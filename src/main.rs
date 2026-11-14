@@ -3,6 +3,9 @@
 //! Right now this only prints a version and usage message.
 //! The compiler stages (lexer, parser, interpreter, ...) get added here one at a time.
 
+mod lexer;
+mod token;
+
 use std::env;
 use std::process::ExitCode;
 
