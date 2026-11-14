@@ -47,6 +47,7 @@ Underneath:
 - **Errors are checked.** A function says what it `raises`, and the compiler makes sure someone handles it.
 - **No surprise `none`.** A value can be `none` only if its type says `or none`, and you must check before using it.
 - **Enums carry data**, and `match` must cover every case.
+- **Generics.** `class Ring[T]` is written once and used for bytes, voltages and text. Each use is checked, and compiled as if written by hand for that type.
 - **Whole numbers have a size where it matters.** A `u8` field is one byte, a number that does not fit is an error, and wrapping is something you ask for.
 - **Compiled, not interpreted**, so it is fast and small enough for a microcontroller.
 
@@ -63,6 +64,7 @@ Samples, none of them final:
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
+- [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
 
 ## One language, every job
 
@@ -126,6 +128,7 @@ cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll)
 cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
+cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -142,6 +145,12 @@ a full `int`, so nothing wraps by accident: `u8(n)` checks that `n` fits, and
 `u8.wrap(n)` keeps the low eight bits on purpose
 ([`docs/sized-ints.md`](docs/sized-ints.md)).
 
+`function first[T](items: list[T]) -> T` and `class Stack[T]` are generic:
+written once, with `T` standing for a type. The call does not say what `T`
+is. The checker works it out, and makes a copy of the function or class for
+each type it is used with, so a `Stack[u8]` is as small and as fast as one
+written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
+
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
@@ -149,7 +158,7 @@ a full `int`, so nothing wraps by accident: `u8(n)` checks that `n` fits, and
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
-  [`docs/sized-ints.md`](docs/sized-ints.md).
+  [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
 ## Roadmap
 
@@ -177,7 +186,9 @@ a full `int`, so nothing wraps by accident: `u8(n)` checks that `n` fits, and
     - Whole numbers with a size, and bit operators (done: `u8` to `i32`,
       checked and wrapping conversions, `& | ^ ~ << >>`, and small fields
       in compiled objects)
-    - Generics
+    - Generics (done: `function first[T]` and `class Stack[T]`, with the
+      types worked out at each call, and one compiled copy for each set of
+      types)
     - `--llvm` together with `--firmware`
 
 ## Layout

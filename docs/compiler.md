@@ -171,6 +171,10 @@ A field with a size, such as `level: u8`, is a `uint8_t` in the struct and
 an `int64_t` everywhere else. [`sized-ints.md`](sized-ints.md) follows one
 through.
 
+A generic class, such as `class Stack[T]`, is not compiled itself. Each
+type it is used with gets a struct of its own: `z_Stack_int`,
+`z_Stack_str`. [`generics.md`](generics.md) has that.
+
 ## Enums and match
 
 ```

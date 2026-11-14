@@ -453,7 +453,8 @@ file. It is a list of field types and nothing else. The names are gone.
 
 (A field with a size, such as `level: u8`, is an `i8` in the struct
 type and an `i64` everywhere else. [`sized-ints.md`](sized-ints.md)
-has that.)
+has that. A generic class gets one struct type for each type it is
+used with, such as `%"z_Stack[int]"`: see [`generics.md`](generics.md).)
 
 An object is a `ptr` to that much memory from the collector. Making one
 is a small function, written the first time the program makes a

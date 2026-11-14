@@ -155,8 +155,8 @@ simple, but strict mode then forces annotations everywhere. *Make an untyped
 function generic*, checked afresh for each call as C++ templates are: more
 precise (`id(1)` and `id("s")` would both be known), but one function then
 becomes many in the compiled program, which costs flash on a microcontroller
-without the programmer having asked for it. That belongs to a later, explicit
-generics feature. *(Provisional: generics are not designed yet.)*
+without the programmer having asked for it. That is what generics are for,
+and there the programmer does ask: `function id[T](x: T) -> T` (3.16).
 
 **How it is done.** The checker makes several passes over the program. Each
 pass notes what arrives at every untyped parameter and field, and the next
@@ -1009,6 +1009,131 @@ real board wires that number to wherever its LED is. **Why 13:** it is
 the Arduino Uno's, the number most people have already met.
 *(Provisional: one LED and numbered pins is the least a board can be.
 Named pins, inputs and the rest wait for a real board to ask.)*
+
+### 3.16 Generics: `function first[T](...)`, `class Stack[T]`
+
+A function or a class can leave a type open and name it:
+
+```zeno
+function first[T](items: list[T]) -> T {
+    return items[0]
+}
+
+class Stack[T] {
+    items: list[T]
+}
+```
+
+`Stack[int]` is then a type, and `first([1, 2])` is known to be an int.
+
+**Why have them.** A ring buffer of bytes and one of voltages are the
+same code. Without generics it is written twice, or written once with
+the types left out, and then nothing after it is checked. A language
+that checks types before the program runs needs a way to say "the same
+type that went in". *(Principle 1.)*
+
+**Why square brackets.** Zeno already writes "a type applied to a
+type" as `list[int]`. `Stack[int]` is the same sentence, so there is
+one rule and no new punctuation. The angle brackets of C++, Java and
+Rust would make `a < b > c` a puzzle for the parser and the reader.
+Go chose square brackets for that reason, and Python writes
+`list[int]` too. *(Principle 3: punctuation has to earn its place.)*
+
+**Why after the name.** `function first[T](...)` reads "first, for any
+T". A keyword in front, as in C++'s `template<typename T>`, is one
+more line for the same information.
+
+### 3.16a A type parameter starts with a capital letter, and its name wins inside
+
+`function first[t]` is an error. Inside `class Pair[A, B]`, `A` is the
+type parameter and not amperes.
+
+**Why the capital.** `int`, `str`, `list`, `ms` and `u8` are all lower
+case or units. A capital says "this is a name for a type" without the
+reader looking back at the header.
+
+**Why it wins.** Zeno has dozens of units, and several are the single
+capital letters people reach for first: `A`, `V`, `K`, `W`, `J`. The
+first version refused a type parameter with a unit's name, and
+`Pair[A, B]` and `Map[K, V]` would not compile. A name declared right
+there, in the header of the function, is the nearest declaration, and
+the nearest declaration winning is the rule everywhere else (3.1).
+A quantity is still written with its unit, `3.3 V`, inside such a
+generic: that is a number followed by a unit, and not a type.
+
+### 3.16b The types are worked out at each call, and never written there
+
+There is no `first[int](xs)`. The checker finds `T`:
+
+1. from the arguments;
+2. from an argument that is a function, by calling it with what the
+   others gave: in `convert(bytes, function(b) { ... })`, what the
+   function returns is `U`;
+3. from the place the result goes, for what is still unknown:
+   `let s: Stack[int] = Stack(items=[])`.
+
+If none of the three says, it is an error that shows how to write the
+third.
+
+**Why.** Zeno works types out wherever it can (0.2), and a call is
+where it can do it best. The cases where the arguments say nothing are
+a constructor with an empty list and a function with no parameters,
+and both have a result that is going somewhere with a type on it.
+Writing the type on the variable is already how `let xs: list[int] =
+[]` works. A second syntax for the same thing can wait until a
+program needs it. *(Principle 3, and "keep what works".)*
+
+**Why arguments first.** When the two disagree, the mistake is
+reported against the type that was written: `let x: str = first(ns)`
+with `ns` a `list[int]` says "`x` should be str, but this is int",
+which is where the eye already is.
+
+### 3.16c A written number waits for the others to speak
+
+`ring(4, 0)` is a `Ring[int]`. `let bytes: Ring[u8] = ring(4, 0)` is a
+`Ring[u8]`. With `small` a `u8`, `same(small, 9)` is a `u8`, and
+`same(small, 300)` is an error.
+
+**Why.** It is 2.8c again. A number written in the program can be an
+`int` or a `u8` and is checked while compiling, so it should not be
+the thing that decides. Without this rule every generic used for bytes
+would need `u8(0)` where `0` is meant, and sized numbers would be the
+one corner of the language where generics are awkward.
+
+### 3.16d No bounds: the body is checked for each type it is used with *(provisional)*
+
+`largest[T]` uses `>`. Nothing in its header says `T` must have a `>`.
+The checker checks the body once for each type the program uses it
+with: for ints and for text it passes, and for a class with no `>` it
+is an error, reported inside `largest` with a note naming the copy and
+the line that asked for it.
+
+**Why.** A bound needs something to name: `T: Ordered` needs
+`Ordered`, and that is interfaces (or traits), a feature Zeno does not
+have yet and should design on its own terms. Checking each use is what
+C++ did for thirty years, and it finds every mistake before the
+program runs. That is the promise that matters. *(Principle 1.)*
+
+**Cost.** The error is reported where the `>` is and not at the call,
+and a generic that nothing uses is only checked loosely (5.14d). C++
+error messages show how badly this can go. The note under the error
+is the guard against that, and bounds are the real fix.
+
+### 3.16e What generics leave out *(provisional)*
+
+Generic enums, methods with type parameters of their own, a generic
+kept as a value (`let f = first`), an owned or borrowed value as a
+type argument, and raising an object of a generic class. Each is
+refused with a message that says so.
+
+**Why.** Each needs a decision that deserves a use case first. An enum
+is `T or none` in its commonest form, which exists. A generic value
+would have to be every copy at once, or be turned into one copy by the
+place it goes. An owned type argument means the container frees what
+it holds, which is a rule about ownership and not about generics.
+`raises` and `except` take a plain name. None of them is needed for a
+ring buffer, a stack or a `largest`, which are what this stage was
+for. *("We don't have to over-engineer things.")*
 
 ---
 
@@ -2297,3 +2422,90 @@ The cast to `int64_t` at the read is what keeps 2.8a true in C.
 **Lists are the gap.** A `list[u8]` still uses eight bytes an item,
 because the runtime has one list type (5.5h). A packed list, or a
 `bytes` type, is the stage that fixes it.
+
+### 5.14 A generic is compiled once for each set of types
+
+`first[T]` called with a `list[int]` and a `list[str]` becomes two
+functions, `first[int]` and `first[str]`. `Stack[int]` and `Stack[str]`
+are two classes, each with its own struct. The generic itself is never
+compiled.
+
+**Why.** There are two ways to build generics. The other is *erasure*,
+which Java uses: one function for every type, with each value behind a
+pointer and its type forgotten. Erasure makes small programs. It also
+means a `Stack[u8]` holds pointers to bytes and not bytes, every `>`
+inside a generic is a call that is looked up while the program runs,
+and a `Cell[float]` cannot hold its float in the struct. On a microcontroller those are the costs
+that matter: memory per object, and time per operation. With copies, a
+`Cell[u8]` is one byte, and `largest` over ints is a loop of integer
+compares, exactly as if it had been written by hand. C++ and Rust made
+the same choice for the same reason. *(Principle 5.)*
+
+**Cost.** Code size. A generic used with ten types is ten functions.
+The programmer can see this: each copy has a name in the C. Erasure
+could be offered later for a generic where size matters more than
+speed, as an explicit choice.
+
+**Why it was cheap.** By the time the compilers run, every copy is an
+ordinary function or class. The C backend and the LLVM backend each
+changed in three small places: register the copies and not the
+generic, call the copy the checker names, and spell the name. Sized
+fields, owned classes, `--firmware` and `--no-collector` all worked
+with generics without a line written for them.
+
+### 5.14a A copy is a copy of the syntax tree
+
+The checker makes `first[int]` by copying the tree of `first`
+(`Function::fresh`), renaming it, and checking it in a scope where `T`
+is a name for `int`.
+
+**Why not substitute types in a table.** Every stage after the parser
+keeps its notes by the address of a node: "this expression is a
+`list[int]`", "this call gives its argument away". One body with two
+sets of notes would need every table keyed by (node, copy), in the
+checker and both compilers. A copy of the tree has addresses of its
+own, so every table works as it is.
+
+**Why `fresh` and not `clone`.** A function written inside another is
+behind an `Arc`, which `clone` shares. Two copies would share the
+inner function's notes, and the second would overwrite the first. A
+test (`doubled`, in `generics_match`) fails if `fresh` is replaced by
+`clone`.
+
+**Cost.** Memory in the compiler, in proportion to the copies. The
+checker stops with an error when a generic needs a bigger copy of
+itself each time (`class Node[T] { next: Node[list[T]] or none }`),
+which is the one way the copies can fail to end.
+
+### 5.14b The interpreter and the VM run the generic itself
+
+Neither engine changed. They run `first` as one function.
+
+**Why.** When a program runs under `zeno run`, every value carries its
+type, so there is nothing for a copy to add. This is erasure, in the
+one place where erasure is free. The tests hold all four engines to
+the same output, so a difference between "one function" and "many
+copies" would show.
+
+### 5.14c In C a copy is called `z_Stack_int`; in LLVM, `"z_Stack[int]"`
+
+**Why.** C names allow letters, digits and `_`, so `Stack[int]` loses
+its brackets: each run of other characters becomes one `_`. LLVM IR
+allows any name in quotes, so there the copy keeps the name the error
+messages use.
+
+**Cost.** In C, `Stack[int]` and a class the programmer called
+`Stack_int` would get the same name. The build refuses the program
+and says why. A scheme that could never clash (C++ mangles `Stack<int>`
+to `5StackIiE`) would make the C unreadable, and reading the C is half
+the point of the C backend (5.5). *(Provisional.)*
+
+### 5.14d A generic that nothing uses is checked with `T` as "anything"
+
+**Why.** With no call there is no type to check the body with, and a
+misspelt name inside it would wait for the first user to find. So the
+checker makes one more copy in which every type parameter is the type
+that fits everywhere, and checks that. It finds wrong names, wrong
+counts of arguments and missing returns. It cannot find a `>` that
+only some types have, because "anything" has every operator. That is
+the gap bounds would close (3.16d).

@@ -273,9 +273,10 @@ loops and `try`, are in [`docs/ownership.md`](ownership.md).
 
 ## What it does not do yet
 
-- **Generic functions.** `function id(x) { return x }` called with an int
-  and with a str leaves `x` dynamic; the checker does not make a separate
-  copy of the function for each kind of call.
+- **An untyped function is not generic by itself.** `function id(x) {
+  return x }` called with an int and with a str leaves `x` dynamic.
+  Written `function id[T](x: T) -> T`, the checker makes a copy for
+  each type: see [`generics.md`](generics.md).
 - **Derived units.** `1 s + 500 ms` works, but `V * A` is not `W`: units are
   grouped by what they measure, with no arithmetic between groups.
 - **Fields of an enum value.** `shape.radius` is `Dynamic`, because which
