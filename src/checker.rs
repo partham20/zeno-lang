@@ -58,12 +58,18 @@ pub enum Kind {
     Class(String),
     /// A value of the enum with this name.
     Enum(String),
+    /// `T or none`: a value of the kind inside, or nothing.
+    Optional(Box<Kind>),
+    /// An error value, such as what `ValueError("bad")` makes.
+    Error,
+    /// A function held as a value.
+    Function(Box<FunctionKind>),
     /// Anything else, described in words for an error message.
     Other(String),
 }
 
 /// What a function takes and gives back.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionKind {
     pub params: Vec<Kind>,
     pub returns: Kind,
@@ -82,6 +88,9 @@ pub struct Types {
     classes: HashMap<usize, Vec<Kind>>,
     /// For each enum, the types of the values each case carries.
     enums: HashMap<usize, Vec<Vec<Kind>>>,
+    /// Each place a variable is read after a check such as `is not none`
+    /// has narrowed it, with the narrower type it has there.
+    narrowed: HashMap<usize, Kind>,
 }
 
 impl Types {
@@ -96,9 +105,43 @@ impl Types {
     pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
         self.functions.get(&(Arc::as_ptr(decl) as usize))
     }
+
+    /// If `expr` is a variable read where a check has narrowed it (`user`
+    /// inside `if user is not none { ... }`), the type it has there.
+    pub fn narrowed(&self, expr: &ast::Expr) -> Option<&Kind> {
+        self.narrowed.get(&(expr as *const ast::Expr as usize))
+    }
 }
 
 fn kind(ty: &Ty) -> Kind {
+    kind_within(ty, 0)
+}
+
+/// `kind`, counting how many function types deep it has gone. A function
+/// can return itself, and its type would then never end.
+fn kind_within(ty: &Ty, depth: usize) -> Kind {
+    let function = |params: Vec<&Ty>, returns: &Ty| {
+        Kind::Function(Box::new(FunctionKind {
+            params: params.into_iter().map(|param| kind_within(param, depth + 1)).collect(),
+            returns: kind_within(returns, depth + 1),
+        }))
+    };
+    match ty {
+        Ty::Optional(inner) => Kind::Optional(Box::new(kind_within(inner, depth))),
+        Ty::List(item) => Kind::List(Box::new(kind_within(item, depth))),
+        Ty::Error(_) => Kind::Error,
+        Ty::Callable(callable) if depth < 4 => function(callable.params.iter().collect(), &callable.returns),
+        Ty::Function(info) if depth < 4 && info.self_type.is_none() => match &*info.state.borrow() {
+            State::Checked(signature) | State::Checking(signature) => {
+                function(signature.params.iter().map(|slot| &slot.ty).collect(), &signature.returns)
+            }
+            State::NotChecked => Kind::Other(ty.to_string()),
+        },
+        other => plain_kind(other),
+    }
+}
+
+fn plain_kind(ty: &Ty) -> Kind {
     match ty {
         Ty::Int => Kind::Int,
         Ty::Float => Kind::Float,
@@ -106,7 +149,6 @@ fn kind(ty: &Ty) -> Kind {
         Ty::Bool => Kind::Bool,
         Ty::None => Kind::None,
         Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
-        Ty::List(item) => Kind::List(Box::new(kind(item))),
         Ty::Instance(class) => Kind::Class(class.name.clone()),
         Ty::EnumValue(info) => Kind::Enum(info.name.clone()),
         other => Kind::Other(other.to_string()),
@@ -475,6 +517,13 @@ struct Variable {
     mutable: bool,
     /// Set for a bare enum case such as `Idle`: which case it is.
     case: Option<usize>,
+    /// Set when `ty` is narrower than the type the variable was declared
+    /// with, after a check such as `is not none`. This is the declared type.
+    declared: Option<Ty>,
+    /// A scope inside the one that declares a variable can hold its own
+    /// view of it, to record what is known about it in there. This marks
+    /// such a view, as opposed to the declaration itself.
+    view: bool,
 }
 
 impl Scope {
@@ -487,7 +536,7 @@ impl Scope {
         if variables.contains_key(name) {
             return false;
         }
-        variables.insert(name.to_string(), Variable { ty, mutable, case: None });
+        variables.insert(name.to_string(), Variable { ty, mutable, case: None, declared: None, view: false });
         true
     }
 
@@ -506,8 +555,40 @@ impl Scope {
     /// narrower type: for example `str` instead of `str or none` after a check.
     fn narrow(&self, name: &str, ty: Ty) {
         if let Some(mut variable) = self.get(name) {
+            variable.view = self.get_here(name).map_or(true, |here| here.view);
+            if variable.declared.is_none() {
+                variable.declared = Some(variable.ty.clone());
+            }
             variable.ty = ty;
             self.variables.borrow_mut().insert(name.to_string(), variable);
+        }
+    }
+
+    /// Give this scope a view of `name` that knows nothing beyond its
+    /// declared type, whatever the scopes around it have worked out.
+    fn forget(&self, name: &str) {
+        if let Some(mut variable) = self.get(name) {
+            if let Some(declared) = variable.declared.take() {
+                variable.ty = declared;
+                variable.view = true;
+                self.variables.borrow_mut().insert(name.to_string(), variable);
+            }
+        }
+    }
+
+    /// `name` has just been given a value that may be `none`. Drop what
+    /// checks have said about it, in this scope and in every scope around
+    /// it, out to the one that declares it.
+    fn widen(&self, name: &str) {
+        let mut view = true;
+        if let Some(variable) = self.variables.borrow_mut().get_mut(name) {
+            if let Some(declared) = variable.declared.take() {
+                variable.ty = declared;
+            }
+            view = variable.view;
+        }
+        if let (true, Some(parent)) = (view, &self.parent) {
+            parent.widen(name);
         }
     }
 }
@@ -1060,16 +1141,27 @@ impl Checker {
                 false
             }
             StmtKind::Assign { target, op, value } => {
-                let (wanted, field) = self.assignment_target(target, env);
+                let (wanted, holds, field) = self.assignment_target(target, env);
                 let mut given = self.expr(value, env);
                 if let Some(op) = op {
-                    given = self.binary(*op, &wanted, &given, span);
+                    given = self.binary(*op, &holds, &given, span);
                 }
                 if let Some(field) = field {
                     // A value stored in an untyped field is evidence of its type.
                     self.sees(&field, &given, value.span);
                 }
                 self.expect(&given, &wanted, "the new value", value.span);
+                // What a variable holds from here on is what was just put
+                // in it. If that is certainly a value, the variable is
+                // known to be present; if it may be `none`, whatever an
+                // earlier check said about it no longer holds.
+                if let (ExprKind::Name(name), Ty::Optional(inner)) = (&target.kind, &wanted) {
+                    if !given.is_loose() && fits(&given, inner) {
+                        env.narrow(name, (**inner).clone());
+                    } else {
+                        env.widen(name);
+                    }
+                }
                 false
             }
             StmtKind::Expr(expr) => {
@@ -1112,17 +1204,39 @@ impl Checker {
                 // runs when the other branch's condition held:
                 //     if x is none { return }
                 //     ... x is not none from here on ...
+                //
+                // The branch that carries on may itself have changed the
+                // variable, so what is passed on is what that branch still
+                // knows at its end.
                 if then_exits && !else_exits {
-                    narrow_all(env, &when_false);
+                    keep_known(env, &else_scope, &when_false);
                 } else if else_exits && !then_exits {
-                    narrow_all(env, &when_true);
+                    keep_known(env, &then_scope, &when_true);
+                } else if !then_exits {
+                    // Both branches carry on. What they agree on at their
+                    // ends is known afterwards:
+                    //     if name is none { name = "anon" }
+                    //     ... name is a str from here on, either way ...
+                    for (name, _) in when_true.iter().chain(&when_false) {
+                        if let (Some(then), Some(other)) = (then_scope.get(name), else_scope.get(name)) {
+                            if then.declared.is_some() && other.declared.is_some() && same(&then.ty, &other.ty) {
+                                env.narrow(name, then.ty);
+                            }
+                        }
+                    }
                 }
                 then_exits && else_exits
             }
             StmtKind::While { condition, body } => {
                 self.condition(condition, env);
+                // Each trip through the body starts just after the
+                // condition held, so what it says is known in there:
+                // `while node is not none { ... node.next ... }`.
+                let scope = Scope::child(env);
+                forget_assigned(body, &scope);
+                narrow_all(&scope, &self.narrowings(condition, &scope).0);
                 self.frame().loops += 1;
-                self.block(body, env);
+                self.block(body, &scope);
                 self.frame().loops -= 1;
                 // `while true` with no `break` never finishes, so nothing follows it.
                 condition.kind == ExprKind::Bool(true) && !has_break(body)
@@ -1131,6 +1245,7 @@ impl Checker {
                 let iterable_type = self.expr(iterable, env);
                 let item = self.item_type(&iterable_type, iterable.span);
                 let scope = Scope::child(env);
+                forget_assigned(body, &scope);
                 scope.declare(variable, item, false);
                 self.frame().loops += 1;
                 self.statements(body, &scope);
@@ -1254,7 +1369,10 @@ impl Checker {
     /// The type that may be assigned to `target`, after checking that it can
     /// be assigned to at all. For a field of an object, the field is
     /// returned as well.
-    fn assignment_target(&mut self, target: &Expr, env: &Env) -> (Ty, Option<Slot>) {
+    /// What can be stored in `target`, what it holds at this point (which
+    /// is narrower after a check such as `is not none`), and the field it
+    /// is, if it is one.
+    fn assignment_target(&mut self, target: &Expr, env: &Env) -> (Ty, Ty, Option<Slot>) {
         let span = target.span;
         let ty = match &target.kind {
             ExprKind::Name(name) => match env.get(name) {
@@ -1266,13 +1384,20 @@ impl Checker {
                     format!("`{name}` cannot be changed. Declare it with `var` to allow that"),
                     span,
                 ),
-                Some(variable) => variable.ty,
+                Some(variable) => {
+                    let Some(declared) = variable.declared else {
+                        return (variable.ty.clone(), variable.ty, None);
+                    };
+                    // `x += 1` reads `x` as well as writing it.
+                    self.types.narrowed.insert(target as *const Expr as usize, kind(&variable.ty));
+                    return (declared, variable.ty, None);
+                }
             },
             ExprKind::Field { object, name } => match self.expr(object, env) {
                 Ty::Instance(class) => {
                     let field = class.fields.borrow().iter().find(|f| f.name == *name).cloned();
                     match field {
-                        Some(field) => return (field.ty.clone(), Some(field)),
+                        Some(field) => return (field.ty.clone(), field.ty.clone(), Some(field)),
                         None => self.error(format!("`{}` has no field `{name}`", class.name), span),
                     }
                 }
@@ -1291,7 +1416,7 @@ impl Checker {
             }
             _ => self.error("this cannot be assigned to", span),
         };
-        (ty, None)
+        (ty.clone(), ty, None)
     }
 
     fn condition(&mut self, condition: &Expr, env: &Env) {
@@ -1726,6 +1851,11 @@ impl Checker {
                 Some(variable) => {
                     if self.worked_out.last().is_some_and(|params| params.contains_key(name)) {
                         self.touched.push(name.clone());
+                    }
+                    if variable.declared.is_some() {
+                        // The compiler needs to know that here the value
+                        // is the narrower type: it stores the two differently.
+                        self.types.narrowed.insert(expr as *const Expr as usize, kind(&variable.ty));
                     }
                     variable.ty
                 }
@@ -2305,6 +2435,38 @@ fn decl_id(span: Span, name: &str) -> DeclId {
     (span.line, span.col, name.to_string())
 }
 
+/// A loop body runs more than once, so what was known about a variable on
+/// the way into the loop is not known on the second trip if the body gives
+/// the variable a new value. Start the body knowing nothing about those.
+fn forget_assigned(body: &[Stmt], scope: &Env) {
+    for statement in body {
+        match &statement.kind {
+            StmtKind::Assign { target: Expr { kind: ExprKind::Name(name), .. }, .. } => scope.forget(name),
+            StmtKind::If { then_block, else_block, .. } => {
+                forget_assigned(then_block, scope);
+                forget_assigned(else_block.as_deref().unwrap_or_default(), scope);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => forget_assigned(body, scope),
+            StmtKind::Match { arms, .. } => arms.iter().for_each(|arm| forget_assigned(&arm.body, scope)),
+            StmtKind::Try { body, handlers } => {
+                forget_assigned(body, scope);
+                handlers.iter().for_each(|handler| forget_assigned(&handler.body, scope));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Carry out to `env` what the scope of a branch still knows, at its end,
+/// about the variables its condition narrowed.
+fn keep_known(env: &Env, branch: &Env, narrowings: &[(String, Ty)]) {
+    for (name, _) in narrowings {
+        if let Some(Variable { ty, declared: Some(_), .. }) = branch.get(name) {
+            env.narrow(name, ty);
+        }
+    }
+}
+
 fn narrow_all(scope: &Env, narrowings: &[(String, Ty)]) {
     for (name, ty) in narrowings {
         scope.narrow(name, ty.clone());
@@ -2646,6 +2808,35 @@ mod tests {
         assert_eq!(
             error("function shout(text: str or none) -> str {\n if text is none {\n  print(\"nothing\")\n }\n return text.upper()\n}"),
             "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+    }
+
+    #[test]
+    fn a_new_value_changes_what_is_known() {
+        let node = "class Node {\n value: int\n next: Node or none = none\n}\n";
+        // Walking a linked list: `node` is checked by the loop, then moved on.
+        ok(&format!(
+            "{node}function total(head: Node or none) -> int {{\n var node = head\n var sum = 0\n while node is not none {{\n  sum += node.value\n  node = node.next\n }}\n return sum\n}}"
+        ));
+        // Filling in a missing value: both ways out of the `if` leave a str.
+        ok("function f(given: str or none) -> str {\n var name = given\n if name is none { name = \"anon\" }\n return name\n}");
+        ok("function f() -> int {\n var x: int or none = none\n x = 5\n return x + 1\n}");
+
+        let gone = "`+` does not work between int or none and int. Check for `none` first";
+        // Set back to none in a block inside the check.
+        assert_eq!(error("var x: int or none = 5\nif x is not none {\n if x > 3 { x = none }\n print(x + 1)\n}"), gone);
+        // Set back to none by an earlier trip round a loop.
+        assert_eq!(error("var x: int or none = 5\nif x is not none {\n while true {\n  print(x + 1)\n  x = none\n }\n}"), gone);
+        assert_eq!(
+            error("function f(xs: list[int]) {\n var x: int or none = 1\n x = 2\n for y in xs {\n  print(x + y)\n  x = none\n }\n}"),
+            gone
+        );
+        // Set back to none in a `try`, which may stop part way.
+        assert_eq!(error("function f() -> int {\n var x: int or none = 1\n x = 2\n try { x = none } except { }\n return x + 1\n}"), gone);
+        // The branch that carries on undid the check.
+        assert_eq!(
+            error("function f(x: int or none) -> int {\n var y = x\n if y is none { return 0 } else { y = none }\n return y + 1\n}"),
+            gone
         );
     }
 

@@ -24,10 +24,12 @@
 //!    does: left to right. Where the order can matter, the pieces are worked
 //!    out one at a time into temporaries. See `sequence`.
 //!
-//! So far it compiles numbers, bools, strings, quantities, functions,
-//! control flow, classes, lists, enums and `match`. `try`, `none` and
-//! functions used as values are refused with a message, and come next.
+//! It compiles numbers, bools, strings, quantities, functions, control flow,
+//! classes, lists, enums and `match`, values that may be `none`, errors
+//! (`try`, `except`, `raise`), and functions used as values. The few things
+//! it does not compile yet are refused with a message that says so.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -62,6 +64,11 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
         definitions: Vec::new(),
         adapters: HashSet::new(),
         returns: None,
+        tries: Vec::new(),
+        loops: Vec::new(),
+        volatile: HashSet::new(),
+        shared: HashSet::new(),
+        closures: 0,
     };
 
     // Classes, enums and functions can be used above where they are written,
@@ -81,6 +88,15 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
     }
 
     // The statements at the top of the file become the body of C's `main`.
+    let top: Vec<&Stmt> = program
+        .statements
+        .iter()
+        .filter(|statement| !matches!(statement.kind, StmtKind::Function(_) | StmtKind::Class(_) | StmtKind::Enum(_)))
+        .collect();
+    for statement in &top {
+        changed_in_try(statement, false, &mut emitter.volatile);
+        names_in_functions(statement, false, &mut emitter.shared);
+    }
     for statement in &program.statements {
         emitter.stmt(statement)?;
     }
@@ -147,6 +163,7 @@ fn render(lines: &Lines) -> String {
 ///
 /// The flags say what running `code` could do, which is what `sequence`
 /// needs to know to keep things in order.
+#[derive(Clone)]
 struct Val {
     code: String,
     kind: Kind,
@@ -201,8 +218,19 @@ impl Val {
 }
 
 struct Variable {
+    /// The C that reads or writes it. Usually a name, such as `z_count`.
     c_name: String,
     kind: Kind,
+    /// Declared with `var`, so it can be given a new value.
+    mutable: bool,
+    /// A `var` that a function written inside this one also uses does not
+    /// live in a C variable: it lives in a box on the heap that both of
+    /// them point to, so that a change made by one is seen by the other.
+    /// This is the C for the pointer to that box.
+    boxed: Option<String>,
+    /// Whether anything has looked the variable up. That is how a function
+    /// written inside another finds out which outside variables it needs.
+    used: Cell<bool>,
 }
 
 struct FunctionEntry {
@@ -255,6 +283,20 @@ struct Emitter<'a> {
     adapters: HashSet<String>,
     /// Inside a function: what it returns.
     returns: Option<Kind>,
+    /// The `try` blocks being compiled around this point, outermost first,
+    /// by the name of the C variable each one keeps its place in.
+    tries: Vec<String>,
+    /// For each loop around this point, how many `try` blocks were open
+    /// when it began. `break` has to close the ones opened since.
+    loops: Vec<usize>,
+    /// In the function being compiled: the variables given a new value
+    /// inside a `try`. See `changed_in_try`.
+    volatile: HashSet<String>,
+    /// In the function being compiled: the names that functions written
+    /// inside it mention. A `var` among them is kept in a box.
+    shared: HashSet<String>,
+    /// How many functions with no name have been compiled, to number them.
+    closures: usize,
 }
 
 /// The error for a part of Zeno this stage does not handle yet.
@@ -281,9 +323,94 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         Kind::Str => "const char *".to_string(),
         Kind::List(_) => "zeno_list *".to_string(),
         Kind::Class(name) | Kind::Enum(name) => format!("z_{name} *"),
-        Kind::None => return Err(cannot("a value that is `none`", span)),
+        Kind::Error => "zeno_error *".to_string(),
+        Kind::Function(_) => "zeno_closure *".to_string(),
+        // A pointer can already say "nothing": it is NULL. A number or a
+        // bool cannot, so it is paired with a flag.
+        Kind::Optional(inner) => match &**inner {
+            inner if is_pointer(inner) => c_type(inner, span)?,
+            Kind::Int => "zeno_opt_int ".to_string(),
+            Kind::Float | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
+            Kind::Bool => "zeno_opt_bool ".to_string(),
+            _ => return Err(cannot("this kind of value that may be `none`", span)),
+        },
+        Kind::None => {
+            return Err(cannot("a variable that only ever holds `none`. Give it a type, as in `x: int or none`", span))
+        }
         Kind::Other(name) => return Err(cannot(format!("a value of type {name}"), span)),
     })
+}
+
+/// Is this a kind that C holds through a pointer?
+fn is_pointer(kind: &Kind) -> bool {
+    matches!(kind, Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_))
+}
+
+/// The C for "no value" where a `T or none` is wanted, `inner` being the T.
+fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
+    Ok(match inner {
+        inner if is_pointer(inner) => "NULL".to_string(),
+        Kind::Int => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Float | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
+        Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
+        _ => return Err(cannot("this kind of value that may be `none`", span)),
+    })
+}
+
+/// The one kind that values of kinds `a` and `b` can both be stored as, if
+/// there is one: `int` and `none` meet in `int or none`.
+fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
+    match (a, b) {
+        _ if a == b => Some(a.clone()),
+        // `[[], [1]]`: the empty list goes along with the other one.
+        (empty, Kind::List(_)) if is_empty_list(empty) => Some(b.clone()),
+        (Kind::List(_), empty) if is_empty_list(empty) => Some(a.clone()),
+        (Kind::None, Kind::Optional(_)) => Some(b.clone()),
+        (Kind::Optional(_), Kind::None) => Some(a.clone()),
+        (Kind::None, other) | (other, Kind::None) => Some(Kind::Optional(Box::new(other.clone()))),
+        (Kind::Optional(inner), other) | (other, Kind::Optional(inner)) if **inner == *other => {
+            Some(Kind::Optional(inner.clone()))
+        }
+        // Two functions that take and give back the same things in C.
+        (Kind::Function(x), Kind::Function(y)) => {
+            let nowhere = Span { line: 0, col: 0 };
+            let (x, y) = (code_type(x, nowhere).ok()?, code_type(y, nowhere).ok()?);
+            (x == y).then(|| a.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The kind of `[]` before the place it arrives at has said what it holds.
+fn is_empty_list(kind: &Kind) -> bool {
+    matches!(kind, Kind::List(item) if matches!(**item, Kind::Other(_)))
+}
+
+/// The C return type of a function that gives back a value of this kind.
+fn return_type(kind: &Kind, span: Span) -> Result<String, Error> {
+    match kind {
+        Kind::None => Ok("void ".to_string()),
+        other => c_type(other, span),
+    }
+}
+
+/// The C type of a pointer to the code of a function held as a value. Its
+/// first argument is always the function value itself, which is where a
+/// function written inside another finds the variables it uses.
+fn code_type(kind: &FunctionKind, span: Span) -> Result<String, Error> {
+    let mut params = vec!["zeno_closure *".to_string()];
+    for param in &kind.params {
+        params.push(c_type(param, span)?.trim_end().to_string());
+    }
+    Ok(format!("{}(*)({})", return_type(&kind.returns, span)?, params.join(", ")))
+}
+
+/// C that calls a function held as a value. `function` is mentioned twice,
+/// so it must be a plain name.
+fn invoke(function: &str, kind: &FunctionKind, args: &[String], span: Span) -> Result<String, Error> {
+    let mut all = vec![function.to_string()];
+    all.extend(args.iter().cloned());
+    Ok(format!("(({}){function}->code)({})", code_type(kind, span)?, all.join(", ")))
 }
 
 /// A short name for a kind, to build C function names from.
@@ -297,6 +424,9 @@ fn key(kind: &Kind) -> String {
         Kind::Quantity(unit) => format!("in_{unit}"),
         Kind::List(item) => format!("list_{}", key(item)),
         Kind::Class(name) | Kind::Enum(name) => name.clone(),
+        Kind::Optional(inner) => format!("opt_{}", key(inner)),
+        Kind::Error => "error".to_string(),
+        Kind::Function(_) => "function".to_string(),
         Kind::Other(_) => "other".to_string(),
     }
 }
@@ -308,7 +438,10 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         Kind::Float | Kind::Quantity(_) => "f",
         Kind::Bool => "b",
         Kind::Str => "s",
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) => "p",
+        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => "p",
+        Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
+        // A number and its flag do not fit in a slot; see `zeno_box_int`.
+        Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
         Kind::None | Kind::Other(_) => return Err(cannot("a list of these", span)),
     };
     Ok(format!("(zeno_slot){{.{member} = {code}}}"))
@@ -321,9 +454,23 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::Bool => format!("{slot}.b"),
         Kind::Str => format!("{slot}.s"),
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) => format!("(({}){slot}.p)", c_type(kind, span)?.trim_end()),
+        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => {
+            format!("(({}){slot}.p)", c_type(kind, span)?.trim_end())
+        }
+        Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
+        Kind::Optional(inner) => format!("zeno_unbox_{}({slot}.p)", scalar(inner, span)?),
         Kind::None | Kind::Other(_) => return Err(cannot("a list of these", span)),
     })
+}
+
+/// Which of the runtime's three flagged kinds holds an optional `inner`.
+fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
+    match inner {
+        Kind::Int => Ok("int"),
+        Kind::Float | Kind::Quantity(_) => Ok("float"),
+        Kind::Bool => Ok("bool"),
+        _ => Err(cannot("this kind of value that may be `none`", span)),
+    }
 }
 
 /// `line, col` as the last two arguments of a runtime call that can fail.
@@ -389,7 +536,7 @@ impl Emitter<'_> {
 
     fn declare(&mut self, name: &str, kind: Kind) -> String {
         let c_name = self.c_name(name);
-        let variable = Variable { c_name: c_name.clone(), kind };
+        let variable = Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false) };
         self.scopes.last_mut().expect("there is always a scope").insert(name.to_string(), variable);
         c_name
     }
@@ -400,7 +547,9 @@ impl Emitter<'_> {
     }
 
     fn lookup(&self, name: &str) -> Option<&Variable> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+        let variable = self.scopes.iter().rev().find_map(|scope| scope.get(name))?;
+        variable.used.set(true);
+        Some(variable)
     }
 
     // ------------------------------------------------------------ Functions
@@ -579,29 +728,60 @@ impl Emitter<'_> {
         // count of names used starts again from the top-level ones.
         let used = self.used.clone();
 
+        let params = self.parameters(decl, kind, span)?;
+        let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+        self.body(decl, kind, span)?;
+        self.scopes.pop();
+        self.used = used;
+
+        let body = render(&std::mem::take(&mut self.lines));
+        self.helper(format!("static {}{c_name}({params})", return_type(&kind.returns, span)?), body);
+        Ok(())
+    }
+
+    /// Declare the parameters of a function in the innermost scope, and
+    /// return them as they are written in C.
+    fn parameters(&mut self, decl: &Function, kind: &FunctionKind, span: Span) -> Result<Vec<String>, Error> {
         let mut params = Vec::new();
         for (param, param_kind) in decl.params.iter().zip(&kind.params) {
             let param_type = c_type(param_kind, span)?;
             let param_name = self.declare(&param.name, param_kind.clone());
             params.push(format!("{param_type}{param_name}"));
         }
-        let return_type = match &kind.returns {
-            Kind::None => "void ".to_string(),
-            other => c_type(other, span)?,
-        };
-        let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+        Ok(params)
+    }
 
-        self.returns = Some(kind.returns.clone());
+    /// Compile the statements of a function into `self.lines`.
+    fn body(&mut self, decl: &Function, kind: &FunctionKind, span: Span) -> Result<(), Error> {
+        let mut volatile = HashSet::new();
+        let mut shared = HashSet::new();
         for statement in &decl.body {
-            self.stmt(statement)?;
+            changed_in_try(statement, false, &mut volatile);
+            names_in_functions(statement, false, &mut shared);
         }
-        self.returns = None;
-        self.scopes.pop();
-        self.used = used;
+        // What the function around this one was in the middle of is set
+        // aside, and put back afterwards.
+        let volatile = std::mem::replace(&mut self.volatile, volatile);
+        let shared = std::mem::replace(&mut self.shared, shared);
+        let tries = std::mem::take(&mut self.tries);
+        let loops = std::mem::take(&mut self.loops);
+        let returns = self.returns.replace(kind.returns.clone());
 
-        let body = render(&std::mem::take(&mut self.lines));
-        self.helper(format!("static {return_type}{c_name}({params})"), body);
-        Ok(())
+        let mut result = decl.body.iter().try_for_each(|statement| self.stmt(statement));
+        // A function that may give back `none` does so if it reaches its
+        // end without a `return`.
+        if let (Ok(()), Kind::Optional(inner)) = (&result, &kind.returns) {
+            if !matches!(decl.body.last().map(|last| &last.kind), Some(StmtKind::Return(_))) {
+                result = nothing(inner, span).map(|none| self.line(format!("return {none};")));
+            }
+        }
+
+        self.volatile = volatile;
+        self.shared = shared;
+        self.tries = tries;
+        self.loops = loops;
+        self.returns = returns;
+        result
     }
 
     // ----------------------------------------------------------- Statements
@@ -621,17 +801,49 @@ impl Emitter<'_> {
         let top_level = self.scopes.len() == 1 && self.returns.is_none();
         match &statement.kind {
             StmtKind::Let { name, ty, value, .. } | StmtKind::Const { name, ty, value } => {
+                let mutable = matches!(statement.kind, StmtKind::Let { mutable: true, .. });
                 let expected = ty.as_ref().and_then(|ty| self.kind_of_type(ty));
-                let val = self.expr_as(value, expected.as_ref())?;
+                let mut val = self.expr_as(value, expected.as_ref())?;
+                if let Some(expected) = &expected {
+                    val = self.coerce(val, expected, value.span)?;
+                }
+                if is_empty_list(&val.kind) {
+                    return Err(cannot(
+                        "an empty list with no type beside it. Write `let items: list[int] = []`",
+                        value.span,
+                    ));
+                }
                 let c_type = c_type(&val.kind, value.span)?;
-                let c_name = self.declare(name, val.kind);
                 if top_level {
                     // A top-level variable is one that functions can see: a
                     // C global, given its value when `main` gets this far.
+                    let c_name = self.declare(name, val.kind);
                     self.globals.push(format!("static {c_type}{c_name};"));
                     self.line(format!("{c_name} = {};", val.code));
+                } else if mutable && self.shared.contains(name) {
+                    // A function written inside this one uses the variable
+                    // too, and either may change it. So it lives in a box on
+                    // the heap, and both hold a pointer to the box.
+                    let pointer = self.c_name(name);
+                    let size = c_type.trim_end();
+                    self.line(format!("{c_type}*{pointer} = ({c_type}*)zeno_alloc(sizeof({size}));"));
+                    self.line(format!("*{pointer} = {};", val.code));
+                    let variable = Variable {
+                        c_name: format!("(*{pointer})"),
+                        kind: val.kind,
+                        mutable,
+                        boxed: Some(pointer),
+                        used: Cell::new(false),
+                    };
+                    self.scopes.last_mut().expect("there is always a scope").insert(name.clone(), variable);
                 } else {
-                    self.line(format!("{c_type}{c_name} = {};", val.code));
+                    // See `changed_in_try` for what `volatile` is doing here.
+                    let careful = if mutable && self.volatile.contains(name) { "volatile " } else { "" };
+                    let c_name = self.declare(name, val.kind);
+                    self.line(format!("{c_type}{careful}{c_name} = {};", val.code));
+                }
+                if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+                    variable.mutable = mutable;
                 }
             }
 
@@ -667,13 +879,13 @@ impl Emitter<'_> {
                     self.line(format!("if (!({})) break;", condition.code));
                     self.indent -= 1;
                 }
-                self.block(body)?;
+                self.loop_body(body)?;
                 self.line("}");
             }
 
             StmtKind::For { variable, iterable, body } => {
                 self.open_loop(variable, iterable)?;
-                self.block(body)?;
+                self.loop_body(body)?;
                 self.line("}");
                 self.scopes.pop();
             }
@@ -687,16 +899,33 @@ impl Emitter<'_> {
                 match value {
                     Some(value) if returns != Kind::None => {
                         let val = self.expr_as(value, Some(&returns))?;
-                        self.line(format!("return {};", val.code));
+                        let val = self.coerce(val, &returns, span)?;
+                        if self.tries.is_empty() {
+                            self.line(format!("return {};", val.code));
+                        } else {
+                            // Work the value out while the `try` is still
+                            // watching, then leave the `try`, then return.
+                            let val = self.temp(val, span)?;
+                            self.leave_tries(0);
+                            self.line(format!("return {};", val.code));
+                        }
                     }
                     Some(value) if !matches!(value.kind, ExprKind::None) => {
                         return Err(cannot("returning a value from a function that returns nothing", span))
                     }
-                    _ => self.line("return;"),
+                    _ => {
+                        self.leave_tries(0);
+                        self.line("return;");
+                    }
                 }
             }
-            StmtKind::Break => self.line("break;"),
-            StmtKind::Continue => self.line("continue;"),
+            StmtKind::Break | StmtKind::Continue => {
+                let Some(&opened_before) = self.loops.last() else {
+                    return Err(cannot("`break` or `continue` outside a loop", span));
+                };
+                self.leave_tries(opened_before);
+                self.line(if statement.kind == StmtKind::Break { "break;" } else { "continue;" });
+            }
 
             // Compiled separately; see `emit`.
             StmtKind::Function(_) | StmtKind::Class(_) | StmtKind::Enum(_) if top_level => {}
@@ -714,17 +943,146 @@ impl Emitter<'_> {
                 }
             }
 
-            StmtKind::Try { .. } => return Err(cannot("`try`", span)),
-            StmtKind::Raise(_) => return Err(cannot("`raise`", span)),
+            StmtKind::Try { body, handlers } => self.try_statement(body, handlers, span)?,
+
+            StmtKind::Raise(value) => {
+                let val = self.expr(value)?;
+                match &val.kind {
+                    Kind::Error => self.line(format!("zeno_raise({}, {});", val.code, at(span))),
+                    // An object of a class can be raised too. It travels
+                    // inside an error value whose kind is the class's name.
+                    Kind::Class(name) => {
+                        let name = name.clone();
+                        let object = self.temp(val, span)?.code;
+                        self.line(format!(
+                            "zeno_raise(zeno_error_new({}, zeno_show_{name}({object}), {object}), {});",
+                            c_string(&name),
+                            at(span)
+                        ));
+                    }
+                    _ => return Err(cannot("`raise` with anything but an error or an object", span)),
+                }
+            }
         }
+        Ok(())
+    }
+
+    /// The body of a loop. It notes how many `try` blocks were open when
+    /// the loop began, for `break` and `continue` to compare against.
+    fn loop_body(&mut self, body: &[Stmt]) -> Result<(), Error> {
+        self.loops.push(self.tries.len());
+        let result = self.block(body);
+        self.loops.pop();
+        result
+    }
+
+    /// Before a `return`, `break` or `continue` jumps out of `try` blocks,
+    /// tell the runtime that those blocks are over. `keep` is how many of
+    /// the open ones stay open.
+    fn leave_tries(&mut self, keep: usize) {
+        if let Some(outermost) = self.tries.get(keep) {
+            self.line(format!("zeno_trying = {outermost}.outer;"));
+        }
+    }
+
+    /// `try { ... } except Kind as name { ... }`
+    ///
+    /// ```c
+    /// zeno_try t1;                      // a place to come back to
+    /// t1.outer = zeno_trying;
+    /// zeno_trying = &t1;                // from here on, errors come to t1
+    /// if (setjmp(t1.place) == 0) {
+    ///     ...the body...
+    ///     zeno_trying = t1.outer;       // finished with no error
+    /// } else if (zeno_caught("ValueError")) {
+    ///     ...the except block...        // an error jumped back here
+    /// } else {
+    ///     zeno_raise_again();           // not ours: pass it outward
+    /// }
+    /// ```
+    ///
+    /// `setjmp` gives 0 when it is first called. If anything inside the
+    /// body raises, however deep in function calls, the runtime jumps back
+    /// to that same `setjmp`, which this time gives 1.
+    fn try_statement(&mut self, body: &[Stmt], handlers: &[Handler], span: Span) -> Result<(), Error> {
+        let place = self.new_temp();
+        self.line(format!("zeno_try {place};"));
+        self.line(format!("{place}.outer = zeno_trying;"));
+        self.line(format!("zeno_trying = &{place};"));
+        self.line(format!("if (setjmp({place}.place) == 0) {{"));
+        self.tries.push(place.clone());
+        let result = self.block(body);
+        self.tries.pop();
+        result?;
+        // Reaching the end of the body means nothing was raised. (If the
+        // body always leaves by its last line, that end is never reached.)
+        let leaves = matches!(
+            body.last().map(|last| &last.kind),
+            Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
+        );
+        if !leaves {
+            self.indent += 1;
+            self.line(format!("zeno_trying = {place}.outer;"));
+            self.indent -= 1;
+        }
+
+        let mut catches_everything = false;
+        for handler in handlers {
+            // What the `except` asks for, and what `as name` then holds.
+            let (wanted, holds) = match handler.error.as_deref() {
+                None | Some("Error") => (None, Kind::Error),
+                Some(class) if self.classes.contains_key(class) => (Some(class), Kind::Class(class.to_string())),
+                Some(kind) if ERROR_KINDS.contains(&kind) => (Some(kind), Kind::Error),
+                Some(other) => return Err(cannot(format!("`except {other}`"), span)),
+            };
+            self.line(match wanted {
+                Some(kind) => format!("}} else if (zeno_caught({})) {{", c_string(kind)),
+                None => "} else {".to_string(),
+            });
+            self.scopes.push(HashMap::new());
+            self.indent += 1;
+            if let Some(name) = &handler.binding {
+                let c_type = c_type(&holds, span)?;
+                let value = match holds {
+                    Kind::Class(_) => format!("({})zeno_raised->object", c_type.trim_end()),
+                    _ => "zeno_raised".to_string(),
+                };
+                let c_name = self.declare(name, holds);
+                self.line(format!("{c_type}{c_name} = {value};"));
+            }
+            let result = handler.body.iter().try_for_each(|statement| self.stmt(statement));
+            self.indent -= 1;
+            self.scopes.pop();
+            result?;
+            if wanted.is_none() {
+                catches_everything = true;
+                break; // nothing gets past an `except` that takes every error
+            }
+        }
+        if !catches_everything {
+            self.line("} else {");
+            self.indent += 1;
+            self.line("zeno_raise_again();");
+            self.indent -= 1;
+        }
+        self.line("}");
         Ok(())
     }
 
     /// The kind a written type stands for, where the compiler needs to know
     /// it before it has a value to look at: `let xs: list[int] = []`.
     fn kind_of_type(&self, ty: &Type) -> Option<Kind> {
-        let Type::Named { name, args } = ty else {
-            return None;
+        let (name, args) = match ty {
+            Type::Named { name, args } => (name, args),
+            Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
+            Type::Function { params, returns } => {
+                let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
+                let returns = match returns {
+                    Some(returns) => self.kind_of_type(returns)?,
+                    None => Kind::None,
+                };
+                return Some(Kind::Function(Box::new(FunctionKind { params, returns })));
+            }
         };
         Some(match (name.as_str(), args.as_slice()) {
             ("int", []) => Kind::Int,
@@ -767,7 +1125,8 @@ impl Emitter<'_> {
                 let Some(variable) = self.lookup(name) else {
                     return Err(cannot(format!("an assignment to `{name}`"), target.span));
                 };
-                let c_name = variable.c_name.clone();
+                let (c_name, kind) = (variable.c_name.clone(), variable.kind.clone());
+                let val = self.coerce(val, &kind, span)?;
                 self.line(format!("{c_name} = {};", val.code));
             }
             // For the other two, Zeno works the new value out first and then
@@ -776,12 +1135,25 @@ impl Emitter<'_> {
             ExprKind::Field { object, name } if is_place(object) => {
                 let val = if val.calls { self.temp(val, span)? } else { val };
                 let object = self.expr(object)?;
+                let field = match &object.kind {
+                    Kind::Class(class) => self.classes[class].fields.iter().find(|(field, _, _)| field == name),
+                    _ => None,
+                };
+                let Some((_, kind, _)) = field else {
+                    return Err(cannot("an assignment to this", target.span));
+                };
+                let kind = kind.clone();
+                let val = self.coerce(val, &kind, span)?;
                 self.line(format!("{}->z_{name} = {};", object.code, val.code));
             }
             ExprKind::Index { object, index } if is_place(object) => {
                 let val = self.temp(val, span)?;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
+                let Kind::List(item) = &object.kind else {
+                    return Err(cannot("an assignment to this", target.span));
+                };
+                let val = self.coerce(val, &item.clone(), span)?;
                 let slot = to_slot(&val.kind, &val.code, span)?;
                 self.line(format!("*zeno_list_at({}, {}, {}) = {slot};", object.code, index.code, at(span)));
             }
@@ -856,10 +1228,12 @@ impl Emitter<'_> {
             },
             Pattern::Literal(literal) => {
                 let literal = self.expr(literal)?;
-                if &literal.kind != kind {
+                let Some(common) = joined(kind, &literal.kind) else {
                     return Err(cannot("a pattern of a different type from the value", span));
-                }
-                tests.push(self.equal(kind, code, &literal.code, span)?);
+                };
+                let subject = self.coerce(Val::plain(code, kind.clone()), &common, span)?;
+                let literal = self.coerce(literal, &common, span)?;
+                tests.push(self.equal(&common, &subject.code, &literal.code, span)?);
             }
             Pattern::Variant { name, fields } => {
                 let (owner, index) = match (self.cases.get(name), kind) {
@@ -973,19 +1347,26 @@ impl Emitter<'_> {
     fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<(), Error> {
         let span = iterable.span;
         let list = self.expr(iterable)?;
-        let Kind::List(item) = list.kind.clone() else {
-            return Err(cannot("a `for` loop over anything but a list or `range(...)`", span));
+        let item = match &list.kind {
+            Kind::List(item) => (**item).clone(),
+            // A str is looped over one character at a time.
+            Kind::Str => Kind::Str,
+            _ => return Err(cannot("a `for` loop over anything but a list, a str or `range(...)`", span)),
         };
         // A list written out right here is nobody else's, so it needs no copy.
         let fresh = matches!(iterable.kind, ExprKind::List(_) | ExprKind::ListComp { .. });
         let items = self.new_temp();
-        let source = if fresh { list.code } else { format!("zeno_list_copy({})", list.code) };
+        let source = match (&list.kind, fresh) {
+            (Kind::Str, _) => format!("zeno_chars({})", list.code),
+            (_, true) => list.code,
+            (_, false) => format!("zeno_list_copy({})", list.code),
+        };
         self.line(format!("zeno_list *{items} = {source};"));
 
         let position = self.new_temp();
         self.scopes.push(HashMap::new());
         let c_type = c_type(&item, span)?;
-        let c_name = self.declare(variable, *item.clone());
+        let c_name = self.declare(variable, item.clone());
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
         self.indent += 1;
         let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
@@ -1061,7 +1442,9 @@ impl Emitter<'_> {
             ExprKind::Float(x) => Ok(Val::plain(format!("{x:?}"), Kind::Float)),
             ExprKind::Str(text) => Ok(Val::plain(c_string(text), Kind::Str)),
             ExprKind::Bool(b) => Ok(Val::plain(b.to_string(), Kind::Bool)),
-            ExprKind::None => Err(cannot("a value that is `none`", span)),
+            // What `none` is in C depends on where it is going, so it is
+            // settled there. See `coerce`.
+            ExprKind::None => Ok(Val::plain("NULL", Kind::None)),
 
             ExprKind::Name(name) if self.lookup(name).is_none() && self.cases.contains_key(name) => {
                 // A bare enum case, such as `Idle`.
@@ -1079,13 +1462,17 @@ impl Emitter<'_> {
             ExprKind::Name(name) => match self.lookup(name) {
                 Some(variable) => {
                     let mut val = Val::plain(variable.c_name.clone(), variable.kind.clone());
-                    // Only a top-level variable can be changed by a function
-                    // that is called. A local one is out of every other
-                    // function's reach, so nothing can disturb it.
-                    val.reads = self.lookup_depth(name) == Some(0);
-                    Ok(val)
+                    // Only a top-level variable, or one shared with a
+                    // function written inside this one, can be changed by a
+                    // function that is called. Any other is out of every
+                    // other function's reach, so nothing can disturb it.
+                    let top_level = self.lookup_depth(name) == Some(0);
+                    let reachable = top_level || variable.boxed.is_some();
+                    let changeable = reachable && variable.mutable;
+                    val.reads = reachable;
+                    self.present(val, expr, changeable)
                 }
-                None if self.functions.contains_key(name) => Err(cannot("a function used as a value", span)),
+                None if self.functions.contains_key(name) => self.function_value(name, span),
                 None => Err(cannot(format!("`{name}` used this way"), span)),
             },
 
@@ -1120,6 +1507,31 @@ impl Emitter<'_> {
             ExprKind::Binary { op: op @ (BinaryOp::And | BinaryOp::Or), left, right } => {
                 self.logic(*op, left, right, span)
             }
+            // `x is none`, `x is not none`
+            ExprKind::Binary { op: op @ (BinaryOp::Is | BinaryOp::IsNot), left, .. } => {
+                let val = self.expr(left)?;
+                let is = *op == BinaryOp::Is;
+                let code = match &val.kind {
+                    Kind::Optional(inner) if is_pointer(inner) => {
+                        format!("({} {} NULL)", val.code, if is { "==" } else { "!=" })
+                    }
+                    Kind::Optional(_) if is => format!("(!{}.present)", val.code),
+                    Kind::Optional(_) => format!("({}.present)", val.code),
+                    // Anything else is either always `none` or never. It
+                    // may still have work to do, such as a call.
+                    other => {
+                        let always_none = *other == Kind::None;
+                        if (val.fails || val.calls) && !val.code.is_empty() {
+                            self.line(format!("(void){};", val.code));
+                        }
+                        let mut answer = Val::plain((always_none == is).to_string(), Kind::Bool);
+                        answer.pre_fails = val.pre_fails || val.fails;
+                        answer.pre_calls = val.pre_calls || val.calls;
+                        return Ok(answer);
+                    }
+                };
+                Ok(Val::from(code, Kind::Bool, &[&val]))
+            }
             ExprKind::Binary { op, left, right } => {
                 let mut vals = self.sequence(&[left, right])?;
                 let right = vals.pop().expect("two values");
@@ -1132,7 +1544,7 @@ impl Emitter<'_> {
                     let code = self.compare(*op, &left, &right, span)?;
                     let mut val = Val::from(code, Kind::Bool, &[&left, &right]);
                     // Comparing lists or objects looks inside them.
-                    val.reads |= matches!(left.kind, Kind::List(_) | Kind::Class(_));
+                    val.reads |= !matches!(left.kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str | Kind::Quantity(_));
                     return Ok(val);
                 }
                 self.arithmetic(*op, left, right, span)
@@ -1147,8 +1559,12 @@ impl Emitter<'_> {
                 let mut vals = self.sequence(&[object, index])?;
                 let index = vals.pop().expect("two values");
                 let list = vals.pop().expect("two values");
+                if list.kind == Kind::Str {
+                    let code = format!("zeno_char_at({}, {}, {})", list.code, index.code, at(span));
+                    return Ok(Val::from(code, Kind::Str, &[&list, &index]).failing());
+                }
                 let Kind::List(item) = &list.kind else {
-                    return Err(cannot("`[ ]` on anything but a list", span));
+                    return Err(cannot("`[ ]` on anything but a list or a str", span));
                 };
                 let slot = format!("(*zeno_list_at({}, {}, {}))", list.code, index.code, at(span));
                 let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing();
@@ -1159,21 +1575,27 @@ impl Emitter<'_> {
                 let exprs: Vec<&Expr> = items.iter().collect();
                 let vals = self.sequence(&exprs)?;
                 let Some(first) = vals.first() else {
-                    return Err(cannot(
-                        "an empty list with no type beside it. Write `let items: list[int] = []`",
-                        span,
-                    ));
+                    // `[]` alone does not say what it will hold. The place
+                    // it arrives at does (`coerce`), and a `let` with no
+                    // type beside it says it cannot tell.
+                    return Ok(Val::plain("zeno_list_new(0)", Kind::List(Box::new(Kind::Other("nothing yet".to_string())))));
                 };
-                if vals.iter().any(|val| val.kind != first.kind) {
-                    return Err(cannot("a list whose items are not all one type", span));
+                // `[1, none]` is a list of `int or none`: find the one kind
+                // that every item can be stored as.
+                let mut item = Some(first.kind.clone());
+                for val in &vals {
+                    item = item.and_then(|item| joined(&item, &val.kind));
                 }
+                let Some(item) = item else {
+                    return Err(cannot("a list whose items are not all one type", span));
+                };
                 let mut slots = vec![vals.len().to_string()];
                 for val in &vals {
-                    slots.push(to_slot(&val.kind, &val.code, span)?);
+                    let val = self.coerce(val.clone(), &item, span)?;
+                    slots.push(to_slot(&item, &val.code, span)?);
                 }
                 let parts: Vec<&Val> = vals.iter().collect();
-                let kind = Kind::List(Box::new(first.kind.clone()));
-                Ok(Val::from(format!("zeno_list_of({})", slots.join(", ")), kind, &parts))
+                Ok(Val::from(format!("zeno_list_of({})", slots.join(", ")), Kind::List(Box::new(item)), &parts))
             }
             // `[n * n for n in items if n > 0]` is a loop that fills a list.
             ExprKind::ListComp { element, variable, iterable, condition } => {
@@ -1200,8 +1622,355 @@ impl Emitter<'_> {
                 val.pre_calls = true;
                 Ok(val)
             }
-            ExprKind::Function(_) => Err(cannot("a function used as a value", span)),
+            ExprKind::Function(decl) => self.closure(decl, span),
         }
+    }
+
+    // ------------------------------------------------- Values that may be none
+
+    /// Make `val` fit a place that holds values of kind `to`.
+    ///
+    /// Nearly always there is nothing to do. The work is at the border of
+    /// `T or none`: a plain number going into an `int or none` has a flag
+    /// put beside it, and `none` becomes whatever "nothing" is for that
+    /// kind.
+    fn coerce(&mut self, val: Val, to: &Kind, span: Span) -> Result<Val, Error> {
+        if val.kind == *to {
+            return Ok(val);
+        }
+        // An empty list becomes a list of whatever this place holds.
+        let mut val = val;
+        if is_empty_list(&val.kind) {
+            match to {
+                Kind::List(_) => return Ok(Val { kind: to.clone(), ..val }),
+                Kind::Optional(inner) if matches!(**inner, Kind::List(_)) => val.kind = (**inner).clone(),
+                _ => {}
+            }
+        }
+        let code = match (&val.kind, to) {
+            (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
+            (from, Kind::Optional(inner)) if from == &**inner => match from {
+                from if is_pointer(from) => val.code.clone(),
+                Kind::Int => format!("(zeno_opt_int){{true, {}}}", val.code),
+                Kind::Float | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
+                Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
+                _ => return Err(cannot("this kind of value that may be `none`", span)),
+            },
+            (Kind::Function(_), Kind::Function(_)) => match joined(&val.kind, to) {
+                Some(_) => val.code.clone(),
+                None => {
+                    return Err(cannot("a function used where a function of a different shape is wanted", span))
+                }
+            },
+            // Anything else the checker has already agreed to as it is.
+            _ => return Ok(val),
+        };
+        Ok(Val { code, kind: to.clone(), ..val })
+    }
+
+    /// A variable has just been read. If the checker has ruled `none` out
+    /// at this spot (it is inside `if x is not none { ... }`, say), give
+    /// the value inside instead of the `T or none` around it.
+    ///
+    /// `changeable` is for a variable that other functions can reach and
+    /// change. One of them may have set it back to `none` since the check,
+    /// so it is looked at once more before it is trusted.
+    fn present(&mut self, val: Val, expr: &Expr, changeable: bool) -> Result<Val, Error> {
+        let Kind::Optional(inner) = &val.kind else {
+            return Ok(val);
+        };
+        if matches!(self.types.narrowed(expr), None | Some(Kind::None)) {
+            return Ok(val);
+        }
+        let inner = (**inner).clone();
+        let again = at(expr.span);
+        let code = match (&inner, changeable) {
+            (inner, false) if is_pointer(inner) => val.code.clone(),
+            (_, false) => format!("{}.value", val.code),
+            (Kind::Int, true) => format!("zeno_still_int({}, {again})", val.code),
+            (Kind::Float | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
+            (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
+            (inner, true) => {
+                format!("(({})zeno_still({}, {again}))", c_type(inner, expr.span)?.trim_end(), val.code)
+            }
+        };
+        Ok(Val { code, kind: inner, fails: val.fails || changeable, ..val })
+    }
+
+    /// The name of a C function that shows a `T or none` as text. One is
+    /// written for each kind, the first time it is needed.
+    fn optional_text(&mut self, inner: &Kind, quoted: bool, span: Span) -> Result<String, Error> {
+        let quoted = quoted && *inner == Kind::Str;
+        let kind = Kind::Optional(Box::new(inner.clone()));
+        let name = format!("zeno_{}_{}", if quoted { "repr" } else { "text" }, key(&kind));
+        if self.adapters.insert(name.clone()) {
+            let (present, value) = if is_pointer(inner) { ("x != NULL", "x") } else { ("x.present", "x.value") };
+            let value = Val::plain(value, inner.clone());
+            let shown = if quoted { self.repr(&value, span)? } else { self.text(&value, span)? };
+            self.helper(
+                format!("static const char *{name}({}x)", c_type(&kind, span)?),
+                format!("    return {present} ? {shown} : \"none\";\n"),
+            );
+        }
+        Ok(name)
+    }
+
+    /// The same, for comparing two of them: equal when both are `none`, or
+    /// when neither is and the values inside are equal.
+    fn optional_same(&mut self, inner: &Kind, span: Span) -> Result<String, Error> {
+        let kind = Kind::Optional(Box::new(inner.clone()));
+        let name = format!("zeno_same_{}", key(&kind));
+        if self.adapters.insert(name.clone()) {
+            let (a, b, a_value, b_value) = if is_pointer(inner) {
+                ("a != NULL", "b != NULL", "a", "b")
+            } else {
+                ("a.present", "b.present", "a.value", "b.value")
+            };
+            let same = self.equal(inner, a_value, b_value, span)?;
+            let c_type = c_type(&kind, span)?;
+            self.helper(
+                format!("static bool {name}({c_type}a, {c_type}b)"),
+                format!("    if (!({a}) || !({b})) return ({a}) == ({b});\n    return {same};\n"),
+            );
+        }
+        Ok(name)
+    }
+
+    // ------------------------------------------------------ Functions as values
+
+    /// A function of the program used as a value: `apply(double, 3)`.
+    ///
+    /// Every function value is called the same way, with itself as a hidden
+    /// first argument. An ordinary function does not take that argument, so
+    /// it gets a small wrapper that does, and one fixed value that points
+    /// at the wrapper.
+    fn function_value(&mut self, name: &str, span: Span) -> Result<Val, Error> {
+        let entry = &self.functions[name];
+        let (target, kind) = (entry.c_name.clone(), entry.kind.clone());
+        let value = format!("zeno_value_{name}");
+        if self.adapters.insert(value.clone()) {
+            let mut params = vec!["zeno_closure *zeno_self".to_string()];
+            let mut args = Vec::new();
+            for (index, param) in kind.params.iter().enumerate() {
+                params.push(format!("{}a{index}", c_type(param, span)?));
+                args.push(format!("a{index}"));
+            }
+            let call = format!("{target}({})", args.join(", "));
+            let call = if kind.returns == Kind::None { call } else { format!("return {call}") };
+            self.helper(
+                format!("static {}zeno_wrap_{name}({})", return_type(&kind.returns, span)?, params.join(", ")),
+                format!("    (void)zeno_self;\n    {call};\n"),
+            );
+            self.definitions
+                .push(format!("static zeno_closure {value} = {{(zeno_code)zeno_wrap_{name}, {}}};\n", c_string(name)));
+        }
+        Ok(Val::plain(format!("(&{value})"), Kind::Function(Box::new(kind))))
+    }
+
+    /// A function written where a value goes: `function(n) { return n * 2 }`.
+    ///
+    /// It becomes a C function of its own. If it uses variables from the
+    /// function around it, they are packed into a struct made on the heap
+    /// at this spot, and the C function receives that struct. That pair, a
+    /// function and the variables it took with it, is called a closure.
+    ///
+    /// ```c
+    /// struct zeno_env_1 { zeno_closure base; int64_t z_k; };
+    /// static int64_t zeno_fn_1(zeno_closure *zeno_self, int64_t z_n) {
+    ///     struct zeno_env_1 *env = (struct zeno_env_1 *)zeno_self;
+    ///     return zeno_mul(z_n, env->z_k, 3, 40);
+    /// }
+    /// ```
+    fn closure(&mut self, decl: &Arc<Function>, span: Span) -> Result<Val, Error> {
+        let Some(kind) = self.types.function(decl).cloned() else {
+            return Err(cannot("this function", span));
+        };
+        self.closures += 1;
+        let id = self.closures;
+
+        // Set aside the function being compiled, and start a new one. Every
+        // variable in sight of this spot is offered to the new function as
+        // `env->name`; the ones it looks up are the ones it needs.
+        let mut outside = std::mem::take(&mut self.scopes);
+        let globals = outside.remove(0);
+        let mut offered: HashMap<String, Variable> = HashMap::new();
+        for scope in &outside {
+            for (name, variable) in scope {
+                let (c_name, boxed) = match variable.boxed {
+                    Some(_) => (format!("(*env->z_{name})"), Some(format!("env->z_{name}"))),
+                    None => (format!("env->z_{name}"), None),
+                };
+                let variable =
+                    Variable { c_name, kind: variable.kind.clone(), mutable: variable.mutable, boxed, used: Cell::new(false) };
+                offered.insert(name.clone(), variable);
+            }
+        }
+        self.scopes = vec![globals, offered, HashMap::new()];
+        let lines = std::mem::take(&mut self.lines);
+        let indent = std::mem::replace(&mut self.indent, 1);
+        let used = self.used.clone();
+
+        let result = match self.parameters(decl, &kind, span) {
+            Ok(params) => self.body(decl, &kind, span).map(|()| params),
+            Err(error) => Err(error),
+        };
+
+        // Put everything back as it was.
+        let body = render(&std::mem::replace(&mut self.lines, lines));
+        self.indent = indent;
+        self.used = used;
+        let mut inside = std::mem::take(&mut self.scopes);
+        outside.insert(0, inside.remove(0));
+        let offered = inside.remove(0);
+        self.scopes = outside;
+        let params = result?;
+
+        let mut taken: Vec<(&String, &Variable)> = offered.iter().filter(|(_, variable)| variable.used.get()).collect();
+        taken.sort_by(|a, b| a.0.cmp(b.0));
+        let mut all_params = vec!["zeno_closure *zeno_self".to_string()];
+        all_params.extend(params);
+        let first_line =
+            format!("static {}zeno_fn_{id}({})", return_type(&kind.returns, span)?, all_params.join(", "));
+        let name = c_string(&decl.name);
+        let kind = Kind::Function(Box::new(kind));
+
+        // The value itself is made here, on the heap, each time this spot
+        // is reached: two function values are equal only if they are the
+        // very same one, as in `zeno run`.
+        let made = self.new_temp();
+        let mut fields = String::new();
+        let mut fill = Vec::new();
+        for (zeno_name, variable) in &taken {
+            let field_type = c_type(&variable.kind, span)?;
+            let star = if variable.boxed.is_some() { "*" } else { "" };
+            fields += &format!("    {field_type}{star}z_{zeno_name};\n");
+            // What the variable is called out here, where the function is
+            // being made. A boxed one hands over its box, not its value.
+            let Some(source) = self.lookup(zeno_name) else {
+                return Err(cannot(format!("a function that uses `{zeno_name}` from outside it"), span));
+            };
+            let source = source.boxed.clone().unwrap_or_else(|| source.c_name.clone());
+            fill.push(format!("{made}->z_{zeno_name} = {source};"));
+        }
+        if taken.is_empty() {
+            // It uses nothing from outside: the plain header is all of it.
+            self.helper(first_line, format!("    (void)zeno_self;\n{body}"));
+            self.line(format!("zeno_closure *{made} = (zeno_closure *)zeno_alloc(sizeof(zeno_closure));"));
+            self.line(format!("{made}->code = (zeno_code)zeno_fn_{id};"));
+            self.line(format!("{made}->name = {name};"));
+            return Ok(Val::plain(made, kind));
+        }
+        let env = format!("struct zeno_env_{id}");
+        self.structs.push(format!("{env} {{\n    zeno_closure base;\n{fields}}};"));
+        self.helper(first_line, format!("    {env} *env = ({env} *)zeno_self;\n{body}"));
+        self.line(format!("{env} *{made} = ({env} *)zeno_alloc(sizeof({env}));"));
+        self.line(format!("{made}->base.code = (zeno_code)zeno_fn_{id};"));
+        self.line(format!("{made}->base.name = {name};"));
+        for line in fill {
+            self.line(line);
+        }
+        Ok(Val::plain(format!("(&{made}->base)"), kind))
+    }
+
+    /// A call to a function held in a variable, or to anything else that
+    /// is a function value: `f(3)`, `make_adder(2)(3)`, `handlers[0]()`.
+    fn call_value(&mut self, function: Val, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let Kind::Function(kind) = function.kind.clone() else {
+            return Err(cannot("a call to something that is not a function", span));
+        };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            return Err(cannot("named arguments to a function held in a variable", span));
+        }
+        if args.len() != kind.params.len() {
+            return Err(cannot("a call with this many arguments", span));
+        }
+        // The C mentions the function twice, so give it a name first.
+        let function = if is_c_place(&function.code) { function } else { self.temp(function, span)? };
+        let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+        let vals = self.sequence_after(vec![function], &exprs)?;
+        let mut codes = Vec::new();
+        for (val, param) in vals[1..].iter().zip(&kind.params) {
+            codes.push(self.coerce(val.clone(), param, span)?.code);
+        }
+        let call = invoke(&vals[0].code, &kind, &codes, span)?;
+        Ok(self.called(call, &vals, kind.returns.clone()))
+    }
+
+    /// `items.map(f)`, `items.filter(f)`, `items.reduce(f, start)`: each is
+    /// a loop that calls `f` on every item. `vals` is the list, the
+    /// function, and for `reduce` the starting value.
+    ///
+    /// They walk the list as it was when they began, as `zeno run` does, so
+    /// `f` may change the list without confusing the loop.
+    fn over_list(&mut self, name: &str, mut vals: Vec<Val>, item: &Kind, span: Span) -> Result<Val, Error> {
+        let takes = if name == "reduce" { 2 } else { 1 };
+        let kind = match vals.get(1).map(|function| &function.kind) {
+            Some(Kind::Function(kind)) if kind.params.len() == takes && vals.len() == takes + 1 => (**kind).clone(),
+            _ => return Err(cannot(format!("the list method `{name}` called this way"), span)),
+        };
+        if !is_c_place(&vals[1].code) {
+            vals[1] = self.temp(vals[1].clone(), span)?;
+        }
+        let function = vals[1].code.clone();
+
+        // `reduce` starts from its second argument.
+        let total = match vals.get(2) {
+            Some(start) => {
+                let start = self.coerce(start.clone(), &kind.returns, span)?;
+                let total = self.new_temp();
+                self.line(format!("{}{total} = {};", c_type(&kind.returns, span)?, start.code));
+                total
+            }
+            None => String::new(),
+        };
+        let items = self.new_temp();
+        let position = self.new_temp();
+        self.line(format!("zeno_list *{items} = zeno_list_copy({});", vals[0].code));
+        let slot = format!("{items}->items[{position}]");
+        let each = Val::plain(from_slot(item, &slot, span)?, item.clone());
+
+        let (before, inside, mut result) = match name {
+            "map" => {
+                let out = self.new_temp();
+                let arg = self.coerce(each, &kind.params[0], span)?.code;
+                let call = invoke(&function, &kind, &[arg], span)?;
+                (
+                    format!("zeno_list *{out} = zeno_list_new({items}->len);"),
+                    format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &call, span)?),
+                    Val::plain(out, Kind::List(Box::new(kind.returns.clone()))),
+                )
+            }
+            "filter" => {
+                if kind.returns != Kind::Bool {
+                    return Err(cannot("`filter` with a function that does not return a bool", span));
+                }
+                let out = self.new_temp();
+                let arg = self.coerce(each, &kind.params[0], span)?.code;
+                let call = invoke(&function, &kind, &[arg], span)?;
+                (
+                    format!("zeno_list *{out} = zeno_list_new(0);"),
+                    format!("if ({call}) zeno_list_append({out}, {slot});"),
+                    Val::plain(out, Kind::List(Box::new(item.clone()))),
+                )
+            }
+            _ => {
+                let so_far = self.coerce(Val::plain(total.clone(), kind.returns.clone()), &kind.params[0], span)?.code;
+                let arg = self.coerce(each, &kind.params[1], span)?.code;
+                let call = invoke(&function, &kind, &[so_far, arg], span)?;
+                (String::new(), format!("{total} = {call};"), Val::plain(total, kind.returns.clone()))
+            }
+        };
+        if !before.is_empty() {
+            self.line(before);
+        }
+        self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
+        self.indent += 1;
+        self.line(inside);
+        self.indent -= 1;
+        self.line("}");
+        result.pre_fails = true;
+        result.pre_calls = true;
+        Ok(result)
     }
 
     /// `+ - * / // % **`, on values that are already in order.
@@ -1364,6 +2133,18 @@ impl Emitter<'_> {
                 }
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence(&exprs)?;
+                // `ValueError("bad")` makes an error value. Its message is
+                // whatever it is given, as text.
+                if ERROR_KINDS.contains(&name.as_str()) {
+                    let message = match vals.as_slice() {
+                        [] => "\"\"".to_string(),
+                        [message] => self.text(message, span)?,
+                        _ => return Err(cannot(format!("`{name}` with more than one message"), span)),
+                    };
+                    let parts: Vec<&Val> = vals.iter().collect();
+                    let code = format!("zeno_error_new({}, {message}, NULL)", c_string(name));
+                    return Ok(Val::from(code, Kind::Error, &parts));
+                }
                 self.builtin(name, vals, span)
             }
             ExprKind::Field { object, name } => {
@@ -1382,7 +2163,11 @@ impl Emitter<'_> {
                 }
                 self.method(object, name, args, span)
             }
-            _ => Err(cannot("this kind of call", span)),
+            // Anything else that is called must be a function value.
+            _ => {
+                let function = self.expr(callee)?;
+                self.call_value(function, args, span)
+            }
         }
     }
 
@@ -1414,7 +2199,7 @@ impl Emitter<'_> {
     fn call_c(
         &mut self,
         c_name: &str,
-        slots: &[(String, Option<Expr>)],
+        slots: &[(String, Kind, Option<Expr>)],
         receiver: Option<Val>,
         args: &[Arg],
         span: Span,
@@ -1423,7 +2208,7 @@ impl Emitter<'_> {
         for (index, arg) in args.iter().enumerate() {
             places.push(match &arg.name {
                 None => index,
-                Some(name) => match slots.iter().position(|(slot, _)| slot == name) {
+                Some(name) => match slots.iter().position(|(slot, _, _)| slot == name) {
                     Some(place) => place,
                     None => return Err(cannot(format!("the argument `{name}`"), span)),
                 },
@@ -1435,19 +2220,19 @@ impl Emitter<'_> {
 
         let mut codes: Vec<Option<String>> = vec![None; slots.len()];
         for (place, val) in places.iter().zip(&vals[first..]) {
-            let Some(code) = codes.get_mut(*place) else {
+            let Some((_, kind, _)) = slots.get(*place) else {
                 return Err(cannot("this many arguments", span));
             };
-            *code = Some(val.code.clone());
+            codes[*place] = Some(self.coerce(val.clone(), kind, span)?.code);
         }
         // An argument that was left out takes the default.
-        for (code, (_, default)) in codes.iter_mut().zip(slots) {
+        for (code, (_, kind, default)) in codes.iter_mut().zip(slots) {
             if code.is_none() {
                 let default = match default {
                     Some(default) if is_literal(default) => self.expr(default)?,
                     _ => return Err(cannot("a default value that is not a plain literal", span)),
                 };
-                *code = Some(default.code);
+                *code = Some(self.coerce(default, kind, span)?.code);
             }
         }
         let mut codes: Vec<String> = codes.into_iter().flatten().collect();
@@ -1478,15 +2263,20 @@ impl Emitter<'_> {
     fn call_function(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
         let entry = &self.functions[name];
         let (c_name, returns) = (entry.c_name.clone(), entry.kind.returns.clone());
-        let slots: Vec<_> = entry.decl.params.iter().map(|param| (param.name.clone(), param.default.clone())).collect();
+        let slots: Vec<_> = entry
+            .decl
+            .params
+            .iter()
+            .zip(&entry.kind.params)
+            .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
+            .collect();
         let (call, vals) = self.call_c(&c_name, &slots, None, args, span)?;
         Ok(self.called(call, &vals, returns))
     }
 
     /// `Point(3.0, 4.0)`: a new object.
     fn construct(&mut self, class: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
-        let slots: Vec<_> =
-            self.classes[class].fields.iter().map(|(name, _, default)| (name.clone(), default.clone())).collect();
+        let slots = self.classes[class].fields.clone();
         let (call, vals) = self.call_c(&format!("zeno_new_{class}"), &slots, None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Class(class.to_string()), &parts))
@@ -1498,7 +2288,7 @@ impl Emitter<'_> {
         if fields.is_empty() {
             return Err(cannot(format!("`{case}` called like a function: it carries no values"), span));
         }
-        let slots: Vec<_> = fields.iter().map(|(name, _)| (name.clone(), None)).collect();
+        let slots: Vec<_> = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
         let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Enum(owner.to_string()), &parts))
@@ -1510,21 +2300,67 @@ impl Emitter<'_> {
         match receiver.kind.clone() {
             Kind::Class(class) => {
                 let Some(entry) = self.classes[&class].methods.get(name) else {
-                    return Err(cannot(format!("the method `{name}`"), span));
+                    // Not a method. It may be a field that holds a function.
+                    let field = self.classes[&class].fields.iter().find(|(field, _, _)| field == name);
+                    let Some((_, kind @ Kind::Function(_), _)) = field else {
+                        return Err(cannot(format!("the method `{name}`"), span));
+                    };
+                    let mut function = Val::from(format!("{}->z_{name}", receiver.code), kind.clone(), &[&receiver]);
+                    function.reads = true;
+                    return self.call_value(function, args, span);
                 };
                 let (c_name, returns) = (entry.c_name.clone(), entry.kind.returns.clone());
                 // The first parameter is `self`, which the receiver fills.
-                let slots: Vec<_> =
-                    entry.decl.params.iter().skip(1).map(|param| (param.name.clone(), param.default.clone())).collect();
+                let slots: Vec<_> = entry
+                    .decl
+                    .params
+                    .iter()
+                    .zip(&entry.kind.params)
+                    .skip(1)
+                    .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
+                    .collect();
                 let (call, vals) = self.call_c(&c_name, &slots, Some(receiver), args, span)?;
                 Ok(self.called(call, &vals, returns))
+            }
+            Kind::Str => {
+                let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+                let vals = self.sequence_after(vec![receiver], &exprs)?;
+                let parts: Vec<&Val> = vals.iter().collect();
+                let all_text = vals.iter().all(|val| val.kind == Kind::Str);
+                let codes: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
+                Ok(match (name, codes.as_slice()) {
+                    ("upper", [text]) => Val::from(format!("zeno_upper({text})"), Kind::Str, &parts),
+                    ("lower", [text]) => Val::from(format!("zeno_lower({text})"), Kind::Str, &parts),
+                    ("strip", [text]) => Val::from(format!("zeno_strip({text})"), Kind::Str, &parts),
+                    ("split", [text]) => {
+                        Val::from(format!("zeno_split_blanks({text})"), Kind::List(Box::new(Kind::Str)), &parts)
+                    }
+                    ("split", [text, separator]) if all_text => Val::from(
+                        format!("zeno_split({text}, {separator}, {})", at(span)),
+                        Kind::List(Box::new(Kind::Str)),
+                        &parts,
+                    )
+                    .failing(),
+                    ("replace", [text, old, new]) if all_text => {
+                        Val::from(format!("zeno_replace({text}, {old}, {new})"), Kind::Str, &parts)
+                    }
+                    ("starts_with", [text, start]) if all_text => {
+                        Val::from(format!("zeno_starts_with({text}, {start})"), Kind::Bool, &parts)
+                    }
+                    ("ends_with", [text, end]) if all_text => {
+                        Val::from(format!("zeno_ends_with({text}, {end})"), Kind::Bool, &parts)
+                    }
+                    _ => return Err(cannot(format!("the str method `{name}` called this way"), span)),
+                })
             }
             Kind::List(item) => {
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 let parts: Vec<&Val> = vals.iter().collect();
                 match (name, vals.as_slice()) {
+                    ("map" | "filter" | "reduce", _) => self.over_list(name, vals, &item, span),
                     ("append", [list, value]) => {
+                        let value = self.coerce(value.clone(), &item, span)?;
                         let slot = to_slot(&value.kind, &value.code, span)?;
                         self.line(format!("zeno_list_append({}, {slot});", list.code));
                         let mut val = Val::from(String::new(), Kind::None, &parts);
@@ -1578,6 +2414,9 @@ impl Emitter<'_> {
                 }
                 None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
             },
+            Kind::Error if matches!(name, "message" | "kind") => {
+                Ok(Val::from(format!("{}->{name}", val.code), Kind::Str, &[&val]))
+            }
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
     }
@@ -1610,7 +2449,11 @@ impl Emitter<'_> {
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{name}({})", val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
-            Kind::None => return Err(cannot("printing a call that returns nothing", span)),
+            Kind::Error => format!("{}->message", val.code),
+            Kind::Function(_) => format!("zeno_show_function({})", val.code),
+            Kind::Optional(inner) => format!("{}({})", self.optional_text(inner, false, span)?, val.code),
+            // `none` itself, or a call that gave nothing back.
+            Kind::None => "\"none\"".to_string(),
             Kind::Other(name) => return Err(cannot(format!("printing a value of type {name}"), span)),
         })
     }
@@ -1620,6 +2463,7 @@ impl Emitter<'_> {
     fn repr(&mut self, val: &Val, span: Span) -> Result<String, Error> {
         match &val.kind {
             Kind::Str => Ok(format!("zeno_repr_str({})", val.code)),
+            Kind::Optional(inner) => Ok(format!("{}({})", self.optional_text(inner, true, span)?, val.code)),
             _ => self.text(val, span),
         }
     }
@@ -1632,18 +2476,31 @@ impl Emitter<'_> {
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{name}({a}, {b})"),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
-            Kind::None | Kind::Other(_) => return Err(cannot("comparing these", span)),
+            Kind::Error => format!("zeno_error_same({a}, {b})"),
+            Kind::Optional(inner) => format!("{}({a}, {b})", self.optional_same(inner, span)?),
+            Kind::None => "true".to_string(),
+            // Two function values are equal only if they are the same one.
+            Kind::Function(_) => format!("({a} == {b})"),
+            Kind::Other(_) => return Err(cannot("comparing these", span)),
         })
     }
 
     /// `==` and the rest, between two compiled values.
     fn compare(&mut self, op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<String, Error> {
-        let by_contents = matches!(left.kind, Kind::List(_) | Kind::Class(_) | Kind::Enum(_));
-        if by_contents && left.kind == right.kind && matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
-            let same = self.equal(&left.kind, &left.code, &right.code, span)?;
-            return Ok(if op == BinaryOp::Eq { same } else { format!("(!{same})") });
+        let plain = |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str | Kind::Quantity(_));
+        if plain(&left.kind) && plain(&right.kind) || !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
+            return comparison(op, left, right, span);
         }
-        comparison(op, left, right, span)
+        // Everything else is equal when its contents are. `x == none` and
+        // `x == 5`, where `x` may be `none`, first bring both sides to the
+        // same kind.
+        let Some(kind) = joined(&left.kind, &right.kind) else {
+            return Err(cannot(format!("`{}` between these two types", op.text()), span));
+        };
+        let left = self.coerce(left.clone(), &kind, span)?;
+        let right = self.coerce(right.clone(), &kind, span)?;
+        let same = self.equal(&kind, &left.code, &right.code, span)?;
+        Ok(if op == BinaryOp::Eq { same } else { format!("(!{same})") })
     }
 
     /// The runtime's list functions do not know what a list holds. To show
@@ -1728,15 +2585,42 @@ impl Emitter<'_> {
                     Kind::Float => {
                         Val::from(format!("zeno_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
                     }
-                    _ => return Err(cannot("`int` of anything but a number", span)),
+                    Kind::Str => {
+                        Val::from(format!("zeno_parse_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
+                    }
+                    _ => return Err(cannot("`int` of anything but a number or a str", span)),
                 }
             }
             "float" => {
                 let val = one()?;
                 match &val.kind {
                     Kind::Int | Kind::Float => Val::from(val.double(), Kind::Float, &parts),
-                    _ => return Err(cannot("`float` of anything but a number", span)),
+                    Kind::Str => {
+                        Val::from(format!("zeno_parse_float({}, {})", val.code, at(span)), Kind::Float, &parts).failing()
+                    }
+                    _ => return Err(cannot("`float` of anything but a number or a str", span)),
                 }
+            }
+            // `sum`, `min` and `max` of one list of numbers.
+            "sum" | "min" | "max" if matches!(vals.as_slice(), [Val { kind: Kind::List(_), .. }]) => {
+                let list = &vals[0];
+                let Kind::List(item) = &list.kind else { unreachable!() };
+                let code = match (name, &**item) {
+                    ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, at(span)),
+                    ("sum", Kind::Float) => format!("zeno_list_sum_float({})", list.code),
+                    (_, Kind::Int | Kind::Float) => format!(
+                        "zeno_list_best_{}({}, {}, {}, {})",
+                        key(item),
+                        list.code,
+                        name == "min",
+                        c_string(name),
+                        at(span)
+                    ),
+                    _ => return Err(cannot(format!("`{name}` of a list of anything but ints or floats"), span)),
+                };
+                let mut val = Val::from(code, (**item).clone(), &parts).failing();
+                val.reads = true;
+                val
             }
             "min" | "max" => {
                 let kind = match vals.first() {
@@ -1841,11 +2725,154 @@ fn is_place(expr: &Expr) -> bool {
 
 fn is_literal(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) => true,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => true,
+        // A new empty list for each call, as `zeno run` makes one.
+        ExprKind::List(items) => items.is_empty(),
         ExprKind::Unit { value, .. } | ExprKind::Unary { op: UnaryOp::Neg, operand: value } => {
             matches!(value.kind, ExprKind::Int(_) | ExprKind::Float(_))
         }
         _ => false,
+    }
+}
+
+/// Is this piece of C a plain name for a value, safe to mention twice?
+/// `z_f`, `env->z_f`, `(*z_f)` and `(&zeno_value_f)` are; a call is not.
+fn is_c_place(code: &str) -> bool {
+    let inner = code
+        .strip_prefix("(*")
+        .or_else(|| code.strip_prefix("(&"))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(code);
+    !inner.is_empty() && inner.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'>' | b'.'))
+}
+
+/// The built-in kinds of error. An object of any class can be raised too.
+const ERROR_KINDS: &[&str] = &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
+
+/// Find the variables that are given a new value inside a `try` block.
+///
+/// `try` is built on C's `setjmp` and `longjmp`, and C has a rule about
+/// them: after the jump back, a local variable that was changed since the
+/// `setjmp` may hold either its old value or its new one, unless it was
+/// declared `volatile`. (The C compiler may have been keeping the new value
+/// in a processor register, and the jump puts the registers back.) So the
+/// variables found here are declared `volatile`, which makes C keep them in
+/// memory, where the jump cannot touch them.
+///
+/// Only `var` variables of the function itself matter. Objects and lists
+/// live on the heap, which the jump leaves alone.
+fn changed_in_try(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
+    let mut each = |block: &[Stmt], inside: bool| {
+        for statement in block {
+            changed_in_try(statement, inside, names);
+        }
+    };
+    match &statement.kind {
+        StmtKind::Assign { target: Expr { kind: ExprKind::Name(name), .. }, .. } if inside => {
+            names.insert(name.clone());
+        }
+        StmtKind::If { then_block, else_block, .. } => {
+            each(then_block, inside);
+            each(else_block.as_deref().unwrap_or_default(), inside);
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } => each(body, inside),
+        StmtKind::Match { arms, .. } => arms.iter().for_each(|arm| each(&arm.body, inside)),
+        StmtKind::Try { body, handlers } => {
+            each(body, true);
+            handlers.iter().for_each(|handler| each(&handler.body, inside));
+        }
+        _ => {}
+    }
+}
+
+/// Find the names that functions written inside this statement mention.
+/// `inside` is whether the walk has already entered such a function.
+///
+/// A `var` whose name turns up here may be changed by the inner function
+/// or by the outer one, and each must see the other's change. See the
+/// `boxed` field of `Variable`.
+fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
+    let block = |block: &[Stmt], inside: bool, names: &mut HashSet<String>| {
+        for statement in block {
+            names_in_functions(statement, inside, names);
+        }
+    };
+    match &statement.kind {
+        StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => names_in_expr(value, inside, names),
+        StmtKind::Assign { target, value, .. } => {
+            names_in_expr(target, inside, names);
+            names_in_expr(value, inside, names);
+        }
+        StmtKind::Expr(expr) | StmtKind::Raise(expr) | StmtKind::Return(Some(expr)) => names_in_expr(expr, inside, names),
+        StmtKind::Function(decl) => block(&decl.body, true, names),
+        StmtKind::Class(class) => class.methods.iter().for_each(|method| block(&method.body, true, names)),
+        StmtKind::If { condition, then_block, else_block } => {
+            names_in_expr(condition, inside, names);
+            block(then_block, inside, names);
+            block(else_block.as_deref().unwrap_or_default(), inside, names);
+        }
+        StmtKind::While { condition, body } => {
+            names_in_expr(condition, inside, names);
+            block(body, inside, names);
+        }
+        StmtKind::For { iterable, body, .. } => {
+            names_in_expr(iterable, inside, names);
+            block(body, inside, names);
+        }
+        StmtKind::Match { subject, arms } => {
+            names_in_expr(subject, inside, names);
+            arms.iter().for_each(|arm| block(&arm.body, inside, names));
+        }
+        StmtKind::Try { body, handlers } => {
+            block(body, inside, names);
+            handlers.iter().for_each(|handler| block(&handler.body, inside, names));
+        }
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Enum(_) | StmtKind::Import { .. } => {}
+    }
+}
+
+fn names_in_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
+    let mut each = |expr: &Expr| names_in_expr(expr, inside, names);
+    match &expr.kind {
+        ExprKind::Name(name) if inside => {
+            names.insert(name.clone());
+        }
+        ExprKind::Name(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
+        ExprKind::Unit { value: inner, .. } | ExprKind::Unary { operand: inner, .. } | ExprKind::Field { object: inner, .. } => {
+            each(inner)
+        }
+        ExprKind::Binary { left, right, .. } | ExprKind::Index { object: left, index: right } => {
+            each(left);
+            each(right);
+        }
+        ExprKind::Compare { first, rest } => {
+            each(first);
+            rest.iter().for_each(|(_, expr)| each(expr));
+        }
+        ExprKind::FormatStr(parts) => {
+            for part in parts {
+                if let FormatPart::Value { value, .. } = part {
+                    each(value);
+                }
+            }
+        }
+        ExprKind::Call { callee, args } => {
+            each(callee);
+            args.iter().for_each(|arg| each(&arg.value));
+        }
+        ExprKind::List(items) => items.iter().for_each(each),
+        ExprKind::ListComp { element, iterable, condition, .. } => {
+            each(element);
+            each(iterable);
+            if let Some(condition) = condition {
+                each(condition);
+            }
+        }
+        ExprKind::Function(decl) => {
+            for statement in &decl.body {
+                names_in_functions(statement, true, names);
+            }
+        }
     }
 }
 
@@ -2171,15 +3198,556 @@ mod tests {
     }
 
     #[test]
+    fn values_that_may_be_none_match() {
+        same_as_interpreter("none", r##"function find(id: int) -> str or none {
+    if id == 1 { return "one" }
+}
+print(find(1), find(2))
+let a = find(1)
+print(a == "one", a == none, a is none)
+var n: int or none = 5
+if n is not none {
+    print(n + 1)
+}
+function get() -> int or none { return 3 }
+let g = get()
+if g is none { print("none") } else { print(g * 2) }
+let names = ["a", none, "c"]
+print(names, names[1] is none, names[0] == "a")
+var best: int or none = none
+for x in [3, 9, 4] {
+    if best is none or x > best { best = x }
+}
+print(best, best == 9, best != none)
+function half(n: int) -> float or none {
+    if n % 2 == 0 { return n / 2 }
+    return none
+}
+print(half(4), half(3), half(3) is none, half(4) == 2.0)
+function flag(n: int) -> bool or none {
+    if n > 0 { return true }
+    if n < 0 { return false }
+}
+print(flag(1), flag(0), flag(-1))
+let w: ms or none = 250 ms
+print(w)
+if w is not none { print(w + 1 s) }
+"##);
+        same_as_interpreter("none-in-objects", r##"function f(x: int or none) -> int {
+    match x {
+        case none { return 0 }
+        case other { return 1 }
+    }
+}
+print(f(none), f(1))
+let e = ValueError("a")
+let e2 = ValueError("a")
+print(e == e2, e == e)
+function show(u: str or none = none) { print(u) }
+show()
+show("x")
+class Node { value: int
+ next: Node or none = none }
+let a = Node(1)
+let b = Node(2, a)
+print(b, a.next is none, b.next is not none)
+let nx = b.next
+if nx is not none { print(nx.value) }
+print(f"{a.next} {nx}")
+"##);
+    }
+
+    #[test]
+    fn a_shared_variable_is_looked_at_again_after_a_check() {
+        // `clear()` sets `n` back to none after the check. The compiled
+        // program must stop, not carry on with a number that is not there.
+        let source = "var n: int or none = 5\nfunction clear() { n = none }\nif n is not none {\n clear()\n print(n + 1)\n}";
+        let c = compile(source).unwrap();
+        assert!(c.contains("zeno_still_int(z_n, 5, 8)"));
+        let Some((printed, errors, finished)) = build_and_run("gone", &c) else {
+            return;
+        };
+        assert_eq!(printed, "");
+        assert!(!finished);
+        assert_eq!(
+            errors,
+            "error: this was checked with `is not none`, but it has been set to `none` since\n --> test.zeno:5:8\n"
+        );
+        // A variable nothing else can reach needs no second look.
+        let c = compile("function f(n: int or none) -> int {\n if n is not none { return n + 1 }\n return 0\n}\nprint(f(1))").unwrap();
+        assert!(c.contains("return zeno_add(z_n.value, 1, "));
+    }
+
+    #[test]
+    fn errors_are_raised_and_caught_the_same_way() {
+        same_as_interpreter("errors", r##"function parse_port(text: str) -> int raises ValueError {
+    let port = int(text)
+    if not 1 <= port <= 65535 {
+        raise ValueError("port out of range")
+    }
+    return port
+}
+for text in ["8080", "0", "abc", " 1_000 ", "", "-5", "99999999999999999999", "+7", "_-5", "1__2", "-"] {
+    try {
+        print("port", parse_port(text))
+    } except ValueError as err {
+        print(f"error: {err}", err.kind, err.message == str(err))
+    }
+}
+for text in ["2.5", " 1e3 ", "abc", "0x10", "inf", "-.5", "1.", "", "nan", "1e", "+3", "1_0"] {
+    try { print(float(text)) } except ValueError as err { print(err) }
+}
+function depth(n: int) -> int {
+    if n == 0 { return 1 // n }
+    return depth(n - 1) + 1
+}
+function safe(n: int) -> int {
+    var result = -1
+    try {
+        result = 10
+        result = depth(n)
+        result = 20
+    } except ZeroDivisionError {
+        result += 100
+    }
+    return result
+}
+print(safe(5))
+function find(xs: list[int], want: int) -> int {
+    var i = 0
+    while i < 10 {
+        try {
+            if xs[i] == want { return i }
+            if xs[i] < 0 { break }
+            i += 1
+            continue
+        } except IndexError as e {
+            print("ran off the end:", e)
+            return -1
+        }
+    }
+    return -2
+}
+print(find([5, 6, 7], 7), find([5, 6], 9), find([1, -1, 3], 3))
+try {
+    try {
+        print([1, 2][5])
+    } except ValueError {
+        print("wrong one")
+    }
+} except IndexError as e {
+    print("outer caught:", e)
+}
+try {
+    try { raise ValueError("inner") } except ValueError as e { raise IndexError(f"from {e}") }
+} except Error as e {
+    print(e.kind, e)
+}
+var n = 0
+try {
+    n = 1
+    print(9223372036854775807 + n)
+    n = 2
+} except OverflowError as e {
+    print("overflow", n, e)
+} except {
+    print("other")
+}
+print(n)
+let big = [1, 2, 3]
+try { print(big.pop(), big.pop(), big.pop(), big.pop()) } except IndexError as e { print(e, big) }
+print(parse_port("70000"))
+"##);
+        same_as_interpreter("error-values", r##"class Oops { code: int }
+function f(n: int) -> int raises Oops, ValueError {
+    if n == 0 { raise Oops(3) }
+    if n == 1 { raise ValueError("one") }
+    return n
+}
+try { print(f(0)) } except Oops as e { print("oops", e.code, e) }
+try { print(f(1)) } except Error as e { print(e, e.kind, e.message) }
+try { print(f(0)) } except Error as e { print(e) }
+try { print(1 // 0) } except ZeroDivisionError as e { print(e.kind, e) }
+try { print(f(1)) } except { print("any") }
+let e = ValueError("made")
+print(e, [e])
+try { raise e } except ValueError as x { print(x == e) }
+print(f(0))
+"##);
+        same_as_interpreter("raised-objects", r##"class Timeout {
+    after: ms
+    tries: int = 1
+}
+function wait(n: int) raises Timeout, ValueError {
+    if n > 2 { raise Timeout(n * 100 ms, n) }
+    if n < 0 { raise ValueError("negative") }
+    print("waited", n)
+}
+for n in [1, 3, -1] {
+    try {
+        wait(n)
+    } except Timeout as t {
+        print("timeout", t.after, t.tries, t)
+        t.tries = 0
+    } except Error as e {
+        print("error", e.kind, e.message, e)
+    }
+}
+try { wait(5) } except Error as e { print(e.kind, e.message, e == e) }
+try {
+    try { wait(9) } except Error as e {
+        print("passing on", e.kind)
+        raise e
+    }
+} except Timeout as t {
+    print("got it back", t.after)
+}
+let s = "  Hello, Wörld \t"
+print(s.upper(), s.lower(), f"[{s.strip()}]", s.split(), "a,b,,c".split(","), "abc".replace("b", "--"), "abc".replace("", "."))
+print("hello".starts_with("he"), "hello".ends_with("lo"), "hello".starts_with("lo"), "é".upper(), "x".replace("", "é"))
+print(sum([1, 2, 3]), sum([0.5, 0.25]), min([3, 1, 2]), max([1.5, 0.5]), len("a b".split()))
+try { print("a b".split("")) } except ValueError as e { print(e) }
+let empty: list[int] = []
+try { print(min(empty)) } except ValueError as e { print(e) }
+print(sum(empty))
+wait(7)
+"##);
+    }
+
+    #[test]
+    fn functions_as_values_match() {
+        same_as_interpreter("closures", r##"function twice(f: function(int) -> int, x: int) -> int { return f(f(x)) }
+print(twice(function(n) { return n * 3 }, 2))
+function make(k: int) { return function(n: int) { return n * k } }
+let triple = make(3)
+print(triple(5), make(2)(4))
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+let c = counter()
+let d = counter()
+print(c(), c(), c(), d())
+let fs: list[function(int) -> int] = [triple, make(10)]
+print(fs[1](2), fs[0](2))
+function apply(f: function(int) -> int, x: int) -> int { return f(x) }
+function double(n: int) -> int { return n * 2 }
+print(apply(triple, 1), apply(double, 21), twice(double, 1))
+print(triple, double, [double])
+let xs = [1, 2, 3, 4]
+print(xs.map(double), xs.filter(function(n) { return n % 2 == 0 }), xs.reduce(function(a, b) { return a + b }, 0))
+print(xs.map(function(n) { return f"<{n}>" }), xs.map(function(n) { return n / 2 }))
+function both() {
+    var total = 0
+    let add = function(n: int) { total += n }
+    add(5)
+    total += 1
+    add(10)
+    return total
+}
+print(both())
+class Button {
+    label: str
+    on_press: function(str) -> str
+}
+let b = Button("ok", function(s) { return s + "!" })
+print(b.on_press(b.label))
+function compose(f: function(int) -> int, g: function(int) -> int) {
+    return function(x: int) { return g(f(x)) }
+}
+print(compose(double, triple)(1))
+function adders() {
+    var out: list[function(int) -> int] = []
+    for i in range(3) {
+        out.append(function(n: int) { return n + i })
+    }
+    return out
+}
+for f in adders() { print(f(10)) }
+"##);
+        same_as_interpreter("closures-and-try", r##"var n: int or none = 5
+if n is not none {
+    n += 1
+    print(n)
+}
+function bump(x: int or none) -> int or none {
+    var y = x
+    if y is not none {
+        y += 10
+        y = y * 2
+    }
+    return y
+}
+print(bump(1), bump(none))
+function outer(a: int) -> function(int) -> function(int) -> int {
+    return function(b: int) {
+        return function(c: int) { return a * 100 + b * 10 + c }
+    }
+}
+print(outer(1)(2)(3))
+class Acc {
+    total: int = 0
+    function adder(self) -> function(int) -> int {
+        return function(n: int) {
+            self.total += n
+            return self.total
+        }
+    }
+}
+let acc = Acc()
+let add = acc.adder()
+print(add(5), add(6), acc)
+function careful(text: str or none) -> function() -> str {
+    if text is none { return function() { return "nothing" } }
+    return function() { return text.upper() }
+}
+print(careful(none)(), careful("abc")())
+function tries(xs: list[int]) -> list[str] {
+    var log: list[str] = []
+    let attempt = function(i: int) -> int {
+        try {
+            return xs[i]
+        } except IndexError {
+            log.append(f"miss {i}")
+            return -1
+        }
+    }
+    var hits = 0
+    for i in range(4) {
+        try {
+            if attempt(i) < 0 { continue }
+            hits += 1
+            if hits == 2 { break }
+        } except Error {
+            log.append("never")
+        }
+    }
+    log.append(f"hits {hits}")
+    return log
+}
+print(tries([7, 8, 9]), tries([7]))
+for round in range(2) {
+    var count = 0
+    let step = function() { count += round + 1 }
+    try {
+        step()
+        count += 10
+        print(1 // round)
+        count += 100
+    } except ZeroDivisionError {
+        count += 1000
+    }
+    step()
+    print(round, count)
+}
+function loop_out() -> int {
+    var i = 0
+    while true {
+        try {
+            try {
+                i += 1
+                if i == 3 { break }
+                if i == 1 { continue }
+                print([0][i])
+            } except ValueError { print("no") }
+        } except IndexError as e {
+            print("caught", i, e)
+        }
+    }
+    try { print([1][0]) } except IndexError { print("no") }
+    return i
+}
+print(loop_out())
+print(1 // 0)
+"##);
+    }
+
+    #[test]
+    fn a_new_value_changes_what_is_known_about_none() {
+        // Walking a linked list, filling in a default, keeping the last
+        // match: each gives the variable a new value after a check.
+        same_as_interpreter("walk", r##"class Node {
+    value: int
+    next: Node or none = none
+}
+function total(head: Node or none) -> int {
+    var node = head
+    var sum = 0
+    while node is not none {
+        sum += node.value
+        node = node.next
+    }
+    return sum
+}
+let list = Node(1, Node(2, Node(3)))
+print(total(list), total(none))
+function name_of(given: str or none) -> str {
+    var name = given
+    if name is none {
+        name = "anon"
+    }
+    return name
+}
+print(name_of(none), name_of("zeno"))
+function last_even(xs: list[int]) -> int or none {
+    var found: int or none = none
+    for x in xs {
+        if x % 2 == 0 { found = x }
+    }
+    return found
+}
+print(last_even([1, 2, 3, 4, 5]), last_even([1, 3]))
+var top: int or none = none
+top = 5
+print(top + 1)
+function longest(words: list[str]) -> str or none {
+    var best: str or none = none
+    for word in words {
+        if best is none or len(word) > len(best) {
+            best = word
+        }
+    }
+    return best
+}
+print(longest(["a", "ccc", "bb"]), longest([]))
+"##);
+    }
+
+    #[test]
+    fn an_empty_list_is_a_list_of_whatever_it_arrives_at() {
+        same_as_interpreter("empty", r##"class Bag {
+    items: list[int] = []
+    name: str or none = none
+}
+function count(xs: list[str]) -> int { return len(xs) }
+function maybe(flag: bool) -> list[int] or none {
+    if flag { return [] }
+    return none
+}
+let b = Bag()
+b.items.append(4)
+print(b, count([]), maybe(true), maybe(false))
+var grid: list[list[int]] = [[], [1, 2]]
+grid.append([])
+grid[1] = []
+print(grid, len([]))
+var xs: list[int] = [1]
+xs = []
+print(xs, [] == xs)
+let c = Bag()
+c.items.append(9)
+print(b.items, c.items)
+function push(x: int, into: list[int] = []) -> list[int] {
+    into.append(x)
+    return into
+}
+print(push(1), push(2), push(3, [0]))
+"##);
+        let message = compile("print([])").err().unwrap_or_else(|| "it compiled".to_string());
+        assert!(message.contains("cannot compile a list of these yet"), "{message}");
+    }
+
+    #[test]
+    fn the_new_pieces_work_together() {
+        same_as_interpreter("optional-fields", r##"class Node {
+    value: int
+    weight: float or none = none
+    next: Node or none = none
+}
+let a = Node(1, 2.5)
+let b = Node(1, 2.5)
+let c = Node(1, none, a)
+print(a == b, a == c, c == Node(1, none, b), c, [a.weight, c.weight] == [2.5, none] )
+"##);
+        same_as_interpreter("together", r##"function countdown(start: int or none) -> int {
+    var x = start
+    var steps = 0
+    while x is not none and x > 0 {
+        x = x - 1
+        steps += 1
+    }
+    return steps
+}
+print(countdown(3), countdown(none))
+let fs = [function() { return n * n } for n in range(4)]
+print([f() for f in fs])
+enum Reading {
+    Value(v: float)
+    Fault(code: int)
+}
+function read(i: int) -> Reading or none {
+    if i == 0 { return Value(1.5) }
+    if i == 1 { return Fault(7) }
+    return none
+}
+for i in range(3) {
+    let r = read(i)
+    var seen = 0
+    try {
+        if r is none { raise ValueError("nothing to read") }
+        seen = 1
+        match r {
+            case Value(v) { print("value", v) }
+            case Fault(code) {
+                seen = 2
+                raise IndexError(f"fault {code}")
+            }
+        }
+        seen = 3
+    } except ValueError as e {
+        print("value error:", e, seen)
+    } except IndexError as e {
+        print("index error:", e, seen)
+    }
+    print("seen", seen)
+}
+let gaps = [21.5, none, 22.0]
+var total = 0.0
+for g in gaps {
+    if g is not none { total += g }
+}
+gaps[1] = 30.0
+gaps.append(none)
+print(gaps, total, gaps[1] == 30.0, gaps[3] is none, [1, none] == [1, none], [true, none], gaps == [21.5, 30.0, 22.0, none])
+let words = "the quick  brown fox".split()
+print(words.map(function(w) { return w.upper() }), words.filter(function(w) { return len(w) > 3 }).map(len_of))
+function len_of(w: str) -> int { return len(w) }
+print(words.reduce(function(acc: str, w: str) { return acc + w[0] }, ""))
+let word = "héllo"
+print(word[1], word[4], [c.upper() for c in word], len(word))
+for ch in "añb" { print(ch) }
+print(word[5])
+"##);
+    }
+
+    #[test]
+    fn the_examples_compile_and_match() {
+        // `blink.zeno` needs a `board` module, which only exists on a board.
+        for (name, source) in [
+            ("hello", include_str!("../examples/hello.zeno")),
+            ("tour", include_str!("../examples/tour.zeno")),
+            ("styles", include_str!("../examples/styles.zeno")),
+            ("primes", include_str!("../examples/primes.zeno")),
+            ("shapes", include_str!("../examples/shapes.zeno")),
+            ("sensor", include_str!("../examples/sensor.zeno")),
+        ] {
+            same_as_interpreter(name, source);
+        }
+    }
+
+    #[test]
     fn what_is_not_compiled_yet_says_so() {
         let refused = |source: &str| compile(source).err().unwrap_or_else(|| "it compiled".to_string());
         assert_eq!(
-            refused("try {\n print(1)\n} except Error {\n print(2)\n}"),
-            "`zeno build` cannot compile `try` yet. `zeno run` can still run this program"
+            refused("function outer() -> int {\n function inner() -> int { return 1 }\n return inner()\n}"),
+            "`zeno build` cannot compile a function inside a function or block yet. `zeno run` can still run this program"
         );
         assert_eq!(
-            refused("function twice(n: int) -> int { return n * 2 }\nlet f = twice"),
-            "`zeno build` cannot compile a function used as a value yet. `zeno run` can still run this program"
+            refused("import time\ntime.sleep(1 s)"),
+            "`zeno build` cannot compile `time` used this way yet. `zeno run` can still run this program"
         );
     }
 

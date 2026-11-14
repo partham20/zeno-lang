@@ -76,8 +76,8 @@ try {
 } except ValueError as err {
     print(f"error: {err}")
 }
-# Under the hood this is a plain return value, not stack unwinding,
-# so it is cheap enough for a microcontroller.
+# Under the hood a `try` remembers one place to jump back to. There are no
+# unwinding tables as in C++, so it is cheap enough for a microcontroller.
 
 
 # --- No surprise none ---

@@ -1,0 +1,99 @@
+# sensor.zeno: values that may be missing, errors, and functions as values.
+#
+#     zeno run examples/sensor.zeno      run it with the interpreter
+#     zeno build examples/sensor.zeno    compile it to sensor.c and ./sensor
+#
+# A temperature sensor sends lines of text. Some lines are damaged and some
+# readings are missing. Turn the lines into numbers, keep the good ones,
+# and report on them.
+
+
+# --- A value that may be missing ---
+
+# One line from the sensor becomes a temperature, or `none` for a gap.
+function parse_line(line: str) -> float or none raises ValueError {
+    let text = line.strip()
+    if text == "--" {
+        return none                       # the sensor had nothing to say
+    }
+    let value = float(text)               # a damaged line raises ValueError
+    if not -40.0 <= value <= 125.0 {
+        raise ValueError(f"{value} is outside what the sensor can measure")
+    }
+    return value
+}
+
+
+# --- An error of our own, carrying data ---
+
+# Any class can be raised. This one says how bad things got.
+class TooManyFaults {
+    count: int
+    limit: int
+}
+
+function read_all(lines: list[str], limit: int) -> list[float or none] raises TooManyFaults {
+    var readings: list[float or none] = []
+    var faults = 0
+    for line in lines {
+        try {
+            readings.append(parse_line(line))
+        } except ValueError as err {
+            faults += 1
+            print(f"  skipped line {faults}: {err}")
+            if faults > limit {
+                raise TooManyFaults(faults, limit)
+            }
+        }
+    }
+    return readings
+}
+
+
+# --- Functions as values ---
+
+# Gives back a new function that remembers `low` and `high`.
+function in_range(low: float, high: float) {
+    return function(t: float) { return low <= t <= high }
+}
+
+# Gives back a function that counts how often it is called. The inner
+# function changes `count`, a variable of the outer one, and the change
+# is still there on the next call.
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+
+
+let lines = ["21.5", " 22.0 ", "--", "abc", "23.5", "900", "24.0"]
+let readings = read_all(lines, 5)
+print("readings:", readings)
+
+# A reading can only be used as a number once `none` is ruled out.
+var present: list[float] = []
+for reading in readings {
+    if reading is not none {
+        present.append(reading)
+    }
+}
+
+let comfortable = present.filter(in_range(21.0, 23.0))
+let fahrenheit = present.map(function(c: float) { return c * 1.8 + 32 })
+print("present:", present)
+print("comfortable:", comfortable)
+print("fahrenheit:", fahrenheit)
+print(f"average: {sum(present) / len(present):.2f}")
+
+let next_id = counter()
+print("ids:", next_id(), next_id(), next_id())
+
+# With a limit of one fault, the same data is too damaged to use.
+try {
+    read_all(lines, 1)
+} except TooManyFaults as fault {
+    print(f"gave up after {fault.count} faults (the limit was {fault.limit})")
+}

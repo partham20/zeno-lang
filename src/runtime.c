@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,11 +22,98 @@
 /* The Zeno source file, for error messages. Set at the top of main. */
 static const char *zeno_file = "";
 
-/* Stop the program with an error nobody caught. This prints what
- * `zeno run` prints, and exits with the same status. */
-static void zeno_fail(const char *kind, const char *message, int line, int col) {
+/* Memory for everything built while the program runs. Nothing is freed
+ * yet: giving memory back is the job of the memory management stage. */
+static char *zeno_alloc(size_t size) {
+    char *memory = malloc(size);
+    if (memory == NULL) {
+        fflush(stdout);
+        fprintf(stderr, "error: out of memory\n");
+        exit(1);
+    }
+    return memory;
+}
+
+/* ------------------------------------------------------------------- Errors
+ *
+ * An error value is what `ValueError("bad")` makes, what `raise` sends and
+ * what `except ValueError as err` receives.
+ */
+typedef struct {
+    const char *kind;    /* "ValueError", or the name of a class */
+    const char *message; /* what `print(err)` shows */
+    void *object;        /* the object itself, when an object was raised */
+} zeno_error;
+
+static zeno_error *zeno_error_new(const char *kind, const char *message, void *object) {
+    zeno_error *error = (zeno_error *)zeno_alloc(sizeof(zeno_error));
+    error->kind = kind;
+    error->message = message;
+    error->object = object;
+    return error;
+}
+
+static bool zeno_error_same(zeno_error *a, zeno_error *b) {
+    return strcmp(a->kind, b->kind) == 0 && strcmp(a->message, b->message) == 0;
+}
+
+/* One of these exists for each `try` that is running: the place to come
+ * back to if something inside it raises. They form a chain, innermost
+ * first, so a `try` inside a `try` is found before the one around it.
+ *
+ * `setjmp` remembers a place in the program and `longjmp` goes back to it,
+ * out of however many function calls lie in between. A `try` that raises
+ * nothing costs one `setjmp`, and code outside any `try` costs nothing. */
+typedef struct zeno_try {
+    jmp_buf place;
+    struct zeno_try *outer;
+} zeno_try;
+
+static zeno_try *zeno_trying = NULL;
+
+/* The error on its way to an `except`, and where it was raised. */
+static zeno_error *zeno_raised = NULL;
+static int zeno_raised_line = 0;
+static int zeno_raised_col = 0;
+
+/* `raise`. Inside a `try`, go to its `except` blocks. Outside every `try`,
+ * nobody can catch it: print what `zeno run` prints and stop. */
+__attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, int col) {
+    if (zeno_trying == NULL) {
+        fflush(stdout);
+        fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", error->kind, error->message, zeno_file, line,
+                col);
+        exit(1);
+    }
+    zeno_try *handler = zeno_trying;
+    zeno_trying = handler->outer; /* that `try` is over, whatever happens next */
+    zeno_raised = error;
+    zeno_raised_line = line;
+    zeno_raised_col = col;
+    longjmp(handler->place, 1);
+}
+
+/* No `except` of this `try` wanted the error: pass it outward unchanged. */
+__attribute__((noreturn)) static void zeno_raise_again(void) {
+    zeno_raise(zeno_raised, zeno_raised_line, zeno_raised_col);
+}
+
+/* Does `except Kind` catch the error on its way? */
+static bool zeno_caught(const char *kind) {
+    return strcmp(zeno_raised->kind, kind) == 0;
+}
+
+/* An error the runtime itself finds, such as a division by zero. */
+__attribute__((noreturn)) static void zeno_fail(const char *kind, const char *message, int line, int col) {
+    zeno_raise(zeno_error_new(kind, message, NULL), line, col);
+}
+
+/* A mistake in the program itself, which `try` does not catch (see
+ * decisions.md 4.1). The checker finds nearly all of these before the
+ * program is built, so there is very little left to report here. */
+__attribute__((noreturn)) static void zeno_bug(const char *message, int line, int col) {
     fflush(stdout);
-    fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", kind, message, zeno_file, line, col);
+    fprintf(stderr, "error: %s\n --> %s:%d:%d\n", message, zeno_file, line, col);
     exit(1);
 }
 
@@ -35,18 +123,6 @@ static void zeno_overflow(int line, int col) {
 
 static void zeno_by_zero(int line, int col) {
     zeno_fail("ZeroDivisionError", "division by zero", line, col);
-}
-
-/* Memory for strings built while the program runs. Nothing is freed yet:
- * giving memory back is the job of the memory management stage. */
-static char *zeno_alloc(size_t size) {
-    char *memory = malloc(size);
-    if (memory == NULL) {
-        fflush(stdout);
-        fprintf(stderr, "error: out of memory\n");
-        exit(1);
-    }
-    return memory;
 }
 
 /* ------------------------------------------------------------ Whole numbers
@@ -498,6 +574,320 @@ static bool zeno_list_contains(zeno_list *list, zeno_slot item, bool (*same)(zen
         if (same(list->items[i], item)) return true;
     }
     return false;
+}
+
+/* A str is a row of characters, and in UTF-8 a character can take from one
+ * to four bytes. Every byte after the first looks like 10xxxxxx. */
+static size_t zeno_char_size(const char *p) {
+    size_t size = 1;
+    while (((unsigned char)p[size] & 0xC0) == 0x80) size++;
+    return size;
+}
+
+/* `text[i]`: the character at position i, as a str of its own. */
+static const char *zeno_char_at(const char *text, int64_t i, int line, int col) {
+    int64_t position = 0;
+    for (const char *p = text; *p != '\0' && i >= 0; p += zeno_char_size(p), position++) {
+        if (position == i) return zeno_copy(p, zeno_char_size(p));
+    }
+    zeno_fail("IndexError",
+              zeno_join(4, "index ", zeno_str_int(i), " is out of range for a str of length ",
+                        zeno_str_int(zeno_len(text))),
+              line, col);
+}
+
+/* `for c in text`: the characters of `text`, each as a str. */
+static zeno_list *zeno_chars(const char *text) {
+    zeno_list *chars = zeno_list_new(0);
+    for (const char *p = text; *p != '\0'; p += zeno_char_size(p)) {
+        zeno_list_append(chars, (zeno_slot){.s = zeno_copy(p, zeno_char_size(p))});
+    }
+    return chars;
+}
+
+/* `sum`, `min` and `max` of a list of numbers. */
+
+static int64_t zeno_list_sum_int(zeno_list *list, int line, int col) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < list->len; i++) total = zeno_add(total, list->items[i].i, line, col);
+    return total;
+}
+
+static double zeno_list_sum_float(zeno_list *list) {
+    double total = 0.0;
+    for (int64_t i = 0; i < list->len; i++) total += list->items[i].f;
+    return total;
+}
+
+static void zeno_list_not_empty(zeno_list *list, const char *name, int line, int col) {
+    if (list->len == 0) zeno_fail("ValueError", zeno_join(3, "`", name, "` of nothing"), line, col);
+}
+
+static int64_t zeno_list_best_int(zeno_list *list, bool smallest, const char *name, int line, int col) {
+    zeno_list_not_empty(list, name, line, col);
+    int64_t best = list->items[0].i;
+    for (int64_t i = 1; i < list->len; i++) {
+        int64_t item = list->items[i].i;
+        if (smallest ? item < best : item > best) best = item;
+    }
+    return best;
+}
+
+static double zeno_list_best_float(zeno_list *list, bool smallest, const char *name, int line, int col) {
+    zeno_list_not_empty(list, name, line, col);
+    double best = list->items[0].f;
+    for (int64_t i = 1; i < list->len; i++) {
+        double item = list->items[i].f;
+        if (smallest ? item < best : item > best) best = item;
+    }
+    return best;
+}
+
+/* ------------------------------------------------------- Text into numbers */
+
+/* The blank characters that `strip`, `split`, `int` and `float` skip. */
+static bool zeno_is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+/* `text` without the blanks at either end. */
+static const char *zeno_strip(const char *text) {
+    while (zeno_is_blank(*text)) text++;
+    size_t length = strlen(text);
+    while (length > 0 && zeno_is_blank(text[length - 1])) length--;
+    return zeno_copy(text, length);
+}
+
+/* `int("42")`. Blanks around the number and `_` inside it are allowed, as
+ * in `1_000`. Anything else that is not a whole number is a ValueError. */
+static int64_t zeno_parse_int(const char *text, int line, int col) {
+    const char *stripped = zeno_strip(text);
+    /* Take every `_` out first, then read what is left. */
+    char *digits = zeno_alloc(strlen(stripped) + 1);
+    char *end = digits;
+    for (const char *p = stripped; *p != '\0'; p++) {
+        if (*p != '_') *end++ = *p;
+    }
+    *end = '\0';
+
+    const char *p = digits;
+    bool negative = *p == '-';
+    if (*p == '-' || *p == '+') p++;
+    bool good = *p != '\0';
+    int64_t n = 0;
+    for (; *p != '\0' && good; p++) {
+        int digit = *p - '0';
+        /* Build the number as a negative when it is one, because the
+         * smallest int has no positive twin to pass through. */
+        good = *p >= '0' && *p <= '9' && !__builtin_mul_overflow(n, 10, &n)
+               && !(negative ? __builtin_sub_overflow(n, digit, &n) : __builtin_add_overflow(n, digit, &n));
+    }
+    if (!good) {
+        zeno_fail("ValueError", zeno_join(3, "cannot turn ", zeno_repr_str(text), " into an int"), line, col);
+    }
+    return n;
+}
+
+/* `float("2.5")`. */
+static double zeno_parse_float(const char *text, int line, int col) {
+    const char *p = zeno_strip(text);
+    char *end = NULL;
+    /* C's own reader also takes hexadecimal and `nan(...)`; Zeno does not. */
+    bool good = *p != '\0' && strpbrk(p, "xX(") == NULL;
+    double x = good ? strtod(p, &end) : 0.0;
+    if (!good || end == p || *end != '\0') {
+        zeno_fail("ValueError", zeno_join(3, "cannot turn ", zeno_repr_str(text), " into a float"), line, col);
+    }
+    return x;
+}
+
+/* ------------------------------------------------------- Methods of a str
+ *
+ * `upper` and `lower` change the letters a to z only. See decisions.md.
+ */
+
+static const char *zeno_upper(const char *text) {
+    size_t length = strlen(text);
+    char *out = zeno_alloc(length + 1);
+    for (size_t i = 0; i <= length; i++) out[i] = (text[i] >= 'a' && text[i] <= 'z') ? text[i] - 32 : text[i];
+    return out;
+}
+
+static const char *zeno_lower(const char *text) {
+    size_t length = strlen(text);
+    char *out = zeno_alloc(length + 1);
+    for (size_t i = 0; i <= length; i++) out[i] = (text[i] >= 'A' && text[i] <= 'Z') ? text[i] + 32 : text[i];
+    return out;
+}
+
+static bool zeno_starts_with(const char *text, const char *start) {
+    return strncmp(text, start, strlen(start)) == 0;
+}
+
+static bool zeno_ends_with(const char *text, const char *end) {
+    size_t length = strlen(text);
+    size_t tail = strlen(end);
+    return tail <= length && strcmp(text + length - tail, end) == 0;
+}
+
+/* `text.split()`: the words of `text`, with the blanks between them gone. */
+static zeno_list *zeno_split_blanks(const char *text) {
+    zeno_list *parts = zeno_list_new(0);
+    const char *p = text;
+    while (*p != '\0') {
+        while (zeno_is_blank(*p)) p++;
+        const char *start = p;
+        while (*p != '\0' && !zeno_is_blank(*p)) p++;
+        if (p > start) zeno_list_append(parts, (zeno_slot){.s = zeno_copy(start, (size_t)(p - start))});
+    }
+    return parts;
+}
+
+/* `text.split(",")`: the pieces of `text` between each `separator`. */
+static zeno_list *zeno_split(const char *text, const char *separator, int line, int col) {
+    size_t step = strlen(separator);
+    if (step == 0) zeno_fail("ValueError", "cannot split on an empty str", line, col);
+    zeno_list *parts = zeno_list_new(0);
+    const char *start = text;
+    for (;;) {
+        const char *found = strstr(start, separator);
+        size_t length = found != NULL ? (size_t)(found - start) : strlen(start);
+        zeno_list_append(parts, (zeno_slot){.s = zeno_copy(start, length)});
+        if (found == NULL) break;
+        start = found + step;
+    }
+    return parts;
+}
+
+/* `text.replace(old, new)`: every `old` in `text` becomes `new`. */
+static const char *zeno_replace(const char *text, const char *old, const char *new_text) {
+    size_t step = strlen(old);
+    const char *out = "";
+    const char *start = text;
+    if (step == 0) {
+        /* An empty `old` is found between every two characters. */
+        for (const char *p = text; *p != '\0'; p++) {
+            if (((unsigned char)*p & 0xC0) != 0x80) out = zeno_join(2, out, new_text);
+            out = zeno_join(2, out, zeno_copy(p, 1));
+        }
+        return zeno_join(2, out, new_text);
+    }
+    for (;;) {
+        const char *found = strstr(start, old);
+        if (found == NULL) return zeno_join(2, out, start);
+        out = zeno_join(3, out, zeno_copy(start, (size_t)(found - start)), new_text);
+        start = found + step;
+    }
+}
+
+/* --------------------------------------------------- Values that may be none
+ *
+ * `str or none` and the other kinds that are already pointers need no extra
+ * room: the pointer is NULL when there is nothing. A number or a bool has no
+ * spare value to mean "nothing", so it travels with a flag beside it.
+ */
+
+typedef struct {
+    bool present;
+    int64_t value;
+} zeno_opt_int;
+
+typedef struct {
+    bool present;
+    double value;
+} zeno_opt_float;
+
+typedef struct {
+    bool present;
+    bool value;
+} zeno_opt_bool;
+
+/* A list gives every item one slot, which is too small for a number and its
+ * flag together. So in a list, a number that may be `none` is kept as a
+ * pointer: NULL for `none`, or the address of a copy of the number. */
+
+static void *zeno_box_int(zeno_opt_int value) {
+    if (!value.present) return NULL;
+    int64_t *box = (int64_t *)zeno_alloc(sizeof(int64_t));
+    *box = value.value;
+    return box;
+}
+
+static zeno_opt_int zeno_unbox_int(const void *box) {
+    return box == NULL ? (zeno_opt_int){false, 0} : (zeno_opt_int){true, *(const int64_t *)box};
+}
+
+static void *zeno_box_float(zeno_opt_float value) {
+    if (!value.present) return NULL;
+    double *box = (double *)zeno_alloc(sizeof(double));
+    *box = value.value;
+    return box;
+}
+
+static zeno_opt_float zeno_unbox_float(const void *box) {
+    return box == NULL ? (zeno_opt_float){false, 0.0} : (zeno_opt_float){true, *(const double *)box};
+}
+
+static void *zeno_box_bool(zeno_opt_bool value) {
+    if (!value.present) return NULL;
+    bool *box = (bool *)zeno_alloc(sizeof(bool));
+    *box = value.value;
+    return box;
+}
+
+static zeno_opt_bool zeno_unbox_bool(const void *box) {
+    return box == NULL ? (zeno_opt_bool){false, false} : (zeno_opt_bool){true, *(const bool *)box};
+}
+
+/* A variable that other code can change may have become `none` again since
+ * it was checked. These look once more before the value is used. */
+__attribute__((noreturn)) static void zeno_gone(int line, int col) {
+    zeno_bug("this was checked with `is not none`, but it has been set to `none` since", line, col);
+}
+
+static void *zeno_still(const void *pointer, int line, int col) {
+    if (pointer == NULL) zeno_gone(line, col);
+    return (void *)pointer;
+}
+
+static int64_t zeno_still_int(zeno_opt_int value, int line, int col) {
+    if (!value.present) zeno_gone(line, col);
+    return value.value;
+}
+
+static double zeno_still_float(zeno_opt_float value, int line, int col) {
+    if (!value.present) zeno_gone(line, col);
+    return value.value;
+}
+
+static bool zeno_still_bool(zeno_opt_bool value, int line, int col) {
+    if (!value.present) zeno_gone(line, col);
+    return value.value;
+}
+
+/* ----------------------------------------------------- Functions as values
+ *
+ * A function held in a variable is a pointer to one of these. `code` is the
+ * C function to run. It is stored as the plainest kind of function pointer
+ * and turned back into its real type at each call, where the compiler
+ * knows what that type is.
+ *
+ * A function written inside another one can use the variables around it.
+ * Those are stored straight after this header, in a struct the compiler
+ * writes for that function, and the function receives a pointer to its own
+ * struct as a hidden first argument.
+ */
+
+typedef void (*zeno_code)(void);
+
+typedef struct zeno_closure {
+    zeno_code code;
+    const char *name; /* for `print`; empty when the function has no name */
+} zeno_closure;
+
+static const char *zeno_show_function(zeno_closure *function) {
+    if (function->name[0] == '\0') return "<function>";
+    return zeno_join(3, "<function ", function->name, ">");
 }
 
 /* ------------------------------------------------------------- The program */
