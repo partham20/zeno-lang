@@ -214,8 +214,10 @@ behave differently, and there is a test in `emit_c.rs` that pins it down.
 Removing `setjmp` removes one obstacle to MISRA, not all of them. The C a
 firmware build writes today still:
 
-- takes memory from the heap (`malloc` is banned by Rule 21.3; see the
-  plan in `decisions.md` 5.9 for a build with no collector),
+- takes memory from the heap (`malloc` is banned by Rule 21.3).
+  `zeno build --no-collector` leaves the garbage collector out and frees
+  every block at a known line, but still uses the heap for owned values:
+  see [`no-collector.md`](no-collector.md),
 - uses variable argument lists in the runtime (`zeno_print`, `zeno_join`:
   Rule 17.1),
 - uses `printf` and `exit` (Rules 21.6 and 21.8),

@@ -477,7 +477,9 @@ frees it once the program can no longer reach it.
 A value marked `owned` does not wait for the collector. The compiler writes
 a call that frees it at the end of its owner's block, and on every other way
 out of that block: `return`, `break`, `continue`, and an error.
-[`docs/ownership.md`](ownership.md) is the walkthrough for that.
+[`docs/ownership.md`](ownership.md) is the walkthrough for that. When
+every list and object is owned, `zeno build --no-collector` leaves the
+collector out of the C file: [`docs/no-collector.md`](no-collector.md).
 
 Programs that only use numbers, bools, string literals and enum cases
 without data do not allocate at all, and the collector never runs.

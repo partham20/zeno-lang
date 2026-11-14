@@ -57,7 +57,7 @@ Samples, none of them final:
 - [`examples/shapes.zeno`](examples/shapes.zeno): classes, enums, lists and `match`, compiled to C.
 - [`examples/sensor.zeno`](examples/sensor.zeno): values that may be `none`, errors, and functions as values.
 - [`examples/memory.zeno`](examples/memory.zeno): a program that makes far more memory than it keeps, and the collector that gives it back.
-- [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to, with no collector involved.
+- [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to. It also builds with no collector at all.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
 
 ## One language, every job
@@ -90,6 +90,9 @@ that is compiled in ([`docs/memory.md`](docs/memory.md)). A value marked
 waiting for the collector ([`docs/ownership.md`](docs/ownership.md)).
 `zeno build --firmware` writes C with no `setjmp`, where errors are return
 values that every caller tests ([`docs/firmware.md`](docs/firmware.md)).
+`zeno build --no-collector` goes one step further for a program where
+everything is owned, and leaves the collector out of the C altogether
+([`docs/no-collector.md`](docs/no-collector.md)).
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -102,6 +105,7 @@ cargo run -- build examples/sensor.zeno         # none, errors and functions as 
 cargo run -- build --memory examples/memory.zeno  # the program reports its memory use as it ends
 cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks are freed without the collector
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
+cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -113,7 +117,8 @@ cargo test
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
-  [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md).
+  [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
+  [`docs/no-collector.md`](docs/no-collector.md).
 
 ## Roadmap
 
@@ -128,8 +133,9 @@ cargo test
    compiles `try` / `raise` to status returns and `if`, with no `setjmp`)
 9. Owned values and borrows, beside the collector (done: `owned` values have
    one owner and are freed where its block ends, `borrow` lends one for a call)
-10. A firmware build with no collector: every allocation owned or of fixed
-    size, and the collector left out of the program
+10. A firmware build with no collector (done: `zeno build --no-collector`
+    accepts a program where every list and object is owned, and leaves the
+    collector out of the C)
 11. Bytecode VM
 12. LLVM backend
 13. Extras

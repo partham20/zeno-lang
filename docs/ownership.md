@@ -20,7 +20,7 @@ cargo run -- build --memory examples/buffer.zeno && ./buffer
 
 ```
 ...
-memory: 1806 blocks made (2646705 bytes), at most 15870 bytes in use at once, 0 collections, 1623 blocks freed without the collector
+memory: 1806 blocks made (2646705 bytes), at most 15870 bytes in use at once, 0 collections, 1625 blocks freed without the collector
 ```
 
 That program makes 2.6 megabytes of buffers, never holds more than 16
@@ -340,7 +340,8 @@ if (!z_check(z_frame, &t1)) { zeno_drop_Frame(z_frame); return false; }
 ```
 
 Every function on the error's way frees what it owns, so nothing is left
-for the collector to find.
+for the collector to find. That is what lets `zeno build --no-collector`
+leave the collector out: see [`no-collector.md`](no-collector.md).
 
 ## Two frees that every program gets
 
@@ -352,7 +353,8 @@ to be garbage, and both now free it at once:
 - **The copy a `for` loop walks.** `for x in items` walks a copy of the
   list, so that the body can change `items` without confusing the loop
   (decision 3.10a). Nothing else ever sees that copy, so it is freed after
-  the loop's `}`.
+  the loop's `}`, and by a `return` or a failed call that leaves from
+  inside the loop.
 
 Neither needs the word `owned`. Run `examples/memory.zeno` with `--memory`
 and the last number on the line counts them.
@@ -381,8 +383,8 @@ breaking any program that works now.
 - The **items** of an owned list, and the text in an owned object, are
   shared values. The collector still frees those.
 - An owned value is still taken from the heap with `malloc`. A build with
-  no collector and no surprise allocations is the next stage
-  ([`decisions.md`](decisions.md), 5.9).
+  no collector at all, for a program where everything is owned, is
+  `zeno build --no-collector`: see [`no-collector.md`](no-collector.md).
 - The borrow checker is small on purpose. It refuses some programs that
   would be safe, such as the one-line rule above. Rust accepts more, with
   far more machinery.

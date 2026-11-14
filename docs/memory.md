@@ -24,7 +24,8 @@ frees are safe at a line the compiler can point to: the old storage of a
 list that has just grown, the copy a `for` loop walks, and every value
 marked `owned`. Those are the subject of
 [`docs/ownership.md`](ownership.md). Everything else on this page is about
-the blocks nobody owns.
+the blocks nobody owns. A program with no such blocks can be built with no
+collector at all: [`docs/no-collector.md`](no-collector.md).
 
 `zeno run` is not affected. The interpreter is a Rust program, and Rust
 frees its values for it.
