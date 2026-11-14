@@ -861,6 +861,21 @@ static const char *zeno_copy(const char *text, size_t length) {
     return copy;
 }
 
+/* A piece of text that a new list is about to hold: one word of
+ * `text.split()`, one character of `for c in text`. With a collector it
+ * is text like any other. With none, a list keeps its own copies of its
+ * items (docs/text.md), so the piece is made in the pool to begin with
+ * and never passes through the text room. */
+static const char *zeno_piece(const char *text, size_t length) {
+#ifdef ZENO_NO_COLLECTOR
+    char *piece = zeno_alloc(length + 1); /* wiped, so it ends in a zero */
+    memcpy(piece, text, length);
+    return piece;
+#else /* ZENO_NO_COLLECTOR */
+    return zeno_copy(text, length);
+#endif /* ZENO_NO_COLLECTOR */
+}
+
 /* Join `count` strings into a new one. This is what an f-string becomes. */
 static const char *zeno_join(int count, ...) {
     va_list parts;
@@ -1312,13 +1327,19 @@ static void zeno_list_drop_text(zeno_list *list) {
     zeno_list_drop(list);
 }
 
+/* `list` was just made, and its items are still somebody else's text: a
+ * copy of another list, or two lists joined by `+`. Give it copies of
+ * its own. */
+static zeno_list *zeno_list_keep_text(zeno_list *list) {
+    for (int64_t i = 0; i < list->len; i++) list->items[i].s = zeno_text_keep(list->items[i].s);
+    return list;
+}
+
 /* The copy of such a list that a `for` loop walks. It has copies of the
  * items as well, so that the body of the loop can give the list new
  * items while the loop is still looking at the old ones. */
 static zeno_list *zeno_list_copy_text(zeno_list *list) {
-    zeno_list *copy = zeno_list_copy(list);
-    for (int64_t i = 0; i < copy->len; i++) copy->items[i].s = zeno_text_keep(copy->items[i].s);
-    return copy;
+    return zeno_list_keep_text(zeno_list_copy(list));
 }
 
 #endif /* ZENO_NO_COLLECTOR */
@@ -1425,7 +1446,7 @@ static const char *zeno_char_at(const char *text, int64_t i, int line, int col) 
 static zeno_list *zeno_chars(const char *text) {
     zeno_list *chars = zeno_list_new(0);
     for (const char *p = text; *p != '\0'; p += zeno_char_size(p)) {
-        zeno_list_append(chars, (zeno_slot){.s = zeno_copy(p, zeno_char_size(p))});
+        zeno_list_append(chars, (zeno_slot){.s = zeno_piece(p, zeno_char_size(p))});
     }
     return chars;
 }
@@ -1596,7 +1617,7 @@ static zeno_list *zeno_split_blanks(const char *text) {
         while (zeno_is_blank(*p)) p++;
         const char *start = p;
         while (*p != '\0' && !zeno_is_blank(*p)) p++;
-        if (p > start) zeno_list_append(parts, (zeno_slot){.s = zeno_copy(start, (size_t)(p - start))});
+        if (p > start) zeno_list_append(parts, (zeno_slot){.s = zeno_piece(start, (size_t)(p - start))});
     }
     return parts;
 }
@@ -1610,7 +1631,7 @@ static zeno_list *zeno_split(const char *text, const char *separator, int line, 
     for (;;) {
         const char *found = strstr(start, separator);
         size_t length = found != NULL ? (size_t)(found - start) : strlen(start);
-        zeno_list_append(parts, (zeno_slot){.s = zeno_copy(start, length)});
+        zeno_list_append(parts, (zeno_slot){.s = zeno_piece(start, length)});
         if (found == NULL) break;
         start = found + step;
     }

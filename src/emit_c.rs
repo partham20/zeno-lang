@@ -107,6 +107,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
         holds: 0,
         raising: None,
         walked: None,
+        passing: Vec::new(),
         fallible: false,
         arriving: Vec::new(),
         jumped: HashSet::new(),
@@ -319,6 +320,25 @@ struct Val {
     /// (see `lend`). Only a build with no collector cares: there, such
     /// text is gone when the statement is over, and is copied to be kept.
     fixed: bool,
+    /// For a list: this very expression made it, and nobody has it yet.
+    /// `[1, 2]` does, and a comprehension, `split`, `map`, `filter` and
+    /// `+` on two lists.
+    made: bool,
+    /// The statement being compiled owns it and frees it when the
+    /// statement is over. So it can be looked at, and it cannot be kept.
+    /// See `belongs`.
+    passing: bool,
+}
+
+/// A value that belongs to the statement being compiled. See
+/// `Emitter::belongs`.
+struct Passing {
+    /// What it is held under, so that leaving early frees it. See `hold`.
+    key: String,
+    /// The C that declares the variable it is in, holding nothing yet.
+    declare: String,
+    /// The C that frees it.
+    free: String,
 }
 
 impl Val {
@@ -334,6 +354,8 @@ impl Val {
             pre_fails: false,
             pre_calls: false,
             fixed: false,
+            made: false,
+            passing: false,
         }
     }
 
@@ -399,6 +421,9 @@ struct FunctionEntry {
     kind: FunctionKind,
     /// For each parameter: does the function take over an owned value?
     owned: Vec<bool>,
+    /// For each parameter: does it say `borrow`? Then the function only
+    /// looks, and may be lent a value that is gone when the statement is.
+    lends: Vec<bool>,
 }
 
 /// `kind` without the checker's note that the value is owned, and whether
@@ -602,9 +627,12 @@ struct Emitter<'a> {
     /// Where the error that a `raise` is about to send is written. An
     /// error may only be made there.
     raising: Option<Span>,
-    /// The list a `for` loop is about to walk, when it is written out
-    /// right there: `for pin in [2, 3, 5]`. The loop frees it.
+    /// What a `for` loop is about to walk. If that is a list made right
+    /// there, as in `for pin in [2, 3, 5]`, the loop frees it.
     walked: Option<usize>,
+    /// The values that belong to the statement being compiled, which
+    /// frees them when it is over. See `belongs`.
+    passing: Vec<Passing>,
 
     // The rest is for a firmware build, where errors travel as values.
     /// `zeno build --firmware`, and `--no-collector`, which is one too.
@@ -907,6 +935,8 @@ impl Emitter<'_> {
         temp.pre_fails = val.pre_fails || val.fails;
         temp.pre_calls = val.pre_calls || val.calls;
         temp.fixed = val.fixed;
+        temp.made = val.made;
+        temp.passing = val.passing;
         Ok(temp)
     }
 
@@ -1029,25 +1059,120 @@ impl Emitter<'_> {
     }
 
     /// The condition of an `if` or a `while`. If working it out builds
-    /// text, the answer is taken first and the text given back, before
-    /// the body runs.
+    /// text, or makes a value that the condition alone owns, the answer
+    /// is taken first and those are given back, before the body runs.
     fn condition(&mut self, expr: &Expr) -> Result<Val, Error> {
         let begin = self.text_begin();
+        let own = self.own_begin();
         let mut val = self.expr(expr)?;
-        if let Some(release) = self.text_end(begin) {
+        let release = self.text_end(begin);
+        if release.is_some() || self.passing.len() > own.2 {
             val = self.temp(val, expr.span)?;
+        }
+        self.own_end(own, true);
+        if let Some(release) = release {
             self.line(release);
         }
         Ok(val)
     }
 
+    // ------------------------------------------------ What a statement owns
+    //
+    // A value that is made in the middle of a statement and given to
+    // nobody belongs to the statement (docs/temporaries.md):
+    //
+    //     print(len(text.split()))      the list of words
+    //     print(size(make()))           the owned value `make` gives
+    //
+    // The statement puts it in a C variable of its own and frees it when
+    // it is over:
+    //
+    //     zeno_list *t1 = NULL;
+    //     t1 = zeno_split_blanks(z_text);
+    //     zeno_print(1, zeno_int_str(t1->len));
+    //     zeno_list_drop_text(t1);
+    //
+    // The variable is declared where the statement begins, holding NULL,
+    // because the value may be made inside an `if` that C needs for `and`
+    // or `or`, and the line that frees it is outside. Freeing NULL does
+    // nothing.
+
+    /// A statement begins, or a part of one that is over before the
+    /// statement is: a condition, one item of a comprehension.
+    fn own_begin(&mut self) -> (usize, usize, usize) {
+        (self.lines.len(), self.indent, self.passing.len())
+    }
+
+    /// It is over. Declare the variables its values were put in, where it
+    /// began. If `free`, free the values here. A statement that leaves
+    /// (`return`, `raise`) has freed them on its way out, as it frees
+    /// what the owners hold, and passes `false`.
+    fn own_end(&mut self, (start, indent, from): (usize, usize, usize), free: bool) {
+        let ended: Vec<Passing> = self.passing.drain(from..).collect();
+        for (position, passing) in ended.iter().enumerate() {
+            self.lines.insert(start + position, (indent, passing.declare.clone()));
+        }
+        // The last one made may be looking at an earlier one.
+        for passing in ended.iter().rev() {
+            if free {
+                self.line(passing.free.clone());
+            }
+            self.let_go(&passing.key);
+        }
+    }
+
+    /// `val` is what `expr` gave. If it was made right here and nobody is
+    /// getting it, the statement owns it from now on.
+    ///
+    /// Two kinds of value are in that position. An owned value that is
+    /// only looked at, which the checker has noted (`Types::lent`), in
+    /// every build. And, in a build with no collector, a list that was
+    /// just made and does not start life owned: every other build leaves
+    /// such a list to the collector.
+    fn belongs(&mut self, mut val: Val, expr: &Expr) -> Result<Val, Error> {
+        let lent = self.types.lent(expr);
+        if self.walked == Some(expr as *const Expr as usize) {
+            // The `for` loop that walks it is the one that frees it.
+            val.made |= lent;
+            return Ok(val);
+        }
+        let nobodys = val.made && !self.collector && !self.types.fresh(expr);
+        if !lent && !nobodys {
+            return Ok(val);
+        }
+        let name = self.new_temp();
+        self.line(format!("{name} = {};", val.code));
+        let key = self.hold(val.kind.clone(), &name);
+        self.passing.push(Passing {
+            key,
+            declare: format!("{}{name} = NULL;", c_type(&val.kind, expr.span)?),
+            free: free_code(&val.kind, &name, !self.collector),
+        });
+        let mut own = Val::plain(name, val.kind);
+        own.pre_fails = val.pre_fails || val.fails;
+        own.pre_calls = val.pre_calls || val.calls;
+        own.passing = true;
+        Ok(own)
+    }
+
+    /// The error for a list that would outlive the statement that owns
+    /// it: one that is put somewhere that is not an owner.
+    fn no_owner(span: Span) -> Error {
+        without_collector("this list has no owner. Give it one, as in `let items: owned list[int] = [1, 2, 3]`", span)
+    }
+
     /// `val` is about to be kept: put in a variable, a field or a list,
     /// given to a function, or returned. In a build with no collector an
     /// error cannot be, because it is freed when the `except` that caught
-    /// it ends. (Text can: see `keep`.)
+    /// it ends, and neither can a value that the statement owns (see
+    /// `belongs`). (Text can: see `keep`.)
     fn stays(&self, val: &Val, span: Span) -> Result<(), Error> {
         if self.collector {
             return Ok(());
+        }
+        if val.passing {
+            // It is freed when this statement is over.
+            return Err(Self::no_owner(span));
         }
         let kind = match &val.kind {
             Kind::Optional(inner) => &**inner,
@@ -1068,19 +1193,6 @@ impl Emitter<'_> {
             )),
             _ => Ok(()),
         }
-    }
-
-    /// A list is being written out, or built by a comprehension. With no
-    /// collector it has to start life owned (the checker knows which do),
-    /// or be the list a `for` loop walks and then frees.
-    fn list_has_owner(&self, expr: &Expr) -> Result<(), Error> {
-        if self.collector || self.types.fresh(expr) || self.walked == Some(expr as *const Expr as usize) {
-            return Ok(());
-        }
-        Err(without_collector(
-            "this list has no owner. Give it one, as in `let items: owned list[int] = [1, 2, 3]`",
-            expr.span,
-        ))
     }
 
     /// Each item of a list sits in one slot. A number that may be `none`
@@ -1164,7 +1276,8 @@ impl Emitter<'_> {
         };
         let (kind, owned) = disown_all(kind);
         let c_name = self.c_name(c_name);
-        Ok(FunctionEntry { c_name, decl: decl.clone(), kind, owned })
+        let lends = decl.params.iter().map(|param| matches!(param.ty, Some(Type::Borrow(_)))).collect();
+        Ok(FunctionEntry { c_name, decl: decl.clone(), kind, owned, lends })
     }
 
     fn register(&mut self, decl: &Arc<Function>, span: Span) -> Result<(), Error> {
@@ -1528,12 +1641,16 @@ impl Emitter<'_> {
         // (The others give it back at a point of their own choosing.)
         let simple =
             matches!(statement.kind, StmtKind::Let { .. } | StmtKind::Const { .. } | StmtKind::Assign { .. } | StmtKind::Expr(_));
-        if self.collector || !simple {
-            return self.statement(statement);
-        }
-        let begin = self.text_begin();
+        let begin = (!self.collector && simple).then(|| self.text_begin());
+        // What the statement makes and gives to nobody is freed as it
+        // ends, in every build (see `belongs`). A `for` or a `match` keeps
+        // such a value until its last block is over.
+        let own = self.own_begin();
         let result = self.statement(statement);
-        if let Some(release) = self.text_end(begin) {
+        if result.is_ok() {
+            self.own_end(own, !matches!(statement.kind, StmtKind::Return(_) | StmtKind::Raise(_)));
+        }
+        if let Some(release) = begin.and_then(|begin| self.text_end(begin)) {
             self.line(release);
         }
         result
@@ -2227,8 +2344,9 @@ impl Emitter<'_> {
     fn expr_as(&mut self, expr: &Expr, expected: Option<&Kind>) -> Result<Val, Error> {
         match (&expr.kind, expected) {
             (ExprKind::List(items), Some(kind @ Kind::List(_))) if items.is_empty() => {
-                self.list_has_owner(expr)?;
-                Ok(Val::plain("zeno_list_new(0)", kind.clone()))
+                let mut val = Val::plain("zeno_list_new(0)", kind.clone());
+                val.made = true;
+                self.belongs(val, expr)
             }
             _ => self.expr(expr),
         }
@@ -2248,12 +2366,18 @@ impl Emitter<'_> {
         };
         self.stays(&val, value.span)?;
         let val = self.keep(val, op.is_none() && is_written(value));
+        // With no collector, a list that was just made (`xs += [4]` makes
+        // one) has to arrive at an owner, which frees the list it had.
+        let needs_owner = val.made && !self.collector;
         match &target.kind {
             ExprKind::Name(name) => {
                 let Some(variable) = self.lookup(name) else {
                     return Err(cannot(format!("an assignment to `{name}`"), target.span));
                 };
                 let (c_name, kind, owner) = (variable.c_name.clone(), variable.kind.clone(), variable.owner);
+                if needs_owner && !owner {
+                    return Err(Self::no_owner(value.span));
+                }
                 let mut val = self.coerce(val, &kind, span)?;
                 if owner {
                     // The new value is made first, since making it may
@@ -2280,6 +2404,9 @@ impl Emitter<'_> {
                 let mut val = self.coerce(val, &kind, span)?;
                 let owned = matches!(&object.kind, Kind::Class(class) if self.classes[class].owned_fields.contains(name))
                     || (!self.collector && is_text(&kind));
+                if needs_owner && !owned {
+                    return Err(Self::no_owner(value.span));
+                }
                 if owned {
                     // As for an owner variable: new value first, then free
                     // the one the field held.
@@ -2298,6 +2425,9 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::Index { object, index } if is_place(object) => {
+                if needs_owner {
+                    return Err(Self::no_owner(value.span));
+                }
                 // A bare `none` is nothing to pin down, and has no C type
                 // until it is known what else the list holds.
                 let val = if val.kind == Kind::None { val } else { self.temp(val, span)? };
@@ -2549,29 +2679,26 @@ impl Emitter<'_> {
     /// confuse the loop. That is what `zeno run` does too.
     fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
-        // A list written out right here is nobody else's, so it needs no copy.
-        let fresh = matches!(iterable.kind, ExprKind::List(_) | ExprKind::ListComp { .. });
-        if fresh {
-            self.walked = Some(iterable as *const Expr as usize);
-        }
+        self.walked = Some(iterable as *const Expr as usize);
         let list = self.expr(iterable);
         self.walked = None;
         let list = list?;
+        // A list made right here is nobody else's, so it needs no copy:
+        // one written out, or what `split`, `map`, `filter` or `+` gave,
+        // or an owned list that a function gave back.
+        let fresh = list.made;
         let item = match &list.kind {
             Kind::List(item) => (**item).clone(),
-            // A str is looped over one character at a time.
-            Kind::Str if !self.collector => {
-                return Err(without_collector(
-                    "a `for` loop over a str makes a list of its characters. \
-                     Count instead: `for i in range(len(text))`, and use `text[i]`",
-                    span,
-                ))
-            }
+            // A str is looped over one character at a time: the loop
+            // walks a list of them, which is its own.
             Kind::Str => Kind::Str,
             _ => return Err(cannot("a `for` loop over anything but a list, a str or `range(...)`", span)),
         };
+        // Nor does a list that the statement owns: nothing the body does
+        // can reach it. The statement frees it, after the loop.
+        let own = list.passing && list.kind != Kind::Str;
         let items = self.new_temp();
-        let source = match (&list.kind, fresh) {
+        let source = match (&list.kind, fresh || own) {
             (Kind::Str, _) => format!("zeno_chars({})", list.code),
             (_, true) => list.code,
             // With no collector a list of text has its own copies of its
@@ -2587,7 +2714,9 @@ impl Emitter<'_> {
         // The list being walked is the loop's own. A `return` or a failed
         // call inside the loop frees it on the way out; `close_loop` does
         // when the loop ends by itself.
-        self.hold(Kind::List(Box::new(item.clone())), &items);
+        if !own {
+            self.hold(Kind::List(Box::new(item.clone())), &items);
+        }
         let c_type = c_type(&item, span)?;
         let c_name = self.declare(variable, item.clone());
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
@@ -2595,7 +2724,7 @@ impl Emitter<'_> {
         let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
         self.line(format!("{c_type}{c_name} = {value};"));
         self.indent -= 1;
-        Ok(Some(free_code(&Kind::List(Box::new(item)), &items, !self.collector)))
+        Ok((!own).then(|| free_code(&Kind::List(Box::new(item)), &items, !self.collector)))
     }
 
     // ---------------------------------------------------------- Expressions
@@ -2656,6 +2785,7 @@ impl Emitter<'_> {
 
     fn expr(&mut self, expr: &Expr) -> Result<Val, Error> {
         let val = self.value(expr)?;
+        let val = self.belongs(val, expr)?;
         // For a build with no collector: text that was not already there
         // has just been built, and the statement will have to give it back.
         let text = match &val.kind {
@@ -2746,7 +2876,7 @@ impl Emitter<'_> {
             }
 
             ExprKind::Unary { op: UnaryOp::Not, operand } => {
-                let val = self.expr(operand)?;
+                let val = self.condition(operand)?;
                 Ok(Val::from(format!("(!{})", val.code), Kind::Bool, &[&val]))
             }
             // Every bit turned over. C's `~` on an `int64_t` is the same.
@@ -2852,7 +2982,6 @@ impl Emitter<'_> {
                 Ok(self.lend(val))
             }
             ExprKind::List(items) => {
-                self.list_has_owner(expr)?;
                 let exprs: Vec<&Expr> = items.iter().collect();
                 let mut vals = self.sequence(&exprs)?;
                 for (val, item) in vals.iter_mut().zip(items) {
@@ -2867,7 +2996,9 @@ impl Emitter<'_> {
                     // `[]` alone does not say what it will hold. The place
                     // it arrives at does (`coerce`), and a `let` with no
                     // type beside it says it cannot tell.
-                    return Ok(Val::plain("zeno_list_new(0)", Kind::List(Box::new(Kind::Other("nothing yet".to_string())))));
+                    let mut val = Val::plain("zeno_list_new(0)", Kind::List(Box::new(Kind::Other("nothing yet".to_string()))));
+                    val.made = true;
+                    return Ok(val);
                 };
                 // `[1, none]` is a list of `int or none`: find the one kind
                 // that every item can be stored as.
@@ -2885,11 +3016,12 @@ impl Emitter<'_> {
                     slots.push(to_slot(&item, &val.code, span)?);
                 }
                 let parts: Vec<&Val> = vals.iter().collect();
-                Ok(Val::from(format!("zeno_list_of({})", slots.join(", ")), Kind::List(Box::new(item)), &parts))
+                let mut val = Val::from(format!("zeno_list_of({})", slots.join(", ")), Kind::List(Box::new(item)), &parts);
+                val.made = true;
+                Ok(val)
             }
             // `[n * n for n in items if n > 0]` is a loop that fills a list.
             ExprKind::ListComp { element, variable, iterable, condition } => {
-                self.list_has_owner(expr)?;
                 let list = self.new_temp();
                 self.line(format!("zeno_list *{list} = zeno_list_new(0);"));
                 // Until it is full, the list is nobody's. If working out
@@ -2905,11 +3037,14 @@ impl Emitter<'_> {
                     self.line(format!("if ({}) {{", bare(&condition.code)));
                     self.indent += 1;
                 }
+                // So is what working out one item makes and gives to nobody.
+                let own = self.own_begin();
                 let item = self.expr(element)?;
                 self.stays(&item, element.span)?;
                 let item = self.keep(item, is_written(element));
                 self.fits_a_slot(&item.kind, span)?;
                 self.line(format!("zeno_list_append({list}, {});", to_slot(&item.kind, &item.code, span)?));
+                self.own_end(own, true);
                 if !self.collector && is_text(&item.kind) {
                     // The list has copies of its items, which was not
                     // known when the lines above were written: a failure
@@ -2934,6 +3069,7 @@ impl Emitter<'_> {
                 let mut val = Val::plain(list, Kind::List(Box::new(item.kind)));
                 val.pre_fails = true;
                 val.pre_calls = true;
+                val.made = true;
                 Ok(val)
             }
             ExprKind::Function(decl) => self.closure(decl, span),
@@ -3241,9 +3377,6 @@ impl Emitter<'_> {
     /// They walk the list as it was when they began, as `zeno run` does, so
     /// `f` may change the list without confusing the loop.
     fn over_list(&mut self, name: &str, mut vals: Vec<Val>, item: &Kind, span: Span) -> Result<Val, Error> {
-        if !self.collector && name != "reduce" {
-            return Err(without_collector(format!("`{name}` makes a new list, which would have no owner"), span));
-        }
         let takes = if name == "reduce" { 2 } else { 1 };
         let kind = match vals.get(1).map(|function| &function.kind) {
             Some(Kind::Function(kind)) if kind.params.len() == takes && vals.len() == takes + 1 => (**kind).clone(),
@@ -3271,7 +3404,13 @@ impl Emitter<'_> {
         // that is called cannot pull away.
         let texts = !self.collector && is_text(item);
         let copy = if texts { "zeno_list_copy_text" } else { "zeno_list_copy" };
-        self.line(format!("zeno_list *{items} = {copy}({});", vals[0].code));
+        // A list that the statement owns is out of every function's
+        // reach, so it is walked as it is.
+        let own = vals[0].passing;
+        match own {
+            true => self.line(format!("zeno_list *{items} = {};", vals[0].code)),
+            false => self.line(format!("zeno_list *{items} = {copy}({});", vals[0].code)),
+        }
         let slot = format!("{items}->items[{position}]");
         let each = Val::plain(from_slot(item, &slot, span)?, item.clone());
 
@@ -3280,42 +3419,67 @@ impl Emitter<'_> {
                 let out = self.new_temp();
                 let arg = self.coerce(each, &kind.params[0], span)?.code;
                 let call = invoke(&function, &kind, &[arg], span)?;
-                (
-                    format!("zeno_list *{out} = zeno_list_new({items}->len);"),
-                    format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &call, span)?),
-                    Val::plain(out, Kind::List(Box::new(kind.returns.clone()))),
-                )
+                let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
+                let mut inside = Vec::new();
+                if !self.collector && is_text(&kind.returns) {
+                    // With no collector the text each call gives back is
+                    // in the text room. The new list takes a copy of its
+                    // own, and the room is given back before the next.
+                    self.marks += 1;
+                    let mark = format!("m{}", self.marks);
+                    before.push(format!("size_t {mark} = zeno_text_top;"));
+                    let kept = format!("zeno_text_keep({call})");
+                    inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &kept, span)?));
+                    inside.push(format!("zeno_text_top = {mark};"));
+                } else {
+                    inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &call, span)?));
+                }
+                let mut result = Val::plain(out, Kind::List(Box::new(kind.returns.clone())));
+                result.made = true;
+                (before, inside, result)
             }
             "filter" => {
                 if kind.returns != Kind::Bool {
                     return Err(cannot("`filter` with a function that does not return a bool", span));
                 }
                 let out = self.new_temp();
-                let arg = self.coerce(each, &kind.params[0], span)?.code;
+                let arg = self.coerce(each.clone(), &kind.params[0], span)?.code;
                 let call = invoke(&function, &kind, &[arg], span)?;
+                // With no collector the new list has its own copy of each
+                // text it takes.
+                let taken = match texts {
+                    true => to_slot(item, &format!("zeno_text_keep({})", each.code), span)?,
+                    false => slot.clone(),
+                };
+                let mut result = Val::plain(out.clone(), Kind::List(Box::new(item.clone())));
+                result.made = true;
                 (
-                    format!("zeno_list *{out} = zeno_list_new(0);"),
-                    format!("if ({call}) zeno_list_append({out}, {slot});"),
-                    Val::plain(out, Kind::List(Box::new(item.clone()))),
+                    vec![format!("zeno_list *{out} = zeno_list_new(0);")],
+                    vec![format!("if ({call}) zeno_list_append({out}, {taken});")],
+                    result,
                 )
             }
             _ => {
                 let so_far = self.coerce(Val::plain(total.clone(), kind.returns.clone()), &kind.params[0], span)?.code;
                 let arg = self.coerce(each, &kind.params[1], span)?.code;
                 let call = invoke(&function, &kind, &[so_far, arg], span)?;
-                (String::new(), format!("{total} = {call};"), Val::plain(total, kind.returns.clone()))
+                (Vec::new(), vec![format!("{total} = {call};")], Val::plain(total, kind.returns.clone()))
             }
         };
-        if !before.is_empty() {
-            self.line(before);
+        for line in before {
+            self.line(line);
         }
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
         self.indent += 1;
-        self.line(inside);
+        for line in inside {
+            self.line(line);
+        }
         self.indent -= 1;
         self.line("}");
-        // The copy that was walked was nobody else's.
-        self.line(free_code(&Kind::List(Box::new(item.clone())), &items, texts));
+        if !own {
+            // The copy that was walked was nobody else's.
+            self.line(free_code(&Kind::List(Box::new(item.clone())), &items, texts));
+        }
         result.pre_fails = true;
         result.pre_calls = true;
         Ok(result)
@@ -3349,11 +3513,17 @@ impl Emitter<'_> {
             (Shr, Int, Int) => Val::from(format!("zeno_shr({l}, {r}, {})", at(span)), Int, &parts).failing(),
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
-            (Add, Kind::List(_), Kind::List(_)) if !self.collector => {
-                return Err(without_collector("`+` on two lists makes a new list, which would have no owner", span))
-            }
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
-                Val::from(format!("zeno_list_concat({l}, {r})"), left.kind.clone(), &parts)
+                let joined = format!("zeno_list_concat({l}, {r})");
+                // With no collector a list of text has its own copy of
+                // each item, and so has the list that `+` makes.
+                let code = match !self.collector && is_text(a) {
+                    true => format!("zeno_list_keep_text({joined})"),
+                    false => joined,
+                };
+                let mut val = Val::from(code, left.kind.clone(), &parts);
+                val.made = true;
+                val
             }
 
             // Quantities. The checker has made sure the two measure the
@@ -3395,10 +3565,13 @@ impl Emitter<'_> {
     }
 
     /// `a and b`, `a or b`. The right side must not run unless it is needed.
+    ///
+    /// Each side is a condition: once it has its answer, the text it
+    /// built and the values it alone owned are given back.
     fn logic(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Result<Val, Error> {
-        let left = self.expr(left)?;
+        let left = self.condition(left)?;
         let mark = self.lines.len();
-        let right = self.expr(right)?;
+        let right = self.condition(right)?;
         let before = self.lines.split_off(mark);
         let symbol = if op == BinaryOp::And { "&&" } else { "||" };
 
@@ -3615,6 +3788,7 @@ impl Emitter<'_> {
         c_name: &str,
         slots: &[(String, Kind, Option<Expr>)],
         owned: &[bool],
+        lends: &[bool],
         receiver: Option<Val>,
         args: &[Arg],
         span: Span,
@@ -3636,7 +3810,12 @@ impl Emitter<'_> {
         for (index, arg) in args.iter().enumerate() {
             let mark = self.lines.len();
             let mut next = self.expr(&arg.value)?;
-            self.stays(&next, arg.value.span)?;
+            // A `borrow` parameter only looks, so it may be lent what
+            // the statement owns. Anything else may keep what it is given.
+            let lent = next.passing && lends.get(places[index]).copied().unwrap_or(false);
+            if !lent {
+                self.stays(&next, arg.value.span)?;
+            }
             self.settle(&mut vals, &next, mark, arg.value.span)?;
             // An owned value on its way into the call has left its owner
             // and not yet reached the function. In a firmware build a
@@ -3714,8 +3893,8 @@ impl Emitter<'_> {
             .zip(&entry.kind.params)
             .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
             .collect();
-        let (raises, owned) = (entry.decl.raises.clone(), entry.owned.clone());
-        let (call, vals) = self.call_c(&c_name, &slots, &owned, None, args, span)?;
+        let (raises, owned, lends) = (entry.decl.raises.clone(), entry.owned.clone(), entry.lends.clone());
+        let (call, vals) = self.call_c(&c_name, &slots, &owned, &lends, None, args, span)?;
         if self.firmware && !raises.is_empty() {
             return self.checked_call(call, returns, &raises, span);
         }
@@ -3737,7 +3916,7 @@ impl Emitter<'_> {
         let entry = &self.classes[class];
         let slots = entry.fields.clone();
         let owned: Vec<bool> = slots.iter().map(|(field, _, _)| entry.owned_fields.contains(field)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{}", ident(class)), &slots, &owned, None, args, span)?;
+        let (call, vals) = self.call_c(&format!("zeno_new_{}", ident(class)), &slots, &owned, &[], None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Class(class.to_string()), &parts))
     }
@@ -3755,7 +3934,7 @@ impl Emitter<'_> {
             ));
         }
         let slots: Vec<_> = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &[], None, args, span)?;
+        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &[], &[], None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Enum(owner.to_string()), &parts))
     }
@@ -3787,7 +3966,8 @@ impl Emitter<'_> {
                     .collect();
                 let raises = entry.decl.raises.clone();
                 let owned: Vec<bool> = entry.owned.iter().skip(1).copied().collect();
-                let (call, vals) = self.call_c(&c_name, &slots, &owned, Some(receiver), args, span)?;
+                let lends: Vec<bool> = entry.lends.iter().skip(1).copied().collect();
+                let (call, vals) = self.call_c(&c_name, &slots, &owned, &lends, Some(receiver), args, span)?;
                 if self.firmware && !raises.is_empty() {
                     return self.checked_call(call, returns, &raises, span);
                 }
@@ -3818,11 +3998,8 @@ impl Emitter<'_> {
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 let parts: Vec<&Val> = vals.iter().collect();
                 let all_text = vals.iter().all(|val| val.kind == Kind::Str);
-                if name == "split" && !self.collector {
-                    return Err(without_collector("`split` makes a new list, which would have no owner", span));
-                }
                 let codes: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
-                Ok(match (name, codes.as_slice()) {
+                let mut val = match (name, codes.as_slice()) {
                     ("upper", [text]) => Val::from(format!("zeno_upper({text})"), Kind::Str, &parts),
                     ("lower", [text]) => Val::from(format!("zeno_lower({text})"), Kind::Str, &parts),
                     ("strip", [text]) => Val::from(format!("zeno_strip({text})"), Kind::Str, &parts),
@@ -3845,7 +4022,10 @@ impl Emitter<'_> {
                         Val::from(format!("zeno_ends_with({text}, {end})"), Kind::Bool, &parts)
                     }
                     _ => return Err(cannot(format!("the str method `{name}` called this way"), span)),
-                })
+                };
+                // The list of pieces is new, and nobody's yet.
+                val.made = name == "split";
+                Ok(val)
             }
             Kind::List(item) => {
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
@@ -3923,6 +4103,9 @@ impl Emitter<'_> {
                     let mut field = Val::from(code, kind.clone(), &[&val]);
                     // A function that is called may change the field.
                     field.reads = true;
+                    // A list or an object inside an object that the
+                    // statement owns is gone when the statement is.
+                    field.passing = val.passing && matches!(kind, Kind::List(_) | Kind::Class(_));
                     Ok(self.lend(field))
                 }
                 None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
@@ -5350,6 +5533,7 @@ print(word[5])
             ("packet", include_str!("../examples/packet.zeno")),
             ("generics", include_str!("../examples/generics.zeno")),
             ("labels", include_str!("../examples/labels.zeno")),
+            ("words", include_str!("../examples/words.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -7322,6 +7506,370 @@ int main(void) {
     }
 
     #[test]
+    fn with_no_collector_a_statement_owns_the_lists_it_makes() {
+        // docs/temporaries.md. Lists made by `split`, `map`, `filter` and
+        // `+`, and lists written out, that are looked at and given to
+        // nobody: in a call, a condition, a loop. Each of these lines was
+        // refused once ("would have no owner").
+        no_collector_as_interpreter("statement-lists", r#"function double(n: int) -> int { return n * 2 }
+function big(n: int) -> bool { return n > 2 }
+function look(xs: borrow list[int]) -> int { return len(xs) }
+function make() -> owned list[int] { return [1, 2, 3] }
+
+let a: owned list[int] = [1, 2, 3]
+print(look(make()))
+print(len(a + a))
+print(2 in a)
+print(5 in [4, 5, 6])
+print(a.map(double))
+print(a.filter(big))
+print(look(a + [9]))
+print(look([7, 8]))
+let b: owned list[int] = a.map(double)
+let c: owned list[int] = a.filter(big) + b
+print(b)
+print(c)
+for w in "x y z".split() { print(w) }
+for n in a.map(double) { print(n) }
+for ch in "hey" { print(ch) }
+for n in make() { print(n) }
+if len("a b".split()) == 2 { print("two") }
+var i = 0
+while len([i, i]) > i { i += 1 }
+print(i)
+"#);
+    }
+
+    #[test]
+    fn with_no_collector_made_lists_of_text_keep_their_own_copies() {
+        // The same with text in the lists, which each list has copies of,
+        // and with the lists inside an object that a statement owns.
+        no_collector_as_interpreter("statement-text-lists", r#"owned class Bag {
+    name: str
+    items: owned list[str]
+
+    function size(self) -> int { return len(self.items) }
+}
+
+function shout(word: str) -> str { return word.upper() + "!" }
+function long(word: str) -> bool { return len(word) > 2 }
+function words(text: str) -> owned list[str] { return text.split() }
+function bag(text: str) -> Bag { return Bag(text, text.split(",")) }
+function count(xs: borrow list[str]) -> int { return len(xs) }
+function first(text: str) -> str raises ValueError {
+    let parts: owned list[str] = text.split(",")
+    if len(parts) < 2 { raise ValueError("no comma in " + text) }
+    return parts[0]
+}
+function pick(text: str) -> str raises ValueError {
+    # A statement that owns a list, and then fails half way.
+    return str(count(text.split())) + first(text)
+}
+function total(text: str) -> int {
+    # A return that owns a list.
+    return count(text.split()) + len(words(text))
+}
+
+let line = "alpha be gamma"
+print(line.split().map(shout))
+print(line.split().filter(long))
+print(count(line.split() + ["x"]))
+let kept: owned list[str] = line.split().map(shout)
+let more: owned list[str] = kept + line.split()
+print(kept)
+print(more)
+print(bag("a,b,c").size())
+print(bag("p,q").name)
+print(count(bag("x,y").items))
+print([shout(w) for w in line.split()])
+print([len(w.split("a")) for w in words(line)])
+for w in bag("m,n").items { print(w) }
+for ch in line.split()[0] { print(ch) }
+print(total(line))
+try {
+    print(pick("a b,c d"))
+    print(pick("nothing here"))
+} except ValueError as e {
+    print("failed:")
+    print(e.message)
+}
+match len(line.split()) {
+    case 3 { print("three") }
+    case _ { print("other") }
+}
+let ok = len(line) > 100 and count(line.split()) > 1
+let or_so = len(line) > 100 or count(line.split()) > 1
+print(ok)
+print(or_so)
+var acc: owned list[str] = []
+acc += line.split()
+acc += ["tail"]
+acc = acc + ["end"]
+print(acc)
+"#);
+    }
+
+    #[test]
+    fn with_no_collector_what_a_statement_owns_is_freed_on_every_way_out() {
+        // A call that fails half way through the statement, a `return`
+        // from inside a loop over a list the statement owns, conditions
+        // of `if`, `else if`, `while` and `match`, and `+=` on a list.
+        no_collector_as_interpreter("statement-exits", r#"function double(n: int) -> int { return n * 2 }
+owned class Box {
+    items: owned list[int]
+    tags: owned list[str]
+}
+function make(n: int) -> Box { return Box([n, n + 1], str(n).split()) }
+function risky(n: int) -> int raises ValueError {
+    if n > 2 { raise ValueError("too big: " + str(n)) }
+    return n
+}
+function sum_of(xs: borrow list[int]) -> int {
+    var total = 0
+    for x in xs { total += x }
+    return total
+}
+function careful(n: int) -> int raises ValueError {
+    # The statement owns a list and a Box when `risky` fails.
+    return sum_of([n, n] + [1]) + len(make(n).tags) + risky(n)
+}
+function early(n: int) -> int {
+    for x in make(n).items {
+        if x > n { return x + len([x, x]) }
+    }
+    return 0
+}
+
+let a: owned list[int] = [1]
+var b: owned list[int] = [2]
+b = a.map(double)
+b += a
+b += [3] + [4]
+print(b)
+let bx = Box([1, 2] + a, "p q".split())
+bx.items += [5]
+print(bx.items)
+print(bx.tags)
+bx.items = a.map(double)
+bx.tags += ["r"] + "s t".split(" ")
+print(bx.items)
+print(bx.tags)
+print([1, 2][0])
+print(([1] + [2])[1])
+print(len([n for n in [1, 2, 3] if n > 1]))
+[1, 2]
+a.map(double)
+print(Box([4], ["x"]).items)
+print(len(Box([4, 5], []).items))
+print(make(7).tags)
+print([sum_of([n, n]) + len(make(n).items) for n in [1, 2, 3]])
+print(early(3))
+for n in range(4) {
+    try {
+        print(careful(n))
+    } except ValueError as e {
+        print("failed:")
+        print(e.message)
+    }
+}
+var i = 0
+while i < 3 and sum_of([i, 1]) < 4 {
+    i += 1
+}
+print(i)
+if sum_of(make(2).items) == 5 {
+    print("five")
+} else if len("a b c".split()) == 3 {
+    print("three")
+}
+match sum_of(make(1).items) {
+    case 3 { print("yes", len(make(9).tags)) }
+    case _ { print("no") }
+}
+"#);
+    }
+
+    #[test]
+    fn with_no_collector_a_statement_owns_what_is_made_in_awkward_places() {
+        // In the middle of `a < b < c`, which is nested `if`s in C and
+        // blocks that may be skipped in IR. Inside an item and a test of
+        // a comprehension. As what `not` is in front of. Inside another
+        // list that is itself only looked at.
+        no_collector_as_interpreter("statement-awkward", r#"function n(xs: borrow list[int]) -> int { return len(xs) }
+function twice(xs: borrow list[int]) -> owned list[int] { return xs + xs }
+owned class Box {
+    items: owned list[int]
+
+    function total(self) -> int { return sum(self.items) }
+}
+print(1 < n([1, 2]) < n([1, 2, 3]))
+print(5 < n([1, 2]) < n([1, 2, 3]))
+let sizes: owned list[int] = [n([i, i]) for i in range(3) if n([i]) == 1]
+print(sizes)
+print(n(twice([1, 2])))
+print(n(twice(twice([1]) + [5])))
+print(not n([1]) == 2)
+let b = Box([1])
+b.items += [2, 3]
+b.items += twice([4])
+print(b.total())
+print(sum([1, 2] + [3]))
+print(max(twice([3, 9])))
+print([x * 2 for x in twice([1, 2])])
+print(len([[1, 2][0], [3][0]]))
+var k = 0
+while n([k]) + k < 4 {
+    k += n([k, k]) - 1
+    if k > 10 { break }
+}
+print(k)
+print(twice([7])[1])
+print(n([n([1, 2]), n(twice([3]))]))
+"#);
+    }
+
+    #[test]
+    fn the_words_example_builds_with_no_collector() {
+        // docs/temporaries.md is written around this file.
+        no_collector_as_interpreter("words", include_str!("../examples/words.zeno"));
+    }
+
+    #[test]
+    fn with_no_collector_made_lists_do_not_fill_the_pool_over_time() {
+        // Each trip makes a dozen lists and keeps one. A hundred times
+        // the trips needs no more of the pool.
+        let program = |trips: usize| r#"function loud(word: str) -> str { return word.upper() }
+function short(word: str) -> bool { return len(word) < 4 }
+function count(items: borrow list[str]) -> int { return len(items) }
+var total = 0
+var last: owned list[str] = []
+for n in range({trips}) {
+    let line = f"set led {n} on"
+    total += count(line.split())
+    total += len(line.split().map(loud) + line.split(" ").filter(short))
+    for word in line.split() { total += len(word) }
+    for ch in line {
+        if ch == "e" { total += 1 }
+    }
+    last = line.split().map(loud)
+    last += ["end"]
+}
+print(total)
+print(last)
+"#.replace("{trips}", &trips.to_string());
+        let mut needed = Vec::new();
+        for trips in [50, 5000] {
+            let source = program(trips);
+            let c = compile_no_collector(&source).unwrap();
+            let name = format!("lists-{trips}-trips");
+            let Some((printed, report, finished)) = build_and_run(&name, &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert!(finished, "{report}");
+            assert_eq!(printed, interpreted(&source));
+            assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+            crate::emit_llvm::tests::no_collector_as_c(&name, &source, &printed, &report);
+            needed.push(pool_needed(&report));
+        }
+        assert_eq!(needed[0], needed[1], "a hundred times the trips needed a bigger pool");
+        assert!(needed[0] < 2048, "{needed:?}");
+    }
+
+    #[test]
+    fn the_c_for_what_a_statement_owns() {
+        let c = compile_no_collector(
+            "function longest(words: borrow list[str]) -> int {
+    var most = 0
+    for word in words {
+        if len(word) > most { most = len(word) }
+    }
+    return most
+}
+
+let line = \"set led on\"
+print(longest(line.split()))
+let ok = len(line) > 4 and len(line.split()) == 3
+print(ok)
+",
+        )
+        .unwrap();
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        let program = program.split("\n}\n").next().unwrap();
+        // The list of words is put in a variable of the statement's own,
+        // which is declared where the statement begins and freed where it
+        // ends. The right side of `and` is over before the statement is,
+        // so the list it made is freed there.
+        assert_eq!(
+            program,
+            "    z_line = \"set led on\";
+    size_t m1 = zeno_text_top;
+    zeno_list *t1 = NULL;
+    t1 = zeno_split_blanks(z_line);
+    zeno_print(1, zeno_str_int(z_longest(t1)));
+    zeno_list_drop_text(t1);
+    zeno_text_top = m1;
+    bool t4 = (zeno_len(z_line) > 4);
+    if (t4) {
+        zeno_list *t2 = NULL;
+        t2 = zeno_split_blanks(z_line);
+        bool t3 = (t2->len == 3);
+        zeno_list_drop_text(t2);
+        t4 = t3;
+    }
+    z_ok = t4;
+    size_t m2 = zeno_text_top;
+    zeno_print(1, zeno_str_bool(z_ok));
+    zeno_text_top = m2;"
+        );
+    }
+
+    #[test]
+    fn an_owned_value_that_is_only_looked_at_is_freed_in_every_build() {
+        // `make(round)` is given to nobody: the statement owns it. That
+        // is so with a collector too, which then has nothing to do.
+        let source = "owned class Packet {
+    id: int
+    bytes: owned list[int]
+}
+function make(round: int) -> Packet { return Packet(round, [n * round for n in range(500)]) }
+function last(p: borrow Packet) -> int { return p.bytes[499] % 7 }
+function work(rounds: int) -> int {
+    var total = 0
+    for round in range(rounds) {
+        total += last(make(round)) + make(round).id % 2
+    }
+    return total
+}
+print(work(400))
+";
+        same_as_interpreter("statement-owned", source);
+        let c = compile(source).unwrap();
+        let work = c.split("static int64_t z_work(int64_t z_rounds) {\n").nth(1).expect("the function");
+        let work = work.split("\n}\n").next().unwrap();
+        assert_eq!(
+            work,
+            "    int64_t z_total = 0;
+    int64_t t2 = z_rounds;
+    for (int64_t z_round = 0; z_round < t2; z_round++) {
+        z_Packet *t3 = NULL;
+        z_Packet *t4 = NULL;
+        t3 = z_make(z_round);
+        int64_t t5 = z_last(t3);
+        t4 = z_make(z_round);
+        z_total = zeno_add(z_total, zeno_add(t5, zeno_mod(t4->z_id, 2, 10, 38), 10, 18), 10, 9);
+        zeno_drop_Packet(t4);
+        zeno_drop_Packet(t3);
+    }
+    return z_total;"
+        );
+        let Some((printed, [made, most, collections])) = memory_of("statement-owned-memory", source) else {
+            return;
+        };
+        assert_eq!(printed, interpreted(source));
+        assert!(made > 2_000_000, "the program made {made} bytes");
+        assert_eq!(collections, 0, "the collector should have nothing to do");
+        assert!(most < 16_384, "at most {most} bytes were in use at once");
+    }
+
+    #[test]
     fn what_a_build_with_no_collector_refuses_says_so() {
         const SETTING: &str = r#"owned class Packet {
     id: int
@@ -7378,17 +7926,22 @@ let x = 7
         refused("print(Bad(1, \"x\").id)", "this object would have no owner");
         refused("print(ValueError(\"x\"))", "this makes a `ValueError` that is not raised");
 
-        // Whatever else makes a block that nothing owns.
+        // A list that is made and only looked at belongs to its statement
+        // (see `with_no_collector_a_statement_owns_the_lists_it_makes`).
+        // One that is kept needs an owner, whatever made it.
         refused("let xs = [1, 2, 3]\nprint(len(xs))", "this list has no owner");
-        refused("print(look([1, 2]))", "this list has no owner");
-        refused("print(x in [1, 2])", "this list has no owner");
         refused("let xs: list[int] = []\nprint(len(xs))", "this list has no owner");
+        refused("let a: owned list[int] = [1]\nlet b = a.map(double)\nprint(b)", "this list has no owner");
+        refused("let a: owned list[int] = [1]\nlet b = a + a\nprint(b)", "this list has no owner");
+        refused("let words = \"a b\".split()\nprint(words)", "this list has no owner");
+        refused("let grid: owned list[list[int]] = [[1], [2]]\nprint(grid)", "this list has no owner");
+        refused("function total(xs: list[int]) -> int { return len(xs) }\nprint(total([1, 2]))", "this list has no owner");
+        refused("function pair() -> list[int] { return [1, 2] }\nprint(len(pair()))", "this list has no owner");
+        refused("class Loose {\n    items: list[int]\n}\nfunction f(l: Loose) { l.items += [1] }", "this list has no owner");
+
+        // Whatever else makes a block that nothing owns.
         refused("let s = Circle(1.0)", "`Circle` carries values");
         refused("let f = function(n: int) { return n + x }\nprint(f(1))", "a function written where a value goes");
-        refused("let a: owned list[int] = [1]\nlet b: owned list[int] = [2]\nprint(a + b)", "`+` on two lists");
-        refused("print(\"a b\".split())", "`split` makes a new list");
-        refused("let a: owned list[int] = [1]\nprint(a.map(double))", "`map` makes a new list");
-        refused("for ch in \"abc\" { print(ch) }", "a `for` loop over a str");
         refused("let m: owned list[int or none] = [1, none]", "numbers that may be `none`");
 
         // What sits right beside those refusals, and is accepted.
@@ -7407,6 +7960,11 @@ for pin in [2, 3, 5] {                # a list the loop frees when it ends
 }
 let a: owned list[int] = [1, 2, 3]
 print(a.reduce(add, 0), look(a), a, Dot == Dot, 3 s, (1500 ms).s)
+print(look([1, 2]), x in [1, 2])      # lists the statement frees when it ends
+print(len(a + a), len("a b".split()), len(a.map(double)))
+for ch in "abc" {                     # a list of characters, the loop's own
+    print(ch)
+}
 var best: int or none = none
 best = 4
 if best is not none {

@@ -1,0 +1,77 @@
+# Lists that nobody keeps.
+#
+# A line arrives from a serial console: "set led 3 on". The program
+# splits it into words, looks at them, and keeps only what it needs.
+#
+# Every list below that is not given a name belongs to the statement
+# that makes it, and is freed when that statement is over. So nothing
+# here needs a collector, and this builds with none:
+#
+#     zeno run examples/words.zeno
+#     zeno build --no-collector --memory examples/words.zeno
+#
+# docs/temporaries.md walks through it.
+
+owned class Command {
+    name: str
+    args: owned list[str]
+
+    function shown(self) -> str {
+        return f"{self.name}/{len(self.args)}"
+    }
+}
+
+function is_number(word: str) -> bool {
+    for ch in word {
+        if ch not in "0123456789" { return false }
+    }
+    return len(word) > 0
+}
+
+function not_empty(word: str) -> bool { return len(word) > 0 }
+
+function loud(word: str) -> str { return word.upper() }
+
+function count(items: borrow list[str]) -> int { return len(items) }
+
+# `split` makes a list and `filter` makes another. The first belongs to
+# the `return` statement, which frees it. The second is given back to
+# the caller, who owns it from then on.
+function words(line: str) -> owned list[str] {
+    return line.split(" ").filter(not_empty)
+}
+
+function parse(line: str) -> Command raises ValueError {
+    let parts = words(line)
+    if len(parts) == 0 { raise ValueError("an empty line") }
+    return Command(parts[0], parts.filter(is_number))
+}
+
+let line = "set  led 3 on 250"
+
+# Looked at and gone: each of these lists lives for one statement.
+print(count(line.split()))
+print(len(words(line)))
+print("led" in line.split())
+
+# A loop walks the list it is given, and frees it after the last trip.
+for word in words(line).map(loud) {
+    print(word)
+}
+
+# Kept: these lists have owners.
+let numbers: owned list[str] = words(line).filter(is_number)
+var history: owned list[str] = []
+history += words(line)
+history += ["end"]
+print(numbers)
+print(history)
+
+for text in [line, "", "stop now"] {
+    try {
+        let command = parse(text)
+        print(command.shown())
+    } except ValueError as e {
+        print("refused:", e.message)
+    }
+}

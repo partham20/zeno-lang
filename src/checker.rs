@@ -111,9 +111,17 @@ pub struct Types {
     owners: HashSet<usize>,
     /// Each statement that makes an owned value and does nothing with it.
     discarded: HashSet<usize>,
-    /// Each list, written out or built by a comprehension, that begins
-    /// life as an owned list. A build with no collector accepts no others.
+    /// Each list that begins life as an owned list: written out, built
+    /// by a comprehension, or made by `split`, `map`, `filter` or `+`,
+    /// where an owned list is wanted.
     fresh: HashSet<usize>,
+    /// Each call of `split`, `map` or `filter`, and each `+` on two
+    /// lists: an expression that makes a new list, which is nobody's yet.
+    made: HashSet<usize>,
+    /// Each owned value that is made in the middle of a statement and
+    /// only looked at there, as in `print(size(make()))`. The statement
+    /// owns it, and frees it when it is over.
+    lent: HashSet<usize>,
     /// For each generic function, the copies made of it: one for each set
     /// of types it is called with. A copy is an ordinary function with a
     /// name such as `first[int]`, and the compilers compile it as one.
@@ -147,6 +155,11 @@ impl Types {
     /// Does the list written at `expr` start out owned?
     pub fn fresh(&self, expr: &ast::Expr) -> bool {
         self.fresh.contains(&(expr as *const ast::Expr as usize))
+    }
+
+    /// Is `expr` an owned value that the statement around it owns?
+    pub fn lent(&self, expr: &ast::Expr) -> bool {
+        self.lent.contains(&(expr as *const ast::Expr as usize))
     }
 
     pub fn class(&self, decl: &ast::Class) -> Option<&Vec<Kind>> {
@@ -1290,8 +1303,8 @@ impl Checker {
                                 (`borrow`) or takes it over (an owned type)"
                 }
                 (Ty::List(_), Ty::Owned(_)) => {
-                    message += ". Only a list written out here, as in `[1, 2]` or `[x for x in xs]`, \
-                                can become an owned one"
+                    message += ". Only a list made right here can become an owned one: one written out, \
+                                as in `[1, 2]` or `[x for x in xs]`, or what `split`, `map`, `filter` or `+` gives"
                 }
                 (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
                 (Ty::List(from), Ty::List(to)) if sized_into_int(from, to) => {
@@ -1980,7 +1993,12 @@ impl Checker {
                     }
                     Some(op) => {
                         let given = self.look(value, env);
-                        self.binary(*op, &holds, &given, span)
+                        // `xs += [4]` is `xs = xs + [4]`. On an owned list,
+                        // the list that `+` makes takes the old one's place.
+                        match (&wanted, self.binary(*op, &holds.looked_at(), &given, span)) {
+                            (Ty::Owned(_), made @ Ty::List(_)) => Ty::Owned(Box::new(made)),
+                            (_, made) => made,
+                        }
                     }
                 };
                 if let Some(field) = field {
@@ -2746,34 +2764,37 @@ impl Checker {
         self.fresh_list(value, given, wanted)
     }
 
-    /// A list written out in full, or built by a comprehension, is
-    /// nobody's yet. So it can begin life as an owned list where one is
-    /// wanted. The compiler is told, because a build with no collector
-    /// accepts only lists that start this way.
+    /// A list that was made right here is nobody's yet: one written out
+    /// in full, one built by a comprehension, or what `split`, `map`,
+    /// `filter` or `+` gives. So it can begin life as an owned list where
+    /// one is wanted. The compiler is told, because a build with no
+    /// collector has to know who frees each list.
     fn fresh_list(&mut self, value: &Expr, given: Ty, wanted: &Ty) -> Ty {
-        match (wanted, &value.kind, given) {
-            (Ty::Owned(_), ExprKind::List(_) | ExprKind::ListComp { .. }, given @ Ty::List(_)) => {
+        let made = matches!(value.kind, ExprKind::List(_) | ExprKind::ListComp { .. })
+            || self.types.made.contains(&(value as *const Expr as usize));
+        match (wanted, given) {
+            (Ty::Owned(_), given @ Ty::List(_)) if made => {
                 self.types.fresh.insert(value as *const Expr as usize);
                 Ty::Owned(Box::new(given))
             }
-            (_, _, given) => given,
+            (_, given) => given,
         }
     }
 
     /// The type of an expression that is only looked at.
     fn look(&mut self, expr: &Expr, env: &Env) -> Ty {
         let ty = self.expr(expr, env);
-        self.looked(ty, expr.span)
+        self.looked(ty, expr)
     }
 
-    /// What somebody who only looks sees of a value of type `ty`.
-    fn looked(&mut self, ty: Ty, span: Span) -> Ty {
+    /// What somebody who only looks sees of the value of `expr`, whose
+    /// type is `ty`.
+    fn looked(&mut self, ty: Ty, expr: &Expr) -> Ty {
         if ty.is_owned() {
-            // Made right here, and owned by nobody: nothing would free it.
-            return self.error(
-                format!("this {ty} has no owner yet. Give it a name with `let` first, and use the name here"),
-                span,
-            );
+            // Made right here, and given to nobody, as in
+            // `print(size(make()))`. The statement it is in owns it, and
+            // frees it when the statement is over.
+            self.types.lent.insert(expr as *const Expr as usize);
         }
         ty.looked_at()
     }
@@ -3150,7 +3171,12 @@ impl Checker {
             ExprKind::Binary { op, left, right } => {
                 let left = self.look(left, env);
                 let right = self.look(right, env);
-                self.binary(*op, &left, &right, span)
+                let ty = self.binary(*op, &left, &right, span);
+                if *op == BinaryOp::Add && matches!(ty, Ty::List(_)) {
+                    // `a + b` on two lists makes a third.
+                    self.types.made.insert(expr as *const Expr as usize);
+                }
+                ty
             }
             ExprKind::Compare { first, rest } => {
                 let mut left = self.look(first, env);
@@ -3226,6 +3252,19 @@ impl Checker {
                         Some(slot) if slot.ty.is_owned() => self.kept(&arg.value, &slot.ty, env),
                         // `print`, `len` and the rest only look.
                         _ if only_looks => self.look(&arg.value, env),
+                        // So does a parameter that says `borrow`. An owned
+                        // value made in the argument itself is lent for
+                        // the length of the statement, which owns it.
+                        Some(slot) if matches!(slot.ty, Ty::Borrowed(_)) => {
+                            self.expecting(&arg.value, &slot.ty);
+                            match self.expr(&arg.value, env) {
+                                ty if ty.is_owned() => {
+                                    self.types.lent.insert(&arg.value as *const Expr as usize);
+                                    Ty::Borrowed(Box::new(ty.looked_at()))
+                                }
+                                ty => ty,
+                            }
+                        }
                         // Anything else is checked against the parameter
                         // by `call`. A look at an owned value fits there
                         // only if the parameter says `borrow`.
@@ -3246,13 +3285,20 @@ impl Checker {
                 if let Ty::Generic(generic) = &callee {
                     return self.call_generic(generic, arguments, expr, wanted, span);
                 }
-                self.call(&callee, arguments, span)
+                let ty = self.call(&callee, arguments, span);
+                if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
+                    if matches!(&**name, "split" | "map" | "filter") {
+                        // Each of these makes a new list.
+                        self.types.made.insert(expr as *const Expr as usize);
+                    }
+                }
+                ty
             }
 
             ExprKind::Field { object, name } => {
-                let object = self.expr(object, env);
-                let tied = object.is_tied();
-                let object = self.looked(object, span);
+                let object_type = self.expr(object, env);
+                let tied = object_type.is_tied();
+                let object = self.looked(object_type, object);
                 match self.field(&object, name, span) {
                     // The method would carry the object away inside it.
                     Ty::BoundMethod(_) | Ty::BuiltinMethod(..) if tied => self.error(
@@ -5371,18 +5417,42 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     }
 
     #[test]
-    fn an_owned_value_needs_an_owner() {
-        assert_eq!(
-            owned_error("print(look(make()))"),
-            "this Packet has no owner yet, so it cannot be lent. Give it a name with `let` first, and pass the name"
-        );
-        assert_eq!(
-            owned_error("print(make().size())"),
-            "this Packet has no owner yet. Give it a name with `let` first, and use the name here"
-        );
+    fn an_owned_value_with_no_name_belongs_to_its_statement() {
+        // Made in the middle of a statement and only looked at: the
+        // statement owns it. (These were refused once: "has no owner yet".)
+        owned_ok("print(look(make()))");
+        owned_ok("print(make().size(), make().id, len(make().data))");
+        owned_ok("if look(make()) > 0 { print(1) }");
+        owned_ok("for x in make().data { print(x) }");
+        // It still cannot be kept by something that is not an owner.
         assert_eq!(
             owned_error("let xs = [1, 2]\nlet ys: owned list[int] = xs"),
-            "`ys` should be owned list[int], but this is list[int]. Only a list written out here, as in `[1, 2]` or `[x for x in xs]`, can become an owned one"
+            "`ys` should be owned list[int], but this is list[int]. Only a list made right here can become an owned one: \
+             one written out, as in `[1, 2]` or `[x for x in xs]`, or what `split`, `map`, `filter` or `+` gives"
+        );
+        assert_eq!(
+            owned_error("let data = make().data"),
+            "`data` holds an owned value, which cannot be taken out of the object it is in. \
+             Use it where it is, or lend it to a `borrow` parameter"
+        );
+    }
+
+    #[test]
+    fn a_list_that_was_just_made_can_start_out_owned() {
+        owned_ok("let words: owned list[str] = \"a b\".split()\nprint(words)");
+        owned_ok("let parts: owned list[str] = \"a,b\".split(\",\")\nprint(total([len(p) for p in parts]))");
+        owned_ok(
+            "function double(n: int) -> int { return n * 2 }\nfunction big(n: int) -> bool { return n > 1 }\n\
+             let xs: owned list[int] = [1, 2]\nlet ys: owned list[int] = xs.map(double)\n\
+             let zs: owned list[int] = xs.filter(big)\nlet all: owned list[int] = xs + ys + zs\nprint(total(all), total(xs + ys))",
+        );
+        owned_ok("function words(text: str) -> owned list[str] { return text.split() }\nprint(len(words(\"a b\")))");
+        // `xs += ys` is `xs = xs + ys`: the list that `+` makes takes the
+        // old one's place.
+        owned_ok("var xs: owned list[int] = [1]\nxs += [2]\nxs += xs\nprint(xs)");
+        assert_eq!(
+            owned_error("var xs: owned list[int] = [1]\nxs += 2"),
+            "`+` does not work between list[int] and int"
         );
     }
 
@@ -5546,5 +5616,6 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         strict_ok(include_str!("../examples/tour.zeno"));
         strict_ok(include_str!("../examples/buffer.zeno"));
         strict_ok(include_str!("../examples/labels.zeno"));
+        strict_ok(include_str!("../examples/words.zeno"));
     }
 }
