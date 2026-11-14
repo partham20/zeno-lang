@@ -4133,7 +4133,7 @@ mod tests {
     fn same_as_interpreter(name: &str, source: &str) {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
-        let (interpreted, result) = crate::interpreter::run(&program, true);
+        let (interpreted, result) = crate::vm::run_both(&program, source);
 
         // Both kinds of build must agree with the interpreter: the
         // ordinary one, and `--firmware`, where errors travel as values.
@@ -5283,7 +5283,7 @@ print("after")
     fn interpreted(source: &str) -> String {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
-        let (printed, result) = crate::interpreter::run(&program, true);
+        let (printed, result) = crate::vm::run_both(&program, source);
         assert!(result.is_ok(), "the interpreter failed");
         printed
     }

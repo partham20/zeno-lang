@@ -2,9 +2,9 @@
 //!
 //! The compiler stages get added here one at a time. `zeno tokens`,
 //! `zeno parse` and `zeno check` show what the lexer, the parser and the
-//! type checker find. `zeno run` checks a program and then runs it.
-//! `zeno bytecode` shows the program as bytecode. `zeno build` compiles
-//! to C.
+//! type checker find. `zeno run` checks a program and then runs it, with
+//! the interpreter or, given `--vm`, by compiling it to bytecode for the
+//! VM. `zeno bytecode` shows that bytecode. `zeno build` compiles to C.
 
 mod ast;
 mod builtins;
@@ -21,6 +21,7 @@ mod printer;
 mod token;
 mod units;
 mod value;
+mod vm;
 
 use std::env;
 use std::fs;
@@ -38,7 +39,7 @@ fn usage() {
     println!("  zeno check <file.zeno>   check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
-    println!("  zeno bytecode <file.zeno> show the program compiled to bytecode");
+    println!("  zeno bytecode <file.zeno> show the bytecode `zeno run --vm` runs");
     println!("  zeno build <file.zeno>   compile to C, then to a program you can run");
     println!("  zeno --version           print the version");
     println!("  zeno --help              print this message");
@@ -47,6 +48,9 @@ fn usage() {
     println!("  --strict                 with check or run: every type must be known");
     println!("                           before the program runs, as firmware needs.");
     println!("                           `build` always works this way");
+    println!("  --vm                     with run: compile the program to bytecode and");
+    println!("                           run that, in place of walking the syntax tree.");
+    println!("                           The program does the same, faster");
     println!("  --firmware               with build: errors travel as values that every");
     println!("                           caller tests, with no setjmp or longjmp, as");
     println!("                           coding standards for firmware require");
@@ -136,9 +140,14 @@ fn bytecode(path: &str) -> Option<()> {
 }
 
 /// `zeno run <file>`: check the program, and if it is sound, run it.
-fn run(path: &str, strict: bool) -> Option<()> {
+///
+/// There are two engines to run it with. Both give the same result.
+fn run(path: &str, strict: bool, on_vm: bool) -> Option<()> {
     let (source, program) = check(path, strict)?;
-    let (_, result) = interpreter::run(&program, false);
+    let (_, result) = match on_vm {
+        true => vm::run(&program, false),
+        false => interpreter::run(&program, false),
+    };
     match result {
         Ok(()) => Some(()),
         Err(error) => {
@@ -259,6 +268,9 @@ fn main() -> ExitCode {
     // would ever free it.)
     let no_collector = args.iter().any(|arg| arg == "--no-collector");
     args.retain(|arg| arg != "--no-collector");
+    // `--vm` runs a program as bytecode.
+    let on_vm = args.iter().any(|arg| arg == "--vm");
+    args.retain(|arg| arg != "--vm");
     let kind = match (no_collector, firmware) {
         (true, _) => emit_c::Build::NoCollector,
         (false, true) => emit_c::Build::Firmware,
@@ -284,7 +296,7 @@ fn main() -> ExitCode {
                 "parse" => parse(path),
                 "bytecode" => bytecode(path),
                 "check" => check(path, strict).map(|_| println!("No errors found.")),
-                _ => run(path, strict),
+                _ => run(path, strict, on_vm),
             };
             match done {
                 Some(()) => ExitCode::SUCCESS,

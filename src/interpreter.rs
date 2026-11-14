@@ -798,7 +798,8 @@ mod tests {
     /// Run a program and return what it printed and how it ended.
     fn run(source: &str) -> (String, Result<(), String>) {
         let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
-        let (output, result) = super::run(&program, true);
+        // Both engines run it, and must agree.
+        let (output, result) = crate::vm::run_both(&program, source);
         (output, result.map_err(|error| error.message))
     }
 
