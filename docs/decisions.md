@@ -652,7 +652,8 @@ source of two classic bugs: a loop that never ends because its body keeps
 appending, and a loop that skips an item because its body removed one.
 *(Principle 1.)* **The cost:** the loop takes a copy of the list first.
 *(Provisional: the copy can be skipped when the compiler can see that the
-body does not touch the list.)*
+body does not touch the list.)* Since 5.8 the copy is given back the moment
+the loop ends, because only the loop ever pointed at it (5.8j).
 
 ### 3.11 Enums carry data, and `match` takes them apart
 
@@ -1180,19 +1181,17 @@ MicroPython does on the same class of microcontroller.
    added underneath without changing the language, since nothing in the
    source depends on which method is used.
 
-### 5.8 Owned values and borrows, beside the collector *(planned)*
+### 5.8 Owned values and borrows, beside the collector
 
 Values stay shared and collected by default (3.10, 5.7). A value can
-instead be marked as **owned**:
+instead be **owned**. `docs/ownership.md` is the walkthrough.
 
-- It has exactly one owner. Assigning it, or passing it, *moves* it: the
-  old name can no longer be used.
+- It has exactly one owner. Storing it somewhere else *moves* it: the old
+  name can no longer be used.
 - It is freed at the end of its owner's block, at a line the programmer
-  can point to. The collector is not involved.
+  can point to, without a collection.
 - It can be *borrowed* for the length of a call: the function may use it
   and must not keep it. A borrow cannot outlive the call it was passed to.
-  That is the whole borrow checker to begin with. It grows only if real
-  programs need more.
 - **An owned value may hold shared values. A shared value may not hold an
   owned one.** Otherwise a shared value could still point at an owned one
   after its owner had freed it.
@@ -1213,16 +1212,165 @@ counts references by default and has added `consuming`, `borrowing` and
 values that cannot be copied. Mojo has `owned` and `borrowed` arguments.
 All four arrived at "automatic by default, exact where asked for".
 
-**To settle when it is built.**
+What was settled when it was built, each with its reason:
 
-- *The spelling.* Principle 3 says punctuation has to earn its place, so
-  whole words (`owned`, `borrow`) are more likely than `&x`.
-- *The collector must still look inside owned values* while they are
-  alive, because they may hold the only pointer to a shared one. It just
-  never frees them.
-- *Optionally*, the compiler can notice shared values that never leave the
-  function that made them and free those at the end of the block too
-  (escape analysis). Only if it stays simple.
+#### 5.8a The words are `owned` and `borrow`, and only three places take them
+
+`owned class Name`, `owned list[T]`, and `borrow` in front of a parameter's
+type. They are whole words *(principle 3)*, and they are not reserved: they
+mean something only in those positions, so no existing program breaks.
+
+*Turned down:* `&x` and `&mut x` at each use, as in Rust. Punctuation, and
+it puts a mark at every call where one in the signature says the same.
+*Turned down:* a mark at the call (`send(move p)`). It would make each
+move visible where it happens, which is worth something, but the checker
+already reports any use after a move by line, and the calls stay plain.
+Provisional: if moves prove easy to miss when reading, this is the first
+thing to revisit.
+
+#### 5.8b A class is owned as a whole, where it is declared
+
+Not `let p: owned Packet` at one use and a shared `Packet` at another.
+
+**Why.** If the same class could be owned here and shared there, a method
+could not know whether `self` may be kept, and an owned object could be
+handed to code that shares it. One word on the class settles it for every
+use, and it is the first thing a reader of the class sees.
+
+Lists are the exception, because there is only one list type: there the
+word goes on the type, `owned list[int]`.
+
+#### 5.8c A parameter takes the value unless it says `borrow`
+
+`function send(p: Packet)` takes `p` over. `function look(p: borrow Packet)`
+only looks.
+
+**Why.** A parameter is a variable. `p: Packet` on a `let` means "this
+variable holds a Packet", and a variable that holds an owned value owns it.
+The parameter means the same. The exception is the one that gets a word.
+A method's `self` is always a borrow, since calling a method on an object
+that then vanished would surprise everyone.
+
+*Turned down:* borrow by default, with a word for taking (Mojo, Swift). It
+makes the common case shorter. But then `p: Packet` would mean two
+different things on a `let` and on a parameter. Provisional.
+
+#### 5.8d The borrow checker is four rules, and stops there
+
+1. A borrow exists only as a parameter. It cannot be stored, returned, or
+   passed to something that keeps it.
+2. One statement cannot both use an owner and give it away.
+3. An owner declared outside a loop cannot be given away inside it, except
+   on a path that leaves the loop.
+4. An owned variable can be used only by the function whose block holds
+   it. Not by another function, not even when it is at the top level of
+   the file, and not by a function written inside this one.
+
+**Why so few.** Rule 1 is what makes lifetimes unnecessary: a borrow that
+only lives for a call needs no name for how long it lives. Rule 4 is what
+makes freeing at the end of the block safe: nothing outside ever knew where
+the value was. Rules 2 and 3 close the two ways a value could be used after
+the same piece of code gave it away. Together they are about 200 lines of
+the checker.
+
+**What it costs.** Programs that would be safe are refused: a function
+cannot return one of two borrowed lists, and `f(p.size, p)` must be two
+lines. Rust accepts these and needs lifetimes, two kinds of borrow and
+flow analysis over a second form of the program to do it. That is the part
+of Rust most often named as hard, and Zeno keeps the collector for the
+cases that need the freedom. *("Start with the minimal borrow checker and
+grow it only if needed.")*
+
+#### 5.8e A place that forgets about ownership gets an error, not a second owner
+
+Reading an owner gives a type, `Borrowed`, that fits nowhere. Only the
+places that are known to merely look take it off, and only the places that
+are known to keep a value mark the owner empty.
+
+**Why.** The checker has dozens of places where a value goes somewhere, and
+more will be added. The two possible mistakes are not equally bad. A place
+wrongly treated as keeping gives the programmer a confusing error. A place
+wrongly treated as looking gives the compiled program two owners, and it
+frees the value twice. So the default is the first.
+
+#### 5.8f In C, giving a value away sets the variable to NULL
+
+And every free does nothing when handed NULL. The end of a block calls the
+free for each owner declared in it, moved or not.
+
+**Why.** The compiler then needs no knowledge, at the end of a block, of
+which owners still hold something: the pointer is the answer. `if` branches
+that move on one side and not the other need nothing special.
+
+*Turned down:* working out at build time exactly which owners are live at
+each exit, and emitting only those frees. The checker has that knowledge
+for errors, but passing it to the compiler exactly, for every exit of every
+block, is far more machinery, and the C compiler removes a free of a
+variable it can see is NULL.
+
+#### 5.8g An owned value is still one of the collector's blocks
+
+`zeno_free` takes the block out of the collector's table at once. Until
+then the block is in the table like any other.
+
+**Why.** Two reasons. The collector must look inside an owned value while
+it lives, since it may hold the only pointer to a shared one, and a block
+in the table is looked into with no extra code. And if a free is skipped,
+the collector frees the block later, so a skipped free costs time and
+never correctness.
+
+*Turned down:* taking owned memory straight from `malloc`, outside the
+table. The collector would then need a list of every live owned value to
+look inside, kept up to date at every move.
+
+A block finds its own line in the table (it keeps its index in the field
+the collector's waiting list uses, since the two are never needed at
+once), so freeing costs the same however many blocks there are.
+
+#### 5.8h Errors: an ordinary build frees what it can, a firmware build frees everything
+
+In an ordinary build an error is a `longjmp` (5.5i). The function that
+raises frees its owners first. The functions the jump passes through free
+nothing, and what they owned waits for the collector (5.8g). An owner in a
+function with a `try` is declared `volatile`, because C does not promise
+that a local changed since `setjmp` keeps its new value after the jump,
+and an owner that forgot it had given its value away would free it twice.
+
+In a firmware build an error is a return value (5.5l), and each failed
+call frees the block's owners before it passes the failure on.
+
+**Why not make the ordinary build exact too.** It would need what 5.7
+turned down for counting references: every `try` keeping a list of what to
+release. The collector is already there for it.
+
+#### 5.8i What is refused for now *(provisional)*
+
+- An owned value inside a list, an `or none`, an enum case or a function
+  type, and moving a field out of an object. Each needs a rule for what is
+  left behind in the hole.
+- Replacing an owned field through a borrow, including `self`. Somebody
+  else may have been lent the old value at that moment. Telling "may
+  change" borrows from "may only read" borrows would lift this, and is the
+  first growth to consider (5.8d).
+- A shared list becoming an owned one. Only a list written out or a
+  comprehension can start life owned: those are the only lists certain to
+  have no other name.
+- `match` on an owned value, raising one, and a method of one kept as a
+  value.
+
+Each is an error with a message that says what to do instead. Allowing any
+of them later breaks no program that works now.
+
+#### 5.8j No escape analysis; two frees that are always safe instead
+
+The plan mentioned freeing shared values that never leave the function
+that made them. That was not built: working out "never leaves" for a
+shared value means following it through every call it is passed to.
+
+Two cases need no analysis at all, and were built: a list that grows frees
+its old storage, and the copy a `for` loop walks (3.10a) is freed after
+the loop. Only the list ever pointed at either. Every program gets these,
+with or without the word `owned`.
 
 ### 5.9 A firmware build with no collector *(planned)*
 
@@ -1240,3 +1388,10 @@ hidden runtime" is finally true without an exception.)*
 **Why after 5.8.** Without owned values, "no collector" would mean "no
 lists, no objects and no built text", which is too little to write real
 firmware in.
+
+**What building 5.8 showed it will need.** Owned lists and objects are
+ready for it. Four things in an owned program still make shared blocks
+today, and this build has to give each an answer or refuse it: text built
+while the program runs, the copy a `for` loop walks when a `return` leaves
+from inside the loop, an owned value held in a temporary when a later
+argument of the same call fails, and function values.
