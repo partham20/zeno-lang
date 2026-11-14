@@ -5179,6 +5179,8 @@ print(word[5])
             panic!("the firmware build refused this: {message}");
         }
         same_as_interpreter(name, source);
+        // The LLVM backend must accept it for firmware too.
+        crate::emit_llvm::tests::firmware_as_interpreter(&format!("{name}-llvm"), source);
     }
 
     #[test]
