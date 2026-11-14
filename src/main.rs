@@ -98,7 +98,9 @@ fn lex(path: &str, source: &str) -> Option<Vec<token::Token>> {
 fn tokens(path: &str) -> Option<()> {
     let source = read(path)?;
     for token in lex(path, &source)? {
-        println!("{:>4}:{:<3} {:?}", token.span.line, token.span.col, token.kind);
+        // `print_line` and not `println!`, so that `zeno tokens f | head`
+        // ends quietly when `head` has seen enough.
+        value::print_line(&format!("{:>4}:{:<3} {:?}", token.span.line, token.span.col, token.kind));
     }
     Some(())
 }
@@ -119,7 +121,7 @@ fn load(path: &str) -> Option<(String, ast::Program)> {
 /// `zeno parse <file>`: print the syntax tree.
 fn parse(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
-    print!("{}", printer::print(&program));
+    printer::print(&program).lines().for_each(value::print_line);
     Some(())
 }
 
@@ -142,7 +144,7 @@ fn check(path: &str, strict: bool) -> Option<(String, ast::Program)> {
 /// `zeno bytecode <file>`: print the bytecode the program compiles to.
 fn bytecode(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
-    print!("{}", bytecode::print(&emit_bytecode::compile(&program)));
+    bytecode::print(&emit_bytecode::compile(&program)).lines().for_each(value::print_line);
     Some(())
 }
 
