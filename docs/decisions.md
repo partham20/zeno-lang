@@ -29,6 +29,81 @@ because more people can read Python than any other language.
 
 ---
 
+## 0. What kind of language Zeno is
+
+### 0.1 Zeno is both object-oriented and functional
+
+**What that means.** The two are not opposites; they answer different
+questions. Object-oriented style is about *where code lives*: data and the
+functions that work on it are bundled into a class. Functional style is
+about *how data flows*: functions are values that can be passed around, and
+results are built from new values instead of by changing old ones.
+
+Zeno has the pieces for both:
+
+| Object-oriented | Functional |
+|---|---|
+| `class` with fields and methods | functions are values: store them, pass them, return them |
+| objects that hold state | `function(n) { ... }` written in place, with no name |
+| `self` | closures: a function remembers the variables around it |
+| | `let` is the default, so values do not change unless you say `var` |
+| | enums with data, taken apart by `match` |
+| | `map`, `filter`, `reduce`, and comprehensions |
+
+**Why.** Different problems have different natural shapes. A device driver
+is an object: it has state (a register, a mode) and operations on it. A
+signal-processing chain is functional: readings go in, get filtered and
+scaled, and a result comes out. A language meant to cover every use must not
+force one shape onto both. Python, Rust, Kotlin and Swift all made the same
+choice. [`examples/styles.zeno`](../examples/styles.zeno) shows one job done
+each way.
+
+**The limits, stated plainly.**
+- Zeno is not a *pure* functional language like Haskell, where functions are
+  forbidden from having effects. Writing to a hardware register is an effect,
+  and firmware is made of them.
+- Classes have no inheritance yet *(provisional, see 3.7)*.
+
+### 0.2 Types are optional
+
+Every type annotation can be left out: on variables, parameters, return
+values, class fields and enum cases. The same program runs with or without
+them.
+
+```
+function area(w: float, h: float) -> float { return w * h }    # typed
+function area(w, h) { return w * h }                           # untyped
+```
+
+**Why.** Types pay for themselves in large programs and in firmware, where a
+mistake found on the bench costs hours. They get in the way of a ten-line
+script or a quick experiment. With optional types, one language covers both,
+and a program can start loose and be tightened a line at a time as it grows,
+instead of being rewritten in another language. *(This is called gradual
+typing; TypeScript and Python's type hints took the same road.)*
+
+**How it will work, once the type checker exists.**
+1. Where a type is written, it is checked before the program runs.
+2. Where it is left out, the compiler works it out from the value when it
+   can. `let n = 3` is an `int` without being told.
+3. Where it cannot be worked out, the value is *dynamic*: it carries its type
+   with it and is checked while the program runs.
+
+**The cost, stated plainly.** A dynamic value needs a tag saying what it is,
+and usually memory from the heap. A small microcontroller cannot afford
+either. *(Principle 5.)* So there will be a **strict mode**, in which step 3
+is an error: everything must be known before the program runs. Strict mode
+will be the default when compiling for a microcontroller, and optional
+elsewhere. In practice this means untyped code still works on a
+microcontroller wherever the compiler can infer the types, which is most of
+the time; it is only truly dynamic code that needs a bigger machine.
+
+**Where this stands today.** The interpreter treats every value as dynamic,
+so typed and untyped programs both run, and annotations are read but not yet
+checked. Steps 1 and 2 and strict mode arrive with the type checker.
+
+---
+
 ## 1. Syntax
 
 ### 1.1 Blocks use `{ }`, not indentation
@@ -110,6 +185,8 @@ arrow would be a second way to introduce a block. *(Principles 3 and 4.)*
 **Why.** The name is what you scan for, so it comes first; and because types
 can usually be inferred, the optional part should be the trailing part. The
 `:` and `->` earn their place by separating a name from its type at a glance.
+
+**Optional.** A type can always be left out; see 0.2.
 
 ### 1.12 `true`, `false`, `none` in lower case
 
@@ -269,6 +346,36 @@ call shares it. It is one of the most-reported surprises in the language.
 **Why.** `set_timer(500, true, false)` cannot be read without looking up the
 function. Names at the call site fix that. *(Principle 2.)*
 
+### 3.6a A function with no name is written `function(n) { ... }`
+
+```
+let double = function(n) { return n * 2 }
+readings.map(function(r) { return r * 1.8 + 32 })
+```
+
+**Why.** It is exactly a function declaration with the name left out, so
+there is nothing new to learn and only one way to write a function.
+*(Principle 4.)*
+
+**Turned down.** Python's `lambda n: n * 2` is a second, more limited syntax
+for the same thing (it cannot hold statements). JavaScript's `n => n * 2`
+needs the `=>` that 1.9 removed.
+
+**Provisional.** This is wordy for one-line functions. A shorter form may be
+added once there is enough real Zeno code to see how often it is needed;
+comprehensions already cover the most common cases.
+
+### 3.6b `map`, `filter` and `reduce` are methods on a list
+
+```
+readings.filter(valid).map(to_celsius).reduce(add, 0.0)
+```
+
+**Why.** As methods they read left to right, in the order things happen:
+take the readings, keep the valid ones, convert them, add them up. As plain
+functions (Python's `reduce(add, map(to_celsius, filter(valid, readings)))`)
+the same chain has to be read inside out. *(Principle 2.)*
+
 ### 3.7 A class lists its fields, and gets a constructor for free
 
 **Why.** The fields are the shape of the data, and the shape should be
@@ -385,4 +492,5 @@ to see what the compiler did. Writing an optimiser can wait.
 
 **Why.** One stage, one job. Types written in the source are parsed and kept
 in the tree; the type checker is the next stage and will use them. Until
-then, a type mistake is found when the line runs, as in Python.
+then, a type mistake is found when the line runs, as in Python. This is also
+what makes untyped programs run today (0.2).

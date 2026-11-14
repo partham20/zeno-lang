@@ -99,6 +99,12 @@ function counter() {
 }
 ```
 
+A function written as a value, `function(n) { return n * 2 }`, becomes a
+closure the same way, at the moment that expression is evaluated. Since a
+closure is just a `Value`, it can be stored in a variable, passed as an
+argument, or handed to `map`, `filter` and `reduce`, which call it once per
+item.
+
 Before running a block, `hoist` declares all the functions, classes and
 enums in it, so they can be used above the line where they are written.
 

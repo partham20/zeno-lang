@@ -58,6 +58,8 @@ emits a `Newline` token for it. But not every line break ends a statement, so
 
 1. **Inside `( )` or `[ ]`.** The lexer counts open brackets in `depth`. While
    it is above zero, line breaks are ignored, so long calls and lists can wrap.
+   A `{` starts counting afresh, because inside braces there are statements
+   again, even when the braces sit inside a call: `items.map(function(n) { ... })`.
 2. **After a token that cannot end a statement**, such as `+`, `,`, `=` or `and`
    (see `TokenKind::continues_line`). The statement carries on to the next line.
 3. **After another `Newline`, or at the top of the file.** Blank lines and

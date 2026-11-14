@@ -102,6 +102,9 @@ Mostly the next token decides everything. A few spots need a little more:
 - **Named argument?** In a call, a name followed by `=` is `name=value`. This
   is the one place the parser peeks two tokens ahead.
 - **`is not` and `not in`** are each two tokens that make one operator.
+- **Declaration or value?** `function name(...)` declares a function;
+  `function(...)` with no name is an expression. One token of lookahead after
+  `function` tells them apart.
 
 ## f-strings
 

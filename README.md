@@ -33,9 +33,16 @@ Variables say once whether they can change: `let` for a value that is set once,
 `var` for one that changes, and plain `x = 2` to update. A misspelt name is an
 error, not a new variable.
 
+Zeno does not make you pick a style:
+
+- **Object-oriented and functional.** Classes with methods, and also functions
+  as values, closures, `map` / `filter` / `reduce` and comprehensions.
+- **Types are optional.** Write `function area(w: float, h: float) -> float`
+  or just `function area(w, h)`. Start loose, add types as the program grows.
+
 Underneath:
 
-- **Types are checked before the program runs**, and inferred so you rarely write them.
+- **Types, where written, are checked before the program runs** (from the type checker stage on).
 - **Errors are checked.** A function says what it `raises`, and the compiler makes sure someone handles it.
 - **No surprise `none`.** A value can be `none` only if its type says `or none`, and you must check before using it.
 - **Enums carry data**, and `match` must cover every case.
@@ -45,6 +52,7 @@ Samples, none of them final:
 
 - [`examples/hello.zeno`](examples/hello.zeno): one line.
 - [`examples/tour.zeno`](examples/tour.zeno): the main features.
+- [`examples/styles.zeno`](examples/styles.zeno): one job written typed, untyped, object-oriented and functional.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
 
 ## One language, every job
