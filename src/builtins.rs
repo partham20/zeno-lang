@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::board;
 use crate::interpreter::{Env, Scope};
+use crate::ints::{self, Width};
 use crate::token::Span;
 use crate::value::*;
 
@@ -34,6 +35,10 @@ pub fn all() -> Vec<(&'static str, Value)> {
 
     let mut all: Vec<(&'static str, Value)> =
         functions.iter().map(|builtin| (builtin.name, Value::Builtin(*builtin))).collect();
+    // `u8(n)` and the other sized whole numbers.
+    for (index, width) in ints::WIDTHS.iter().enumerate() {
+        all.push((width.name, Value::Builtin(Builtin { name: width.name, call: FITS[index] })));
+    }
     all.extend(ERROR_TYPES.iter().map(|kind| (*kind, Value::ErrorType(Rc::from(*kind)))));
     all
 }
@@ -203,6 +208,57 @@ fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         };
     }
     Ok(int_total.map_or(Value::Float(float_total), Value::Int))
+}
+
+// ----------------------------------------------------------------- Sized ints
+
+// A sized whole number is an ordinary `Value::Int` that is known to be in
+// range: nothing about it is different once it exists. So all the work is
+// in the two ways of making one.
+
+/// `u8(n)`: `n` itself if a u8 can hold it, and an OverflowError if not.
+fn fit_in(width: Width, args: Vec<Value>, span: Span) -> Result {
+    arity(width.name, &args, 1, 1, span)?;
+    match &args[0] {
+        Value::Int(n) if width.holds(*n) => Ok(Value::Int(*n)),
+        Value::Int(n) => raise("OverflowError", width.does_not_fit(n), span),
+        other => wrong_type(width.name, "a whole number", other, span),
+    }
+}
+
+/// `u8.wrap(n)`: the low eight bits of `n`. Never an error.
+fn wrap_to(width: Width, args: Vec<Value>, span: Span) -> Result {
+    arity(width.wrap, &args, 1, 1, span)?;
+    match &args[0] {
+        Value::Int(n) => Ok(Value::Int(width.wrap(*n))),
+        other => wrong_type(width.wrap, "a whole number", other, span),
+    }
+}
+
+// A built-in is a plain function pointer, which cannot remember which size
+// it is for. So there is one function for each size, stamped out from
+// these two by the number in `::<N>`: `fit::<0>` is `u8( )`, because `u8`
+// is first in `ints::WIDTHS`.
+
+fn fit<const N: usize>(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    fit_in(ints::WIDTHS[N], args, span)
+}
+
+fn wrap<const N: usize>(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    wrap_to(ints::WIDTHS[N], args, span)
+}
+
+type Call = fn(&mut dyn Machine, Vec<Value>, Span) -> Result;
+const FITS: [Call; 6] = [fit::<0>, fit::<1>, fit::<2>, fit::<3>, fit::<4>, fit::<5>];
+const WRAPS: [Call; 6] = [wrap::<0>, wrap::<1>, wrap::<2>, wrap::<3>, wrap::<4>, wrap::<5>];
+
+/// `u8.wrap`, given the built-in `u8`. `None` for any other built-in.
+pub fn wrapping(sized: &Builtin) -> Option<Value> {
+    let index = ints::WIDTHS.iter().position(|width| width.name == sized.name)?;
+    // `u8` could also be a function of the program's own. Only the real
+    // one has a `.wrap`.
+    (sized.call as usize == FITS[index] as usize)
+        .then(|| Value::Builtin(Builtin { name: ints::WIDTHS[index].wrap, call: WRAPS[index] }))
 }
 
 // -------------------------------------------------------------------- Methods

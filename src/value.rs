@@ -166,6 +166,16 @@ pub enum Control {
     Fatal(Error),
 }
 
+/// Print one line of a program's output. If nobody is reading any more,
+/// as in `zeno run program.zeno | head -3`, stop quietly, the way other
+/// command-line tools do. (`println!` would crash with a long report.)
+pub fn print_line(text: &str) {
+    use std::io::Write;
+    if writeln!(std::io::stdout(), "{text}").is_err() {
+        std::process::exit(0);
+    }
+}
+
 /// Stop with a bug report. Returns `Err` so it can be used with `return` or `?`.
 pub fn fatal<T>(message: impl Into<String>, span: Span) -> Result<T, Control> {
     Err(Control::Fatal(Error::new(message, span)))

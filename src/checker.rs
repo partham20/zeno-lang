@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use crate::ast::{self, *};
 use crate::error::Error;
+use crate::ints::{self, Width};
 use crate::token::Span;
 use crate::units;
 
@@ -93,6 +94,10 @@ pub struct Types {
     functions: HashMap<usize, FunctionKind>,
     /// The type of each field of each class, in the order they are listed.
     classes: HashMap<usize, Vec<Kind>>,
+    /// For each class, which of its fields are sized whole numbers. Such a
+    /// field is stored in that many bits; everywhere else a sized number
+    /// travels as an ordinary int.
+    widths: HashMap<usize, Vec<Option<Width>>>,
     /// For each enum, the types of the values each case carries.
     enums: HashMap<usize, Vec<Vec<Kind>>>,
     /// Each place a variable is read after a check such as `is not none`
@@ -134,6 +139,12 @@ impl Types {
 
     pub fn class(&self, decl: &ast::Class) -> Option<&Vec<Kind>> {
         self.classes.get(&(decl as *const ast::Class as usize))
+    }
+
+    /// The size of each field of the class, for the ones that have one:
+    /// `level: u8` is stored in a byte.
+    pub fn widths(&self, decl: &ast::Class) -> Option<&Vec<Option<Width>>> {
+        self.widths.get(&(decl as *const ast::Class as usize))
     }
 
     pub fn enumeration(&self, decl: &ast::Enum) -> Option<&Vec<Vec<Kind>>> {
@@ -188,7 +199,9 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
 
 fn plain_kind(ty: &Ty) -> Kind {
     match ty {
-        Ty::Int => Kind::Int,
+        // A sized number is an ordinary int to the stages after this one.
+        // Only a field of an object stores it small: see `Types::widths`.
+        Ty::Int | Ty::Sized(_) => Kind::Int,
         Ty::Float => Kind::Float,
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
@@ -278,6 +291,8 @@ enum Ty {
     Quantity(Rc<str>),
     /// A pin of the board, from the `board` module.
     Pin,
+    /// A whole number with a size: `u8`, `i32`. See src/ints.rs.
+    Sized(Width),
     List(Box<Ty>),
     /// `T or none`
     Optional(Box<Ty>),
@@ -376,6 +391,8 @@ enum Key {
     Str,
     Bool,
     Pin,
+    /// A sized whole number, by its name: `u8`.
+    Sized(&'static str),
     None,
     Quantity(String),
     List(Box<Key>),
@@ -397,6 +414,9 @@ enum Seen {
 fn join_keys(a: &Key, b: &Key) -> Option<Key> {
     match (a, b) {
         _ if a == b => Some(a.clone()),
+        // A parameter that is handed a u8 by one call and an int by
+        // another is an int.
+        (Key::Sized(_), Key::Int | Key::Sized(_)) | (Key::Int, Key::Sized(_)) => Some(Key::Int),
         (Key::None, Key::Optional(_)) => Some(b.clone()),
         (Key::Optional(_), Key::None) => Some(a.clone()),
         (Key::None, other) | (other, Key::None) => Some(Key::Optional(Box::new(other.clone()))),
@@ -508,6 +528,27 @@ impl Ty {
         }
     }
 
+    /// The type as arithmetic sees it. Sums, comparisons, indexes and the
+    /// built-in functions all work on plain ints, so a `u8` that takes
+    /// part in one counts as an `int`, and the answer is an `int`.
+    fn widened(&self) -> Ty {
+        match self {
+            Ty::Sized(_) => Ty::Int,
+            other => other.clone(),
+        }
+    }
+
+    /// `widened`, all the way down: a `list[u8]` holds the same values
+    /// as a `list[int]`, which is what `==` and `in` ask about.
+    fn as_ints(&self) -> Ty {
+        match self {
+            Ty::Sized(_) => Ty::Int,
+            Ty::List(inner) => Ty::list(inner.as_ints()),
+            Ty::Optional(inner) => Ty::Optional(Box::new(inner.as_ints())),
+            other => other.clone(),
+        }
+    }
+
     /// Can a value of this type be `none`?
     fn accepts_none(&self) -> bool {
         matches!(self, Ty::None | Ty::Optional(_)) || self.is_loose()
@@ -524,6 +565,7 @@ impl fmt::Display for Ty {
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
+            Ty::Sized(width) => write!(f, "{}", width.name),
             Ty::None => write!(f, "none"),
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
             Ty::List(item) => write!(f, "list[{item}]"),
@@ -565,6 +607,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Pin, Ty::Pin)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
+        (Ty::Sized(a), Ty::Sized(b)) => a == b,
         (Ty::List(a), Ty::List(b))
         | (Ty::Optional(a), Ty::Optional(b))
         | (Ty::Owned(a), Ty::Owned(b))
@@ -597,7 +640,14 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         // `none` and a plain T both fit `T or none`.
         (Ty::None, Ty::Optional(_)) => true,
         (from, Ty::Optional(inner)) => fits(from, inner),
-        (Ty::List(from), Ty::List(to)) => fits(from, to),
+        // A `list[u8]` is not a `list[int]`: whoever holds it as a list of
+        // ints could append 300, and the first holder would then find a
+        // u8 that is not one.
+        (Ty::List(from), Ty::List(to)) => !sized_into_int(from, to) && fits(from, to),
+        // Every u8 is an int, so a sized number goes where an int is
+        // wanted and nothing has to be written. The other way round needs
+        // a conversion, because not every int is a u8.
+        (Ty::Sized(_), Ty::Int) => true,
         // Any error fits the catch-all `Error`.
         (Ty::Error(_), Ty::Error(to)) => &**to == "Error",
         // A function going where a function type is wanted is compared in
@@ -607,6 +657,75 @@ fn fits(from: &Ty, to: &Ty) -> bool {
             Ty::Callable(_),
         ) => true,
         _ => false,
+    }
+}
+
+/// Is this a sized number (perhaps inside lists) going where the same
+/// shape of `int` is wanted?
+fn sized_into_int(from: &Ty, to: &Ty) -> bool {
+    match (from, to) {
+        (Ty::Sized(_), Ty::Int) => true,
+        (Ty::List(from), Ty::List(to)) | (Ty::Optional(from), Ty::Optional(to)) => sized_into_int(from, to),
+        (from, Ty::Optional(to)) => sized_into_int(from, to),
+        _ => false,
+    }
+}
+
+/// A whole number, or a list of them, as it is written in the program:
+/// `7`, `-1`, `[0x10, 0x20]`. Its value is known while checking, so it
+/// can go where a sized number is wanted without a conversion: `let b: u8
+/// = 7` is checked here, once, and costs nothing when the program runs.
+#[derive(Clone)]
+enum Written {
+    Number(i128),
+    List(Vec<Written>),
+}
+
+fn written(expr: &Expr) -> Option<Written> {
+    match &expr.kind {
+        ExprKind::Int(n) => Some(Written::Number(*n as i128)),
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => match written(operand)? {
+            Written::Number(n) => Some(Written::Number(-n)),
+            Written::List(_) => None,
+        },
+        ExprKind::List(items) if !items.is_empty() => {
+            items.iter().map(written).collect::<Option<Vec<_>>>().map(Written::List)
+        }
+        _ => None,
+    }
+}
+
+/// Does what is written fit where a `to` is wanted? `None` if `to` asks
+/// for no sized number here, and the ordinary rules decide. Otherwise
+/// yes, or the message for the first number that is too big.
+fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
+    match (written, to) {
+        (Written::Number(n), Ty::Sized(width)) => {
+            let fits = i64::try_from(*n).is_ok_and(|n| width.holds(n));
+            Some(if fits { Ok(()) } else { Err(width.does_not_fit(n)) })
+        }
+        (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => written_fits(written, inner),
+        (Written::List(items), Ty::List(item)) => {
+            for written in items {
+                if let Err(message) = written_fits(written, item)? {
+                    return Some(Err(message));
+                }
+            }
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+/// The type `from` with its ints read as the sized numbers `to` wants:
+/// what `[1, 2]` is, written where a `list[u8]` goes.
+fn sized_as(from: &Ty, to: &Ty) -> Ty {
+    match (from, to) {
+        (Ty::Int, Ty::Sized(_)) => to.clone(),
+        (Ty::List(from), Ty::List(to)) => Ty::list(sized_as(from, to)),
+        (Ty::Owned(from), Ty::Owned(to)) => Ty::Owned(Box::new(sized_as(from, to))),
+        (from, Ty::Optional(to) | Ty::Borrowed(to) | Ty::Owned(to)) => sized_as(from, to),
+        _ => from.clone(),
     }
 }
 
@@ -626,6 +745,8 @@ fn join(a: &Ty, b: &Ty) -> Ty {
             Ty::Optional(Box::new(join(inner, other)))
         }
         (Ty::List(a), Ty::List(b)) => Ty::list(join(a, b)),
+        // A u8 beside an int, or beside an i16: what covers both is an int.
+        (Ty::Sized(_), Ty::Int | Ty::Sized(_)) | (Ty::Int, Ty::Sized(_)) => Ty::Int,
         // Unrelated types: only known when the program runs.
         _ => Ty::Dynamic,
     }
@@ -803,6 +924,10 @@ fn globals() -> Env {
     for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum"] {
         env.declare(name, Ty::Builtin(name), false);
     }
+    // The sized whole numbers: `u8(n)` converts, and `u8` is also a type.
+    for width in ints::WIDTHS {
+        env.declare(width.name, Ty::Builtin(width.name), false);
+    }
     for kind in ["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"] {
         env.declare(kind, Ty::ErrorType(Rc::from(kind)), false);
     }
@@ -843,6 +968,8 @@ struct Argument {
     name: Option<String>,
     ty: Ty,
     span: Span,
+    /// The number, if the argument is one written out: `f(7)`.
+    written: Option<Written>,
 }
 
 struct Checker {
@@ -989,6 +1116,13 @@ impl Checker {
                                 can become an owned one"
                 }
                 (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
+                (Ty::List(from), Ty::List(to)) if sized_into_int(from, to) => {
+                    message += ". The list could then be given a number too big for it. \
+                                Make a list of ints from it with `[int(n) for n in ...]`"
+                }
+                (Ty::Int | Ty::Sized(_), Ty::Sized(width)) => {
+                    message += &format!(". Convert it with `{}(...)`, which checks that it fits", width.name)
+                }
                 (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
                 (Ty::Quantity(from), Ty::Quantity(to)) if units::convert(from, to).is_some() => {
                     message += &format!(". Convert it with `.{to}`")
@@ -999,6 +1133,21 @@ impl Checker {
             return;
         }
         self.arrives(from, to, what, span);
+    }
+
+    /// A number that is written out adapts to the sized type it is put in:
+    /// `let b: u8 = 7` needs no `u8(7)`. This gives the type the value has
+    /// there, after checking that the number fits. Anything that is not a
+    /// written number keeps the type it was given.
+    fn adapted(&mut self, written: Option<Written>, given: Ty, wanted: &Ty, span: Span) -> Ty {
+        let Some(written) = written else {
+            return given;
+        };
+        match written_fits(&written, wanted) {
+            None => given,
+            Some(Ok(())) => sized_as(&given, wanted),
+            Some(Err(message)) => self.error(message, span),
+        }
     }
 
     /// A value of type `from` goes where a `to` is wanted, and the two fit.
@@ -1087,6 +1236,7 @@ impl Checker {
             Ty::Str => Key::Str,
             Ty::Bool => Key::Bool,
             Ty::Pin => Key::Pin,
+            Ty::Sized(width) => Key::Sized(width.name),
             Ty::None => Key::None,
             Ty::Quantity(unit) => Key::Quantity(unit.to_string()),
             Ty::Error(kind) => Key::Error(kind.to_string()),
@@ -1113,6 +1263,7 @@ impl Checker {
             Key::Str => Ty::Str,
             Key::Bool => Ty::Bool,
             Key::Pin => Ty::Pin,
+            Key::Sized(name) => ints::width(name).map_or(Ty::Int, Ty::Sized),
             Key::None => Ty::None,
             Key::Quantity(unit) => Ty::Quantity(Rc::from(unit.as_str())),
             Key::Error(kind) => Ty::Error(Rc::from(kind.as_str())),
@@ -1294,11 +1445,25 @@ impl Checker {
                         Some(Ty::Class(class)) => Ty::Instance(class),
                         Some(Ty::Enum(info)) => Ty::EnumValue(info),
                         Some(Ty::ErrorType(kind)) => Ty::Error(kind),
+                        // `u8` the type shares its name with `u8( )` the
+                        // conversion, which is how it is found here.
+                        Some(Ty::Builtin(name)) if ints::width(name).is_some() => {
+                            ints::width(name).map_or(Ty::Int, Ty::Sized)
+                        }
                         // A unit is the type of a quantity measured in it.
                         _ if units::is_unit(name) => Ty::Quantity(Rc::from(name.as_str())),
                         // A pin of the board. A class of the program's own
                         // called `Pin` was found above, and comes first.
                         _ if name == "Pin" => Ty::Pin,
+                        _ if name == "i64" || name == "u64" => {
+                            return self.error(
+                                format!(
+                                    "there is no type called `{name}`. An `int` is 64 bits with a sign, \
+                                     and the sized whole numbers are u8, u16, u32, i8, i16 and i32"
+                                ),
+                                span,
+                            )
+                        }
                         _ => return self.error(format!("there is no type called `{name}`"), span),
                     },
                     _ => return self.error(format!("`{name}` does not take types in `[ ]`"), span),
@@ -1416,6 +1581,16 @@ impl Checker {
             self.types
                 .classes
                 .insert(decl as *const ast::Class as usize, fields.iter().map(|slot| kind(&slot.ty)).collect());
+            self.types.widths.insert(
+                decl as *const ast::Class as usize,
+                fields
+                    .iter()
+                    .map(|slot| match &slot.ty {
+                        Ty::Sized(width) => Some(*width),
+                        _ => None,
+                    })
+                    .collect(),
+            );
             *info.fields.borrow_mut() = fields;
             for method in &decl.methods {
                 let function = FunctionInfo {
@@ -1509,7 +1684,10 @@ impl Checker {
                 let (wanted, holds, field) = self.assignment_target(target, env);
                 let given = match op {
                     // `x = v` keeps `v`. `x += v` only reads it.
-                    None => self.kept(value, &wanted, env),
+                    None => {
+                        let given = self.kept(value, &wanted, env);
+                        self.adapted(written(value), given, &wanted, value.span)
+                    }
                     Some(op) => {
                         let given = self.look(value, env);
                         self.binary(*op, &holds, &given, span)
@@ -1653,7 +1831,11 @@ impl Checker {
                 let declared = self.frame().declared_return.clone();
                 let ty = match value {
                     // The caller keeps what is returned.
-                    Some(value) => self.kept(value, declared.as_ref().unwrap_or(&Ty::Invalid), env),
+                    Some(value) => {
+                        let wanted = declared.as_ref().unwrap_or(&Ty::Invalid);
+                        let given = self.kept(value, wanted, env);
+                        self.adapted(written(value), given, wanted, value.span)
+                    }
                     None => Ty::None,
                 };
                 if self.frames.len() == 1 {
@@ -1765,6 +1947,7 @@ impl Checker {
                         }
                         for item in items {
                             let item_type = self.expr(item, env);
+                            let item_type = self.adapted(written(item), item_type, wanted_item, item.span);
                             if !fits(&item_type, wanted_item) {
                                 self.error(
                                     format!("`{name}` should be {wanted}, but this item is {item_type}"),
@@ -1777,6 +1960,7 @@ impl Checker {
                     }
                     _ => {
                         let given = self.fresh_list(value, given, &wanted);
+                        let given = self.adapted(written(value), given, &wanted, value.span);
                         self.expect(&given, &wanted, &format!("`{name}`"), value.span)
                     }
                 }
@@ -1928,6 +2112,7 @@ impl Checker {
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
                 let given = self.kept(default, &slot.ty, env);
+                let given = self.adapted(written(default), given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
@@ -2432,6 +2617,7 @@ impl Checker {
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
                 let given = self.kept(default, &slot.ty, &scope);
+                let given = self.adapted(written(default), given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
@@ -2615,7 +2801,7 @@ impl Checker {
             }
 
             ExprKind::Unary { op, operand } => {
-                let ty = self.look(operand, env);
+                let ty = self.look(operand, env).widened();
                 match (op, &ty) {
                     (_, ty) if ty.is_loose() => ty.clone(),
                     (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::Quantity(_)) => ty,
@@ -2718,7 +2904,12 @@ impl Checker {
                         // only if the parameter says `borrow`.
                         _ => self.expr(&arg.value, env),
                     };
-                    arguments.push(Argument { name: arg.name.clone(), ty, span: arg.value.span });
+                    arguments.push(Argument {
+                        name: arg.name.clone(),
+                        ty,
+                        span: arg.value.span,
+                        written: written(&arg.value),
+                    });
                 }
                 self.call(&callee, arguments, span)
             }
@@ -2790,6 +2981,10 @@ impl Checker {
                 Some(ty) => ty,
                 None => self.error(format!("module `{module}` has no `{name}`"), span),
             },
+            // `u8.wrap`: the conversion that keeps the low bits.
+            Ty::Builtin(sized) if name == "wrap" && ints::width(sized).is_some() => {
+                ints::width(sized).map_or(Ty::Invalid, |width| Ty::Builtin(width.wrap))
+            }
             Ty::Error(_) if name == "message" || name == "kind" => Ty::Str,
             // `(3 s).ms`: the same quantity in another unit.
             Ty::Quantity(unit) if units::is_unit(name) => match units::convert(unit, name) {
@@ -2892,7 +3087,8 @@ impl Checker {
                     );
                 }
                 for (argument, wanted) in arguments.iter().zip(&callable.params) {
-                    self.expect(&argument.ty, wanted, "an argument", argument.span);
+                    let given = self.adapted(argument.written.clone(), argument.ty.clone(), wanted, argument.span);
+                    self.expect(&given, wanted, "an argument", argument.span);
                 }
                 callable.returns.clone()
             }
@@ -2948,7 +3144,9 @@ impl Checker {
             filled[index] = true;
             self.sees(&slots[index], &argument.ty, argument.span);
             let label = format!("`{}` of `{what}`", slots[index].name);
-            self.expect(&argument.ty, &slots[index].ty, &label, argument.span);
+            let given =
+                self.adapted(argument.written.clone(), argument.ty.clone(), &slots[index].ty, argument.span);
+            self.expect(&given, &slots[index].ty, &label, argument.span);
         }
 
         for (slot, filled) in slots.iter().zip(filled) {
@@ -2973,7 +3171,8 @@ impl Checker {
 
     /// The result of calling a built-in function.
     fn builtin(&mut self, name: &str, arguments: &[Argument], span: Span) -> Ty {
-        let first = arguments.first().map(|a| a.ty.clone()).unwrap_or(Ty::Invalid);
+        // The built-ins work on plain ints: `abs` of an i8 is an int.
+        let first = arguments.first().map(|a| a.ty.widened()).unwrap_or(Ty::Invalid);
         let wrong = |checker: &mut Checker, wanted: &str| {
             checker.error(format!("`{name}` needs {wanted}, but this is {first}"), span)
         };
@@ -3024,8 +3223,8 @@ impl Checker {
             "min" | "max" | "sum" => {
                 // Either one list, or the numbers themselves.
                 let types: Vec<Ty> = match arguments {
-                    [Argument { ty: Ty::List(item), .. }] => vec![(**item).clone()],
-                    _ => arguments.iter().map(|a| a.ty.clone()).collect(),
+                    [Argument { ty: Ty::List(item), .. }] => vec![item.widened()],
+                    _ => arguments.iter().map(|a| a.ty.widened()).collect(),
                 };
                 let joined = self.join_all(&types).unwrap_or(Ty::Int);
                 if !joined.is_number() && !joined.is_loose() {
@@ -3052,6 +3251,26 @@ impl Checker {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::Quantity(Rc::from("ms"))
             }
+            // `u8(n)` checks that `n` fits when the program runs, and
+            // `u8.wrap(n)` keeps its low bits. Either way the answer is a u8.
+            _ if ints::width(name).or(ints::wrapping(name)).is_some() => {
+                let width = ints::width(name).or(ints::wrapping(name)).unwrap_or(ints::WIDTHS[0]);
+                if !self.arity(name, arguments, 1, 1, span) {
+                    return Ty::Invalid;
+                }
+                if !matches!(first, Ty::Int) && !first.is_loose() {
+                    let hint = if matches!(first, Ty::Float) { ". Make it one with `int( )` first" } else { "" };
+                    return self.error(format!("`{name}` needs a whole number, but this is {first}{hint}"), span);
+                }
+                // A number written out is checked now. Only `u8( )`
+                // refuses one: `u8.wrap(300)` is asking for the 44.
+                if let (Some(Written::Number(n)), true) = (&arguments[0].written, ints::width(name).is_some()) {
+                    if !i64::try_from(*n).is_ok_and(|n| width.holds(n)) {
+                        return self.error(width.does_not_fit(n), arguments[0].span);
+                    }
+                }
+                Ty::Sized(width)
+            }
             "pin" => {
                 if self.arity(name, arguments, 1, 1, span) {
                     self.expect(&first, &Ty::Int, "the number of a pin", arguments[0].span);
@@ -3073,7 +3292,7 @@ impl Checker {
         let apply = |checker: &mut Checker, function: &Argument, types: Vec<Ty>| {
             let arguments = types
                 .into_iter()
-                .map(|ty| Argument { name: None, ty, span: function.span })
+                .map(|ty| Argument { name: None, ty, span: function.span, written: None })
                 .collect();
             checker.call(&function.ty, arguments, function.span)
         };
@@ -3105,7 +3324,9 @@ impl Checker {
 
             (Ty::List(item), "append") => {
                 if self.arity(name, arguments, 1, 1, span) {
-                    self.expect(&arguments[0].ty, item, "an item added to this list", arguments[0].span);
+                    let added = &arguments[0];
+                    let given = self.adapted(added.written.clone(), added.ty.clone(), item, added.span);
+                    self.expect(&given, item, "an item added to this list", added.span);
                 }
                 Ty::None
             }
@@ -3145,6 +3366,9 @@ impl Checker {
     fn binary(&mut self, op: BinaryOp, left: &Ty, right: &Ty, span: Span) -> Ty {
         use BinaryOp::*;
         let comparison = matches!(op, Eq | NotEq | Lt | LtEq | Gt | GtEq | In | NotIn | Is | IsNot);
+        // A sized number takes part as the int it is, and the answer is an
+        // int: `a + b` on two u8s is never cut down to eight bits.
+        let (left, right) = (&left.widened(), &right.widened());
 
         // With a side that is only known at run time, so is the result,
         // except that a comparison is always a bool.
@@ -3211,6 +3435,7 @@ impl Checker {
             Eq | NotEq => {
                 // Two types that can never hold the same value: the answer
                 // is already known, which means the comparison is a mistake.
+                let (left, right) = (&left.as_ints(), &right.as_ints());
                 if !numbers && !same_unit && !fits(left, right) && !fits(right, left) {
                     let answer = if op == Eq { "false" } else { "true" };
                     self.error(
@@ -3224,7 +3449,7 @@ impl Checker {
                 let both_strs = matches!((left, right), (Ty::Str, Ty::Str));
                 (numbers || both_strs || same_unit).then_some(Ty::Bool)
             }
-            In | NotIn => match (left, right) {
+            In | NotIn => match (left, &right.as_ints()) {
                 (item, Ty::List(items)) if fits(item, items) || fits(items, item) => Some(Ty::Bool),
                 (Ty::Str, Ty::Str) => Some(Ty::Bool),
                 _ => None,
@@ -3559,6 +3784,95 @@ mod tests {
         assert_eq!(error("print(1.5 << 2)"), "`<<` works on the bits of whole numbers, and these are float and int");
         assert_eq!(error("print(~1.5)"), "`~` works on the bits of a whole number, and this is float");
         assert_eq!(error("var x = 1.0\nx &= 3"), "`&` works on the bits of whole numbers, and these are float and int");
+    }
+
+    // ----- Sized whole numbers -----
+
+    #[test]
+    fn sized_ints_are_types() {
+        strict_ok(include_str!("../examples/packet.zeno"));
+        strict_ok(
+            "let a: u8 = 200\nlet b: u8 = u8(100)\nlet c: i8 = i8.wrap(a)\nlet d: u16 = u16(a + b)\n\
+             let e: i32 = -2147483648\nlet f: u32 = 4294967295\nlet g: i16 = -32768\n\
+             let added: int = a + b\nlet bits: int = a << 8 | b\nlet same: bool = a == b or a < 3 or a in [1, 2]\n\
+             let wide: int = a\nlet text: str = f\"{a:02x}\"\nlet biggest: int = max(a, b)\nlet size: int = abs(c)\n\
+             function double(n: int) -> int { return n * 2 }\nlet twice: int = double(a)\n\
+             class Reg {\n    value: u8\n    mask: u8 = 0xFF\n}\nlet r = Reg(value=1)\nr.value = u8(r.value | 4)\nr.mask = 15\n\
+             let bytes: list[u8] = [1, 2, 255]\nbytes.append(a)\nbytes.append(9)\nbytes[0] = 7\nlet first: u8 = bytes[0]\n\
+             let total: int = sum(bytes)\nvar maybe: u8 or none = none\nmaybe = 5\nmaybe = a\n\
+             for i in range(a) { print(bytes[b]) }",
+        );
+        // A class of the program's own may take the name.
+        ok("class u8 {\n    n: int\n}\nlet x: u8 = u8(n=300)");
+    }
+
+    #[test]
+    fn a_written_number_must_fit_its_size() {
+        assert_eq!(error("let a: u8 = 256"), "256 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("let a: u8 = -1"), "-1 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("let a: i8 = -129"), "-129 does not fit in an i8 (-128 to 127)");
+        assert_eq!(error("let a: u16 or none = 65536"), "65536 does not fit in a u16 (0 to 65535)");
+        assert_eq!(error("let a: list[u8] = [1, 2, 300]"), "300 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("var a: u8 = 0\na = 999"), "999 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("function f(n: u8) { print(n) }\nf(256)"), "256 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("function f(n: i8 = 128) { print(n) }"), "128 does not fit in an i8 (-128 to 127)");
+        assert_eq!(error("function f() -> i8 { return 128 }"), "128 does not fit in an i8 (-128 to 127)");
+        assert_eq!(error("class P {\n    v: u8 = 256\n}"), "256 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("class P {\n    v: u8\n}\nlet p = P(v=-1)"), "-1 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("let xs: list[u8] = [1]\nxs.append(256)"), "256 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("let xs: list[u8] = [1]\nxs[0] = 256"), "256 does not fit in a u8 (0 to 255)");
+        // `u8( )` of a written number is checked here too. `wrap` is not:
+        // it is asked for the low bits.
+        assert_eq!(error("let a = u8(1000)"), "1000 does not fit in a u8 (0 to 255)");
+        ok("let a: u8 = u8.wrap(1000)\nlet b: i32 = i32.wrap(-99999999999)");
+    }
+
+    #[test]
+    fn an_int_does_not_become_sized_by_itself() {
+        let hint = "Convert it with `u8(...)`, which checks that it fits";
+        assert_eq!(error("let n = 5\nlet a: u8 = n"), format!("`a` should be u8, but this is int. {hint}"));
+        // The answer of an operator is an int, whatever went in.
+        assert_eq!(error("var a: u8 = 1\na += 1"), format!("the new value should be u8, but this is int. {hint}"));
+        assert_eq!(error("var a: u8 = 1\na = a + 1"), format!("the new value should be u8, but this is int. {hint}"));
+        assert_eq!(error("let a: u8 = 1\nlet b: u8 = ~a"), format!("`b` should be u8, but this is int. {hint}"));
+        assert_eq!(
+            error("let a: u8 = 1\nlet b: u16 = a"),
+            "`b` should be u16, but this is u8. Convert it with `u16(...)`, which checks that it fits"
+        );
+        assert_eq!(
+            error("function f(n: u8) { print(n) }\nlet n = 5\nf(n)"),
+            format!("`n` of `f` should be u8, but this is int. {hint}")
+        );
+        assert_eq!(
+            error("let xs: list[u8] = [1]\nlet n = 5\nxs.append(n)"),
+            format!("an item added to this list should be u8, but this is int. {hint}")
+        );
+        assert_eq!(
+            error("let xs: list[u8] = [1]\nlet ys: list[int] = xs"),
+            "`ys` should be list[int], but this is list[u8]. The list could then be given a number too big for it. \
+             Make a list of ints from it with `[int(n) for n in ...]`"
+        );
+        assert_eq!(error("let a = u8(2.5)"), "`u8` needs a whole number, but this is float. Make it one with `int( )` first");
+        assert_eq!(error("let a = u8.wrap(\"x\")"), "`u8.wrap` needs a whole number, but this is str");
+        assert_eq!(error("let a = u8(1, 2)"), "`u8` takes 1 argument(s), but 2 were given");
+        assert_eq!(
+            error("let a: u64 = 1"),
+            "there is no type called `u64`. An `int` is 64 bits with a sign, \
+             and the sized whole numbers are u8, u16, u32, i8, i16 and i32"
+        );
+    }
+
+    #[test]
+    fn a_size_left_out_is_worked_out() {
+        // From the value, and for a parameter from the calls.
+        strict_ok("let a = u8(5)\nlet b: u8 = a\nfunction same(n) { return n }\nlet c: u8 = same(a)");
+        // A u8 from one call and an int from another: the parameter is an int.
+        assert_eq!(
+            strict_error("function same(n) { return n }\nlet a = same(u8(5))\nlet b: u8 = same(7)"),
+            "`b` should be u8, but this is int. Convert it with `u8(...)`, which checks that it fits"
+        );
+        // A list of a u8 and an int is a list of ints.
+        strict_ok("let a: u8 = 1\nlet xs: list[int] = [a, 300]\nlet ys = [a, u16(2)]\nlet zs: list[int] = ys");
     }
 
     // ----- The board and the clock -----

@@ -61,6 +61,7 @@ use crate::ast::*;
 use crate::checker::{FunctionKind, Kind, Types};
 use crate::emit_c;
 use crate::error::Error;
+use crate::ints::{self, Width};
 use crate::token::Span;
 use crate::units;
 
@@ -151,6 +152,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_now", "declare double @zeno_now()"),
     ("zeno_abs", "declare i64 @zeno_abs(i64, i32 signext, i32 signext)"),
     ("zeno_shl", "declare i64 @zeno_shl(i64, i64, i32 signext, i32 signext)"),
+    ("zeno_fit", "declare i64 @zeno_fit(i64, i64, i64, ptr, i32 signext, i32 signext)"),
     ("zeno_shr", "declare i64 @zeno_shr(i64, i64, i32 signext, i32 signext)"),
     ("zeno_range_count", "declare i64 @zeno_range_count(i64, i64, i64, i32 signext, i32 signext)"),
     ("zeno_floordiv_float", "declare double @zeno_floordiv_float(double, double, i32 signext, i32 signext)"),
@@ -498,6 +500,10 @@ type Slots = Vec<(String, Kind, Option<Expr>)>;
 /// A class: an object is a block of memory holding its fields in order.
 struct ClassEntry {
     fields: Slots,
+    /// For each field, its size if it is a sized whole number such as
+    /// `level: u8`. The struct holds it in that many bits (`i8`), and it
+    /// is an `i64` everywhere else: see `load_field` and `store_field`.
+    sized: Vec<Option<Width>>,
     methods: HashMap<String, Entry>,
     /// The name of its struct type in the IR, such as `%z_Point`.
     ty: String,
@@ -1179,6 +1185,43 @@ impl Emitter<'_> {
         self.set(format!("getelementptr {ty}, ptr {object}, i32 0, i32 {index}"))
     }
 
+    /// Read field `index` of the object of `class` at `object`.
+    ///
+    /// A sized field is read at its own width and then made an `i64`,
+    /// which is what a whole number is everywhere outside an object.
+    /// `zext` ("zero extend") fills the new bits with zeros, right for a
+    /// `u8`. `sext` ("sign extend") fills them with copies of the top
+    /// bit, so that an `i8` holding -1 (eight ones) becomes sixty-four
+    /// ones, which is -1 again.
+    fn load_field(&mut self, class: &str, object: &str, index: usize, span: Span) -> Result<String, Error> {
+        let (ty, kind) = (self.classes[class].ty.clone(), self.classes[class].fields[index].1.clone());
+        let at = self.field_at(&ty, object, index);
+        Ok(match self.classes[class].sized[index] {
+            Some(width) => {
+                let small = self.set(format!("load {}, ptr {at}", width.ir_type()));
+                let extend = if width.signed { "sext" } else { "zext" };
+                self.set(format!("{extend} {} {small} to i64", width.ir_type()))
+            }
+            None => self.set(format!("load {}, ptr {at}", ir_type(&kind, span)?)),
+        })
+    }
+
+    /// Put `value` in field `index` of the object of `class` at `object`.
+    /// For a sized field, `trunc` ("truncate") keeps the low bits. The
+    /// checker made sure the number is in range, so none are lost.
+    fn store_field(&mut self, class: &str, object: &str, index: usize, value: &str, span: Span) -> Result<(), Error> {
+        let (ty, kind) = (self.classes[class].ty.clone(), self.classes[class].fields[index].1.clone());
+        let at = self.field_at(&ty, object, index);
+        match self.classes[class].sized[index] {
+            Some(width) => {
+                let small = self.set(format!("trunc i64 {value} to {}", width.ir_type()));
+                self.ins(format!("store {} {small}, ptr {at}", width.ir_type()));
+            }
+            None => self.ins(format!("store {} {value}, ptr {at}", ir_type(&kind, span)?)),
+        }
+        Ok(())
+    }
+
     /// Finish the function being written and return its text.
     fn finish(&mut self, first_line: String) -> String {
         if !self.code.ended {
@@ -1240,9 +1283,16 @@ impl Emitter<'_> {
         };
         let kinds: Vec<Kind> = kinds.iter().map(shared).collect();
         let ty = named('%', "z_", &decl.name);
+        let mut sized = self.types.widths(decl).cloned().unwrap_or_default();
+        sized.resize(kinds.len(), None);
         let mut inside = Vec::new();
-        for kind in &kinds {
-            inside.push(ir_type(kind, span)?);
+        for (kind, width) in kinds.iter().zip(&sized) {
+            // `%z_Packet = type { i8, i16, ptr }`: a u8 and a u16 take
+            // three bytes between them and not sixteen.
+            inside.push(match width {
+                Some(width) => width.ir_type(),
+                None => ir_type(kind, span)?,
+            });
         }
         if inside.is_empty() {
             // An object with no fields still needs an address of its own.
@@ -1258,7 +1308,7 @@ impl Emitter<'_> {
         }
         let fields =
             decl.fields.iter().zip(kinds).map(|(field, kind)| (field.name.clone(), kind, field.default.clone())).collect();
-        self.classes.insert(decl.name.clone(), ClassEntry { fields, methods, ty });
+        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, ty });
         Ok(())
     }
 
@@ -1360,6 +1410,8 @@ impl Emitter<'_> {
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
             ("Pin", []) => Kind::Pin,
+            // `u8` and the rest: an int that is known to be small.
+            (name, []) if ints::width(name).is_some() => Kind::Int,
             _ => return None,
         })
     }
@@ -1593,15 +1645,14 @@ impl Emitter<'_> {
             ExprKind::Field { object, name } => {
                 let object = self.expr(object)?;
                 let field = match &object.kind {
-                    Kind::Class(class) => self.field_of(class, name),
+                    Kind::Class(class) => self.field_of(class, name).map(|field| (class.clone(), field)),
                     _ => None,
                 };
-                let Some((ty, index, kind)) = field else {
+                let Some((class, (_, index, kind))) = field else {
                     return Err(cannot("an assignment to this", target.span));
                 };
                 let new = self.fit(new, &kind, span)?;
-                let at = self.field_at(&ty, &object.code, index);
-                self.ins(format!("store {} {}, ptr {at}", ir_type(&kind, span)?, new.code));
+                self.store_field(&class, &object.code, index, &new.code, span)?;
             }
             ExprKind::Index { object, index } => {
                 let object = self.expr(object)?;
@@ -2536,10 +2587,7 @@ impl Emitter<'_> {
             },
             // Where the field is, then what is there.
             Kind::Class(class) => match self.field_of(class, name) {
-                Some((ty, index, kind)) => {
-                    let at = self.field_at(&ty, &val.code, index);
-                    Ok(Val::new(self.set(format!("load {}, ptr {at}", ir_type(&kind, span)?)), kind))
-                }
+                Some((_, index, kind)) => Ok(Val::new(self.load_field(class, &val.code, index, span)?, kind)),
                 None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
             },
             Kind::Error if matches!(name, "message" | "kind") => {
@@ -2822,6 +2870,17 @@ impl Emitter<'_> {
                         if owner == "time" || owner == "board" {
                             return self.device(owner, name, args, span);
                         }
+                        // `u8.wrap(n)`: cut `n` down to eight bits and
+                        // make it an i64 again. Two instructions, no call.
+                        if let (Some(width), "wrap", [arg]) = (self.sized_name(owner), name.as_str(), args) {
+                            let n = self.expr(&arg.value)?;
+                            if n.kind != Kind::Int || arg.name.is_some() {
+                                return Err(cannot(format!("`{owner}.wrap` called this way"), span));
+                            }
+                            let small = self.set(format!("trunc i64 {} to {}", n.code, width.ir_type()));
+                            let extend = if width.signed { "sext" } else { "zext" };
+                            return Ok(Val::new(self.set(format!("{extend} {} {small} to i64", width.ir_type())), Kind::Int));
+                        }
                         // `Shape.Circle(1.0)`
                         let case =
                             self.enums.get(owner).and_then(|entry| entry.cases.iter().position(|(case, _)| case == name));
@@ -2969,6 +3028,14 @@ impl Emitter<'_> {
                 self.ins(format!("call void (i32, ...) @zeno_print({list})"));
                 Val::nothing()
             }
+            // `u8(n)`: `n` itself, once the runtime has seen that it fits.
+            // The size goes along in words, for the message.
+            (sized, [n]) if ints::width(sized).is_some() && n.kind == Kind::Int => {
+                let width = ints::width(sized).unwrap_or(ints::WIDTHS[0]);
+                let said = self.string(&format!("{} {sized}", if width.signed { "an" } else { "a" }));
+                let args = format!("i64 {}, i64 {}, i64 {}, ptr {said}, {}", n.code, width.min(), width.max(), at(span));
+                Val::new(self.call("i64", "zeno_fit", args), Kind::Int)
+            }
             // `ValueError("bad")` makes an error value: its kind, its
             // message, and no object.
             (kind, _) if emit_c::ERROR_KINDS.contains(&kind) => {
@@ -3056,6 +3123,13 @@ impl Emitter<'_> {
             }
             _ => return Err(wrong()),
         })
+    }
+
+    /// The size called `name`, if `name` is still the built-in one and not
+    /// something of the program's own.
+    fn sized_name(&self, name: &str) -> Option<Width> {
+        let taken = self.functions.contains_key(name) || self.classes.contains_key(name) || self.enums.contains_key(name);
+        ints::width(name).filter(|_| !taken)
     }
 
     /// `object.name(args)`: a method of a class, of a str, or of a list.
@@ -3187,9 +3261,8 @@ impl Emitter<'_> {
         }
         self.side(format!("define internal ptr {name}({})", params.join(", ")), |emitter| {
             let object = emitter.call("ptr", "zeno_alloc", format!("i64 {}", size_of(&ty)));
-            for (index, (_, kind, _)) in fields.iter().enumerate() {
-                let at = emitter.field_at(&ty, &object, index);
-                emitter.ins(format!("store {} %f{index}, ptr {at}", ir_type(kind, span)?));
+            for index in 0..fields.len() {
+                emitter.store_field(class, &object, index, &format!("%f{index}"), span)?;
             }
             emitter.end(format!("ret ptr {object}"));
             Ok(())
@@ -3205,14 +3278,13 @@ impl Emitter<'_> {
         if !self.written.insert(name.clone()) {
             return Ok(name);
         }
-        let (ty, fields) = (self.classes[class].ty.clone(), self.classes[class].fields.clone());
+        let fields = self.classes[class].fields.clone();
         self.side(format!("define internal ptr {name}(ptr %self)"), |emitter| {
             let mut pieces = Vec::new();
             for (index, (field, kind, _)) in fields.iter().enumerate() {
                 let label = if index == 0 { format!("{class}({field}=") } else { format!(", {field}=") };
                 pieces.push(emitter.string(&label));
-                let at = emitter.field_at(&ty, "%self", index);
-                let value = emitter.set(format!("load {}, ptr {at}", ir_type(kind, span)?));
+                let value = emitter.load_field(class, "%self", index, span)?;
                 pieces.push(emitter.repr(&Val::new(value, kind.clone()), span)?);
             }
             if fields.is_empty() {
@@ -3234,10 +3306,12 @@ impl Emitter<'_> {
         if !self.written.insert(name.clone()) {
             return Ok(name);
         }
-        let (ty, fields) = (self.classes[class].ty.clone(), self.classes[class].fields.clone());
+        let fields = self.classes[class].fields.clone();
         self.side(format!("define internal i1 {name}(ptr %a, ptr %b)"), |emitter| {
             for (index, (_, kind, _)) in fields.iter().enumerate() {
-                emitter.same_field(&ty, index, kind, &format!("more{index}"), span)?;
+                let a = emitter.load_field(class, "%a", index, span)?;
+                let b = emitter.load_field(class, "%b", index, span)?;
+                emitter.same_or_differ(kind, &a, &b, &format!("more{index}"), span)?;
             }
             emitter.end("ret i1 true");
             emitter.place("differ");
@@ -3254,7 +3328,13 @@ impl Emitter<'_> {
         let (a_at, b_at) = (self.field_at(ty, "%a", index), self.field_at(ty, "%b", index));
         let a = self.set(format!("load {field_type}, ptr {a_at}"));
         let b = self.set(format!("load {field_type}, ptr {b_at}"));
-        let same = self.equal(kind, &a, &b, span)?;
+        self.same_or_differ(kind, &a, &b, more, span)
+    }
+
+    /// Leave for `differ` unless `a` and `b`, two values of `kind`, are
+    /// equal. Otherwise carry on at `more`.
+    fn same_or_differ(&mut self, kind: &Kind, a: &str, b: &str, more: &str, span: Span) -> Result<(), Error> {
+        let same = self.equal(kind, a, b, span)?;
         self.jump_if(&same, more, "differ");
         self.place(more);
         Ok(())
@@ -4218,6 +4298,7 @@ pub(crate) mod tests {
         same_as_interpreter("memory", include_str!("../examples/memory.zeno"));
         same_as_interpreter("buffer", include_str!("../examples/buffer.zeno"));
         same_as_interpreter("signal", include_str!("../examples/signal.zeno"));
+        same_as_interpreter("packet", include_str!("../examples/packet.zeno"));
     }
 
     #[test]
@@ -4503,6 +4584,25 @@ pub(crate) mod tests {
                     \x20 call void @zeno_sleep(double %t2)\n\
                     \x20 br label %while1\n";
         assert!(ir.contains(body), "{ir}");
+    }
+
+    #[test]
+    fn the_ir_for_a_sized_field() {
+        let source = "class Packet {\n    kind: u8\n    length: u16\n    offset: i8\n}\n\
+                      let p = Packet(3, 1024, -1)\nprint(p.kind + p.offset, u8.wrap(p.length), u8(p.length))\n";
+        let ir = compile(source).expect("it compiles");
+        // Four bytes of fields, where three plain ints would take 24.
+        assert!(ir.contains("%z_Packet = type { i8, i16, i8 }"), "{ir}");
+        // Going in, the i64 is cut down to the size of the field.
+        assert!(ir.contains("  %t3 = trunc i64 %f0 to i8\n  store i8 %t3, ptr %t2\n"), "{ir}");
+        // Coming out, it is made an i64 again: with zeros for a u8, and
+        // with copies of the sign bit for an i8.
+        assert!(ir.contains("  %t4 = load i8, ptr %t3\n  %t5 = zext i8 %t4 to i64\n"), "{ir}");
+        assert!(ir.contains("  %t8 = load i8, ptr %t7\n  %t9 = sext i8 %t8 to i64\n"), "{ir}");
+        // `u8.wrap` is the same two instructions, and `u8( )` asks the runtime.
+        assert!(ir.contains(" = trunc i64 %t"), "{ir}");
+        assert!(ir.contains("call i64 @zeno_fit(i64 %t"), "{ir}");
+        assert!(ir.contains(", i64 0, i64 255, ptr @.str"), "{ir}");
     }
 
     #[test]

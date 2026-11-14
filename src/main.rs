@@ -17,6 +17,7 @@ mod emit_c;
 mod emit_llvm;
 mod error;
 mod interpreter;
+mod ints;
 mod lexer;
 mod ops;
 mod parser;

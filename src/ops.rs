@@ -444,6 +444,10 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
         },
         // `led.number`: which pin this is.
         Value::Pin(number) if name == "number" => Ok(Value::Int(*number)),
+        // `u8.wrap`: the conversion that keeps the low bits.
+        Value::Builtin(sized) if name == "wrap" && builtins::wrapping(sized).is_some() => {
+            Ok(builtins::wrapping(sized).unwrap_or(Value::None))
+        }
         Value::Error(error) if name == "message" => Ok(Value::str(&error.message)),
         Value::Error(error) if name == "kind" => Ok(Value::str(&error.kind)),
         _ if builtins::has_method(&object, name) => {

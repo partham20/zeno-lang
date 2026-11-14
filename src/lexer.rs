@@ -634,6 +634,7 @@ mod tests {
             ("hello", include_str!("../examples/hello.zeno")),
             ("tour", include_str!("../examples/tour.zeno")),
             ("blink", include_str!("../examples/blink.zeno")),
+            ("packet", include_str!("../examples/packet.zeno")),
         ] {
             if let Err(errors) = lex(source) {
                 panic!("examples/{name}.zeno: {errors:?}");

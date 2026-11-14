@@ -164,7 +164,7 @@ impl Machine for Vm {
                 buffer.push_str(text);
                 buffer.push('\n');
             }
-            None => println!("{text}"),
+            None => print_line(text),
         }
     }
 

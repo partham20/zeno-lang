@@ -1,0 +1,105 @@
+# packet.zeno: sized whole numbers and bit operators.
+#
+# A sensor sends each reading as six bytes:
+#
+#     byte 0      0xA5, which marks the start of a frame
+#     byte 1      flags in the top four bits, the sensor's number in the low four
+#     byte 2, 3   the reading, high byte first
+#     byte 4      how many readings have been sent, starting again after 255
+#     byte 5      the sum of bytes 0 to 4, cut down to a byte
+#
+# This program packs readings into frames and unpacks them again.
+#
+# Run it with:  zeno run examples/packet.zeno
+
+const START: u8 = 0xA5
+const ALARM: u8 = 0b1000
+const BATTERY_LOW: u8 = 0b0100
+
+# As plain ints these four fields would take thirty-two bytes of an
+# object. With sizes they take six.
+class Reading {
+    sensor: u8
+    flags: u8
+    value: u16
+    count: u8
+}
+
+function checksum(bytes: list[u8]) -> u8 {
+    # Sums are done on ints, so `total` cannot overflow at 255.
+    var total = 0
+    for byte in bytes {
+        total += byte
+    }
+    # Only the low eight bits are sent. `wrap` says so out loud.
+    return u8.wrap(total)
+}
+
+function encode(reading: Reading) -> list[u8] {
+    # Each `u8( )` checks that what it is given fits. Flags above 15
+    # would not: shifted up by four they need more than a byte.
+    let frame: list[u8] = [
+        START,
+        u8(reading.flags << 4 | reading.sensor),
+        u8(reading.value >> 8),
+        u8(reading.value & 0xFF),
+        reading.count
+    ]
+    frame.append(checksum(frame))
+    return frame
+}
+
+function decode(frame: list[u8]) -> Reading raises ValueError {
+    if len(frame) != 6 or frame[0] != START {
+        raise ValueError("this is not a frame")
+    }
+    let body = [frame[i] for i in range(5)]
+    if checksum(body) != frame[5] {
+        raise ValueError(f"the checksum should be {checksum(body):02x}, but the frame says {frame[5]:02x}")
+    }
+    return Reading(
+        sensor=u8(frame[1] & 0x0F),
+        flags=u8(frame[1] >> 4),
+        value=u16(frame[2] << 8 | frame[3]),
+        count=frame[4]
+    )
+}
+
+function hex(bytes: list[u8]) -> str {
+    var text = ""
+    for byte in bytes {
+        text += f"{byte:02x} "
+    }
+    return text.strip()
+}
+
+# The counter starts near the top to show it going round.
+var count: u8 = 254
+for value in [215, 1023, 64000] {
+    var flags: u8 = 0
+    if value > 1000 {
+        flags = ALARM
+    }
+    if value > 60000 {
+        # `|` gives an int, like every operator. It is a u8 again once checked.
+        flags = u8(ALARM | BATTERY_LOW)
+    }
+    let reading = Reading(sensor=3, flags=flags, value=u16(value), count=count)
+    let frame = encode(reading)
+    let back = decode(frame)
+    print(hex(frame), " ", back, back == reading)
+    if back.flags & ALARM != 0 {
+        print("  alarm on sensor", back.sensor)
+    }
+    # 254, 255, 0: the same way the counter in the sensor goes round.
+    count = u8.wrap(count + 1)
+}
+
+# One byte changed on the way, and the checksum no longer agrees.
+let damaged = encode(Reading(sensor=1, flags=0, value=500, count=0))
+damaged[3] = 0xFF
+try {
+    print(decode(damaged))
+} except ValueError as e {
+    print(e.message)
+}

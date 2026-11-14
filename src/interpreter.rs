@@ -205,7 +205,7 @@ impl Machine for Interpreter {
                 buffer.push_str(text);
                 buffer.push('\n');
             }
-            None => println!("{text}"),
+            None => print_line(text),
         }
     }
 
@@ -1198,6 +1198,34 @@ mod tests {
         assert_eq!(error("print(3 << 62)"), "uncaught OverflowError: the result is too big for an int");
         assert_eq!(error("let n = 64\nprint(1 << n)"), "uncaught ValueError: cannot shift by 64. An int has 64 bits, so a shift is 0 to 63");
         assert_eq!(error("let n = -1\nprint(1 >> n)"), "uncaught ValueError: cannot shift by -1. An int has 64 bits, so a shift is 0 to 63");
+    }
+
+    // ----- Sized whole numbers -----
+
+    #[test]
+    fn sized_ints() {
+        // A sized number is an ordinary int that is known to be small:
+        // arithmetic on two of them is never cut down to their size.
+        assert_eq!(output("let a: u8 = 200\nlet b: u8 = 100\nprint(a + b, a * b, b - a, ~a, a << 8)"), "300 20000 -100 -201 51200\n");
+        assert_eq!(output("print(u8(255), i8(-128), u16(65535), i16(-32768), u32(4294967295), i32(-2147483648))"), "255 -128 65535 -32768 4294967295 -2147483648\n");
+        assert_eq!(output("print(u8.wrap(300), u8.wrap(-1), i8.wrap(200), i16.wrap(0xFFFF), u32.wrap(-1), i32.wrap(0x80000000))"), "44 255 -56 -1 4294967295 -2147483648\n");
+        assert_eq!(output("var count: u8 = 254\nfor i in range(3) {\n    count = u8.wrap(count + 1)\n    print(count)\n}"), "255\n0\n1\n");
+        assert_eq!(output("class Reg {\n    value: u8\n}\nlet r = Reg(value=1)\nr.value = u8(r.value | 0x80)\nprint(r, r.value >> 7)"), "Reg(value=129) 1\n");
+        assert_eq!(output("let bytes: list[u8] = [1, 2, 255]\nbytes.append(7)\nprint(bytes, sum(bytes), bytes[2] << 8 | bytes[3])"), "[1, 2, 255, 7] 265 65287\n");
+        // `u8` is a value like any built-in, and `wrap` belongs to it.
+        assert_eq!(output("let make = u8\nlet cut = u8.wrap\nprint(make(7), cut(263))"), "7 7\n");
+    }
+
+    #[test]
+    fn a_sized_int_must_fit() {
+        assert_eq!(error("let n = 300\nprint(u8(n))"), "uncaught OverflowError: 300 does not fit in a u8 (0 to 255)");
+        assert_eq!(error("let n = -1\nprint(u16(n))"), "uncaught OverflowError: -1 does not fit in a u16 (0 to 65535)");
+        assert_eq!(error("let n = 128\nprint(i8(n))"), "uncaught OverflowError: 128 does not fit in an i8 (-128 to 127)");
+        assert_eq!(
+            output("let a: u8 = 200\ntry { print(u8(a + a)) } except OverflowError as e { print(e.message) }"),
+            "400 does not fit in a u8 (0 to 255)\n"
+        );
+        assert_eq!(error("let x = \"7\"\nlet f = u8\nprint(f(x))"), "`u8` needs a whole number, but this is a str");
     }
 
     // ----- The board and the clock -----

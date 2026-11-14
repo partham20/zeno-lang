@@ -39,6 +39,7 @@ use std::sync::Arc;
 use crate::ast::*;
 use crate::checker::{FunctionKind, Kind, Types};
 use crate::error::Error;
+use crate::ints::{self, Width};
 use crate::token::Span;
 use crate::units;
 
@@ -427,6 +428,11 @@ fn leaves(statement: Option<&Stmt>) -> bool {
 /// its methods.
 struct ClassEntry {
     fields: Vec<(String, Kind, Option<Expr>)>,
+    /// The fields that are sized whole numbers, such as `level: u8`. The
+    /// struct stores each in that many bits. Everywhere else it is an
+    /// `int64_t` like any int, so it is made small on the way in and
+    /// wide again on the way out.
+    sized: HashMap<String, Width>,
     methods: HashMap<String, FunctionEntry>,
     /// The fields that own what they hold: an object of an `owned class`
     /// frees those along with itself.
@@ -1049,6 +1055,8 @@ impl Emitter<'_> {
             return Err(cannot(format!("the class `{}`", decl.name), span));
         };
         let (kinds, owned): (Vec<Kind>, Vec<bool>) = kinds.into_iter().map(disown).unzip();
+        let widths = self.types.widths(decl).cloned().unwrap_or_default();
+        let mut sized = HashMap::new();
         let name = &decl.name;
         let c_name = self.c_name(name);
 
@@ -1061,9 +1069,20 @@ impl Emitter<'_> {
         for (index, (field, kind)) in decl.fields.iter().zip(&kinds).enumerate() {
             let field_type = c_type(kind, span)?;
             let field_name = format!("z_{}", field.name);
-            body += &format!("    {field_type}{field_name};\n");
             params.push(format!("{field_type}{field_name}"));
-            fill += &format!("    self->{field_name} = {field_name};\n");
+            match widths.get(index).copied().flatten() {
+                // `level: u8` is one byte of the struct. The number was
+                // checked when it became a u8, so the cast loses nothing.
+                Some(width) => {
+                    body += &format!("    {} {field_name};\n", width.c_type());
+                    fill += &format!("    self->{field_name} = ({}){field_name};\n", width.c_type());
+                    sized.insert(field.name.clone(), width);
+                }
+                None => {
+                    body += &format!("    {field_type}{field_name};\n");
+                    fill += &format!("    self->{field_name} = {field_name};\n");
+                }
+            }
             let label = if index == 0 { format!("{name}({}=", field.name) } else { format!(", {}=", field.name) };
             shown.push(c_string(&label));
             shown.push(self.repr(&Val::plain(format!("self->{field_name}"), kind.clone()), span)?);
@@ -1115,7 +1134,7 @@ impl Emitter<'_> {
             .zip(kinds)
             .map(|(field, kind)| (field.name.clone(), kind, field.default.clone()))
             .collect();
-        self.classes.insert(name.clone(), ClassEntry { fields, methods, owned_fields, owned: decl.owned });
+        self.classes.insert(name.clone(), ClassEntry { fields, sized, methods, owned_fields, owned: decl.owned });
         Ok(())
     }
 
@@ -1996,6 +2015,8 @@ impl Emitter<'_> {
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
             ("Pin", []) => Kind::Pin,
+            // `u8` and the rest: an int that is known to be small.
+            (name, []) if ints::width(name).is_some() => Kind::Int,
             _ => return None,
         })
     }
@@ -2062,7 +2083,16 @@ impl Emitter<'_> {
                     val = self.temp(val, span)?;
                     self.line(free_code(&kind, &format!("{}->z_{name}", object.code)));
                 }
-                self.line(format!("{}->z_{name} = {};", object.code, val.code));
+                let sized = match &object.kind {
+                    Kind::Class(class) => self.classes[class].sized.get(name).copied(),
+                    _ => None,
+                };
+                match sized {
+                    Some(width) => {
+                        self.line(format!("{}->z_{name} = ({}){};", object.code, width.c_type(), val.code))
+                    }
+                    None => self.line(format!("{}->z_{name} = {};", object.code, val.code)),
+                }
             }
             ExprKind::Index { object, index } if is_place(object) => {
                 let val = self.temp(val, span)?;
@@ -3226,6 +3256,15 @@ impl Emitter<'_> {
                         if owner == "time" || owner == "board" {
                             return self.device(owner, name, args, span);
                         }
+                        // `u8.wrap(n)`: the low bits of `n`, which cannot fail.
+                        if let (Some(width), "wrap", [arg]) = (self.sized_name(owner), name.as_str(), args) {
+                            let n = self.expr(&arg.value)?;
+                            if n.kind != Kind::Int || arg.name.is_some() {
+                                return Err(cannot(format!("`{owner}.wrap` called this way"), span));
+                            }
+                            let code = format!("zeno_wrap({}, {}, {})", n.code, width.bits, width.signed);
+                            return Ok(Val::from(code, Kind::Int, &[&n]));
+                        }
                         // `Shape.Circle(1.0)`
                         let case = self.enums.get(owner).and_then(|entry| entry.cases.iter().position(|(case, _)| case == name));
                         if let Some(index) = case {
@@ -3241,6 +3280,13 @@ impl Emitter<'_> {
                 self.call_value(function, args, span)
             }
         }
+    }
+
+    /// The size called `name`, if `name` is still the built-in one and not
+    /// something of the program's own.
+    fn sized_name(&self, name: &str) -> Option<Width> {
+        let taken = self.functions.contains_key(name) || self.classes.contains_key(name) || self.enums.contains_key(name);
+        ints::width(name).filter(|_| !taken)
     }
 
     /// A function of the `time` or the `board` module. Each is one call
@@ -3588,7 +3634,14 @@ impl Emitter<'_> {
             },
             Kind::Class(class) => match self.classes[class].fields.iter().find(|(field, _, _)| field == name) {
                 Some((_, kind, _)) => {
-                    let mut field = Val::from(format!("{}->z_{name}", val.code), kind.clone(), &[&val]);
+                    let code = match self.classes[class].sized.contains_key(name) {
+                        // A small field is an ordinary int again as soon
+                        // as it is read. Left as a `uint32_t`, C would do
+                        // the sums that follow without a sign.
+                        true => format!("((int64_t){}->z_{name})", val.code),
+                        false => format!("{}->z_{name}", val.code),
+                    };
+                    let mut field = Val::from(code, kind.clone(), &[&val]);
                     // A function that is called may change the field.
                     field.reads = true;
                     Ok(field.fixed())
@@ -3751,6 +3804,20 @@ impl Emitter<'_> {
                 val
             }
             "str" => Val::from(self.text(one()?, span)?, Kind::Str, &parts),
+            // `u8(n)`: `n` itself, once the runtime has seen that it fits.
+            // The size is handed over as the words for the message.
+            _ if ints::width(name).is_some() && matches!(one(), Ok(val) if val.kind == Kind::Int) => {
+                let width = ints::width(name).unwrap_or(ints::WIDTHS[0]);
+                let article = if width.signed { "an" } else { "a" };
+                let code = format!(
+                    "zeno_fit({}, INT64_C({}), INT64_C({}), \"{article} {name}\", {})",
+                    one()?.code,
+                    width.min(),
+                    width.max(),
+                    at(span)
+                );
+                Val::from(code, Kind::Int, &parts).failing()
+            }
             "len" => match one()? {
                 val if val.kind == Kind::Str => Val::from(format!("zeno_len({})", val.code), Kind::Int, &parts),
                 val if matches!(val.kind, Kind::List(_)) => {
@@ -5001,6 +5068,7 @@ print(word[5])
             ("memory", include_str!("../examples/memory.zeno")),
             ("buffer", include_str!("../examples/buffer.zeno")),
             ("signal", include_str!("../examples/signal.zeno")),
+            ("packet", include_str!("../examples/packet.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -6594,6 +6662,103 @@ try {
         same_as_interpreter("shift-minus", &format!("{shift}print(back(8, -1))\n"));
         same_as_interpreter("shift-big", &format!("{shift}print(shift(3, 61))\nprint(shift(3, 62))\n"));
         same_as_interpreter("shift-small", &format!("{shift}print(shift(-3, 61))\nprint(shift(-3, 62))\n"));
+    }
+
+    // ----- Sized whole numbers -----
+
+    const SIZED: &str = r#"class Packet {
+    kind: u8
+    length: u16
+    offset: i8 = -1
+    total: i32 = 0
+    big: u32 = 4294967295
+    name: str = "p"
+}
+function checksum(data: list[u8]) -> u8 {
+    var total = 0
+    for byte in data { total += byte }
+    return u8.wrap(total)
+}
+function double(n: int) -> int { return n * 2 }
+function small(n: int) -> i8 { return i8(n) }
+function level(by: u8 = 7) -> u8 { return by }
+let a: u8 = 200
+let b: u8 = 100
+print(a + b, a - b, b - a, a * b, a // b, a % b, -a, ~a, a << 8, a >> 3, a & b, a | b, a ^ b, a ** 2)
+print(a == 200, a != b, a < b, a >= b, a == b + 100, a in [100, 200], f"{a} {a:x} {a:08b}", str(a), abs(small(-5)), min(a, b), max(a, 1000), float(a), int(a))
+print(u8.wrap(a + b), i8.wrap(a), i16.wrap(0xFFFF), u16.wrap(-1), u32.wrap(-1), i32.wrap(0x80000000), u8.wrap(256))
+print(u8(255), u16(65535), u32(4294967295), i8(-128), i16(-32768), i32(-2147483648), small(127), level(), level(9), level(by=b))
+print(double(a), double(small(-3)))
+let bytes: list[u8] = [1, 2, 0xFF]
+bytes.append(7)
+bytes.append(a)
+bytes[0] = 16
+print(bytes, sum(bytes), max(bytes), min(bytes), len(bytes), checksum(bytes), bytes[1] << 4 | bytes[0], a in bytes, 3 in bytes)
+let doubled = [double(n) for n in bytes]
+let wide: list[int] = [int(n) for n in bytes]
+print(doubled, wide, wide == doubled)
+var maybe: u8 or none = none
+print(maybe)
+maybe = 5
+if maybe is not none { print(maybe + 1) }
+let p = Packet(kind=3, length=1024)
+let q = Packet(255, 65535, -128, -2147483648, 0)
+print(p, q, p == q, p == Packet(3, 1024), q.big, ~q.big, -p.big, p.big < -1, q.offset < q.length, p.offset + p.big)
+p.kind = u8(p.kind + 250)
+p.length = u16.wrap(-2)
+p.offset = 127
+p.total = i32(p.offset * -1000)
+q.big = u32.wrap(-1)
+print(p, q, p.kind + q.kind, p.length >> 8)
+var count: u8 = 254
+for i in range(3) {
+    count = u8.wrap(count + 1)
+    print(count)
+}
+match a {
+    case 200 { print("two hundred") }
+    case _ { print("other") }
+}
+"#;
+
+    #[test]
+    fn sized_ints_match() {
+        same_as_interpreter("sized", SIZED);
+        same_as_interpreter("packet", include_str!("../examples/packet.zeno"));
+    }
+
+    #[test]
+    fn a_number_too_big_for_its_size_is_an_error() {
+        let small = "function small(n: int) -> i8 { return i8(n) }\nfunction byte(n: int) -> u8 { return u8(n) }\n";
+        same_as_interpreter("sized-fits", &format!("{small}print(small(-128), small(127), byte(0), byte(255))\nprint(byte(256))\n"));
+        same_as_interpreter("sized-below", &format!("{small}print(small(-129))\n"));
+        same_as_interpreter("sized-minus", &format!("{small}print(byte(-1))\n"));
+        same_as_interpreter(
+            "sized-caught",
+            &format!("{small}try {{ print(byte(300)) }} except OverflowError as e {{ print(e.kind, e.message) }}\nprint(small(5))\n"),
+        );
+        same_as_interpreter("sized-field", "class Reg {\n    value: u8\n}\nlet r = Reg(value=200)\nr.value = u8(r.value + 100)\n");
+    }
+
+    #[test]
+    fn a_sized_field_is_small_in_the_struct() {
+        let source = "class Packet {\n    kind: u8\n    length: u16\n    offset: i8\n    total: i32\n    big: u32\n    plain: int\n}\n\
+                      let p = Packet(3, 1024, -1, 0, 0, 0)\np.kind = 9\nprint(p.kind + p.offset)\n";
+        let c = compile(source).unwrap();
+        assert!(
+            c.contains(
+                "struct z_Packet {\n    uint8_t z_kind;\n    uint16_t z_length;\n    int8_t z_offset;\n    \
+                 int32_t z_total;\n    uint32_t z_big;\n    int64_t z_plain;\n};"
+            ),
+            "{c}"
+        );
+        // Small going in, an ordinary int coming out.
+        assert!(c.contains("    self->z_kind = (uint8_t)z_kind;\n"), "{c}");
+        assert!(c.contains("    z_p->z_kind = (uint8_t)9;\n"), "{c}");
+        assert!(c.contains("zeno_add(((int64_t)z_p->z_kind), ((int64_t)z_p->z_offset), 11, 7)"), "{c}");
+        // A sized number outside an object is an int64_t like any other.
+        let c = compile("function next(n: u8) -> u8 { return u8.wrap(n + 1) }\nlet a: u8 = next(255)\n").unwrap();
+        assert!(c.contains("static int64_t z_next(int64_t z_n) {\n    return zeno_wrap(zeno_add(z_n, 1, 1, 45), 8, false);\n}"), "{c}");
     }
 
     // ----- The board and the clock -----

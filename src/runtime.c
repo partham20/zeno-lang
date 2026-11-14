@@ -890,6 +890,28 @@ static int64_t zeno_shr(int64_t a, int64_t n, int line, int col) {
     return a < 0 ? ~(~a >> n) : a >> n;
 }
 
+/* `u8(n)`: `n` itself if the size can hold it. `size` is the size in
+ * words, "a u8", for the message. A sized whole number is an ordinary
+ * int64_t that has been through here, or through zeno_wrap. */
+static int64_t zeno_fit(int64_t n, int64_t min, int64_t max, const char *size, int line, int col) {
+    if (n < min || n > max) {
+        zeno_fail("OverflowError",
+                  zeno_join(8, zeno_str_int(n), " does not fit in ", size, " (", zeno_str_int(min), " to ",
+                            zeno_str_int(max), ")"),
+                  line, col);
+    }
+    return n;
+}
+
+/* `u8.wrap(n)`: the low `bits` bits of `n`. In a signed size the top one
+ * of them counts as minus, so `i8.wrap(200)` is -56. Done on the unsigned
+ * number, where C says exactly what happens. */
+static int64_t zeno_wrap(int64_t n, int bits, bool is_signed) {
+    uint64_t low = (uint64_t)n & ((UINT64_C(1) << bits) - 1);
+    if (is_signed && (low >> (bits - 1)) != 0) return (int64_t)low - (INT64_C(1) << bits);
+    return (int64_t)low;
+}
+
 static double zeno_sqrt(double x, int line, int col) {
     if (x < 0.0) {
         zeno_fail("ValueError", zeno_join(2, "cannot take the square root of ", zeno_str_float(x)), line, col);
