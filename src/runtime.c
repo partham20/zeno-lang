@@ -365,4 +365,139 @@ static int64_t zeno_int(double x, int line, int col) {
     return zeno_whole(x);
 }
 
+/* A str the way it is shown inside a list or an object: in quotes. */
+static const char *zeno_repr_str(const char *text) {
+    size_t length = 2;
+    for (const char *p = text; *p != '\0'; p++) {
+        length += (*p == '"' || *p == '\\' || *p == '\n' || *p == '\t' || *p == '\r') ? 2 : 1;
+    }
+    char *out = zeno_alloc(length + 1);
+    char *o = out;
+    *o++ = '"';
+    for (const char *p = text; *p != '\0'; p++) {
+        switch (*p) {
+        case '"': *o++ = '\\'; *o++ = '"'; break;
+        case '\\': *o++ = '\\'; *o++ = '\\'; break;
+        case '\n': *o++ = '\\'; *o++ = 'n'; break;
+        case '\t': *o++ = '\\'; *o++ = 't'; break;
+        case '\r': *o++ = '\\'; *o++ = 'r'; break;
+        default: *o++ = *p;
+        }
+    }
+    *o++ = '"';
+    *o = '\0';
+    return out;
+}
+
+/* -------------------------------------------------------------------- Lists
+ *
+ * One list type serves every kind of item. Each item sits in a slot big
+ * enough for any Zeno value: a number, a bool, or a pointer to a str, an
+ * object, an enum value or another list. The compiler knows what kind of
+ * item each list holds, and reads the matching member of the slot.
+ *
+ * As with strings, the memory is taken and not given back yet.
+ */
+
+typedef union {
+    int64_t i;
+    double f;
+    bool b;
+    const char *s;
+    void *p;
+} zeno_slot;
+
+typedef struct {
+    int64_t len;
+    int64_t room; /* how many items fit before `items` must grow */
+    zeno_slot *items;
+} zeno_list;
+
+static zeno_list *zeno_list_new(int64_t room) {
+    zeno_list *list = (zeno_list *)zeno_alloc(sizeof(zeno_list));
+    list->len = 0;
+    list->room = room;
+    list->items = room > 0 ? (zeno_slot *)zeno_alloc((size_t)room * sizeof(zeno_slot)) : NULL;
+    return list;
+}
+
+static void zeno_list_append(zeno_list *list, zeno_slot item) {
+    if (list->len == list->room) {
+        /* Full: move to a place twice the size. */
+        int64_t room = list->room == 0 ? 4 : list->room * 2;
+        zeno_slot *items = (zeno_slot *)zeno_alloc((size_t)room * sizeof(zeno_slot));
+        if (list->len > 0) memcpy(items, list->items, (size_t)list->len * sizeof(zeno_slot));
+        list->items = items;
+        list->room = room;
+    }
+    list->items[list->len++] = item;
+}
+
+/* `[a, b, c]`: a list holding `count` items. */
+static zeno_list *zeno_list_of(int count, ...) {
+    zeno_list *list = zeno_list_new(count);
+    va_list items;
+    va_start(items, count);
+    for (int i = 0; i < count; i++) zeno_list_append(list, va_arg(items, zeno_slot));
+    va_end(items);
+    return list;
+}
+
+static zeno_list *zeno_list_copy(zeno_list *list) {
+    zeno_list *copy = zeno_list_new(list->len);
+    if (list->len > 0) memcpy(copy->items, list->items, (size_t)list->len * sizeof(zeno_slot));
+    copy->len = list->len;
+    return copy;
+}
+
+static zeno_list *zeno_list_concat(zeno_list *a, zeno_list *b) {
+    zeno_list *joined = zeno_list_new(a->len + b->len);
+    for (int64_t i = 0; i < a->len; i++) zeno_list_append(joined, a->items[i]);
+    for (int64_t i = 0; i < b->len; i++) zeno_list_append(joined, b->items[i]);
+    return joined;
+}
+
+/* Every use of `list[i]` goes through here, so a position that is not in
+ * the list is an IndexError and never a read of someone else's memory. */
+static zeno_slot *zeno_list_at(zeno_list *list, int64_t i, int line, int col) {
+    if (i < 0 || i >= list->len) {
+        zeno_fail("IndexError",
+                  zeno_join(4, "index ", zeno_str_int(i), " is out of range for a list of length ",
+                            zeno_str_int(list->len)),
+                  line, col);
+    }
+    return &list->items[i];
+}
+
+static zeno_slot zeno_list_pop(zeno_list *list, int line, int col) {
+    if (list->len == 0) zeno_fail("IndexError", "cannot pop from an empty list", line, col);
+    return list->items[--list->len];
+}
+
+/* The three below need to know how to show or compare one item, which
+ * depends on its kind. The compiler passes a small function that does. */
+
+static const char *zeno_list_str(zeno_list *list, const char *(*show)(zeno_slot)) {
+    const char *text = "[";
+    for (int64_t i = 0; i < list->len; i++) {
+        text = zeno_join(3, text, i > 0 ? ", " : "", show(list->items[i]));
+    }
+    return zeno_join(2, text, "]");
+}
+
+static bool zeno_list_eq(zeno_list *a, zeno_list *b, bool (*same)(zeno_slot, zeno_slot)) {
+    if (a->len != b->len) return false;
+    for (int64_t i = 0; i < a->len; i++) {
+        if (!same(a->items[i], b->items[i])) return false;
+    }
+    return true;
+}
+
+static bool zeno_list_contains(zeno_list *list, zeno_slot item, bool (*same)(zeno_slot, zeno_slot)) {
+    for (int64_t i = 0; i < list->len; i++) {
+        if (same(list->items[i], item)) return true;
+    }
+    return false;
+}
+
 /* ------------------------------------------------------------- The program */

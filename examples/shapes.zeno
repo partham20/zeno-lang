@@ -1,0 +1,44 @@
+# shapes.zeno: classes, enums, lists and match, in a program that
+# `zeno build` can compile.
+#
+#     zeno run examples/shapes.zeno      run it with the interpreter
+#     zeno build examples/shapes.zeno    compile it to shapes.c and ./shapes
+#
+# Open shapes.c afterwards: a class is a C struct, an enum is a struct with
+# a tag and a union, and `match` is an if / else if chain on the tag.
+
+import math
+
+class Point {
+    x: float
+    y: float
+
+    function distance_to(self, other: Point) -> float {
+        return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
+    }
+}
+
+enum Shape {
+    Circle(centre: Point, radius: float)
+    Rect(corner: Point, width: float, height: float)
+    Nothing
+}
+
+function area(shape) {
+    match shape {
+        case Circle(_, r) { return math.pi * r * r }
+        case Rect(_, w, h) { return w * h }
+        case Nothing { return 0.0 }
+    }
+}
+
+let origin = Point(0.0, 0.0)
+let shapes = [Circle(origin, 1.0), Rect(Point(1.0, 1.0), 2.0, 3.0), Nothing]
+
+var total = 0.0
+for shape in shapes {
+    print(f"{shape} has area {area(shape):.2f}")
+    total += area(shape)
+}
+print(f"total {total:.2f}, biggest first: {[area(s) for s in shapes if area(s) > 4.0]}")
+print(origin.distance_to(Point(3.0, 4.0)), shapes[2] == Nothing, len(shapes))
