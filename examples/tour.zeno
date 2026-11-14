@@ -108,3 +108,16 @@ while tries < 3 and ports[tries] != 8080 {
 
 let squares = [n * n for n in range(10) if n % 2 == 0]
 print(greet(name, excited=true), count, squares, origin.distance_to(here))
+
+
+# --- Functions are values, and units are types ---
+
+function twice(f: function(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+function describe(delay: ms) -> str {    # only a quantity in ms is accepted
+    return f"waiting {delay}"
+}
+
+print(twice(function(n) { return n * 3 }, 2), describe(500 ms))

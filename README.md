@@ -81,6 +81,7 @@ interpreter work. Compiling to C is not started.
 cargo run -- run examples/tour.zeno             # check a program, then run it
 cargo run -- check examples/tour.zeno           # only check it for mistakes
 cargo run -- check --strict examples/tour.zeno  # every type must be known, as firmware needs
+cargo run -- check --strict examples/styles.zeno  # passes with no types written: they are worked out
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test

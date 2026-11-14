@@ -96,18 +96,73 @@ step 3 is an error: everything must be known before the program runs. Strict
 mode will be the default when compiling for a microcontroller, and optional
 elsewhere.
 
-**What gets worked out, and what does not.** The checker infers the types of
-variables and the return types of functions. It does not infer the types of
-parameters or class fields: an unannotated parameter is dynamic. Working a
-parameter's type out from how the function is called would mean a mistake at
-one call site changes the meaning of the function for everyone else, and the
-error would appear far from its cause. *(Principle 1.)* A signature is a
-promise; it should be read, not guessed. So strict mode asks for types on
-parameters and fields, and nowhere else.
+**What gets worked out.** Everything that can be: variables, return types
+(of recursive functions too), and also the parameters and class fields that
+have no type written. A parameter is worked out from the calls: if every call
+to `add(a, b)` passes two ints, `a` and `b` are ints, and the body is checked
+with that knowledge. A field is worked out from every value stored in it.
 
-**Where this stands today.** All three steps and strict mode are in the type
-checker. Strict mode is chosen with a flag for now; choosing it per file or
-per project is still to be designed. *(Provisional.)*
+```
+function add(a, b) { return a + b }
+let total: str = add(1, 2)        # error: `total` should be str, but this is int
+```
+
+**Why.** The first version of the checker left untyped parameters dynamic.
+That made strict mode demand a type on every parameter, so the "same program,
+typed or untyped" promise held for scripts and broke for firmware. Working
+them out keeps the promise: `examples/styles.zeno`, written with no types at
+all, now passes strict mode and can be compiled without a heap.
+
+**The rules, and the reason for each.**
+- *Only what is certain is used.* If two calls disagree (`id(1)` and
+  `id("s")`), the parameter stays dynamic; the checker never picks a winner.
+  An int and `none` do combine, to `int or none`, because that is one real type.
+- *A written type always wins.* It is a promise to the reader; the calls are
+  checked against it and never change it.
+- *A function that goes where its type is not tracked* (stored in a `list[any]`,
+  passed to an untyped parameter that is itself dynamic) may be called from
+  there with anything, so its parameters are not worked out from the calls
+  that happen to be visible.
+- *A function that is never called* has nothing to go on, and stays dynamic.
+
+**The cost, stated plainly.** There are two.
+1. When a parameter's type was worked out, a wrong call is reported *inside
+   the function*, where the value is misused, not at the call. `f(1)` with
+   `function f(a) { return a.upper() }` says "int has no field or method
+   `upper`" at `a.upper()`. Writing the type moves the error to the call,
+   which is where a library author wants it. This is the reason annotations
+   are still worth writing on anything other people call.
+2. Adding a call can change what a parameter is worked out to be: a second
+   call with a different type turns it dynamic again, which strict mode then
+   reports at the function. The message says the type could not be worked
+   out from how it is used.
+
+**Alternatives rejected.** *Leave parameters dynamic* (the first version):
+simple, but strict mode then forces annotations everywhere. *Make an untyped
+function generic*, checked afresh for each call as C++ templates are: more
+precise (`id(1)` and `id("s")` would both be known), but one function then
+becomes many in the compiled program, which costs flash on a microcontroller
+without the programmer having asked for it. That belongs to a later, explicit
+generics feature. *(Provisional: generics are not designed yet.)*
+
+**How it is done.** The checker makes several passes over the program. Each
+pass notes what arrives at every untyped parameter and field, and the next
+pass starts from those answers. It stops when a pass learns nothing new. If
+that does not happen within eight passes, everything worked out is thrown
+away and treated as dynamic: unknown is always safe, a wrong guess is not.
+
+**Strict mode is chosen by the file or by the command.** A file whose first
+line is the word `strict` is checked in strict mode, however it is run.
+`--strict` on the command line does the same from outside.
+
+**Why a line in the file.** Whether a file may hold dynamic values is a fact
+about that file: firmware must not, a script may. A flag lives in a build
+script, where it can be forgotten; a first line travels with the code and is
+seen by every reader. It is a bare word, with no `#` or `@`, because it is
+part of the language and not a comment or a decoration. *(Principle 3.)* It
+must be the first line so that nothing above it is checked under different
+rules. There is no way to switch strict mode *off* from inside a file that is
+run with `--strict`: the stricter of the two always wins.
 
 ---
 
@@ -195,6 +250,23 @@ can usually be inferred, the optional part should be the trailing part. The
 
 **Optional.** A type can always be left out; see 0.2.
 
+### 1.11a The type of a function is written `function(int) -> int`
+
+```
+function twice(f: function(int) -> int, x: int) -> int { return f(f(x)) }
+```
+
+**Why.** It is the heading of a function with the names and body taken out,
+so there is nothing new to learn: the same keyword, the same `( )`, the same
+`->`. *(Principle 2.)* Leaving `->` off means the function returns nothing.
+A function fits the type if it can be called with those arguments and what it
+returns fits; an untyped anonymous function passed there has its parameters
+worked out from the type.
+
+**Alternative rejected.** `(int) -> int`, as in TypeScript and Swift: shorter,
+but it gives `( )` a second meaning in types and reads as punctuation where
+Zeno prefers a word. *(Principle 3.)*
+
 ### 1.12 `true`, `false`, `none` in lower case
 
 **Why.** They are keywords like any other, and every other keyword is lower
@@ -228,8 +300,22 @@ passed where microseconds were expected, or volts added to millivolts. If
 the unit is part of the value, that is an error instead of a wrong reading.
 *(Principle 1.)* `sleep(500 ms)` also documents itself. *(Principle 2.)*
 
-**Provisional.** Today a quantity only knows its unit's name. Conversions
-(`1 s == 1000 ms`) and derived units (`V * A = W`) belong to the type checker.
+**A unit is also a type.** `function wait(d: ms)` takes a quantity in
+milliseconds; passing `3 s` or a bare `3` is an error before the program
+runs. The unit's own name is the type, so there is no second vocabulary such
+as `Duration` to learn.
+
+**Units come from a fixed list** (`s ms us ns min h`, `Hz kHz MHz`, `V mV uV
+kV`, `A mA uA`, `ohm kohm Mohm`, `W mW kW`, `J Wh kWh`, `degC K`, `m mm cm
+km`, `g mg kg`, `deg rad`, `rpm`). Anything else, such as `5 sec`, is an
+error. **Why.** If any word after a number were a unit, a typing mistake
+would silently create a new one, which is the very bug units are there to
+prevent. *(Principle 1.)*
+
+**Provisional.** A quantity knows its unit but not its dimension yet, so
+`1 s` and `1000 ms` are different types and there is no conversion between
+them, and no derived units (`V * A = W`). User-defined units are not
+designed either.
 
 ### 1.16 Comparisons chain: `0 <= i < len`
 

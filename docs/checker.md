@@ -44,14 +44,15 @@ of three places:
 1. **The type was written down.** `let x: int = ...` is checked against it.
 2. **The type was left out but can be worked out.** `let n = 3` is an `int`.
    `[n * 2 for n in range(3)]` is a `list[int]`. No annotation needed.
-3. **The type cannot be known until the program runs.** A parameter with no
-   annotation could be anything. Its type is `Dynamic`.
+3. **The type cannot be known until the program runs.** A parameter that is
+   called with an int in one place and a str in another could be either. Its
+   type is `Dynamic`.
 
 `Dynamic` fits everywhere and everything fits it, so untyped code passes
 through without complaint. The function `fits(from, to)` is the centre of the
 checker: it decides whether a value of one type may go where another is wanted.
 
-**Strict mode** (`--strict`) turns case 3 into an error. That is the mode for
+**Strict mode** (`--strict`, or `strict` as the first line of the file) turns case 3 into an error. That is the mode for
 firmware, where a value of unknown type would need extra memory at run time.
 
 ## Working out a return type
@@ -68,7 +69,64 @@ without a `return`, `none` is added. The types are combined with `join`:
 This is done the first time the function's signature is needed (`signature`),
 which may be at a call that comes before the function in the file. A function
 that is mid-check when it is called is being called recursively; that call
-sees only what the signature declares.
+sees what the signature declares, or, if no return type is written, what the
+previous pass worked out (see the next section).
+
+## Working out parameters and fields
+
+```
+function add(a, b) { return a + b }
+print(add(1, 2))
+```
+
+Nothing says what `a` and `b` are, but the only call passes ints. The checker
+uses that. Every untyped parameter and field is a *slot* with an identity (a
+`SlotId`: where its function or class is declared, plus its name). Whenever a
+value arrives at a slot (an argument at a call, a default value, a value
+stored in a field, a function passed where a function type is wanted),
+`sees` records its type against the slot.
+
+One answer leads to another: if `a(x)` passes `x` on to `b`, then `b`'s
+parameter is known only once `a`'s is. So `check` runs the whole checker
+several times:
+
+1. In the first pass every slot is *unsettled*. Its type is `Invalid`, the
+   quiet type, so nothing built on it complains and nothing built on it
+   counts as evidence.
+2. At the end of the pass, each slot has seen either one consistent type
+   (`known`), types that disagree or cannot be pinned down (`open`, which
+   means dynamic for good), or nothing.
+3. The next pass starts with those answers. This repeats until a pass changes
+   nothing, at most `MAX_ROUNDS` times.
+4. A final pass, with everything settled, is the only one whose errors are
+   reported.
+
+Types are carried between passes as a `Key`, a plain description such as
+"list of int" or "the class declared at line 4", because each pass builds its
+own `ClassInfo` objects and one pass's cannot be used in the next.
+
+A function value can leave the checker's sight: stored in a `list[any]`, or
+passed to something dynamic. From there it may be called with anything, so
+`escapes` marks its slots open. `arrives` is where this is noticed: it is
+called whenever a value has been accepted somewhere, and looks inside lists
+and `or none` for functions.
+
+The return type of a recursive function uses the same machinery, as a slot
+named `->`. In the first pass the recursive call's type is unsettled and is
+left out of the `join`, so `fact` is an `int` from `return 1`; the second
+pass confirms it.
+
+## Function types and units
+
+`function(int) -> int` resolves to `Ty::Callable`. A real function is still a
+`Ty::Function` that points at its declaration; when one arrives where a
+`Callable` is wanted, `expect_function` compares them: the number of
+parameters, each parameter, and what is returned.
+
+A unit name used as a type, such as `d: ms`, resolves to the same
+`Ty::Quantity` that the literal `500 ms` has. The list of units lives in
+`src/units.rs`, shared with the interpreter, and a unit that is not on it is
+an error.
 
 ## Knowing that something is not none
 
@@ -135,14 +193,11 @@ built on it stays quiet.
 
 ## What it does not do yet
 
-- **Infer parameter types.** A parameter with no annotation is `Dynamic`. The
-  checker does not look at how a function is called to guess. So in strict
-  mode, parameters and class fields must be annotated.
-- **Function types.** There is no way to write "a function from int to
-  int" as an annotation, so a parameter that receives a function cannot be
-  typed yet, which strict mode needs.
-- **Units.** `500 ms + 3 V` is caught, but there is no way to annotate a
-  parameter as a duration, and no conversion between `s` and `ms`.
+- **Generic functions.** `function id(x) { return x }` called with an int
+  and with a str leaves `x` dynamic; the checker does not make a separate
+  copy of the function for each kind of call.
+- **Unit conversion.** `ms` and `s` are different types with nothing between
+  them, and `V * A` is not `W`. A quantity knows its unit, not its dimension.
 - **Fields of an enum value.** `shape.radius` is `Dynamic`, because which
   case the value is, is not known. Use `match`.
 - **Exact positions inside signatures.** A bad parameter or field type is
@@ -155,6 +210,6 @@ built on it stays quiet.
 1. Make `"abc" * 3` type check (and add it to the interpreter).
 2. Give parameters and fields their own spans in the tree, so that errors
    point at the exact parameter.
-3. Add a type annotation for functions, such as `function(int) -> int`.
+3. Give units a dimension, so that `1 s + 500 ms` works and `1 s + 1 V` does not.
 4. Warn about code that can never run: statements after a `return`.
 5. Narrow on `==`: after `if x == none`. Why is `is none` the form Zeno prefers?
