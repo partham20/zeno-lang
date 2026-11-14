@@ -60,7 +60,7 @@ it next, and each has an answer to "who frees it?":
 | an owner | `let parts: owned list[str] = line.split()` | the owner, when its block ends |
 | nobody | `print(count(line.split()))` | the statement, when it is over |
 | a `for` loop | `for word in line.split() { ... }` | the loop, after its last trip |
-| a place that is not an owner | `let parts = line.split()` | nobody could, so it is refused |
+| a place that is not an owner | `let parts = line.split()` | nobody could, so it was refused. Since [`one-owner.md`](one-owner.md) every such place is an owner |
 
 The second row is the new one:
 
@@ -242,10 +242,11 @@ enforces: the function cannot keep, return or give away what it was
 lent ([`ownership.md`](ownership.md)). So `count(line.split())` is safe
 by a rule that was there before this stage.
 
-A parameter that is a plain `list[str]` makes no such promise, so
-`total(line.split())` is still refused where `total` takes a
-`list[str]`. Write `borrow list[str]`, or wait for the next step, which
-makes a plain list in this build an owned one.
+A parameter that is a plain `list[str]` makes no such promise. When
+this page was written `total(line.split())` was refused where `total`
+takes a `list[str]`. The next step ([`one-owner.md`](one-owner.md))
+made a plain list in this build an owned one, so `total` now takes the
+list and frees it.
 
 A field of an object the statement owns is marked the same way:
 `make().data` may be walked and counted and not kept.
@@ -341,8 +342,9 @@ z_history = t16;
 zeno_list_drop_text(t14);          // the statement's
 ```
 
-Where the variable or field on the left is not an owner, a build with
-no collector refuses the line: the list that `+` makes would have none.
+Where the variable or field on the left was not an owner, a build with
+no collector refused the line. Every variable and field that holds a
+list is an owner there now ([`one-owner.md`](one-owner.md)).
 
 ## The same rule, in every build
 
@@ -434,11 +436,10 @@ Three costs that are worth knowing:
 
 ## What this does not claim
 
-- **A plain `list[T]` parameter cannot be given a made list** in a build
-  with no collector, and a plain variable or field cannot keep one. That
-  is the next step.
-- **Nested lists** (`[[1, 2], [3]]`) are still refused in that build:
-  the inner lists would be kept by a list, which frees only itself.
+- When this page was written, a plain `list[T]` parameter, variable or
+  field could not keep a made list in a build with no collector, and
+  nested lists (`[[1, 2], [3]]`) were refused. Both work since the next
+  step: [`one-owner.md`](one-owner.md).
 - **The statement's end is not the last use.** `print(len(a.split()),
   slow())` holds the list while `slow()` runs. Rust makes the same
   choice. A name and a block of your own (`let`) is how to say

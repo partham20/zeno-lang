@@ -54,9 +54,11 @@ values that are owned. This build is what you get when *every* value is.
   `#ifdef ZENO_NO_COLLECTOR` and `#endif`. As with `ZENO_FIRMWARE`, the
   compiler keeps one side when it pastes the runtime in (`runtime` in
   `emit_c.rs`).
-- [`src/checker.rs`](../src/checker.rs): three small sets, `fresh`, `made`
-  and `lent`. The checker tells the compiler which lists start life
-  owned, and which owned values are only looked at.
+- [`src/checker.rs`](../src/checker.rs): `Rules { one_owner }`, which
+  makes every list and object owned for this build
+  ([`one-owner.md`](one-owner.md)), and three small sets, `fresh`, `made`
+  and `lent`, which tell the compiler which lists start life owned and
+  which owned values are only looked at.
 
 ## Where memory comes from now
 
@@ -91,7 +93,12 @@ program runs. It refuses to build a program that could have one.
 
 ## Owned lists and objects
 
-Nothing new happens here, and that is the point. Stage 2 already wrote a
+In this build every list and every object is owned, by whoever received
+it. `let xs = [1, 2]` owns its list and `class Task` is an owned class,
+with no word to write. [`one-owner.md`](one-owner.md) is the walkthrough
+of that, and of lists that own their items.
+
+Nothing new happens when one is freed, and that is the point. Stage 2 already wrote a
 free at the end of every owner's block and on every early way out. What
 changes is what the free *is*. With a collector, `zeno_free` takes the
 block out of the collector's table and hands it to the C library's
@@ -182,9 +189,9 @@ if (zeno_is(zeno_caught_1, "Overload")) {
 }
 ```
 
-Inside the block the error can be read, printed and asked for its fields.
-It cannot be kept, handed to a function or raised again. Copy out what you
-need. The other half of the rule: an error can only be made by `raise`, as
+Inside the block the error can be read, printed, asked for its fields
+and lent to a `borrow` parameter. It cannot be kept, given away or
+raised again. Copy out what you need. The other half of the rule: an error can only be made by `raise`, as
 in `raise ValueError("too hot")`. `let e = ValueError("too hot")` is
 refused, because no `except` would ever free it.
 
@@ -239,15 +246,18 @@ line and says what to write instead where there is something.
 
 | Refused | Why |
 |---|---|
-| A list that is kept by something that is not an owner: `let xs = [1, 2]`, a plain `list[int]` parameter or field, a list inside a list | nobody frees it |
-| An object of a class that is not an `owned class` | nobody frees it |
-| An error that is kept, passed on, or raised again | its `except` frees it |
+| A list or object used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
+| A list or object inside an `or none` | taking it out would leave a hole |
+| An error that is kept, given away, or raised again | its `except` frees it |
 | An error made anywhere but in `raise` | no `except` would free it |
 | An enum case that carries values | it sits in a block of its own |
 | A function written where a value goes | so does it, with the variables it uses |
 | A list of `int or none` | each item sits in a block of its own |
 
-Four things you might expect on this list are not. A named function
+Six things you might expect on this list are not. A plain list or
+object is fine: whoever receives it owns it. A list of objects or of
+lists is fine: the list owns its items
+([`one-owner.md`](one-owner.md)). A named function
 used as a value (`items.reduce(add, 0)`) is fine: it takes no memory.
 Text that is kept is fine: the keeper has a copy
 ([`text.md`](text.md)). A list that is made and only looked at is fine,
@@ -257,8 +267,8 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 `for ch in text`): the loop frees it. Both are in
 [`temporaries.md`](temporaries.md).
 
-Most of these are provisional. A plain list or class could be owned by
-whoever receives it, and so could an enum value or a function value.
+Most of these are provisional. An enum value and a function value
+could be owned by whoever receives them, as lists and objects now are.
 Those are the next steps.
 
 ## What this does not claim
@@ -318,7 +328,7 @@ list, inside another `except`, half way through filling a list, and while
 owned values are on their way into a call; `return`, `break` and
 `continue` out of `except` blocks; and two thousand trips round a loop
 that builds text, which must leave the text room as it found it. A table
-of 20 small programs checks that each refusal says what it should, and
+of 14 small programs checks that each refusal says what it should, and
 that each of them still builds where there is a collector.
 
 They were also run by hand with gcc and clang at several optimisation
@@ -331,10 +341,11 @@ tests of the pool itself.
 1. Build `examples/buffer.zeno` with `--memory`, then with
    `--no-collector --memory`. The second makes fewer blocks. Which ones
    are gone? (Look at where the text went.)
-2. In `buffer.zeno`, change `refused` back to a plain `list[int]` and
-   build with `--no-collector`. Read the error. Then try keeping an error:
+2. In `buffer.zeno`, take the word `owned` off `refused` and build
+   with `--no-collector`. Nothing changes: in this build the list has
+   one owner either way. Then try keeping an error:
    `var last: Overload or none = none` and `last = overload` in the
-   `except`.
+   `except`. Read the error.
 3. Compile `buffer.c` by hand with `-DZENO_TEXT_ROOM=32`. Which statement
    stops the program? What is the smallest room it runs in, and does the
    report agree?

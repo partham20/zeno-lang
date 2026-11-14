@@ -63,6 +63,7 @@ Samples, none of them final:
 - [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to. It also builds with no collector at all.
 - [`examples/labels.zeno`](examples/labels.zeno): text that is built and kept, in a build with no collector.
 - [`examples/words.zeno`](examples/words.zeno): a line split into words, with lists that nobody keeps and the statement frees.
+- [`examples/scheduler.zeno`](examples/scheduler.zeno): tasks in a list, with no collector and not one `owned`: each list frees its items.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -98,9 +99,11 @@ that is compiled in ([`docs/memory.md`](docs/memory.md)). A value marked
 waiting for the collector ([`docs/ownership.md`](docs/ownership.md)).
 `zeno build --firmware` writes C with no `setjmp`, where errors are return
 values that every caller tests ([`docs/firmware.md`](docs/firmware.md)).
-`zeno build --no-collector` goes one step further for a program where
-everything is owned, and leaves the collector out of the C altogether
-([`docs/no-collector.md`](docs/no-collector.md)). Such a program does
+`zeno build --no-collector` goes one step further and leaves the
+collector out of the C altogether
+([`docs/no-collector.md`](docs/no-collector.md)). In that build every
+list and object has one owner, whoever received it, with no word to
+write ([`docs/one-owner.md`](docs/one-owner.md)). Such a program does
 not use the heap either: its lists and objects live in a pool of a
 fixed size that is part of the program ([`docs/pool.md`](docs/pool.md)).
 Text that such a program keeps is a copy that its keeper frees
@@ -137,6 +140,8 @@ cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjm
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector and no malloc: memory is a fixed pool
 cargo run -- build --no-collector --memory examples/labels.zeno  # text that is kept, with no collector: every copy is freed
 cargo run -- build --no-collector --memory examples/words.zeno   # split, map, filter and + with no collector: each statement frees what it made
+cargo run -- build --no-collector --memory examples/scheduler.zeno  # lists of objects with no collector and no `owned`: each list frees its items
+cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
@@ -173,6 +178,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/pool.md`](docs/pool.md),
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
+  [`docs/one-owner.md`](docs/one-owner.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -191,8 +197,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
 9. Owned values and borrows, beside the collector (done: `owned` values have
    one owner and are freed where its block ends, `borrow` lends one for a call)
 10. A firmware build with no collector (done: `zeno build --no-collector`
-    accepts a program where every list and object is owned, and leaves the
-    collector out of the C)
+    gives every list and object one owner, and leaves the collector out
+    of the C)
 11. Bytecode VM (done: `zeno run --vm` compiles to bytecode and runs it on a
     stack machine; `zeno bytecode` shows the instructions)
 12. LLVM backend (done: `zeno build --llvm` writes LLVM IR for the whole
@@ -222,8 +228,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       a list made by `split`, `map`, `filter` or `+`, or written out,
       and an owned value that is only looked at, belong to the
       statement that made them, which frees them when it is over.
-      Next: plain lists and classes; enum cases that carry values;
-      function values)
+      Done: plain lists and classes have one owner without the word
+      `owned`, and a list owns its items, so lists of objects and lists
+      of lists work. Next: enum cases that carry values and values that
+      may be `none`; function values)
 
 ## Layout
 
