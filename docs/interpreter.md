@@ -138,8 +138,9 @@ the body can use it.
 
 ## What it does not do yet
 
-- **Check types.** `let x: int = "hello"` runs. That is the next stage.
-- **Check `raises`.** A function can raise an error it did not declare.
+- **Look at types.** The interpreter ignores annotations. Checking them is
+  the type checker's job, and `zeno run` calls it first; see
+  [`checker.md`](checker.md).
 - **Free cyclic memory.** A function and its scope can point at each other
   and are never released. That belongs to the memory management stage.
 - **Run fast.** Names are looked up in hash tables on every use. The

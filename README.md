@@ -42,7 +42,7 @@ Zeno does not make you pick a style:
 
 Underneath:
 
-- **Types, where written, are checked before the program runs** (from the type checker stage on).
+- **Types, where written, are checked before the program runs.** Where they are left out, they are worked out when possible.
 - **Errors are checked.** A function says what it `raises`, and the compiler makes sure someone handles it.
 - **No surprise `none`.** A value can be `none` only if its type says `or none`, and you must check before using it.
 - **Enums carry data**, and `match` must cover every case.
@@ -74,27 +74,30 @@ piece of the compiler:
 
 ## Status
 
-Zeno runs programs. The lexer, parser and interpreter work; types are parsed
-but not checked yet, which is the next stage.
+Zeno checks and runs programs. The lexer, parser, type checker and
+interpreter work. Compiling to C is not started.
 
 ```sh
-cargo run -- run examples/tour.zeno       # run a program
-cargo run -- parse examples/tour.zeno     # the syntax tree the parser builds
-cargo run -- tokens examples/hello.zeno   # the tokens the lexer finds
+cargo run -- run examples/tour.zeno             # check a program, then run it
+cargo run -- check examples/tour.zeno           # only check it for mistakes
+cargo run -- check --strict examples/tour.zeno  # every type must be known, as firmware needs
+cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
+cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
 ```
 
 `examples/blink.zeno` does not run yet, because there is no `board` module.
 
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
-- **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md), [`docs/interpreter.md`](docs/interpreter.md).
+- **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
+  [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md).
 
 ## Roadmap
 
 1. Lexer (done)
 2. Parser and syntax tree (done)
 3. Tree-walking interpreter, `zeno run` (done)
-4. Type checker
+4. Type checker, `zeno check` (done)
 5. Bytecode VM
 6. Compile to C (`zeno build`)
 7. Memory management
@@ -110,6 +113,7 @@ src/lexer.rs        source text -> tokens
 src/ast.rs          the shapes of the syntax tree
 src/parser.rs       tokens -> syntax tree
 src/printer.rs      syntax tree -> text, for `zeno parse`
+src/checker.rs      finds type mistakes before the program runs
 src/value.rs        what a value is while a program runs
 src/interpreter.rs  runs a syntax tree
 src/builtins.rs     print, len, methods, modules, formatting

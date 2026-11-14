@@ -82,25 +82,32 @@ and a program can start loose and be tightened a line at a time as it grows,
 instead of being rewritten in another language. *(This is called gradual
 typing; TypeScript and Python's type hints took the same road.)*
 
-**How it will work, once the type checker exists.**
+**How it works.**
 1. Where a type is written, it is checked before the program runs.
-2. Where it is left out, the compiler works it out from the value when it
+2. Where it is left out, the checker works it out from the value when it
    can. `let n = 3` is an `int` without being told.
 3. Where it cannot be worked out, the value is *dynamic*: it carries its type
    with it and is checked while the program runs.
 
 **The cost, stated plainly.** A dynamic value needs a tag saying what it is,
 and usually memory from the heap. A small microcontroller cannot afford
-either. *(Principle 5.)* So there will be a **strict mode**, in which step 3
-is an error: everything must be known before the program runs. Strict mode
-will be the default when compiling for a microcontroller, and optional
-elsewhere. In practice this means untyped code still works on a
-microcontroller wherever the compiler can infer the types, which is most of
-the time; it is only truly dynamic code that needs a bigger machine.
+either. *(Principle 5.)* So there is a **strict mode** (`--strict`), in which
+step 3 is an error: everything must be known before the program runs. Strict
+mode will be the default when compiling for a microcontroller, and optional
+elsewhere.
 
-**Where this stands today.** The interpreter treats every value as dynamic,
-so typed and untyped programs both run, and annotations are read but not yet
-checked. Steps 1 and 2 and strict mode arrive with the type checker.
+**What gets worked out, and what does not.** The checker infers the types of
+variables and the return types of functions. It does not infer the types of
+parameters or class fields: an unannotated parameter is dynamic. Working a
+parameter's type out from how the function is called would mean a mistake at
+one call site changes the meaning of the function for everyone else, and the
+error would appear far from its cause. *(Principle 1.)* A signature is a
+promise; it should be read, not guessed. So strict mode asks for types on
+parameters and fields, and nowhere else.
+
+**Where this stands today.** All three steps and strict mode are in the type
+checker. Strict mode is chosen with a flag for now; choosing it per file or
+per project is still to be designed. *(Provisional.)*
 
 ---
 
@@ -245,7 +252,20 @@ They are not exceptions in the C++ sense. The plan is to compile a raising
 function to one that returns "value or error", so there is no stack
 unwinding and no hidden cost. *(Principle 5.)*
 
-**Provisional.** The interpreter does not yet check `raises`.
+**How `raises` is checked.** It follows the same rule as every other
+annotation (0.2). If a function writes `raises`, the list must be complete,
+and the checker reports anything missing. If it writes nothing, the list is
+worked out from the body and passed on to callers. In strict mode it must
+always be written, so that every signature is a complete contract.
+
+**What counts.** Only errors that are *raised on purpose* are tracked: a
+`raise` statement, a call to a function that raises, and turning text into a
+number with `int()` or `float()`, which fails on bad input. Errors that an
+operator can produce, such as dividing by zero, indexing out of range or
+overflow, can still be caught, but do not have to be declared. Those can
+happen on almost any line, so declaring them would put `raises` on every
+function, and a label that is on everything says nothing. Java's checked
+exceptions are widely disliked for exactly this.
 
 ---
 
@@ -282,6 +302,19 @@ arithmetic. Every other automatic conversion guesses at what the programmer
 meant, and JavaScript shows where that leads (`"3" + 4` is `"34"`).
 *(Principle 1.)*
 
+**But not at a boundary.** `let x: float = 1` is an error; write `1.0`. Mixing
+inside arithmetic produces a new value, so nothing is disguised. Storing an
+int in a float variable would leave a value whose written type and real type
+differ, and in compiled code it would hide a conversion instruction.
+*(Principles 1 and 5.)* Kotlin, Swift and Rust draw the same line.
+
+### 2.3a A whole number to a negative power is an error
+
+`2 ** 8` is an int. `2 ** -1` would have to be `0.5`, a float. Then the type
+of `a ** b` would depend on the *value* of `b`, which the checker cannot see.
+Zeno refuses the negative power and says to write `2.0 ** -1`.
+*(Principle 4: the operator decides the type, not the values.)*
+
 ### 2.4 Conditions must be real bools
 
 `if items { }` is an error; write `if len(items) > 0 { }`.
@@ -298,6 +331,13 @@ class with equal fields.
 
 **Why.** That is what "equal" means to a reader. Comparing by identity
 (Java's `==` on objects) is a famous source of confusion. *(Principle 2.)*
+
+### 2.5a Comparing things that can never be equal is an error
+
+`1 == "1"` is always false, so writing it is a mistake, most often a number
+read as text and never converted. The checker reports it instead of quietly
+answering false. *(Principle 1.)* An int and a float can be compared, because
+they can hold the same number.
 
 ### 2.6 Positions start at 0, and negative positions are an error
 
@@ -416,8 +456,39 @@ common shapes in real programs, and most languages make it awkward. An enum
 whose cases hold their own data says it directly, and `match` guarantees
 every case is considered.
 
-**Provisional.** The interpreter reports a missing case only when it is
-reached. The type checker will report it before the program runs.
+The checker reports a `match` on an enum that leaves a case out, naming the
+missing cases. This is the main reason to use an enum instead of a set of
+integer constants: when a new case is added, every `match` that needs
+updating becomes an error, instead of silently falling through. A `match` on
+anything else (numbers, strings) needs a final `case _`, since those cannot
+be listed in full.
+
+### 3.12 A value that may be `none` must be tested first
+
+```
+let user = find_user(2)          # str or none
+print(user.upper())              # error
+if user is not none {
+    print(user.upper())          # fine
+}
+```
+
+**Why.** Using a null value is the most common crash in C, Java and
+JavaScript; its inventor called it his "billion-dollar mistake". Zeno makes
+it impossible to forget the test. *(Principle 1.)*
+
+The checker follows the test itself rather than asking for special syntax:
+after `x is not none`, or after `if x is none { return }`, it knows `x` is
+present. The programmer writes the `if` they would have written anyway.
+
+**Turned down.** Rust's `match` / `if let Some(x)` and Swift's `if let x = x`
+need a new construct and a second name for the same thing.
+
+### 3.13 A function that promises a value must return on every path
+
+**Why.** In C, falling off the end of a non-void function returns garbage.
+In Python it returns `None`, which then fails somewhere else. Here it is an
+error at the function. *(Principle 1.)*
 
 ---
 
@@ -433,9 +504,9 @@ A **bug** is a mistake in the program itself: a misspelt name, `"abc" - 1`,
 calling something that is not a function. These stop the program and cannot
 be caught.
 
-**Why.** Catching a bug hides it. And once the type checker exists, almost
-every bug in the second group will be reported before the program runs, so
-there would be nothing to catch. *(Principle 1.)*
+**Why.** Catching a bug hides it. And the type checker reports almost every
+bug in the second group before the program runs, so in checked code there is
+nothing to catch. *(Principle 1.)*
 
 ### 4.2 Error messages say what to do
 
@@ -446,12 +517,22 @@ Declare it with `var` to allow that". Habits from other languages (`;`, `&&`,
 **Why.** An error message is the language teaching its user. The moment
 something goes wrong is when the explanation is most useful. *(Principle 2.)*
 
-### 4.3 The lexer reports every error; the parser stops at the first
+### 4.3 The lexer and the checker report every error; the parser stops at the first
 
-**Why.** After a bad character the lexer can simply skip it and carry on, so
-all its errors are real. After a syntax error the parser no longer knows
-where it is, and the errors that follow are usually nonsense caused by the
-first. One accurate error beats ten misleading ones.
+**Why.** The rule is: report an error only if it is certainly real. After a
+bad character the lexer can skip it and carry on, so all its errors are real.
+After a type error the checker still knows exactly where it is, and it marks
+the faulty expression so that nothing built on it is reported again. After a
+syntax error the parser no longer knows where it is, and what follows is
+usually nonsense caused by the first. One accurate error beats ten misleading
+ones.
+
+### 4.4 `zeno run` checks first, and does not run a program with errors
+
+**Why.** A mistake found before the program starts costs seconds. The same
+mistake found halfway through a run, with a motor already spinning, costs
+more. Untyped code is not held back by this, because the checker only
+reports what it is certain of. *(Principle 1.)*
 
 ---
 
@@ -488,9 +569,14 @@ stays useful afterwards as `zeno run` and a future interactive prompt.
 on every target from day one, works with existing debuggers, and can be read
 to see what the compiler did. Writing an optimiser can wait.
 
-### 5.6 The interpreter does not check types yet
+### 5.6 The checker and the interpreter are separate
 
-**Why.** One stage, one job. Types written in the source are parsed and kept
-in the tree; the type checker is the next stage and will use them. Until
-then, a type mistake is found when the line runs, as in Python. This is also
-what makes untyped programs run today (0.2).
+**Why.** One stage, one job. The checker decides whether a program is sound;
+the interpreter runs it and never looks at a type annotation. That is what
+lets untyped programs run (0.2), and it means the checker can be made
+stricter or smarter without touching how programs execute.
+
+The interpreter still tests types as it goes, because dynamic values need it.
+A program that passes the checker should never fail one of those tests on
+typed code; the test suite checks this by running every working interpreter
+test through the checker as well.
