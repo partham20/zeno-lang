@@ -138,6 +138,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
         volatile: HashSet::new(),
         shared: HashSet::new(),
         closures: 0,
+        below: HashSet::new(),
     };
 
     // Classes, enums and functions can be used above where they are written,
@@ -178,7 +179,19 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
 
     // Then each function and method. They are compiled after `main` so that
     // every top-level variable is known by the time a body mentions one.
-    for statement in &program.statements {
+    for (index, statement) in program.statements.iter().enumerate() {
+        // A function sees the top-level variables declared above it, and
+        // not the ones below.
+        emitter.below.clear();
+        for later in &program.statements[index + 1..] {
+            match &later.kind {
+                StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => {
+                    emitter.below.insert(name.clone());
+                }
+                StmtKind::Import { names, .. } => emitter.below.extend(names.iter().cloned()),
+                _ => {}
+            }
+        }
         match &statement.kind {
             StmtKind::Function(decl) => {
                 let entry = &emitter.functions[&decl.name];
@@ -487,6 +500,9 @@ struct Emitter<'a> {
     shared: HashSet<String>,
     /// How many functions with no name have been compiled, to number them.
     closures: usize,
+    /// While a function is being compiled: the top-level variables that
+    /// are declared below it in the file, which it must not see.
+    below: HashSet<String>,
 
     // For a build with no collector (`zeno build --no-collector`).
     /// False in a build with no collector.
@@ -986,11 +1002,15 @@ impl Emitter<'_> {
 
     /// Which scope `name` is found in: 0 is the top level.
     fn lookup_depth(&self, name: &str) -> Option<usize> {
-        self.scopes.iter().rposition(|scope| scope.contains_key(name))
+        let depth = self.scopes.iter().rposition(|scope| scope.contains_key(name))?;
+        // A top-level variable declared below the function being compiled
+        // is not in sight from inside it (decision 3.6c).
+        (depth > 0 || !self.below.contains(name)).then_some(depth)
     }
 
     fn lookup(&self, name: &str) -> Option<&Variable> {
-        let variable = self.scopes.iter().rev().find_map(|scope| scope.get(name))?;
+        let depth = self.lookup_depth(name)?;
+        let variable = self.scopes[depth].get(name)?;
         variable.used.set(true);
         Some(variable)
     }
@@ -4307,6 +4327,17 @@ mod tests {
              print(0 < next(11) < next(12) < 5, 100 < next(13) < next(-1))\n\
              var i = 0\nwhile next(14) < 20 and i < 2 { i += 1 }\n\
              if count > 100 { print(\"no\") } else if next(15) > 0 and next(16) > 0 { print(\"yes\") }",
+        );
+    }
+
+    #[test]
+    fn a_function_does_not_see_what_is_declared_below_it() {
+        // `len` inside `size` is the built-in. The variable of the same
+        // name further down the file is not in sight from there.
+        same_as_interpreter(
+            "below",
+            "function size(items: list[int]) -> int { return len(items) }\n\
+             print(size([1, 2]))\nlet len = 5\nprint(size([1, 2, 3]), len)",
         );
     }
 

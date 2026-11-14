@@ -59,6 +59,24 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
 pub struct Scope {
     variables: RefCell<HashMap<String, Rc<Variable>>>,
     parent: Option<Env>,
+    /// Set for a scope that is a *view* of another (see `seen`). A view
+    /// has no variables of its own.
+    view: Option<View>,
+}
+
+/// What a function can see of the block it is written in.
+struct View {
+    /// The block's scope.
+    of: Env,
+    /// How many of that scope's variables can be seen: the ones declared
+    /// first.
+    count: usize,
+    /// The names of the variables among those that the block declares
+    /// with `let`, `var`, `const` or `import`. When the function is called
+    /// from above the line that declares one of them, the variable does
+    /// not exist yet. The name still means that variable, and not one of
+    /// the same name further out.
+    lets: Rc<[String]>,
 }
 
 /// Scopes are shared (`Rc`) because a function keeps hold of the scope it
@@ -72,6 +90,9 @@ struct Variable {
     value: RefCell<Value>,
     /// True for `var`, false for `let`, `const`, parameters and loop variables.
     mutable: bool,
+    /// How many variables its scope had before this one: 0 for the first
+    /// to be declared there, 1 for the second.
+    number: usize,
 }
 
 enum AssignError {
@@ -81,11 +102,11 @@ enum AssignError {
 
 impl Scope {
     pub fn root() -> Env {
-        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None })
+        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, view: None })
     }
 
     pub fn child(parent: &Env) -> Env {
-        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: Some(parent.clone()) })
+        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: Some(parent.clone()), view: None })
     }
 
     /// Create a variable in this scope. Returns false if the name is taken here.
@@ -94,53 +115,73 @@ impl Scope {
         if variables.contains_key(name) {
             return false;
         }
-        variables.insert(name.to_string(), Rc::new(Variable { value: RefCell::new(value), mutable }));
+        let number = variables.len();
+        variables.insert(name.to_string(), Rc::new(Variable { value: RefCell::new(value), mutable, number }));
         true
     }
 
-    /// The scope a function written as a value keeps: the variables in
-    /// sight at this moment, and no others.
+    /// How many variables have been declared in this scope so far.
+    fn count(&self) -> usize {
+        self.variables.borrow().len()
+    }
+
+    /// The scope a function keeps: what can be seen from where it is
+    /// written, and nothing that is declared later.
     ///
-    /// Keeping `env` itself would be wrong. A variable declared *later* in
-    /// the same block would then be visible inside the function, and could
+    /// Keeping `env` itself would be wrong. A variable declared further
+    /// down the block would then be visible inside the function, and could
     /// hide an outer variable of the same name that the function was
-    /// written to use. So the function gets a scope of its own holding the
-    /// variables that exist now. They are the same variables, not copies,
-    /// so changes still pass both ways.
+    /// written to use.
     ///
-    /// The top level of the program is left as it is: a function may use a
-    /// top-level variable that is declared further down the file.
-    fn seen_from(env: &Env) -> Env {
-        let mut seen = HashMap::new();
-        let mut scope = env;
-        while let Some(parent) = scope.parent.as_ref().filter(|parent| parent.parent.is_some()) {
-            for (name, variable) in scope.variables.borrow().iter() {
-                seen.entry(name.clone()).or_insert_with(|| variable.clone());
-            }
-            scope = parent;
+    /// So the function gets a **view** of `env`: a scope with no variables
+    /// of its own, which looks into `env` and sees only the first `count`
+    /// variables declared there. They are the same variables, not copies,
+    /// so changes still pass both ways. The scopes around `env` are treated
+    /// the same way, each seen as it is at this moment.
+    fn seen(env: &Env, count: usize, lets: &[String]) -> Env {
+        // The built-ins never gain a variable, and a view never changes.
+        let Some(parent) = &env.parent else {
+            return env.clone();
+        };
+        if env.view.is_some() {
+            return env.clone();
         }
-        Rc::new(Scope { variables: RefCell::new(seen), parent: Some(scope.clone()) })
+        let parent = Scope::seen(parent, parent.count(), &[]);
+        Rc::new(Scope {
+            variables: RefCell::new(HashMap::new()),
+            parent: Some(parent),
+            view: Some(View { of: env.clone(), count, lets: Rc::from(lets) }),
+        })
+    }
+
+    /// Find a variable by name, here or in a scope around this one.
+    fn find(&self, name: &str) -> Option<Rc<Variable>> {
+        let here = match &self.view {
+            Some(view) => {
+                let seen =
+                    view.of.variables.borrow().get(name).filter(|variable| variable.number < view.count).cloned();
+                if seen.is_none() && view.lets.iter().any(|declared| declared == name) {
+                    // The block declares it, on a line that has not run yet.
+                    return None;
+                }
+                seen
+            }
+            None => self.variables.borrow().get(name).cloned(),
+        };
+        here.or_else(|| self.parent.as_ref()?.find(name))
     }
 
     fn get(&self, name: &str) -> Option<Value> {
-        if let Some(variable) = self.variables.borrow().get(name) {
-            return Some(variable.value.borrow().clone());
-        }
-        self.parent.as_ref()?.get(name)
+        Some(self.find(name)?.value.borrow().clone())
     }
 
     fn assign(&self, name: &str, value: Value) -> Result<(), AssignError> {
-        if let Some(variable) = self.variables.borrow().get(name) {
-            if !variable.mutable {
-                return Err(AssignError::Immutable);
-            }
-            *variable.value.borrow_mut() = value;
-            return Ok(());
+        let variable = self.find(name).ok_or(AssignError::NotDeclared)?;
+        if !variable.mutable {
+            return Err(AssignError::Immutable);
         }
-        match &self.parent {
-            Some(parent) => parent.assign(name, value),
-            None => Err(AssignError::NotDeclared),
-        }
+        *variable.value.borrow_mut() = value;
+        Ok(())
     }
 }
 
@@ -218,21 +259,39 @@ impl Interpreter {
 
     /// Declare the block's functions, classes and enums before running any
     /// of it, so they can be used above the line where they are written.
+    ///
+    /// Each sees the block as it will be when the program reaches the line
+    /// it is written on: everything declared here, and the variables
+    /// declared above that line. Those variables do not exist yet, so what
+    /// is worked out is how many there will be (`above`) and what they are
+    /// called (`lets`).
     fn hoist(&mut self, statements: &[Stmt], env: &Env) -> Result<(), Control> {
+        let hoisted: usize = statements
+            .iter()
+            .map(|statement| match &statement.kind {
+                StmtKind::Function(_) | StmtKind::Class(_) => 1,
+                StmtKind::Enum(decl) => 1 + decl.variants.len(),
+                _ => 0,
+            })
+            .sum();
+        let mut above = env.count() + hoisted;
+        let mut lets: Vec<String> = Vec::new();
+
         for statement in statements {
             let span = statement.span;
             match &statement.kind {
                 StmtKind::Function(decl) => {
-                    let closure = Closure { decl: decl.clone(), home: Home::Scope(env.clone()) };
+                    let home = Scope::seen(env, above, &lets);
+                    let closure = Closure { decl: decl.clone(), home: Home::Scope(home) };
                     self.declare(env, &decl.name, Value::Function(Rc::new(closure)), false, span)?;
                 }
                 StmtKind::Class(class) => {
+                    let home = Scope::seen(env, above, &lets);
                     let methods = class
                         .methods
                         .iter()
                         .map(|decl| {
-                            let closure =
-                                Closure { decl: decl.clone(), home: Home::Scope(env.clone()) };
+                            let closure = Closure { decl: decl.clone(), home: Home::Scope(home.clone()) };
                             (decl.name.clone(), Rc::new(closure))
                         })
                         .collect();
@@ -240,7 +299,7 @@ impl Interpreter {
                         name: class.name.clone(),
                         fields: class.fields.clone(),
                         methods,
-                        home: Home::Scope(env.clone()),
+                        home: Home::Scope(home),
                     };
                     self.declare(env, &class.name, Value::Class(Rc::new(def)), false, span)?;
                 }
@@ -251,6 +310,19 @@ impl Interpreter {
                     // `Circle(1.0)` as well as `Shape.Circle(1.0)`.
                     for (index, case) in decl.variants.iter().enumerate() {
                         self.declare(env, &case.name, ops::case_value(&def, index), false, span)?;
+                    }
+                }
+                // Each of these adds to what the functions below it can see.
+                StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => {
+                    above += 1;
+                    lets.push(name.clone());
+                }
+                StmtKind::Import { module, names } => {
+                    // `import a.b` declares one name, the module's.
+                    above += names.len().max(1);
+                    lets.extend(names.iter().cloned());
+                    if names.is_empty() {
+                        lets.extend(module.last().cloned());
                     }
                 }
                 _ => {}
@@ -579,7 +651,7 @@ impl Interpreter {
             // A function written as a value remembers the scope it was written in.
             ExprKind::Function(decl) => {
                 let closure =
-                    Closure { decl: decl.clone(), home: Home::Scope(Scope::seen_from(env)) };
+                    Closure { decl: decl.clone(), home: Home::Scope(Scope::seen(env, env.count(), &[])) };
                 Ok(Value::Function(Rc::new(closure)))
             }
 
@@ -1050,6 +1122,31 @@ mod tests {
         // But it does see changes to the variables it kept.
         let source = "function g() -> int {\n var n = 1\n let f = function() { return n }\n n = 5\n return f()\n}\nprint(g())";
         assert_eq!(output(source), "5\n");
+    }
+
+    #[test]
+    fn a_named_function_sees_what_is_declared_above_it_and_no_more() {
+        // The same rule for a function with a name. It is made at the top
+        // of its block, so that it can be called from above, but the `x`
+        // declared below it is still not the one it was written to use.
+        let source = "let x = 1\nfunction outer() -> int {\n function inner() -> int { return x }\n let x = 5\n return inner() + x\n}\nprint(outer())";
+        assert_eq!(output(source), "6\n");
+        // That holds at the top level of a file too, where the name
+        // hidden is a built-in.
+        let source = "function size(items: list[int]) -> int { return len(items) }\nlet len = 5\nprint(size([1, 2]), len)";
+        assert_eq!(output(source), "2 5\n");
+        // What is declared above it is seen, wherever it is called from...
+        assert_eq!(output("let a = 1\nprint(f())\nfunction f() -> int { return a }"), "1\n");
+        // ...once the line that declares it has run.
+        assert_eq!(error("print(f())\nlet a = 1\nfunction f() { return a }"), "`a` is not defined");
+        // A name means one variable, whenever the function is called. Here
+        // `inner` uses the `x` of its own block, which has no value at
+        // the first call. It does not fall back on the `x` outside.
+        let source = "let x = 1\nfunction outer() {\n print(inner())\n let x = 5\n function inner() { return x }\n}\nouter()";
+        assert_eq!(error(source), "`x` is not defined");
+        // A method follows the same rule.
+        let source = "let k = 2\nfunction make() -> int {\n class Scale {\n  by: int = k\n  function apply(self, n: int) -> int { return n * self.by * k }\n }\n let k = 10\n return Scale().apply(k)\n}\nprint(make())";
+        assert_eq!(output(source), "40\n");
     }
 
     #[test]
