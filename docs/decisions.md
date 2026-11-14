@@ -3341,7 +3341,8 @@ leaves has one owner. The path must start at an owner, not at a
 borrow, which includes `self`. No `for` or comprehension around it may
 be walking a list reached from that owner. And the line must not have
 looked at that owner already. After a `pop()`, the rest of the line
-may not use the owner either.
+may not use the owner either. Inside such a loop the owner itself
+cannot be given away or given a new value: both free every item.
 
 **Why these three.** A look lives for one statement at most (5.8d rule
 1), or for a loop's body. So there are exactly three places a look can

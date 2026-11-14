@@ -2426,6 +2426,18 @@ impl Checker {
                 (Some(variable), None) if variable.ty.is_owned() && variable.function != env.function => {
                     self.error(elsewhere(name), span)
                 }
+                // A new value frees the old one, items and all, and the
+                // loop is still looking at one of those items.
+                (Some(variable), None) if variable.ty.is_owned() && self.being_walked(target, env).is_some() => {
+                    let line = self.being_walked(target, env).map_or(0, |(_, line)| line);
+                    self.error(
+                        format!(
+                            "the `for` on line {line} is walking a list that `{name}` owns, and is still looking at its items. \
+                             `{name}` cannot be given a new value until the loop is over"
+                        ),
+                        span,
+                    )
+                }
                 (Some(variable), None) => {
                     let Some(declared) = variable.declared else {
                         return (variable.ty.clone(), variable.ty, None);
@@ -5967,6 +5979,20 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             owned_error(&format!("{ps}let ids = [ps.pop().id for p in ps]")),
             format!("{walking} Nothing can take an item out of this list until the loop is over")
+        );
+        // Nor may the owner be given a new value: that frees the old one,
+        // items and all.
+        assert_eq!(
+            owned_error("var ps: owned list[Packet] = [make(), make()]\nfor p in ps { ps = []\nbreak }"),
+            format!("{walking} `ps` cannot be given a new value until the loop is over")
+        );
+        assert_eq!(
+            owned_error(
+                "owned class Queue { waiting: owned list[Packet] }\n\
+                 var q = Queue([make()])\nfor p in q.waiting { q = Queue([])\nbreak }"
+            ),
+            "the `for` on line 12 is walking a list that `q` owns, and is still looking at its items. \
+             `q` cannot be given a new value until the loop is over"
         );
         // Adding to it is fine: the loop walks the list as it was.
         owned_ok(&format!("{ps}for p in ps {{ if p.id > 5 {{ ps.append(make()) }} }}"));

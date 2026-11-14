@@ -187,6 +187,10 @@ error: this line has already looked at `tasks`, and the look might
 still be in use. Do the other thing on a line of its own first
 ```
 
+For the same reason the owner cannot be given a new value inside the
+loop (`tasks = []`), or be given away there: either would free the
+list, items and all, under the loop's feet.
+
 Appending is not on this list. A `for` loop walks a copy of the list
 (decision 3.10a), so `tasks.append(...)` inside the loop, or through a
 borrow, moves nothing the loop can see.
