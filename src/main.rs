@@ -12,6 +12,7 @@ mod emit_c;
 mod error;
 mod interpreter;
 mod lexer;
+mod ops;
 mod parser;
 mod printer;
 mod token;

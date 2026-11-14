@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::interpreter::{Env, Interpreter, Scope};
+use crate::interpreter::{Env, Scope};
 use crate::token::Span;
 use crate::value::*;
 
@@ -16,8 +16,8 @@ type Result<T = Value> = std::result::Result<T, Control>;
 const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
 
-/// The outermost scope, holding every built-in name.
-pub fn globals() -> Env {
+/// Every built-in name and what it stands for.
+pub fn all() -> Vec<(&'static str, Value)> {
     let functions: &[Builtin] = &[
         Builtin { name: "print", call: print },
         Builtin { name: "len", call: len },
@@ -31,12 +31,17 @@ pub fn globals() -> Env {
         Builtin { name: "sum", call: sum },
     ];
 
+    let mut all: Vec<(&'static str, Value)> =
+        functions.iter().map(|builtin| (builtin.name, Value::Builtin(*builtin))).collect();
+    all.extend(ERROR_TYPES.iter().map(|kind| (*kind, Value::ErrorType(Rc::from(*kind)))));
+    all
+}
+
+/// The outermost scope of the interpreter, holding every built-in name.
+pub fn globals() -> Env {
     let env = Scope::root();
-    for builtin in functions {
-        env.declare(builtin.name, Value::Builtin(*builtin), false);
-    }
-    for kind in ERROR_TYPES {
-        env.declare(kind, Value::ErrorType(Rc::from(*kind)), false);
+    for (name, value) in all() {
+        env.declare(name, value, false);
     }
     env
 }
@@ -56,13 +61,13 @@ fn wrong_type<T>(name: &str, wanted: &str, got: &Value, span: Span) -> Result<T>
 
 // ------------------------------------------------------------------ Functions
 
-fn print(interpreter: &mut Interpreter, args: Vec<Value>, _: Span) -> Result {
+fn print(machine: &mut dyn Machine, args: Vec<Value>, _: Span) -> Result {
     let words: Vec<String> = args.iter().map(Value::to_string).collect();
-    interpreter.write_line(&words.join(" "));
+    machine.write_line(&words.join(" "));
     Ok(Value::None)
 }
 
-fn len(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn len(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("len", &args, 1, 1, span)?;
     match &args[0] {
         Value::Str(text) => Ok(Value::Int(text.chars().count() as i64)),
@@ -72,7 +77,7 @@ fn len(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// `range(stop)`, `range(start, stop)`, `range(start, stop, step)`
-fn range(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn range(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("range", &args, 1, 3, span)?;
     let mut ints = Vec::new();
     for arg in &args {
@@ -100,7 +105,7 @@ fn range(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::list(items))
 }
 
-fn int(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn int(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("int", &args, 1, 1, span)?;
     match &args[0] {
         Value::Int(n) => Ok(Value::Int(*n)),
@@ -114,7 +119,7 @@ fn int(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     }
 }
 
-fn float(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn float(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("float", &args, 1, 1, span)?;
     match &args[0] {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
@@ -127,12 +132,12 @@ fn float(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     }
 }
 
-fn str(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn str(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("str", &args, 1, 1, span)?;
     Ok(Value::str(args[0].to_string()))
 }
 
-fn abs(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn abs(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("abs", &args, 1, 1, span)?;
     match &args[0] {
         Value::Int(n) => match n.checked_abs() {
@@ -173,15 +178,15 @@ fn pick(name: &str, args: Vec<Value>, span: Span, better: fn(f64, f64) -> bool) 
     Ok(best)
 }
 
-fn min(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn min(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     pick("min", args, span, |a, b| a < b)
 }
 
-fn max(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn max(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     pick("max", args, span, |a, b| a > b)
 }
 
-fn sum(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     let items = numbers("sum", args, span)?;
     // Stay an int while every item is an int.
     let mut int_total: Option<i64> = Some(0);
@@ -234,7 +239,7 @@ fn text<'a>(method: &str, arg: &'a Value, span: Span) -> Result<&'a str> {
 }
 
 pub fn call_method(
-    interpreter: &mut Interpreter,
+    machine: &mut dyn Machine,
     receiver: &Value,
     name: &str,
     mut args: Vec<Value>,
@@ -302,7 +307,7 @@ pub fn call_method(
                 let function = args.remove(0);
                 let mut mapped = Vec::new();
                 for item in items.borrow().clone() {
-                    mapped.push(interpreter.call(function.clone(), vec![item], Vec::new(), span)?);
+                    mapped.push(machine.call(function.clone(), vec![item], Vec::new(), span)?);
                 }
                 Ok(Value::list(mapped))
             }
@@ -311,7 +316,7 @@ pub fn call_method(
                 let function = args.remove(0);
                 let mut kept = Vec::new();
                 for item in items.borrow().clone() {
-                    match interpreter.call(function.clone(), vec![item.clone()], Vec::new(), span)? {
+                    match machine.call(function.clone(), vec![item.clone()], Vec::new(), span)? {
                         Value::Bool(true) => kept.push(item),
                         Value::Bool(false) => {}
                         other => {
@@ -334,7 +339,7 @@ pub fn call_method(
                 let function = args.remove(0);
                 let mut total = args.remove(0);
                 for item in items.borrow().clone() {
-                    total = interpreter.call(function.clone(), vec![total, item], Vec::new(), span)?;
+                    total = machine.call(function.clone(), vec![total, item], Vec::new(), span)?;
                 }
                 Ok(total)
             }
@@ -375,7 +380,7 @@ fn one_number(name: &str, args: &[Value], span: Span) -> Result<f64> {
     }
 }
 
-fn sqrt(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn sqrt(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     let x = one_number("sqrt", &args, span)?;
     if x < 0.0 {
         return raise("ValueError", format!("cannot take the square root of {x:?}"), span);
@@ -383,25 +388,25 @@ fn sqrt(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Float(x.sqrt()))
 }
 
-fn floor(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn floor(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Int(one_number("floor", &args, span)?.floor() as i64))
 }
 
-fn ceil(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn ceil(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Int(one_number("ceil", &args, span)?.ceil() as i64))
 }
 
-fn sin(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn sin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Float(one_number("sin", &args, span)?.sin()))
 }
 
-fn cos(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn cos(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Float(one_number("cos", &args, span)?.cos()))
 }
 
 /// `sleep(500 ms)`. A time without a unit is refused, because nobody can
 /// tell whether `sleep(500)` means seconds or milliseconds.
-fn sleep(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
+fn sleep(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("sleep", &args, 1, 1, span)?;
     let seconds = match &args[0] {
         Value::Quantity(x, unit) => match crate::units::convert(unit, "s") {

@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::ast;
 use crate::error::Error;
-use crate::interpreter::{Env, Interpreter};
+use crate::interpreter::Env;
 use crate::token::Span;
 
 /// `Rc` lets several variables share one value without copying it, which is
@@ -52,11 +52,18 @@ pub enum Value {
     Module(Rc<Module>),
 }
 
-/// A function together with the scope it was defined in, so that it can
-/// still see the variables around it when it is called later.
+/// A function together with the variables around it, so that it can still
+/// see them when it is called later.
 pub struct Closure {
     pub decl: std::sync::Arc<ast::Function>,
-    pub env: Env,
+    pub home: Home,
+}
+
+/// Where a function keeps the variables around it. The interpreter has
+/// one answer. An engine that runs the program another way will have its own.
+pub enum Home {
+    /// The interpreter: the scope the function was defined in.
+    Scope(Env),
 }
 
 pub struct ClassDef {
@@ -64,7 +71,7 @@ pub struct ClassDef {
     pub fields: Vec<ast::Field>,
     pub methods: HashMap<String, Rc<Closure>>,
     /// Where the class was defined, for working out field defaults.
-    pub env: Env,
+    pub home: Home,
 }
 
 pub struct Instance {
@@ -107,7 +114,25 @@ pub struct Module {
 #[derive(Clone, Copy)]
 pub struct Builtin {
     pub name: &'static str,
-    pub call: fn(&mut Interpreter, Vec<Value>, Span) -> Result<Value, Control>,
+    pub call: fn(&mut dyn Machine, Vec<Value>, Span) -> Result<Value, Control>,
+}
+
+/// What a built-in may ask of the engine that is running the program.
+///
+/// Built-ins are written once and used by both engines, so they cannot
+/// know which one called them. This is the little they need from either.
+pub trait Machine {
+    /// Print one line.
+    fn write_line(&mut self, text: &str);
+
+    /// Call a Zeno value, as `map` calls the function it was given.
+    fn call(
+        &mut self,
+        callee: Value,
+        positional: Vec<Value>,
+        named: Vec<(String, Value)>,
+        span: Span,
+    ) -> Result<Value, Control>;
 }
 
 /// Every way a statement or expression can finish other than normally.

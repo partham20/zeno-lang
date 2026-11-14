@@ -14,15 +14,14 @@
 //! the next stage, will find them before the program runs.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::*;
 use crate::builtins;
 use crate::error::Error;
+use crate::ops;
 use crate::token::Span;
-use crate::units;
 use crate::value::*;
 
 /// How deep function calls may nest before we assume runaway recursion.
@@ -43,35 +42,13 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
                     .run_statements(&program.statements, &env)
-                    .map_err(top_level_error);
+                    .map_err(ops::escaped);
                 (interpreter.output.unwrap_or_default(), result)
             })
             .expect("could not start the interpreter thread")
             .join()
             .expect("the interpreter crashed")
     })
-}
-
-/// What to report when something escapes the whole program.
-fn top_level_error(control: Control) -> Error {
-    match control {
-        Control::Fatal(error) => error,
-        Control::Raise(value, span) => {
-            Error::new(format!("uncaught {}: {value}", error_kind(&value)), span)
-        }
-        Control::Break(span) => Error::new("`break` outside a loop", span),
-        Control::Continue(span) => Error::new("`continue` outside a loop", span),
-        Control::Return(_, span) => Error::new("`return` outside a function", span),
-    }
-}
-
-/// The name `except` matches against: the error's kind, or an object's class.
-fn error_kind(value: &Value) -> String {
-    match value {
-        Value::Error(error) => error.kind.clone(),
-        Value::Instance(instance) => instance.class.name.clone(),
-        _ => "Error".to_string(),
-    }
 }
 
 // --------------------------------------------------------------------- Scopes
@@ -176,8 +153,9 @@ pub struct Interpreter {
     depth: usize,
 }
 
-impl Interpreter {
-    pub fn write_line(&mut self, text: &str) {
+/// What the built-ins ask of the interpreter (see `Machine` in value.rs).
+impl Machine for Interpreter {
+    fn write_line(&mut self, text: &str) {
         match &mut self.output {
             Some(buffer) => {
                 buffer.push_str(text);
@@ -186,6 +164,26 @@ impl Interpreter {
             None => println!("{text}"),
         }
     }
+
+    fn call(
+        &mut self,
+        callee: Value,
+        positional: Vec<Value>,
+        named: Vec<(String, Value)>,
+        span: Span,
+    ) -> Result<Value, Control> {
+        Interpreter::call(self, callee, positional, named, span)
+    }
+}
+
+/// The scope a function or class made by the interpreter was defined in.
+fn scope_of(home: &Home) -> Env {
+    match home {
+        Home::Scope(scope) => scope.clone(),
+    }
+}
+
+impl Interpreter {
 
     fn declare(
         &self,
@@ -225,7 +223,7 @@ impl Interpreter {
             let span = statement.span;
             match &statement.kind {
                 StmtKind::Function(decl) => {
-                    let closure = Closure { decl: decl.clone(), env: env.clone() };
+                    let closure = Closure { decl: decl.clone(), home: Home::Scope(env.clone()) };
                     self.declare(env, &decl.name, Value::Function(Rc::new(closure)), false, span)?;
                 }
                 StmtKind::Class(class) => {
@@ -233,7 +231,8 @@ impl Interpreter {
                         .methods
                         .iter()
                         .map(|decl| {
-                            let closure = Closure { decl: decl.clone(), env: env.clone() };
+                            let closure =
+                                Closure { decl: decl.clone(), home: Home::Scope(env.clone()) };
                             (decl.name.clone(), Rc::new(closure))
                         })
                         .collect();
@@ -241,7 +240,7 @@ impl Interpreter {
                         name: class.name.clone(),
                         fields: class.fields.clone(),
                         methods,
-                        env: env.clone(),
+                        home: Home::Scope(env.clone()),
                     };
                     self.declare(env, &class.name, Value::Class(Rc::new(def)), false, span)?;
                 }
@@ -251,7 +250,7 @@ impl Interpreter {
                     // Each case is also a name of its own, so you can write
                     // `Circle(1.0)` as well as `Shape.Circle(1.0)`.
                     for (index, case) in decl.variants.iter().enumerate() {
-                        self.declare(env, &case.name, case_value(&def, index), false, span)?;
+                        self.declare(env, &case.name, ops::case_value(&def, index), false, span)?;
                     }
                 }
                 _ => {}
@@ -277,7 +276,7 @@ impl Interpreter {
                 if let Some(op) = op {
                     // `x += 1` is `x = x + 1`.
                     let old = self.eval(target, env)?;
-                    new = self.binary(*op, old, new, span)?;
+                    new = ops::binary(*op, old, new, span)?;
                 }
                 self.assign(target, new, env)
             }
@@ -311,7 +310,7 @@ impl Interpreter {
             StmtKind::For { variable, iterable, body } => {
                 let iterable_span = iterable.span;
                 let iterable = self.eval(iterable, env)?;
-                for item in self.items(&iterable, iterable_span)? {
+                for item in ops::items(&iterable, iterable_span)? {
                     // A fresh scope and a fresh loop variable for every round.
                     let scope = Scope::child(env);
                     scope.declare(variable, item, false);
@@ -339,27 +338,12 @@ impl Interpreter {
                     Err(Control::Raise(error, span)) => (error, span),
                     other => return other,
                 };
-                let kind = error_kind(&error);
+                let kind = ops::error_kind(&error);
                 for handler in handlers {
-                    // A bare `except` and `except Error` both catch everything.
-                    let catches = match &handler.error {
-                        None => true,
-                        Some(name) => name == "Error" || *name == kind,
-                    };
-                    if catches {
+                    if ops::catches(handler.error.as_deref(), &kind) {
                         let scope = Scope::child(env);
                         if let Some(binding) = &handler.binding {
-                            // `except Timeout as t` asked for the object
-                            // that was raised, so `t` is that object.
-                            // `except Error as e` asked for any error, so
-                            // `e` is the error the object travelled in.
-                            let caught = match (&handler.error, &error) {
-                                (Some(name), Value::Error(inner)) if name != "Error" => {
-                                    inner.object.clone().unwrap_or_else(|| error.clone())
-                                }
-                                _ => error.clone(),
-                            };
-                            scope.declare(binding, caught, false);
+                            scope.declare(binding, ops::caught(handler.error.as_deref(), &error), false);
                         }
                         return self.run_statements(&handler.body, &scope);
                     }
@@ -376,24 +360,7 @@ impl Interpreter {
             }
             StmtKind::Raise(value) => {
                 let error = self.eval(value, env)?;
-                match error {
-                    Value::Error(_) => Err(Control::Raise(error, span)),
-                    // An object is wrapped in an error named after its
-                    // class, so that every `except` receives the same kind
-                    // of thing whatever was raised.
-                    Value::Instance(ref instance) => {
-                        let wrapped = ErrorValue {
-                            kind: instance.class.name.clone(),
-                            message: error.to_string(),
-                            object: Some(error.clone()),
-                        };
-                        Err(Control::Raise(Value::Error(Rc::new(wrapped)), span))
-                    }
-                    other => fatal(
-                        format!("only an error can be raised, and this is {}", other.type_name()),
-                        span,
-                    ),
-                }
+                Err(ops::raised(error, span))
             }
             StmtKind::Break => Err(Control::Break(span)),
             StmtKind::Continue => Err(Control::Continue(span)),
@@ -423,23 +390,8 @@ impl Interpreter {
 
     /// Work out a condition. It has to be a real bool; see docs/decisions.md.
     fn condition(&mut self, condition: &Expr, env: &Env) -> Result<bool, Control> {
-        match self.eval(condition, env)? {
-            Value::Bool(b) => Ok(b),
-            other => fatal(
-                format!("a condition must be true or false, but this is {}", other.type_name()),
-                condition.span,
-            ),
-        }
-    }
-
-    /// The things a `for` loop or comprehension steps through.
-    fn items(&mut self, value: &Value, span: Span) -> Result<Vec<Value>, Control> {
-        match value {
-            // A copy, so changing the list inside the loop cannot upset the loop.
-            Value::List(items) => Ok(items.borrow().clone()),
-            Value::Str(text) => Ok(text.chars().map(|c| Value::str(c.to_string())).collect()),
-            other => fatal(format!("cannot loop over {}", other.type_name()), span),
-        }
+        let value = self.eval(condition, env)?;
+        ops::condition(value, condition.span)
     }
 
     fn assign(&mut self, target: &Expr, value: Value, env: &Env) -> Result<(), Control> {
@@ -456,33 +408,14 @@ impl Interpreter {
                     span,
                 ),
             },
-            ExprKind::Field { object, name } => match self.eval(object, env)? {
-                Value::Instance(instance) => {
-                    match instance.fields.borrow_mut().get_mut(name) {
-                        Some(slot) => *slot = value,
-                        None => {
-                            return fatal(
-                                format!("`{}` has no field `{name}`", instance.class.name),
-                                span,
-                            )
-                        }
-                    }
-                    Ok(())
-                }
-                other => fatal(format!("cannot set a field on {}", other.type_name()), span),
-            },
+            ExprKind::Field { object, name } => {
+                let object = self.eval(object, env)?;
+                ops::set_field(object, name, value, span)
+            }
             ExprKind::Index { object, index } => {
                 let object = self.eval(object, env)?;
                 let index = self.eval(index, env)?;
-                match object {
-                    Value::List(items) => {
-                        let len = items.borrow().len();
-                        let i = self.index(&index, len, "list", span)?;
-                        items.borrow_mut()[i] = value;
-                        Ok(())
-                    }
-                    other => fatal(format!("cannot set an item of {}", other.type_name()), span),
-                }
+                ops::set_item(object, &index, value, span)
             }
             // The parser only lets the three kinds above through.
             _ => fatal("this cannot be assigned to", span),
@@ -578,11 +511,10 @@ impl Interpreter {
                 None => fatal(format!("`{name}` is not defined"), span),
             },
 
-            ExprKind::Unit { value, unit } => match self.eval(value, env)?.number() {
-                _ if !units::is_unit(unit) => fatal(crate::units::unknown(unit), span),
-                Some(number) => Ok(Value::Quantity(number, Rc::from(unit.as_str()))),
-                None => fatal("a unit can only follow a number", span),
-            },
+            ExprKind::Unit { value, unit } => {
+                let value = self.eval(value, env)?;
+                ops::quantity(value, unit, span)
+            }
 
             ExprKind::List(items) => {
                 let mut values = Vec::new();
@@ -594,7 +526,7 @@ impl Interpreter {
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let source = self.eval(iterable, env)?;
                 let mut values = Vec::new();
-                for item in self.items(&source, iterable.span)? {
+                for item in ops::items(&source, iterable.span)? {
                     let scope = Scope::child(env);
                     scope.declare(variable, item, false);
                     let keep = match condition {
@@ -610,21 +542,7 @@ impl Interpreter {
 
             ExprKind::Unary { op, operand } => {
                 let value = self.eval(operand, env)?;
-                match (op, value) {
-                    (UnaryOp::Neg, Value::Int(n)) => match n.checked_neg() {
-                        Some(n) => Ok(Value::Int(n)),
-                        None => raise("OverflowError", "the result is too big for an int", span),
-                    },
-                    (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
-                    (UnaryOp::Neg, Value::Quantity(x, unit)) => Ok(Value::Quantity(-x, unit)),
-                    (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-                    (UnaryOp::Neg, other) => {
-                        fatal(format!("`-` does not work on {}", other.type_name()), span)
-                    }
-                    (UnaryOp::Not, other) => {
-                        fatal(format!("`not` needs a bool, but this is {}", other.type_name()), span)
-                    }
-                }
+                ops::unary(*op, value, span)
             }
 
             // `and` and `or` only work out their right side when they have to.
@@ -642,7 +560,7 @@ impl Interpreter {
             ExprKind::Binary { op, left, right } => {
                 let left = self.eval(left, env)?;
                 let right = self.eval(right, env)?;
-                self.binary(*op, left, right, span)
+                ops::binary(*op, left, right, span)
             }
             ExprKind::Compare { first, rest } => {
                 // `a < b < c`: compare neighbours, stop at the first false,
@@ -650,7 +568,7 @@ impl Interpreter {
                 let mut left = self.eval(first, env)?;
                 for (op, operand) in rest {
                     let right = self.eval(operand, env)?;
-                    match self.binary(*op, left, right.clone(), span)? {
+                    match ops::binary(*op, left, right.clone(), span)? {
                         Value::Bool(true) => left = right,
                         _ => return Ok(Value::Bool(false)),
                     }
@@ -660,7 +578,8 @@ impl Interpreter {
 
             // A function written as a value remembers the scope it was written in.
             ExprKind::Function(decl) => {
-                let closure = Closure { decl: decl.clone(), env: Scope::seen_from(env) };
+                let closure =
+                    Closure { decl: decl.clone(), home: Home::Scope(Scope::seen_from(env)) };
                 Ok(Value::Function(Rc::new(closure)))
             }
 
@@ -683,97 +602,25 @@ impl Interpreter {
 
             ExprKind::Field { object, name } => {
                 let object = self.eval(object, env)?;
-                self.field(object, name, span)
+                ops::field(object, name, span)
             }
             ExprKind::Index { object, index } => {
                 let object = self.eval(object, env)?;
                 let index = self.eval(index, env)?;
-                match &object {
-                    Value::List(items) => {
-                        let items = items.borrow();
-                        let i = self.index(&index, items.len(), "list", span)?;
-                        Ok(items[i].clone())
-                    }
-                    Value::Str(text) => {
-                        let chars: Vec<char> = text.chars().collect();
-                        let i = self.index(&index, chars.len(), "str", span)?;
-                        Ok(Value::str(chars[i].to_string()))
-                    }
-                    other => fatal(format!("cannot take an item from {}", other.type_name()), span),
-                }
+                ops::item(&object, &index, span)
             }
         }
     }
 
     fn logic_operand(&mut self, op: BinaryOp, operand: &Expr, env: &Env) -> Result<bool, Control> {
-        match self.eval(operand, env)? {
-            Value::Bool(b) => Ok(b),
-            other => fatal(
-                format!("`{}` needs bools, but this is {}", op.text(), other.type_name()),
-                operand.span,
-            ),
-        }
+        let value = self.eval(operand, env)?;
+        ops::logic_operand(op, value, operand.span)
     }
 
-    /// Check an index and turn it into a position. Positions start at 0 and
-    /// negative ones are refused; see docs/decisions.md.
-    fn index(&self, index: &Value, len: usize, what: &str, span: Span) -> Result<usize, Control> {
-        let Value::Int(i) = index else {
-            return fatal(format!("an index must be an int, but this is {}", index.type_name()), span);
-        };
-        match usize::try_from(*i) {
-            Ok(i) if i < len => Ok(i),
-            _ => raise("IndexError", format!("index {i} is out of range for a {what} of length {len}"), span),
-        }
-    }
-
-    /// `object.name`
-    fn field(&mut self, object: Value, name: &str, span: Span) -> Result<Value, Control> {
-        match &object {
-            Value::Instance(instance) => {
-                if let Some(value) = instance.fields.borrow().get(name) {
-                    return Ok(value.clone());
-                }
-                if let Some(method) = instance.class.methods.get(name) {
-                    return Ok(Value::BoundMethod(instance.clone(), method.clone()));
-                }
-                fatal(format!("`{}` has no field or method `{name}`", instance.class.name), span)
-            }
-            Value::Case(case) => {
-                let fields = &case.def.cases[case.index].fields;
-                match fields.iter().position(|field| field.name == name) {
-                    Some(i) => Ok(case.fields[i].clone()),
-                    None => fatal(format!("`{}` has no field `{name}`", case.name()), span),
-                }
-            }
-            Value::Enum(def) => match def.cases.iter().position(|case| case.name == name) {
-                Some(index) => Ok(case_value(def, index)),
-                None => fatal(format!("enum `{}` has no case `{name}`", def.name), span),
-            },
-            Value::Module(module) => match module.members.get(name) {
-                Some(member) => Ok(member.clone()),
-                None => fatal(format!("module `{}` has no `{name}`", module.name), span),
-            },
-            // `(3 s).ms`: the same quantity in another unit.
-            Value::Quantity(x, unit) if units::is_unit(name) => match units::convert(unit, name) {
-                Some(scale) => Ok(Value::Quantity(scale.apply(*x), Rc::from(name))),
-                None => fatal(
-                    format!("a quantity in {unit} cannot be turned into {name}. They measure different things"),
-                    span,
-                ),
-            },
-            Value::Error(error) if name == "message" => Ok(Value::str(&error.message)),
-            Value::Error(error) if name == "kind" => Ok(Value::str(&error.kind)),
-            _ if builtins::has_method(&object, name) => {
-                Ok(Value::Method(Box::new(object), Rc::from(name)))
-            }
-            other => fatal(format!("{} has no field or method `{name}`", other.type_name()), span),
-        }
-    }
 
     // ----------------------------------------------------------------- Calls
 
-    pub fn call(
+    fn call(
         &mut self,
         callee: Value,
         mut positional: Vec<Value>,
@@ -788,21 +635,22 @@ impl Interpreter {
                 self.call_function(&closure, positional, named, span)
             }
             Value::Builtin(builtin) => {
-                no_named(builtin.name, &named, span)?;
+                ops::no_named(builtin.name, &named, span)?;
                 (builtin.call)(self, positional, span)
             }
             Value::Method(receiver, name) => {
-                no_named(&name, &named, span)?;
+                ops::no_named(&name, &named, span)?;
                 builtins::call_method(self, &receiver, &name, positional, span)
             }
             Value::Class(class) => {
                 let names: Vec<&str> = class.fields.iter().map(|f| f.name.as_str()).collect();
-                let slots = bind(&class.name, &names, positional, named, span)?;
+                let slots = ops::bind(&class.name, &names, positional, named, span)?;
+                let scope = scope_of(&class.home);
                 let mut fields = HashMap::new();
                 for (field, slot) in class.fields.iter().zip(slots) {
                     let value = match (slot, &field.default) {
                         (Some(value), _) => value,
-                        (None, Some(default)) => self.eval(default, &class.env)?,
+                        (None, Some(default)) => self.eval(default, &scope)?,
                         (None, None) => {
                             return fatal(
                                 format!("`{}` needs a value for `{}`", class.name, field.name),
@@ -814,33 +662,8 @@ impl Interpreter {
                 }
                 Ok(Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) })))
             }
-            Value::CaseConstructor(def, index) => {
-                let case = &def.cases[index];
-                let names: Vec<&str> = case.fields.iter().map(|f| f.name.as_str()).collect();
-                let slots = bind(&case.name, &names, positional, named, span)?;
-                let mut fields = Vec::new();
-                for (field, slot) in case.fields.iter().zip(slots) {
-                    match slot {
-                        Some(value) => fields.push(value),
-                        None => {
-                            return fatal(
-                                format!("`{}` needs a value for `{}`", case.name, field.name),
-                                span,
-                            )
-                        }
-                    }
-                }
-                Ok(Value::Case(Rc::new(CaseValue { def: def.clone(), index, fields })))
-            }
-            Value::ErrorType(kind) => {
-                no_named(&kind, &named, span)?;
-                let message = match positional.as_slice() {
-                    [] => String::new(),
-                    [message] => message.to_string(),
-                    _ => return fatal(format!("`{kind}` takes one message"), span),
-                };
-                Ok(Value::Error(Rc::new(ErrorValue { kind: kind.to_string(), message, object: None })))
-            }
+            Value::CaseConstructor(def, index) => ops::new_case(&def, index, positional, named, span),
+            Value::ErrorType(kind) => ops::new_error(&kind, positional, named, span),
             other => fatal(format!("{} cannot be called", other.type_name()), span),
         }
     }
@@ -864,9 +687,9 @@ impl Interpreter {
 
         // The body runs in a new scope inside the scope where the function
         // was *defined*, not the one it was called from.
-        let scope = Scope::child(&closure.env);
+        let scope = Scope::child(&scope_of(&closure.home));
         let names: Vec<&str> = decl.params.iter().map(|p| p.name.as_str()).collect();
-        let slots = bind(name, &names, positional, named, span)?;
+        let slots = ops::bind(name, &names, positional, named, span)?;
         for (param, slot) in decl.params.iter().zip(slots) {
             let value = match (slot, &param.default) {
                 (Some(value), _) => value,
@@ -892,212 +715,8 @@ impl Interpreter {
         }
     }
 
-    // ------------------------------------------------------------- Operators
-
-    fn binary(&mut self, op: BinaryOp, left: Value, right: Value, span: Span) -> Result<Value, Control> {
-        use BinaryOp::*;
-        use Value::{Bool, Float, Int, List, Quantity, Str};
-
-        let mismatch = || {
-            fatal(
-                format!(
-                    "`{}` does not work between {} and {}",
-                    op.text(),
-                    left.type_name(),
-                    right.type_name()
-                ),
-                span,
-            )
-        };
-        let overflow = || raise("OverflowError", "the result is too big for an int", span);
-        let by_zero = || raise("ZeroDivisionError", "division by zero", span);
-        // Both sides as floats, when both are numbers.
-        let floats = match (left.number(), right.number()) {
-            (Some(a), Some(b)) => Some((a, b)),
-            _ => None,
-        };
-
-        match op {
-            Add => match (&left, &right) {
-                (Int(a), Int(b)) => a.checked_add(*b).map(Int).map_or_else(overflow, Ok),
-                (Str(a), Str(b)) => Ok(Value::str(format!("{a}{b}"))),
-                (List(a), List(b)) => {
-                    let mut items = a.borrow().clone();
-                    items.extend(b.borrow().iter().cloned());
-                    Ok(Value::list(items))
-                }
-                // `1 s + 500 ms` is `1500 ms`: both sides in the finer unit.
-                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
-                    Some((unit, left, right)) => Ok(Quantity(left.apply(*a) + right.apply(*b), Rc::from(unit))),
-                    None => mismatch(),
-                },
-                _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a + b))),
-            },
-            Sub => match (&left, &right) {
-                (Int(a), Int(b)) => a.checked_sub(*b).map(Int).map_or_else(overflow, Ok),
-                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
-                    Some((unit, left, right)) => Ok(Quantity(left.apply(*a) - right.apply(*b), Rc::from(unit))),
-                    None => mismatch(),
-                },
-                _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a - b))),
-            },
-            Mul => match (&left, &right) {
-                (Int(a), Int(b)) => a.checked_mul(*b).map(Int).map_or_else(overflow, Ok),
-                // Scaling a quantity keeps its unit: 2 * 500 ms is 1000 ms.
-                (Quantity(a, unit), other) | (other, Quantity(a, unit)) => match other.number() {
-                    Some(b) => Ok(Quantity(a * b, unit.clone())),
-                    None => mismatch(),
-                },
-                _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a * b))),
-            },
-            // `/` always gives a float, even for two ints. `//` is the one that rounds down.
-            Div => match (&left, &right) {
-                (Quantity(_, _), Quantity(b, _)) | (Quantity(_, _), Float(b)) if *b == 0.0 => by_zero(),
-                (Quantity(_, _), Int(0)) => by_zero(),
-                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
-                    Some((_, left, right)) => Ok(Float(left.apply(*a) / right.apply(*b))),
-                    None => mismatch(),
-                },
-                (Quantity(a, unit), other) => match other.number() {
-                    Some(b) => Ok(Quantity(a / b, unit.clone())),
-                    None => mismatch(),
-                },
-                _ => match floats {
-                    Some((_, b)) if b == 0.0 => by_zero(),
-                    Some((a, b)) => Ok(Float(a / b)),
-                    None => mismatch(),
-                },
-            },
-            FloorDiv => match (&left, &right) {
-                (Int(_), Int(0)) => by_zero(),
-                (Int(a), Int(b)) => match a.checked_div(*b) {
-                    // Rust rounds toward zero; step down once more when the
-                    // signs differ and the division was not exact.
-                    Some(q) if a % b != 0 && (*a < 0) != (*b < 0) => Ok(Int(q - 1)),
-                    Some(q) => Ok(Int(q)),
-                    None => overflow(),
-                },
-                _ => match floats {
-                    Some((_, b)) if b == 0.0 => by_zero(),
-                    Some((a, b)) => Ok(Float((a / b).floor())),
-                    None => mismatch(),
-                },
-            },
-            // The result takes the sign of the right side, to pair with `//`.
-            Mod => match (&left, &right) {
-                (Int(_), Int(0)) => by_zero(),
-                (Int(a), Int(b)) => {
-                    let r = a.checked_rem(*b).unwrap_or(0);
-                    Ok(Int(if r != 0 && (r < 0) != (*b < 0) { r + b } else { r }))
-                }
-                _ => match floats {
-                    Some((_, b)) if b == 0.0 => by_zero(),
-                    Some((a, b)) => Ok(Float(a - b * (a / b).floor())),
-                    None => mismatch(),
-                },
-            },
-            Pow => match (&left, &right) {
-                // int ** int is always an int, so a negative power, which
-                // would need a fraction, is refused. See docs/decisions.md.
-                (Int(_), Int(b)) if *b < 0 => raise(
-                    "ValueError",
-                    "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`",
-                    span,
-                ),
-                (Int(a), Int(b)) => u32::try_from(*b)
-                    .ok()
-                    .and_then(|b| a.checked_pow(b))
-                    .map(Int)
-                    .map_or_else(overflow, Ok),
-                _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a.powf(b)))),
-            },
-
-            Eq | Is => Ok(Bool(equal(&left, &right))),
-            NotEq | IsNot => Ok(Bool(!equal(&left, &right))),
-
-            Lt | LtEq | Gt | GtEq => {
-                let order = match (&left, &right) {
-                    (Int(a), Int(b)) => Some(a.cmp(b)),
-                    (Str(a), Str(b)) => Some(a.cmp(b)),
-                    (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
-                        Some((_, left, right)) => left.apply(*a).partial_cmp(&right.apply(*b)),
-                        None => return mismatch(),
-                    },
-                    _ => match floats {
-                        Some((a, b)) => a.partial_cmp(&b),
-                        None => return mismatch(),
-                    },
-                };
-                // `order` is None only for NaN, which compares false with everything.
-                Ok(Bool(match (op, order) {
-                    (_, None) => false,
-                    (Lt, Some(order)) => order == Ordering::Less,
-                    (LtEq, Some(order)) => order != Ordering::Greater,
-                    (Gt, Some(order)) => order == Ordering::Greater,
-                    (_, Some(order)) => order != Ordering::Less,
-                }))
-            }
-
-            In | NotIn => {
-                let found = match (&left, &right) {
-                    (item, List(items)) => items.borrow().iter().any(|other| equal(item, other)),
-                    (Str(part), Str(text)) => text.contains(&**part),
-                    _ => return mismatch(),
-                };
-                Ok(Bool(found == (op == In)))
-            }
-
-            // Handled in `eval`, because they must not always work out both sides.
-            And | Or => mismatch(),
-        }
-    }
 }
 
-/// A case with no values is a finished value; one with values needs calling.
-fn case_value(def: &Rc<EnumDef>, index: usize) -> Value {
-    if def.cases[index].fields.is_empty() {
-        Value::Case(Rc::new(CaseValue { def: def.clone(), index, fields: Vec::new() }))
-    } else {
-        Value::CaseConstructor(def.clone(), index)
-    }
-}
-
-fn no_named(what: &str, named: &[(String, Value)], span: Span) -> Result<(), Control> {
-    match named.first() {
-        Some((name, _)) => fatal(format!("`{what}` does not take a named argument `{name}`"), span),
-        None => Ok(()),
-    }
-}
-
-/// Line the arguments of a call up with the names they are for. The result
-/// has one slot per name, `None` where no argument was given.
-fn bind(
-    what: &str,
-    names: &[&str],
-    positional: Vec<Value>,
-    named: Vec<(String, Value)>,
-    span: Span,
-) -> Result<Vec<Option<Value>>, Control> {
-    if positional.len() > names.len() {
-        return fatal(
-            format!("`{what}` takes {} argument(s), but {} were given", names.len(), positional.len()),
-            span,
-        );
-    }
-    let mut slots: Vec<Option<Value>> = positional.into_iter().map(Some).collect();
-    slots.resize(names.len(), None);
-
-    for (name, value) in named {
-        match names.iter().position(|n| *n == name) {
-            None => return fatal(format!("`{what}` has no argument named `{name}`"), span),
-            Some(i) if slots[i].is_some() => {
-                return fatal(format!("`{what}` was given `{name}` twice"), span)
-            }
-            Some(i) => slots[i] = Some(value),
-        }
-    }
-    Ok(slots)
-}
 
 #[cfg(test)]
 mod tests {
