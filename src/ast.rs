@@ -180,6 +180,9 @@ pub enum ExprKind {
     Unary { op: UnaryOp, operand: Box<Expr> },
     /// `a + b`, `x == y`, `p and q`
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
+    /// A chain of two or more comparisons: `0 <= i < len`.
+    /// It means `0 <= i and i < len`, with `i` worked out only once.
+    Compare { first: Box<Expr>, rest: Vec<(BinaryOp, Expr)> },
     /// `callee(args)`
     Call { callee: Box<Expr>, args: Vec<Arg> },
     /// `object.name`
@@ -215,6 +218,7 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    FloorDiv,
     Mod,
     Pow,
     Eq,
@@ -240,6 +244,7 @@ impl BinaryOp {
             Sub => "-",
             Mul => "*",
             Div => "/",
+            FloorDiv => "//",
             Mod => "%",
             Pow => "**",
             Eq => "==",

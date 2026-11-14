@@ -222,6 +222,13 @@ pub fn expr(e: &Expr) -> String {
         ExprKind::Binary { op, left, right } => {
             format!("({} {} {})", expr(left), op.text(), expr(right))
         }
+        ExprKind::Compare { first, rest } => {
+            let mut text = format!("({}", expr(first));
+            for (op, operand) in rest {
+                text += &format!(" {} {}", op.text(), expr(operand));
+            }
+            text + ")"
+        }
         ExprKind::Call { callee, args } => format!("{}({})", expr(callee), join(args, arg)),
         ExprKind::Field { object, name } => format!("{}.{name}", expr(object)),
         ExprKind::Index { object, index } => format!("{}[{}]", expr(object), expr(index)),

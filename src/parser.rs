@@ -530,7 +530,7 @@ impl Parser {
     //   not
     //   == != < <= > >= is in
     //   + -
-    //   * / %
+    //   * / // %
     //   - (negation)
     //   **
     //   calls, .field, [index]
@@ -598,22 +598,36 @@ impl Parser {
         Some(op)
     }
 
+    /// One comparison is an ordinary binary operator. Two or more in a row,
+    /// like `0 <= i < len`, become a single `Compare` chain.
     fn comparison(&mut self) -> Result<Expr, Error> {
-        let left = self.sum()?;
-        let Some(op) = self.comparison_op() else {
-            return Ok(left);
-        };
-        let right = self.sum()?;
+        let first = self.sum()?;
 
-        // `a < b < c` would quietly compare a bool with c. Refuse it instead.
-        let span = self.span();
-        if self.comparison_op().is_some() {
-            return Err(Error::new(
-                "comparisons cannot be chained. Join them with `and`, as in `a < b and b < c`",
-                span,
-            ));
+        let mut rest = Vec::new();
+        while let Some(op) = self.comparison_op() {
+            let right = self.sum()?;
+            // `is` tests for none and nothing else. See docs/decisions.md.
+            let is = matches!(op, BinaryOp::Is | BinaryOp::IsNot);
+            if is && right.kind != ExprKind::None {
+                return Err(Error::new(
+                    "`is` only tests for `none`. Use `==` to compare values",
+                    right.span,
+                ));
+            }
+            rest.push((op, right));
         }
-        Ok(Self::binary(left, op, right))
+
+        Ok(match rest.len() {
+            0 => first,
+            1 => {
+                let (op, right) = rest.remove(0);
+                Self::binary(first, op, right)
+            }
+            _ => {
+                let span = first.span;
+                Expr { kind: ExprKind::Compare { first: Box::new(first), rest }, span }
+            }
+        })
     }
 
     fn sum(&mut self) -> Result<Expr, Error> {
@@ -636,6 +650,7 @@ impl Parser {
             let op = match self.peek() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
+                TokenKind::SlashSlash => BinaryOp::FloorDiv,
                 TokenKind::Percent => BinaryOp::Mod,
                 _ => return Ok(left),
             };
@@ -943,7 +958,7 @@ mod tests {
     #[test]
     fn same_level_operators_group_left() {
         assert_eq!(expr("a - b - c"), "((a - b) - c)");
-        assert_eq!(expr("a / b * c % d"), "(((a / b) * c) % d)");
+        assert_eq!(expr("a / b * c % d // e"), "((((a / b) * c) % d) // e)");
     }
 
     #[test]
@@ -967,6 +982,14 @@ mod tests {
         assert_eq!(expr("user is not none"), "(user is not none)");
         assert_eq!(expr("x in items"), "(x in items)");
         assert_eq!(expr("x not in items"), "(x not in items)");
+    }
+
+    #[test]
+    fn chained_comparisons() {
+        assert_eq!(expr("0 <= i < len"), "(0 <= i < len)");
+        assert_eq!(expr("a < b < c == d"), "(a < b < c == d)");
+        assert_eq!(expr("not 1 <= port <= 65535"), "(not (1 <= port <= 65535))");
+        assert_eq!(expr("a < b and b < c"), "((a < b) and (b < c))");
     }
 
     #[test]
@@ -1172,10 +1195,7 @@ mod tests {
         assert_eq!(error("try { x() }"), "`try` needs at least one `except`");
         assert_eq!(error("1 = 2"), "this cannot be assigned to");
         assert_eq!(error("f() = 2"), "this cannot be assigned to");
-        assert_eq!(
-            error("a < b < c"),
-            "comparisons cannot be chained. Join them with `and`, as in `a < b and b < c`"
-        );
+        assert_eq!(error("a is b"), "`is` only tests for `none`. Use `==` to compare values");
         assert_eq!(error("match x { y }"), "expected `case`, found the name `y`");
         assert_eq!(error("let x: int or str = 1"), "only `or none` can follow a type for now");
     }

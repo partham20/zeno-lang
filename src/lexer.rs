@@ -330,7 +330,15 @@ impl Lexer {
                     Star
                 }
             }
-            '/' => if self.eat('=') { SlashAssign } else { Slash },
+            '/' => {
+                if self.eat('/') {
+                    SlashSlash
+                } else if self.eat('=') {
+                    SlashAssign
+                } else {
+                    Slash
+                }
+            }
             '=' => if self.eat('=') { Eq } else { Assign },
             '<' => if self.eat('=') { LtEq } else { Lt },
             '>' => if self.eat('=') { GtEq } else { Gt },
@@ -441,10 +449,11 @@ mod tests {
     #[test]
     fn operators() {
         assert_eq!(
-            kinds("a + b - c * d / e % f ** g"),
+            kinds("a + b - c * d / e % f ** g // h"),
             vec![
                 ident("a"), Plus, ident("b"), Minus, ident("c"), Star, ident("d"),
-                Slash, ident("e"), Percent, ident("f"), StarStar, ident("g"), Newline
+                Slash, ident("e"), Percent, ident("f"), StarStar, ident("g"),
+                SlashSlash, ident("h"), Newline
             ]
         );
         assert_eq!(

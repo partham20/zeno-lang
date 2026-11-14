@@ -77,6 +77,7 @@ pub enum TokenKind {
     Minus,       // -
     Star,        // *
     Slash,       // /
+    SlashSlash,  // //
     Percent,     // %
     StarStar,    // **
     Assign,      // =
@@ -192,6 +193,7 @@ impl TokenKind {
             Minus => "-",
             Star => "*",
             Slash => "/",
+            SlashSlash => "//",
             Percent => "%",
             StarStar => "**",
             Assign => "=",
@@ -221,7 +223,7 @@ impl TokenKind {
         matches!(
             self,
             Comma | Dot | Arrow
-                | Plus | Minus | Star | Slash | Percent | StarStar
+                | Plus | Minus | Star | Slash | SlashSlash | Percent | StarStar
                 | Assign | PlusAssign | MinusAssign | StarAssign | SlashAssign
                 | Eq | NotEq | Lt | LtEq | Gt | GtEq
                 | And | Or | Not | Is | In
