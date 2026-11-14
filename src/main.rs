@@ -1,14 +1,18 @@
 //! The `zeno` command-line tool.
 //!
 //! The compiler stages get added here one at a time. So far there are the
-//! lexer and the parser; `zeno tokens` and `zeno parse` show what each one produces.
+//! lexer, the parser and the interpreter: `zeno tokens` and `zeno parse`
+//! show what the first two produce, and `zeno run` runs a program.
 
 mod ast;
+mod builtins;
 mod error;
+mod interpreter;
 mod lexer;
 mod parser;
 mod printer;
 mod token;
+mod value;
 
 use std::env;
 use std::fs;
@@ -21,9 +25,9 @@ fn usage() {
     println!("Every journey is halfway done. Forever.");
     println!();
     println!("Usage:");
+    println!("  zeno run <file.zeno>     run a program");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
-    println!("  zeno run <file.zeno>     run a program (not implemented yet)");
     println!("  zeno build <file.zeno>   compile to C (not implemented yet)");
     println!("  zeno --version           print the version");
     println!("  zeno --help              print this message");
@@ -62,15 +66,32 @@ fn tokens(path: &str) -> Option<()> {
     Some(())
 }
 
-/// `zeno parse <file>`: run the lexer and parser and print the syntax tree.
-fn parse(path: &str) -> Option<()> {
+/// Run the lexer and the parser, printing any errors they find.
+fn load(path: &str) -> Option<(String, ast::Program)> {
     let source = read(path)?;
     let tokens = lex(path, &source)?;
     match parser::parse(tokens) {
-        Ok(program) => {
-            print!("{}", printer::print(&program));
-            Some(())
+        Ok(program) => Some((source, program)),
+        Err(error) => {
+            report(path, &source, &error);
+            None
         }
+    }
+}
+
+/// `zeno parse <file>`: print the syntax tree.
+fn parse(path: &str) -> Option<()> {
+    let (_, program) = load(path)?;
+    print!("{}", printer::print(&program));
+    Some(())
+}
+
+/// `zeno run <file>`: run the program.
+fn run(path: &str) -> Option<()> {
+    let (source, program) = load(path)?;
+    let (_, result) = interpreter::run(&program, false);
+    match result {
+        Ok(()) => Some(()),
         Err(error) => {
             report(path, &source, &error);
             None
@@ -118,19 +139,23 @@ fn main() -> ExitCode {
             println!("zeno {VERSION}");
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("tokens" | "parse")) => {
+        Some(cmd @ ("tokens" | "parse" | "run")) => {
             let Some(path) = args.get(1) else {
                 eprintln!("zeno: `{cmd}` needs a file, e.g. `zeno {cmd} examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            let done = if cmd == "tokens" { tokens(path) } else { parse(path) };
+            let done = match cmd {
+                "tokens" => tokens(path),
+                "parse" => parse(path),
+                _ => run(path),
+            };
             match done {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
             }
         }
-        Some(cmd @ ("run" | "build")) => {
-            eprintln!("zeno: `{cmd}` is not implemented yet. Achilles is still catching the tortoise.");
+        Some("build") => {
+            eprintln!("zeno: `build` is not implemented yet. Achilles is still catching the tortoise.");
             ExitCode::FAILURE
         }
         Some(other) => {

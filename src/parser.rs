@@ -854,14 +854,22 @@ fn format_parts(text: &str, span: Span) -> Result<Vec<FormatPart>, Error> {
             return fail("`}` without a `{`. Write `}}` for a literal brace");
         } else if c == '{' {
             // Find the matching `}`, and the `:` that starts a format, if any.
-            // Brackets inside the expression are counted so that `{a[1:2]}`
-            // and `{f(x)}` are not cut short.
+            // Brackets and strings inside the expression are skipped over, so
+            // that `{f(x)}` and `{names[':']}` are not cut short.
             let start = i + 1;
             let mut depth = 0;
             let mut colon = None;
             let mut end = None;
+            let mut quote = None; // the quote character, while inside a string
             for (j, &c) in chars.iter().enumerate().skip(start) {
+                if let Some(open) = quote {
+                    if c == open {
+                        quote = None;
+                    }
+                    continue;
+                }
                 match c {
+                    '"' | '\'' => quote = Some(c),
                     '(' | '[' | '{' => depth += 1,
                     ')' | ']' => depth -= 1,
                     '}' if depth > 0 => depth -= 1,

@@ -6,6 +6,9 @@
 #      about it: no semicolons, no colons after if/for, no brackets around conditions.
 
 
+from math import sqrt
+
+
 # --- Variables: say once whether a value can change ---
 
 let name = "Zeno"                      # let: set once, never changes
@@ -61,7 +64,7 @@ function area(shape: Shape) -> float {
 
 function parse_port(text: str) -> int raises ValueError {
     let port = int(text)               # int() may raise ValueError; it passes up
-    if port < 1 or port > 65535 {
+    if not 1 <= port <= 65535 {        # comparisons chain, as in maths
         raise ValueError("port out of range")
     }
     return port
@@ -99,8 +102,8 @@ for shape in [Circle(1.0), Rect(2.0, 3.0)] {
 }
 
 var tries = 0
-while tries < 3 and not connected() {
-    tries = tries + 1
+while tries < 3 and ports[tries] != 8080 {
+    tries += 1
 }
 
 let squares = [n * n for n in range(10) if n % 2 == 0]
