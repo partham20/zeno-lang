@@ -203,7 +203,7 @@ fn sum(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
 
 const STR_METHODS: &[&str] =
     &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
-const LIST_METHODS: &[&str] = &["append", "pop"];
+const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
 
 pub fn has_method(receiver: &Value, name: &str) -> bool {
     match receiver {
@@ -221,7 +221,13 @@ fn text<'a>(method: &str, arg: &'a Value, span: Span) -> Result<&'a str> {
     }
 }
 
-pub fn call_method(receiver: &Value, name: &str, mut args: Vec<Value>, span: Span) -> Result {
+pub fn call_method(
+    interpreter: &mut Interpreter,
+    receiver: &Value,
+    name: &str,
+    mut args: Vec<Value>,
+    span: Span,
+) -> Result {
     match receiver {
         Value::Str(this) => match name {
             "upper" => {
@@ -275,6 +281,50 @@ pub fn call_method(receiver: &Value, name: &str, mut args: Vec<Value>, span: Spa
                     Some(item) => Ok(item),
                     None => raise("IndexError", "cannot pop from an empty list", span),
                 }
+            }
+
+            // The three below take a function and call it on the items.
+            // They work on a copy, so the function may safely change the list.
+            "map" => {
+                arity(name, &args, 1, 1, span)?;
+                let function = args.remove(0);
+                let mut mapped = Vec::new();
+                for item in items.borrow().clone() {
+                    mapped.push(interpreter.call(function.clone(), vec![item], Vec::new(), span)?);
+                }
+                Ok(Value::list(mapped))
+            }
+            "filter" => {
+                arity(name, &args, 1, 1, span)?;
+                let function = args.remove(0);
+                let mut kept = Vec::new();
+                for item in items.borrow().clone() {
+                    match interpreter.call(function.clone(), vec![item.clone()], Vec::new(), span)? {
+                        Value::Bool(true) => kept.push(item),
+                        Value::Bool(false) => {}
+                        other => {
+                            return fatal(
+                                format!(
+                                    "the function given to `filter` must return true or false, but it returned {}",
+                                    other.type_name()
+                                ),
+                                span,
+                            )
+                        }
+                    }
+                }
+                Ok(Value::list(kept))
+            }
+            // `items.reduce(function(total, item) { ... }, start)` folds the
+            // list into one value, beginning from `start`.
+            "reduce" => {
+                arity(name, &args, 2, 2, span)?;
+                let function = args.remove(0);
+                let mut total = args.remove(0);
+                for item in items.borrow().clone() {
+                    total = interpreter.call(function.clone(), vec![total, item], Vec::new(), span)?;
+                }
+                Ok(total)
             }
             _ => fatal(format!("a list has no method `{name}`"), span),
         },

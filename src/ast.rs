@@ -63,6 +63,7 @@ pub enum StmtKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
+    /// Empty for a function written as a value: `function(n) { return n * 2 }`
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
@@ -86,11 +87,11 @@ pub struct Class {
     pub methods: Vec<Function>,
 }
 
-/// A named, typed slot: a class field, or one value carried by an enum case.
+/// A named slot: a class field, or one value carried by an enum case.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
-    pub ty: Type,
+    pub ty: Option<Type>,
     pub default: Option<Expr>,
 }
 
@@ -183,6 +184,8 @@ pub enum ExprKind {
     /// A chain of two or more comparisons: `0 <= i < len`.
     /// It means `0 <= i and i < len`, with `i` worked out only once.
     Compare { first: Box<Expr>, rest: Vec<(BinaryOp, Expr)> },
+    /// A function with no name, used as a value: `function(n) { return n * 2 }`
+    Function(Box<Function>),
     /// `callee(args)`
     Call { callee: Box<Expr>, args: Vec<Arg> },
     /// `object.name`

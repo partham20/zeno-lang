@@ -608,6 +608,12 @@ impl Interpreter {
                 Ok(Value::Bool(true))
             }
 
+            // A function written as a value remembers the scope it was written in.
+            ExprKind::Function(decl) => {
+                let closure = Closure { decl: (**decl).clone(), env: env.clone() };
+                Ok(Value::Function(Rc::new(closure)))
+            }
+
             ExprKind::Call { callee, args } => {
                 let callee = self.eval(callee, env)?;
                 let mut positional = Vec::new();
@@ -709,7 +715,7 @@ impl Interpreter {
 
     // ----------------------------------------------------------------- Calls
 
-    fn call(
+    pub fn call(
         &mut self,
         callee: Value,
         mut positional: Vec<Value>,
@@ -729,7 +735,7 @@ impl Interpreter {
             }
             Value::Method(receiver, name) => {
                 no_named(&name, &named, span)?;
-                builtins::call_method(&receiver, &name, positional, span)
+                builtins::call_method(self, &receiver, &name, positional, span)
             }
             Value::Class(class) => {
                 let names: Vec<&str> = class.fields.iter().map(|f| f.name.as_str()).collect();
@@ -789,10 +795,11 @@ impl Interpreter {
         span: Span,
     ) -> Result<Value, Control> {
         let decl = &closure.decl;
+        let name = if decl.name.is_empty() { "function" } else { &decl.name };
 
         if self.depth >= MAX_DEPTH {
             return fatal(
-                format!("more than {MAX_DEPTH} calls are nested. Is `{}` calling itself forever?", decl.name),
+                format!("more than {MAX_DEPTH} calls are nested. Is `{name}` calling itself forever?"),
                 span,
             );
         }
@@ -801,17 +808,14 @@ impl Interpreter {
         // was *defined*, not the one it was called from.
         let scope = Scope::child(&closure.env);
         let names: Vec<&str> = decl.params.iter().map(|p| p.name.as_str()).collect();
-        let slots = bind(&decl.name, &names, positional, named, span)?;
+        let slots = bind(name, &names, positional, named, span)?;
         for (param, slot) in decl.params.iter().zip(slots) {
             let value = match (slot, &param.default) {
                 (Some(value), _) => value,
                 // Defaults are worked out fresh on every call.
                 (None, Some(default)) => self.eval(default, &scope)?,
                 (None, None) => {
-                    return fatal(
-                        format!("`{}` needs a value for `{}`", decl.name, param.name),
-                        span,
-                    )
+                    return fatal(format!("`{name}` needs a value for `{}`", param.name), span)
                 }
             };
             self.declare(&scope, &param.name, value, false, span)?;
@@ -1214,6 +1218,39 @@ mod tests {
         assert_eq!(error("function f(n: int) { n = 2 }\nf(1)"), "`n` cannot be changed. Declare it with `var` to allow that");
     }
 
+    #[test]
+    fn functions_are_values() {
+        let source = "function twice(f, x) { return f(f(x)) }\nfunction add_one(n) { return n + 1 }\nlet double = function(n) { return n * 2 }\nprint(twice(add_one, 5), twice(double, 5), function(a, b) { return a + b }(1, 2))";
+        assert_eq!(output(source), "7 20 3\n");
+        assert_eq!(output("function f() { }\nprint(f, function() { }, len)"), "<function f> <function> <function len>\n");
+    }
+
+    #[test]
+    fn map_filter_reduce() {
+        let source = "let xs = [1, 2, 3, 4, 5, 6]\nfunction even(n) { return n % 2 == 0 }\nprint(xs.filter(even).map(function(n) { return n * n }).reduce(function(total, n) { return total + n }, 0))\nprint(xs.map(str), [].map(even), [].reduce(even, 7))";
+        assert_eq!(output(source), "56\n[\"1\", \"2\", \"3\", \"4\", \"5\", \"6\"] [] 7\n");
+        assert_eq!(
+            error("[1].filter(function(n) { return n })"),
+            "the function given to `filter` must return true or false, but it returned an int"
+        );
+        assert_eq!(error("[1].map(5)"), "an int cannot be called");
+        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 argument(s), but 1 were given");
+    }
+
+    #[test]
+    fn a_function_written_inside_a_call_can_span_lines() {
+        let source = "let total = [1, 2, 3].reduce(function(sum, n) {\n    let bigger = n * 10\n    return sum + bigger\n}, 0)\nprint(total)";
+        assert_eq!(output(source), "60\n");
+    }
+
+    #[test]
+    fn types_are_optional() {
+        let typed = "class Point {\n x: float\n y: float\n}\nfunction length(p: Point) -> float {\n let squared: float = p.x ** 2 + p.y ** 2\n return squared ** 0.5\n}\nprint(length(Point(3.0, 4.0)))";
+        let untyped = "class Point {\n x\n y\n}\nfunction length(p) {\n let squared = p.x ** 2 + p.y ** 2\n return squared ** 0.5\n}\nprint(length(Point(3.0, 4.0)))";
+        assert_eq!(output(typed), "5.0\n");
+        assert_eq!(output(untyped), "5.0\n");
+    }
+
     // ----- Classes -----
 
     #[test]
@@ -1311,6 +1348,17 @@ mod tests {
     #[test]
     fn hello_runs() {
         assert_eq!(output(include_str!("../examples/hello.zeno")), "Hello, Zeno!\n");
+    }
+
+    #[test]
+    fn the_styles_example_gives_the_same_answer_four_ways() {
+        assert_eq!(
+            output(include_str!("../examples/styles.zeno")),
+            "typed, with a class:   21.5\n\
+             untyped, with a class: 21.5\n\
+             functional:            21.5\n\
+             comprehension:         21.5\n"
+        );
     }
 
     #[test]

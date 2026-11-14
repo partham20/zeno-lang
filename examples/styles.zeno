@@ -1,0 +1,99 @@
+# styles.zeno: one small job, written four ways.
+#
+# The job: a temperature sensor gives some readings. Throw away the ones
+# that are out of range, and average the rest.
+#
+# Zeno does not make you pick a style. Types are optional, and you can
+# organise code around objects, around functions, or mix the two.
+
+let readings = [21.5, 22.0, -99.0, 21.0, 150.0]
+
+
+# --- 1. With types, around a class (object-oriented) ---
+#
+# The data and the code that works on it live together. The types say what
+# each thing is, and will be checked before the program runs.
+
+class Sensor {
+    low: float
+    high: float
+    readings: list[float]
+
+    function is_valid(self, reading: float) -> bool {
+        return self.low <= reading <= self.high
+    }
+
+    function average(self) -> float {
+        var total: float = 0.0
+        var count: int = 0
+        for reading in self.readings {
+            if self.is_valid(reading) {
+                total += reading
+                count += 1
+            }
+        }
+        return total / count
+    }
+}
+
+let sensor = Sensor(low=-40.0, high=85.0, readings=readings)
+print("typed, with a class:  ", sensor.average())
+
+
+# --- 2. The same thing with no types ---
+#
+# Exactly the same program with every type left out. It runs the same.
+# You can start like this and add types later, a line at a time.
+
+class LooseSensor {
+    low
+    high
+    readings
+
+    function is_valid(self, reading) {
+        return self.low <= reading <= self.high
+    }
+
+    function average(self) {
+        var total = 0.0
+        var count = 0
+        for reading in self.readings {
+            if self.is_valid(reading) {
+                total += reading
+                count += 1
+            }
+        }
+        return total / count
+    }
+}
+
+let loose = LooseSensor(-40.0, 85.0, readings)
+print("untyped, with a class:", loose.average())
+
+
+# --- 3. Around functions (functional) ---
+#
+# No object and no variable that changes. Small functions are passed to
+# other functions: filter keeps some items, reduce folds a list into one value.
+
+function in_range(low: float, high: float) {
+    # Returns a new function that remembers low and high.
+    return function(reading: float) -> bool {
+        return low <= reading <= high
+    }
+}
+
+function add(total: float, reading: float) -> float {
+    return total + reading
+}
+
+let valid = readings.filter(in_range(-40.0, 85.0))
+print("functional:           ", valid.reduce(add, 0.0) / len(valid))
+
+
+# --- 4. The short way ---
+#
+# A comprehension and a built-in do the same job in two lines.
+
+let kept = [r for r in readings if -40.0 <= r <= 85.0]
+print("comprehension:        ", sum(kept) / len(kept))

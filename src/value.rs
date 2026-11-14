@@ -237,6 +237,7 @@ impl fmt::Display for Value {
                 let items: Vec<String> = items.borrow().iter().map(Value::repr).collect();
                 write!(f, "[{}]", items.join(", "))
             }
+            Value::Function(closure) if closure.decl.name.is_empty() => write!(f, "<function>"),
             Value::Function(closure) => write!(f, "<function {}>", closure.decl.name),
             Value::Builtin(builtin) => write!(f, "<function {}>", builtin.name),
             Value::Method(_, name) => write!(f, "<function {name}>"),

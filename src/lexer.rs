@@ -32,6 +32,10 @@ struct Lexer {
     /// How many `(` or `[` are currently open. Line breaks inside them are
     /// ignored, so a long call or list can be split over several lines.
     depth: usize,
+    /// The value of `depth` outside each `{` that is currently open. Inside
+    /// braces line breaks matter again, even if the braces are themselves
+    /// inside brackets, as with a function written as an argument.
+    outer_depths: Vec<usize>,
     tokens: Vec<Token>,
     errors: Vec<Error>,
 }
@@ -44,6 +48,7 @@ impl Lexer {
             line: 1,
             col: 1,
             depth: 0,
+            outer_depths: Vec::new(),
             tokens: Vec::new(),
             errors: Vec::new(),
         }
@@ -305,8 +310,15 @@ impl Lexer {
                 self.depth = self.depth.saturating_sub(1);
                 RBracket
             }
-            '{' => LBrace,
-            '}' => RBrace,
+            '{' => {
+                self.outer_depths.push(self.depth);
+                self.depth = 0;
+                LBrace
+            }
+            '}' => {
+                self.depth = self.outer_depths.pop().unwrap_or(0);
+                RBrace
+            }
             ',' => Comma,
             '.' => Dot,
             ':' => Colon,
@@ -501,6 +513,17 @@ mod tests {
         assert_eq!(
             kinds("[\n1,\n2\n]"),
             vec![LBracket, Int(1), Comma, Int(2), RBracket, Newline]
+        );
+    }
+
+    #[test]
+    fn line_breaks_count_again_inside_braces_inside_parentheses() {
+        assert_eq!(
+            kinds("f(function() {\n  a\n  b\n},\n  1)"),
+            vec![
+                ident("f"), LParen, Function, LParen, RParen, LBrace, Newline,
+                ident("a"), Newline, ident("b"), Newline, RBrace, Comma, Int(1), RParen, Newline
+            ]
         );
     }
 

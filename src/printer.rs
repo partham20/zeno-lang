@@ -132,15 +132,21 @@ fn if_chain(statement: &Stmt, keyword: &str, depth: usize, out: &mut String) {
 }
 
 fn function(f: &Function, depth: usize, out: &mut String) {
-    let mut text = format!("function {}({})", f.name, join(&f.params, param));
+    line(&signature(f), depth, out);
+    block(&f.body, depth + 1, out);
+}
+
+/// `function name(params) -> type raises Error`
+fn signature(f: &Function) -> String {
+    let space = if f.name.is_empty() { "" } else { " " };
+    let mut text = format!("function{space}{}({})", f.name, join(&f.params, param));
     if let Some(ty) = &f.return_type {
         text += &format!(" -> {}", type_(ty));
     }
     if !f.raises.is_empty() {
         text += &format!(" raises {}", f.raises.join(", "));
     }
-    line(&text, depth, out);
-    block(&f.body, depth + 1, out);
+    text
 }
 
 fn param(p: &Param) -> String {
@@ -152,7 +158,7 @@ fn param(p: &Param) -> String {
 }
 
 fn field(f: &Field) -> String {
-    let mut text = format!("{}: {}", f.name, type_(&f.ty));
+    let mut text = format!("{}{}", f.name, annotation(&f.ty));
     if let Some(default) = &f.default {
         text += &format!(" = {}", expr(default));
     }
@@ -228,6 +234,17 @@ pub fn expr(e: &Expr) -> String {
                 text += &format!(" {} {}", op.text(), expr(operand));
             }
             text + ")"
+        }
+        ExprKind::Function(f) => {
+            // An expression has to fit on one line, so the body goes inside braces.
+            let mut body = String::new();
+            block(&f.body, 0, &mut body);
+            let statements: Vec<&str> = body.lines().map(str::trim).collect();
+            if statements.is_empty() {
+                format!("{} {{ }}", signature(f))
+            } else {
+                format!("{} {{ {} }}", signature(f), statements.join("; "))
+            }
         }
         ExprKind::Call { callee, args } => format!("{}({})", expr(callee), join(args, arg)),
         ExprKind::Field { object, name } => format!("{}.{name}", expr(object)),

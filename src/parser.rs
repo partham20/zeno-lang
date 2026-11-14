@@ -139,7 +139,11 @@ impl Parser {
 
         let kind = match self.peek() {
             TokenKind::Let | TokenKind::Var | TokenKind::Const => self.declaration()?,
-            TokenKind::Function => StmtKind::Function(self.function()?),
+            // `function name(...)` declares. `function(...)` with no name is a
+            // value, so it is handled with the other expressions below.
+            TokenKind::Function if *self.peek_at(1) != TokenKind::LParen => {
+                StmtKind::Function(self.function()?)
+            }
             TokenKind::Class => self.class()?,
             TokenKind::Enum => self.enum_()?,
             TokenKind::If => self.if_statement()?,
@@ -404,6 +408,11 @@ impl Parser {
     fn function(&mut self) -> Result<Function, Error> {
         self.advance(); // function
         let name = self.name("a name for the function")?;
+        self.function_after_name(name)
+    }
+
+    /// Everything from the `(` on, shared by named and nameless functions.
+    fn function_after_name(&mut self, name: String) -> Result<Function, Error> {
 
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
@@ -455,11 +464,10 @@ impl Parser {
         Ok(StmtKind::Class(Class { name, fields, methods }))
     }
 
-    /// `name: type`, optionally with `= default`
+    /// `name`, optionally with `: type` and `= default`
     fn field(&mut self) -> Result<Field, Error> {
         let name = self.name("a field name")?;
-        self.expect(TokenKind::Colon)?;
-        let ty = self.type_()?;
+        let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
         let default = if self.eat(TokenKind::Assign) { Some(self.expression()?) } else { None };
         Ok(Field { name, ty, default })
     }
@@ -767,6 +775,10 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
                 ExprKind::Name(name)
+            }
+            TokenKind::Function => {
+                self.advance();
+                ExprKind::Function(Box::new(self.function_after_name(String::new())?))
             }
             TokenKind::LParen => {
                 // Brackets only group. They leave no node of their own in the tree.
@@ -1103,6 +1115,27 @@ mod tests {
         );
         assert_eq!(tree("function nothing() {\n}"), "function nothing()\n");
         assert_eq!(tree("function stop() { return }"), "function stop()\n    return\n");
+    }
+
+    #[test]
+    fn functions_as_values() {
+        assert_eq!(
+            tree("let double = function(n) { return n * 2 }"),
+            "let double = function(n) { return (n * 2) }\n"
+        );
+        assert_eq!(
+            expr("items.map(function(n: int) -> int {\n    let m = n + 1\n    return m\n})"),
+            "items.map(function(n: int) -> int { let m = (n + 1); return m })"
+        );
+        assert_eq!(expr("function() { }()"), "function() { }()");
+    }
+
+    #[test]
+    fn types_can_be_left_out() {
+        assert_eq!(
+            tree("function add(a, b) { return a + b }\nclass Point {\n    x\n    y = 0\n}\nenum Shape {\n    Circle(radius)\n}"),
+            "function add(a, b)\n    return (a + b)\nclass Point\n    field x\n    field y = 0\nenum Shape\n    Circle(radius)\n"
+        );
     }
 
     #[test]
