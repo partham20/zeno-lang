@@ -108,7 +108,8 @@ machine, which is two to three times as fast and prints exactly the same
 `zeno build --llvm` compiles a second way: to LLVM IR, the input of the
 compiler library behind Clang and Rust, which clang turns into a
 program ([`docs/llvm.md`](docs/llvm.md)). It compiles what the C backend
-compiles, and the tests build every program both ways.
+compiles, and the tests build every program both ways. It goes with
+`--firmware` too: errors as values, and no `setjmp` in the IR.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -125,6 +126,7 @@ cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks ar
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
+cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
@@ -189,7 +191,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     - Generics (done: `function first[T]` and `class Stack[T]`, with the
       types worked out at each call, and one compiled copy for each set of
       types)
-    - `--llvm` together with `--firmware`
+    - `--llvm` together with `--firmware` (done: errors as values in the
+      IR, with no `setjmp`, and the same refusals as the C firmware build)
 
 ## Layout
 

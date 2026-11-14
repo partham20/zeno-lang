@@ -228,6 +228,18 @@ firmware build writes today still:
 None of these is hidden. Each is a later piece of work, and
 `decisions.md` 5.5l keeps the list.
 
+## The same, through LLVM
+
+`zeno build --llvm --firmware` writes the same design in LLVM IR in
+place of C: a function that can raise gives back an `i1` and puts its
+answer where a pointer says, each call is followed by a `br` on what
+came back, and a `try` is a label that failures branch to. The runtime
+file beside the IR is the firmware one, so neither file contains
+`setjmp`. It refuses what this build refuses, in the same words.
+[`llvm.md`](llvm.md), "Errors as values", walks through the IR.
+
+`--no-collector` does not go with `--llvm` yet.
+
 ## How it is tested
 
 Every test that compares a compiled program with `zeno run` now builds it

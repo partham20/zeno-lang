@@ -2157,7 +2157,8 @@ one of them could be tested against the interpreter.
 
 What it refuses is what `zeno build` refuses (a named function inside a
 function, the `time` module, a default that is not a literal, a method
-used as a value), and `--firmware`, `--no-collector` and `--memory`.
+used as a value), and `--no-collector` and `--memory`. `--firmware`
+was refused too at first, and came later (5.11o).
 One thing it takes that the C backend does not: an assignment through
 any place, such as `grid[0][1] = 5`. In IR the order of the steps is the
 order they are written, so the C backend's reason for refusing it (the
@@ -2263,9 +2264,10 @@ division by zero) already travel this way, and a `try` in IR has to
 catch those too. **Turned down:** LLVM's own exceptions (`invoke` and
 `landingpad`). They are what C++ uses, cost nothing until something is
 raised, and need a "personality" function and the system's unwinder,
-which `runtime.c` would have to be rebuilt around. Also turned down for
-now: errors as values, as in a firmware build (5.5l). That is the way
-to make `--llvm --firmware` one day.
+which `runtime.c` would have to be rebuilt around. Errors as values, as
+in a firmware build (5.5l), are not the ordinary way here for the reason
+they are not in C (5.5i): a test after every call that can raise. They
+are what `--llvm --firmware` does (5.11o).
 
 **Two things this costs.**
 
@@ -2320,6 +2322,63 @@ the moment its owner ends matters for a build without one (5.9), which
 `--llvm` does not do yet. The program prints the same either way.
 **Cost:** memory comes back later than in a C build, and `--memory` is
 not offered.
+
+### 5.11o `--llvm --firmware`: the firmware design again, in IR
+
+`zeno build --llvm --firmware` carries errors as values, as the C
+firmware build does (5.5l), and for its reason: no `setjmp`.
+`docs/llvm.md` walks through the IR.
+
+- A function that says `raises` gives back an `i1`, and takes one more
+  argument, `ptr %result`, where it stores its answer.
+- A call to it is followed by a `br` on that `i1`. A failure goes to the
+  `except` of the `try` around it, or out of the function with
+  `ret i1 false`, or, at the top of the file, to `zeno_uncaught`.
+- `raise` calls `zeno_note` and fails the same way.
+- A `try` is plain blocks and branches. There is no `_setjmp`, no
+  `zeno_try`, and no slot is `volatile`.
+- The runtime file written beside the IR is the firmware one, so an
+  error the runtime finds stops the program.
+
+**Why the same design,** and not something LLVM is better at. Three
+reasons. The firmware runtime already exists and is used as it is: not
+one line of C was written for this. What a firmware build means stays
+one thing, whichever backend makes it: the same programs are accepted,
+the same ones are refused in the same words, and a fault stops both
+*(principle 1)*. And the tests come free: every test program was
+already built for firmware through C and compared with `zeno run`, so
+building it once more through LLVM needed no new programs.
+
+**Why this is the better half of the LLVM backend.** In an ordinary
+LLVM build, every slot of a function with a `try` in it is `volatile`
+(5.11l), which stops the optimiser from keeping those variables in
+registers. Here nothing jumps, so nothing is `volatile`, and `opt` sees
+ordinary calls, tests and returns, which it can inline and simplify.
+
+**Turned down: giving back a pair, `{ i1, T }`.** IR can return two
+values at once, and for small ones they travel in registers, which is
+what Rust does with a `Result`. Three things against it today. The C
+runtime's own functions that can fail (`zeno_parse_int`) use the
+pointer form, so a build would have both forms in it. A pair type is
+needed for every return type. And how a pair is returned depends on the
+processor, where a pointer is the same everywhere. After inlining, LLVM
+removes the pointer for small functions anyway. *(provisional: worth
+measuring when there is a real board to measure on.)*
+
+**Turned down: `invoke` and `landingpad`,** as in 5.11l. They need the
+system's unwinder, which is the very thing a firmware build is there to
+avoid.
+
+**The room for the answer is made at the top of the function,** one
+`alloca` for each call that can fail. An `alloca` inside a loop would
+take new stack on every turn. **Cost:** a function with many such calls
+has that many slots, until `opt` merges them.
+
+**Still refused *(provisional)*:** `--llvm` with `--no-collector` or
+`--memory`. Both need owned values freed where their owner ends, and
+the LLVM backend holds an owned value like a shared one (5.11n). So a
+firmware build through LLVM has the collector in it, and the C backend
+stays the one for a board with no heap to spare.
 
 ### 5.12 The board is four functions
 

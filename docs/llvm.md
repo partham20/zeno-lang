@@ -746,10 +746,10 @@ each item, and the emitter writes a small **adapter** that takes the
 
 The C backend has two ways to do errors ([`firmware.md`](firmware.md)).
 The ordinary one is `setjmp` and `longjmp`: `try` marks a place, and
-`raise` jumps back to it from however deep. This backend uses that one,
-because the runtime that raises (`zeno_raise`, and every
-`IndexError` and `OverflowError` inside the runtime) already works that
-way.
+`raise` jumps back to it from however deep. `zeno build --llvm` uses
+that one, and this section shows it. `zeno build --llvm --firmware`
+uses the other, where an error is a value that each caller tests. That
+is the section after this one.
 
 `raise` is short:
 
@@ -853,6 +853,138 @@ and really write memory, every time". So in a function that has a
 and `mem2reg` leaves those slots alone. Functions with no `try` are
 not touched, so nothing else pays for it. Exercise 6 takes the word out
 by hand, and the program prints `6 0` (decision 5.11l).
+
+## Errors as values: `--llvm --firmware`
+
+```sh
+cargo run -- build --llvm --firmware examples/sensor.zeno
+grep -c setjmp sensor.ll sensor_runtime.c     # 0 and 0
+```
+
+Coding standards for firmware do not allow `setjmp`
+([`firmware.md`](firmware.md) says why). So a firmware build carries
+an error the slow, plain way: as a return value. The C backend has
+done this since its firmware stage. This is the same design, written
+in IR, and the two builds must print the same thing.
+
+Take the `steps` program from just above, and build it this way.
+
+**A function that can raise** gives back an `i1`: 1 for "it worked", 0
+for "it raised". Its real answer goes out through one more parameter,
+a pointer the caller supplies:
+
+```llvm
+define internal zeroext i1 @z_halve(i64 %arg.n, ptr %result) {
+entry:
+  %t1 = call i64 @zeno.mod(i64 %arg.n, i64 2, i32 2, i32 8)
+  %t2 = icmp ne i64 %t1, 0
+  br i1 %t2, label %then1, label %end1
+
+then1:
+  %t3 = call ptr @zeno_str_int(i64 %arg.n)
+  %t4 = call ptr (i32, ...) @zeno_join(i32 2, ptr %t3, ptr @.str.1)
+  %t5 = call ptr @zeno_error_new(ptr @.str.2, ptr %t4, ptr null)
+  call void @zeno_note(ptr %t5, i32 3, i32 9)      ; raise: note the error...
+  ret i1 false                                     ; ...and say "it failed"
+
+end1:
+  %t6 = call i64 @zeno.floordiv(i64 %arg.n, i64 2, i32 5, i32 12)
+  store i64 %t6, ptr %result                       ; return: the answer...
+  ret i1 true                                      ; ...and "it worked"
+}
+```
+
+`zeno_note` puts the error in the runtime's `zeno_raised`, with its
+line and column. Nothing jumps. `raise` is a `ret`.
+
+**A call to such a function** is followed at once by a test:
+
+```llvm
+do2:
+  %t3 = load i64, ptr %var.left
+  %t4 = call zeroext i1 @z_halve(i64 %t3, ptr %answer.3)
+  br i1 %t4, label %worked4, label %failed4
+
+failed4:
+  br label %except1               ; inside a `try`: go to its `except`s
+
+worked4:
+  %t5 = load i64, ptr %answer.3   ; the answer `halve` stored
+```
+
+`%answer.3` is an `alloca` at the top of `steps`, one for each such
+call. Where `failed4` goes depends on where the call is, and it is the
+table from `firmware.md` again (`failed` in `emit_llvm.rs`):
+
+| Where | What a failure does |
+|---|---|
+| Inside a `try` in this function | `br label %except1` |
+| In a function that says `raises` | `ret i1 false` |
+| At the top of the file | `call void @zeno_uncaught()`, which prints the error and stops |
+
+**`try`** has no `setjmp`, no buffer, no `zeno_try_open`. The body is
+just the body. Its end, and every failure inside it, arrive at one
+label:
+
+```llvm
+done2:                                    ; the loop ended: the body is over
+  br label %except1
+
+except1:
+  %t10 = load ptr, ptr @zeno_raised
+  %t11 = icmp ne ptr %t10, null           ; did anything fail?
+  br i1 %t11, label %caught1, label %end1
+
+caught1:
+  store ptr null, ptr @zeno_raised        ; it is being dealt with
+  %t12 = call i1 @zeno_is(ptr %t10, ptr @.str.2)       ; a ValueError?
+  br i1 %t12, label %except1.1, label %caught1.1
+
+except1.1:
+  %t13 = getelementptr { ptr, ptr, ptr }, ptr %t10, i32 0, i32 1
+  %t14 = load ptr, ptr %t13                            ; error.message
+  call void (i32, ...) @zeno_print(i32 2, ptr @.str.3, ptr %t14)
+  br label %end1
+
+caught1.1:
+  store ptr %t10, ptr @zeno_raised        ; not ours: put it back
+  call void @zeno_uncaught()
+  unreachable
+```
+
+`caught1.1` cannot be reached here: the body can only raise a
+`ValueError`, and there is an `except` for it. The block is written
+all the same, because a `br` needs two labels.
+
+Now look for the word `volatile`. It is gone:
+
+```llvm
+  %t6 = load i64, ptr %var.count
+  ...
+  store i64 %t8, ptr %var.count
+```
+
+`volatile` was there because a jump could put old registers back.
+Nothing jumps now, so `count` can live in a register through the whole
+loop, and `mem2reg` is free to put it there. `return`, `break` and
+`continue` inside a `try` need no `zeno_try_close` either, because
+there is nothing to close. The plain way of carrying errors is also
+the one the optimiser understands best.
+
+What it costs is a test after every call to a function that can
+raise, whether or not it raised. Exercise 16 measures both.
+
+**What the runtime finds for itself**, such as a division by zero or
+an index past the end, stops a firmware build, as in C. The runtime
+file written beside the IR is the firmware one, where `zeno_fail`
+prints and stops. `int(text)` and `float(text)` are the two runtime
+functions a program can catch, so they follow the same pattern as
+`halve`: `call zeroext i1 @zeno_parse_int(ptr %t1, i32 2, i32 12, ptr
+%answer.1)`.
+
+**What it refuses** is what the C firmware build refuses, in the same
+words: a `try` in which nothing can be caught, and a function that can
+raise used as a value.
 
 ## Functions as values
 
@@ -1001,6 +1133,17 @@ one for a small function and one for a class. A change to the shape of
 the IR is noticed. One checks that everything in `DECLARED` is in the
 runtime.
 
+Every one of those programs is built a second time for firmware
+(`--llvm --firmware`) and must print the same again. A refusal has to
+say `--firmware`, as in the C backend's tests. On top of that:
+`a_firmware_build_has_nothing_to_jump_with` (no `setjmp`, `zeno_try`
+or `volatile` in the IR, and a function that cannot raise is the same
+in both kinds of build), `the_ir_for_a_try_in_a_firmware_build`,
+`what_a_firmware_build_refuses_says_so`, and
+`a_fault_stops_a_firmware_build_where_an_ordinary_one_catches_it`.
+The two long programs the C backend uses for errors as values must be
+accepted here too (`firmware_as_interpreter`).
+
 If clang is not installed the compiled half of each test is skipped.
 
 ## How fast
@@ -1026,8 +1169,9 @@ file. In a C build they are in the same file and can be inlined.
 
 ## What it does not do yet
 
-- **`--firmware`, `--no-collector`, `--memory`.** They do not go with
-  `--llvm`. For firmware the C backend is the one to use.
+- **`--no-collector` and `--memory`.** They do not go with `--llvm`.
+  A firmware build through LLVM still has the garbage collector in it.
+  For a build with no collector the C backend is the one to use.
 - **Owned values are not freed early.** An `owned` list or object is
   held like a shared one and the collector frees it. The program
   prints the same, and uses memory for longer (decision 5.11n).
@@ -1102,7 +1246,19 @@ any expression, such as `grid[0][1] = 5`.
 14. A big one: free an `owned` value at the end of its scope, as
     `zeno build` does ([`ownership.md`](ownership.md)). Start with a
     list that never leaves the function.
-15. The biggest: `--llvm --firmware`. Errors become values there
-    ([`firmware.md`](firmware.md)): a function that can raise returns
-    its result and an error together. What IR type would that be? You
-    have already met one that pairs a value with a flag.
+15. Build `examples/sensor.zeno` with `--llvm` and again with
+    `--llvm --firmware` (keep the first `sensor.ll` under another
+    name). Compare `z_read_all` in the two files. Which has more
+    blocks? Which has `volatile`? Then run `opt -passes=mem2reg -S` on
+    both and count the `alloca`s that are left in each.
+16. Time it. Write a loop that calls `halve` twenty million times with
+    an even number, and build it both ways. Which is faster when
+    nothing is ever raised? Now make every tenth call raise, with the
+    `try` inside the loop. Which is faster now, and why does the
+    ordinary build suffer more?
+17. A firmware build gives back an `i1` and writes the answer through
+    a pointer. The other way is to give back both together, as
+    `{ i1, i64 }`: you have already met that type, for `int or none`.
+    Change `function`, the `return` statement and `checked_call` to do
+    that, and read `opt -O2 -S` of both. Is the machine code
+    different? What would a `list[int]` answer look like?
