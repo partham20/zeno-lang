@@ -393,6 +393,7 @@ breaking any program that works now.
 - An owned value is still taken from the heap with `malloc`. A build with
   no collector at all, for a program where everything is owned, is
   `zeno build --no-collector`: see [`no-collector.md`](no-collector.md).
+  That build takes its blocks from a fixed pool ([`pool.md`](pool.md)).
 - The borrow checker is small on purpose. It refuses some programs that
   would be safe, such as the one-line rule above. Rust accepts more, with
   far more machinery.

@@ -1357,10 +1357,11 @@ except2:
   %t12 = load ptr, ptr @zeno_raised
 ```
 
-**An error is freed by the `except` that catches it.** The error and
-its message are two blocks from the heap, made by `zeno_error_new`.
-(The message is copied out of the text room, which is why `raise` can
-put the mark back.) The handler holds the error while it runs:
+**An error is freed by the `except` that catches it.** The error is
+one block, made by `zeno_error_new`, with a copy of its message in the
+same block. (The message is copied out of the text room, which is why
+`raise` can put the mark back.) The handler holds the error while it
+runs:
 
 ```llvm
 except2.1:
@@ -1423,16 +1424,23 @@ ends. Through LLVM that is one line in `main` and one flag:
 ```
 
 and `-DZENO_MEMORY_REPORT` for the runtime file, so that it counts.
-With no collector the report has a second line for the text room:
+With no collector the report has a line for the pool that blocks come
+from ([`pool.md`](pool.md)) and one for the text room:
 
 ```
 memory: 2 blocks made (66 bytes), at most 33 bytes in use at once, no collector, 0 blocks left at the end
+pool: 72 bytes taken, in a pool of 32768
 text: at most 17 bytes in use at once, in a room of 1024
 ```
 
-Those are the two errors with their messages, both freed, and the
-longest line the program ever built. The C build of the same program
-prints the same two lines, and the tests require that.
+Those are the two errors with their messages, both freed, the one
+64-byte block of the pool that held each in turn, and the longest line
+the program ever built. The C build of the same program prints the
+same three lines, and the tests require that.
+
+The pool is in the runtime file, so the IR knows nothing of it. To
+choose its size, build by hand with `-DZENO_POOL=`, as exercise 19
+does for the text room.
 
 ## The tests
 
@@ -1472,14 +1480,17 @@ With no collector the test is stricter than "prints the same". Each
 of the C backend's no-collector programs is built both ways with
 `--memory`, and the two **memory reports must be the same line for
 line** (`no_collector_as_c`): blocks made, bytes, the most in use at
-once, nothing left at the end, and the most text in the room. A free
+once, nothing left at the end, how much of the pool was taken, and
+the most text in the room. A free
 that is missing, or one that comes a statement late, changes a number.
 Each refusal is tried through LLVM too and must use the C build's
 words (`refuses_as_c`).
 
 Set `ZENO_VALGRIND=1` and the no-collector tests run each program
-under valgrind, which stops at a block freed twice or read after it
-was freed:
+under valgrind. (It was most use while blocks came from the heap,
+where it stops at a block freed twice or read after it was freed. It
+cannot see inside the pool. The pool catches a block given back twice
+by itself.)
 
 ```sh
 ZENO_VALGRIND=1 cargo test no_collector

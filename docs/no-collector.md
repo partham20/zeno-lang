@@ -15,12 +15,15 @@ refused 33 frames, the first on channel 84
 [3, 3, 3, 3]
 4
 memory: 1691 blocks made (2646299 bytes), at most 13336 bytes in use at once, no collector, 0 blocks left at the end
+pool: 25384 bytes taken, in a pool of 32768
 text: at most 53 bytes in use at once, in a room of 1024
 ```
 
 The program made 1691 blocks and gave every one of them back, at a line
 you can find in `buffer.c`. Open that file and search for `zeno_collect`,
-`zeno_roots` or `setjmp`. None is there.
+`zeno_roots` or `setjmp`. None is there. Nor is `malloc`: the blocks come
+from a pool of a fixed size that is part of the program
+([`pool.md`](pool.md)).
 
 It is a firmware build ([`firmware.md`](firmware.md)) with one more
 promise, so `--no-collector` turns `--firmware` on by itself.
@@ -62,9 +65,9 @@ each has such a line.
 
 | What | Where it lives | When it is given back |
 |---|---|---|
-| An owned list or object | the heap | when its owner's block ends |
+| An owned list or object | the pool, a fixed array | when its owner's block ends |
 | Text built while the program runs | the text room, a fixed array | when the statement that built it is over |
-| An error that was raised | the heap | when the `except` block that caught it ends |
+| An error that was raised | the pool | when the `except` block that caught it ends |
 
 Numbers, bools, quantities, enum cases without data and text written in
 the program (`"idle"`) need no memory at all, here as in every build.
@@ -87,22 +90,21 @@ program runs. It refuses to build a program that could have one.
 
 Nothing new happens here, and that is the point. Stage 2 already wrote a
 free at the end of every owner's block and on every early way out. What
-changes is what the free *is*. In runtime.c:
+changes is what the free *is*. With a collector, `zeno_free` takes the
+block out of the collector's table and hands it to the C library's
+`free`. Here there is no table and no C library heap. `zeno_alloc` takes
+a block from the **pool**, one array whose size is fixed when the C is
+compiled, and `zeno_free` puts it on a list of spare blocks of its size:
 
 ```c
-static char *zeno_alloc(size_t size) {
-    char *memory = calloc(1, size);
-    if (memory == NULL) zeno_out_of_memory();
-    return memory;
-}
-
-static void zeno_free(void *memory) {
-    free(memory);
-}
+block->head.asked = 0;
+block->next = zeno_pool_spare[block->head.step];
+zeno_pool_spare[block->head.step] = block;
 ```
 
-No table of blocks, nothing in front of each block. (With `--memory`
-there is a size in front of each, so that the report can count bytes.)
+[`pool.md`](pool.md) is the walkthrough of the pool: how it is laid out,
+why it cannot break up into unusable pieces, what it costs, and how to
+choose its size.
 
 ## Text: one statement, one fixed room
 
@@ -246,14 +248,15 @@ needed yet.
 
 ## What this does not claim
 
-- **It still uses the heap.** Owned values come from `calloc` and go back
-  through `free`. MISRA C:2012 Rule 21.3 bans both, and Directive 4.12
-  frowns on dynamic memory of any kind. What this build gives is that
-  every `calloc` has its `free` at a line you can point to, and that
-  memory use is the same on every run with the same input. A fixed pool
-  in place of the heap is the natural next step, and exercise 5 below.
+- **Memory is still taken and given back while the program runs.** It
+  comes from a fixed pool and not from the heap, so MISRA C:2012 Rule
+  21.3 (no `malloc`, `calloc`, `realloc` or `free`) is met. Directive
+  4.12 is wider: it is against dynamic memory of any kind, and a pool is
+  still that. [`pool.md`](pool.md), "What this does not claim", says what
+  the pool does and does not answer.
 - **It does not bound memory for you.** A loop that appends to an owned
-  list for ever still runs out. `--memory` tells you what a run needed.
+  list for ever fills the pool, and the program stops there. `--memory`
+  tells you what a run needed.
 - **The text room is a fixed size that you choose.** Too small, and the
   program stops at the statement that overflowed it.
 - The rest of the list in [`firmware.md`](firmware.md) stands: `printf`
@@ -288,7 +291,8 @@ Every test program for this build (`no_collector_as_interpreter` in
 2. Its memory report ends with **0 blocks left at the end**. With no
    collector, a block that no line frees is never freed, so this number
    is the test.
-3. The C file does not contain `zeno_collect`, `zeno_roots` or `setjmp`.
+3. The C file does not contain `zeno_collect`, `zeno_roots` or `setjmp`,
+   nor `malloc`, `calloc`, `realloc` or the library's `free`.
 4. The same program still agrees with the interpreter in the two builds
    that do have a collector.
 5. Built through LLVM with no collector, it prints the same, and its
@@ -303,7 +307,9 @@ of 29 small programs checks that each refusal says what it should, and
 that each of them still builds where there is a collector.
 
 They were also run by hand with gcc and clang at several optimisation
-levels, and under AddressSanitizer with its leak check on.
+levels, and, while memory still came from the heap, under
+AddressSanitizer with its leak check on. [`pool.md`](pool.md) lists the
+tests of the pool itself.
 
 ## Things to try
 
@@ -320,11 +326,11 @@ levels, and under AddressSanitizer with its leak check on.
 4. `let line = f"plain text"` is refused, though nothing in it is built.
    Find where `format_string` makes its value and mark it `fixed` when
    every part is a literal.
-5. The big one: replace `calloc` and `free` in the no-collector part of
-   runtime.c with a pool. Start with the simplest that could work, a
-   static array of fixed-size blocks and a free list threaded through the
-   unused ones. Which sizes does `buffer.zeno` ask for? What should happen
-   when the pool is empty?
+5. This exercise used to be "replace `calloc` and `free` with a pool".
+   That is done ([`pool.md`](pool.md)), so here is what is left of it:
+   print, from `zeno_memory_report`, how many blocks of each size were
+   ever cut from the pool. Which sizes does `buffer.zeno` ask for, and
+   which size holds most of the pool?
 6. `print(42)` builds the text `"42"` and then prints it. Give the runtime
    a `zeno_put_int` that prints a number with no text room, and make the
    compiler use it when `print` has one argument.

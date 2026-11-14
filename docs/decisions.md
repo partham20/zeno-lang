@@ -1475,7 +1475,8 @@ does not follow errors through function values in any build.
 
 **What this does not make true.** The C of a firmware build is not thereby
 MISRA-compliant. Still to do, each its own piece of work: the heap (Rule
-21.3; plan in 5.9), variable argument lists in the runtime (17.1),
+21.3; answered for `--no-collector` builds by the pool, 5.9h), variable
+argument lists in the runtime (17.1),
 `printf` and `exit` (21.6, 21.8), the GCC and Clang builtins (1.2), and the
 forward `goto` above (15.1, advisory).
 
@@ -1777,11 +1778,10 @@ exception.)*
 **Why after 5.8.** Without owned values, "no collector" would mean "no
 lists and no objects", which is too little to write real firmware in.
 
-**What it does not do yet.** It still takes owned values from the heap,
-and MISRA C bans `malloc` and `free` (Rule 21.3). The earlier plan for
-this decision said the build would answer that rule. It does not, and the
-walkthrough says so. What it gives is a `free` for every allocation at a
-line that can be pointed to. See 5.9b.
+**The heap.** At first this build still took owned values from the
+heap, and MISRA C bans `malloc` and `free` (Rule 21.3). It now takes
+them from a pool of a fixed size, and the heap is not used: 5.9b and
+5.9h to 5.9k.
 
 ### 5.9a `--no-collector` is a firmware build
 
@@ -1797,17 +1797,16 @@ travels as a return value passes every one of those lines.
 collector. It could not be made sound without unwinding tables, which is
 C++ exceptions by another name.
 
-### 5.9b Owned values use `calloc` and `free`, for now *(provisional)*
+### 5.9b Owned values came from `calloc` and `free` at first; now from a pool
 
-**Why.** It is the least that works, and it is honest about what it is.
-The compiler's part of the job, a `free` on every path, is the same
-whatever sits underneath.
+The first no-collector build used `calloc` and `free`. **Why then.** It
+was the least that worked, and the compiler's part of the job, a free
+on every path, is the same whatever sits underneath. A fixed pool was
+turned down "for now", as a change to runtime.c that touches nothing in
+the compiler.
 
-**Turned down for now:** a fixed pool in the runtime. That is the right
-answer for a board with no C library heap, and for Rule 21.3. It is a
-change to about twenty lines of runtime.c that touches nothing in the
-compiler, so it can come when a real board asks for it. It is also a good
-exercise, and the walkthrough sets it as one.
+That is how it went. The pool (5.9h) replaced the two functions, and
+not a line of either compiler changed.
 
 ### 5.9c Built text lives for one statement, in a room of fixed size
 
@@ -1902,6 +1901,157 @@ a moment, and each would be more machinery. None was needed to build the
 example or the tests, so none was built. *(Principle: keep what works.)*
 The error for each names the line, and where there is one, the thing to
 write instead.
+
+### 5.9h The pool: fixed sizes that double, and a list of spares for each
+
+In a build with no collector, lists, objects and errors come from one
+static array of `ZENO_POOL` bytes. Blocks come in sizes of 16, 32, 64
+bytes and so on. A request gets the smallest size it fits. A block
+given back goes on a list of spare blocks of its size, and the next
+request of that size takes it. When there is no spare one, a new block
+is cut from the part of the array that has never been used. A block is
+never cut in two and two are never joined. `docs/pool.md` is the
+walkthrough.
+
+**Why a pool at all.** MISRA C:2012 Rule 21.3 bans `malloc`, `calloc`,
+`realloc` and `free`. A small board may have no heap. And the two
+things firmware cannot plan for with a heap are how long a request
+takes and whether the heap has broken into pieces too small to use.
+
+**Why these sizes and no joining.** Three properties follow, and each
+can be said in a sentence.
+
+- Taking and giving are a few instructions, the same however full the
+  pool is. Nothing is searched.
+- The pool cannot break up. A block of a size the program has given
+  back is there, whole, for the next request of that size. So a piece
+  of work that fitted once fits every time after.
+- How much pool a run needed is one number, `zeno_pool_top`, and a
+  pool of exactly that size is enough.
+
+**Cost.** Memory cut for one size never serves another. A list that
+grows by doubling leaves each old place behind as a spare block, so it
+costs about twice its final size. A request is rounded up to the next
+size. `buffer.zeno` takes 25,384 bytes of pool for 13,336 bytes in use
+at once. *(principle: firmware would sooner pay a known cost than risk
+an unknown one.)*
+
+**Turned down: a free list with joining** (the allocator in K&R, and
+most small `malloc`s). It wastes less. It searches, and it can break
+up, which are the two things the pool is there to remove.
+
+**Turned down: a buddy allocator,** which cuts a block in two halves
+and joins them again when both are spare. It keeps the doubling sizes
+and gets back the memory a growing list leaves behind. It is about
+three times the code, and giving back is then a loop of joins. Worth
+another look if a real program is short of RAM because of growing
+lists. *(provisional)*
+
+**Turned down: TLSF,** the usual answer when a real-time system must
+have a general allocator. It is constant-time and wastes little, and
+is some hundreds of lines. Too much machinery for what is asked of it
+here.
+
+**Turned down: one pool for each type,** each with a count chosen by
+the programmer (`pool Frame[8]`). That is the strictest design and the
+one a certifying project may want, because the compiler could then say
+when it builds that the program cannot run out. It needs new syntax,
+and a list has no one size. It can be added beside this pool later.
+
+**Turned down: one block size for everything.** A list of a thousand
+items would not fit, or every object would take a thousand items' room.
+
+**The sizes start at 16 bytes.** A spare block keeps the address of
+the next spare one in its own first bytes, so it must hold a pointer,
+and 16 keeps every block lined up for a 64-bit number.
+
+**A new block is wiped whole,** not only the bytes asked for. The
+compilers rely on a new list or object being all zeros, and wiping the
+whole block means a spare block never shows the next owner what the
+last one left.
+
+### 5.9i Eight bytes in front of each block say its size and how much was asked for
+
+`zeno_free` is handed an address and nothing else. In front of the
+block are two 32-bit numbers: `step` (the block is `16 << step` bytes)
+and `asked` (how many of them the program asked for, and 0 while the
+block is spare).
+
+**Why not have the caller pass the size.** The compilers know the size
+of an object, but not of a list's items or an error's message when
+they free them. A size passed in is also one more thing that can be
+wrong.
+
+**Why `asked`.** Two uses for four bytes that alignment would have
+left empty anyway. The memory report needs it to count bytes in use,
+so a build with `--memory` lays memory out exactly as a build without
+it does, and the numbers it reports are true of the program that
+ships. (The heap version added two words to each block only when
+reporting.) And 0 means "spare", which is how a block given back twice
+is caught.
+
+**Why catch that,** when the compiler writes one free for each block.
+Because of what it would do: the block would be handed to two owners,
+and the fault would show up somewhere else, later. The check is one
+comparison. *(principle: a fault stops at the line that caused it.)*
+
+**Cost:** eight bytes a block, which is half as much again for the
+smallest.
+
+### 5.9j A full pool stops the program, and the size is chosen with `-DZENO_POOL`
+
+When a request does not fit, the program prints `error: the memory
+pool is full (ZENO_POOL is N bytes)` and stops, as it does when a
+statement overflows the text room (5.9c).
+
+**Why stop, and not raise a `MemoryError`.** In a firmware build what
+the runtime finds for itself, such as an index past the end, is a
+fault that stops the program (5.5l), and running out of memory is one
+of those. An error is also itself a block from the pool.
+
+**The size is a C macro, 32768 unless given.** **Why a macro.** The
+text room is chosen the same way (5.9c), and one build of the C can be
+compiled for boards of different sizes. **Why 32768.** It is the
+smallest round number in which every example runs. On a board it is
+meant to be changed, and `--memory` prints the number to change it to.
+*(provisional: `zeno build --pool N` is an exercise in `docs/pool.md`.)*
+
+**The report says `pool: N bytes taken`,** which is how much of the
+array was ever cut into blocks. **Why that number,** and not the most
+bytes in use at once (which the line above it already gives). It is
+the one that answers "how big must the pool be", and a test checks
+that it is exact: the program runs in a pool of N bytes and not in
+N - 1.
+
+### 5.9k The heap is gone from a no-collector build, not switched off
+
+There is no flag that puts `calloc` and `free` back. The runtime of a
+build with no collector does not contain the words, comments included,
+and the tests search the C, the IR and the runtime file for them.
+
+**Why.** The same reason the collector's code is left out and not
+switched off (5.9): a reviewer who searches a firmware build for
+`malloc` must find nothing, and must not have to work out which
+`#ifdef` is live.
+
+**Both backends get it for nothing.** The pool is in the runtime, and
+the LLVM backend links the same runtime (5.11d). The IR did not
+change. The two builds must still write the same memory report
+(5.11t), which now includes the pool.
+
+**Cost: a heap checker cannot see inside the pool.** Valgrind and
+AddressSanitizer watch `malloc` and `free`. To them the pool is one
+array that is always in use, so a block read after it was given back
+is no longer reported. What stands in for them: the compilers null an
+owner when it gives its value away, the report must end with 0 blocks
+left, the two backends must agree on every number, and a block given
+back twice is caught by the pool itself. Poisoning spare blocks in a
+checking build is an exercise in `docs/pool.md`. *(provisional)*
+
+**What this does not make true.** MISRA Directive 4.12 is against
+dynamic memory of any kind, and a pool is still that. The pool removes
+the directive's stated reasons one by one, and a project would still
+record a deviation.
 
 ### 5.10 A bytecode VM, beside the interpreter
 
@@ -2540,7 +2690,8 @@ Comparing the two builds needs no numbers.
 With `ZENO_VALGRIND=1` the same tests run each program under valgrind.
 **Why valgrind and not AddressSanitizer:** clang's sanitizer library
 is not installed everywhere clang is, and valgrind needs nothing at
-build time. It is off by default because it is slow.
+build time. It is off by default because it is slow. (Since the pool,
+5.9k, it sees less: blocks no longer come from the heap.)
 
 ### 5.12 The board is four functions
 

@@ -312,8 +312,9 @@ as `now() - start >= 200 ms` after sleeping that long.
   ADC, a serial port. Each would be a few more functions in the board
   layer.
 - **The runtime is still a desktop runtime.** A firmware build with no
-  collector has no `setjmp` and no garbage collector, but it still
-  calls `printf`, `malloc` and `exit` ([`no-collector.md`](no-collector.md)).
+  collector has no `setjmp`, no garbage collector and no `malloc`
+  ([`pool.md`](pool.md)), but it still calls `printf` and `exit`
+  ([`no-collector.md`](no-collector.md)).
   The board layer is the first piece of a port, and not the whole of
   it.
 - **`now()` is a `double`** of milliseconds. That is exact for

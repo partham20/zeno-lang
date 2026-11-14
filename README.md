@@ -98,7 +98,9 @@ waiting for the collector ([`docs/ownership.md`](docs/ownership.md)).
 values that every caller tests ([`docs/firmware.md`](docs/firmware.md)).
 `zeno build --no-collector` goes one step further for a program where
 everything is owned, and leaves the collector out of the C altogether
-([`docs/no-collector.md`](docs/no-collector.md)).
+([`docs/no-collector.md`](docs/no-collector.md)). Such a program does
+not use the heap either: its lists and objects live in a pool of a
+fixed size that is part of the program ([`docs/pool.md`](docs/pool.md)).
 
 `zeno run` has two engines. The interpreter walks the syntax tree. With
 `--vm` the program is compiled to bytecode and run by a small virtual
@@ -126,7 +128,7 @@ cargo run -- build examples/sensor.zeno         # none, errors and functions as 
 cargo run -- build --memory examples/memory.zeno  # the program reports its memory use as it ends
 cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks are freed without the collector
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
-cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
+cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector and no malloc: memory is a fixed pool
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
@@ -161,7 +163,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
-  [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md),
+  [`docs/no-collector.md`](docs/no-collector.md), [`docs/pool.md`](docs/pool.md),
+  [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
@@ -200,6 +203,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       values are freed where their owner ends, text is given back at the
       end of its statement, and the memory report matches the C build's
       line for line)
+    - A fixed memory pool for `--no-collector` builds (done: no `malloc`,
+      `calloc` or `free` in the program; blocks in sizes that double,
+      taken and given back in constant time, from one array whose size
+      is chosen when the C is compiled)
 
 ## Layout
 
