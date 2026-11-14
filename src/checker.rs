@@ -13,30 +13,77 @@
 //!
 //! In strict mode step 3 is an error. Everything must be known in advance.
 //!
+//! A parameter or field with no type written is worked out from how it is
+//! used across the whole program. That needs several passes, because one
+//! answer can unlock another; see `check` and `Seen`.
+//!
 //! Unlike the parser, the checker does not stop at the first error. After
 //! reporting one it treats the expression as `Invalid`, which is accepted
 //! everywhere, so one mistake does not set off a string of others.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
 use crate::ast::{self, *};
 use crate::error::Error;
 use crate::token::Span;
+use crate::units;
+
+/// How many passes to allow for working out untyped parameters and fields.
+const MAX_ROUNDS: usize = 8;
 
 /// Check a whole program. Returns every error found, in source order.
+///
+/// Strict mode is on if it is asked for here or by the file itself.
 pub fn check(program: &Program, strict: bool) -> Vec<Error> {
-    let mut checker = Checker {
-        strict,
-        errors: Vec::new(),
-        frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
-        raised: vec![Vec::new()],
-    };
-    let env = Scope::child(&globals());
-    checker.statements(&program.statements, &env);
+    let strict = strict || program.strict;
 
+    // Parameters and fields with no type written are worked out from how
+    // they are used: `add(1, 2)` says both parameters of `add` are ints.
+    // One answer can lead to another (if `f` passes its parameter on to
+    // `g`, then `g` is only known once `f` is), so the program is checked
+    // repeatedly, each pass starting from what the last one learned, until
+    // a pass learns nothing new. Only the final pass reports errors.
+    let mut known: HashMap<SlotId, Key> = HashMap::new();
+    let mut open: HashSet<SlotId> = HashSet::new();
+    let mut settled = false;
+    for _ in 0..MAX_ROUNDS {
+        let mut checker = Checker::new(strict, false, known.clone(), open.clone());
+        checker.run(program);
+
+        let mut next_known = HashMap::new();
+        let mut next_open = open.clone(); // once open, always open
+        for (id, seen) in checker.seen {
+            match seen {
+                Seen::Known(key) if !next_open.contains(&id) => {
+                    next_known.insert(id, key);
+                }
+                Seen::Known(_) => {}
+                Seen::Unknowable => {
+                    next_open.insert(id);
+                }
+            }
+        }
+        next_known.retain(|id, _| !next_open.contains(id));
+
+        settled = next_known == known && next_open == open;
+        known = next_known;
+        open = next_open;
+        if settled {
+            break;
+        }
+    }
+    if !settled {
+        // Still changing after that many passes. Rather than trust a
+        // half-finished answer, treat everything worked out as unknown:
+        // unknown is always safe, a wrong guess is not.
+        open.extend(known.drain().map(|(id, _)| id));
+    }
+
+    let mut checker = Checker::new(strict, true, known, open);
+    checker.run(program);
     let mut errors = checker.errors;
     errors.sort_by_key(|error| (error.span.line, error.span.col));
     errors.dedup();
@@ -71,6 +118,9 @@ enum Ty {
     /// A built-in error value, such as a `ValueError`.
     Error(Rc<str>),
 
+    /// A function known only by its written type: `function(int) -> int`
+    Callable(Rc<CallableType>),
+
     // Things that can be called.
     Function(Rc<FunctionInfo>),
     /// A method read from an object: `self` is already supplied.
@@ -87,13 +137,28 @@ enum Ty {
     Module(&'static str),
 }
 
+struct CallableType {
+    params: Vec<Ty>,
+    returns: Ty,
+}
+
+/// Names a declaration: where it starts in the file, and what it is called.
+/// Types from one checking pass are carried to the next by this, since the
+/// passes do not share any of their working data.
+type DeclId = (usize, usize, String);
+
+/// Names one parameter or field: the declaration it belongs to, and its name.
+type SlotId = (DeclId, String);
+
 struct ClassInfo {
+    id: DeclId,
     name: String,
     fields: RefCell<Vec<Slot>>,
     methods: RefCell<HashMap<String, Rc<FunctionInfo>>>,
 }
 
 struct EnumInfo {
+    id: DeclId,
     name: String,
     cases: RefCell<Vec<CaseInfo>>,
 }
@@ -109,6 +174,48 @@ struct Slot {
     name: String,
     ty: Ty,
     has_default: bool,
+    /// Set when no type was written, so that its type is being worked out
+    /// from the values that arrive here.
+    id: Option<SlotId>,
+}
+
+/// A type in a form that outlives one checking pass. It is `Ty` without
+/// the things that only exist during a pass.
+#[derive(Clone, PartialEq, Debug)]
+enum Key {
+    Int,
+    Float,
+    Str,
+    Bool,
+    None,
+    Quantity(String),
+    List(Box<Key>),
+    Optional(Box<Key>),
+    Class(DeclId),
+    Enum(DeclId),
+    Error(String),
+}
+
+/// What has been learned so far about a parameter or field with no type.
+enum Seen {
+    /// Every value that arrives here has this type.
+    Known(Key),
+    /// The values differ, or one of them is itself unknown until run time.
+    Unknowable,
+}
+
+/// The one key that covers both, if there is one.
+fn join_keys(a: &Key, b: &Key) -> Option<Key> {
+    match (a, b) {
+        _ if a == b => Some(a.clone()),
+        (Key::None, Key::Optional(_)) => Some(b.clone()),
+        (Key::Optional(_), Key::None) => Some(a.clone()),
+        (Key::None, other) | (other, Key::None) => Some(Key::Optional(Box::new(other.clone()))),
+        (Key::Optional(inner), other) | (other, Key::Optional(inner)) if **inner == *other => {
+            Some(Key::Optional(inner.clone()))
+        }
+        _ => None,
+    }
 }
 
 /// What a caller needs to know about a function.
@@ -185,6 +292,14 @@ impl fmt::Display for Ty {
             Ty::Instance(class) => write!(f, "{}", class.name),
             Ty::EnumValue(info) => write!(f, "{}", info.name),
             Ty::Error(kind) => write!(f, "{kind}"),
+            Ty::Callable(callable) => {
+                let params: Vec<String> = callable.params.iter().map(Ty::to_string).collect();
+                write!(f, "function({})", params.join(", "))?;
+                match &callable.returns {
+                    Ty::None => Ok(()),
+                    returns => write!(f, " -> {returns}"),
+                }
+            }
             Ty::Function(_) | Ty::BoundMethod(_) | Ty::Builtin(_) | Ty::BuiltinMethod(..) => {
                 write!(f, "a function")
             }
@@ -212,6 +327,11 @@ fn same(a: &Ty, b: &Ty) -> bool {
         (Ty::Instance(a), Ty::Instance(b)) => Rc::ptr_eq(a, b),
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
+        (Ty::Callable(a), Ty::Callable(b)) => {
+            a.params.len() == b.params.len()
+                && a.params.iter().zip(&b.params).all(|(a, b)| same(a, b))
+                && same(&a.returns, &b.returns)
+        }
         _ => false,
     }
 }
@@ -228,10 +348,11 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         (Ty::List(from), Ty::List(to)) => fits(from, to),
         // Any error fits the catch-all `Error`.
         (Ty::Error(_), Ty::Error(to)) => &**to == "Error",
-        // Functions are not compared in detail yet.
+        // A function going where a function type is wanted is compared in
+        // detail by `Checker::expect`, which can look inside it.
         (
             Ty::Function(_) | Ty::BoundMethod(_) | Ty::Builtin(_) | Ty::BuiltinMethod(..),
-            Ty::Function(_),
+            Ty::Callable(_),
         ) => true,
         _ => false,
     }
@@ -257,11 +378,6 @@ fn join(a: &Ty, b: &Ty) -> Ty {
         // Unrelated types: only known when the program runs.
         _ => Ty::Dynamic,
     }
-}
-
-fn join_all(types: &[Ty]) -> Option<Ty> {
-    let (first, rest) = types.split_first()?;
-    Some(rest.iter().fold(first.clone(), |joined, ty| join(&joined, ty)))
 }
 
 // --------------------------------------------------------------------- Scopes
@@ -364,6 +480,17 @@ struct Argument {
 
 struct Checker {
     strict: bool,
+    /// False while types are still being worked out over several passes.
+    last_round: bool,
+    /// What earlier passes worked out for untyped parameters and fields.
+    known: HashMap<SlotId, Key>,
+    /// The untyped parameters and fields that cannot be worked out.
+    open: HashSet<SlotId>,
+    /// What this pass has seen arrive at each untyped parameter and field.
+    seen: HashMap<SlotId, Seen>,
+    /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
+    classes: HashMap<DeclId, Rc<ClassInfo>>,
+    enums: HashMap<DeclId, Rc<EnumInfo>>,
     errors: Vec<Error>,
     frames: Vec<Frame>,
     /// The errors that can be raised by the code checked so far, innermost
@@ -373,6 +500,26 @@ struct Checker {
 }
 
 impl Checker {
+    fn new(strict: bool, last_round: bool, known: HashMap<SlotId, Key>, open: HashSet<SlotId>) -> Checker {
+        Checker {
+            strict,
+            last_round,
+            known,
+            open,
+            seen: HashMap::new(),
+            classes: HashMap::new(),
+            enums: HashMap::new(),
+            errors: Vec::new(),
+            frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
+            raised: vec![Vec::new()],
+        }
+    }
+
+    fn run(&mut self, program: &Program) {
+        let env = Scope::child(&globals());
+        self.statements(&program.statements, &env);
+    }
+
     fn error(&mut self, message: impl Into<String>, span: Span) -> Ty {
         self.errors.push(Error::new(message, span));
         Ty::Invalid
@@ -394,16 +541,220 @@ impl Checker {
 
     /// Report an error unless a `from` can go where a `to` is wanted.
     fn expect(&mut self, from: &Ty, to: &Ty, what: &str, span: Span) {
-        if fits(from, to) {
+        if !fits(from, to) {
+            let mut message = format!("{what} should be {to}, but this is {from}");
+            match (from, to) {
+                (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
+                (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
+                _ => {}
+            }
+            self.error(message, span);
             return;
         }
-        let mut message = format!("{what} should be {to}, but this is {from}");
+        self.arrives(from, to, what, span);
+    }
+
+    /// A value of type `from` goes where a `to` is wanted, and the two fit.
+    /// What is left concerns functions, which may sit inside a list or an
+    /// `or none`: one going where a function type is wanted is compared with
+    /// it in detail, and one going where its type is not tracked `escapes`.
+    fn arrives(&mut self, from: &Ty, to: &Ty, what: &str, span: Span) {
         match (from, to) {
-            (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
-            (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
+            (_, to) if to.is_loose() => self.escapes(from),
+            (Ty::List(from), Ty::List(to)) | (Ty::Optional(from), Ty::Optional(to)) => {
+                self.arrives(from, to, what, span)
+            }
+            (from, Ty::Optional(to)) => self.arrives(from, to, what, span),
+            (from, Ty::Callable(wanted)) => {
+                if let Some(given) = self.callable(from) {
+                    self.expect_function(&given, wanted, to, what, span);
+                }
+            }
             _ => {}
         }
-        self.error(message, span);
+    }
+
+    // ----------------------------------------------- Working out left-out types
+
+    /// The type of a parameter or field: what is written, or failing that,
+    /// what has been worked out from how it is used.
+    fn slot_type(
+        &mut self,
+        annotation: &Option<ast::Type>,
+        id: &SlotId,
+        what: &str,
+        env: &Env,
+        span: Span,
+    ) -> Ty {
+        if let Some(annotation) = annotation {
+            return self.resolve(annotation, env, span);
+        }
+        if let Some(key) = self.known.get(id).cloned() {
+            return self.from_key(&key);
+        }
+        if !self.last_round && !self.open.contains(id) {
+            // Not settled yet. `Invalid` is quiet and is not counted as
+            // evidence about anything it is passed on to.
+            return Ty::Invalid;
+        }
+        if self.strict {
+            return self.error(
+                format!("strict mode: {what} needs a type. It could not be worked out from how it is used"),
+                span,
+            );
+        }
+        Ty::Dynamic
+    }
+
+    /// Note that a value of type `ty` arrives at `slot`.
+    fn sees(&mut self, slot: &Slot, ty: &Ty) {
+        let Some(id) = &slot.id else {
+            return;
+        };
+        let seen = match (self.key(ty), self.seen.remove(id)) {
+            (None, previous) => previous, // no evidence either way
+            (Some(Ok(key)), None) => Some(Seen::Known(key)),
+            (Some(Ok(key)), Some(Seen::Known(old))) => {
+                Some(join_keys(&old, &key).map_or(Seen::Unknowable, Seen::Known))
+            }
+            _ => Some(Seen::Unknowable),
+        };
+        if let Some(seen) = seen {
+            self.seen.insert(id.clone(), seen);
+        }
+    }
+
+    /// `ty` as a key. `None` means the type is not settled yet and says
+    /// nothing; `Some(Err(()))` means it can never be pinned down.
+    fn key(&self, ty: &Ty) -> Option<Result<Key, ()>> {
+        Some(Ok(match ty {
+            Ty::Invalid => return None,
+            Ty::Int => Key::Int,
+            Ty::Float => Key::Float,
+            Ty::Str => Key::Str,
+            Ty::Bool => Key::Bool,
+            Ty::None => Key::None,
+            Ty::Quantity(unit) => Key::Quantity(unit.to_string()),
+            Ty::Error(kind) => Key::Error(kind.to_string()),
+            Ty::Instance(class) => Key::Class(class.id.clone()),
+            Ty::EnumValue(info) => Key::Enum(info.id.clone()),
+            Ty::List(inner) => match self.key(inner)? {
+                Ok(inner) => Key::List(Box::new(inner)),
+                Err(()) => return Some(Err(())),
+            },
+            Ty::Optional(inner) => match self.key(inner)? {
+                Ok(inner) => Key::Optional(Box::new(inner)),
+                Err(()) => return Some(Err(())),
+            },
+            _ => return Some(Err(())),
+        }))
+    }
+
+    fn from_key(&self, key: &Key) -> Ty {
+        match key {
+            Key::Int => Ty::Int,
+            Key::Float => Ty::Float,
+            Key::Str => Ty::Str,
+            Key::Bool => Ty::Bool,
+            Key::None => Ty::None,
+            Key::Quantity(unit) => Ty::Quantity(Rc::from(unit.as_str())),
+            Key::Error(kind) => Ty::Error(Rc::from(kind.as_str())),
+            Key::List(inner) => Ty::list(self.from_key(inner)),
+            Key::Optional(inner) => Ty::Optional(Box::new(self.from_key(inner))),
+            Key::Class(id) => self.classes.get(id).map_or(Ty::Dynamic, |class| Ty::Instance(class.clone())),
+            Key::Enum(id) => self.enums.get(id).map_or(Ty::Dynamic, |info| Ty::EnumValue(info.clone())),
+        }
+    }
+
+    /// A function value has gone somewhere its type is not tracked, so it
+    /// may be called from there with anything. Its untyped parameters can
+    /// no longer be worked out from the calls that are visible.
+    fn escapes(&mut self, ty: &Ty) {
+        let function = match ty {
+            Ty::Function(function) | Ty::BoundMethod(function) => function.clone(),
+            Ty::List(inner) | Ty::Optional(inner) => return self.escapes(inner),
+            _ => return,
+        };
+        for slot in &self.signature(&function).params {
+            if let Some(id) = &slot.id {
+                self.seen.insert(id.clone(), Seen::Unknowable);
+            }
+        }
+    }
+
+    /// `join`, for places where a function might be one of the things joined.
+    fn join(&mut self, a: &Ty, b: &Ty) -> Ty {
+        let joined = join(a, b);
+        if joined.is_loose() {
+            self.escapes(a);
+            self.escapes(b);
+        }
+        joined
+    }
+
+    fn join_all(&mut self, types: &[Ty]) -> Option<Ty> {
+        let (first, rest) = types.split_first()?;
+        let mut joined = first.clone();
+        for ty in rest {
+            joined = self.join(&joined, ty);
+        }
+        Some(joined)
+    }
+
+    /// If `ty` is a function whose details are known, its parameters and
+    /// what it returns.
+    fn callable(&mut self, ty: &Ty) -> Option<(Vec<Slot>, Ty)> {
+        match ty {
+            Ty::Function(function) => {
+                let signature = self.signature(function);
+                Some((signature.params.clone(), signature.returns.clone()))
+            }
+            Ty::BoundMethod(function) => {
+                let signature = self.signature(function);
+                Some((signature.params.get(1..).unwrap_or_default().to_vec(), signature.returns.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Check a function against a written function type.
+    fn expect_function(
+        &mut self,
+        (params, returns): &(Vec<Slot>, Ty),
+        wanted: &CallableType,
+        wanted_type: &Ty,
+        what: &str,
+        span: Span,
+    ) {
+        let needed = params.iter().filter(|slot| !slot.has_default).count();
+        if !(needed..=params.len()).contains(&wanted.params.len()) {
+            self.error(
+                format!(
+                    "{what} should be {wanted_type}, but this function takes {} argument(s)",
+                    params.len()
+                ),
+                span,
+            );
+            return;
+        }
+        for (slot, given) in params.iter().zip(&wanted.params) {
+            // It will be called with these types, which is evidence for an
+            // untyped parameter just as a direct call would be.
+            self.sees(slot, given);
+            if !fits(given, &slot.ty) {
+                self.error(
+                    format!(
+                        "{what} should be {wanted_type}, but the parameter `{}` of this function is {}",
+                        slot.name, slot.ty
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
+        if !fits(returns, &wanted.returns) {
+            self.error(format!("{what} should be {wanted_type}, but this function returns {returns}"), span);
+        }
     }
 
     // ------------------------------------------------------- Type annotations
@@ -412,6 +763,14 @@ impl Checker {
     fn resolve(&mut self, ty: &ast::Type, env: &Env, span: Span) -> Ty {
         match ty {
             ast::Type::Optional(inner) => Ty::Optional(Box::new(self.resolve(inner, env, span))),
+            ast::Type::Function { params, returns } => {
+                let params = params.iter().map(|param| self.resolve(param, env, span)).collect();
+                let returns = match returns {
+                    Some(returns) => self.resolve(returns, env, span),
+                    None => Ty::None,
+                };
+                Ty::Callable(Rc::new(CallableType { params, returns }))
+            }
             ast::Type::Named { name, args } => {
                 let ty = match (name.as_str(), args.as_slice()) {
                     ("int", []) => Ty::Int,
@@ -431,27 +790,14 @@ impl Checker {
                         Some(Ty::Class(class)) => Ty::Instance(class),
                         Some(Ty::Enum(info)) => Ty::EnumValue(info),
                         Some(Ty::ErrorType(kind)) => Ty::Error(kind),
+                        // A unit is the type of a quantity measured in it.
+                        _ if units::is_unit(name) => Ty::Quantity(Rc::from(name.as_str())),
                         _ => return self.error(format!("there is no type called `{name}`"), span),
                     },
                     _ => return self.error(format!("`{name}` does not take types in `[ ]`"), span),
                 };
                 ty
             }
-        }
-    }
-
-    /// The type for something whose annotation may have been left out.
-    fn resolve_or_dynamic(
-        &mut self,
-        ty: &Option<ast::Type>,
-        what: &str,
-        env: &Env,
-        span: Span,
-    ) -> Ty {
-        match ty {
-            Some(ty) => self.resolve(ty, env, span),
-            None if self.strict => self.error(format!("strict mode: {what} needs a type"), span),
-            None => Ty::Dynamic,
         }
     }
 
@@ -482,16 +828,23 @@ impl Checker {
             match &statement.kind {
                 StmtKind::Class(decl) => {
                     let info = Rc::new(ClassInfo {
+                        id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
                         fields: RefCell::new(Vec::new()),
                         methods: RefCell::new(HashMap::new()),
                     });
                     self.declare(env, &decl.name, Ty::Class(info.clone()), false, statement.span);
+                    self.classes.insert(info.id.clone(), info.clone());
                     classes.push((decl, info, statement.span));
                 }
                 StmtKind::Enum(decl) => {
-                    let info = Rc::new(EnumInfo { name: decl.name.clone(), cases: RefCell::new(Vec::new()) });
+                    let info = Rc::new(EnumInfo {
+                        id: decl_id(statement.span, &decl.name),
+                        name: decl.name.clone(),
+                        cases: RefCell::new(Vec::new()),
+                    });
                     self.declare(env, &decl.name, Ty::Enum(info.clone()), false, statement.span);
+                    self.enums.insert(info.id.clone(), info.clone());
                     enums.push((decl, info, statement.span));
                 }
                 _ => {}
@@ -552,10 +905,12 @@ impl Checker {
 
     fn slot(&mut self, field: &ast::Field, owner: &str, env: &Env, span: Span) -> Slot {
         let what = format!("`{}` in `{owner}`", field.name);
+        let id = (decl_id(span, owner), field.name.clone());
         Slot {
             name: field.name.clone(),
-            ty: self.resolve_or_dynamic(&field.ty, &what, env, span),
+            ty: self.slot_type(&field.ty, &id, &what, env, span),
             has_default: field.default.is_some(),
+            id: field.ty.is_none().then_some(id),
         }
     }
 
@@ -573,10 +928,14 @@ impl Checker {
                 false
             }
             StmtKind::Assign { target, op, value } => {
-                let wanted = self.assignment_target(target, env);
+                let (wanted, field) = self.assignment_target(target, env);
                 let mut given = self.expr(value, env);
                 if let Some(op) = op {
                     given = self.binary(*op, &wanted, &given, span);
+                }
+                if let Some(field) = field {
+                    // A value stored in an untyped field is evidence of its type.
+                    self.sees(&field, &given);
                 }
                 self.expect(&given, &wanted, "the new value", value.span);
                 false
@@ -742,6 +1101,8 @@ impl Checker {
                                     format!("`{name}` should be {wanted}, but this item is {item_type}"),
                                     item.span,
                                 );
+                            } else {
+                                self.arrives(&item_type, wanted_item, &format!("`{name}`"), item.span);
                             }
                         }
                     }
@@ -759,10 +1120,11 @@ impl Checker {
     }
 
     /// The type that may be assigned to `target`, after checking that it can
-    /// be assigned to at all.
-    fn assignment_target(&mut self, target: &Expr, env: &Env) -> Ty {
+    /// be assigned to at all. For a field of an object, the field is
+    /// returned as well.
+    fn assignment_target(&mut self, target: &Expr, env: &Env) -> (Ty, Option<Slot>) {
         let span = target.span;
-        match &target.kind {
+        let ty = match &target.kind {
             ExprKind::Name(name) => match env.get(name) {
                 None => self.error(
                     format!("`{name}` is not declared. Create it with `let` or `var` first"),
@@ -778,7 +1140,7 @@ impl Checker {
                 Ty::Instance(class) => {
                     let field = class.fields.borrow().iter().find(|f| f.name == *name).cloned();
                     match field {
-                        Some(field) => field.ty,
+                        Some(field) => return (field.ty.clone(), Some(field)),
                         None => self.error(format!("`{}` has no field `{name}`", class.name), span),
                     }
                 }
@@ -796,7 +1158,8 @@ impl Checker {
                 }
             }
             _ => self.error("this cannot be assigned to", span),
-        }
+        };
+        (ty, None)
     }
 
     fn condition(&mut self, condition: &Expr, env: &Env) {
@@ -862,6 +1225,7 @@ impl Checker {
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
                 let given = self.expr(default, env);
+                self.sees(slot, &given);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
         }
@@ -1045,10 +1409,14 @@ impl Checker {
                 Some(self_type) if index == 0 && param.ty.is_none() => self_type.clone(),
                 _ => {
                     let what = format!("the parameter `{}` of `{name}`", param.name);
-                    self.resolve_or_dynamic(&param.ty, &what, &function.env, span)
+                    let id = (decl_id(span, &decl.name), param.name.clone());
+                    let ty = self.slot_type(&param.ty, &id, &what, &function.env, span);
+                    let id = param.ty.is_none().then_some(id);
+                    params.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id });
+                    continue;
                 }
             };
-            params.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some() });
+            params.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id: None });
         }
         let declared_return = decl.return_type.as_ref().map(|ty| self.resolve(ty, &function.env, span));
         for kind in &decl.raises {
@@ -1059,11 +1427,21 @@ impl Checker {
         }
 
         // Until the body is checked, callers (that is, recursive calls) see
-        // only what is written down.
+        // what is written down. If no return type is written, they see what
+        // the last pass worked out, the same way untyped parameters do.
+        let return_id: SlotId = (decl_id(span, &decl.name), "->".to_string());
+        let returns_for_now = match &declared_return {
+            Some(declared) => declared.clone(),
+            None => match self.known.get(&return_id).cloned() {
+                Some(key) => self.from_key(&key),
+                None if !self.last_round && !self.open.contains(&return_id) => Ty::Invalid,
+                None => Ty::Dynamic,
+            },
+        };
         let declared = Rc::new(Signature {
             name: name.clone(),
             params: params.clone(),
-            returns: declared_return.clone().unwrap_or(Ty::Dynamic),
+            returns: returns_for_now,
             raises: decl.raises.clone(),
         });
         *function.state.borrow_mut() = State::Checking(declared);
@@ -1072,6 +1450,7 @@ impl Checker {
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
                 let given = self.expr(default, &scope);
+                self.sees(slot, &given);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
             self.declare(&scope, &param.name, slot.ty.clone(), false, span);
@@ -1100,7 +1479,26 @@ impl Checker {
                 if !exits {
                     types.push(Ty::None);
                 }
-                join_all(&types).unwrap_or(Ty::None)
+                if !self.last_round {
+                    // A `return` whose type is not settled yet (it hangs on
+                    // a recursive call, say) is left out of this pass.
+                    let unsettled = types.len();
+                    types.retain(|ty| !matches!(ty, Ty::Invalid));
+                    if types.is_empty() && unsettled > 0 {
+                        types.push(Ty::Invalid);
+                    }
+                }
+                let returns = self.join_all(&types).unwrap_or(Ty::None);
+                match self.key(&returns) {
+                    Some(Ok(key)) => {
+                        self.seen.insert(return_id, Seen::Known(key));
+                    }
+                    Some(Err(())) => {
+                        self.seen.insert(return_id, Seen::Unknowable);
+                    }
+                    None => {}
+                }
+                returns
             }
         };
 
@@ -1170,13 +1568,16 @@ impl Checker {
 
             ExprKind::Unit { value, unit } => {
                 self.expr(value, env);
+                if !units::is_unit(unit) {
+                    return self.error(units::unknown(unit), span);
+                }
                 Ty::Quantity(Rc::from(unit.as_str()))
             }
 
             ExprKind::List(items) => {
                 let types: Vec<Ty> = items.iter().map(|item| self.expr(item, env)).collect();
                 // An empty list holds nothing yet, so its item type is open.
-                Ty::list(join_all(&types).unwrap_or(Ty::Dynamic))
+                Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
             }
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let iterable_type = self.expr(iterable, env);
@@ -1377,7 +1778,30 @@ impl Checker {
                 self.no_named(name, &arguments, span);
                 self.method(receiver, name, &arguments, span)
             }
-            ty if ty.is_loose() => ty.clone(),
+            Ty::Callable(callable) => {
+                self.no_named("this function", &arguments, span);
+                if arguments.len() != callable.params.len() {
+                    return self.error(
+                        format!(
+                            "this function takes {} argument(s), but {} were given",
+                            callable.params.len(),
+                            arguments.len()
+                        ),
+                        span,
+                    );
+                }
+                for (argument, wanted) in arguments.iter().zip(&callable.params) {
+                    self.expect(&argument.ty, wanted, "an argument", argument.span);
+                }
+                callable.returns.clone()
+            }
+            ty if ty.is_loose() => {
+                // Whatever is being called, it receives these untracked.
+                for argument in &arguments {
+                    self.escapes(&argument.ty);
+                }
+                ty.clone()
+            }
             ty => self.error(format!("{ty} cannot be called"), span),
         }
     }
@@ -1421,6 +1845,7 @@ impl Checker {
                 continue;
             }
             filled[index] = true;
+            self.sees(&slots[index], &argument.ty);
             let label = format!("`{}` of `{what}`", slots[index].name);
             self.expect(&argument.ty, &slots[index].ty, &label, argument.span);
         }
@@ -1501,7 +1926,7 @@ impl Checker {
                     [Argument { ty: Ty::List(item), .. }] => vec![(**item).clone()],
                     _ => arguments.iter().map(|a| a.ty.clone()).collect(),
                 };
-                let joined = join_all(&types).unwrap_or(Ty::Int);
+                let joined = self.join_all(&types).unwrap_or(Ty::Int);
                 if !joined.is_number() && !joined.is_loose() {
                     return self.error(format!("`{name}` needs numbers, but this is {joined}"), span);
                 }
@@ -1589,7 +2014,7 @@ impl Checker {
                 }
                 let start = arguments[1].ty.clone();
                 let result = apply(self, &arguments[0], vec![start.clone(), (**item).clone()]);
-                join(&start, &result)
+                self.join(&start, &result)
             }
             _ => Ty::Dynamic,
         }
@@ -1694,6 +2119,10 @@ enum Covers {
     Case(usize),
     /// Only some values.
     Some,
+}
+
+fn decl_id(span: Span, name: &str) -> DeclId {
+    (span.line, span.col, name.to_string())
 }
 
 fn narrow_all(scope: &Env, narrowings: &[(String, Ty)]) {
@@ -2091,8 +2520,12 @@ mod tests {
 
     #[test]
     fn strict_mode_needs_every_type_to_be_known() {
-        assert_eq!(strict_error("function add(a, b: int) -> int { return b }"), "strict mode: the parameter `a` of `add` needs a type");
-        assert_eq!(strict_error("class Box {\n item\n}"), "strict mode: `item` in `Box` needs a type");
+        assert_eq!(strict_error("function add(a, b: int) -> int { return b }"), "strict mode: the parameter `a` of `add` needs a type. It could not be worked out from how it is used"
+        );
+        assert_eq!(
+            strict_error("class Box {\n item\n}"),
+            "strict mode: `item` in `Box` needs a type. It could not be worked out from how it is used"
+        );
         assert_eq!(
             strict_error("let xs = []"),
             "strict mode: the type of `xs` cannot be worked out. Give it one, as in `xs: list[int]`"
@@ -2112,6 +2545,115 @@ mod tests {
             "`parse` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
         );
         strict_ok("function parse(text: str) -> int raises ValueError { return int(text) }");
+    }
+
+    // ----- Function types -----
+
+    #[test]
+    fn function_types_can_be_written() {
+        let twice = "function twice(f: function(int) -> int, x: int) -> int { return f(f(x)) }\n";
+        ok(&format!("{twice}function inc(n: int) -> int {{ return n + 1 }}\nlet r: int = twice(inc, 1)"));
+        ok(&format!("{twice}let r: int = twice(function(k) {{ return k * 2 }}, 5)"));
+        assert_eq!(
+            error(&format!("{twice}function shout(s: str) -> str {{ return s.upper() }}\ntwice(shout, 1)")),
+            "`f` of `twice` should be function(int) -> int, but the parameter `s` of this function is str"
+        );
+        assert_eq!(
+            error("let g: function(int) -> str = function(k: int) -> int { return k }"),
+            "`g` should be function(int) -> str, but this function returns int"
+        );
+        assert_eq!(
+            error(&format!("{twice}twice(5, 1)")),
+            "`f` of `twice` should be function(int) -> int, but this is int"
+        );
+        // Calling through a function type is checked like any other call.
+        assert_eq!(
+            error("function apply(f: function(int) -> int) -> int { return f(\"x\") }"),
+            "an argument should be int, but this is str"
+        );
+    }
+
+    // ----- Units -----
+
+    #[test]
+    fn units_are_types() {
+        ok("function wait(d: ms) { }\nwait(500 ms)\nlet v: mV = 20 mV");
+        assert_eq!(
+            error("function wait(d: ms) { }\nwait(3 s)"),
+            "`d` of `wait` should be a quantity in ms, but this is a quantity in s"
+        );
+        assert_eq!(
+            error("function wait(d: ms) { }\nwait(3)"),
+            "`d` of `wait` should be a quantity in ms, but this is int"
+        );
+        assert_eq!(
+            error("let t = 5 sec"),
+            "`sec` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC"
+        );
+    }
+
+    // ----- Working out parameters and fields -----
+
+    #[test]
+    fn untyped_parameters_are_worked_out_from_the_calls() {
+        assert_eq!(
+            error("function add(a, b) { return a + b }\nlet s: str = add(1, 2)"),
+            "`s` should be str, but this is int"
+        );
+        // What one function learns is passed on to the next.
+        assert_eq!(
+            error("function a(x) { return b(x) }\nfunction b(y) { return y + 1 }\nlet s: str = a(1)"),
+            "`s` should be str, but this is int"
+        );
+        // A mistake shows up inside the function, where the value is used.
+        assert_eq!(error("function f(a) { return a.upper() }\nf(1)"), "int has no field or method `upper`");
+        // `none` at one call and an int at another makes `int or none`.
+        strict_ok("function h(a) {\n if a is none { return 0 }\n return a + 1\n}\nprint(h(1), h(none))");
+        // A default value counts as a use.
+        assert_eq!(error("function f(a = 3) { return a }\nlet s: str = f()"), "`s` should be str, but this is int");
+    }
+
+    #[test]
+    fn calls_that_disagree_leave_a_parameter_dynamic() {
+        ok("function id(x) { return x }\nlet a: int = id(1)\nlet b: str = id(\"s\")");
+        assert_eq!(
+            strict_error("function id(x) { return x }\nprint(id(1), id(\"s\"))"),
+            "strict mode: the parameter `x` of `id` needs a type. It could not be worked out from how it is used"
+        );
+        // Never called, so there is nothing to go on.
+        ok("function f(x) { return x.anything }");
+        // Stored in a variable of unknown type, it may be called with anything.
+        ok("function f(x) { return x.upper() }\nlet fs: list[any] = [f]\nprint(f(1))");
+    }
+
+    #[test]
+    fn untyped_fields_are_worked_out_from_what_is_stored() {
+        assert_eq!(
+            error("class P {\n x\n}\nlet p = P(1)\np.x = 2\nlet s: str = p.x"),
+            "`s` should be str, but this is int"
+        );
+        ok("class P {\n x\n}\nlet p = P(1)\np.x = \"s\"\nlet n: int = p.x");
+        strict_ok("class C {\n total\n function add(self, n) { self.total = self.total + n }\n}\nlet c = C(0)\nc.add(5)\nlet t: int = c.total");
+    }
+
+    #[test]
+    fn recursive_functions_have_their_return_type_worked_out() {
+        let fact = "function fact(n) {\n if n <= 1 { return 1 }\n return n * fact(n - 1)\n}\n";
+        strict_ok(&format!("{fact}let x: int = fact(5)"));
+        assert_eq!(error(&format!("{fact}let s: str = fact(5)")), "`s` should be str, but this is int");
+        let even = "function ev(n) {\n if n == 0 { return true }\n return od(n - 1)\n}\nfunction od(n) {\n if n == 0 { return false }\n return ev(n - 1)\n}\n";
+        assert_eq!(error(&format!("{even}let s: str = ev(4)")), "`s` should be str, but this is bool");
+    }
+
+    // ----- Strict in the file -----
+
+    #[test]
+    fn a_file_can_ask_for_strict_mode() {
+        ok("let xs = []");
+        assert_eq!(
+            error("strict\nlet xs = []"),
+            "strict mode: the type of `xs` cannot be worked out. Give it one, as in `xs: list[int]`"
+        );
     }
 
     // ----- Reporting -----
