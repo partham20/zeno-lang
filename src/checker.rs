@@ -730,7 +730,23 @@ impl Checker {
         let ty = match annotation {
             Some(annotation) => {
                 let wanted = self.resolve(annotation, env, span);
-                self.expect(&given, &wanted, &format!("`{name}`"), value.span);
+                match (&value.kind, &wanted) {
+                    // A list written out in full is checked item by item, so
+                    // that `[1, "two"]` is caught rather than passing as a
+                    // list of mixed, unknown things.
+                    (ExprKind::List(items), Ty::List(wanted_item)) => {
+                        for item in items {
+                            let item_type = self.expr(item, env);
+                            if !fits(&item_type, wanted_item) {
+                                self.error(
+                                    format!("`{name}` should be {wanted}, but this item is {item_type}"),
+                                    item.span,
+                                );
+                            }
+                        }
+                    }
+                    _ => self.expect(&given, &wanted, &format!("`{name}`"), value.span),
+                }
                 wanted
             }
             None if self.strict && given.has_dynamic() => self.error(
@@ -899,7 +915,9 @@ impl Checker {
                         span,
                     );
                 }
-                missing.is_empty()
+                // Already reported. Treat it as complete so that the same
+                // gap is not reported again as a missing `return`.
+                true
             }
             ty if ty.is_loose() => false,
             _ => {
@@ -1698,4 +1716,424 @@ fn has_break(statements: &[Stmt]) -> bool {
         }
         _ => false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{lexer, parser};
+
+    fn check(source: &str, strict: bool) -> Vec<String> {
+        let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
+        super::check(&program, strict).into_iter().map(|error| error.message).collect()
+    }
+
+    /// The messages the checker gives for a program.
+    fn errors(source: &str) -> Vec<String> {
+        check(source, false)
+    }
+
+    /// The single message expected from a program with one mistake.
+    fn error(source: &str) -> String {
+        let mut found = errors(source);
+        assert_eq!(found.len(), 1, "expected exactly one error, got {found:?}");
+        found.remove(0)
+    }
+
+    fn strict_error(source: &str) -> String {
+        let mut found = check(source, true);
+        assert_eq!(found.len(), 1, "expected exactly one error, got {found:?}");
+        found.remove(0)
+    }
+
+    fn ok(source: &str) {
+        assert_eq!(errors(source), Vec::<String>::new(), "\n{source}");
+    }
+
+    fn strict_ok(source: &str) {
+        assert_eq!(check(source, true), Vec::<String>::new(), "\n{source}");
+    }
+
+    // ----- Written types are checked -----
+
+    #[test]
+    fn declared_types_must_match() {
+        ok("let a: int = 1\nlet b: float = 1.5\nlet c: str = \"x\"\nlet d: bool = true\nlet e: list[int] = [1, 2]\nlet f: list[str] = []");
+        assert_eq!(error("let x: int = \"hello\""), "`x` should be int, but this is str");
+        assert_eq!(error("let xs: list[int] = [1, \"two\"]"), "`xs` should be list[int], but this item is str");
+        assert_eq!(error("let xs: list[int] = [\"a\"]"), "`xs` should be list[int], but this item is str");
+        assert_eq!(error("let ys = [\"a\"]\nlet xs: list[int] = ys"), "`xs` should be list[int], but this is list[str]");
+        assert_eq!(
+            error("let x: float = 1"),
+            "`x` should be float, but this is int. Write the number with a decimal point, as in `1.0`"
+        );
+    }
+
+    #[test]
+    fn unknown_type_names() {
+        assert_eq!(error("let x: Strng = \"a\""), "there is no type called `Strng`");
+        assert_eq!(error("let x: list = []"), "`list` takes one type, as in `list[int]`");
+        assert_eq!(error("let x: int[str] = 1"), "`int` does not take types in `[ ]`");
+    }
+
+    // ----- Types that are left out are worked out -----
+
+    #[test]
+    fn types_are_inferred_from_values() {
+        assert_eq!(error("let n = 3\nlet s: str = n"), "`s` should be str, but this is int");
+        assert_eq!(error("let xs = [1, 2]\nlet s: str = xs[0]"), "`s` should be str, but this is int");
+        assert_eq!(error("let xs = [n * 2 for n in range(3)]\nlet s: str = xs"), "`s` should be str, but this is list[int]");
+        assert_eq!(error("let q = 500 ms\nlet s: str = q"), "`s` should be str, but this is a quantity in ms");
+        assert_eq!(error("let x = 7 / 2\nlet n: int = x"), "`n` should be int, but this is float");
+        ok("let n: int = 7 // 2\nlet m: int = 7 % 2\nlet p: int = 2 ** 8\nlet f: float = 1 + 0.5");
+    }
+
+    #[test]
+    fn return_types_are_inferred() {
+        assert_eq!(error("function double(n: int) { return n * 2 }\nlet s: str = double(2)"), "`s` should be str, but this is int");
+        assert_eq!(
+            error("function find(n: int) {\n if n > 0 { return \"yes\" }\n}\nlet s: str = find(1)"),
+            "`s` should be str, but this is str or none. Check it with `is not none` first"
+        );
+        ok("function nothing() { }\nlet x = nothing()");
+        // A function used above where it is written still has its type worked out.
+        assert_eq!(error("let s: str = later()\nfunction later() { return 1 }"), "`s` should be str, but this is int");
+    }
+
+    #[test]
+    fn untyped_code_is_left_alone() {
+        ok("function add(a, b) { return a + b }\nprint(add(1, 2), add(\"a\", \"b\"))\nlet x: int = add(1, 2)");
+        ok("class Box {\n item\n}\nlet b = Box(1)\nb.item = \"now a str\"\nprint(b.item.upper())");
+        ok("let x: any = 1\nprint(x.whatever)");
+    }
+
+    // ----- Names -----
+
+    #[test]
+    fn names_must_exist() {
+        assert_eq!(error("print(missing)"), "`missing` is not defined");
+        assert_eq!(error("x = 1"), "`x` is not declared. Create it with `let` or `var` first");
+        assert_eq!(error("let x = 1\nlet x = 2"), "`x` is already declared in this block");
+        assert_eq!(error("if true {\n let inner = 1\n}\nprint(inner)"), "`inner` is not defined");
+        // One mistake, one message: the bad name does not set off more errors.
+        assert_eq!(error("let y = missing + 1\nprint(y.upper())"), "`missing` is not defined");
+    }
+
+    #[test]
+    fn let_cannot_be_reassigned() {
+        ok("var x = 1\nx = 2\nx += 3");
+        assert_eq!(error("let x = 1\nx = 2"), "`x` cannot be changed. Declare it with `var` to allow that");
+        assert_eq!(error("function f(n: int) { n = 2 }"), "`n` cannot be changed. Declare it with `var` to allow that");
+        assert_eq!(error("for i in range(3) { i = 0 }"), "`i` cannot be changed. Declare it with `var` to allow that");
+        assert_eq!(error("var x = 1\nx = \"one\""), "the new value should be int, but this is str");
+        assert_eq!(error("var x = 1\nx += 0.5"), "the new value should be int, but this is float");
+    }
+
+    // ----- Operators -----
+
+    #[test]
+    fn operators_need_matching_types() {
+        assert_eq!(error("print(\"abc\" - 1)"), "`-` does not work between str and int");
+        assert_eq!(error("print(1 + \"1\")"), "`+` does not work between int and str");
+        assert_eq!(error("print(500 ms + 3 V)"), "`+` does not work between a quantity in ms and a quantity in V");
+        assert_eq!(error("print(1 < \"2\")"), "`<` does not work between int and str");
+        assert_eq!(error("print(-\"x\")"), "`-` does not work on str");
+        assert_eq!(error("print(not 1)"), "`not` needs a bool, but this is int");
+        assert_eq!(error("print(1 and true)"), "`and` needs bools, but this is int");
+        assert_eq!(error("print(1 in 5)"), "`in` does not work between int and int");
+        ok("print(1 + 2.5, \"a\" + \"b\", [1] + [2], 2 * 500 ms, 1 < 2 < 3, \"a\" in \"abc\", 1 in [1, 2])");
+    }
+
+    #[test]
+    fn comparisons_that_can_never_be_true() {
+        assert_eq!(error("print(1 == \"1\")"), "`==` between int and str is always false");
+        assert_eq!(error("print([1] != \"x\")"), "`!=` between list[int] and str is always true");
+        ok("print(1 == 1.0, none == none)\nlet x: int or none = 1\nprint(x == 1, x == none)");
+    }
+
+    #[test]
+    fn conditions_must_be_bools() {
+        assert_eq!(error("if 1 { }"), "a condition must be true or false, but this is int");
+        assert_eq!(error("while \"yes\" { }"), "a condition must be true or false, but this is str");
+        assert_eq!(error("let xs = [n for n in range(3) if n]"), "a condition must be true or false, but this is int");
+    }
+
+    // ----- Calls -----
+
+    #[test]
+    fn arguments_are_checked() {
+        let f = "function f(a: int, b: str = \"x\") -> int { return a }\n";
+        ok(&format!("{f}f(1)\nf(1, \"y\")\nf(a=1, b=\"y\")\nf(1, b=\"y\")"));
+        assert_eq!(error(&format!("{f}f(\"one\")")), "`a` of `f` should be int, but this is str");
+        assert_eq!(error(&format!("{f}f(1, 2)")), "`b` of `f` should be str, but this is int");
+        assert_eq!(error(&format!("{f}f()")), "`f` needs a value for `a`");
+        assert_eq!(error(&format!("{f}f(1, \"y\", 3)")), "`f` takes 2 argument(s), but 3 were given");
+        assert_eq!(error(&format!("{f}f(1, c=3)")), "`f` has no argument named `c`");
+        assert_eq!(error(&format!("{f}f(1, a=3)")), "`f` was given `a` twice");
+        assert_eq!(error(&format!("{f}f(b=\"y\", 1)")), "plain arguments must come before named ones");
+        assert_eq!(error("let x = 5\nx()"), "int cannot be called");
+        assert_eq!(error("function f(a: int = \"no\") { }"), "`a` should be int, but this is str");
+    }
+
+    #[test]
+    fn built_ins_are_checked() {
+        assert_eq!(error("print(len(5))"), "`len` needs a str or a list, but this is int");
+        assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument(s), but 2 were given");
+        assert_eq!(error("let s: str = len(\"abc\")"), "`s` should be str, but this is int");
+        assert_eq!(error("range(\"3\")"), "an argument of `range` should be int, but this is str");
+        assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is int");
+        assert_eq!(error("print(\"x\".upper(1))"), "`upper` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("print(\"x\".nope())"), "str has no field or method `nope`");
+        assert_eq!(error("let xs = [1]\nxs.append(\"two\")"), "an item added to this list should be int, but this is str");
+        assert_eq!(error("import board"), "there is no module `board`. So far Zeno has `math` and `time`");
+        assert_eq!(error("from math import nope"), "module `math` has no `nope`");
+        ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
+    }
+
+    #[test]
+    fn functions_passed_to_map_filter_reduce_are_checked() {
+        ok("let xs = [1, 2, 3]\nlet ys: list[str] = xs.map(str)\nlet total: int = xs.reduce(function(a: int, b: int) -> int { return a + b }, 0)\nlet evens: list[int] = xs.filter(function(n: int) -> bool { return n % 2 == 0 })");
+        assert_eq!(
+            error("let xs = [1, 2]\nxs.filter(function(n: int) -> int { return n })"),
+            "what the function given to `filter` returns should be bool, but this is int"
+        );
+        assert_eq!(
+            error("let xs = [1, 2]\nxs.map(function(s: str) -> str { return s })"),
+            "`s` of `function` should be str, but this is int"
+        );
+        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 argument(s), but 1 were given");
+    }
+
+    // ----- Functions -----
+
+    #[test]
+    fn returns_must_match_the_declared_type() {
+        assert_eq!(error("function f() -> int { return \"x\" }"), "the returned value should be int, but this is str");
+        assert_eq!(error("function f() -> int { return }"), "the returned value should be int, but this is none");
+        assert_eq!(
+            error("function f(n: int) -> int {\n if n > 0 { return 1 }\n}"),
+            "`f` can reach its end without returning the int it promises"
+        );
+        ok("function f(n: int) -> int {\n if n > 0 { return 1 } else { return 2 }\n}");
+        ok("function f(n: int) -> int {\n while true {\n  if n > 0 { return 1 }\n }\n}");
+        ok("function f(n: int) -> int or none {\n if n > 0 { return 1 }\n}");
+        ok("function f() -> int { raise ValueError(\"no\") }");
+        assert_eq!(error("return 1"), "`return` outside a function");
+        assert_eq!(error("break"), "`break` outside a loop");
+        assert_eq!(error("while true {\n function f() { continue }\n}"), "`continue` outside a loop");
+    }
+
+    #[test]
+    fn recursion_is_checked() {
+        ok("function fact(n: int) -> int {\n if n <= 1 { return 1 }\n return n * fact(n - 1)\n}\nlet x: int = fact(5)");
+        ok("function even(n: int) -> bool {\n if n == 0 { return true }\n return odd(n - 1)\n}\nfunction odd(n: int) -> bool {\n if n == 0 { return false }\n return even(n - 1)\n}");
+        assert_eq!(error("function fact(n: int) -> int {\n return fact(\"x\")\n}"), "`n` of `fact` should be int, but this is str");
+    }
+
+    #[test]
+    fn a_function_nobody_calls_is_still_checked() {
+        assert_eq!(error("function unused() { print(missing) }"), "`missing` is not defined");
+    }
+
+    // ----- Classes -----
+
+    #[test]
+    fn classes_are_checked() {
+        let point = "class Point {\n x: float\n y: float = 0.0\n function scaled(self, by: float) -> Point {\n  return Point(self.x * by, self.y * by)\n }\n}\n";
+        ok(&format!("{point}let p = Point(1.0)\nlet q: Point = p.scaled(2.0)\np.x = 3.0\nlet x: float = q.x"));
+        assert_eq!(error(&format!("{point}Point(\"one\")")), "`x` of `Point` should be float, but this is str");
+        assert_eq!(error(&format!("{point}Point()")), "`Point` needs a value for `x`");
+        assert_eq!(error(&format!("{point}print(Point(1.0).z)")), "`Point` has no field or method `z`");
+        assert_eq!(error(&format!("{point}let p = Point(1.0)\np.z = 2.0")), "`Point` has no field `z`");
+        assert_eq!(error(&format!("{point}let p = Point(1.0)\np.x = \"far\"")), "the new value should be float, but this is str");
+        assert_eq!(error(&format!("{point}Point(1.0).scaled(\"big\")")), "`by` of `scaled` should be float, but this is str");
+        assert_eq!(error(&format!("{point}Point(1.0).scaled()")), "`scaled` needs a value for `by`");
+        assert_eq!(error(&format!("{point}let n: int = Point(1.0)")), "`n` should be int, but this is Point");
+    }
+
+    #[test]
+    fn mistakes_inside_a_class() {
+        assert_eq!(error("class A {\n n: int = \"no\"\n}"), "`n` should be int, but this is str");
+        assert_eq!(error("class A {\n n: int\n function get(self) -> str { return self.n }\n}"), "the returned value should be str, but this is int");
+        assert_eq!(error("class A {\n function lost() { }\n}"), "the method `lost` needs `self` as its first parameter");
+        assert_eq!(error("class A {\n other: Missing\n}"), "there is no type called `Missing`");
+        // Two classes can mention each other, whichever comes first.
+        ok("class A {\n b: B or none\n}\nclass B {\n a: A or none\n}");
+    }
+
+    // ----- Enums and match -----
+
+    const SHAPE: &str = "enum Shape {\n Dot\n Circle(radius: float)\n Rect(w: float, h: float)\n}\n";
+
+    #[test]
+    fn enums_are_checked() {
+        ok(&format!("{SHAPE}let a: Shape = Circle(1.0)\nlet b: Shape = Dot\nlet c: Shape = Shape.Rect(1.0, h=2.0)\nlet d: list[Shape] = [Dot, Circle(2.0)]"));
+        assert_eq!(error(&format!("{SHAPE}Circle(\"big\")")), "`radius` of `Circle` should be float, but this is str");
+        assert_eq!(error(&format!("{SHAPE}Circle()")), "`Circle` needs a value for `radius`");
+        assert_eq!(error(&format!("{SHAPE}print(Shape.Square)")), "enum `Shape` has no case `Square`");
+        assert_eq!(error(&format!("{SHAPE}let n: int = Dot")), "`n` should be int, but this is Shape");
+    }
+
+    #[test]
+    fn match_must_cover_every_case() {
+        let area = "function area(s: Shape) -> float {\n match s {\n  case Circle(r) { return r }\n  case Rect(w, h) { return w * h }\n";
+        ok(&format!("{SHAPE}{area}  case Dot {{ return 0.0 }}\n }}\n}}"));
+        ok(&format!("{SHAPE}{area}  case _ {{ return 0.0 }}\n }}\n}}"));
+        ok(&format!("{SHAPE}{area}  case other {{ return 0.0 }}\n }}\n}}"));
+        assert_eq!(
+            errors(&format!("{SHAPE}{area} }}\n}}")),
+            vec!["this `match` does not handle Dot. Add a `case` for it, or a final `case _`"]
+        );
+        assert_eq!(
+            error(&format!("{SHAPE}match Circle(1.0) {{\n case Dot {{ }}\n}}")),
+            "this `match` does not handle Circle, Rect. Add a `case` for it, or a final `case _`"
+        );
+        // A case that only matches some values does not cover the whole case.
+        assert_eq!(
+            error(&format!("{SHAPE}match Dot {{\n case Dot {{ }}\n case Rect(w, h) {{ }}\n case Circle(1.0) {{ }}\n}}")),
+            "this `match` does not handle Circle. Add a `case` for it, or a final `case _`"
+        );
+    }
+
+    #[test]
+    fn patterns_are_checked() {
+        assert_eq!(error(&format!("{SHAPE}match Dot {{\n case Circle(a, b) {{ }}\n case _ {{ }}\n}}")), "`Circle` carries 1 value(s), but this pattern has 2");
+        assert_eq!(error(&format!("{SHAPE}match Dot {{\n case Nope(x) {{ }}\n case _ {{ }}\n}}")), "`Nope` is not an enum case that carries values");
+        assert_eq!(error(&format!("{SHAPE}match 5 {{\n case Dot {{ }}\n case _ {{ }}\n}}")), "`Dot` is a case of Shape, which can never match int");
+        assert_eq!(error("match 5 {\n case \"five\" { }\n case _ { }\n}"), "this case is str, which can never match int");
+        assert_eq!(error("match 5 {\n case 1 { }\n}"), "this `match` needs a final `case _` to handle every other value");
+        // The values a case carries have the types the enum gave them.
+        assert_eq!(
+            error(&format!("{SHAPE}match Dot {{\n case Circle(r) {{ let s: str = r }}\n case _ {{ }}\n}}")),
+            "`s` should be str, but this is float"
+        );
+    }
+
+    // ----- none -----
+
+    #[test]
+    fn none_must_be_checked_before_use() {
+        let find = "function find(id: int) -> str or none {\n if id == 1 { return \"partha\" }\n return none\n}\nlet user = find(1)\n";
+        assert_eq!(
+            error(&format!("{find}print(user.upper())")),
+            "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+        assert_eq!(
+            error(&format!("{find}let name: str = user")),
+            "`name` should be str, but this is str or none. Check it with `is not none` first"
+        );
+        assert_eq!(error(&format!("{find}print(user + \"!\")")), "`+` does not work between str or none and str. Check for `none` first");
+        ok(&format!("{find}if user is not none {{\n print(user.upper())\n}}"));
+        ok(&format!("{find}if user is none {{\n print(\"nobody\")\n}} else {{\n print(user.upper())\n}}"));
+        ok(&format!("{find}print(user is not none and user.upper() == \"PARTHA\")"));
+        ok(&format!("{find}print(user is none or user.upper() == \"PARTHA\")"));
+        ok(&format!("{find}if not user is none {{\n print(user.upper())\n}}"));
+    }
+
+    #[test]
+    fn an_early_exit_settles_the_rest_of_the_block() {
+        let source = "function shout(text: str or none) -> str {\n if text is none {\n  return \"\"\n }\n return text.upper()\n}";
+        ok(source);
+        ok("function first(xs: list[str or none]) -> list[str] {\n return [x for x in xs if x is not none]\n}");
+        assert_eq!(
+            error("function shout(text: str or none) -> str {\n if text is none {\n  print(\"nothing\")\n }\n return text.upper()\n}"),
+            "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+    }
+
+    #[test]
+    fn none_only_goes_where_it_is_allowed() {
+        ok("let a: int or none = none\nlet b: int or none = 5\nvar c: int or none = 1\nc = none");
+        assert_eq!(error("let a: int = none"), "`a` should be int, but this is none");
+        assert_eq!(error("function f(n: int) { }\nf(none)"), "`n` of `f` should be int, but this is none");
+    }
+
+    // ----- Errors and raises -----
+
+    #[test]
+    fn declared_raises_must_be_complete() {
+        ok("function f(text: str) -> int raises ValueError { return int(text) }");
+        ok("function f() raises ValueError { raise ValueError(\"no\") }");
+        ok("function f() raises Error { raise IndexError(\"no\") }");
+        assert_eq!(
+            error("function f(n: int) raises ValueError {\n if n > 0 { raise ValueError(\"a\") }\n raise IndexError(\"b\")\n}"),
+            "`f` can raise IndexError here but does not say so. Add `raises IndexError` to it, or catch the error"
+        );
+        let parse = "function parse(text: str) -> int raises ValueError { return int(text) }\n";
+        assert_eq!(
+            error(&format!("{parse}function load() -> int raises IndexError {{ return parse(\"1\") }}")),
+            "`load` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        ok(&format!("{parse}function load() -> int raises IndexError {{\n try {{\n  return parse(\"1\")\n }} except ValueError {{\n  return 0\n }}\n}}"));
+        assert_eq!(error("function f() raises Oops { }"), "`Oops` is not a kind of error");
+        assert_eq!(error("try { } except Oops { }"), "`Oops` is not a kind of error");
+        assert_eq!(error("raise 5"), "only an error can be raised, and this is int");
+    }
+
+    #[test]
+    fn raises_left_out_is_worked_out() {
+        // `parse` does not say what it raises, so that is inferred, and
+        // `load`, which does say, must account for it.
+        let source = "function parse(text: str) -> int { return int(text) }\nfunction load() -> int raises IndexError { return parse(\"1\") }";
+        assert_eq!(
+            error(source),
+            "`load` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        ok("function parse(text: str) -> int { return int(text) }\nprint(parse(\"1\"))");
+    }
+
+    #[test]
+    fn caught_errors_have_fields() {
+        ok("try {\n raise ValueError(\"bad\")\n} except ValueError as e {\n let m: str = e.message\n} except Error as e {\n print(e.kind)\n}");
+        ok("class Timeout {\n after: int\n}\ntry {\n raise Timeout(3)\n} except Timeout as t {\n let n: int = t.after\n}");
+    }
+
+    // ----- Strict mode -----
+
+    #[test]
+    fn strict_mode_needs_every_type_to_be_known() {
+        assert_eq!(strict_error("function add(a, b: int) -> int { return b }"), "strict mode: the parameter `a` of `add` needs a type");
+        assert_eq!(strict_error("class Box {\n item\n}"), "strict mode: `item` in `Box` needs a type");
+        assert_eq!(
+            strict_error("let xs = []"),
+            "strict mode: the type of `xs` cannot be worked out. Give it one, as in `xs: list[int]`"
+        );
+        assert_eq!(strict_error("let x: any = 1"), "`any` is not allowed in strict mode");
+        assert_eq!(
+            strict_error("let mixed = [1, \"two\"]"),
+            "strict mode: the type of `mixed` cannot be worked out. Give it one, as in `mixed: list[int]`"
+        );
+        strict_ok("let xs: list[int] = []\nlet n = 3\nlet names = [\"a\", \"b\"]\nfunction double(n: int) { return n * 2 }\nlet d: int = double(n)");
+    }
+
+    #[test]
+    fn strict_mode_needs_raises_to_be_written() {
+        assert_eq!(
+            strict_error("function parse(text: str) -> int { return int(text) }"),
+            "`parse` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        strict_ok("function parse(text: str) -> int raises ValueError { return int(text) }");
+    }
+
+    // ----- Reporting -----
+
+    #[test]
+    fn every_error_is_reported_in_order() {
+        assert_eq!(
+            errors("let a: int = \"x\"\nprint(missing)\nlet b = 1\nb = 2"),
+            vec![
+                "`a` should be int, but this is str",
+                "`missing` is not defined",
+                "`b` cannot be changed. Declare it with `var` to allow that",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_examples_pass() {
+        ok(include_str!("../examples/hello.zeno"));
+        ok(include_str!("../examples/tour.zeno"));
+        ok(include_str!("../examples/styles.zeno"));
+        // The tour is fully typed, so it passes strict mode as well.
+        strict_ok(include_str!("../examples/tour.zeno"));
+    }
 }

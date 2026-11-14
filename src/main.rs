@@ -33,11 +33,11 @@ fn usage() {
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
     println!("  zeno build <file.zeno>   compile to C (not implemented yet)");
     println!("  zeno --version           print the version");
+    println!("  zeno --help              print this message");
     println!();
     println!("Options:");
     println!("  --strict                 with check or run: every type must be known");
     println!("                           before the program runs, as firmware needs");
-    println!("  zeno --help              print this message");
 }
 
 /// Read a source file, or print why it could not be read.
