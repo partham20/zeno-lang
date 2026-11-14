@@ -2620,6 +2620,10 @@ impl Checker {
                     (_, ty) if ty.is_loose() => ty.clone(),
                     (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::Quantity(_)) => ty,
                     (UnaryOp::Not, Ty::Bool) => Ty::Bool,
+                    (UnaryOp::BitNot, Ty::Int) => Ty::Int,
+                    (UnaryOp::BitNot, _) => {
+                        self.error(format!("`~` works on the bits of a whole number, and this is {ty}"), span)
+                    }
                     (UnaryOp::Neg, _) => self.error(format!("`-` does not work on {ty}"), span),
                     (UnaryOp::Not, _) => self.error(format!("`not` needs a bool, but this is {ty}"), span),
                 }
@@ -3189,6 +3193,21 @@ impl Checker {
             FloorDiv | Mod | Pow if ints => Some(Ty::Int),
             FloorDiv | Mod | Pow if numbers => Some(Ty::Float),
 
+            BitAnd | BitOr | BitXor | Shl | Shr if ints => Some(Ty::Int),
+            // Anything else has no bits to speak of. Two bools are the
+            // likely slip, by someone who writes C.
+            BitAnd | BitOr | BitXor | Shl | Shr => {
+                let hint = match (op, left, right) {
+                    (BitAnd, Ty::Bool, Ty::Bool) => ". For two bools Zeno spells this `and`",
+                    (BitOr, Ty::Bool, Ty::Bool) => ". For two bools Zeno spells this `or`",
+                    _ => "",
+                };
+                return self.error(
+                    format!("`{}` works on the bits of whole numbers, and these are {left} and {right}{hint}", op.text()),
+                    span,
+                );
+            }
+
             Eq | NotEq => {
                 // Two types that can never hold the same value: the answer
                 // is already known, which means the comparison is a mistake.
@@ -3522,6 +3541,24 @@ mod tests {
     #[test]
     fn a_function_nobody_calls_is_still_checked() {
         assert_eq!(error("function unused() { print(missing) }"), "`missing` is not defined");
+    }
+
+    // ----- The bits of whole numbers -----
+
+    #[test]
+    fn bit_operators_need_whole_numbers() {
+        ok("let a: int = 6 & 3\nlet b: int = 1 << 4 | 1\nlet c: int = ~a ^ b >> 1\nvar d = 0\nd |= 4\nd <<= 1");
+        assert_eq!(
+            error("print(true & false)"),
+            "`&` works on the bits of whole numbers, and these are bool and bool. For two bools Zeno spells this `and`"
+        );
+        assert_eq!(
+            error("print(true | false)"),
+            "`|` works on the bits of whole numbers, and these are bool and bool. For two bools Zeno spells this `or`"
+        );
+        assert_eq!(error("print(1.5 << 2)"), "`<<` works on the bits of whole numbers, and these are float and int");
+        assert_eq!(error("print(~1.5)"), "`~` works on the bits of a whole number, and this is float");
+        assert_eq!(error("var x = 1.0\nx &= 3"), "`&` works on the bits of whole numbers, and these are float and int");
     }
 
     // ----- The board and the clock -----

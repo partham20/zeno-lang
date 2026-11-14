@@ -126,11 +126,36 @@ pub fn unary(op: UnaryOp, value: Value, span: Span) -> Result {
         (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
         (UnaryOp::Neg, Value::Quantity(x, unit)) => Ok(Value::Quantity(-x, unit)),
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+        // Every bit turned over. For a number held in two's complement
+        // that is `-n - 1`, which always fits.
+        (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
+        (UnaryOp::BitNot, other) => {
+            fatal(format!("`~` works on the bits of a whole number, and this is {}", other.type_name()), span)
+        }
         (UnaryOp::Neg, other) => fatal(format!("`-` does not work on {}", other.type_name()), span),
         (UnaryOp::Not, other) => {
             fatal(format!("`not` needs a bool, but this is {}", other.type_name()), span)
         }
     }
+}
+
+/// `&` and its kin, given something that is not a whole number. Two bools
+/// are the likely mistake, coming from C.
+fn bits_mismatch(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Result {
+    let hint = match (op, left, right) {
+        (BinaryOp::BitAnd, Value::Bool(_), Value::Bool(_)) => ". For two bools Zeno spells this `and`",
+        (BinaryOp::BitOr, Value::Bool(_), Value::Bool(_)) => ". For two bools Zeno spells this `or`",
+        _ => "",
+    };
+    fatal(
+        format!(
+            "`{}` works on the bits of whole numbers, and these are {} and {}{hint}",
+            op.text(),
+            left.type_name(),
+            right.type_name()
+        ),
+        span,
+    )
 }
 
 /// A number with a unit after it: `500 ms`.
@@ -259,6 +284,33 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
                 .map(Int)
                 .map_or_else(overflow, Ok),
             _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a.powf(b)))),
+        },
+
+        // The bits of two whole numbers. A negative number is taken in
+        // two's complement, as every processor holds it.
+        BitAnd | BitOr | BitXor => match (&left, &right) {
+            (Int(a), Int(b)) => Ok(Int(match op {
+                BitAnd => a & b,
+                BitOr => a | b,
+                _ => a ^ b,
+            })),
+            _ => bits_mismatch(op, &left, &right, span),
+        },
+        // `a << n` is `a` times two, `n` times, and like `*` it must fit.
+        // `a >> n` is `a` halved `n` times, rounding down like `//`.
+        Shl | Shr => match (&left, &right) {
+            (Int(_), Int(n)) if !(0..64).contains(n) => raise(
+                "ValueError",
+                format!("cannot shift by {n}. An int has 64 bits, so a shift is 0 to 63"),
+                span,
+            ),
+            (Int(a), Int(n)) if op == Shr => Ok(Int(a >> n)),
+            (Int(a), Int(n)) => {
+                let shifted = a << n;
+                // Shifting back gives the number again unless bits fell off the top.
+                if shifted >> n == *a { Ok(Int(shifted)) } else { overflow() }
+            }
+            _ => bits_mismatch(op, &left, &right, span),
         },
 
         Eq | Is => Ok(Bool(equal(&left, &right))),

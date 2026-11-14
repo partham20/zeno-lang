@@ -1027,8 +1027,8 @@ file. In a C build they are in the same file and can be inlined.
   held like a shared one and the collector frees it. The program
   prints the same, and uses memory for longer (decision 5.11n).
 - **What the C backend also refuses**: a named function, class or enum
-  declared inside a function, a module Zeno does not have, a default
-  for a parameter that is not a literal, a method used as a value.
+  declared inside a function, a default for a parameter that is not
+  a literal, a method used as a value.
   The message says so, and `zeno run` runs all of them.
 - **It needs clang**, version 15 or later (the first to write every
   pointer as `ptr`). gcc cannot read IR.

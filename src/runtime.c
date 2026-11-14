@@ -863,6 +863,33 @@ static void zeno_print(int count, ...) {
     fputc('\n', stdout);
 }
 
+/* `a << n` and `a >> n`. An int has 64 bits, so `n` is 0 to 63. */
+static void zeno_shift_count(int64_t n, int line, int col) {
+    if (n < 0 || n > 63) {
+        zeno_fail("ValueError",
+                  zeno_join(3, "cannot shift by ", zeno_str_int(n), ". An int has 64 bits, so a shift is 0 to 63"),
+                  line, col);
+    }
+}
+
+/* `a << n` is `a` times two, `n` times, and like `*` it must fit. The
+ * shift is done on the unsigned number, where C says what happens to the
+ * bits that leave. Shifting back gives `a` again unless some did. */
+static int64_t zeno_shl(int64_t a, int64_t n, int line, int col) {
+    zeno_shift_count(n, line, col);
+    int64_t shifted = (int64_t)((uint64_t)a << n);
+    if ((shifted < 0 ? ~(~shifted >> n) : shifted >> n) != a) zeno_overflow(line, col);
+    return shifted;
+}
+
+/* `a >> n` halves `a`, `n` times, rounding down as `//` does. C leaves
+ * `>>` on a negative number to the compiler, so that case is done on the
+ * number with every bit turned over, which is not negative. */
+static int64_t zeno_shr(int64_t a, int64_t n, int line, int col) {
+    zeno_shift_count(n, line, col);
+    return a < 0 ? ~(~a >> n) : a >> n;
+}
+
 static double zeno_sqrt(double x, int line, int col) {
     if (x < 0.0) {
         zeno_fail("ValueError", zeno_join(2, "cannot take the square root of ", zeno_str_float(x)), line, col);

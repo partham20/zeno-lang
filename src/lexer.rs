@@ -352,8 +352,24 @@ impl Lexer {
                 }
             }
             '=' => if self.eat('=') { Eq } else { Assign },
-            '<' => if self.eat('=') { LtEq } else { Lt },
-            '>' => if self.eat('=') { GtEq } else { Gt },
+            '<' => {
+                if self.eat('<') {
+                    if self.eat('=') { ShlAssign } else { Shl }
+                } else if self.eat('=') {
+                    LtEq
+                } else {
+                    Lt
+                }
+            }
+            '>' => {
+                if self.eat('>') {
+                    if self.eat('=') { ShrAssign } else { Shr }
+                } else if self.eat('=') {
+                    GtEq
+                } else {
+                    Gt
+                }
+            }
             '!' => {
                 if self.eat('=') {
                     NotEq
@@ -362,15 +378,22 @@ impl Lexer {
                 }
             }
 
-            // Habits from other languages get a hint instead of a bare error.
+            // One `&` or `|` works on the bits of a whole number. Two is a
+            // habit from other languages, and gets a hint.
             '&' => {
-                self.eat('&');
-                return self.error("Zeno spells this `and`", span);
+                if self.eat('&') {
+                    return self.error("Zeno spells this `and`", span);
+                }
+                if self.eat('=') { AmpAssign } else { Amp }
             }
             '|' => {
-                self.eat('|');
-                return self.error("Zeno spells this `or`", span);
+                if self.eat('|') {
+                    return self.error("Zeno spells this `or`", span);
+                }
+                if self.eat('=') { PipeAssign } else { Pipe }
             }
+            '^' => if self.eat('=') { CaretAssign } else { Caret },
+            '~' => Tilde,
             ';' => {
                 return self.error("Zeno has no semicolons. A line break ends a statement", span);
             }
@@ -564,6 +587,17 @@ mod tests {
     }
 
     #[test]
+    fn bit_operators() {
+        assert_eq!(
+            kinds("a & b | c ^ ~d << 1 >> 2"),
+            vec![ident("a"), Amp, ident("b"), Pipe, ident("c"), Caret, Tilde, ident("d"), Shl, Int(1), Shr, Int(2), Newline]
+        );
+        assert_eq!(kinds("&= |= ^= <<= >>= x"), vec![AmpAssign, PipeAssign, CaretAssign, ShlAssign, ShrAssign, ident("x"), Newline]);
+        // The comparisons that begin the same way are still themselves.
+        assert_eq!(kinds("< <= << > >= >> x"), vec![Lt, LtEq, Shl, Gt, GtEq, Shr, ident("x"), Newline]);
+    }
+
+    #[test]
     fn hints_for_habits_from_other_languages() {
         let found = errors("let x = 1;\nif a && b || !c {");
         let messages: Vec<_> = found.iter().map(|e| e.0.as_str()).collect();
@@ -591,7 +625,7 @@ mod tests {
 
     #[test]
     fn all_reported_errors_not_just_the_first() {
-        assert_eq!(errors("$\n@\n~").len(), 3);
+        assert_eq!(errors("$\n@\n`").len(), 3);
     }
 
     #[test]

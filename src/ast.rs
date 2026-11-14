@@ -227,6 +227,8 @@ pub struct Arg {
 pub enum UnaryOp {
     Neg,
     Not,
+    /// `~x`: every bit of a whole number turned over.
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -238,6 +240,12 @@ pub enum BinaryOp {
     FloorDiv,
     Mod,
     Pow,
+    /// `&`, `|`, `^`, `<<`, `>>`: the bits of whole numbers.
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
     Eq,
     NotEq,
     Lt,
@@ -264,6 +272,11 @@ impl BinaryOp {
             FloorDiv => "//",
             Mod => "%",
             Pow => "**",
+            BitAnd => "&",
+            BitOr => "|",
+            BitXor => "^",
+            Shl => "<<",
+            Shr => ">>",
             Eq => "==",
             NotEq => "!=",
             Lt => "<",

@@ -233,6 +233,11 @@ impl Parser {
             TokenKind::MinusAssign => Some(BinaryOp::Sub),
             TokenKind::StarAssign => Some(BinaryOp::Mul),
             TokenKind::SlashAssign => Some(BinaryOp::Div),
+            TokenKind::AmpAssign => Some(BinaryOp::BitAnd),
+            TokenKind::PipeAssign => Some(BinaryOp::BitOr),
+            TokenKind::CaretAssign => Some(BinaryOp::BitXor),
+            TokenKind::ShlAssign => Some(BinaryOp::Shl),
+            TokenKind::ShrAssign => Some(BinaryOp::Shr),
             _ => return Ok(StmtKind::Expr(target)),
         };
 
@@ -647,11 +652,11 @@ impl Parser {
     /// One comparison is an ordinary binary operator. Two or more in a row,
     /// like `0 <= i < len`, become a single `Compare` chain.
     fn comparison(&mut self) -> Result<Expr, Error> {
-        let first = self.sum()?;
+        let first = self.bits()?;
 
         let mut rest = Vec::new();
         while let Some(op) = self.comparison_op() {
-            let right = self.sum()?;
+            let right = self.bits()?;
             // `is` tests for none and nothing else. See docs/decisions.md.
             let is = matches!(op, BinaryOp::Is | BinaryOp::IsNot);
             if is && right.kind != ExprKind::None {
@@ -674,6 +679,35 @@ impl Parser {
                 Expr { kind: ExprKind::Compare { first: Box::new(first), rest }, span }
             }
         })
+    }
+
+    /// The operators on the bits of a whole number. They bind tighter
+    /// than a comparison, so `flags & mask == 0` asks about `flags & mask`,
+    /// and looser than arithmetic, so `1 << n + 1` shifts by `n + 1`.
+    /// Among themselves, from loosest: `|`, then `^`, then `&`, then the
+    /// two shifts. `level` counts up through those four.
+    fn bits(&mut self) -> Result<Expr, Error> {
+        self.bits_at(0)
+    }
+
+    fn bits_at(&mut self, level: usize) -> Result<Expr, Error> {
+        if level == 4 {
+            return self.sum();
+        }
+        let mut left = self.bits_at(level + 1)?;
+        loop {
+            let op = match (level, self.peek()) {
+                (0, TokenKind::Pipe) => BinaryOp::BitOr,
+                (1, TokenKind::Caret) => BinaryOp::BitXor,
+                (2, TokenKind::Amp) => BinaryOp::BitAnd,
+                (3, TokenKind::Shl) => BinaryOp::Shl,
+                (3, TokenKind::Shr) => BinaryOp::Shr,
+                _ => return Ok(left),
+            };
+            self.advance();
+            let right = self.bits_at(level + 1)?;
+            left = Self::binary(left, op, right);
+        }
     }
 
     fn sum(&mut self) -> Result<Expr, Error> {
@@ -711,6 +745,10 @@ impl Parser {
         if self.eat(TokenKind::Minus) {
             let operand = Box::new(self.negation()?);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, operand }, span });
+        }
+        if self.eat(TokenKind::Tilde) {
+            let operand = Box::new(self.negation()?);
+            return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::BitNot, operand }, span });
         }
         self.power()
     }
@@ -1025,6 +1063,24 @@ mod tests {
         assert_eq!(expr("-2 ** 2"), "(-(2 ** 2))");
         assert_eq!(expr("2 ** -1"), "(2 ** (-1))");
         assert_eq!(expr("a * b ** c"), "(a * (b ** c))");
+    }
+
+    #[test]
+    fn bit_operators_sit_between_comparison_and_arithmetic() {
+        // Looser than `+`, tighter than `==`. In C `flags & mask == 0`
+        // compares first, which is never what was meant.
+        assert_eq!(expr("flags & mask == 0"), "((flags & mask) == 0)");
+        assert_eq!(expr("1 << n + 1"), "(1 << (n + 1))");
+        // Among themselves: `|`, then `^`, then `&`, then the shifts.
+        assert_eq!(expr("a | b ^ c & d << e"), "(a | (b ^ (c & (d << e))))");
+        assert_eq!(expr("a << 1 >> 2"), "((a << 1) >> 2)");
+        assert_eq!(expr("a & b & c"), "((a & b) & c)");
+        // `~` binds like the minus in front of a number.
+        assert_eq!(expr("~a & b"), "((~a) & b)");
+        assert_eq!(expr("~-a"), "(~(-a))");
+        assert_eq!(expr("-~a ** 2"), "(-(~(a ** 2)))");
+        assert_eq!(expr("0 <= x & 7 < 8"), "(0 <= (x & 7) < 8)");
+        assert_eq!(expr("a | b and c | d"), "((a | b) and (c | d))");
     }
 
     #[test]

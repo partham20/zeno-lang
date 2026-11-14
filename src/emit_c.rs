@@ -2482,6 +2482,14 @@ impl Emitter<'_> {
                 let val = self.expr(operand)?;
                 Ok(Val::from(format!("(!{})", val.code), Kind::Bool, &[&val]))
             }
+            // Every bit turned over. C's `~` on an `int64_t` is the same.
+            ExprKind::Unary { op: UnaryOp::BitNot, operand } => {
+                let val = self.expr(operand)?;
+                if val.kind != Kind::Int {
+                    return Err(cannot("`~` on this", span));
+                }
+                Ok(Val::from(format!("(~{})", val.code), Kind::Int, &[&val]))
+            }
             ExprKind::Unary { op: UnaryOp::Neg, operand } => {
                 let val = self.expr(operand)?;
                 match val.kind {
@@ -3035,6 +3043,12 @@ impl Emitter<'_> {
             }
             (Mod, Int, Int) => Val::from(format!("zeno_mod({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Pow, Int, Int) => Val::from(format!("zeno_pow({l}, {r}, {})", at(span)), Int, &parts).failing(),
+
+            // The bits of whole numbers. C's own operators do these three.
+            // The two shifts go through the runtime, which checks how far.
+            (BitAnd | BitOr | BitXor, Int, Int) => Val::from(format!("({l} {symbol} {r})"), Int, &parts),
+            (Shl, Int, Int) => Val::from(format!("zeno_shl({l}, {r}, {})", at(span)), Int, &parts).failing(),
+            (Shr, Int, Int) => Val::from(format!("zeno_shr({l}, {r}, {})", at(span)), Int, &parts).failing(),
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
             (Add, Kind::List(_), Kind::List(_)) if !self.collector => {
@@ -6553,6 +6567,33 @@ try {
             refused("function outer() -> int {\n function inner() -> int { return 1 }\n return inner()\n}"),
             "`zeno build` cannot compile a function inside a function or block yet. `zeno run` can still run this program"
         );
+    }
+
+    // ----- The bits of whole numbers -----
+
+    #[test]
+    fn bit_operators_match() {
+        same_as_interpreter(
+            "bits",
+            "let flags = 0b1010_0101\nlet mask = 0x0F\n\
+             print(flags & mask, flags | mask, flags ^ mask, ~flags, ~0, ~-1)\n\
+             print(1 << 5, 1 << 62, 0xFF >> 4, -8 >> 1, -1 >> 63, -7 >> 1, 5 >> 0, 3 << 0, -1 << 63, -2 << 62)\n\
+             print(flags & mask == 5, 1 << 2 + 1, 6 | 1 ^ 3 & 2, 1 | 2 == 3, -1 & 0xFF, ~5 & 0xFF)\n\
+             print(f\"{flags & ~mask:08b} {1 << 12:x}\")\n\
+             var reg = 0\nreg |= 1 << 3\nreg |= 0x81\nreg &= ~0x01\nreg ^= 0xFF\nreg <<= 4\nreg >>= 2\nprint(reg)\n\
+             function bit(n: int, at: int) -> bool { return (n >> at) & 1 == 1 }\n\
+             print(bit(5, 0), bit(5, 1), bit(5, 2))\n",
+        );
+    }
+
+    #[test]
+    fn a_shift_too_far_is_an_error() {
+        let shift = "function shift(n: int, by: int) -> int { return n << by }\n\
+                     function back(n: int, by: int) -> int { return n >> by }\n";
+        same_as_interpreter("shift-64", &format!("{shift}print(shift(1, 63), back(-1, 63))\nprint(shift(1, 64))\n"));
+        same_as_interpreter("shift-minus", &format!("{shift}print(back(8, -1))\n"));
+        same_as_interpreter("shift-big", &format!("{shift}print(shift(3, 61))\nprint(shift(3, 62))\n"));
+        same_as_interpreter("shift-small", &format!("{shift}print(shift(-3, 61))\nprint(shift(-3, 62))\n"));
     }
 
     // ----- The board and the clock -----

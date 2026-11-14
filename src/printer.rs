@@ -238,6 +238,7 @@ pub fn expr(e: &Expr) -> String {
         }
         ExprKind::Unary { op: UnaryOp::Neg, operand } => format!("(-{})", expr(operand)),
         ExprKind::Unary { op: UnaryOp::Not, operand } => format!("(not {})", expr(operand)),
+        ExprKind::Unary { op: UnaryOp::BitNot, operand } => format!("(~{})", expr(operand)),
         ExprKind::Binary { op, left, right } => {
             format!("({} {} {})", expr(left), op.text(), expr(right))
         }

@@ -150,6 +150,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_sleep", "declare void @zeno_sleep(double)"),
     ("zeno_now", "declare double @zeno_now()"),
     ("zeno_abs", "declare i64 @zeno_abs(i64, i32 signext, i32 signext)"),
+    ("zeno_shl", "declare i64 @zeno_shl(i64, i64, i32 signext, i32 signext)"),
+    ("zeno_shr", "declare i64 @zeno_shr(i64, i64, i32 signext, i32 signext)"),
     ("zeno_range_count", "declare i64 @zeno_range_count(i64, i64, i64, i32 signext, i32 signext)"),
     ("zeno_floordiv_float", "declare double @zeno_floordiv_float(double, double, i32 signext, i32 signext)"),
     ("zeno_mod_float", "declare double @zeno_mod_float(double, double, i32 signext, i32 signext)"),
@@ -2088,6 +2090,15 @@ impl Emitter<'_> {
                     }
                 }
             },
+            // Every bit turned over: exclusive-or with a number that is
+            // all ones, which is -1.
+            ExprKind::Unary { op: UnaryOp::BitNot, operand } => {
+                let val = self.expr(operand)?;
+                if val.kind != Kind::Int {
+                    return Err(cannot(format!("`~` in front of {}", described(&val.kind)), span));
+                }
+                Val::new(self.set(format!("xor i64 {}, -1", val.code)), Kind::Int)
+            }
             ExprKind::Unary { op: UnaryOp::Not, operand } => {
                 let test = self.condition(operand)?;
                 // There is no "not" instruction. Exclusive-or with 1 flips the bit.
@@ -2108,7 +2119,12 @@ impl Emitter<'_> {
                     | BinaryOp::Div
                     | BinaryOp::FloorDiv
                     | BinaryOp::Mod
-                    | BinaryOp::Pow => self.arithmetic(*op, left, right, span)?,
+                    | BinaryOp::Pow
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => self.arithmetic(*op, left, right, span)?,
                     BinaryOp::In | BinaryOp::NotIn => self.contains(*op, left, right, span)?,
                     _ => Val::new(self.compare(*op, &left, &right, span)?, Kind::Bool),
                 }
@@ -2250,6 +2266,21 @@ impl Emitter<'_> {
                     Mod => "zeno.mod",
                     _ => "zeno_pow",
                 };
+                Val::new(self.call("i64", name, format!("i64 {l}, i64 {r}, {}", at(span))), Int)
+            }
+
+            // The bits of whole numbers: one instruction each.
+            (BitAnd | BitOr | BitXor, Int, Int) => {
+                let instruction = match op {
+                    BitAnd => "and",
+                    BitOr => "or",
+                    _ => "xor",
+                };
+                Val::new(self.set(format!("{instruction} i64 {l}, {r}")), Int)
+            }
+            // The two shifts go through the runtime, which checks how far.
+            (Shl | Shr, Int, Int) => {
+                let name = if op == Shl { "zeno_shl" } else { "zeno_shr" };
                 Val::new(self.call("i64", name, format!("i64 {l}, i64 {r}, {}", at(span))), Int)
             }
 

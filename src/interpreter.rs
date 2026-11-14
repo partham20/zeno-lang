@@ -1182,6 +1182,24 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ----- The bits of whole numbers -----
+
+    #[test]
+    fn bit_operators() {
+        // Checked against Python, which gives the same answers.
+        assert_eq!(output("print(0b1100 & 0b1010, 0b1100 | 0b1010, 0b1100 ^ 0b1010, ~0b1100, ~0, ~-1)"), "8 14 6 -13 -1 0\n");
+        assert_eq!(output("print(1 << 5, 1 << 62, 0xFF >> 4, -8 >> 1, -7 >> 1, -1 >> 63, -1 << 63)"), "32 4611686018427387904 15 -4 -4 -1 -9223372036854775808\n");
+        assert_eq!(output("print(-1 & 0xFF, ~5 & 0xFF, 6 | 1 ^ 3 & 2, 1 | 2 == 3, 1 << 2 + 1)"), "255 250 7 true 8\n");
+        assert_eq!(output("var r = 0\nr |= 1 << 3\nr |= 0x81\nr &= ~1\nr ^= 0xFF\nr <<= 4\nr >>= 2\nprint(r)"), "476\n");
+    }
+
+    #[test]
+    fn a_shift_must_fit() {
+        assert_eq!(error("print(3 << 62)"), "uncaught OverflowError: the result is too big for an int");
+        assert_eq!(error("let n = 64\nprint(1 << n)"), "uncaught ValueError: cannot shift by 64. An int has 64 bits, so a shift is 0 to 63");
+        assert_eq!(error("let n = -1\nprint(1 >> n)"), "uncaught ValueError: cannot shift by -1. An int has 64 bits, so a shift is 0 to 63");
+    }
+
     // ----- The board and the clock -----
 
     #[test]
