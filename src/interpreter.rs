@@ -611,7 +611,7 @@ impl Interpreter {
 
             // A function written as a value remembers the scope it was written in.
             ExprKind::Function(decl) => {
-                let closure = Closure { decl: (**decl).clone(), env: env.clone() };
+                let closure = Closure { decl: decl.clone(), env: env.clone() };
                 Ok(Value::Function(Rc::new(closure)))
             }
 

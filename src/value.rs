@@ -55,7 +55,7 @@ pub enum Value {
 /// A function together with the scope it was defined in, so that it can
 /// still see the variables around it when it is called later.
 pub struct Closure {
-    pub decl: ast::Function,
+    pub decl: std::sync::Arc<ast::Function>,
     pub env: Env,
 }
 

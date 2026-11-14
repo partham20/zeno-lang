@@ -366,7 +366,7 @@ fn one_number(name: &str, args: &[Value], span: Span) -> Result<f64> {
 fn sqrt(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     let x = one_number("sqrt", &args, span)?;
     if x < 0.0 {
-        return raise("ValueError", format!("cannot take the square root of {x}"), span);
+        return raise("ValueError", format!("cannot take the square root of {x:?}"), span);
     }
     Ok(Value::Float(x.sqrt()))
 }

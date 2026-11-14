@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{self, *};
 use crate::error::Error;
@@ -38,6 +39,62 @@ const MAX_ROUNDS: usize = 8;
 ///
 /// Strict mode is on if it is asked for here or by the file itself.
 pub fn check(program: &Program, strict: bool) -> Vec<Error> {
+    check_with_types(program, strict).0
+}
+
+/// A type, as the stages after the checker see it. The checker's own `Ty`
+/// is full of links back into the checker; this is the plain answer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kind {
+    Int,
+    Float,
+    Str,
+    Bool,
+    None,
+    /// A number with a unit; the string is the unit, such as "ms".
+    Quantity(String),
+    /// Anything else, described in words for an error message.
+    Other(String),
+}
+
+/// What a function takes and gives back.
+#[derive(Debug, Clone)]
+pub struct FunctionKind {
+    pub params: Vec<Kind>,
+    pub returns: Kind,
+}
+
+/// What the checker worked out that the compiler cannot work out for
+/// itself: the signature of every function, including the parameter and
+/// return types that were never written down.
+///
+/// A function is looked up by its node in the syntax tree (its address in
+/// memory), so the tree that was checked must be the tree that is compiled.
+#[derive(Default)]
+pub struct Types {
+    functions: HashMap<usize, FunctionKind>,
+}
+
+impl Types {
+    pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
+        self.functions.get(&(Arc::as_ptr(decl) as usize))
+    }
+}
+
+fn kind(ty: &Ty) -> Kind {
+    match ty {
+        Ty::Int => Kind::Int,
+        Ty::Float => Kind::Float,
+        Ty::Str => Kind::Str,
+        Ty::Bool => Kind::Bool,
+        Ty::None => Kind::None,
+        Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
+        other => Kind::Other(other.to_string()),
+    }
+}
+
+/// `check`, also returning what was learned about the program's types.
+pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) {
     let strict = strict || program.strict;
 
     // Parameters and fields with no type written are worked out from how
@@ -87,7 +144,7 @@ pub fn check(program: &Program, strict: bool) -> Vec<Error> {
     let mut errors = checker.errors;
     errors.sort_by_key(|error| (error.span.line, error.span.col));
     errors.dedup();
-    errors
+    (errors, checker.types)
 }
 
 // ---------------------------------------------------------------------- Types
@@ -230,7 +287,7 @@ struct Signature {
 /// first time it is needed, because a return type that is not written down
 /// has to be found by checking the body.
 struct FunctionInfo {
-    decl: ast::Function,
+    decl: Arc<ast::Function>,
     env: Env,
     span: Span,
     /// For a method, the type of `self`.
@@ -366,7 +423,6 @@ fn join(a: &Ty, b: &Ty) -> Ty {
     }
     match (a, b) {
         (Ty::Invalid, _) | (_, Ty::Invalid) => Ty::Invalid,
-        (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
         (Ty::None, other) | (other, Ty::None) => match other {
             Ty::Optional(_) => other.clone(),
             _ => Ty::Optional(Box::new(other.clone())),
@@ -491,6 +547,8 @@ struct Checker {
     /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
     classes: HashMap<DeclId, Rc<ClassInfo>>,
     enums: HashMap<DeclId, Rc<EnumInfo>>,
+    /// What this pass worked out, kept for the compiler.
+    types: Types,
     errors: Vec<Error>,
     frames: Vec<Frame>,
     /// The errors that can be raised by the code checked so far, innermost
@@ -509,6 +567,7 @@ impl Checker {
             seen: HashMap::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
+            types: Types::default(),
             errors: Vec::new(),
             frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
             raised: vec![Vec::new()],
@@ -1488,7 +1547,19 @@ impl Checker {
                         types.push(Ty::Invalid);
                     }
                 }
-                let returns = self.join_all(&types).unwrap_or(Ty::None);
+                let mut returns = self.join_all(&types).unwrap_or(Ty::None);
+                if self.strict && matches!(returns, Ty::Dynamic) && !types.iter().any(Ty::is_loose) {
+                    // Each `return` is known, but they do not agree.
+                    let mut kinds: Vec<String> = types.iter().map(Ty::to_string).collect();
+                    kinds.dedup();
+                    returns = self.error(
+                        format!(
+                            "strict mode: `{name}` returns different types ({}). Make them one type, as in `float(n)` or `1.0`",
+                            kinds.join(", ")
+                        ),
+                        span,
+                    );
+                }
                 match self.key(&returns) {
                     Some(Ok(key)) => {
                         self.seen.insert(return_id, Seen::Known(key));
@@ -1523,6 +1594,10 @@ impl Checker {
             kinds
         };
 
+        self.types.functions.insert(
+            Arc::as_ptr(&function.decl) as usize,
+            FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
+        );
         let signature = Rc::new(Signature { name, params, returns, raises });
         *function.state.borrow_mut() = State::Checked(signature.clone());
         signature
@@ -1636,7 +1711,7 @@ impl Checker {
 
             ExprKind::Function(decl) => {
                 let function = Rc::new(FunctionInfo {
-                    decl: (**decl).clone(),
+                    decl: decl.clone(),
                     env: env.clone(),
                     span,
                     self_type: None,
@@ -2643,6 +2718,18 @@ mod tests {
         assert_eq!(error(&format!("{fact}let s: str = fact(5)")), "`s` should be str, but this is int");
         let even = "function ev(n) {\n if n == 0 { return true }\n return od(n - 1)\n}\nfunction od(n) {\n if n == 0 { return false }\n return ev(n - 1)\n}\n";
         assert_eq!(error(&format!("{even}let s: str = ev(4)")), "`s` should be str, but this is bool");
+    }
+
+    #[test]
+    fn an_int_is_not_quietly_made_a_float() {
+        // Arithmetic mixes the two, but a function that returns an int on
+        // one path and a float on another does not have one return type.
+        strict_ok("function half(n: int) { return n / 2 }\nlet h: float = half(3) + 1");
+        assert_eq!(
+            strict_error("function pick(n: int) {\n if n > 0 { return 1 }\n return 2.5\n}\nlet p = pick(1)"),
+            "strict mode: `pick` returns different types (int, float). Make them one type, as in `float(n)` or `1.0`"
+        );
+        strict_ok("function pick(n: int) {\n if n > 0 { return 1.0 }\n return 2.5\n}\nlet p: float = pick(1)");
     }
 
     // ----- Strict in the file -----

@@ -9,6 +9,8 @@
 //! - a **statement** does something: declare a variable, loop, return.
 //! - an **expression** produces a value: `1 + 2`, `area(shape)`, `user.name`.
 
+use std::sync::Arc;
+
 use crate::token::Span;
 
 /// A whole source file.
@@ -43,7 +45,7 @@ pub enum StmtKind {
     /// An expression used as a statement, usually a call: `print("hi")`
     Expr(Expr),
 
-    Function(Function),
+    Function(Arc<Function>),
     Class(Class),
     Enum(Enum),
 
@@ -87,7 +89,7 @@ pub struct Param {
 pub struct Class {
     pub name: String,
     pub fields: Vec<Field>,
-    pub methods: Vec<Function>,
+    pub methods: Vec<Arc<Function>>,
 }
 
 /// A named slot: a class field, or one value carried by an enum case.
@@ -190,7 +192,7 @@ pub enum ExprKind {
     /// It means `0 <= i and i < len`, with `i` worked out only once.
     Compare { first: Box<Expr>, rest: Vec<(BinaryOp, Expr)> },
     /// A function with no name, used as a value: `function(n) { return n * 2 }`
-    Function(Box<Function>),
+    Function(Arc<Function>),
     /// `callee(args)`
     Call { callee: Box<Expr>, args: Vec<Arg> },
     /// `object.name`

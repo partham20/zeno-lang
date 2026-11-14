@@ -11,6 +11,8 @@
 //! The parser stops at the first error. `?` after a call means "if that
 //! failed, stop and pass the error up".
 
+use std::sync::Arc;
+
 use crate::ast::*;
 use crate::error::Error;
 use crate::lexer;
@@ -152,7 +154,7 @@ impl Parser {
             // `function name(...)` declares. `function(...)` with no name is a
             // value, so it is handled with the other expressions below.
             TokenKind::Function if *self.peek_at(1) != TokenKind::LParen => {
-                StmtKind::Function(self.function()?)
+                StmtKind::Function(Arc::new(self.function()?))
             }
             TokenKind::Class => self.class()?,
             TokenKind::Enum => self.enum_()?,
@@ -462,7 +464,7 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) {
             if self.check(TokenKind::Function) {
-                methods.push(self.function()?);
+                methods.push(Arc::new(self.function()?));
             } else if matches!(self.peek(), TokenKind::Ident(_)) {
                 fields.push(self.field()?);
             } else {
@@ -802,7 +804,7 @@ impl Parser {
             }
             TokenKind::Function => {
                 self.advance();
-                ExprKind::Function(Box::new(self.function_after_name(String::new())?))
+                ExprKind::Function(Arc::new(self.function_after_name(String::new())?))
             }
             TokenKind::LParen => {
                 // Brackets only group. They leave no node of their own in the tree.
