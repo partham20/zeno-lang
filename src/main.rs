@@ -4,7 +4,8 @@
 //! `zeno parse` and `zeno check` show what the lexer, the parser and the
 //! type checker find. `zeno run` checks a program and then runs it, with
 //! the interpreter or, given `--vm`, by compiling it to bytecode for the
-//! VM. `zeno bytecode` shows that bytecode. `zeno build` compiles to C.
+//! VM. `zeno bytecode` shows that bytecode. `zeno build` compiles to C,
+//! or with `--llvm` to LLVM IR.
 
 mod ast;
 mod builtins;
@@ -12,6 +13,7 @@ mod bytecode;
 mod checker;
 mod emit_bytecode;
 mod emit_c;
+mod emit_llvm;
 mod error;
 mod interpreter;
 mod lexer;
@@ -58,6 +60,9 @@ fn usage() {
     println!("                           collector in it. Every list and object must");
     println!("                           be `owned`, and is freed where its owner's");
     println!("                           block ends");
+    println!("  --llvm                   with build: compile to LLVM IR in place of C,");
+    println!("                           and hand that to clang. Numbers, text,");
+    println!("                           functions and control flow so far");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -218,6 +223,66 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     }
 }
 
+/// `zeno build --llvm <file>`: compile the program to LLVM IR, then hand
+/// the IR to clang to make a program that runs by itself.
+///
+/// `hello.zeno` becomes `hello.ll`, `hello_runtime.c` and `hello`. The IR
+/// holds the program. The C file is the runtime the program calls for
+/// text, printing and memory, which a C build has pasted in front of it.
+fn build_llvm(path: &str) -> Option<()> {
+    let (source, program) = load(path)?;
+    let (errors, types) = checker::check_with_types(&program, true);
+    for error in &errors {
+        report(path, &source, error);
+    }
+    if !errors.is_empty() {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was built.", errors.len());
+        return None;
+    }
+
+    let ir = match emit_llvm::emit(&program, &types, path) {
+        Ok(ir) => ir,
+        Err(error) => {
+            report(path, &source, &error);
+            return None;
+        }
+    };
+    let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
+    let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
+    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime())] {
+        if let Err(err) = fs::write(file, text) {
+            eprintln!("zeno: cannot write `{file}`: {err}");
+            return None;
+        }
+    }
+    println!("Wrote {ir_file} and {runtime_file}");
+
+    // Only clang reads IR, so `CC` is not looked at here. `CLANG` names
+    // another one, such as `clang-18`.
+    let compiler = env::var("CLANG").unwrap_or_else(|_| "clang".to_string());
+    // The IR does not say which processor it is for, so that the same
+    // file builds anywhere. clang fills in its own and would mention
+    // doing so; `-Wno-override-module` says there is no need.
+    let flags = ["-O2", "-Wno-override-module", "-o", name, &ir_file, &runtime_file, "-lm"];
+    match Command::new(&compiler).args(flags).status() {
+        Ok(status) if status.success() => {
+            println!("Built {name}. Run it with ./{name}");
+            Some(())
+        }
+        Ok(_) => {
+            eprintln!("zeno: `{compiler}` could not compile `{ir_file}`. That is a bug in Zeno, not in your program");
+            None
+        }
+        Err(_) => {
+            eprintln!("zeno: no clang found (tried `{compiler}`), so only the IR and the runtime were written.");
+            eprintln!("      Install clang 15 or later, or set CLANG, then run:");
+            eprintln!("      clang {}", flags.join(" "));
+            None
+        }
+    }
+}
+
 /// Print an error with the offending line and a caret under the exact spot:
 ///
 /// ```text
@@ -271,6 +336,9 @@ fn main() -> ExitCode {
     // `--vm` runs a program as bytecode.
     let on_vm = args.iter().any(|arg| arg == "--vm");
     args.retain(|arg| arg != "--vm");
+    // `--llvm` builds through LLVM IR in place of C.
+    let llvm = args.iter().any(|arg| arg == "--llvm");
+    args.retain(|arg| arg != "--llvm");
     let kind = match (no_collector, firmware) {
         (true, _) => emit_c::Build::NoCollector,
         (false, true) => emit_c::Build::Firmware,
@@ -308,7 +376,15 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            match build(path, memory_report, kind) {
+            if llvm && (firmware || no_collector || memory_report) {
+                eprintln!("zeno: `--llvm` does not go with `--firmware`, `--no-collector` or `--memory` yet");
+                return ExitCode::FAILURE;
+            }
+            let built = match llvm {
+                true => build_llvm(path),
+                false => build(path, memory_report, kind),
+            };
+            match built {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
             }
