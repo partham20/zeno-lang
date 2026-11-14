@@ -467,6 +467,86 @@ static char *zeno_alloc_text(size_t size) {
     return text;
 }
 
+/* Text that is kept.
+ *
+ * Text can be in three places, and its address says which:
+ *
+ *     written in the program    in neither array. It is there for ever.
+ *     the text room             built by the statement now running, or a
+ *                               function's answer. Gone when that
+ *                               statement is over.
+ *     the pool                  kept: a variable, a field or a list holds
+ *                               it, and frees it when it is done with it.
+ *
+ * So a str is never given away and never shared. Whatever keeps text has
+ * its own copy, and text is never changed once made, so nobody can tell
+ * a copy from the original. docs/text.md goes through it. */
+static bool zeno_in_pool(const char *text) {
+    return (uintptr_t)text - (uintptr_t)zeno_pool.bytes < (uintptr_t)ZENO_POOL;
+}
+
+static bool zeno_in_room(const char *text) {
+    return (uintptr_t)text - (uintptr_t)zeno_text_room < (uintptr_t)ZENO_TEXT_ROOM;
+}
+
+/* `text` is about to be kept in a variable, a field or a list. Text
+ * written in the program can be kept as it is. Anything else will not
+ * last, or is somebody else's, so the keeper gets a copy of its own. */
+static const char *zeno_text_keep(const char *text) {
+    if (text == NULL || !(zeno_in_pool(text) || zeno_in_room(text))) return text;
+    size_t size = strlen(text) + 1;
+    char *kept = zeno_alloc(size);
+    memcpy(kept, text, size);
+    return kept;
+}
+
+/* Whatever kept `text` is done with it. Only a copy made by zeno_text_keep
+ * is in the pool; for text written in the program there is nothing to do. */
+static void zeno_text_drop(const char *text) {
+    if (text != NULL && zeno_in_pool(text)) zeno_free((void *)text);
+}
+
+/* `text` was read from a place that a function may change: a variable at
+ * the top of the file, a field, an item of a list. If it is a kept copy,
+ * the statement gets a copy of its own in the text room. Then a function
+ * called later in the statement can give the place new text, which frees
+ * the old, and the statement is still holding good text. */
+static const char *zeno_text_lend(const char *text) {
+    if (text == NULL || !zeno_in_pool(text)) return text;
+    size_t size = strlen(text) + 1;
+    char *copy = zeno_alloc_text(size);
+    memcpy(copy, text, size);
+    return copy;
+}
+
+/* The same, for text that is leaving the place that kept it for good
+ * (`names.pop()`): the statement gets it, and the kept copy is freed. */
+static const char *zeno_text_take(const char *text) {
+    const char *lent = zeno_text_lend(text);
+    zeno_text_drop(text);
+    return lent;
+}
+
+/* `return text`. `mark` is where the top of the text room was when the
+ * `return` began. A function's answer travels in the text room: it is
+ * moved down to `mark`, and the top is left just above it, so that the
+ * statement that called the function finds it there and gives it back
+ * with the rest of its text. Text that will outlast the call anyway
+ * (written in the program, or the caller's own, lower in the room) is
+ * given back as it is. */
+static const char *zeno_text_return(size_t mark, const char *text) {
+    bool above = text != NULL && zeno_in_room(text) && (size_t)(text - zeno_text_room) >= mark;
+    if (text == NULL || !(above || zeno_in_pool(text))) {
+        zeno_text_top = mark;
+        return text;
+    }
+    size_t size = strlen(text) + 1;
+    zeno_text_top = mark;
+    char *answer = zeno_alloc_text(size);
+    memmove(answer, text, size);
+    return answer;
+}
+
 /* What a program built with `zeno build --memory` prints as it ends. A
  * program that ran to its last line should have no blocks left. */
 #ifdef ZENO_MEMORY_REPORT
@@ -490,6 +570,9 @@ typedef struct {
     const char *kind;    /* "ValueError", or the name of a class */
     const char *message; /* what `print(err)` shows */
     void *object;        /* the object itself, when an object was raised */
+#ifdef ZENO_NO_COLLECTOR
+    void (*drop)(void *); /* what frees `object`, when it is one */
+#endif /* ZENO_NO_COLLECTOR */
 } zeno_error;
 
 #ifndef ZENO_NO_COLLECTOR
@@ -519,11 +602,24 @@ static zeno_error *zeno_error_new(const char *kind, const char *message, void *o
     return error;
 }
 
+/* `raise Overload(channel, name)`: an object travelling as an error.
+ * `drop` is the function the compiler wrote to free such an object, with
+ * whatever text it keeps. */
+static zeno_error *zeno_error_of(const char *kind, const char *message, void *object, void (*drop)(void *)) {
+    zeno_error *error = zeno_error_new(kind, message, object);
+    error->drop = drop;
+    return error;
+}
+
 /* The `except` block that caught `error` is over: free the error, and the
  * object that was raised, if there was one. */
 static void zeno_error_drop(zeno_error *error) {
     if (error == NULL) return;
-    zeno_free(error->object);
+    if (error->drop != NULL) {
+        error->drop(error->object);
+    } else {
+        zeno_free(error->object);
+    }
     zeno_free(error);
 }
 
@@ -1204,6 +1300,28 @@ static zeno_list *zeno_list_copy(zeno_list *list) {
     copy->len = list->len;
     return copy;
 }
+
+#ifdef ZENO_NO_COLLECTOR
+
+/* A list of text, in a build with no collector. Each item that is not
+ * text written in the program is the list's own copy (zeno_text_keep),
+ * so the end of the list frees those too. */
+static void zeno_list_drop_text(zeno_list *list) {
+    if (list == NULL) return;
+    for (int64_t i = 0; i < list->len; i++) zeno_text_drop(list->items[i].s);
+    zeno_list_drop(list);
+}
+
+/* The copy of such a list that a `for` loop walks. It has copies of the
+ * items as well, so that the body of the loop can give the list new
+ * items while the loop is still looking at the old ones. */
+static zeno_list *zeno_list_copy_text(zeno_list *list) {
+    zeno_list *copy = zeno_list_copy(list);
+    for (int64_t i = 0; i < copy->len; i++) copy->items[i].s = zeno_text_keep(copy->items[i].s);
+    return copy;
+}
+
+#endif /* ZENO_NO_COLLECTOR */
 
 static zeno_list *zeno_list_concat(zeno_list *a, zeno_list *b) {
     zeno_list *joined = zeno_list_new(a->len + b->len);
