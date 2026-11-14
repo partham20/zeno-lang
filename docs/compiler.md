@@ -349,6 +349,13 @@ Details that the compiler looks after:
   error whose kind is the class's name. `except Timeout as t` gets the
   object back out. `except Error as e` gets the error it travelled in.
 
+### In a firmware build
+
+`zeno build --firmware` compiles all of this differently, with no
+`setjmp`: a function that can raise returns `true` or `false`, and each
+caller tests what came back. [`docs/firmware.md`](firmware.md) is the
+walkthrough.
+
 ## Functions as values
 
 A function held in a variable is a pointer to a small struct:
@@ -479,6 +486,9 @@ without data do not allocate at all, and the collector never runs.
   `limit` example above). Both stop with an error at that line, but the
   wording differs: the interpreter complains about the operation that was
   tried, the compiled program about the variable.
+- **In a firmware build, an error the runtime finds stops the program**
+  even inside a `try`. An `except` that could only be waiting for one is
+  refused when the program is built. See [`firmware.md`](firmware.md).
 - **`sum` of an empty list of floats** prints `0.0` compiled and `0`
   interpreted. The compiled answer is the right one: the interpreter does
   not know what an empty list was meant to hold.

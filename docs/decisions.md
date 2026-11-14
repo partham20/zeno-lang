@@ -766,6 +766,10 @@ be caught.
 bug in the second group before the program runs, so in checked code there is
 nothing to catch. *(Principle 1.)*
 
+A firmware build draws the line in a different place: errors that the
+runtime finds, such as a division by zero, stop the program there too.
+5.5l says why.
+
 ### 4.2 Error messages say what to do
 
 `x` declared with `let` and then assigned gives "`x` cannot be changed.
@@ -945,9 +949,8 @@ function, and nothing is added to code that does not use `try`.
   `setjmp` and `longjmp` outright. A project held to such a standard could
   not use the generated C as it is.
 
-**Provisional**, for that last reason. The syntax does not depend on the
-choice, so a second build mode that uses checked returns is planned for
-projects that need it: 5.5l.
+For that last reason there is a second build mode that uses checked
+returns, for projects that need it: 5.5l.
 
 ### 5.5j `T or none` in C: NULL for pointers, a flag for numbers
 
@@ -1006,19 +1009,22 @@ visible from the top of its block, before the variables it uses exist.
 That needs the box treatment for every variable of the block, so for now
 `zeno build` refuses it and asks for `let name = function(...) { ... }`.
 
-### 5.5l A second way to compile errors, for firmware held to MISRA *(planned, next stage)*
+### 5.5l A firmware build carries errors as values, with no `setjmp`
 
-`zeno build` will take a setting (for example `--target firmware`) that
-compiles errors without `setjmp` and `longjmp`:
+`zeno build --firmware` compiles errors without `setjmp` and `longjmp`.
+`docs/firmware.md` walks through the C.
 
-- A function that can fail returns a status code and writes its result
-  through a pointer the caller passes in. The caller tests the status
-  after the call and passes a failure on.
-- `try` / `except` becomes an `if` on that status.
-- A function that cannot fail keeps a plain return and no tests. The
+- A function that says `raises` returns `true` or `false`, and gives its
+  answer through a pointer the caller passes in. The caller tests what
+  came back, and passes a failure on.
+- `raise` notes the error in one variable of the runtime and returns
+  `false`.
+- `try` / `except` becomes an `if`: a failure inside the body goes forward
+  to it.
+- A function that cannot raise keeps a plain return and no tests. The
   checker already knows which is which, from `raises` (1.17).
 - The default build keeps `setjmp` (5.5i). The same source compiles both
-  ways, and the tests run both against `zeno run`.
+  ways, and every compiler test runs both against `zeno run`.
 
 **Why.** MISRA C:2012 Rule 21.4 bans `setjmp` and `longjmp`: the jump skips
 whatever the functions in between meant to do on the way out, it can leave
@@ -1032,14 +1038,59 @@ mode that can.
 firmware with no such standard to meet, `setjmp` costs nothing where no
 `try` is running, and the generated C is shorter.
 
-**To settle when it is built.** Errors the runtime finds itself (division
-by zero, a bad index, overflow) can happen on almost any line and are not
-declared (1.17, 4.1). In this mode either every function is treated as one
-that can fail, which is the cost 5.5i was written to avoid, or those errors
-stop the program and cannot be caught. Certified firmware usually wants
-the second: such a failure goes to a fault handler, not to an `except`.
-That is the likely answer. It would change 4.1 for this mode only, and be
-the one place where the two modes differ.
+**Why one switch called `--firmware`,** and not a setting for errors
+alone. The planned build with no collector (5.9) answers to the same
+standards and the same people. One switch that means "C a firmware review
+will accept" is easier to remember than several that must be combined.
+
+**Why `true` / `false` plus one noted error,** and not the error itself as
+the return value. The error has to be somewhere the collector can see it
+while it travels (5.7), and it needs the line it was raised on for the
+message when nobody catches it. One variable in the runtime does both, and
+the return value stays the simplest thing a reviewer can check: a `bool`
+that every caller tests.
+
+**Why the answer goes out through a pointer,** and not in a struct beside
+the status. A struct per return type is one more type for every function
+shape, and C compilers return small structs less well than they pass a
+pointer.
+
+**Why a `goto`.** Inside a `try`, a failure has to leave the body from
+wherever it is, including from inside loops. The alternative with no
+`goto` is a flag tested around every statement that follows, which is
+longer, slower and harder to read. The `goto` used only goes forward, to a
+label in a block around it: MISRA's required Rules 15.2 and 15.3 allow
+that form. Its advisory Rule 15.1 prefers none at all, and a project may
+have to record a deviation for it.
+
+**Errors the runtime finds are faults in this mode.** A division by zero,
+a bad index, an overflow or `pop` on an empty list stops the program and
+no `except` sees it. This was the open question when the stage was
+planned, and it is settled this way because the other answer makes every
+function one that can fail, with a test after nearly every line: the cost
+5.5i was written to avoid, paid everywhere. Rust (`panic` beside `Result`)
+and Swift (a trap beside `throws`) draw the same line. It changes 4.1 for
+this mode only. So that it never comes as a surprise *(principle 1)*, a
+`try` whose `except` could only ever be waiting for a fault is refused
+when the program is built, with a message that says to test first.
+
+**One difference that is not refused.** `except` with no kind, around a
+body that raises something as a value and can also fault: an ordinary
+build catches both, a firmware build catches the first and stops at the
+second. Refusing every `except` with no kind would be too strict, so this
+is documented and pinned by a test instead.
+
+**Provisional: a function that can raise cannot be used as a value** in a
+firmware build. The two sorts of function are called differently, and the
+type `function(str) -> int` does not say which sort it is. The fix is to
+let function types say `raises`, which the checker needs anyway: today it
+does not follow errors through function values in any build.
+
+**What this does not make true.** The C of a firmware build is not thereby
+MISRA-compliant. Still to do, each its own piece of work: the heap (Rule
+21.3; plan in 5.9), variable argument lists in the runtime (17.1),
+`printf` and `exit` (21.6, 21.8), the GCC and Clang builtins (1.2), and the
+forward `goto` above (15.1, advisory).
 
 Memory needs nothing special in either mode. The collector frees what an
 error leaves behind whichever way the error travels (5.7).
@@ -1122,7 +1173,7 @@ MicroPython does on the same class of microcontroller.
 1. Certified firmware usually allows no heap at all. The answer for it is
    not a different collector but a build that proves a program makes no
    blocks, and says which line does if it cannot. The checker already
-   knows where blocks are made. This belongs with 5.5l.
+   knows where blocks are made. This is planned as 5.9.
 2. The blocks come from the C library's `malloc`. On a real board the
    collector should own one fixed region and hand out pieces of it itself.
 3. If pauses turn out to matter in practice, counting references can be
