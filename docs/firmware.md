@@ -148,6 +148,11 @@ Because nothing is skipped, the awkward parts of the jumping version are
 gone. `return`, `break` and `continue` inside a `try` need no care, and no
 variable has to be `volatile`.
 
+It also means a failure passes every line where something could be freed.
+If the block that fails holds owned values, the failure frees them first:
+`{ zeno_drop_Frame(z_frame); return false; }`.
+[`docs/ownership.md`](ownership.md) has the details.
+
 ## Errors that stop the program instead
 
 Zeno has two sorts of error that can be caught under `zeno run`:

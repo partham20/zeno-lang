@@ -240,6 +240,13 @@ The compiler stores an `int or none` differently from an `int`, so it has
 to know that `x` inside `if x is not none { ... }` is the plain number.
 Only the checker knows that, so the checker writes it down.
 
+Owned values are handed on the same way. `Types` lists every place where a
+name gives its value away (`moves`), every `let` or `var` that becomes an
+owner (`owner`), and every statement that makes an owned value and drops it
+on the floor (`discarded`). The compiler turns each of those into a line of
+C. The rules themselves, and how the checker follows a value through `if`,
+loops and `try`, are in [`docs/ownership.md`](ownership.md).
+
 ## What it does not do yet
 
 - **Generic functions.** `function id(x) { return x }` called with an int

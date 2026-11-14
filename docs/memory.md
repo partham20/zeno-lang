@@ -12,12 +12,19 @@ cargo run -- build --memory examples/memory.zeno
 
 ```
 ...
-memory: 780027 blocks made (13222784 bytes), at most 1048576 bytes in use at once, 12 collections
+memory: 780027 blocks made (13222784 bytes), at most 1048574 bytes in use at once, 10 collections, 60002 blocks freed without the collector
 ```
 
 That program asked for thirteen megabytes, a few bytes at a time, and never
 held more than one. `--memory` is what adds the last line; without it the
 collector works just the same and says nothing.
+
+The last figure counts blocks that never waited for the collector. A few
+frees are safe at a line the compiler can point to: the old storage of a
+list that has just grown, the copy a `for` loop walks, and every value
+marked `owned`. Those are the subject of
+[`docs/ownership.md`](ownership.md). Everything else on this page is about
+the blocks nobody owns.
 
 `zeno run` is not affected. The interpreter is a Rust program, and Rust
 frees its values for it.
@@ -182,6 +189,11 @@ waiting list, and one loop takes blocks off it until it is empty. The
 waiting list is threaded through the blocks themselves (`next_waiting`, a
 field in front of every block), so the collector needs no memory of its own
 at the one moment when there may be none to have.
+
+Between collections that field has nothing to do, so it holds something
+else: the block's position in the table (`place`). The two share one word,
+`link`. Knowing the position is what lets `zeno_free` take a single block
+out of the table without searching for it.
 
 ## When it runs
 

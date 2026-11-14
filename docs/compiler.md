@@ -38,7 +38,8 @@ quantities, variables, `if` / `while` / `for`, functions, f-strings,
 `print`, the `math` module, classes with methods, lists (literals,
 indexing, `append`, `pop`, `+`, `in`, comprehensions, `map`, `filter`,
 `reduce`), enums and `match`, values that may be `none`, errors (`try`,
-`except`, `raise`), and functions used as values.
+`except`, `raise`), functions used as values, and owned values
+([`docs/ownership.md`](ownership.md)).
 
 Every program in `examples/` builds, except `blink.zeno`, which needs a
 board to run on.
@@ -222,7 +223,8 @@ function per kind of item (`zeno_item_repr_float`) and passes it in.
 
 A `for` loop over a list walks a copy of it. That matches `zeno run`, where
 the loop sees the list as it was when the loop began, even if the body adds
-to it.
+to it. Only the loop ever points at the copy, so it is freed as soon as the
+loop ends.
 
 ## Values that may be none
 
@@ -471,6 +473,11 @@ function made inside another one, and the box of a variable they share.
 The runtime takes it from `malloc`, and a garbage collector in the runtime
 frees it once the program can no longer reach it.
 [`docs/memory.md`](memory.md) is the walkthrough.
+
+A value marked `owned` does not wait for the collector. The compiler writes
+a call that frees it at the end of its owner's block, and on every other way
+out of that block: `return`, `break`, `continue`, and an error.
+[`docs/ownership.md`](ownership.md) is the walkthrough for that.
 
 Programs that only use numbers, bools, string literals and enum cases
 without data do not allocate at all, and the collector never runs.
