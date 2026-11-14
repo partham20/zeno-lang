@@ -1372,26 +1372,147 @@ its old storage, and the copy a `for` loop walks (3.10a) is freed after
 the loop. Only the list ever pointed at either. Every program gets these,
 with or without the word `owned`.
 
-### 5.9 A firmware build with no collector *(planned)*
+### 5.9 A firmware build with no collector
 
-In a firmware build, every value that needs memory must be owned (5.8) or
-of a size known when the program is built. If that holds, the collector is
-left out of the program altogether. If it does not, the build stops and
-names the line that makes a shared value.
+`zeno build --no-collector` writes C with no garbage collector in it.
+Every list and object in the program must be owned (5.8). Whatever else
+would take memory that no line gives back is refused when the program is
+built, with the line that does it. `docs/no-collector.md` is the
+walkthrough.
 
-**Why.** MISRA C bans `malloc` and `free` (Rule 21.3), and certified
-firmware wants to know its worst-case memory before it runs. A collector
-cannot give either, however good it is. With 5.5l (no `setjmp`) this is
-the build that such a project can ship. *(Principle 5: this is where "no
-hidden runtime" is finally true without an exception.)*
+**Why.** A collector pauses the program for a time nobody can promise,
+finds its roots by reading the C stack (which no C standard describes),
+and frees a block at a moment nobody can name. Firmware with a deadline
+or a memory budget cannot always accept those. With 5.5l (no `setjmp`)
+this is the build such a project can start from. *(Principle 5: this is
+where "no hidden runtime" comes closest to being true without an
+exception.)*
 
 **Why after 5.8.** Without owned values, "no collector" would mean "no
-lists, no objects and no built text", which is too little to write real
-firmware in.
+lists and no objects", which is too little to write real firmware in.
 
-**What building 5.8 showed it will need.** Owned lists and objects are
-ready for it. Four things in an owned program still make shared blocks
-today, and this build has to give each an answer or refuse it: text built
-while the program runs, the copy a `for` loop walks when a `return` leaves
-from inside the loop, an owned value held in a temporary when a later
-argument of the same call fails, and function values.
+**What it does not do yet.** It still takes owned values from the heap,
+and MISRA C bans `malloc` and `free` (Rule 21.3). The earlier plan for
+this decision said the build would answer that rule. It does not, and the
+walkthrough says so. What it gives is a `free` for every allocation at a
+line that can be pointed to. See 5.9b.
+
+### 5.9a `--no-collector` is a firmware build
+
+The flag turns `--firmware` on.
+
+**Why.** In an ordinary build an error jumps (5.5i), and the jump skips
+the lines that free owned values in the functions it passes through. The
+collector picks those up (5.8h). With no collector they would leak, and
+the only fix is the one a firmware build already has: an error that
+travels as a return value passes every one of those lines.
+
+**Turned down:** a separate, fourth kind of build with jumps and no
+collector. It could not be made sound without unwinding tables, which is
+C++ exceptions by another name.
+
+### 5.9b Owned values use `calloc` and `free`, for now *(provisional)*
+
+**Why.** It is the least that works, and it is honest about what it is.
+The compiler's part of the job, a `free` on every path, is the same
+whatever sits underneath.
+
+**Turned down for now:** a fixed pool in the runtime. That is the right
+answer for a board with no C library heap, and for Rule 21.3. It is a
+change to about twenty lines of runtime.c that touches nothing in the
+compiler, so it can come when a real board asks for it. It is also a good
+exercise, and the walkthrough sets it as one.
+
+### 5.9c Built text lives for one statement, in a room of fixed size
+
+Text built while the program runs (`f"..."`, `str(n)`, `a + b`,
+`.upper()`) is written into one fixed array and given back when the
+statement that built it is over. It can be printed, compared and
+measured. It cannot be kept: not in a variable, a field or a list, not
+returned, and not passed to one of the program's own functions.
+
+**Why text needs an answer at all.** Firmware prints. A build that
+refused `print(f"temperature {t}")` would be of no use.
+
+**Why one statement.** It is the shortest life that still lets text be
+built and used, and it has an end the compiler can see without following
+the text anywhere. Giving it back is setting one number, so there is
+nothing to search and nothing to fragment. Calls nest inside statements,
+so the room behaves as a stack, and its size is the answer to "how much
+text can be in the making at once", which the report measures.
+
+**Why it cannot be passed to a function.** The function could keep it.
+Knowing that it does not is the borrow checker's question, asked of
+text. That can be added later (`borrow str`) if the rule proves too
+tight.
+
+**The cost.** A program cannot build a line and keep it for later. It
+keeps the numbers and builds the line again. Every `str` that is stored
+is text written in the program, which is also what makes the rule cheap
+to check: one flag on a compiled value.
+
+**Turned down:** owned text, moved and freed like an owned list. It is
+the complete answer and a much bigger one, since text is copied about far
+more freely than lists are (`let a = b` would have to move). **Also
+turned down:** printing piece by piece with no text at all. It only
+helps `print`, and `if name.upper() == "ON"` still needs somewhere to put
+`"ON"`.
+
+### 5.9d The `except` that catches an error frees it
+
+An error is made only by `raise`. The `except` block that catches it
+frees it when the block ends, however the block is left. Inside the
+block the error can be read. It cannot be kept, passed to a function or
+raised again.
+
+**Why.** An error has to outlive the function that raised it, so no
+block's end in that function can own it. The one place every caught
+error is certain to reach is its `except`, and after that block nothing
+can refer to it, as long as it was not kept. So the block's end is a line
+that can free it. An error nobody catches stops the program, and needs
+no freeing.
+
+**Why the message is copied into the error.** The message is often built
+text, which lasts one statement (5.9c). The error keeps its own copy, in
+the same block, so one `free` gives back both.
+
+**The cost.** `raise e` to pass a caught error on is refused. Raise a new
+one. *(Provisional: passing it on could be a move.)*
+
+### 5.9e The compiler refuses, not the checker
+
+What needs a collector is found by `emit_c.rs`, at the spot where each
+kind of value is made.
+
+**Why.** Whether a program needs a collector depends on the build, and
+the checker checks the language, which is the same in every build. The
+same program is right for `zeno run` and wrong for `--no-collector`. It
+also keeps the list honest: a refusal sits beside the line that would
+have written the allocation, so a new way to allocate cannot be added
+without meeting it. The checker helps in one place, where it already
+knew the answer: which lists start life owned (`Types::fresh`).
+
+### 5.9f A value between two owners is held
+
+A list being filled by a comprehension, an owned value on its way into a
+call, and the copy a `for` loop walks (3.10a) each belong to nobody for a
+moment. If the block is left early in that moment, the value is freed
+with what the block's owners hold.
+
+**Why.** 5.8 left these three to the collector. Here there is none, so
+each needed a line. One mechanism covers all three: the compiler lists
+the value among the block's owners until it arrives. The first and third
+apply to every build, so every build is a little tidier for it.
+
+### 5.9g What a build with no collector refuses *(provisional)*
+
+Shared lists and objects; enum cases that carry values; functions written
+as values; `split`, `map`, `filter` and `+` on lists; `for` over the
+characters of a str; lists of numbers that may be `none`; and a list
+written where it is only looked at.
+
+**Why refuse and not support.** Each could be given an owner or held for
+a moment, and each would be more machinery. None was needed to build the
+example or the tests, so none was built. *(Principle: keep what works.)*
+The error for each names the line, and where there is one, the thing to
+write instead.
