@@ -1,0 +1,11 @@
+[package]
+name = "zeno"
+version = "0.0.1"
+edition = "2021"
+description = "Zeno: a small, readable, statically typed language that compiles to C"
+
+[[bin]]
+name = "zeno"
+path = "src/main.rs"
+
+[dependencies]

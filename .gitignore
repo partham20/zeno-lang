@@ -1,0 +1,15 @@
+# Rust build output
+/target/
+
+# Generated C output (once the compiler emits it)
+/out/
+*.o
+*.elf
+*.hex
+*.bin
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
