@@ -451,6 +451,10 @@ file. It is a list of field types and nothing else. The names are gone.
 %z_Point = type { double, double }
 ```
 
+(A field with a size, such as `level: u8`, is an `i8` in the struct
+type and an `i64` everywhere else. [`sized-ints.md`](sized-ints.md)
+has that.)
+
 An object is a `ptr` to that much memory from the collector. Making one
 is a small function, written the first time the program makes a
 `Point`:

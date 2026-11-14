@@ -76,9 +76,14 @@ How does `1 + 2 * 3` become `1 + (2 * 3)`? Each precedence level is its own
 function, and each one calls the next tighter level to get its operands:
 
 ```
-expression → or → and → not → comparison → sum → product → negation → power → postfix → primary
-  loosest                                                                          tightest
+expression → or → and → not → comparison → bits → sum → product → negation → power → postfix → primary
+  loosest                                                                                 tightest
 ```
+
+`bits` is four levels in one function: `|`, then `^`, then `&`, then the
+shifts `<<` and `>>`. They are the same loop four times over, so `bits_at`
+takes the level as a number and calls itself with the next one
+([`sized-ints.md`](sized-ints.md) says why they sit where they do).
 
 `sum` asks `product` for its left side. `product` consumes `1`, sees a `+`,
 which is not its business, and returns. `sum` takes the `+`, then asks

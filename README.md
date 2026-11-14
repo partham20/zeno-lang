@@ -21,6 +21,7 @@ Zeno should read like plain English and still be checked like Rust. Two rules sh
 | `( )` for calls, `[ ]` for lists, `,` between items | Everyone already reads these |
 | `:` before a type, `->` before a return type | Separates a name from its type at a glance |
 | `#` for comments | One character, hard to miss |
+| `&`, `|`, `^`, `~`, `<<`, `>>` on whole numbers | How every datasheet writes a register |
 
 | Dropped | Why |
 |---|---|
@@ -46,6 +47,7 @@ Underneath:
 - **Errors are checked.** A function says what it `raises`, and the compiler makes sure someone handles it.
 - **No surprise `none`.** A value can be `none` only if its type says `or none`, and you must check before using it.
 - **Enums carry data**, and `match` must cover every case.
+- **Whole numbers have a size where it matters.** A `u8` field is one byte, a number that does not fit is an error, and wrapping is something you ask for.
 - **Compiled, not interpreted**, so it is fast and small enough for a microcontroller.
 
 Samples, none of them final:
@@ -60,6 +62,7 @@ Samples, none of them final:
 - [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to. It also builds with no collector at all.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
+- [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 
 ## One language, every job
 
@@ -122,6 +125,7 @@ cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage co
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
+cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -132,13 +136,20 @@ clock. On a computer the board is simulated and prints each pin as it changes.
 A compiled program meets the board through four C functions, so a real one
 can be put underneath ([`docs/board.md`](docs/board.md)).
 
+`u8`, `u16`, `u32`, `i8`, `i16` and `i32` are whole numbers with a size, and
+`&`, `|`, `^`, `~`, `<<` and `>>` work on their bits. Arithmetic always gives
+a full `int`, so nothing wraps by accident: `u8(n)` checks that `n` fits, and
+`u8.wrap(n)` keeps the low eight bits on purpose
+([`docs/sized-ints.md`](docs/sized-ints.md)).
+
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md),
-  [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md).
+  [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
+  [`docs/sized-ints.md`](docs/sized-ints.md).
 
 ## Roadmap
 
@@ -163,7 +174,9 @@ can be put underneath ([`docs/board.md`](docs/board.md)).
 13. Extras:
     - The `board` and `time` modules (done: pins, `sleep` and `now`, on a
       simulated board, with a real one put underneath by a header)
-    - Whole numbers with a size, such as `u8` and `i32`
+    - Whole numbers with a size, and bit operators (done: `u8` to `i32`,
+      checked and wrapping conversions, `& | ^ ~ << >>`, and small fields
+      in compiled objects)
     - Generics
     - `--llvm` together with `--firmware`
 
@@ -185,6 +198,7 @@ src/emit_bytecode.rs  syntax tree -> bytecode
 src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
 src/board.rs        the simulated board that `zeno run` uses
+src/ints.rs         the sized whole numbers: what a `u8` holds
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`
 src/emit_llvm.rs    syntax tree -> LLVM IR, for `zeno build --llvm`

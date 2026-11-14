@@ -167,6 +167,10 @@ An object is always handled through a pointer. That is what makes
 `let b = a` a second name for the same object, as Zeno says it is: copying
 a pointer does not copy what it points to.
 
+A field with a size, such as `level: u8`, is a `uint8_t` in the struct and
+an `int64_t` everywhere else. [`sized-ints.md`](sized-ints.md) follows one
+through.
+
 ## Enums and match
 
 ```

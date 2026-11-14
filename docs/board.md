@@ -318,8 +318,9 @@ as `now() - start >= 200 ms` after sleeping that long.
   it.
 - **`now()` is a `double`** of milliseconds. That is exact for
   thousands of years, and slow on a processor with no floating point.
-  Whole numbers with a size, such as `u32`, are the stage after this
-  one.
+  Whole numbers with a size, such as `u32`, came in the stage after
+  this one ([`sized-ints.md`](sized-ints.md)). The clock has not been
+  moved onto them yet.
 
 ## Things to try
 

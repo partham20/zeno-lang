@@ -427,9 +427,9 @@ index for any `i`, negative or not.
 wrong number that looks plausible is the worst kind of bug. Zeno raises
 `OverflowError` instead. *(Principle 1.)*
 
-**Provisional.** The interpreter has one 64-bit `int`. Sized types (`u8`,
-`i32`, ...) and explicit wrapping arithmetic, which firmware genuinely needs
-for counters and checksums, come with the type checker.
+There is one `int`, of 64 bits. The sized types (`u8`, `i32`, ...) and
+wrapping on purpose, which firmware needs for counters and checksums, are
+in 2.8.
 
 ### 2.3 An int and a float can be mixed; nothing else converts by itself
 
@@ -499,6 +499,154 @@ they can hold the same number.
 but it means an index that goes negative *by mistake* quietly reads from the
 wrong end instead of failing. For code that runs on hardware, a clear
 `IndexError` is the safer behaviour. *(Principle 1.)*
+
+### 2.7 Bit operators are symbols: `&`, `|`, `^`, `~`, `<<`, `>>`
+
+They work on whole numbers only, with `&=`, `|=`, `^=`, `<<=` and `>>=`
+beside them. An int is 64 bits in two's complement, so `~x` is `-x - 1`
+and `-1 & 0xFF` is `255`.
+
+**Why symbols, when 1.5 chose words.** Principle 2 says a word beats a
+symbol, and principle 3 lets a mark stay when it earns its place. These
+do. `status & MASK` is how every datasheet, every C header and every
+Python script writes it, and a firmware engineer reads it faster than
+any word. The words tried were `bit_and(status, MASK)`, which buries a
+register expression in brackets, and infix `band` / `bor` / `shl`,
+which nobody has seen before. 1.5 kept `&` and `|` free for exactly
+this.
+
+**The C slip is caught.** `&&` and `||` are still lexer errors with a
+hint (`and`, `or`). `true & false` is a checker error that says the
+same: the operators take whole numbers, never bools. So `&` never means
+"and", which is the confusion 1.5 was about.
+
+### 2.7a Their precedence is Python's, not C's
+
+From loosest: `or`, `and`, `not`, comparisons, `|`, `^`, `&`, shifts,
+`+ -`, `* / // %`, unary `-` and `~`, `**`.
+
+**Why.** In C, `flags & MASK == 0` means `flags & (MASK == 0)`, which is
+almost never what was meant and compiles without a word. C's own
+authors called it a mistake that was too late to fix. Python put the
+bit operators above the comparisons, so the line means what it looks
+like. Zeno copies Python, as it does wherever Python's spelling passes
+the principles. *(Principle 1.)*
+
+**Cost.** Someone who knows C's table by heart has one row to
+unlearn. The row they unlearn is the one that bites.
+
+### 2.7b A shift is checked
+
+`a << n` is `a` times two, `n` times, and like `*` (2.2) it raises
+`OverflowError` when bits would be lost. `a >> n` rounds down, so
+`-5 >> 1` is `-3`, the same as `-5 // 2`. A count outside 0 to 63 is a
+`ValueError`.
+
+**Why.** In C a shift by 64 or by a negative count is undefined, and
+`1 << 40` on a 32-bit int is a wrong number. Each of the three is a
+quiet wrong answer. *(Principle 1.)* Checking costs a comparison or two.
+
+**Turned down.** Python's shift, which never overflows because its
+ints grow: Zeno's do not (2.2). Java's, which uses only the low six
+bits of the count, so `1 << 64` is `1`: that is the quiet wrong answer
+again. To throw the top bits away on purpose, say so: `u32.wrap(x <<
+4)` (2.8b).
+
+### 2.8 Sized whole numbers: `u8`, `u16`, `u32`, `i8`, `i16`, `i32`
+
+`let level: u8 = 200`. Six types that say a whole number fits in
+fewer bits than an `int`. They are for where the size is real: a field
+of an object, a byte in a frame, a register.
+
+**Why.** A protocol says "one byte", and a struct on a microcontroller
+with 2 KB of memory cannot spend eight bytes on a flag. With the size
+in the type, the checker knows that a `u8` field is never handed 300,
+and the compiler can store it in one byte (5.13a). *(Principles 1 and
+5.)*
+
+**Why these names.** They are Rust's, and close to C's `uint8_t` with
+the noise taken off. `byte` and `short` say less: how long is a
+`short`?
+
+### 2.8a Arithmetic on sized numbers gives an `int`
+
+`a + b` on two `u8`s is an `int`. So are `a << 8`, `~a` and `-a`. To
+put the answer back in a `u8`, say how: `u8(a + b)` or `u8.wrap(a + b)`.
+
+**Why.** There are three other choices, and each one hides something.
+
+- *Wrap at the size*, as C does after promotion and Rust does in a
+  release build: `200 + 100` is `44`, quietly. That is the bug 2.2
+  exists to stop.
+- *Check at the size*, as Rust does in a debug build: `(a + b) // 2`
+  fails for two `u8`s whose average fits perfectly well. The size of
+  the storage has leaked into the middle of a sum.
+- *Refuse to mix sizes*, as Rust does: `length + offset` needs a
+  conversion on every line, and people stop reading them.
+
+With the sum done on ints, the middle of an expression cannot
+overflow at 255, and the one place where a number may not fit is the
+place it is stored, where the program has to say what it wants. This
+is C's integer promotion, kept, without the silent cut at the end.
+*(Principles 1 and 4.)*
+
+**Cost.** `count += 1` on a `u8` does not compile. The message gives
+the fix: `count = u8(count + 1)`, or `u8.wrap(count + 1)` for a counter
+that is meant to go round.
+
+### 2.8b `u8(n)` checks, `u8.wrap(n)` cuts
+
+`u8(n)` is `n` if it fits and an `OverflowError` if not. `u8.wrap(n)`
+keeps the low eight bits and never fails: `u8.wrap(300)` is `44`, and
+`i8.wrap(200)` is `-56`.
+
+**Why two.** Both are needed, and they must not look alike. A length
+that does not fit in its field is a bug. A checksum is *meant* to lose
+its top bits. In C both are written `(uint8_t)x`, and the reader has
+to guess which was intended. Here the short spelling is the safe one,
+and wrapping is a word in the program that a reviewer can search for.
+*(Principles 1 and 2.)*
+
+**Turned down.** Wrapping operators such as `+%` (Zig) or methods such
+as `a.wrapping_add(b)` (Rust): one more of each for every operator.
+One `wrap` after ordinary arithmetic does the same job, because the
+low bits of a sum do not depend on when the top ones are dropped.
+
+In a firmware build, a `u8( )` that does not fit stops the program,
+like any overflow (5.5l).
+
+### 2.8c A written number adapts; a sized number is an `int` for free
+
+- `let b: u8 = 7`, `f(7)`, `[1, 2, 255]` where a `list[u8]` is wanted:
+  a number written out takes the size of where it goes. The checker
+  sees whether it fits, and `let b: u8 = 300` is an error before the
+  program runs.
+- A `u8` goes wherever an `int` is wanted, with nothing written. Every
+  `u8` is an `int`.
+- An `int` does not go where a `u8` is wanted, and a `u8` does not go
+  where a `u16` is wanted. Each needs `u8( )` or `u16( )`.
+
+**Why.** The first is the only bearable way to write a constant, and
+it is checked at no cost when the program runs. The second cannot
+lose anything, so asking for it would be noise. The third can lose
+something, so it is written. *(Principles 1 and 3.)* It is the same
+line 2.3 draws between an int and a float, drawn for the same reason.
+
+**A `u8` to a `u16` could be allowed**, since it always fits. It is
+not, yet: the rule "sized to `int` is free, everything else is
+written" has no table to remember. *(Provisional.)*
+
+**A `list[u8]` is not a `list[int]`.** Lists are shared (3.10), so
+whoever held it as a `list[int]` could append 300, and the first
+holder would find a `u8` that is not one. Copy it: `[int(n) for n in
+bytes]`.
+
+### 2.8d No `u64` *(provisional)*
+
+**Why.** An `int` is 64 bits with a sign, so half of a `u64`'s values
+do not fit in one, and 2.8a ("the sum is an `int`") would stop being
+true. Hashes and 64-bit registers will want it. It waits for one of
+them, and for an answer to what `u64 + u64` is.
 
 ---
 
@@ -2109,3 +2257,43 @@ flags and linker script, by hand or from its project.
 **Why.** Those tools exist, differ for every vendor, and are what a
 firmware engineer already has set up. A `--target` option would be a
 second, worse copy of each of them. *(Principle: keep what works.)*
+
+### 5.13 A sized number is an ordinary int when the program runs
+
+In the interpreter and the VM a `u8` is a `Value::Int`. In C it is an
+`int64_t`, and in LLVM an `i64`. Only the checker knows its size. The
+two things that make one, `u8( )` and `u8.wrap( )`, are the only code
+that runs because of it.
+
+**Why.** It is how units (1.15) and pins (3.15) already work: the
+type exists to stop mistakes, and is gone afterwards. Because
+arithmetic gives an `int` (2.8a), there is nothing a sized number does
+differently once it exists, so there is nothing for a second kind of
+value to do. The four engines agree for free, where a `Value::U8`
+would have needed every operator taught about it four times.
+*(Principle 5, and "keep what works".)*
+
+**Cost.** In a program that is not strict, a value whose type is not
+known until run time can be put in a `u8` variable unchecked, as it
+can be put in an `int` variable today (0.2). A compiled program is
+always strict (5.5c), so this is the interpreter only.
+
+### 5.13a Only a field of an object is stored small *(provisional)*
+
+A class with the fields `kind: u8` and `length: u16` is a struct of a
+`uint8_t` and a `uint16_t` in C, and `{ i8, i16 }` in LLVM. A value is made
+small as it goes into the field and an `int64_t` again as it comes
+out. Variables, parameters and list items stay 64 bits wide.
+
+**Why.** Memory is spent on what there are many of, and what there are
+many of lives in objects. A local variable is in a register, where a
+`u8` saves nothing and can cost an extra instruction. So the one place
+the size reaches the generated code is the one place it pays.
+
+**Why the read is cast.** In C, a `uint32_t` field used straight in a
+sum is unsigned arithmetic: `-field` and `field < -1` come out wrong.
+The cast to `int64_t` at the read is what keeps 2.8a true in C.
+
+**Lists are the gap.** A `list[u8]` still uses eight bytes an item,
+because the runtime has one list type (5.5h). A packed list, or a
+`bytes` type, is the stage that fixes it.
