@@ -2884,7 +2884,7 @@ impl Checker {
         if let Some((name, line)) = self.being_walked(inside, env) {
             self.error(
                 format!(
-                    "the `for` on line {line} is walking a list of `{name}`, and is still looking at its items. \
+                    "the `for` on line {line} is walking a list that `{name}` owns, and is still looking at its items. \
                      Nothing can {does} until the loop is over"
                 ),
                 span,
@@ -2915,7 +2915,7 @@ impl Checker {
             if let Some((_, line)) = self.being_walked(expr, env) {
                 return self.error(
                     format!(
-                        "the `for` on line {line} is walking a list of `{name}`, and is still looking at its items. \
+                        "the `for` on line {line} is walking a list that `{name}` owns, and is still looking at its items. \
                          `{name}` cannot be given away until the loop is over"
                     ),
                     expr.span,
@@ -4276,6 +4276,18 @@ impl Checker {
             };
             if ty.is_tied() {
                 self.error(format!("`{name}` would be {ty} here. An owned or borrowed value cannot fill a type parameter yet"), span);
+                return None;
+            }
+            // With one owner for everything, a list is an owned value
+            // too, whatever it was called when the argument was read.
+            if self.one_owner && matches!(ty, Ty::List(_)) {
+                self.error(
+                    format!(
+                        "`{name}` would be {ty} here. With no collector a list has one owner, \
+                         and a value that has one owner cannot fill a type parameter yet"
+                    ),
+                    span,
+                );
                 return None;
             }
             types.push(ty);
@@ -5939,7 +5951,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
 
         // Not while a `for` loop is looking at the items.
         let ps = "let ps = [make(), make()]\n";
-        let walking = "the `for` on line 11 is walking a list of `ps`, and is still looking at its items.";
+        let walking = "the `for` on line 11 is walking a list that `ps` owns, and is still looking at its items.";
         assert_eq!(
             owned_error(&format!("{ps}for p in ps {{ ps.pop() }}")),
             format!("{walking} Nothing can take an item out of this list until the loop is over")
@@ -6049,6 +6061,17 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
             error("var xs: list[int] or none = none"),
             "an owned list[int] cannot be kept inside an `or none`, a function type or the `[ ]` of a generic yet. \
              It lives in a variable, a parameter, a field, or a list that has an owner"
+        );
+        // Nor as what a type parameter stands for. An item type is fine.
+        ok("function first[T](items: borrow list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
+        assert_eq!(
+            error("function same[T](x: T) -> T { return x }\nlet xs = same([1, 2])"),
+            "`T` would be list[int] here. With no collector a list has one owner, \
+             and a value that has one owner cannot fill a type parameter yet"
+        );
+        assert_eq!(
+            error("function same[T](x: T) -> T { return x }\nlet p = same(Point(1, 2))"),
+            "`T` would be Point here. An owned or borrowed value cannot fill a type parameter yet"
         );
     }
 
