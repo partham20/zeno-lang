@@ -1812,9 +1812,7 @@ not a line of either compiler changed.
 
 Text built while the program runs (`f"..."`, `str(n)`, `a + b`,
 `.upper()`) is written into one fixed array and given back when the
-statement that built it is over. It can be printed, compared and
-measured. It cannot be kept: not in a variable, a field or a list, not
-returned, and not passed to one of the program's own functions.
+statement that built it is over.
 
 **Why text needs an answer at all.** Firmware prints. A build that
 refused `print(f"temperature {t}")` would be of no use.
@@ -1826,20 +1824,13 @@ nothing to search and nothing to fragment. Calls nest inside statements,
 so the room behaves as a stack, and its size is the answer to "how much
 text can be in the making at once", which the report measures.
 
-**Why it cannot be passed to a function.** The function could keep it.
-Knowing that it does not is the borrow checker's question, asked of
-text. That can be added later (`borrow str`) if the rule proves too
-tight.
+**Text that has to last longer is copied out of the room** (5.9l). At
+first it could not be kept at all: not in a variable, a field or a
+list, not returned, not passed to a function. That rule was cheap, one
+flag on a compiled value, and it was too tight: a program could not
+build a line and keep it for later.
 
-**The cost.** A program cannot build a line and keep it for later. It
-keeps the numbers and builds the line again. Every `str` that is stored
-is text written in the program, which is also what makes the rule cheap
-to check: one flag on a compiled value.
-
-**Turned down:** owned text, moved and freed like an owned list. It is
-the complete answer and a much bigger one, since text is copied about far
-more freely than lists are (`let a = b` would have to move). **Also
-turned down:** printing piece by piece with no text at all. It only
+**Turned down:** printing piece by piece with no text at all. It only
 helps `print`, and `if name.upper() == "ON"` still needs somewhere to put
 `"ON"`.
 
@@ -1895,6 +1886,10 @@ Shared lists and objects; enum cases that carry values; functions written
 as values; `split`, `map`, `filter` and `+` on lists; `for` over the
 characters of a str; lists of numbers that may be `none`; and a list
 written where it is only looked at.
+
+Keeping built text was on this list until 5.9l. The rest are being
+taken off it one step at a time, under one rule: whoever receives a
+value owns it.
 
 **Why refuse and not support.** Each could be given an owner or held for
 a moment, and each would be more machinery. None was needed to build the
@@ -2052,6 +2047,156 @@ checking build is an exercise in `docs/pool.md`. *(provisional)*
 dynamic memory of any kind, and a pool is still that. The pool removes
 the directive's stated reasons one by one, and a project would still
 record a deviation.
+
+### 5.9l With no collector, text is kept by copy
+
+Whatever stores text has a copy of its own, in the pool, and frees it
+when it is done: a variable at the end of its block, a field with its
+object, a list item with its list. `let a = b` leaves both usable.
+Text written in the program is never copied. `docs/text.md` is the
+walkthrough.
+
+**Why a copy, when a list is moved.** A list can be changed after it
+is made, so two names for one list can tell that they share it. That
+is what moving and borrowing are for (5.8). Text cannot be changed
+after it is made, so no program can tell a copy from the original.
+Copying therefore needs no rule at all: nothing new is refused, the
+checker is not changed by a line, and a program means under
+`--no-collector` exactly what it means under `zeno run`. *(Principles:
+unambiguous and intuitive; one meaning in every build.)*
+
+**The cost** is the copying: a `strlen`, a block from the pool and a
+`memcpy` for each keep, and no sharing, so ten variables with the same
+built line hold ten copies. Each cost is at a line that can be pointed
+to and takes a time that depends only on that text's length, which is
+what firmware asks of memory (5.9).
+
+**Turned down: moving text, as Rust moves a `String`.** `let a = b`
+would end `b`. That is the most surprising rule in Rust for people who
+arrive from every other language, and Zeno's text gives it no reason:
+there is nothing a second holder could do to the first. **Turned down:
+a count of holders in front of each text** (reference counting). It
+saves the copies and it is the natural next step if copying proves too
+dear, but it adds a count to every keep and drop and a way for text
+to stay alive that no line of the program shows. *(provisional)*
+**Turned down: `borrow str`**, which 5.9c used to suggest. It would
+bring the borrow rules to the most common value in the language to
+save a copy.
+
+### 5.9m Where text is tells who must free it
+
+Text is in one of three places: written in the program, in the text
+room, or in the pool. The runtime tells which by the address, with one
+subtraction and one comparison for each array.
+
+**Why not a flag beside the pointer.** A `str` stays one pointer, which
+is what the C code that reads it expects, and what a list slot and a
+field already hold. A flag would have to travel with every `str`
+through every call, and could disagree with the truth. The address
+cannot.
+
+**What rests on it.** `zeno_text_keep` copies only what is in the room
+or the pool. `zeno_text_drop` frees only what is in the pool. So a
+variable may hold a literal at one moment and a copy the next, and the
+same line frees it correctly either way. **Cost:** two comparisons on
+each keep, drop and lend. The casts to `uintptr_t` are there because C
+does not define comparing pointers into different arrays.
+
+### 5.9n A function's text answer travels in the text room
+
+`return text` moves the answer down to where the top of the room was
+when the `return` began, and leaves the top just above it. The
+caller's statement gives it back with the rest of its text.
+
+**Why the room.** The function's own copies are about to be freed, and
+the caller has not yet said whether it will keep the answer.
+`print(label(3))` never does. The room is the one place that needs no
+owner. It stays a stack: a function leaves exactly its answer on it.
+
+**Turned down: the answer in the pool, owned by the caller.** Then
+every call that returns text would need a statement-long owner to free
+it, on every way out of the statement, including a failure half way.
+That is what `hold` does for lists (5.9f), and it would have to be
+written for every text call in the language. **Cost of the choice:** an
+answer that is kept is copied twice, into the room and then into the
+pool, and the room must be big enough for the longest answer. Text
+written in the program, and the caller's own text passed in and
+returned, are given back as they are.
+
+### 5.9o Text read from a place a function can change is lent
+
+A read of a `var` at the top of the file, a field or a list item gives
+the statement a copy in the text room, if the text there is a kept
+copy. A read of a local variable, a parameter or an unchanging `let`
+does not.
+
+**Why.** In `print(last, note("x"), last)` the function gives `last`
+other text, which frees what the first read is still holding. A
+collector would have kept it alive. Here the statement must have text
+of its own. The places listed are exactly those a called function can
+assign to (the same test 3.12 uses for looking again at a value that
+was checked for `none`).
+
+**The short cut.** Text that is read and stored at once
+(`let before = last`) is copied straight from the place: nothing can
+run in between. In C the compiler sees that the value is still the
+bare read. In IR the `zeno_text_lend` has already been written, as the
+last line, and is taken out again.
+
+**Cost, and what is turned down for now.** `print(channel.label)`
+copies the label though nothing is called after the read. The compiler
+knows which statements call functions and could skip the copy.
+*(provisional: an exercise in `docs/text.md`.)* **Turned down: copy
+only if a later part of the statement calls something.** It is right,
+and it makes whether a copy is made depend on what else is on the
+line. The simple rule came first.
+
+### 5.9p Objects, lists and errors free the text they keep
+
+The function that makes an object keeps the text for its fields, and
+the function that ends it drops them. A list of text drops its items
+with itself, and the copy a `for` loop walks (3.10a) has copies of the
+items too. An error that carries an object is told which function ends
+that object (`zeno_error_of`).
+
+**Why the copy for `for` is deep.** The body may give the list a new
+item, which frees the old one, while the loop is still holding it. A
+shallow copy would be a list of pointers to freed text. **Cost:** a
+block for each item before the first trip. *(provisional: the checker
+could say when the body cannot change the list.)*
+
+**Why the error needs a function.** To the runtime an object is a
+`void *`. Before this stage freeing one was `zeno_free`, because an
+object that could be raised held no memory of its own. With text in
+its fields that leaks. **Turned down: refusing text in a raised
+object.** `raise TooHot(channel.label, reading)` is the natural thing
+to write.
+
+**In a list literal every item is lent and then kept,** without the
+short cut of 5.9o. All the items are worked out before any is stored,
+so something may run between a read and its keep. The two backends do
+the same so that their memory reports agree (5.11t).
+
+### 5.9q `match` and `for` give built text back as soon as they can
+
+A `for` whose first line builds text gives it back before the first
+trip: by then it has its numbers, or its copy of the list. A `match`
+gives it back when a case is chosen, and a name the pattern gives
+(`case other`) keeps a copy first. Both were refused before (5.11r).
+
+**Why not hold the text for the whole statement.** A loop that runs
+for ever would hold it for ever, and every `break`, `continue` and
+`return` inside would have to give it back. Giving it back at the one
+point every path passes through needs no such list.
+
+**Known gap, for the audit.** C does not say in which order the
+arguments of a call are worked out. Showing a list uses the room for a
+moment while it works, so a statement that shows a list and builds
+other text can fill the room a few bytes higher in the C build than in
+the LLVM build. What is printed is the same. The test programs avoid
+the mix so that 5.11t can stay strict. The fix is to work each
+argument out into a temporary in order, which changes most of the C
+this project's pages quote, so it waits for the audit stage.
 
 ### 5.10 A bytecode VM, beside the interpreter
 
@@ -2605,9 +2750,10 @@ refused program to both backends and requires the same message. **Why.**
 A user who moves a program from one backend to the other should not
 meet a new error, or the old error in new words.
 
-**Text that may be kept is tracked on the value** (`fixed` in `Val`):
-set for a literal, a variable, a field, a list item and the result of
-a call, clear for text the statement built. **Why on the value.** The
+**Which text is in the room is tracked on the value** (`fixed` in
+`Val`): set for a literal and a variable that cannot change, clear for
+text that is in the text room. (Until 5.9l the bit decided what could
+be kept at all. Now it decides what the statement must give back.) **Why on the value.** The
 C backend asks the same question of the syntax tree. In the LLVM
 emitter the value is what every "keep" site already has in its hand,
 and the bit travels with it through `if` expressions and `or none`.
@@ -2644,9 +2790,9 @@ places where text is made, and cannot disagree with itself.
 is safe because names in IR do not depend on position, and the mark is
 inserted at a point where the block is open.
 
-**A `for` or a `match` whose first line builds text is refused,** as
-in C: the text would have to last for the whole loop, and a `continue`
-would need to know that. *(provisional)*
+**A `for` or a `match` whose first line builds text** was refused at
+first, as in C. Now each gives the text back at the first point where
+it is no longer needed (5.9q).
 
 ### 5.11s In an f-string a number waits to become text
 

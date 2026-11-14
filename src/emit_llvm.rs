@@ -5599,6 +5599,7 @@ pub(crate) mod tests {
         same_as_interpreter("signal", include_str!("../examples/signal.zeno"));
         same_as_interpreter("packet", include_str!("../examples/packet.zeno"));
         same_as_interpreter("generics", include_str!("../examples/generics.zeno"));
+        same_as_interpreter("labels", include_str!("../examples/labels.zeno"));
     }
 
     #[test]

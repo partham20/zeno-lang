@@ -5545,5 +5545,6 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // The tour is fully typed, so it passes strict mode as well.
         strict_ok(include_str!("../examples/tour.zeno"));
         strict_ok(include_str!("../examples/buffer.zeno"));
+        strict_ok(include_str!("../examples/labels.zeno"));
     }
 }

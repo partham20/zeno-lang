@@ -60,13 +60,14 @@ values that are owned. This build is what you get when *every* value is.
 ## Where memory comes from now
 
 With no collector, memory that is taken must be given back by a line of
-the program. There are exactly three ways to get memory in this build, and
+the program. There are exactly four ways to get memory in this build, and
 each has such a line.
 
 | What | Where it lives | When it is given back |
 |---|---|---|
 | An owned list or object | the pool, a fixed array | when its owner's block ends |
 | Text built while the program runs | the text room, a fixed array | when the statement that built it is over |
+| Text that is kept | the pool | when the variable, field or list that keeps it is done with it |
 | An error that was raised | the pool | when the `except` block that caught it ends |
 
 Numbers, bools, quantities, enum cases without data and text written in
@@ -138,26 +139,30 @@ cc -O2 -DZENO_TEXT_ROOM=256 -o buffer buffer.c -lm
 If a statement needs more than the room has, the program stops and says
 so. That is a fault, like an index past the end of a list.
 
-**The rule that makes this safe:** built text cannot be kept. It can be
-printed, compared, measured and passed to `int()`. It cannot be put in a
-variable, a field or a list, returned, or given to one of your own
-functions:
+**Text that outlives its statement is copied.** The room is emptied
+when the statement ends, so text that is kept cannot stay there:
 
 ```zeno
-print(f"channel {channel}")              # fine
-if command.strip().upper() == "ON" { }   # fine
-let line = f"channel {channel}"          # refused: `line` would outlive it
+print(f"channel {channel}")              # built, printed, given back
+if command.strip().upper() == "ON" { }   # the same
+let line = f"channel {channel}"          # `line` keeps a copy, in the pool
 ```
 
-So every `str` that is stored anywhere is text that was written in the
-program. The compiler tracks this with one flag on each compiled value
-(`fixed` on `Val`): a literal, a variable, a field, a list item and the
-result of one of your functions are fixed, and everything else is built.
-`stays` is asked wherever a value is about to be kept.
+Whatever keeps text (a variable, a field, a list) has a copy of its
+own and frees it when it is done. Text is never changed once made, so
+a copy cannot be told from the original, and there is no rule to
+learn. [`text.md`](text.md) is the walkthrough: where the copies are
+made and freed, how a function gives text back, and what it costs.
+(Until that stage, keeping built text was refused.)
+
+The compiler tracks which text is in the room with one flag on each
+compiled value (`fixed` on `Val`): a literal and a variable that
+cannot change are fixed, and everything else is in the room and is
+copied to be kept.
 
 An `if` or `while` whose condition builds text takes its answer first,
-gives the text back, and then runs its body. A `for` or `match` whose
-first line builds text is refused. Work the value out on the line before.
+gives the text back, and then runs its body. A `for` gives it back
+before the first trip, and a `match` as soon as a case is chosen.
 
 ## Errors
 
@@ -227,7 +232,6 @@ line and says what to write instead where there is something.
 | Refused | Why |
 |---|---|
 | A list or object that is not `owned` | nobody frees it |
-| Built text that is kept | it lasts one statement |
 | An error that is kept, passed on, or raised again | its `except` frees it |
 | An error made anywhere but in `raise` | no `except` would free it |
 | An enum case that carries values | it sits in a block of its own |
@@ -237,10 +241,11 @@ line and says what to write instead where there is something.
 | A list of `int or none` | each item sits in a block of its own |
 | A list written where it is only looked at: `x in [1, 2]`, `look([1, 2])` | nobody owns it |
 
-Two things you might expect on this list are not. A named function used as
-a value (`items.reduce(add, 0)`) is fine: it takes no memory. A list
-written as what a `for` loop walks (`for pin in [2, 3, 5]`) is fine: the
-loop frees it.
+Three things you might expect on this list are not. A named function
+used as a value (`items.reduce(add, 0)`) is fine: it takes no memory. A
+list written as what a `for` loop walks (`for pin in [2, 3, 5]`) is
+fine: the loop frees it. And text that is kept is fine: the keeper has
+a copy ([`text.md`](text.md)).
 
 Most of these are provisional. An enum value or a function value could be
 owned, and a literal list could be lent for the length of a call. None is
@@ -323,9 +328,10 @@ tests of the pool itself.
 3. Compile `buffer.c` by hand with `-DZENO_TEXT_ROOM=32`. Which statement
    stops the program? What is the smallest room it runs in, and does the
    report agree?
-4. `let line = f"plain text"` is refused, though nothing in it is built.
-   Find where `format_string` makes its value and mark it `fixed` when
-   every part is a literal.
+4. `let line = f"plain text"` copies the text into the pool, though
+   nothing in it is built. Find where `format_string` makes its value,
+   and when every part is a literal make it the literal itself. How
+   does the report for such a program change?
 5. This exercise used to be "replace `calloc` and `free` with a pool".
    That is done ([`pool.md`](pool.md)), so here is what is left of it:
    print, from `zeno_memory_report`, how many blocks of each size were

@@ -1,0 +1,73 @@
+# Text that is kept: names for channels, and a log of what happened.
+#
+#   zeno run examples/labels.zeno
+#   zeno build --no-collector --memory examples/labels.zeno && ./labels
+#
+# With no collector, whatever keeps text has a copy of its own and frees
+# it. docs/text.md goes through what the compiler writes for this file.
+
+owned class Channel {
+    id: int
+    label: str
+    notes: owned list[str]
+
+    function rename(self, label: str) {
+        self.notes.append(f"was {self.label}")
+        self.label = label
+    }
+
+    function describe(self) -> str {
+        return f"{self.label} (channel {self.id}, {len(self.notes)} notes)"
+    }
+}
+
+class TooHot {
+    label: str
+    reading: int
+}
+
+function label_for(id: int) -> str {
+    if id == 0 { return "ground" }
+    return f"ch{id}"
+}
+
+function check(channel: borrow Channel, reading: int) -> int raises TooHot {
+    if reading > 90 { raise TooHot(channel.label, reading) }
+    return reading
+}
+
+# The last thing that happened. Any function can change it.
+var last = "started " + label_for(1)
+
+function note(what: str) -> str {
+    let before = last
+    last = what
+    return before
+}
+
+let channel = Channel(3, label_for(3), [])
+print(channel.describe())
+channel.rename(label_for(0))
+channel.rename("probe " + channel.label)
+print(channel.describe())
+print(channel.notes)
+
+# `last` is read, then changed by `note`, then read again, in one statement.
+print(last, note("renamed twice"), last)
+
+var hottest = ""
+var total = 0
+for reading in [40, 95, 60, 99] {
+    try {
+        total += check(channel, reading)
+    } except TooHot as hot {
+        hottest = f"{hot.label} at {hot.reading}"
+        print(note(hottest))
+    }
+}
+print(total, hottest, last)
+
+match label_for(total % 2) {
+    case "ground" { print("an even total") }
+    case other { print("an odd total, so", other) }
+}

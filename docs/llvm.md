@@ -1292,7 +1292,8 @@ grep -c zeno_collect buffer.ll buffer_runtime.c     # 0 and 0
 
 [`no-collector.md`](no-collector.md) is the design: owned values are
 freed by their owners, text lives in a fixed room until the end of the
-statement that built it, and the checker refuses what would need
+statement that built it, text that is kept is a copy
+([`text.md`](text.md)), and the compiler refuses what would need
 anything more. This is that design again in IR. The runtime file
 written beside the IR is the one the C build uses, with the collector
 left out of it.
@@ -1376,12 +1377,15 @@ A `return` or a `continue` inside the handler gets the same call,
 because the error is held with `hold`, like a value between two
 owners.
 
-**Which text may be kept.** Text that was there before the statement
-began can be kept: a literal, a variable, a field. Text the statement
-built cannot, because the room is about to be emptied. Each value the
-emitter makes carries one more bit for this (`fixed` in `Val`), and
-`stays` looks at it wherever a value is kept: a `let`, an assignment,
-a field, a list item, a `return`.
+**Text that is kept is copied.** The room is about to be emptied, so
+wherever text is stored (a `let`, an assignment, a field, a list
+item) the IR calls `zeno_text_keep`, which copies it into the pool
+unless it is written in the program. The slot that holds the copy is
+an owner, and the end of its block calls `zeno_text_drop`. A `return`
+of text calls `zeno_text_return`, which leaves the answer in the room
+for the caller. [`text.md`](text.md), "Through LLVM", shows the IR.
+Each value the emitter makes carries one bit for this (`fixed` in
+`Val`): text that is not fixed is in the room.
 
 **What it refuses** is what the C build refuses, in the same words,
 because both call the same function for the message
@@ -1522,8 +1526,7 @@ file. In a C build they are in the same file and can be inlined.
 ## What it does not do yet
 
 - **What `--no-collector` refuses in C it refuses here**: shared
-  lists and objects, function literals, keeping built text, a `for`
-  or a `match` whose first line builds text
+  lists and objects, function literals, enum cases that carry values
   ([`no-collector.md`](no-collector.md), "What is refused").
 - **What the C backend also refuses**: a named function, class or enum
   declared inside a function, a default for a parameter that is not
@@ -1637,8 +1640,8 @@ any expression, such as `grid[0][1] = 5`.
     every statement. Do that, and look at `opt -O2 -S` of a function
     that builds no text. Are they still there? Why can LLVM not remove
     a `load` and a `store` of a global round a call?
-22. A `for` whose first line builds text is refused in both backends,
-    such as `for i in range(len(str(x))) { }`. The text is needed only
-    until the loop begins. Where would the mark have to be put back
-    for this to be allowed? Is that true of every `for`? (Think of a
-    `for` over the characters of built text, were that allowed.)
+22. A `for` whose first line builds text, such as
+    `for i in range(len(str(x))) { }`, gives the text back before the
+    first trip. Find `text_given_back` in `emit_llvm.rs` and the two
+    places that call it. Why is it called after the list is copied
+    and not before? (Think of `for name in [str(x), str(y)]`.)

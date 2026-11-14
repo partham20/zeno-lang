@@ -5349,6 +5349,7 @@ print(word[5])
             ("signal", include_str!("../examples/signal.zeno")),
             ("packet", include_str!("../examples/packet.zeno")),
             ("generics", include_str!("../examples/generics.zeno")),
+            ("labels", include_str!("../examples/labels.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -7151,6 +7152,12 @@ print(names)
 print(names.pop())
 print(names)
 "#);
+    }
+
+    #[test]
+    fn the_labels_example_builds_with_no_collector() {
+        // docs/text.md is written around this file.
+        no_collector_as_interpreter("labels", include_str!("../examples/labels.zeno"));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # The memory pool
 
 A program built with `zeno build --no-collector` does not use the heap.
-Its lists, objects and errors live in **one array of a fixed size**, the
+Its lists, objects and errors, and the text it keeps
+([`text.md`](text.md)), live in **one array of a fixed size**, the
 pool, which is part of the program from the start.
 
 ```sh
