@@ -671,7 +671,7 @@ impl Compiler {
                     });
                     self.open();
                     if let Some(binding) = &handler.binding {
-                        self.emit(Op::GetLocal(error), span);
+                        self.emit_noted(Op::GetLocal(error), span, "the error");
                         if kind.is_some() {
                             self.emit(Op::Unwrap, span);
                         }
@@ -881,10 +881,10 @@ impl Compiler {
     fn source(&mut self, source: Source, span: Span) {
         match source {
             Source::Slot(slot) => {
-                self.emit(Op::GetLocal(slot), span);
+                self.emit_noted(Op::GetLocal(slot), span, "the value to match");
             }
             Source::Field(slot, index) => {
-                self.emit(Op::GetLocal(slot), span);
+                self.emit_noted(Op::GetLocal(slot), span, "the value to match");
                 self.emit(Op::CaseField(index), span);
             }
         }
