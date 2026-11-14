@@ -45,22 +45,44 @@ use crate::units;
 /// The runtime library, pasted in front of every compiled program.
 const RUNTIME: &str = include_str!("runtime.c");
 
+/// The three ways `zeno build` can compile a program.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Build {
+    /// `zeno build`: errors jump (`setjmp`), and a collector frees memory.
+    Ordinary,
+    /// `zeno build --firmware`: errors travel as values that each caller
+    /// tests, with no `setjmp`. The collector is still there.
+    Firmware,
+    /// `zeno build --no-collector`: a firmware build with no collector in
+    /// it. Every list and object must be owned. See docs/no-collector.md.
+    NoCollector,
+}
+
 /// The runtime as one kind of build needs it. The runtime marks what only
-/// a firmware build uses, and what only an ordinary build uses, with
-/// `#ifdef ZENO_FIRMWARE`. The choice is made here, so that the C file
-/// holds what the program uses and nothing else. (For a firmware build
-/// that matters: a reviewer must not find `setjmp` anywhere in it.)
-fn runtime(firmware: bool) -> String {
+/// some builds use with `#ifdef ZENO_FIRMWARE` and `#ifdef
+/// ZENO_NO_COLLECTOR`. The choice is made here, so that the C file holds
+/// what the program uses and nothing else. (That matters to a reviewer,
+/// who must not find `setjmp` anywhere in a firmware build, nor a
+/// collector in a build that says it has none.)
+fn runtime(firmware: bool, collector: bool) -> String {
     let mut text = String::new();
-    // `None` outside a marked part. Inside one: is that part being kept?
-    let mut keeping: Option<bool> = None;
+    // One entry for each marked part the line is inside: is it being kept?
+    let mut keeping: Vec<bool> = Vec::new();
     for line in RUNTIME.lines() {
         match line.trim() {
-            "#ifdef ZENO_FIRMWARE" => keeping = Some(firmware),
-            "#ifndef ZENO_FIRMWARE" => keeping = Some(!firmware),
-            "#else /* ZENO_FIRMWARE */" => keeping = keeping.map(|kept| !kept),
-            "#endif /* ZENO_FIRMWARE */" => keeping = None,
-            _ if keeping != Some(false) => {
+            "#ifdef ZENO_FIRMWARE" => keeping.push(firmware),
+            "#ifndef ZENO_FIRMWARE" => keeping.push(!firmware),
+            "#ifdef ZENO_NO_COLLECTOR" => keeping.push(!collector),
+            "#ifndef ZENO_NO_COLLECTOR" => keeping.push(collector),
+            "#else /* ZENO_FIRMWARE */" | "#else /* ZENO_NO_COLLECTOR */" => {
+                if let Some(kept) = keeping.last_mut() {
+                    *kept = !*kept;
+                }
+            }
+            "#endif /* ZENO_FIRMWARE */" | "#endif /* ZENO_NO_COLLECTOR */" => {
+                keeping.pop();
+            }
+            _ if keeping.iter().all(|kept| *kept) => {
                 text += line;
                 text.push('\n');
             }
@@ -72,11 +94,18 @@ fn runtime(firmware: bool) -> String {
 
 /// Turn a checked program into the text of one C file. `file` is the name of
 /// the Zeno source, which the compiled program uses in its error messages.
-/// `firmware` is `zeno build --firmware`: errors travel as values that
-/// each caller tests, with no `setjmp`.
-pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Result<String, Error> {
+/// `build` says which of the three kinds of build this is.
+pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Result<String, Error> {
+    let firmware = build != Build::Ordinary;
+    let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
         firmware,
+        collector,
+        built: false,
+        marks: 0,
+        holds: 0,
+        raising: None,
+        walked: None,
         fallible: false,
         arriving: Vec::new(),
         jumped: HashSet::new(),
@@ -170,7 +199,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Res
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = runtime(firmware);
+    let mut c = runtime(firmware, collector);
     for section in [&emitter.typedefs, &emitter.structs, &emitter.globals, &emitter.prototypes, &emitter.definitions] {
         if !section.is_empty() {
             c.push('\n');
@@ -187,19 +216,21 @@ pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Res
     c += &render(&main);
     c += "}\n";
 
-    // The collector starts from the variables. Those on the stack it finds
-    // by itself; the top-level ones, and an error on its way to an
-    // `except`, are listed here.
-    c += "\nstatic void zeno_roots(void) {\n";
-    c += "    zeno_mark_words(&zeno_raised, sizeof zeno_raised);\n";
-    for root in &emitter.roots {
-        c += &format!("    zeno_mark_words(&{root}, sizeof {root});\n");
-    }
-    c += "}\n";
-
     c += "\nint main(void) {\n";
-    c += "    void *base = NULL;\n";
-    c += "    zeno_stack_base = &base; /* the stack starts here */\n";
+    if collector {
+        // The collector starts from the variables. Those on the stack it
+        // finds by itself; the top-level ones, and an error on its way to
+        // an `except`, are listed here.
+        let mut roots = "\nstatic void zeno_roots(void) {\n".to_string();
+        roots += "    zeno_mark_words(&zeno_raised, sizeof zeno_raised);\n";
+        for root in &emitter.roots {
+            roots += &format!("    zeno_mark_words(&{root}, sizeof {root});\n");
+        }
+        roots += "}\n";
+        c.insert_str(c.len() - "\nint main(void) {\n".len(), &roots);
+        c += "    void *base = NULL;\n";
+        c += "    zeno_stack_base = &base; /* the stack starts here */\n";
+    }
     c += "#ifdef ZENO_MEMORY_REPORT\n    atexit(zeno_memory_report);\n#endif\n";
     c += &format!("    zeno_file = {};\n", c_string(file));
     c += "    zeno_program();\n";
@@ -241,13 +272,28 @@ struct Val {
     /// The same two questions, about the statements already written out.
     pre_fails: bool,
     pre_calls: bool,
+    /// For text: it was there before this statement began (a literal, or
+    /// what a variable, a field or a list holds), so it will still be
+    /// there afterwards. Text that is not `fixed` was built by this
+    /// statement. Only a build with no collector cares: there, built text
+    /// is gone when the statement is over, and cannot be kept.
+    fixed: bool,
 }
 
 impl Val {
     /// A value that does nothing and depends on nothing: a literal, or a
     /// temporary that already holds its answer.
     fn plain(code: impl Into<String>, kind: Kind) -> Val {
-        Val { code: code.into(), kind, reads: false, fails: false, calls: false, pre_fails: false, pre_calls: false }
+        Val {
+            code: code.into(),
+            kind,
+            reads: false,
+            fails: false,
+            calls: false,
+            pre_fails: false,
+            pre_calls: false,
+            fixed: false,
+        }
     }
 
     /// A value built out of other values, inheriting what they can do.
@@ -265,6 +311,11 @@ impl Val {
 
     fn failing(mut self) -> Val {
         self.fails = true;
+        self
+    }
+
+    fn fixed(mut self) -> Val {
+        self.fixed = true;
         self
     }
 
@@ -332,6 +383,8 @@ fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
 fn free_code(kind: &Kind, place: &str) -> String {
     match kind {
         Kind::Class(name) => format!("zeno_drop_{name}({place});"),
+        // An error that an `except` caught, in a build with no collector.
+        Kind::Error => format!("zeno_error_drop({place});"),
         _ => format!("zeno_list_drop({place});"),
     }
 }
@@ -365,6 +418,8 @@ struct ClassEntry {
     /// The fields that own what they hold: an object of an `owned class`
     /// frees those along with itself.
     owned_fields: Vec<String>,
+    /// It is an `owned class`: each object has one owner.
+    owned: bool,
 }
 
 /// An enum: each case with the names and types of the values it carries.
@@ -433,8 +488,26 @@ struct Emitter<'a> {
     /// How many functions with no name have been compiled, to number them.
     closures: usize,
 
+    // For a build with no collector (`zeno build --no-collector`).
+    /// False in a build with no collector.
+    collector: bool,
+    /// The statement being compiled has built text, which lasts until the
+    /// statement is over. See `text_begin`.
+    built: bool,
+    /// How many places in the text room have been noted, to number them.
+    marks: usize,
+    /// How many values are being held for a moment, to number them. See
+    /// `hold`.
+    holds: usize,
+    /// Where the error that a `raise` is about to send is written. An
+    /// error may only be made there.
+    raising: Option<Span>,
+    /// The list a `for` loop is about to walk, when it is written out
+    /// right there: `for pin in [2, 3, 5]`. The loop frees it.
+    walked: Option<usize>,
+
     // The rest is for a firmware build, where errors travel as values.
-    /// `zeno build --firmware`.
+    /// `zeno build --firmware`, and `--no-collector`, which is one too.
     firmware: bool,
     /// The function being compiled can raise: it returns `true` or `false`
     /// and gives its answer through `zeno_result`.
@@ -461,6 +534,19 @@ fn raises_as_value(span: Span) -> Error {
 /// The error for something a firmware build has to refuse.
 fn firmware_cannot(what: impl AsRef<str>, span: Span) -> Error {
     Error::new(format!("{}, or build without `--firmware`", what.as_ref()), span)
+}
+
+/// The error for something a build with no collector has to refuse:
+/// whatever would make memory that no line of the program gives back.
+fn without_collector(why: impl AsRef<str>, span: Span) -> Error {
+    Error::new(
+        format!(
+            "{}. `zeno build --no-collector` leaves the collector out, so nothing would free it. \
+             docs/no-collector.md lists what such a build accepts",
+            why.as_ref()
+        ),
+        span,
+    )
 }
 
 /// The error for a part of Zeno this stage does not handle yet.
@@ -695,6 +781,7 @@ impl Emitter<'_> {
         let mut temp = Val::plain(name, val.kind);
         temp.pre_fails = val.pre_fails || val.fails;
         temp.pre_calls = val.pre_calls || val.calls;
+        temp.fixed = val.fixed;
         Ok(temp)
     }
 
@@ -717,6 +804,139 @@ impl Emitter<'_> {
             Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: false };
         self.scopes.last_mut().expect("there is always a scope").insert(name.to_string(), variable);
         c_name
+    }
+
+    // ------------------------------------------- With no collector to help
+    //
+    // `zeno build --no-collector` (docs/no-collector.md). Three things
+    // need care that a collector would otherwise take: a value that
+    // belongs to nobody for a moment, text built while the program runs,
+    // and values that must not be kept.
+
+    /// `place` holds an owned value that has no owner just now: it is on
+    /// its way into a call, or it is a list still being filled. Until
+    /// `let_go`, whatever leaves the block early (a `return`, a failed
+    /// call) frees it, as it frees what the block's owners hold.
+    fn hold(&mut self, kind: Kind, place: &str) -> String {
+        self.holds += 1;
+        // No Zeno name has a space in it, so this cannot hide a variable.
+        let key = format!("held {}", self.holds);
+        let variable =
+            Variable { c_name: place.to_string(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: true };
+        self.scopes.last_mut().expect("there is always a scope").insert(key.clone(), variable);
+        key
+    }
+
+    /// The value has arrived where it was going, and has an owner again.
+    fn let_go(&mut self, key: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.remove(key).is_some() {
+                return;
+            }
+        }
+    }
+
+    /// A statement is about to be compiled. In a build with no collector,
+    /// text that the statement builds is written into the text room (see
+    /// runtime.c) and stays there until the statement is over. Call
+    /// `text_end` with what this returns when it is.
+    fn text_begin(&mut self) -> (usize, usize, bool) {
+        (self.lines.len(), self.indent, std::mem::replace(&mut self.built, false))
+    }
+
+    /// The statement begun at `text_begin` has been compiled. If it built
+    /// text, note where the text room's top was before it:
+    ///
+    /// ```c
+    /// size_t m1 = zeno_text_top;
+    /// ```
+    ///
+    /// and return the C statement that puts the top back there, for the
+    /// caller to write once nothing needs the text any more.
+    fn text_end(&mut self, (start, indent, outer): (usize, usize, bool)) -> Option<String> {
+        if !std::mem::replace(&mut self.built, outer) {
+            return None;
+        }
+        self.marks += 1;
+        let mark = format!("m{}", self.marks);
+        self.lines.insert(start, (indent, format!("size_t {mark} = zeno_text_top;")));
+        Some(format!("zeno_text_top = {mark};"))
+    }
+
+    /// The condition of an `if` or a `while`. If working it out builds
+    /// text, the answer is taken first and the text given back, before
+    /// the body runs.
+    fn condition(&mut self, expr: &Expr) -> Result<Val, Error> {
+        let begin = self.text_begin();
+        let mut val = self.expr(expr)?;
+        if let Some(release) = self.text_end(begin) {
+            val = self.temp(val, expr.span)?;
+            self.line(release);
+        }
+        Ok(val)
+    }
+
+    /// `val` is about to be kept: put in a variable, a field or a list,
+    /// given to a function, or returned. In a build with no collector two
+    /// kinds of value cannot be, because they are gone soon after:
+    ///
+    /// - text built while the program runs, which lasts until the end of
+    ///   the statement that built it;
+    /// - an error, which is freed when the `except` that caught it ends.
+    fn stays(&self, val: &Val, span: Span) -> Result<(), Error> {
+        if self.collector {
+            return Ok(());
+        }
+        let kind = match &val.kind {
+            Kind::Optional(inner) => &**inner,
+            kind => kind,
+        };
+        match kind {
+            Kind::Str if !val.fixed => Err(without_collector(
+                "this text is built while the program runs, and such text lasts only until the end of the \
+                 statement that builds it. It can be printed or compared there, but not kept",
+                span,
+            )),
+            Kind::Error => Err(without_collector(
+                "an error lasts only until the end of the `except` block that caught it, so it cannot be kept. \
+                 Copy out what is needed from it",
+                span,
+            )),
+            Kind::Class(name) if !self.classes[name].owned => Err(without_collector(
+                format!(
+                    "`{name}` is not an `owned class`, so the only object of it is an error on its way to an \
+                     `except`, and that is freed when the `except` block ends. It cannot be kept"
+                ),
+                span,
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// A list is being written out, or built by a comprehension. With no
+    /// collector it has to start life owned (the checker knows which do),
+    /// or be the list a `for` loop walks and then frees.
+    fn list_has_owner(&self, expr: &Expr) -> Result<(), Error> {
+        if self.collector || self.types.fresh(expr) || self.walked == Some(expr as *const Expr as usize) {
+            return Ok(());
+        }
+        Err(without_collector(
+            "this list has no owner. Give it one, as in `let items: owned list[int] = [1, 2, 3]`",
+            expr.span,
+        ))
+    }
+
+    /// Each item of a list sits in one slot. A number that may be `none`
+    /// does not fit, and is kept in a small block of its own, which
+    /// nothing would free.
+    fn fits_a_slot(&self, item: &Kind, span: Span) -> Result<(), Error> {
+        match item {
+            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => Err(without_collector(
+                "a list of numbers that may be `none` keeps each item in a small block of its own",
+                span,
+            )),
+            _ => Ok(()),
+        }
     }
 
     // ---------------------------------------------------------- Owned values
@@ -873,7 +1093,7 @@ impl Emitter<'_> {
             .zip(kinds)
             .map(|(field, kind)| (field.name.clone(), kind, field.default.clone()))
             .collect();
-        self.classes.insert(name.clone(), ClassEntry { fields, methods, owned_fields });
+        self.classes.insert(name.clone(), ClassEntry { fields, methods, owned_fields, owned: decl.owned });
         Ok(())
     }
 
@@ -1095,6 +1315,23 @@ impl Emitter<'_> {
     }
 
     fn stmt(&mut self, statement: &Stmt) -> Result<(), Error> {
+        // The statements that work out one value and are done. In a build
+        // with no collector, text they build is given back as they end.
+        // (The others give it back at a point of their own choosing.)
+        let simple =
+            matches!(statement.kind, StmtKind::Let { .. } | StmtKind::Const { .. } | StmtKind::Assign { .. } | StmtKind::Expr(_));
+        if self.collector || !simple {
+            return self.statement(statement);
+        }
+        let begin = self.text_begin();
+        let result = self.statement(statement);
+        if let Some(release) = self.text_end(begin) {
+            self.line(release);
+        }
+        result
+    }
+
+    fn statement(&mut self, statement: &Stmt) -> Result<(), Error> {
         let span = statement.span;
         // At the top of the file, outside any function or block.
         let top_level = self.scopes.len() == 1 && self.returns.is_none();
@@ -1105,6 +1342,7 @@ impl Emitter<'_> {
                 let owner = self.types.owner(statement);
                 let expected = ty.as_ref().and_then(|ty| self.kind_of_type(ty));
                 let mut val = self.expr_as(value, expected.as_ref())?;
+                self.stays(&val, value.span)?;
                 if let Some(expected) = &expected {
                     val = self.coerce(val, expected, value.span)?;
                 }
@@ -1177,7 +1415,7 @@ impl Emitter<'_> {
             }
 
             StmtKind::If { condition, then_block, else_block } => {
-                let condition = self.expr(condition)?;
+                let condition = self.condition(condition)?;
                 self.line(format!("if ({}) {{", bare(&condition.code)));
                 self.block(then_block)?;
                 self.else_part(else_block)?;
@@ -1185,7 +1423,7 @@ impl Emitter<'_> {
 
             StmtKind::While { condition, body } => {
                 let mark = self.lines.len();
-                let condition = self.expr(condition)?;
+                let condition = self.condition(condition)?;
                 let before = self.lines.split_off(mark);
                 if before.is_empty() {
                     self.line(format!("while ({}) {{", bare(&condition.code)));
@@ -1203,7 +1441,15 @@ impl Emitter<'_> {
             }
 
             StmtKind::For { variable, iterable, body } => {
+                let begin = self.text_begin();
                 let walked = self.open_loop(variable, iterable)?;
+                if self.text_end(begin).is_some() {
+                    return Err(without_collector(
+                        "the first line of this `for` builds text, which would have to last for the whole loop. \
+                         Work the value out on the line before",
+                        iterable.span,
+                    ));
+                }
                 self.loop_body(body)?;
                 self.line("}");
                 self.scopes.pop();
@@ -1218,8 +1464,16 @@ impl Emitter<'_> {
                 };
                 match value {
                     Some(value) if returns != Kind::None => {
+                        let begin = self.text_begin();
                         let val = self.expr_as(value, Some(&returns))?;
+                        self.stays(&val, value.span)?;
                         let mut val = self.coerce(val, &returns, span)?;
+                        if let Some(release) = self.text_end(begin) {
+                            // Take the answer before the text it was
+                            // worked out from is given back.
+                            val = self.temp(val, span)?;
+                            self.line(release);
+                        }
                         // Every block of the function ends here. Work the
                         // value out first: it may read what is freed next.
                         let frees = self.frees(self.base);
@@ -1280,8 +1534,33 @@ impl Emitter<'_> {
             StmtKind::Try { body, handlers } => self.try_statement(body, handlers, span)?,
 
             StmtKind::Raise(value) if self.firmware => {
+                let begin = self.text_begin();
+                if !self.collector {
+                    // With no collector, an error is freed by the `except`
+                    // that catches it. So each error is raised once: it
+                    // has to be made right here.
+                    let made_here = match &value.kind {
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Name(name) => {
+                                self.lookup(name).is_none()
+                                    && (self.classes.contains_key(name) || ERROR_KINDS.contains(&name.as_str()))
+                            }
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if !made_here {
+                        return Err(without_collector(
+                            "`raise` needs a new error here, such as `raise ValueError(\"too hot\")`. An error that \
+                             was caught is freed when its `except` block ends, so it cannot be raised again",
+                            value.span,
+                        ));
+                    }
+                    self.raising = Some(value.span);
+                }
                 // Note the error, then go where a failed call would go.
                 let val = self.expr(value)?;
+                self.raising = None;
                 let (error, kind) = match &val.kind {
                     Kind::Error => match &value.kind {
                         // `raise ValueError("...")` says its kind. An error
@@ -1295,12 +1574,18 @@ impl Emitter<'_> {
                     Kind::Class(name) => {
                         let name = name.clone();
                         let object = self.temp(val, span)?.code;
+                        // Showing the object builds text.
+                        self.built = !self.collector;
                         (format!("zeno_error_new({}, zeno_show_{name}({object}), {object})", c_string(&name)), name)
                     }
                     _ => return Err(cannot("`raise` with anything but an error or an object", span)),
                 };
                 let leave = self.failed(&[kind], span)?;
                 self.line(format!("zeno_note({error}, {});", at(span)));
+                // The error has its own copy of its message by now.
+                if let Some(release) = self.text_end(begin) {
+                    self.line(release);
+                }
                 self.line(leave);
             }
 
@@ -1508,7 +1793,9 @@ impl Emitter<'_> {
             self.line(format!("{}{answer};", c_type(&returns, span)?));
             let comma = if open.ends_with('(') { "" } else { ", " };
             self.line(format!("if (!{open}{comma}&{answer})) {leave}"));
-            Val::plain(answer, returns)
+            // Text that a function gives back was there before it ran: a
+            // function cannot return text it built (see `stays`).
+            Val::plain(answer, returns).fixed()
         };
         val.pre_fails = true;
         val.pre_calls = true;
@@ -1545,6 +1832,16 @@ impl Emitter<'_> {
         self.tries.push(label.clone());
         self.try_scopes.push(self.scopes.len());
         self.arriving.push(BTreeSet::new());
+        // With no collector: an error can leave a statement half way
+        // through, with its text still in the text room. Whatever the
+        // body leaves there is given back where the error is caught.
+        let text_top = (!self.collector).then(|| {
+            self.marks += 1;
+            format!("m{}", self.marks)
+        });
+        if let Some(mark) = &text_top {
+            self.line(format!("size_t {mark} = zeno_text_top;"));
+        }
         self.line("{");
         let result = self.block(body);
         self.line("}");
@@ -1563,6 +1860,9 @@ impl Emitter<'_> {
         let anything = arrived.contains("Error");
 
         self.line(format!("{label}: ;"));
+        if let Some(mark) = &text_top {
+            self.line(format!("zeno_text_top = {mark};"));
+        }
         // If the body always leaves by its last line, the only way to get
         // here is the `goto`, and there is nothing to ask.
         let leaves = matches!(
@@ -1596,6 +1896,11 @@ impl Emitter<'_> {
             self.line(if index == 0 { format!("{test}{{") } else { format!("}} else {test}{{") });
             self.scopes.push(HashMap::new());
             self.indent += 1;
+            if !self.collector {
+                // This block is where the error ends its life. However
+                // the block is left, the error is freed on the way out.
+                self.hold(Kind::Error, &caught);
+            }
             if let Some(name) = &handler.binding {
                 let c_type = c_type(&holds, span)?;
                 let value = match holds {
@@ -1677,6 +1982,7 @@ impl Emitter<'_> {
     fn expr_as(&mut self, expr: &Expr, expected: Option<&Kind>) -> Result<Val, Error> {
         match (&expr.kind, expected) {
             (ExprKind::List(items), Some(kind @ Kind::List(_))) if items.is_empty() => {
+                self.list_has_owner(expr)?;
                 Ok(Val::plain("zeno_list_new(0)", kind.clone()))
             }
             _ => self.expr(expr),
@@ -1695,6 +2001,7 @@ impl Emitter<'_> {
                 self.arithmetic(op, left, right, span)?
             }
         };
+        self.stays(&val, value.span)?;
         match &target.kind {
             ExprKind::Name(name) => {
                 let Some(variable) = self.lookup(name) else {
@@ -1742,6 +2049,7 @@ impl Emitter<'_> {
                     return Err(cannot("an assignment to this", target.span));
                 };
                 let val = self.coerce(val, &item.clone(), span)?;
+                self.fits_a_slot(&val.kind, span)?;
                 let slot = to_slot(&val.kind, &val.code, span)?;
                 self.line(format!("*zeno_list_at({}, {}, {}) = {slot};", object.code, index.code, at(span)));
             }
@@ -1754,7 +2062,15 @@ impl Emitter<'_> {
     /// A pattern gives two things: tests the value must pass (is it this
     /// case?), and new variables for the parts the pattern names.
     fn match_statement(&mut self, subject: &Expr, arms: &[Arm], span: Span) -> Result<(), Error> {
+        let begin = self.text_begin();
         let subject = self.expr(subject)?;
+        if self.text_end(begin).is_some() {
+            return Err(without_collector(
+                "the first line of this `match` builds text, which would have to last for the whole `match`. \
+                 Work the value out on the line before",
+                span,
+            ));
+        }
         let subject = self.temp(subject, span)?;
         for (index, arm) in arms.iter().enumerate() {
             let mut tests = Vec::new();
@@ -1854,7 +2170,7 @@ impl Emitter<'_> {
         // The parser stores `else if` as an else block holding one `if`.
         if let [Stmt { kind: StmtKind::If { condition, then_block, else_block }, .. }] = block.as_slice() {
             let mark = self.lines.len();
-            let condition = self.expr(condition)?;
+            let condition = self.condition(condition)?;
             let before = self.lines.split_off(mark);
             if before.is_empty() {
                 self.line(format!("}} else if ({}) {{", bare(&condition.code)));
@@ -1937,7 +2253,7 @@ impl Emitter<'_> {
     /// for it alone (see `open_list_loop`), and `walked` is that copy.
     /// Nothing else ever saw it, so it can be freed here and now instead
     /// of being left for the collector. (A `return` from inside the loop
-    /// skips this line, and then the collector does get it.)
+    /// skips this line, and frees the copy itself: see `open_list_loop`.)
     fn close_loop(&mut self, walked: Option<String>) {
         if let Some(list) = walked {
             self.line(format!("zeno_list_drop({list});"));
@@ -1949,15 +2265,27 @@ impl Emitter<'_> {
     /// confuse the loop. That is what `zeno run` does too.
     fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
-        let list = self.expr(iterable)?;
+        // A list written out right here is nobody else's, so it needs no copy.
+        let fresh = matches!(iterable.kind, ExprKind::List(_) | ExprKind::ListComp { .. });
+        if fresh {
+            self.walked = Some(iterable as *const Expr as usize);
+        }
+        let list = self.expr(iterable);
+        self.walked = None;
+        let list = list?;
         let item = match &list.kind {
             Kind::List(item) => (**item).clone(),
             // A str is looped over one character at a time.
+            Kind::Str if !self.collector => {
+                return Err(without_collector(
+                    "a `for` loop over a str makes a list of its characters. \
+                     Count instead: `for i in range(len(text))`, and use `text[i]`",
+                    span,
+                ))
+            }
             Kind::Str => Kind::Str,
             _ => return Err(cannot("a `for` loop over anything but a list, a str or `range(...)`", span)),
         };
-        // A list written out right here is nobody else's, so it needs no copy.
-        let fresh = matches!(iterable.kind, ExprKind::List(_) | ExprKind::ListComp { .. });
         let items = self.new_temp();
         let source = match (&list.kind, fresh) {
             (Kind::Str, _) => format!("zeno_chars({})", list.code),
@@ -1968,6 +2296,10 @@ impl Emitter<'_> {
 
         let position = self.new_temp();
         self.scopes.push(HashMap::new());
+        // The list being walked is the loop's own. A `return` or a failed
+        // call inside the loop frees it on the way out; `close_loop` does
+        // when the loop ends by itself.
+        self.hold(Kind::List(Box::new(item.clone())), &items);
         let c_type = c_type(&item, span)?;
         let c_name = self.declare(variable, item.clone());
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
@@ -2035,6 +2367,20 @@ impl Emitter<'_> {
     }
 
     fn expr(&mut self, expr: &Expr) -> Result<Val, Error> {
+        let val = self.value(expr)?;
+        // For a build with no collector: text that was not already there
+        // has just been built, and the statement will have to give it back.
+        let text = match &val.kind {
+            Kind::Optional(inner) => **inner == Kind::Str,
+            kind => *kind == Kind::Str,
+        };
+        if text && !val.fixed && !self.collector {
+            self.built = true;
+        }
+        Ok(val)
+    }
+
+    fn value(&mut self, expr: &Expr) -> Result<Val, Error> {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Int(n) => match i64::try_from(*n) {
@@ -2043,7 +2389,7 @@ impl Emitter<'_> {
                 Err(_) => Err(cannot("a whole number this big", span)),
             },
             ExprKind::Float(x) => Ok(Val::plain(format!("{x:?}"), Kind::Float)),
-            ExprKind::Str(text) => Ok(Val::plain(c_string(text), Kind::Str)),
+            ExprKind::Str(text) => Ok(Val::plain(c_string(text), Kind::Str).fixed()),
             ExprKind::Bool(b) => Ok(Val::plain(b.to_string(), Kind::Bool)),
             // What `none` is in C depends on where it is going, so it is
             // settled there. See `coerce`.
@@ -2088,7 +2434,9 @@ impl Emitter<'_> {
                     let reachable = top_level || variable.boxed.is_some();
                     let changeable = reachable && variable.mutable;
                     val.reads = reachable;
-                    self.present(val, expr, changeable)
+                    // Whatever a variable holds was there before this
+                    // statement began.
+                    self.present(val, expr, changeable).map(Val::fixed)
                 }
                 None if self.functions.contains_key(name) => self.function_value(name, span),
                 None => Err(cannot(format!("`{name}` used this way"), span)),
@@ -2187,11 +2535,15 @@ impl Emitter<'_> {
                 let slot = format!("(*zeno_list_at({}, {}, {}))", list.code, index.code, at(span));
                 let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing();
                 val.reads = true;
-                Ok(val)
+                Ok(val.fixed())
             }
             ExprKind::List(items) => {
+                self.list_has_owner(expr)?;
                 let exprs: Vec<&Expr> = items.iter().collect();
                 let vals = self.sequence(&exprs)?;
+                for (val, item) in vals.iter().zip(items) {
+                    self.stays(val, item.span)?;
+                }
                 let Some(first) = vals.first() else {
                     // `[]` alone does not say what it will hold. The place
                     // it arrives at does (`coerce`), and a `let` with no
@@ -2207,6 +2559,7 @@ impl Emitter<'_> {
                 let Some(item) = item else {
                     return Err(cannot("a list whose items are not all one type", span));
                 };
+                self.fits_a_slot(&item, span)?;
                 let mut slots = vec![vals.len().to_string()];
                 for val in &vals {
                     let val = self.coerce(val.clone(), &item, span)?;
@@ -2217,25 +2570,37 @@ impl Emitter<'_> {
             }
             // `[n * n for n in items if n > 0]` is a loop that fills a list.
             ExprKind::ListComp { element, variable, iterable, condition } => {
+                self.list_has_owner(expr)?;
                 let list = self.new_temp();
                 self.line(format!("zeno_list *{list} = zeno_list_new(0);"));
+                // Until it is full, the list is nobody's. If working out
+                // an item fails, the failure frees what there is of it.
+                let filling = self.hold(Kind::List(Box::new(Kind::None)), &list);
                 let walked = self.open_loop(variable, iterable)?;
                 self.indent += 1;
+                // Text built for one item is given back before the next.
+                let begin = self.text_begin();
                 if let Some(condition) = condition {
-                    let condition = self.expr(condition)?;
+                    let condition = self.condition(condition)?;
                     self.line(format!("if ({}) {{", bare(&condition.code)));
                     self.indent += 1;
                 }
                 let item = self.expr(element)?;
+                self.stays(&item, element.span)?;
+                self.fits_a_slot(&item.kind, span)?;
                 self.line(format!("zeno_list_append({list}, {});", to_slot(&item.kind, &item.code, span)?));
                 if condition.is_some() {
                     self.indent -= 1;
                     self.line("}");
                 }
+                if let Some(release) = self.text_end(begin) {
+                    self.line(release);
+                }
                 self.indent -= 1;
                 self.line("}");
                 self.scopes.pop();
                 self.close_loop(walked);
+                self.let_go(&filling);
                 let mut val = Val::plain(list, Kind::List(Box::new(item.kind)));
                 val.pre_fails = true;
                 val.pre_calls = true;
@@ -2411,6 +2776,13 @@ impl Emitter<'_> {
         if self.firmware && !decl.raises.is_empty() {
             return Err(raises_as_value(span));
         }
+        if !self.collector {
+            return Err(without_collector(
+                "a function written where a value goes is kept in a block of its own, with the variables it \
+                 uses, and has no owner. Give the function a name at the top of the file and use the name",
+                span,
+            ));
+        }
         self.closures += 1;
         let id = self.closures;
 
@@ -2525,6 +2897,7 @@ impl Emitter<'_> {
         let vals = self.sequence_after(vec![function], &exprs)?;
         let mut codes = Vec::new();
         for (val, param) in vals[1..].iter().zip(&kind.params) {
+            self.stays(val, span)?;
             codes.push(self.coerce(val.clone(), param, span)?.code);
         }
         let call = invoke(&vals[0].code, &kind, &codes, span)?;
@@ -2538,6 +2911,9 @@ impl Emitter<'_> {
     /// They walk the list as it was when they began, as `zeno run` does, so
     /// `f` may change the list without confusing the loop.
     fn over_list(&mut self, name: &str, mut vals: Vec<Val>, item: &Kind, span: Span) -> Result<Val, Error> {
+        if !self.collector && name != "reduce" {
+            return Err(without_collector(format!("`{name}` makes a new list, which would have no owner"), span));
+        }
         let takes = if name == "reduce" { 2 } else { 1 };
         let kind = match vals.get(1).map(|function| &function.kind) {
             Some(Kind::Function(kind)) if kind.params.len() == takes && vals.len() == takes + 1 => (**kind).clone(),
@@ -2632,6 +3008,9 @@ impl Emitter<'_> {
             (Pow, Int, Int) => Val::from(format!("zeno_pow({l}, {r}, {})", at(span)), Int, &parts).failing(),
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
+            (Add, Kind::List(_), Kind::List(_)) if !self.collector => {
+                return Err(without_collector("`+` on two lists makes a new list, which would have no owner", span))
+            }
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
                 Val::from(format!("zeno_list_concat({l}, {r})"), left.kind.clone(), &parts)
             }
@@ -2768,6 +3147,12 @@ impl Emitter<'_> {
                 if args.iter().any(|arg| arg.name.is_some()) {
                     return Err(cannot("named arguments to a built-in", span));
                 }
+                if ERROR_KINDS.contains(&name.as_str()) && !self.collector && self.raising.take() != Some(span) {
+                    return Err(without_collector(
+                        format!("this makes a `{name}` that is not raised. An error is freed by the `except` that catches it"),
+                        span,
+                    ));
+                }
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence(&exprs)?;
                 // `ValueError("bad")` makes an error value. Its message is
@@ -2837,6 +3222,7 @@ impl Emitter<'_> {
         &mut self,
         c_name: &str,
         slots: &[(String, Kind, Option<Expr>)],
+        owned: &[bool],
         receiver: Option<Val>,
         args: &[Arg],
         span: Span,
@@ -2852,8 +3238,33 @@ impl Emitter<'_> {
             });
         }
         let first = receiver.is_some() as usize;
-        let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
-        let vals = self.sequence_after(receiver.into_iter().collect(), &exprs)?;
+        // The arguments, left to right, as `sequence` would work them out.
+        let mut vals: Vec<Val> = receiver.into_iter().collect();
+        let mut held = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let mark = self.lines.len();
+            let mut next = self.expr(&arg.value)?;
+            self.stays(&next, arg.value.span)?;
+            self.settle(&mut vals, &next, mark, arg.value.span)?;
+            // An owned value on its way into the call has left its owner
+            // and not yet reached the function. In a firmware build a
+            // later argument may fail, and the failure leaves this
+            // function at once. Hold the value until the call, so that
+            // such a failure frees it.
+            let taken = owned.get(places[index]).copied().unwrap_or(false);
+            let later_work = args[index + 1..].iter().any(|arg| !is_plain(&arg.value));
+            if taken && later_work && self.firmware {
+                if !self.types.moves(&arg.value) {
+                    next = self.temp(next, arg.value.span)?;
+                }
+                held.push(self.hold(next.kind.clone(), &next.code));
+            }
+            vals.push(next);
+        }
+        // From here the function owns what it was given.
+        for key in &held {
+            self.let_go(key);
+        }
 
         let mut codes: Vec<Option<String>> = vec![None; slots.len()];
         for (place, val) in places.iter().zip(&vals[first..]) {
@@ -2890,7 +3301,7 @@ impl Emitter<'_> {
             val.pre_calls = true;
             return val;
         }
-        let mut val = Val::from(call, returns, &parts);
+        let mut val = Val::from(call, returns, &parts).fixed();
         val.fails = true;
         val.calls = true;
         val
@@ -2907,8 +3318,8 @@ impl Emitter<'_> {
             .zip(&entry.kind.params)
             .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
             .collect();
-        let raises = entry.decl.raises.clone();
-        let (call, vals) = self.call_c(&c_name, &slots, None, args, span)?;
+        let (raises, owned) = (entry.decl.raises.clone(), entry.owned.clone());
+        let (call, vals) = self.call_c(&c_name, &slots, &owned, None, args, span)?;
         if self.firmware && !raises.is_empty() {
             return self.checked_call(call, returns, &raises, span);
         }
@@ -2917,8 +3328,20 @@ impl Emitter<'_> {
 
     /// `Point(3.0, 4.0)`: a new object.
     fn construct(&mut self, class: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
-        let slots = self.classes[class].fields.clone();
-        let (call, vals) = self.call_c(&format!("zeno_new_{class}"), &slots, None, args, span)?;
+        let entry = &self.classes[class];
+        // With no collector, an object needs an owner. The one exception
+        // is an error being raised, which the `except` that catches it
+        // will free.
+        if !self.collector && !entry.owned && self.raising.take() != Some(span) {
+            return Err(without_collector(
+                format!("`{class}` is not an `owned class`, so this object would have no owner"),
+                span,
+            ));
+        }
+        let entry = &self.classes[class];
+        let slots = entry.fields.clone();
+        let owned: Vec<bool> = slots.iter().map(|(field, _, _)| entry.owned_fields.contains(field)).collect();
+        let (call, vals) = self.call_c(&format!("zeno_new_{class}"), &slots, &owned, None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Class(class.to_string()), &parts))
     }
@@ -2929,8 +3352,14 @@ impl Emitter<'_> {
         if fields.is_empty() {
             return Err(cannot(format!("`{case}` called like a function: it carries no values"), span));
         }
+        if !self.collector {
+            return Err(without_collector(
+                format!("`{case}` carries values, so it is kept in a block of its own, and an enum value has no owner"),
+                span,
+            ));
+        }
         let slots: Vec<_> = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, None, args, span)?;
+        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &[], None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Enum(owner.to_string()), &parts))
     }
@@ -2961,7 +3390,8 @@ impl Emitter<'_> {
                     .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
                     .collect();
                 let raises = entry.decl.raises.clone();
-                let (call, vals) = self.call_c(&c_name, &slots, Some(receiver), args, span)?;
+                let owned: Vec<bool> = entry.owned.iter().skip(1).copied().collect();
+                let (call, vals) = self.call_c(&c_name, &slots, &owned, Some(receiver), args, span)?;
                 if self.firmware && !raises.is_empty() {
                     return self.checked_call(call, returns, &raises, span);
                 }
@@ -2972,6 +3402,9 @@ impl Emitter<'_> {
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 let parts: Vec<&Val> = vals.iter().collect();
                 let all_text = vals.iter().all(|val| val.kind == Kind::Str);
+                if name == "split" && !self.collector {
+                    return Err(without_collector("`split` makes a new list, which would have no owner", span));
+                }
                 let codes: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
                 Ok(match (name, codes.as_slice()) {
                     ("upper", [text]) => Val::from(format!("zeno_upper({text})"), Kind::Str, &parts),
@@ -3005,6 +3438,8 @@ impl Emitter<'_> {
                 match (name, vals.as_slice()) {
                     ("map" | "filter" | "reduce", _) => self.over_list(name, vals, &item, span),
                     ("append", [list, value]) => {
+                        self.stays(value, span)?;
+                        self.fits_a_slot(&item, span)?;
                         let value = self.coerce(value.clone(), &item, span)?;
                         let slot = to_slot(&value.kind, &value.code, span)?;
                         self.line(format!("zeno_list_append({}, {slot});", list.code));
@@ -3055,7 +3490,7 @@ impl Emitter<'_> {
                     let mut field = Val::from(format!("{}->z_{name}", val.code), kind.clone(), &[&val]);
                     // A function that is called may change the field.
                     field.reads = true;
-                    Ok(field)
+                    Ok(field.fixed())
                 }
                 None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
             },
@@ -3086,6 +3521,10 @@ impl Emitter<'_> {
 
     /// The C expression that turns a value into the text `print` shows.
     fn text(&mut self, val: &Val, span: Span) -> Result<String, Error> {
+        // Anything but text has to be turned into text, which builds some.
+        if val.kind != Kind::Str && !self.collector {
+            self.built = true;
+        }
         Ok(match &val.kind {
             Kind::Str => val.code.clone(),
             Kind::Int => format!("zeno_str_int({})", val.code),
@@ -3107,6 +3546,9 @@ impl Emitter<'_> {
     /// The text for a value inside a list or an object. Only a str differs:
     /// there it is shown in quotes.
     fn repr(&mut self, val: &Val, span: Span) -> Result<String, Error> {
+        if !self.collector {
+            self.built = true;
+        }
         match &val.kind {
             Kind::Str => Ok(format!("zeno_repr_str({})", val.code)),
             Kind::Optional(inner) => Ok(format!("{}({})", self.optional_text(inner, true, span)?, val.code)),
@@ -3232,6 +3674,7 @@ impl Emitter<'_> {
                         Val::from(format!("zeno_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
                     }
                     Kind::Str => {
+                        self.built = !self.collector;
                         let call = format!("zeno_parse_int({}, {})", val.code, at(span));
                         if self.firmware {
                             return self.checked_call(call, Kind::Int, &["ValueError".to_string()], span);
@@ -3246,6 +3689,7 @@ impl Emitter<'_> {
                 match &val.kind {
                     Kind::Int | Kind::Float => Val::from(val.double(), Kind::Float, &parts),
                     Kind::Str => {
+                        self.built = !self.collector;
                         let call = format!("zeno_parse_float({}, {})", val.code, at(span));
                         if self.firmware {
                             return self.checked_call(call, Kind::Float, &["ValueError".to_string()], span);
@@ -3628,7 +4072,7 @@ mod tests {
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit(&program, &types, "test.zeno", false).map_err(|error| error.message)
+        emit(&program, &types, "test.zeno", Build::Ordinary).map_err(|error| error.message)
     }
 
     /// The same, as `zeno build --firmware` compiles it.
@@ -3637,7 +4081,7 @@ mod tests {
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit(&program, &types, "test.zeno", true).map_err(|error| error.message)
+        emit(&program, &types, "test.zeno", Build::Firmware).map_err(|error| error.message)
     }
 
     /// Build the C with the machine's C compiler, run it, and return what it
@@ -5395,6 +5839,585 @@ function main() -> int raises Refused {
         // In a firmware build, a failed call frees on its way out too.
         let c = compile_firmware(source).expect("the program compiles for firmware");
         assert!(c.contains(")) { zeno_drop_Frame(z_frame); return false; }"), "{c}");
+    }
+
+    // ------------------------------------------------ A build with no collector
+
+    /// The same, as `zeno build --no-collector` compiles it.
+    fn compile_no_collector(source: &str) -> Result<String, String> {
+        let tokens = crate::lexer::lex(source).expect("the test program lexes");
+        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let (errors, types) = crate::checker::check_with_types(&program, true);
+        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        emit(&program, &types, "test.zeno", Build::NoCollector).map_err(|error| error.message)
+    }
+
+    /// A program that a build with no collector must accept. Built that
+    /// way it must print what the interpreter prints, and it must end
+    /// with every block it made given back: with no collector, a block
+    /// that is not freed by some line of the program is never freed.
+    /// Returns the most text that was in the text room at once.
+    fn no_collector_as_interpreter(name: &str, source: &str) -> Option<usize> {
+        let c = match compile_no_collector(source) {
+            Ok(c) => c,
+            Err(message) => panic!("the build with no collector refused this: {message}"),
+        };
+        // The point of the build: none of this is in the C file.
+        for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_block_count", "setjmp"] {
+            assert!(!c.contains(gone), "`{gone}` is still in a build with no collector");
+        }
+        let name = format!("{name}-no-collector");
+        let (compiled, errors, finished) = build_and_run(&name, &c, &["-O1", "-DZENO_MEMORY_REPORT"])?;
+        assert!(finished, "the compiled program failed: {errors}");
+        assert_eq!(compiled, interpreted(source), "\n{source}");
+        assert!(errors.contains("no collector, 0 blocks left at the end\n"), "blocks were never freed: {errors}");
+        let text = errors.lines().find(|line| line.starts_with("text:")).expect("a line about the text room");
+        let most = text.split(|c: char| !c.is_ascii_digit()).find(|word| !word.is_empty()).expect("a number");
+        // A program with no shared values is still a Zeno program: the
+        // two builds that do have a collector must agree as well.
+        same_as_interpreter(&name, source);
+        Some(most.parse().expect("a number"))
+    }
+
+    #[test]
+    fn with_no_collector_errors_and_early_exits_free_everything() {
+        no_collector_as_interpreter("errors-and-exits", NO_COLLECTOR_ERRORS);
+    }
+
+    #[test]
+    fn with_no_collector_a_failure_half_way_frees_everything() {
+        no_collector_as_interpreter("half-way", NO_COLLECTOR_HALF_WAY);
+    }
+
+    /// Errors, early exits and text.
+    const NO_COLLECTOR_ERRORS: &str = r#"# Errors, early exits and text, with no collector to tidy up after them.
+owned class Packet {
+    id: int
+    name: str
+    bytes: owned list[int]
+
+    function total(self) -> int {
+        var sum_ = 0
+        for b in self.bytes {
+            sum_ += b
+        }
+        return sum_
+    }
+
+    function first_over(self, limit: int) -> int {
+        for b in self.bytes {
+            if b > limit {
+                return b              # leaves from inside the loop
+            }
+        }
+        return -1
+    }
+
+    function check(self) -> int raises BadPacket {
+        for b in self.bytes {
+            if b < 0 {
+                raise BadPacket(self.id, "negative byte")
+            }
+        }
+        return len(self.bytes)
+    }
+}
+
+class BadPacket {
+    id: int
+    why: str
+
+    function label(self) -> str {
+        if self.id > 100 {
+            return "big"
+        }
+        return "small"
+    }
+}
+
+class Fatal {
+    code: int
+}
+
+function make(id: int, size: int) -> Packet {
+    let bytes: owned list[int] = [(n * 7 + id) % 50 - (id % 3) for n in range(size)]
+    return Packet(id, "pkt", bytes)
+}
+
+function risky(n: int) -> int raises BadPacket {
+    if n % 4 == 3 {
+        raise BadPacket(n, "risky")
+    }
+    return n * 2
+}
+
+function consume(p: Packet, extra: int) -> int {
+    return p.total() + extra
+}
+
+function name_of(code: int) -> str {
+    if code == 0 {
+        return "idle"
+    } else if code == 1 {
+        return "busy"
+    }
+    return "unknown"
+}
+
+function parse(text: str) -> int raises ValueError {
+    let n = int(text)
+    if n > 1000 {
+        raise ValueError(f"{n} is more than {1000}")
+    }
+    return n
+}
+
+function squares(count: int) -> owned list[int] raises BadPacket {
+    return [risky(n) for n in range(count)]
+}
+
+function process(id: int) -> int raises BadPacket, Fatal {
+    let p = make(id, 6)
+    if id == 9 {
+        raise Fatal(id)                    # p is freed on the way out
+    }
+    let checked = p.check()
+    return consume(p, risky(id)) + checked # p is held while risky runs
+}
+
+var good = 0
+var bad = 0
+for id in range(12) {
+    try {
+        good += process(id)
+    } except BadPacket as e {
+        bad += 1
+        print(f"bad packet {e.id}: {e.why} ({e.label()})")
+        if e.id == 7 {
+            continue
+        }
+        print("  noted")
+    } except Fatal as f {
+        print(f"fatal {f.code}")
+    }
+}
+print(good, bad)
+
+# An error raised while another is being handled.
+function twice(n: int) -> int raises BadPacket, ValueError {
+    try {
+        return risky(n)
+    } except BadPacket as first {
+        if first.id > 10 {
+            raise ValueError(f"gave up on {first.id}")
+        }
+        return risky(n + 4)
+    }
+}
+
+for n in [3, 5, 11, 2] {
+    try {
+        print(twice(n))
+    } except BadPacket as e {
+        print(f"still bad: {e.id}")
+    } except ValueError as e {
+        print(f"value error: {e}")
+    }
+}
+
+# A list that fails while it is being filled.
+for count in [3, 5] {
+    try {
+        let s = squares(count)
+        print(s, len(s))
+    } except BadPacket as e {
+        print(f"squares({count}) stopped at {e.id}")
+    }
+}
+
+# Text: built, compared and printed, never kept.
+let words: owned list[str] = ["On", "off", " ON ", "7", "x9", "2000"]
+var on = 0
+for word in words {
+    if word.strip().upper() == "ON" {
+        on += 1
+    } else if word.lower() == "off" {
+        print("off seen")
+    } else {
+        try {
+            print(f"number {parse(word):>6} from {word}")
+        } except ValueError as e {
+            print(f"not usable: {e}")
+        }
+    }
+}
+print(f"on {on} times, {name_of(1)} {name_of(5)}")
+
+var i = 0
+while str(i * i) != "49" {
+    i += 1
+}
+print(i, 3.5, 2.0 / 3.0, f"{i / 3:.3f}", true, none)
+
+let label = name_of(0)
+var count_e = 0
+for k in range(len(label)) {
+    if label[k] == "e" or label[k] == "i" {
+        count_e += 1
+    }
+}
+print(label, count_e, len(label + "!"), "dl" in label, label < "idler")
+
+# Moves into calls that come to nothing, breaks and whiles.
+var round = 0
+while true {
+    let p = make(round, 3 + round)
+    if round == 4 {
+        break
+    }
+    round += 1
+    if p.first_over(40) > 0 {
+        continue
+    }
+    print(consume(p, round))
+}
+print(round)
+"#;
+
+    /// Failures that happen while a list is being filled, while owned
+    /// values are on their way into a call, and while text is being built.
+    const NO_COLLECTOR_HALF_WAY: &str = r#"# Failures that happen half way through something.
+owned class Batch {
+    tag: str
+    values: owned list[int]
+
+    function sum_until(self, stop: int) -> int raises TooBig {
+        var total = 0
+        for v in self.values {
+            if v == stop {
+                raise TooBig(v, self.tag)      # the loop's list is freed too
+            }
+            total += v
+        }
+        return total
+    }
+
+    function grow(self, by: int) {
+        for n in range(by) {
+            self.values.append(n)
+        }
+    }
+}
+
+class TooBig {
+    value: int
+    tag: str
+}
+
+enum Level {
+    Low
+    High
+}
+
+function level(n: int) -> Level {
+    if n > 5 {
+        return High
+    }
+    return Low
+}
+
+function check(n: int) -> int raises TooBig {
+    if n >= 6 {
+        raise TooBig(n, "check")
+    }
+    return n
+}
+
+function batch(tag: str, size: int) -> Batch raises TooBig {
+    return Batch(tag, [check(n) for n in range(size)])
+}
+
+function join(a: Batch, b: Batch, extra: int) -> int {
+    return len(a.values) + len(b.values) + extra
+}
+
+function total(xs: borrow list[int]) -> int {
+    var t = 0
+    for x in xs {
+        t += x
+    }
+    return t
+}
+
+function describe(n: int) -> int raises TooBig {
+    # Text is in the making when `check` fails.
+    print(f"n is {n}, checked {check(n)}, level {level(n)}")
+    return n
+}
+
+function deep(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    print(f"depth {n}: {deep(n - 1)}")
+    return n
+}
+
+var failures = 0
+for round in range(300) {
+    try {
+        let a = batch("a", round % 9)
+        let b = batch("b", 3)
+        # `a` and `b` are on their way into `join` when `check` fails.
+        failures += join(a, b, check(round % 8)) * 0
+    } except TooBig as e {
+        failures += 1
+    }
+    try {
+        let c = batch("c", 5)
+        c.grow(round % 4)
+        failures += c.sum_until(round % 7) * 0
+    } except TooBig as e {
+        if e.tag != "c" {
+            print("wrong tag")
+        }
+        failures += 1
+    }
+    try {
+        if round % 50 == 0 {
+            failures += describe((round // 50) * 2) * 0
+        }
+    } except TooBig as e {
+        print(f"round {round}: {e.value} from {e.tag}")
+    }
+}
+print(failures)
+print(deep(4))
+
+let big: owned list[int] = [n * n for n in range(40)]
+print(total(big), big.reduce(larger, 0), level(3), level(9) == High)
+match level(total(big)) {
+    case Low {
+        print("low")
+    }
+    case High {
+        print("high")
+    }
+}
+
+function larger(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+function first_even(xs: borrow list[int]) -> int or none {
+    for x in xs {
+        if x % 2 == 0 and x > 0 {
+            return x
+        }
+    }
+    return none
+}
+
+let found = first_even(big)
+if found is not none {
+    print(f"first even square: {found}")
+}
+let odd: owned list[int] = [1, 3, 5]
+print(first_even(odd) is none)
+"#;
+
+    #[test]
+    fn with_no_collector_text_is_given_back_after_each_statement() {
+        // Ten thousand lines of text are built, a few bytes at a time,
+        // in a loop, a comprehension, a condition and a `while`. If any
+        // statement left its text behind, the room would overflow.
+        let source = r#"owned class Reading {
+    tick: int
+    celsius: float
+}
+
+function label(tick: int) -> str {
+    if tick % 2 == 0 {
+        return "even"
+    }
+    return "odd"
+}
+
+function width(n: int) -> int {
+    return len(str(n))
+}
+
+var shown = 0
+var longest = 0
+for tick in range(2000) {
+    let reading = Reading(tick, 20.0 + tick % 7)
+    if f"{reading.tick}" == "1999" or tick % 500 == 0 {
+        print(f"tick {reading.tick:>5}: {reading.celsius:.1f} C, {label(tick)}", reading)
+        shown += 1
+    }
+    let widths: owned list[int] = [width(n) + len(f"<{n}>") for n in range(tick % 5) if str(n) != "3"]
+    longest = max(longest, len(widths), width(tick))
+}
+var n = 1
+while len(str(n)) < 6 {
+    n *= 10
+}
+print(shown, longest, n, label(shown).upper() + "!")
+"#;
+        let Some(most_text) = no_collector_as_interpreter("text", source) else { return };
+        assert!(most_text < 200, "text is piling up in the text room: {most_text} bytes");
+
+        // What the C for one such statement looks like.
+        let c = compile_no_collector("let count = 3\nprint(f\"count: {count}\")\nprint(\"done\")").unwrap();
+        assert!(
+            c.contains(
+                "    size_t m1 = zeno_text_top;\n    \
+                 zeno_print(1, zeno_join(2, \"count: \", zeno_str_int(z_count)));\n    \
+                 zeno_text_top = m1;\n    \
+                 zeno_print(1, \"done\");\n"
+            ),
+            "{c}"
+        );
+    }
+
+    #[test]
+    fn with_no_collector_the_text_room_has_an_end() {
+        let source = "let squares: owned list[int] = [n * n for n in range(40)]\nprint(\"before\")\nprint(squares)";
+        let c = compile_no_collector(source).unwrap();
+        let Some((printed, errors, finished)) = build_and_run("small-room", &c, &["-DZENO_TEXT_ROOM=64"]) else {
+            return;
+        };
+        assert!(!finished);
+        assert_eq!(printed, "before\n");
+        assert_eq!(errors, "error: a statement built more text than there is room for (ZENO_TEXT_ROOM is 64 bytes)\n");
+        // Showing a list gives back each half-built piece as it goes, so
+        // the room needs about twice the finished text, not far more.
+        let Some((printed, _, finished)) = build_and_run("room", &c, &["-DZENO_TEXT_ROOM=400"]) else { return };
+        assert!(finished);
+        assert_eq!(printed, interpreted(source));
+    }
+
+    #[test]
+    fn what_a_build_with_no_collector_refuses_says_so() {
+        const SETTING: &str = r#"owned class Packet {
+    id: int
+    name: str
+    bytes: owned list[int]
+}
+class Bad {
+    id: int
+    why: str
+}
+enum Shape {
+    Dot
+    Circle(r: float)
+}
+function risky(n: int) -> int raises Bad {
+    if n > 2 { raise Bad(n, "big") }
+    return n
+}
+function name_len(text: str) -> int { return len(text) }
+function look(xs: borrow list[int]) -> int { return len(xs) }
+function double(n: int) -> int { return n * 2 }
+function add(a: int, b: int) -> int { return a + b }
+let x = 7
+"#;
+        let refused = |body: &str, why: &str| {
+            let source = format!("{SETTING}{body}\n");
+            let message = compile_no_collector(&source).err().unwrap_or_else(|| "it compiled".to_string());
+            assert!(message.contains(why), "{body}\n{message}");
+            assert!(message.contains("`zeno build --no-collector` leaves the collector out"), "{message}");
+            // Each of these is fine where there is a collector.
+            assert!(compile(&source).is_ok(), "{body}");
+        };
+
+        // Text that is built lasts for one statement, so it cannot be kept.
+        let built = "this text is built while the program runs";
+        refused("let s = f\"{x}\"\nprint(s)", built);
+        refused("function f(n: int) -> str { return str(n) }\nprint(f(1))", built);
+        refused("let p = Packet(1, \"a\", [1])\np.name = \"a\" + \"b\"", built);
+        refused("let w: owned list[str] = [\"a\"]\nw.append(str(x))", built);
+        refused("let w: owned list[str] = [str(n) for n in range(3)]", built);
+        refused("print(name_len(str(x)))", built);
+        refused("let c = \"abc\"[0]", built);
+        refused("var s = \"a\"\ns += \"b\"", built);
+        refused("var keep = \"\"\ntry { print(int(\"x\")) } except ValueError as e { keep = str(e) }", built);
+        refused("for i in range(len(str(x))) { print(i) }", "the first line of this `for` builds text");
+
+        // An error is freed when its `except` ends, so it cannot be kept
+        // or raised again, and one can only be made by `raise`.
+        let caught = "try { print(risky(5)) } except Bad as e";
+        refused(&format!("{caught} {{ let again = e\nprint(again.id) }}"), "It cannot be kept");
+        refused(&format!("var last: Bad or none = none\n{caught} {{ last = e }}"), "It cannot be kept");
+        refused(
+            &format!("function pass_on(b: Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e)) }}"),
+            "It cannot be kept",
+        );
+        refused("try { print(risky(5)) } except Error as e { let again = e\nprint(again) }", "so it cannot be kept");
+        refused(
+            &format!("function f() -> int raises Bad {{ try {{ return risky(5) }} except Bad as e {{ raise e }} }}\n{caught} {{ print(f()) }}"),
+            "`raise` needs a new error here",
+        );
+        refused("let b = Bad(1, \"x\")", "this object would have no owner");
+        refused("print(Bad(1, \"x\").id)", "this object would have no owner");
+        refused("print(ValueError(\"x\"))", "this makes a `ValueError` that is not raised");
+
+        // Whatever else makes a block that nothing owns.
+        refused("let xs = [1, 2, 3]\nprint(len(xs))", "this list has no owner");
+        refused("print(look([1, 2]))", "this list has no owner");
+        refused("print(x in [1, 2])", "this list has no owner");
+        refused("let xs: list[int] = []\nprint(len(xs))", "this list has no owner");
+        refused("let s = Circle(1.0)", "`Circle` carries values");
+        refused("let f = function(n: int) { return n + x }\nprint(f(1))", "a function written where a value goes");
+        refused("let a: owned list[int] = [1]\nlet b: owned list[int] = [2]\nprint(a + b)", "`+` on two lists");
+        refused("print(\"a b\".split())", "`split` makes a new list");
+        refused("let a: owned list[int] = [1]\nprint(a.map(double))", "`map` makes a new list");
+        refused("for ch in \"abc\" { print(ch) }", "a `for` loop over a str");
+        refused("let m: owned list[int or none] = [1, none]", "numbers that may be `none`");
+
+        // What sits right beside those refusals, and is accepted.
+        let accepted = format!(
+            "{SETTING}{}",
+            r#"var why = ""
+try {
+    print(risky(5))
+} except Bad as e {
+    print(e.id, e.why, e)
+    why = e.why                       # fixed text, which outlives the error
+}
+print(why)
+for pin in [2, 3, 5] {                # a list the loop frees when it ends
+    print(pin)
+}
+let a: owned list[int] = [1, 2, 3]
+print(a.reduce(add, 0), look(a), a, Dot == Dot, 3 s, (1500 ms).s)
+var best: int or none = none
+best = 4
+if best is not none {
+    print(best + 1)
+}
+try {
+    print(int("12"), float("1.5"))
+    print(int("zz"))
+} except ValueError as e {
+    print(e)
+}
+"#
+        );
+        no_collector_as_interpreter("accepted", &accepted);
+    }
+
+    #[test]
+    fn the_owned_example_builds_with_no_collector() {
+        no_collector_as_interpreter("buffer", include_str!("../examples/buffer.zeno"));
+        // Simple code stays simple here too: nothing is noted or freed
+        // for a program that makes no memory.
+        let c = compile_no_collector("var total = 0\nfor i in range(10) {\n    total += i\n}\nlet done = total > 40").unwrap();
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        assert!(!program.contains("zeno_text_top") && !program.contains("drop"), "{program}");
     }
 
     #[test]

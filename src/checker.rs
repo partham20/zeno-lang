@@ -104,6 +104,9 @@ pub struct Types {
     owners: HashSet<usize>,
     /// Each statement that makes an owned value and does nothing with it.
     discarded: HashSet<usize>,
+    /// Each list, written out or built by a comprehension, that begins
+    /// life as an owned list. A build with no collector accepts no others.
+    fresh: HashSet<usize>,
 }
 
 impl Types {
@@ -120,6 +123,11 @@ impl Types {
     /// Is `expr`, written as a statement, an owned value nobody keeps?
     pub fn discarded(&self, expr: &ast::Expr) -> bool {
         self.discarded.contains(&(expr as *const ast::Expr as usize))
+    }
+
+    /// Does the list written at `expr` start out owned?
+    pub fn fresh(&self, expr: &ast::Expr) -> bool {
+        self.fresh.contains(&(expr as *const ast::Expr as usize))
     }
 
     pub fn class(&self, decl: &ast::Class) -> Option<&Vec<Kind>> {
@@ -1622,6 +1630,9 @@ impl Checker {
                     // that `[1, "two"]` is caught rather than passing as a
                     // list of mixed, unknown things.
                     (ExprKind::List(items), Some(wanted_item)) => {
+                        if matches!(wanted, Ty::Owned(_)) {
+                            self.types.fresh.insert(value as *const Expr as usize);
+                        }
                         for item in items {
                             let item_type = self.expr(item, env);
                             if !fits(&item_type, wanted_item) {
@@ -1635,7 +1646,7 @@ impl Checker {
                         }
                     }
                     _ => {
-                        let given = fresh_list(value, given, &wanted);
+                        let given = self.fresh_list(value, given, &wanted);
                         self.expect(&given, &wanted, &format!("`{name}`"), value.span)
                     }
                 }
@@ -2080,7 +2091,21 @@ impl Checker {
     /// `take`, for a value going somewhere whose type is known.
     fn kept(&mut self, value: &Expr, wanted: &Ty, env: &Env) -> Ty {
         let given = self.take(value, env);
-        fresh_list(value, given, wanted)
+        self.fresh_list(value, given, wanted)
+    }
+
+    /// A list written out in full, or built by a comprehension, is
+    /// nobody's yet. So it can begin life as an owned list where one is
+    /// wanted. The compiler is told, because a build with no collector
+    /// accepts only lists that start this way.
+    fn fresh_list(&mut self, value: &Expr, given: Ty, wanted: &Ty) -> Ty {
+        match (wanted, &value.kind, given) {
+            (Ty::Owned(_), ExprKind::List(_) | ExprKind::ListComp { .. }, given @ Ty::List(_)) => {
+                self.types.fresh.insert(value as *const Expr as usize);
+                Ty::Owned(Box::new(given))
+            }
+            (_, _, given) => given,
+        }
     }
 
     /// The type of an expression that is only looked at.
@@ -2995,17 +3020,6 @@ enum Covers {
     Case(usize),
     /// Only some values.
     Some,
-}
-
-/// A list written out in full, or built by a comprehension, is nobody's
-/// yet. So it can begin life as an owned list where one is wanted.
-fn fresh_list(value: &Expr, given: Ty, wanted: &Ty) -> Ty {
-    match (wanted, &value.kind, given) {
-        (Ty::Owned(_), ExprKind::List(_) | ExprKind::ListComp { .. }, given @ Ty::List(_)) => {
-            Ty::Owned(Box::new(given))
-        }
-        (_, _, given) => given,
-    }
 }
 
 /// The error for an owned variable used from another function's body.

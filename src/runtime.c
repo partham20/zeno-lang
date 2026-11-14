@@ -48,6 +48,14 @@ static const char *zeno_file = "";
  * memory and breaks nothing.
  */
 
+static void zeno_out_of_memory(void) {
+    fflush(stdout);
+    fprintf(stderr, "error: out of memory\n");
+    exit(1);
+}
+
+#ifndef ZENO_NO_COLLECTOR
+
 /* What sits in front of every block. The first field does two jobs, at
  * different times. Between collections it is the block's `place` in the
  * table, so that zeno_free can take the block out without searching. During
@@ -91,12 +99,6 @@ static void *zeno_stack_base = NULL;
  * compiler writes this function, at the end of the file, since only it
  * knows what they are. */
 static void zeno_roots(void);
-
-static void zeno_out_of_memory(void) {
-    fflush(stdout);
-    fprintf(stderr, "error: out of memory\n");
-    exit(1);
-}
 
 /* Blocks that are marked but whose insides have not been looked at yet,
  * chained through `next_waiting`. The chain ends at this marker instead
@@ -292,6 +294,114 @@ static void zeno_memory_report(void) {
 }
 #endif
 
+#else /* ZENO_NO_COLLECTOR */
+
+/* A build with no collector: `zeno build --no-collector`, and
+ * docs/no-collector.md.
+ *
+ * Nothing here looks for memory that is no longer used, because the
+ * compiler has made sure there is none to find. Memory comes from two
+ * places, and each gives it back at a line that can be pointed to:
+ *
+ *   1. A list or an object has one owner. The line that ends its owner's
+ *      block hands it back. zeno_alloc and zeno_free are `calloc` and
+ *      `free`, and nothing more.
+ *   2. Text built while the program runs lasts until the statement that
+ *      built it is over. It is written into one array of a fixed size, the
+ *      text room, and giving it back is setting one number.
+ */
+
+/* Numbers for the report that `zeno build --memory` asks for. Counting
+ * bytes in use needs the size of each block, so a block carries its size
+ * in front of it, but only in a build that asked for the report. (Two
+ * words, not one, so that what follows is lined up as `calloc` left it.) */
+#ifdef ZENO_MEMORY_REPORT
+static size_t zeno_in_use = 0;
+static size_t zeno_most_in_use = 0;
+static size_t zeno_blocks_made = 0;
+static size_t zeno_bytes_made = 0;
+static size_t zeno_blocks_held = 0;
+static size_t zeno_most_text = 0;
+#endif
+
+/* Memory for a list, an object or an error. It starts as all zeros. */
+static char *zeno_alloc(size_t size) {
+#ifdef ZENO_MEMORY_REPORT
+    size_t *block = calloc(1, 2 * sizeof(size_t) + size);
+    if (block == NULL) zeno_out_of_memory();
+    block[0] = size;
+    zeno_blocks_made++;
+    zeno_blocks_held++;
+    zeno_bytes_made += size;
+    zeno_in_use += size;
+    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
+    return (char *)(block + 2);
+#else
+    char *memory = calloc(1, size);
+    if (memory == NULL) zeno_out_of_memory();
+    return memory;
+#endif
+}
+
+/* Give a block back. `memory` is what zeno_alloc returned, or NULL, which
+ * does nothing. */
+static void zeno_free(void *memory) {
+    if (memory == NULL) return;
+#ifdef ZENO_MEMORY_REPORT
+    size_t *block = (size_t *)memory - 2;
+    zeno_in_use -= block[0];
+    zeno_blocks_held--;
+    free(block);
+#else
+    free(memory);
+#endif
+}
+
+/* The text room. Text is written at `zeno_text_top`, which then moves up.
+ * The compiled program notes where the top was before a statement that
+ * builds text, and puts it back there when the statement is over:
+ *
+ *     size_t m1 = zeno_text_top;
+ *     zeno_print(1, zeno_join(2, "count: ", zeno_str_int(z_count)));
+ *     zeno_text_top = m1;
+ *
+ * A function called in the middle does the same with its own statements,
+ * above this one's text, so the room is used like a stack. Its size is the
+ * most text that may be in the making at one moment. */
+#ifndef ZENO_TEXT_ROOM
+#define ZENO_TEXT_ROOM 1024
+#endif
+static char zeno_text_room[ZENO_TEXT_ROOM];
+static size_t zeno_text_top = 0;
+
+static char *zeno_alloc_text(size_t size) {
+    if (size > (size_t)ZENO_TEXT_ROOM - zeno_text_top) {
+        fflush(stdout);
+        fprintf(stderr, "error: a statement built more text than there is room for (ZENO_TEXT_ROOM is %d bytes)\n",
+                (int)ZENO_TEXT_ROOM);
+        exit(1);
+    }
+    char *text = zeno_text_room + zeno_text_top;
+    zeno_text_top += size;
+#ifdef ZENO_MEMORY_REPORT
+    if (zeno_text_top > zeno_most_text) zeno_most_text = zeno_text_top;
+#endif
+    return text;
+}
+
+/* What a program built with `zeno build --memory` prints as it ends. A
+ * program that ran to its last line should have no blocks left. */
+#ifdef ZENO_MEMORY_REPORT
+static void zeno_memory_report(void) {
+    fflush(stdout);
+    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, no collector, %zu blocks left at the end\n",
+            zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_blocks_held);
+    fprintf(stderr, "text: at most %zu bytes in use at once, in a room of %d\n", zeno_most_text, (int)ZENO_TEXT_ROOM);
+}
+#endif
+
+#endif /* ZENO_NO_COLLECTOR */
+
 /* ------------------------------------------------------------------- Errors
  *
  * An error value is what `ValueError("bad")` makes, what `raise` sends and
@@ -303,6 +413,8 @@ typedef struct {
     void *object;        /* the object itself, when an object was raised */
 } zeno_error;
 
+#ifndef ZENO_NO_COLLECTOR
+
 static zeno_error *zeno_error_new(const char *kind, const char *message, void *object) {
     zeno_error *error = (zeno_error *)zeno_alloc(sizeof(zeno_error));
     error->kind = kind;
@@ -310,6 +422,33 @@ static zeno_error *zeno_error_new(const char *kind, const char *message, void *o
     error->object = object;
     return error;
 }
+
+#else /* ZENO_NO_COLLECTOR */
+
+/* With no collector, an error is one block that is freed when the `except`
+ * that caught it ends. The message is often text that was built for it,
+ * which will not last that long, so the error keeps a copy of its own,
+ * in the same block. */
+static zeno_error *zeno_error_new(const char *kind, const char *message, void *object) {
+    size_t length = strlen(message) + 1;
+    zeno_error *error = (zeno_error *)zeno_alloc(sizeof(zeno_error) + length);
+    char *kept = (char *)(error + 1);
+    memcpy(kept, message, length);
+    error->kind = kind;
+    error->message = kept;
+    error->object = object;
+    return error;
+}
+
+/* The `except` block that caught `error` is over: free the error, and the
+ * object that was raised, if there was one. */
+static void zeno_error_drop(zeno_error *error) {
+    if (error == NULL) return;
+    zeno_free(error->object);
+    zeno_free(error);
+}
+
+#endif /* ZENO_NO_COLLECTOR */
 
 static bool zeno_error_same(zeno_error *a, zeno_error *b) {
     return strcmp(a->kind, b->kind) == 0 && strcmp(a->message, b->message) == 0;
@@ -867,12 +1006,36 @@ static zeno_slot zeno_list_pop(zeno_list *list, int line, int col) {
 /* The three below need to know how to show or compare one item, which
  * depends on its kind. The compiler passes a small function that does. */
 
+#ifdef ZENO_NO_COLLECTOR
+/* `text` is the newest thing in the text room, and everything else written
+ * since `start` was only needed to build it. Slide it down to `start` and
+ * give the rest back. Showing a list joins one item at a time; without
+ * this, a list of a hundred items would leave a hundred half-built texts
+ * in the room. */
+static const char *zeno_text_settle(size_t start, const char *text) {
+    size_t size = strlen(text) + 1;
+    memmove(zeno_text_room + start, text, size);
+    zeno_text_top = start + size;
+    return zeno_text_room + start;
+}
+#endif /* ZENO_NO_COLLECTOR */
+
 static const char *zeno_list_str(zeno_list *list, const char *(*show)(zeno_slot)) {
+#ifdef ZENO_NO_COLLECTOR
+    size_t start = zeno_text_top;
+#endif /* ZENO_NO_COLLECTOR */
     const char *text = "[";
     for (int64_t i = 0; i < list->len; i++) {
         text = zeno_join(3, text, i > 0 ? ", " : "", show(list->items[i]));
+#ifdef ZENO_NO_COLLECTOR
+        text = zeno_text_settle(start, text);
+#endif /* ZENO_NO_COLLECTOR */
     }
-    return zeno_join(2, text, "]");
+    text = zeno_join(2, text, "]");
+#ifdef ZENO_NO_COLLECTOR
+    text = zeno_text_settle(start, text);
+#endif /* ZENO_NO_COLLECTOR */
+    return text;
 }
 
 static bool zeno_list_eq(zeno_list *a, zeno_list *b, bool (*same)(zeno_slot, zeno_slot)) {

@@ -2,11 +2,15 @@
 #
 #     cargo run -- run examples/buffer.zeno
 #     cargo run -- build --memory examples/buffer.zeno && ./buffer
+#     cargo run -- build --no-collector --memory examples/buffer.zeno && ./buffer
 #
 # Most values in Zeno are shared, and a garbage collector frees them some
 # time after their last use (docs/memory.md). A value marked `owned` has
 # exactly one owner instead, and is freed the moment its owner's block
 # ends. docs/ownership.md explains the rules. This file is the short tour.
+#
+# Every list and object here is owned, so the third command above can
+# build the program with no collector in it at all (docs/no-collector.md).
 
 # Every Frame has one owner. When that owner's block ends, the frame and
 # the list inside it are freed, there and then.
@@ -55,7 +59,7 @@ function send(frame: Frame) -> int raises Overload {
 
 var sent = 0
 var quiet = 0
-var refused: list[int] = []
+var refused: owned list[int] = []
 
 for channel in range(120) {
     let frame = capture(channel, 600)

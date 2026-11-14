@@ -45,6 +45,10 @@ fn usage() {
     println!("  --firmware               with build: errors travel as values that every");
     println!("                           caller tests, with no setjmp or longjmp, as");
     println!("                           coding standards for firmware require");
+    println!("  --no-collector           with build: a firmware build with no garbage");
+    println!("                           collector in it. Every list and object must");
+    println!("                           be `owned`, and is freed where its owner's");
+    println!("                           block ends");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -138,7 +142,7 @@ fn run(path: &str, strict: bool) -> Option<()> {
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str, memory_report: bool, firmware: bool) -> Option<()> {
+fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode.
     let (source, program) = load(path)?;
@@ -152,7 +156,7 @@ fn build(path: &str, memory_report: bool, firmware: bool) -> Option<()> {
         return None;
     }
 
-    let c = match emit_c::emit(&program, &types, path, firmware) {
+    let c = match emit_c::emit(&program, &types, path, kind) {
         Ok(c) => c,
         Err(error) => {
             report(path, &source, &error);
@@ -237,6 +241,17 @@ fn main() -> ExitCode {
     // `--firmware` builds C that firmware coding standards accept.
     let firmware = args.iter().any(|arg| arg == "--firmware");
     args.retain(|arg| arg != "--firmware");
+    // `--no-collector` is a firmware build that also leaves the garbage
+    // collector out. (It has to be a firmware build: when an error jumps,
+    // it skips the lines that free memory, and with no collector nothing
+    // would ever free it.)
+    let no_collector = args.iter().any(|arg| arg == "--no-collector");
+    args.retain(|arg| arg != "--no-collector");
+    let kind = match (no_collector, firmware) {
+        (true, _) => emit_c::Build::NoCollector,
+        (false, true) => emit_c::Build::Firmware,
+        (false, false) => emit_c::Build::Ordinary,
+    };
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -268,7 +283,7 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            match build(path, memory_report, firmware) {
+            match build(path, memory_report, kind) {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
             }
