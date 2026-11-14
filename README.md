@@ -66,22 +66,26 @@ piece of the compiler:
 
 ## Status
 
-The lexer and the parser work. Zeno can read a program and show how it
-understood it, but cannot run one yet. The interpreter is next.
+Zeno runs programs. The lexer, parser and interpreter work; types are parsed
+but not checked yet, which is the next stage.
 
 ```sh
-cargo run -- tokens examples/hello.zeno   # the tokens the lexer finds
+cargo run -- run examples/tour.zeno       # run a program
 cargo run -- parse examples/tour.zeno     # the syntax tree the parser builds
+cargo run -- tokens examples/hello.zeno   # the tokens the lexer finds
 cargo test
 ```
 
-How each stage works: [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md).
+`examples/blink.zeno` does not run yet, because there is no `board` module.
+
+- **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
+- **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md), [`docs/interpreter.md`](docs/interpreter.md).
 
 ## Roadmap
 
 1. Lexer (done)
 2. Parser and syntax tree (done)
-3. Tree-walking interpreter (`zeno run`)
+3. Tree-walking interpreter, `zeno run` (done)
 4. Type checker
 5. Bytecode VM
 6. Compile to C (`zeno build`)
@@ -92,13 +96,16 @@ How each stage works: [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/
 ## Layout
 
 ```
-src/main.rs        the `zeno` command
-src/token.rs       the kinds of token
-src/lexer.rs       source text -> tokens
-src/ast.rs         the shapes of the syntax tree
-src/parser.rs      tokens -> syntax tree
-src/printer.rs     syntax tree -> text, for `zeno parse`
-src/error.rs       the error type every stage shares
-docs/              how each stage works
-examples/          sample .zeno programs
+src/main.rs         the `zeno` command
+src/token.rs        the kinds of token
+src/lexer.rs        source text -> tokens
+src/ast.rs          the shapes of the syntax tree
+src/parser.rs       tokens -> syntax tree
+src/printer.rs      syntax tree -> text, for `zeno parse`
+src/value.rs        what a value is while a program runs
+src/interpreter.rs  runs a syntax tree
+src/builtins.rs     print, len, methods, modules, formatting
+src/error.rs        the error type every stage shares
+docs/               the design decisions, and how each stage works
+examples/           sample .zeno programs
 ```
