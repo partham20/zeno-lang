@@ -28,9 +28,12 @@
 //! classes, lists, enums and `match`, values that may be `none`, errors
 //! (`try`, `except`, `raise`), and functions used as values. The few things
 //! it does not compile yet are refused with a message that says so.
+//!
+//! `zeno build --firmware` compiles errors a second way, as values that
+//! each caller tests, with no `setjmp`. Look for "Errors as values".
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::*;
@@ -42,10 +45,42 @@ use crate::units;
 /// The runtime library, pasted in front of every compiled program.
 const RUNTIME: &str = include_str!("runtime.c");
 
+/// The runtime as one kind of build needs it. The runtime marks what only
+/// a firmware build uses, and what only an ordinary build uses, with
+/// `#ifdef ZENO_FIRMWARE`. The choice is made here, so that the C file
+/// holds what the program uses and nothing else. (For a firmware build
+/// that matters: a reviewer must not find `setjmp` anywhere in it.)
+fn runtime(firmware: bool) -> String {
+    let mut text = String::new();
+    // `None` outside a marked part. Inside one: is that part being kept?
+    let mut keeping: Option<bool> = None;
+    for line in RUNTIME.lines() {
+        match line.trim() {
+            "#ifdef ZENO_FIRMWARE" => keeping = Some(firmware),
+            "#ifndef ZENO_FIRMWARE" => keeping = Some(!firmware),
+            "#else /* ZENO_FIRMWARE */" => keeping = keeping.map(|kept| !kept),
+            "#endif /* ZENO_FIRMWARE */" => keeping = None,
+            _ if keeping != Some(false) => {
+                text += line;
+                text.push('\n');
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 /// Turn a checked program into the text of one C file. `file` is the name of
 /// the Zeno source, which the compiled program uses in its error messages.
-pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Error> {
+/// `firmware` is `zeno build --firmware`: errors travel as values that
+/// each caller tests, with no `setjmp`.
+pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Result<String, Error> {
     let mut emitter = Emitter {
+        firmware,
+        fallible: false,
+        arriving: Vec::new(),
+        jumped: HashSet::new(),
+        labels: 0,
         types,
         functions: HashMap::new(),
         classes: HashMap::new(),
@@ -95,7 +130,9 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
         .filter(|statement| !matches!(statement.kind, StmtKind::Function(_) | StmtKind::Class(_) | StmtKind::Enum(_)))
         .collect();
     for statement in &top {
-        changed_in_try(statement, false, &mut emitter.volatile);
+        if !firmware {
+            changed_in_try(statement, false, &mut emitter.volatile);
+        }
         names_in_functions(statement, false, &mut emitter.shared);
     }
     for statement in &program.statements {
@@ -126,7 +163,7 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = String::from(RUNTIME);
+    let mut c = runtime(firmware);
     for section in [&emitter.typedefs, &emitter.structs, &emitter.globals, &emitter.prototypes, &emitter.definitions] {
         if !section.is_empty() {
             c.push('\n');
@@ -321,6 +358,35 @@ struct Emitter<'a> {
     shared: HashSet<String>,
     /// How many functions with no name have been compiled, to number them.
     closures: usize,
+
+    // The rest is for a firmware build, where errors travel as values.
+    /// `zeno build --firmware`.
+    firmware: bool,
+    /// The function being compiled can raise: it returns `true` or `false`
+    /// and gives its answer through `zeno_result`.
+    fallible: bool,
+    /// For each `try` around this point, the kinds of error that can
+    /// arrive at its `except` blocks as values.
+    arriving: Vec<BTreeSet<String>>,
+    /// The `except` labels that some `goto` leads to.
+    jumped: HashSet<String>,
+    /// How many `except` labels there have been, to number them.
+    labels: usize,
+}
+
+/// A firmware build calls a function that can raise in a different way
+/// from one that cannot, and the type of a function value does not say
+/// which it is. So for now only functions that cannot raise may be values.
+fn raises_as_value(span: Span) -> Error {
+    firmware_cannot(
+        "`zeno build --firmware` cannot compile a function that can raise, used as a value, yet. Call it by its name",
+        span,
+    )
+}
+
+/// The error for something a firmware build has to refuse.
+fn firmware_cannot(what: impl AsRef<str>, span: Span) -> Error {
+    Error::new(format!("{}, or build without `--firmware`", what.as_ref()), span)
 }
 
 /// The error for a part of Zeno this stage does not handle yet.
@@ -762,14 +828,21 @@ impl Emitter<'_> {
         // count of names used starts again from the top-level ones.
         let used = self.used.clone();
 
-        let params = self.parameters(decl, kind, span)?;
+        // In a firmware build a function that can raise gives back `true`
+        // or `false`, and its answer goes out through one more parameter.
+        let fallible = self.firmware && !decl.raises.is_empty();
+        let mut params = self.parameters(decl, kind, span)?;
+        if fallible && kind.returns != Kind::None {
+            params.push(format!("{}*zeno_result", c_type(&kind.returns, span)?));
+        }
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-        self.body(decl, kind, span)?;
+        self.body(decl, kind, fallible, span)?;
         self.scopes.pop();
         self.used = used;
 
         let body = render(&std::mem::take(&mut self.lines));
-        self.helper(format!("static {}{c_name}({params})", return_type(&kind.returns, span)?), body);
+        let returns = if fallible { "bool ".to_string() } else { return_type(&kind.returns, span)? };
+        self.helper(format!("static {returns}{c_name}({params})"), body);
         Ok(())
     }
 
@@ -786,11 +859,13 @@ impl Emitter<'_> {
     }
 
     /// Compile the statements of a function into `self.lines`.
-    fn body(&mut self, decl: &Function, kind: &FunctionKind, span: Span) -> Result<(), Error> {
+    fn body(&mut self, decl: &Function, kind: &FunctionKind, fallible: bool, span: Span) -> Result<(), Error> {
         let mut volatile = HashSet::new();
         let mut shared = HashSet::new();
         for statement in &decl.body {
-            changed_in_try(statement, false, &mut volatile);
+            if !self.firmware {
+                changed_in_try(statement, false, &mut volatile);
+            }
             names_in_functions(statement, false, &mut shared);
         }
         // What the function around this one was in the middle of is set
@@ -800,15 +875,29 @@ impl Emitter<'_> {
         let tries = std::mem::take(&mut self.tries);
         let loops = std::mem::take(&mut self.loops);
         let returns = self.returns.replace(kind.returns.clone());
+        let arriving = std::mem::take(&mut self.arriving);
+        let fallible = std::mem::replace(&mut self.fallible, fallible);
 
         let mut result = decl.body.iter().try_for_each(|statement| self.stmt(statement));
+        let ends = matches!(decl.body.last().map(|last| &last.kind), Some(StmtKind::Return(_) | StmtKind::Raise(_)));
         // A function that may give back `none` does so if it reaches its
         // end without a `return`.
-        if let (Ok(()), Kind::Optional(inner)) = (&result, &kind.returns) {
-            if !matches!(decl.body.last().map(|last| &last.kind), Some(StmtKind::Return(_))) {
-                result = nothing(inner, span).map(|none| self.line(format!("return {none};")));
-            }
+        if let (Ok(()), Kind::Optional(inner), false) = (&result, &kind.returns, ends) {
+            result = nothing(inner, span).map(|none| {
+                if self.fallible {
+                    self.line(format!("*zeno_result = {none};"));
+                    self.line("return true;");
+                } else {
+                    self.line(format!("return {none};"));
+                }
+            });
         }
+        // Reaching the end of a function that can raise means it did not.
+        if result.is_ok() && self.fallible && kind.returns == Kind::None && !ends {
+            self.line("return true;");
+        }
+        self.arriving = arriving;
+        self.fallible = fallible;
 
         self.volatile = volatile;
         self.shared = shared;
@@ -938,7 +1027,10 @@ impl Emitter<'_> {
                     Some(value) if returns != Kind::None => {
                         let val = self.expr_as(value, Some(&returns))?;
                         let val = self.coerce(val, &returns, span)?;
-                        if self.tries.is_empty() {
+                        if self.fallible {
+                            self.line(format!("*zeno_result = {};", val.code));
+                            self.line("return true;");
+                        } else if self.tries.is_empty() || self.firmware {
                             self.line(format!("return {};", val.code));
                         } else {
                             // Work the value out while the `try` is still
@@ -953,7 +1045,7 @@ impl Emitter<'_> {
                     }
                     _ => {
                         self.leave_tries(0);
-                        self.line("return;");
+                        self.line(if self.fallible { "return true;" } else { "return;" });
                     }
                 }
             }
@@ -982,6 +1074,31 @@ impl Emitter<'_> {
             }
 
             StmtKind::Try { body, handlers } => self.try_statement(body, handlers, span)?,
+
+            StmtKind::Raise(value) if self.firmware => {
+                // Note the error, then go where a failed call would go.
+                let val = self.expr(value)?;
+                let (error, kind) = match &val.kind {
+                    Kind::Error => match &value.kind {
+                        // `raise ValueError("...")` says its kind. An error
+                        // held in a variable could be any kind.
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Name(name) if ERROR_KINDS.contains(&name.as_str()) => (val.code, name.clone()),
+                            _ => (val.code, "Error".to_string()),
+                        },
+                        _ => (val.code, "Error".to_string()),
+                    },
+                    Kind::Class(name) => {
+                        let name = name.clone();
+                        let object = self.temp(val, span)?.code;
+                        (format!("zeno_error_new({}, zeno_show_{name}({object}), {object})", c_string(&name)), name)
+                    }
+                    _ => return Err(cannot("`raise` with anything but an error or an object", span)),
+                };
+                let leave = self.failed(&[kind], span)?;
+                self.line(format!("zeno_note({error}, {});", at(span)));
+                self.line(leave);
+            }
 
             StmtKind::Raise(value) => {
                 let val = self.expr(value)?;
@@ -1018,6 +1135,10 @@ impl Emitter<'_> {
     /// tell the runtime that those blocks are over. `keep` is how many of
     /// the open ones stay open.
     fn leave_tries(&mut self, keep: usize) {
+        // In a firmware build a `try` leaves nothing behind to undo.
+        if self.firmware {
+            return;
+        }
         if let Some(outermost) = self.tries.get(keep) {
             self.line(format!("zeno_trying = {outermost}.outer;"));
         }
@@ -1043,6 +1164,9 @@ impl Emitter<'_> {
     /// body raises, however deep in function calls, the runtime jumps back
     /// to that same `setjmp`, which this time gives 1.
     fn try_statement(&mut self, body: &[Stmt], handlers: &[Handler], span: Span) -> Result<(), Error> {
+        if self.firmware {
+            return self.try_with_values(body, handlers, span);
+        }
         let place = self.new_temp();
         self.line(format!("zeno_try {place};"));
         self.line(format!("{place}.outer = zeno_trying;"));
@@ -1103,6 +1227,187 @@ impl Emitter<'_> {
             self.line("zeno_raise_again();");
             self.indent -= 1;
         }
+        self.line("}");
+        Ok(())
+    }
+
+    // ------------------------------------------- Errors as values (firmware)
+
+    /// Something here can fail in a firmware build: a `raise`, or a call to
+    /// a function that can raise, which has just given back `false`. The
+    /// error is already noted in `zeno_raised`. Returns the C statement
+    /// that sends control where the error goes next:
+    ///
+    /// - inside a `try`, to its `except` blocks, further down this function;
+    /// - in a function that can raise, back to its caller, as `false`;
+    /// - at the top level, nobody is left to catch it.
+    ///
+    /// `kinds` is what may have been raised, so that the `try` around this
+    /// point knows what can reach it.
+    fn failed(&mut self, kinds: &[String], span: Span) -> Result<String, Error> {
+        if let Some(arriving) = self.arriving.last_mut() {
+            arriving.extend(kinds.iter().cloned());
+        }
+        if let Some(label) = self.tries.last() {
+            self.jumped.insert(label.clone());
+            return Ok(format!("goto {label};"));
+        }
+        if self.fallible {
+            return Ok("return false;".to_string());
+        }
+        if self.returns.is_none() {
+            return Ok("zeno_uncaught();".to_string());
+        }
+        // The checker makes a function say what it raises, so this is a
+        // function value, which has no way to say it.
+        Err(raises_as_value(span))
+    }
+
+    /// A call, in a firmware build, to something that gives back `true` or
+    /// `false` and puts its answer where the last argument points:
+    ///
+    /// ```c
+    /// double t3;
+    /// if (!z_parse(z_text, &t3)) goto zeno_except_1;   // or: return false;
+    /// ```
+    ///
+    /// `call` is the C call without the answer's pointer.
+    fn checked_call(&mut self, call: String, returns: Kind, kinds: &[String], span: Span) -> Result<Val, Error> {
+        let leave = self.failed(kinds, span)?;
+        let open = call.strip_suffix(')').expect("a call ends with `)`");
+        let mut val = if returns == Kind::None {
+            self.line(format!("if (!{call}) {leave}"));
+            Val::plain(String::new(), Kind::None)
+        } else {
+            let answer = self.new_temp();
+            self.line(format!("{}{answer};", c_type(&returns, span)?));
+            let comma = if open.ends_with('(') { "" } else { ", " };
+            self.line(format!("if (!{open}{comma}&{answer})) {leave}"));
+            Val::plain(answer, returns)
+        };
+        val.pre_fails = true;
+        val.pre_calls = true;
+        Ok(val)
+    }
+
+    /// `try` / `except` in a firmware build. Nothing jumps between
+    /// functions. Each thing in the body that can fail is followed by a
+    /// test, and a failure goes forward to the `except` blocks:
+    ///
+    /// ```c
+    /// {
+    ///     double t1;
+    ///     if (!z_parse(z_line, &t1)) goto zeno_except_1;
+    ///     ...the rest of the body...
+    /// }
+    /// zeno_except_1: ;
+    /// if (zeno_raised != NULL) {                 // did the body fail?
+    ///     zeno_error *zeno_caught_1 = zeno_raised;
+    ///     zeno_raised = NULL;                    // it is being dealt with
+    ///     if (zeno_is(zeno_caught_1, "ValueError")) {
+    ///         ...the except block...
+    ///     } else {
+    ///         zeno_raised = zeno_caught_1;       // not ours: pass it on
+    ///         return false;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The `goto` only ever goes forward, to a label in a block around it.
+    fn try_with_values(&mut self, body: &[Stmt], handlers: &[Handler], span: Span) -> Result<(), Error> {
+        self.labels += 1;
+        let (label, caught) = (format!("zeno_except_{}", self.labels), format!("zeno_caught_{}", self.labels));
+        self.tries.push(label.clone());
+        self.arriving.push(BTreeSet::new());
+        self.line("{");
+        let result = self.block(body);
+        self.line("}");
+        self.tries.pop();
+        let arrived = self.arriving.pop().unwrap_or_default();
+        result?;
+
+        // Only an error that travels as a value can reach an `except`. A
+        // division by zero or a bad index stops a firmware build instead,
+        // and an `except` waiting for one would wait for ever.
+        const WHY: &str = "In a firmware build, an error the program raises itself (and `int` or `float` of text) travels as a value and can be caught. A division by zero, a bad index or an overflow stops the program. Test for it before it happens";
+        if arrived.is_empty() {
+            return Err(firmware_cannot(format!("nothing in this `try` can be caught. {WHY}"), span));
+        }
+        let anything = arrived.contains("Error");
+
+        self.line(format!("{label}: ;"));
+        // If the body always leaves by its last line, the only way to get
+        // here is the `goto`, and there is nothing to ask.
+        let leaves = matches!(
+            body.last().map(|last| &last.kind),
+            Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
+        );
+        self.line(if leaves { "{" } else { "if (zeno_raised != NULL) {" });
+        self.indent += 1;
+        self.line(format!("zeno_error *{caught} = zeno_raised;"));
+        self.line("zeno_raised = NULL;");
+        self.line(format!("(void){caught};"));
+        let mut handled: Vec<&str> = Vec::new();
+        let mut catches_everything = false;
+        for (index, handler) in handlers.iter().enumerate() {
+            let (wanted, holds) = match handler.error.as_deref() {
+                None | Some("Error") => (None, Kind::Error),
+                Some(class) if self.classes.contains_key(class) => (Some(class), Kind::Class(class.to_string())),
+                Some(kind) if ERROR_KINDS.contains(&kind) => (Some(kind), Kind::Error),
+                Some(other) => return Err(cannot(format!("`except {other}`"), span)),
+            };
+            if let Some(kind) = wanted {
+                // An `except` for a class that nothing here raises is idle
+                // in every kind of build. One for a built-in kind is most
+                // likely waiting for the runtime to raise it.
+                if !anything && !arrived.contains(kind) && !self.classes.contains_key(kind) {
+                    return Err(firmware_cannot(format!("nothing in this `try` can reach `except {kind}`. {WHY}"), span));
+                }
+                handled.push(kind);
+            }
+            let test = wanted.map(|kind| format!("if (zeno_is({caught}, {})) ", c_string(kind))).unwrap_or_default();
+            self.line(if index == 0 { format!("{test}{{") } else { format!("}} else {test}{{") });
+            self.scopes.push(HashMap::new());
+            self.indent += 1;
+            if let Some(name) = &handler.binding {
+                let c_type = c_type(&holds, span)?;
+                let value = match holds {
+                    Kind::Class(_) => format!("({}){caught}->object", c_type.trim_end()),
+                    _ => caught.clone(),
+                };
+                let c_name = self.declare(name, holds);
+                self.line(format!("{c_type}{c_name} = {value};"));
+                self.line(format!("(void){c_name};"));
+            }
+            let result = handler.body.iter().try_for_each(|statement| self.stmt(statement));
+            self.indent -= 1;
+            self.scopes.pop();
+            result?;
+            if wanted.is_none() {
+                catches_everything = true;
+                break; // nothing gets past an `except` that takes every error
+            }
+        }
+        // What no `except` here takes carries on outward.
+        let passed_on: Vec<String> = arrived.iter().filter(|kind| !handled.contains(&kind.as_str())).cloned().collect();
+        if !catches_everything {
+            let leave = if passed_on.is_empty() {
+                // Every kind the body can raise has an `except` above, so
+                // this cannot happen. It is written out all the same: C
+                // cannot see that, and coding standards want every chain
+                // of `else if` to end in an `else`.
+                "zeno_uncaught();".to_string()
+            } else {
+                self.failed(&passed_on, span)?
+            };
+            self.line("} else {");
+            self.indent += 1;
+            self.line(format!("zeno_raised = {caught};"));
+            self.line(leave);
+            self.indent -= 1;
+        }
+        self.line("}");
+        self.indent -= 1;
         self.line("}");
         Ok(())
     }
@@ -1784,6 +2089,9 @@ impl Emitter<'_> {
     /// at the wrapper.
     fn function_value(&mut self, name: &str, span: Span) -> Result<Val, Error> {
         let entry = &self.functions[name];
+        if self.firmware && !entry.decl.raises.is_empty() {
+            return Err(raises_as_value(span));
+        }
         let (target, kind) = (entry.c_name.clone(), entry.kind.clone());
         let value = format!("zeno_value_{name}");
         if self.adapters.insert(value.clone()) {
@@ -1823,6 +2131,9 @@ impl Emitter<'_> {
         let Some(kind) = self.types.function(decl).cloned() else {
             return Err(cannot("this function", span));
         };
+        if self.firmware && !decl.raises.is_empty() {
+            return Err(raises_as_value(span));
+        }
         self.closures += 1;
         let id = self.closures;
 
@@ -1849,7 +2160,7 @@ impl Emitter<'_> {
         let used = self.used.clone();
 
         let result = match self.parameters(decl, &kind, span) {
-            Ok(params) => self.body(decl, &kind, span).map(|()| params),
+            Ok(params) => self.body(decl, &kind, false, span).map(|()| params),
             Err(error) => Err(error),
         };
 
@@ -2308,7 +2619,11 @@ impl Emitter<'_> {
             .zip(&entry.kind.params)
             .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
             .collect();
+        let raises = entry.decl.raises.clone();
         let (call, vals) = self.call_c(&c_name, &slots, None, args, span)?;
+        if self.firmware && !raises.is_empty() {
+            return self.checked_call(call, returns, &raises, span);
+        }
         Ok(self.called(call, &vals, returns))
     }
 
@@ -2357,7 +2672,11 @@ impl Emitter<'_> {
                     .skip(1)
                     .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
                     .collect();
+                let raises = entry.decl.raises.clone();
                 let (call, vals) = self.call_c(&c_name, &slots, Some(receiver), args, span)?;
+                if self.firmware && !raises.is_empty() {
+                    return self.checked_call(call, returns, &raises, span);
+                }
                 Ok(self.called(call, &vals, returns))
             }
             Kind::Str => {
@@ -2624,7 +2943,11 @@ impl Emitter<'_> {
                         Val::from(format!("zeno_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
                     }
                     Kind::Str => {
-                        Val::from(format!("zeno_parse_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
+                        let call = format!("zeno_parse_int({}, {})", val.code, at(span));
+                        if self.firmware {
+                            return self.checked_call(call, Kind::Int, &["ValueError".to_string()], span);
+                        }
+                        Val::from(call, Kind::Int, &parts).failing()
                     }
                     _ => return Err(cannot("`int` of anything but a number or a str", span)),
                 }
@@ -2634,7 +2957,11 @@ impl Emitter<'_> {
                 match &val.kind {
                     Kind::Int | Kind::Float => Val::from(val.double(), Kind::Float, &parts),
                     Kind::Str => {
-                        Val::from(format!("zeno_parse_float({}, {})", val.code, at(span)), Kind::Float, &parts).failing()
+                        let call = format!("zeno_parse_float({}, {})", val.code, at(span));
+                        if self.firmware {
+                            return self.checked_call(call, Kind::Float, &["ValueError".to_string()], span);
+                        }
+                        Val::from(call, Kind::Float, &parts).failing()
                     }
                     _ => return Err(cannot("`float` of anything but a number or a str", span)),
                 }
@@ -3012,7 +3339,16 @@ mod tests {
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit(&program, &types, "test.zeno").map_err(|error| error.message)
+        emit(&program, &types, "test.zeno", false).map_err(|error| error.message)
+    }
+
+    /// The same, as `zeno build --firmware` compiles it.
+    fn compile_firmware(source: &str) -> Result<String, String> {
+        let tokens = crate::lexer::lex(source).expect("the test program lexes");
+        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let (errors, types) = crate::checker::check_with_types(&program, true);
+        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        emit(&program, &types, "test.zeno", true).map_err(|error| error.message)
     }
 
     /// Build the C with the machine's C compiler, run it, and return what it
@@ -3045,24 +3381,40 @@ mod tests {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (interpreted, result) = crate::interpreter::run(&program, true);
-        let c = compile(source).expect("the test program compiles");
-        // ZENO_COLLECT_ALWAYS runs the garbage collector before every
-        // single allocation. If the collector ever frees something that
-        // is still in use, this is the setting most likely to show it.
-        let Some((compiled, errors, finished)) = build_and_run(name, &c, &["-DZENO_COLLECT_ALWAYS"]) else {
-            return;
-        };
-        assert_eq!(compiled, interpreted, "\n{source}");
-        match result {
-            Ok(()) => assert!(finished, "the compiled program failed: {errors}"),
-            // Both must stop with the same error, at the same place.
-            Err(error) => {
-                assert!(!finished, "the compiled program should have failed");
-                let expected = format!(
-                    "error: {}\n --> test.zeno:{}:{}\n",
-                    error.message, error.span.line, error.span.col
-                );
-                assert_eq!(errors, expected, "\n{source}");
+
+        // Both kinds of build must agree with the interpreter: the
+        // ordinary one, and `--firmware`, where errors travel as values.
+        for firmware in [false, true] {
+            let c = if firmware {
+                match compile_firmware(source) {
+                    Ok(c) => c,
+                    // A firmware build refuses a few things on purpose,
+                    // and says so. Any other refusal is a failure.
+                    Err(message) => {
+                        assert!(message.contains("--firmware"), "the firmware build failed: {message}\n{source}");
+                        continue;
+                    }
+                }
+            } else {
+                compile(source).expect("the test program compiles")
+            };
+            let name = if firmware { format!("{name}-firmware") } else { name.to_string() };
+            // ZENO_COLLECT_ALWAYS runs the garbage collector before every
+            // single allocation. If the collector ever frees something that
+            // is still in use, this is the setting most likely to show it.
+            let Some((compiled, errors, finished)) = build_and_run(&name, &c, &["-DZENO_COLLECT_ALWAYS"]) else {
+                return;
+            };
+            assert_eq!(compiled, interpreted, "\nfirmware: {firmware}\n{source}");
+            match &result {
+                Ok(()) => assert!(finished, "the compiled program failed (firmware: {firmware}): {errors}"),
+                // Both must stop with the same error, at the same place.
+                Err(error) => {
+                    assert!(!finished, "the compiled program should have failed");
+                    let expected =
+                        format!("error: {}\n --> test.zeno:{}:{}\n", error.message, error.span.line, error.span.col);
+                    assert_eq!(errors, expected, "\nfirmware: {firmware}\n{source}");
+                }
             }
         }
     }
@@ -3778,6 +4130,368 @@ print(word[5])
         ] {
             same_as_interpreter(name, source);
         }
+    }
+
+    // ---------------------------------------------- Errors as values (firmware)
+
+    /// `same_as_interpreter`, for a program that a firmware build must
+    /// accept, so that the firmware half of the comparison really runs.
+    fn firmware_as_interpreter(name: &str, source: &str) {
+        if let Err(message) = compile_firmware(source) {
+            panic!("the firmware build refused this: {message}");
+        }
+        same_as_interpreter(name, source);
+    }
+
+    #[test]
+    fn a_firmware_build_has_no_setjmp() {
+        let source = include_str!("../examples/sensor.zeno");
+        let c = compile_firmware(source).unwrap();
+        for word in ["setjmp", "longjmp", "jmp_buf", "ZENO_FIRMWARE"] {
+            assert!(!c.contains(word), "`{word}` is in the C of a firmware build");
+        }
+        // A function that can raise says whether it worked, and gives its
+        // answer through a pointer. Its caller tests what came back.
+        assert!(c.contains("static bool z_parse_line(const char *z_line, zeno_opt_float *zeno_result) {"));
+        assert!(c.contains("if (!zeno_parse_float(z_text, 19, 17, &t"));
+        assert!(c.contains("if (!z_parse_line(z_line, &t"));
+        assert!(c.contains(")) goto zeno_except_"));
+        assert!(c.contains("if (zeno_is(zeno_caught_"));
+        // A function that cannot raise is exactly as before.
+        assert!(c.contains("static zeno_closure *z_in_range(double z_low, double z_high) {"));
+        // And an ordinary build has none of this.
+        let c = compile(source).unwrap();
+        assert!(c.contains("setjmp") && !c.contains("zeno_except_") && !c.contains("ZENO_FIRMWARE"));
+        assert!(c.contains("static zeno_opt_float z_parse_line(const char *z_line) {"));
+    }
+
+    #[test]
+    fn errors_as_values_match() {
+        // Errors the program raises, through functions, methods, loops,
+        // nested `try` blocks, conditions and recursion, and one left
+        // uncaught at the end.
+        firmware_as_interpreter("values-a", r##"class Timeout {
+    after: int
+    tries: int
+}
+class Sensor {
+    name: str
+    offset: float
+    function read(self, raw: str) -> float raises ValueError {
+        let value = float(raw) + self.offset
+        if value > 100.0 {
+            raise ValueError(f"{self.name}: {value} is too hot")
+        }
+        return value
+    }
+    function check(self, raw: str) raises ValueError {
+        self.read(raw)
+    }
+}
+function parse_port(text: str) -> int raises ValueError {
+    let port = int(text)
+    if not 1 <= port <= 65535 {
+        raise ValueError("port out of range")
+    }
+    return port
+}
+function note(what: str) -> int {
+    print("  note", what)
+    return 1
+}
+function first_port(texts: list[str]) -> int or none raises ValueError {
+    for text in texts {
+        if text == "skip" { continue }
+        if text == "stop" { break }
+        return parse_port(text)
+    }
+}
+function wait(n: int) raises Timeout {
+    if n > 3 {
+        raise Timeout(n * 100, n)
+    }
+    print("  waited", n)
+}
+function depth(n: int) -> int raises ValueError {
+    if n == 0 { raise ValueError("bottom") }
+    return depth(n - 1) + 1
+}
+function safe(n: int) -> int {
+    var result = -1
+    try {
+        result = 10
+        result = depth(n)
+        result = 20
+    } except ValueError {
+        result += 100
+    }
+    return result
+}
+function find(texts: list[str], want: int) -> int {
+    var i = 0
+    while i < len(texts) {
+        try {
+            if parse_port(texts[i]) == want { return i }
+            if texts[i] == "9" { break }
+            i += 1
+            continue
+        } except ValueError as e {
+            print("  bad entry:", e)
+            return -1
+        }
+    }
+    return -2
+}
+function relay(n: int) raises Timeout, ValueError {
+    try {
+        wait(n)
+        parse_port("x")
+    } except ValueError as e {
+        print("  relay saw", e)
+        raise e
+    }
+}
+function total(texts: list[str]) -> int raises ValueError {
+    var sum = 0
+    for text in texts {
+        sum += parse_port(text) + note(text) * parse_port(text)
+    }
+    return sum
+}
+
+for text in ["8080", "0", "abc", " 1_000 ", "", "-5", "99999999999999999999"] {
+    try {
+        print("port", parse_port(text))
+    } except ValueError as err {
+        print(f"error: {err}", err.kind, err.message == str(err))
+    }
+}
+for text in ["2.5", " 1e3 ", "abc", "0x10", ""] {
+    try { print(float(text)) } except ValueError as err { print(err) }
+}
+print(safe(5), safe(0))
+print(find(["5", "6", "7"], 7), find(["5", "x"], 9), find(["1", "9", "3"], 3), find(["1"], 3))
+let s = Sensor("probe", 0.5)
+try {
+    print(s.read("20"))
+    s.check("21")
+    print(s.read("99.9"))
+    print("not reached")
+} except ValueError as e {
+    print("caught:", e)
+}
+try {
+    try {
+        print(parse_port("7"), parse_port("70000"))
+    } except Timeout {
+        print("wrong one")
+    }
+} except ValueError as e {
+    print("outer caught:", e)
+}
+try {
+    try { raise ValueError("inner") } except ValueError as e { raise IndexError(f"from {e}") }
+} except Error as e {
+    print(e.kind, e)
+}
+for n in [2, 5] {
+    try {
+        relay(n)
+    } except Timeout as t {
+        print("timeout", t.after, t.tries, t)
+    } except Error as e {
+        print("other", e.kind, e)
+    }
+}
+try {
+    print(first_port(["skip", "80"]), first_port(["skip", "stop", "81"]), first_port([]))
+    print(first_port(["skip", "zero"]))
+} except {
+    print("any")
+}
+var count = 0
+try {
+    if parse_port("1") == 1 and parse_port("2") == 2 or parse_port("bad") == 3 {
+        count += 1
+    }
+    while parse_port(str(count + 1)) < 4 {
+        count += 1
+    }
+    print(f"count {count} port {parse_port('44')} then {parse_port('nope')}")
+} except ValueError as e {
+    print("stopped at", count, e)
+}
+try {
+    print(total(["1", "2"]))
+    print(total(["3", "0", "5"]))
+} except ValueError as e {
+    print(e)
+}
+function chain(n: int) -> int raises ValueError {
+    try {
+        return parse_port(str(n))
+    } except ValueError as e {
+        if n < -1 {
+            raise ValueError(f"gave up at {n}")
+        }
+        return chain(n - 1)
+    }
+}
+try { print(chain(3), chain(0)) } except ValueError as e { print(e) }
+let e = ValueError("kept")
+try { raise e } except ValueError as x { print(x == e) }
+print(parse_port("70000"))
+print("never printed")
+"##);
+    }
+
+    #[test]
+    fn errors_as_values_match_in_methods_loops_and_function_values() {
+        firmware_as_interpreter("values-b", r##"enum Reply {
+    Ok(value: int)
+    Missing
+}
+class Bad {
+    why: str
+}
+class Parser {
+    seen: int = 0
+    function one(self, text: str) -> int raises ValueError {
+        self.seen += 1
+        return int(text)
+    }
+    function many(self, texts: list[str]) -> list[int] raises ValueError {
+        return [self.one(text) for text in texts]
+    }
+    function reply(self, text: str) -> Reply raises Bad {
+        if text == "" { return Missing }
+        if text == "!" { raise Bad("bang") }
+        try {
+            return Ok(self.one(text))
+        } except ValueError as e {
+            raise Bad(f"not a number: {text}")
+        }
+    }
+}
+function describe(p: Parser, text: str) -> str raises Bad {
+    match p.reply(text) {
+        case Ok(value) { return f"ok {value}" }
+        case Missing { return "missing" }
+    }
+}
+function numbers(text: str) -> list[int] raises ValueError {
+    var out: list[int] = []
+    for piece in text.split(",") {
+        out.append(int(piece))
+    }
+    return out
+}
+function first_good(texts: list[str]) -> int or none {
+    for text in texts {
+        try {
+            return int(text)
+        } except ValueError {
+            continue
+        }
+    }
+    return none
+}
+function count_good(texts: list[str]) -> int {
+    var good = 0
+    var i = 0
+    while true {
+        try {
+            if i >= len(texts) { break }
+            let text = texts[i]
+            i += 1
+            int(text)
+            good += 1
+        } except ValueError {
+            try {
+                float(texts[i - 1])
+                good += 10
+            } except ValueError {
+                if texts[i - 1] == "end" { break }
+            }
+        }
+    }
+    return good
+}
+let p = Parser()
+try {
+    print(p.many(["1", "2", "3"]), p.seen)
+    print(p.many(["4", "x", "6"]), p.seen)
+} except ValueError as e {
+    print("stopped:", e, p.seen)
+}
+for text in ["12", "", "zz", "!"] {
+    try {
+        print(describe(p, text))
+    } except Bad as bad {
+        print("bad:", bad.why, bad)
+    }
+}
+try {
+    for n in numbers("3,4,5") { print(n) }
+    for n in numbers("6,seven") { print(n) }
+} except ValueError as e { print(e) }
+print(first_good(["a", "b", "7", "8"]), first_good(["a"]), first_good([]))
+print(count_good(["1", "2.5", "x", "3", "end", "4"]))
+let twice = function(text: str) -> int {
+    try {
+        return int(text) * 2
+    } except ValueError {
+        return -1
+    }
+}
+print(twice("21"), twice("no"), ["1", "b", "3"].map(twice))
+function boom() raises Bad {
+    raise Bad("at the top")
+}
+print("before")
+boom()
+print("after")
+"##);
+    }
+
+    #[test]
+    fn what_a_firmware_build_refuses_says_so() {
+        let refused = |source: &str| compile_firmware(source).err().unwrap_or_else(|| "it compiled".to_string());
+        // A division by zero stops a firmware build. An `except` for it
+        // would never run, so it is refused, not left to mislead.
+        let message = refused("let zero = 0\ntry { print(1 // zero) } except ZeroDivisionError { print(\"no\") }");
+        assert!(message.starts_with("nothing in this `try` can be caught. In a firmware build"), "{message}");
+        assert!(message.ends_with("Test for it before it happens, or build without `--firmware`"), "{message}");
+        let parse = "function parse(text: str) -> int raises ValueError { return int(text) }\n";
+        let message = refused(&format!("{parse}try {{ print(parse(\"1\")) }} except IndexError {{ print(\"no\") }}"));
+        assert!(message.starts_with("nothing in this `try` can reach `except IndexError`."), "{message}");
+        // The type of a function value does not say whether it can raise.
+        let as_value = "`zeno build --firmware` cannot compile a function that can raise, used as a value, yet. Call it by its name, or build without `--firmware`";
+        assert_eq!(refused(&format!("{parse}print([\"1\"].map(parse))")), as_value);
+        assert_eq!(
+            refused("let f = function(text: str) -> int raises ValueError { return int(text) }\nprint(1)"),
+            as_value
+        );
+        // All four are fine in an ordinary build.
+        assert!(compile(&format!("{parse}print([\"1\"].map(parse))")).is_ok());
+    }
+
+    #[test]
+    fn a_fault_stops_a_firmware_build_where_an_ordinary_one_catches_it() {
+        // The one place the two kinds of build differ, on purpose. The
+        // `except` here takes anything. An ordinary build catches the
+        // division by zero with it. A firmware build catches the errors
+        // the program raises, and stops at the division.
+        let source = "function parse(text: str) -> int raises ValueError { return int(text) }\nlet zero = 0\ntry {\n print(parse(\"1\"))\n print(1 // zero)\n} except {\n print(\"caught\")\n}\ntry { print(parse(\"x\")) } except { print(\"caught too\") }";
+        let Some((printed, _, finished)) = build_and_run("fault", &compile(source).unwrap(), &[]) else {
+            return;
+        };
+        assert_eq!(printed, "1\ncaught\ncaught too\n");
+        assert!(finished);
+        let (printed, errors, finished) = build_and_run("fault-firmware", &compile_firmware(source).unwrap(), &[]).unwrap();
+        assert_eq!(printed, "1\n");
+        assert!(!finished);
+        assert_eq!(errors, "error: uncaught ZeroDivisionError: division by zero\n --> test.zeno:5:8\n");
     }
 
     // ------------------------------------------------------------ Memory

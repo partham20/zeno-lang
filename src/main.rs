@@ -42,6 +42,9 @@ fn usage() {
     println!("  --strict                 with check or run: every type must be known");
     println!("                           before the program runs, as firmware needs.");
     println!("                           `build` always works this way");
+    println!("  --firmware               with build: errors travel as values that every");
+    println!("                           caller tests, with no setjmp or longjmp, as");
+    println!("                           coding standards for firmware require");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -135,7 +138,7 @@ fn run(path: &str, strict: bool) -> Option<()> {
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str, memory_report: bool) -> Option<()> {
+fn build(path: &str, memory_report: bool, firmware: bool) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode.
     let (source, program) = load(path)?;
@@ -149,7 +152,7 @@ fn build(path: &str, memory_report: bool) -> Option<()> {
         return None;
     }
 
-    let c = match emit_c::emit(&program, &types, path) {
+    let c = match emit_c::emit(&program, &types, path, firmware) {
         Ok(c) => c,
         Err(error) => {
             report(path, &source, &error);
@@ -231,6 +234,9 @@ fn main() -> ExitCode {
     // `--memory` makes a built program report how much memory it used.
     let memory_report = args.iter().any(|arg| arg == "--memory");
     args.retain(|arg| arg != "--memory");
+    // `--firmware` builds C that firmware coding standards accept.
+    let firmware = args.iter().any(|arg| arg == "--firmware");
+    args.retain(|arg| arg != "--firmware");
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -262,7 +268,7 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            match build(path, memory_report) {
+            match build(path, memory_report, firmware) {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
             }

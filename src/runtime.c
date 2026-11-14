@@ -11,7 +11,9 @@
 
 #include <inttypes.h>
 #include <math.h>
+#ifndef ZENO_FIRMWARE
 #include <setjmp.h>
+#endif /* ZENO_FIRMWARE */
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -171,15 +173,9 @@ static void zeno_collect(void) {
 
     /* Mark. A pointer may be nowhere in memory at this moment, only in one
      * of the processor's registers. This copies the registers onto the
-     * stack, where zeno_mark_stack will see them. GCC and Clang have a
-     * builtin for exactly that; elsewhere `setjmp` does nearly the same. */
-#if defined(__GNUC__)
+     * stack, where zeno_mark_stack will see them. (A builtin of GCC and
+     * Clang, like the ones the checked arithmetic uses further down.) */
     __builtin_unwind_init();
-#else
-    jmp_buf registers;
-    memset(&registers, 0, sizeof registers);
-    (void)setjmp(registers);
-#endif
     zeno_mark_stack();
     zeno_roots();
     /* Then follow the pointers inside each marked block, which marks more
@@ -285,7 +281,24 @@ static bool zeno_error_same(zeno_error *a, zeno_error *b) {
     return strcmp(a->kind, b->kind) == 0 && strcmp(a->message, b->message) == 0;
 }
 
-/* One of these exists for each `try` that is running: the place to come
+/* The error on its way to an `except`, and where it was raised. */
+static zeno_error *zeno_raised = NULL;
+static int zeno_raised_line = 0;
+static int zeno_raised_col = 0;
+
+/* Nobody caught it: print what `zeno run` prints, and stop. */
+__attribute__((noreturn)) static void zeno_uncaught(void) {
+    fflush(stdout);
+    fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_raised->kind, zeno_raised->message, zeno_file,
+            zeno_raised_line, zeno_raised_col);
+    exit(1);
+}
+
+#ifndef ZENO_FIRMWARE
+
+/* How an error travels in an ordinary build: it jumps.
+ *
+ * One of these exists for each `try` that is running: the place to come
  * back to if something inside it raises. They form a chain, innermost
  * first, so a `try` inside a `try` is found before the one around it.
  *
@@ -299,25 +312,15 @@ typedef struct zeno_try {
 
 static zeno_try *zeno_trying = NULL;
 
-/* The error on its way to an `except`, and where it was raised. */
-static zeno_error *zeno_raised = NULL;
-static int zeno_raised_line = 0;
-static int zeno_raised_col = 0;
-
 /* `raise`. Inside a `try`, go to its `except` blocks. Outside every `try`,
- * nobody can catch it: print what `zeno run` prints and stop. */
+ * nobody can catch it. */
 __attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, int col) {
-    if (zeno_trying == NULL) {
-        fflush(stdout);
-        fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", error->kind, error->message, zeno_file, line,
-                col);
-        exit(1);
-    }
-    zeno_try *handler = zeno_trying;
-    zeno_trying = handler->outer; /* that `try` is over, whatever happens next */
     zeno_raised = error;
     zeno_raised_line = line;
     zeno_raised_col = col;
+    if (zeno_trying == NULL) zeno_uncaught();
+    zeno_try *handler = zeno_trying;
+    zeno_trying = handler->outer; /* that `try` is over, whatever happens next */
     longjmp(handler->place, 1);
 }
 
@@ -335,6 +338,39 @@ static bool zeno_caught(const char *kind) {
 __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *message, int line, int col) {
     zeno_raise(zeno_error_new(kind, message, NULL), line, col);
 }
+
+#else /* ZENO_FIRMWARE */
+
+/* How an error travels in a firmware build (`zeno build --firmware`): as
+ * a value. Nothing jumps out of a function, which is what coding
+ * standards for firmware ask for.
+ *
+ * A function that can raise returns `true` when all went well and `false`
+ * when it did not, and gives its answer through a pointer. `raise` notes
+ * the error here and returns `false`. Each caller tests what came back,
+ * and either goes to its own `except` or returns `false` in its turn. */
+static void zeno_note(zeno_error *error, int line, int col) {
+    zeno_raised = error;
+    zeno_raised_line = line;
+    zeno_raised_col = col;
+}
+
+/* Does `except Kind` catch this error? */
+static bool zeno_is(const zeno_error *error, const char *kind) {
+    return strcmp(error->kind, kind) == 0;
+}
+
+/* An error the runtime itself finds, such as a division by zero or an
+ * index past the end. In a firmware build these are faults: they stop the
+ * program, and no `except` sees them. (Making them catchable would put a
+ * test after nearly every line of every function. On a real board this is
+ * where the fault handler would be called.) */
+__attribute__((noreturn)) static void zeno_fail(const char *kind, const char *message, int line, int col) {
+    zeno_note(zeno_error_new(kind, message, NULL), line, col);
+    zeno_uncaught();
+}
+
+#endif /* ZENO_FIRMWARE */
 
 /* A mistake in the program itself, which `try` does not catch (see
  * decisions.md 4.1). The checker finds nearly all of these before the
@@ -890,9 +926,9 @@ static const char *zeno_strip(const char *text) {
     return zeno_copy(text, length);
 }
 
-/* `int("42")`. Blanks around the number and `_` inside it are allowed, as
- * in `1_000`. Anything else that is not a whole number is a ValueError. */
-static int64_t zeno_parse_int(const char *text, int line, int col) {
+/* Read a whole number out of text. Blanks around the number and `_`
+ * inside it are allowed, as in `1_000`. Gives `false` for anything else. */
+static bool zeno_read_int(const char *text, int64_t *result) {
     const char *stripped = zeno_strip(text);
     /* Take every `_` out first, then read what is left. */
     char *digits = zeno_alloc_text(strlen(stripped) + 1);
@@ -914,24 +950,57 @@ static int64_t zeno_parse_int(const char *text, int line, int col) {
         good = *p >= '0' && *p <= '9' && !__builtin_mul_overflow(n, 10, &n)
                && !(negative ? __builtin_sub_overflow(n, digit, &n) : __builtin_add_overflow(n, digit, &n));
     }
-    if (!good) {
-        zeno_fail("ValueError", zeno_join(3, "cannot turn ", zeno_repr_str(text), " into an int"), line, col);
-    }
-    return n;
+    *result = n;
+    return good;
 }
 
-/* `float("2.5")`. */
-static double zeno_parse_float(const char *text, int line, int col) {
+static bool zeno_read_float(const char *text, double *result) {
     const char *p = zeno_strip(text);
     char *end = NULL;
     /* C's own reader also takes hexadecimal and `nan(...)`; Zeno does not. */
     bool good = *p != '\0' && strpbrk(p, "xX(") == NULL;
-    double x = good ? strtod(p, &end) : 0.0;
-    if (!good || end == p || *end != '\0') {
-        zeno_fail("ValueError", zeno_join(3, "cannot turn ", zeno_repr_str(text), " into a float"), line, col);
-    }
+    *result = good ? strtod(p, &end) : 0.0;
+    return good && end != p && *end == '\0';
+}
+
+/* The ValueError for text that is not a number. `what` is "an int" or
+ * "a float". */
+static zeno_error *zeno_not_a_number(const char *text, const char *what) {
+    return zeno_error_new("ValueError", zeno_join(4, "cannot turn ", zeno_repr_str(text), " into ", what), NULL);
+}
+
+/* `int("42")` and `float("2.5")`. Text from outside may not be a number
+ * at all, so these two can raise, and how they do it depends on the kind
+ * of build. */
+#ifndef ZENO_FIRMWARE
+
+static int64_t zeno_parse_int(const char *text, int line, int col) {
+    int64_t n;
+    if (!zeno_read_int(text, &n)) zeno_raise(zeno_not_a_number(text, "an int"), line, col);
+    return n;
+}
+
+static double zeno_parse_float(const char *text, int line, int col) {
+    double x;
+    if (!zeno_read_float(text, &x)) zeno_raise(zeno_not_a_number(text, "a float"), line, col);
     return x;
 }
+
+#else /* ZENO_FIRMWARE */
+
+static bool zeno_parse_int(const char *text, int line, int col, int64_t *result) {
+    if (zeno_read_int(text, result)) return true;
+    zeno_note(zeno_not_a_number(text, "an int"), line, col);
+    return false;
+}
+
+static bool zeno_parse_float(const char *text, int line, int col, double *result) {
+    if (zeno_read_float(text, result)) return true;
+    zeno_note(zeno_not_a_number(text, "a float"), line, col);
+    return false;
+}
+
+#endif /* ZENO_FIRMWARE */
 
 /* ------------------------------------------------------- Methods of a str
  *
