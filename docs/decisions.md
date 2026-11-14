@@ -1732,9 +1732,10 @@ release. The collector is already there for it.
 
 #### 5.8i What is refused for now *(provisional)*
 
-- An owned value inside a list, an `or none`, an enum case or a function
+- An owned value inside ~~a list,~~ an `or none`, an enum case or a function
   type, and moving a field out of an object. Each needs a rule for what is
-  left behind in the hole.
+  left behind in the hole. *(A list that has an owner can hold owned
+  values since 5.15c: `pop()` takes one out and leaves no hole.)*
 - Replacing an owned field through a borrow, including `self`. Somebody
   else may have been lent the old value at that moment. Telling "may
   change" borrows from "may only read" borrows would lift this, and is the
@@ -1877,7 +1878,13 @@ the same block, so one `free` gives back both.
 **The cost.** `raise e` to pass a caught error on is refused. Raise a new
 one. *(Provisional: passing it on could be a move.)*
 
+Since 5.15h the checker says this, and the error may be lent to a
+`borrow` parameter.
+
 ### 5.9e The compiler refuses, not the checker
+
+*(Taken back in part by 5.15a: who owns what is the checker's question
+now. What cannot be stored yet is still refused here.)*
 
 What needs a collector is found by `emit_c.rs`, at the spot where each
 kind of value is made.
@@ -1903,6 +1910,9 @@ the value among the block's owners until it arrives. The first and third
 apply to every build, so every build is a little tidier for it.
 
 ### 5.9g What a build with no collector refuses *(provisional)*
+
+*(The first two entries are gone since 5.15: a plain list and a plain
+class have an owner now. The list as it stands is in 5.15j.)*
 
 A list kept by something that is not an owner (a plain variable,
 parameter or field, or another list); objects of a class that is not an
@@ -3216,3 +3226,224 @@ that fits everywhere, and checks that. It finds wrong names, wrong
 counts of arguments and missing returns. It cannot find a `>` that
 only some types have, because "anything" has every operator. That is
 the gap bounds would close (3.16d).
+
+### 5.15 With no collector, whoever receives a value owns it
+
+In `zeno build --no-collector` every list and every object has one
+owner, without the word `owned`. A list owns its items, in every build.
+The walkthrough is `docs/one-owner.md`.
+
+**Why.** 5.9g refused every value that had no owner and told the
+programmer to write `owned`. A rule that is the same on every line is a
+rule the compiler can apply itself, and a word that must be written
+everywhere says nothing. *(Principle: punctuation, and words, have to
+earn their place.)* Rust is built this way, and Rust is the proof that
+the model is enough to write firmware in.
+
+**Why only in that build.** With a collector, sharing is the easy
+default and costs nothing to offer: `let b = a` gives two names for one
+list, as in Python. Taking that away from `zeno run` would make the
+first hour with Zeno harder for no gain there.
+
+### 5.15a The checker is told which build it is checking for, and may only refuse
+
+`checker::Rules { strict, one_owner }` replaces the single `strict`
+flag. `Build::rules()` says what each build asks for, and
+`zeno check --no-collector` asks for the same without building. This
+takes back 5.9e ("the compiler refuses, not the checker") for one
+question: who owns what.
+
+**Why take it back.** 5.9e kept the checker the same for every build.
+But the answer to "who owns this list?" decides which later lines are
+errors (`print(a)` after `let b = a`), and only the checker follows a
+value from line to line. Doing that a second time in two compilers
+would be the borrow checker written three times.
+
+**What keeps the language one language.** The mode adds errors and
+changes nothing else. A program it accepts gives no value two owners,
+and such a program cannot tell "owned" from "shared" by what it
+prints. So the same file means the same under `zeno run`, `zeno build`
+and `zeno build --no-collector`, and the tests run each accepted
+program all three ways. *(Principle: one way to say a thing, with one
+meaning.)*
+
+**Turned down: a different default per build that changes behaviour**,
+such as copying a list on `let b = a` when there is no collector. The
+program would print different things in different builds.
+
+**What the compilers still refuse themselves:** what has no place to
+live yet (an enum case with values, a function value that captures, a
+list of `int or none`). Those are about how a value is stored, not who
+owns it, so 5.9e still holds for them.
+
+### 5.15b A plain parameter takes, and `borrow` looks, as before
+
+No new word came with this step. `function retire(task: Task)` takes
+the task and frees it on return. `function report(task: borrow Task)`
+looks.
+
+**Why not borrow by default** (5.8c turned it down once already, as
+provisional). It was weighed again, since in this build most
+parameters only look and each now needs the word. It stays as it is:
+`task: Task` then means the same on a `let`, a field and a parameter
+("this holds the task"), and the error for a forgotten `borrow` names
+the fix in its first line. *(Provisional, and a question for the
+audit: count how often each is written in real programs.)*
+
+### 5.15c A list owns its items, in every build
+
+An owned list may hold values that have one owner: objects of an owned
+class, and with no collector other lists. Rule 6 of 5.8 ("shared may
+not hold owned") stands. What changed is that an owned list is no
+longer barred from it, which lifts the first line of 5.8i.
+
+**Why.** A list of objects is the most ordinary data structure there
+is: tasks, packets, readings. A no-collector build that cannot hold
+one is a demonstration and not a tool.
+
+**Why the list and not each item's maker.** The list is the one place
+that knows when the items are no longer reachable: when it is freed
+itself. That is rule 1 of ownership applied once more, with the list in
+the role a field has in an object.
+
+**The cost in an ordinary build.** A list of owned things must itself
+be owned, and the annotation has to say so: `owned list[Packet]`.
+`list[Packet]` of an `owned class Packet` is an error that says what
+to write.
+
+### 5.15d `[ ]` and `for` look, `append` gives, `pop()` takes, `xs[i] = v` replaces
+
+Each way of touching an item has one meaning, whatever the item is.
+`xs[i]` and the loop variable are looks: they can read, change and
+lend the item and cannot keep it. `append` hands the list a new item.
+`pop()` hands the item to whoever receives it. `xs[i] = v` frees the
+old item and puts `v` in its place.
+
+**Why `[ ]` does not take.** `let first = xs[0]` would have to leave a
+hole in the list, or shift every later item, and neither is what
+`xs[0]` reads as. `pop()` already means "take it out" in every
+language that has it. *(Principle: read like plain words.)*
+
+**Why `xs[i] = v` frees on the spot.** The old item has no other owner
+and no name, so that line is the last that can free it. The new value
+is worked out first, so a failure while making it leaves the list as
+it was.
+
+**`+`, `+=` and `filter` are refused** for lists whose items have one
+owner: each would put one item in two lists. The message for each says
+what to write. `map` and `reduce` lend each item to the function, so
+they stay.
+
+### 5.15e Taking an item out needs the owner, no loop over the list, and a line of its own
+
+Three rules guard `pop()`, `xs[i] = v` and `obj.field = v` when what
+leaves has one owner. The path must start at an owner, not at a
+borrow, which includes `self`. No `for` or comprehension around it may
+be walking a list reached from that owner. And the line must not have
+looked at that owner already. After a `pop()`, the rest of the line
+may not use the owner either.
+
+**Why these three.** A look lives for one statement at most (5.8d rule
+1), or for a loop's body. So there are exactly three places a look can
+be alive when an item leaves: in a caller that lent it, in a loop
+around the line, and earlier on the same line. Each rule closes one.
+This is 5.8i's "only the owner replaces a field", said once for every
+way an owned part can leave.
+
+**The cost.** Safe programs are refused. `xs.append(xs.pop())` must be
+two lines. A method cannot take an object out of a list that its own
+object holds, so `Scheduler` cannot have `remove_last(self) -> Task`
+yet. (Popping a number or text is fine: those are copied out.) The
+second is the one that will be felt.
+
+**Turned down: a second kind of borrow that may take out** (Rust's
+`&mut`, with the rule that only one exists at a time). It is the
+complete answer and the largest single piece of Rust's checker: every
+borrow then has a region and two may not overlap. 5.8d chose four
+rules a reader can hold in their head. *(Provisional. If methods that
+remove turn out to matter, the smallest growth is "a method may take
+out when the object was not lent to anything else on that line", which
+needs no new word.)*
+
+**Turned down: check it when the program runs** (a count of looks in
+each list, as Rust's `RefCell` does). It moves a mistake from build
+time to run time. *(Principle 1.)*
+
+### 5.15f One free function for each kind of list, written when a program needs it
+
+`zeno_list_drop_1_Task` frees a list of tasks: each task with
+`zeno_drop_Task`, then the list. `zeno_list_drop_2_Task` frees a list
+of those. Lists of plain lists and of lists of text are
+`zeno_list_drop_lists1` and `zeno_list_drop_texts1`. `Drops` in
+`emit_c.rs` picks the name, both backends use it, and each function is
+written only if something calls it.
+
+**Why not one runtime function that takes "how to free an item".** It
+would be shorter. The generated function has a name that says what it
+frees, is a direct call the C compiler can inline, and shows up by
+that name in a profile or a stack trace. *(5.5: reading the C is half
+the point.)*
+
+**Why the compilers do not carry "owned" in each type.** By the time
+code is written, the checker has settled who owns what. All a compiler
+needs is whether a kind of item must be freed with its list, and that
+follows from the kind alone: an object of an owned class always, a
+list when there is no collector. So `Kind` stays as it was and one
+function, `Drops::owns`, answers.
+
+### 5.15g The copy a loop walks is freed alone
+
+`for task in tasks` walks a copy (3.10a). The copy is freed with
+`zeno_list_drop`, never with the function that frees items.
+
+**Why.** The copy holds the same items as the real list, which still
+owns them. Freeing them through the copy would free them twice.
+**Turned down: walk the real list when the items have one owner.** An
+`append` in the body may move the list's storage, which is what 3.10a
+is for. Skipping the copy when the body cannot append is an exercise
+in `docs/one-owner.md`.
+
+### 5.15h The `except` owns the error it caught, and the checker says so
+
+5.9d's rule moved into the checker for this build: `e` in
+`except Bad as e` is a look at the error. It can be read and lent to a
+`borrow` parameter, which is new. Keeping it is refused in words about
+errors, not about borrows.
+
+**Why.** It is the same rule as a loop's item: something else owns the
+value and frees it when the block ends. One mechanism now covers both.
+
+### 5.15i The C backend assigns through an index, value first
+
+`points[1].x = 30` and `grid[1][0] = 5` were refused by `zeno build`
+and accepted by `zeno run` and the LLVM backend. They compile now. The
+value is worked out first, then the list or object, then the index.
+
+**Why now.** Lists of objects make these everyday lines. **Why that
+order.** It is the interpreter's, and four engines must agree. The
+test uses functions that print when they are called, so a change of
+order fails it.
+
+### 5.15j What a no-collector build still refuses *(provisional)*
+
+This replaces the list in 5.9g.
+
+- A list or object inside an `or none`, an enum case with values, a
+  list of `int or none`. *(Step 4.)*
+- A function written where a value goes, a function type that mentions
+  a list or an object, an error that is kept or raised again.
+  *(Step 5.)*
+- A list or object as what a type parameter stands for. The copy made
+  for `T` would have to be checked as a value that moves.
+- A function that uses a list or object declared at the top of the
+  file (5.8d rule 4). A table of constants that several functions read
+  is the commonest shape of firmware data, so this one matters. A
+  top-level `let` that the program never gives away could be lent to
+  every function without being passed. *(For the audit.)*
+- A method that takes out what its object owns (5.15e).
+
+**A note for 5.9q's known gap.** It is wider than was written there:
+one `print` that shows two lists is enough for the C and LLVM builds
+to report text-room peaks a byte or more apart. What is printed is the
+same. The fix described there still stands, and the test programs
+still avoid the mix.
