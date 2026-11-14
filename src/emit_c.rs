@@ -64,7 +64,7 @@ pub enum Build {
 /// what the program uses and nothing else. (That matters to a reviewer,
 /// who must not find `setjmp` anywhere in a firmware build, nor a
 /// collector in a build that says it has none.)
-fn runtime(firmware: bool, collector: bool) -> String {
+pub fn runtime(firmware: bool, collector: bool) -> String {
     let mut text = String::new();
     // One entry for each marked part the line is inside: is it being kept?
     let mut keeping: Vec<bool> = Vec::new();
@@ -3841,7 +3841,7 @@ fn is_place(expr: &Expr) -> bool {
     }
 }
 
-fn is_literal(expr: &Expr) -> bool {
+pub fn is_literal(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => true,
         // A new empty list for each call, as `zeno run` makes one.
@@ -4035,13 +4035,28 @@ fn comparison(op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<Strin
     })
 }
 
-/// A value with a format after the colon, as in `{x:.2f}` or `{n:08b}`.
+/// The format after the colon in `{x:>8.2f}`, taken apart: line up to the
+/// right, eight wide, two decimals, as a float.
+pub struct Format {
+    /// `<`, `>` or `^`, if one was written.
+    pub align: Option<char>,
+    /// Fill with zeros instead of spaces.
+    pub zero: bool,
+    /// How wide to make it. 0 means as wide as it is.
+    pub width: usize,
+    /// The digits after the `.`, if any.
+    pub precision: Option<usize>,
+    /// The letter at the end: `f`, `d`, `x`, `X` or `b`.
+    pub kind: Option<char>,
+}
+
+/// Read a format. `None` means it is not one Zeno understands.
 ///
-/// The format is read here, while compiling, so the compiled program does
-/// not have to read it again every time the line runs. The rules are the
-/// ones `format` in `builtins.rs` follows.
-fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String, Error> {
-    let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
+/// It is read here, while compiling, so the compiled program does not
+/// have to read it again every time the line runs. The rules are the
+/// ones `format` in `builtins.rs` follows. The LLVM backend reads formats
+/// with this too.
+pub fn read_format(spec: &str) -> Option<Format> {
     let mut rest = spec.chars().peekable();
 
     let align = rest.next_if(|c| matches!(c, '<' | '>' | '^'));
@@ -4062,8 +4077,15 @@ fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String,
     }
     let kind = rest.next();
     if rest.next().is_some() {
-        return Err(bad());
+        return None;
     }
+    Some(Format { align, zero, width, precision, kind })
+}
+
+/// A value with a format after the colon, as in `{x:.2f}` or `{n:08b}`.
+fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String, Error> {
+    let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
+    let Format { align, zero, width, precision, kind } = read_format(spec).ok_or_else(bad)?;
 
     let is_number = val.is_number();
     let body = match (kind, precision, &val.kind) {
