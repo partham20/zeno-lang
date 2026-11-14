@@ -1,0 +1,9 @@
+# blink.zeno: the same language on a microcontroller.
+# Nothing here is final.
+
+from board import led
+from time import sleep
+
+while True:
+    led.toggle()
+    sleep(500 ms)        # units are part of the number, so 500 ms + 3 V is an error
