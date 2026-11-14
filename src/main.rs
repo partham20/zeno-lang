@@ -64,8 +64,7 @@ fn usage() {
     println!("                           block ends");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
-    println!("                           --firmware, and not yet with --no-collector");
-    println!("                           or --memory");
+    println!("                           --firmware, --no-collector and --memory");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -234,7 +233,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
 /// `hello.zeno` becomes `hello.ll`, `hello_runtime.c` and `hello`. The IR
 /// holds the program. The C file is the runtime the program calls for
 /// text, printing and memory, which a C build has pasted in front of it.
-fn build_llvm(path: &str, firmware: bool) -> Option<()> {
+fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     let (source, program) = load(path)?;
     let (errors, types) = checker::check_with_types(&program, true);
     for error in &errors {
@@ -246,7 +245,7 @@ fn build_llvm(path: &str, firmware: bool) -> Option<()> {
         return None;
     }
 
-    let ir = match emit_llvm::emit(&program, &types, path, firmware) {
+    let ir = match emit_llvm::emit(&program, &types, path, kind, memory_report) {
         Ok(ir) => ir,
         Err(error) => {
             report(path, &source, &error);
@@ -255,7 +254,7 @@ fn build_llvm(path: &str, firmware: bool) -> Option<()> {
     };
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
     let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
-    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime(firmware))] {
+    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime(kind))] {
         if let Err(err) = fs::write(file, text) {
             eprintln!("zeno: cannot write `{file}`: {err}");
             return None;
@@ -269,8 +268,14 @@ fn build_llvm(path: &str, firmware: bool) -> Option<()> {
     // The IR does not say which processor it is for, so that the same
     // file builds anywhere. clang fills in its own and would mention
     // doing so; `-Wno-override-module` says there is no need.
-    let flags = ["-O2", "-Wno-override-module", "-o", name, &ir_file, &runtime_file, "-lm"];
-    match Command::new(&compiler).args(flags).status() {
+    let mut flags = vec!["-O2", "-Wno-override-module"];
+    if memory_report {
+        // Turns on the lines of the runtime that count memory and print
+        // the report. The IR asks for the report to be printed at the end.
+        flags.push("-DZENO_MEMORY_REPORT");
+    }
+    flags.extend(["-o", name, &ir_file, &runtime_file, "-lm"]);
+    match Command::new(&compiler).args(&flags).status() {
         Ok(status) if status.success() => {
             println!("Built {name}. Run it with ./{name}");
             Some(())
@@ -381,12 +386,8 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            if llvm && (no_collector || memory_report) {
-                eprintln!("zeno: `--llvm` does not go with `--no-collector` or `--memory` yet");
-                return ExitCode::FAILURE;
-            }
             let built = match llvm {
-                true => build_llvm(path, firmware),
+                true => build_llvm(path, memory_report, kind),
                 false => build(path, memory_report, kind),
             };
             match built {

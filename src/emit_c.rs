@@ -601,7 +601,7 @@ fn firmware_cannot(what: impl AsRef<str>, span: Span) -> Error {
 
 /// The error for something a build with no collector has to refuse:
 /// whatever would make memory that no line of the program gives back.
-fn without_collector(why: impl AsRef<str>, span: Span) -> Error {
+pub fn without_collector(why: impl AsRef<str>, span: Span) -> Error {
     Error::new(
         format!(
             "{}. `zeno build --no-collector` leaves the collector out, so nothing would free it. \
@@ -6182,6 +6182,9 @@ function main() -> int raises Refused {
         // A program with no shared values is still a Zeno program: the
         // two builds that do have a collector must agree as well.
         same_as_interpreter(&name, source);
+        // And the build with no collector through LLVM must use memory
+        // exactly as this one did: the same report, line for line.
+        crate::emit_llvm::tests::no_collector_as_c(&name, source, &compiled, &errors);
         Some(most.parse().expect("a number"))
     }
 
@@ -6638,6 +6641,8 @@ let x = 7
             assert!(message.contains("`zeno build --no-collector` leaves the collector out"), "{message}");
             // Each of these is fine where there is a collector.
             assert!(compile(&source).is_ok(), "{body}");
+            // The LLVM backend refuses the same program in the same words.
+            crate::emit_llvm::tests::refuses_as_c(&source, &message);
         };
 
         // Text that is built lasts for one statement, so it cannot be kept.
