@@ -450,21 +450,23 @@ or function, becomes `z2_count`. Temporaries the compiler invents are `t1`,
 ## Top-level code
 
 C has no code outside functions. The statements at the top of a Zeno file
-become the body of C's `main`. Variables declared there become C globals, so
-that functions can see them, and are given their values inside `main`, in
-the order the file says.
+become the body of one C function, `zeno_program`, which `main` calls.
+(`main` itself only notes where the stack begins, for the garbage
+collector.) Variables declared at the top become C globals, so that
+functions can see them, and are given their values inside `zeno_program`,
+in the order the file says.
 
 ## Memory
 
 A string built while the program runs (`a + b`, an f-string) needs memory,
-and so does every object, list and enum value that carries data. The
-runtime takes it from `malloc` and never gives it back. The same goes for
-a function made inside another one, and for the box of a variable they
-share. For a program
-that runs and exits, that is harmless. For firmware that runs for years it
-is not acceptable, and fixing it is the memory management stage. Programs
-that only use numbers, bools, string literals and enum cases without data
-do not allocate at all.
+and so does every object, list and enum value that carries data, every
+function made inside another one, and the box of a variable they share.
+The runtime takes it from `malloc`, and a garbage collector in the runtime
+frees it once the program can no longer reach it.
+[`docs/memory.md`](memory.md) is the walkthrough.
+
+Programs that only use numbers, bools, string literals and enum cases
+without data do not allocate at all, and the collector never runs.
 
 ## What differs from `zeno run`, on purpose
 

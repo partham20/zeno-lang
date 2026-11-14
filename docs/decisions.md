@@ -628,17 +628,19 @@ object as the first argument, with no hidden variable. *(Principle 4.)*
 `let xs = [1]` followed by `xs.append(2)` is allowed; `xs = [3]` is not.
 
 **Why.** It is the simplest rule to state: the name always refers to the same
-thing. Whether Zeno should also offer deeply unchangeable data is a memory
-management question, to be settled at that stage.
+thing. Deeply unchangeable data was left open until memory was managed.
+The collector (5.7) does not need it, so it is still open, and now purely
+a question of what helps the programmer.
 
-### 3.10 Lists and objects are shared, not copied *(provisional)*
+### 3.10 Lists and objects are shared, not copied
 
 `let b = a` makes `b` the same list as `a`.
 
 **Why.** It is what Python, Java and JavaScript programmers expect, and it is
-the cheapest thing for the interpreter. Whether sharing, copying or Rust-style
-ownership is the right default for the compiled language is the central
-question of the memory management stage.
+the cheapest thing for the interpreter. This was provisional until the
+memory management stage, which had to choose between sharing, copying and
+Rust-style ownership for compiled programs. It chose to keep sharing, with
+a garbage collector to make it safe. 5.7 has the reasons.
 
 ### 3.10a A `for` loop sees the list as it was when the loop began
 
@@ -880,22 +882,20 @@ easy to get wrong. GCC and Clang cover nearly every microcontroller
 toolchain in use (ARM, RISC-V, AVR, ESP). *(Provisional: a plain-C fallback
 can be added for other compilers.)*
 
-### 5.5f Compiled strings are not freed yet
+### 5.5f Compiled strings were not freed at first
 
-**Why.** Memory management is its own stage, and guessing at it now would
-mean redoing it. Until then, memory for strings built at run time is taken
-and never returned. Programs that use only numbers, bools and fixed strings
-take no memory at all. *(Provisional, and not acceptable for firmware that
-builds strings in a loop.)*
+Until the memory management stage, memory for text built at run time was
+taken and never returned. **Replaced by 5.7.**
 
 ### 5.5g In C, objects, enum values and lists are pointers
 
 **Why.** Zeno says objects and lists are shared, not copied (3.10): after
 `let b = a`, changing `b` changes `a`. A C struct is copied on assignment; a
 pointer to one is not. So the pointer is the faithful translation. The cost
-is that each one needs memory from the heap. *(Provisional, with 3.10: a
-value that never changes and is never shared could live on the stack, and
-the memory stage is where that gets decided.)*
+is that each one needs memory from the heap, which the collector (5.7)
+gives back. *(Provisional in one respect: an object that never leaves the
+function that made it could live on the stack and cost the collector
+nothing. Finding those is an optimisation for later.)*
 
 ### 5.5h One list type in C, not one per kind of item
 
@@ -935,9 +935,9 @@ function, and nothing is added to code that does not use `try`.
 **What it costs.**
 
 - Objects made between the `try` and the `raise` are not tidied up by the
-  jump. Today nothing is freed anyway (5.5f), so nothing is lost. The
-  memory management stage must take this into account: each `try` will
-  have to remember what to release.
+  jump. This turned out to cost nothing: the collector (5.7) finds them
+  unreachable and frees them, and no `try` has to remember anything. It
+  was one of the reasons for choosing a collector.
 - A local variable changed inside a `try` must be declared `volatile` in C,
   or its value after the jump is not guaranteed. The compiler finds those
   variables and does it. They are a little slower to use.
@@ -946,8 +946,8 @@ function, and nothing is added to code that does not use `try`.
   not use the generated C as it is.
 
 **Provisional**, for that last reason. The syntax does not depend on the
-choice, so a build mode that uses checked returns instead could be added
-for projects that need it, at the price described above.
+choice, so a second build mode that uses checked returns is planned for
+projects that need it: 5.5l.
 
 ### 5.5j `T or none` in C: NULL for pointers, a flag for numbers
 
@@ -1006,6 +1006,44 @@ visible from the top of its block, before the variables it uses exist.
 That needs the box treatment for every variable of the block, so for now
 `zeno build` refuses it and asks for `let name = function(...) { ... }`.
 
+### 5.5l A second way to compile errors, for firmware held to MISRA *(planned, next stage)*
+
+`zeno build` will take a setting (for example `--target firmware`) that
+compiles errors without `setjmp` and `longjmp`:
+
+- A function that can fail returns a status code and writes its result
+  through a pointer the caller passes in. The caller tests the status
+  after the call and passes a failure on.
+- `try` / `except` becomes an `if` on that status.
+- A function that cannot fail keeps a plain return and no tests. The
+  checker already knows which is which, from `raises` (1.17).
+- The default build keeps `setjmp` (5.5i). The same source compiles both
+  ways, and the tests run both against `zeno run`.
+
+**Why.** MISRA C:2012 Rule 21.4 bans `setjmp` and `longjmp`: the jump skips
+whatever the functions in between meant to do on the way out, it can leave
+local variables that are not `volatile` with no defined value, and tools
+that prove how deep the stack gets, or that every path is covered, cannot
+follow it. Firmware that must be certified cannot ship the C that 5.5i
+produces. Zeno is meant for that firmware *(principle 5)*, so it needs a
+mode that can.
+
+**Why not make it the only way.** 5.5i still holds: on a PC, and on
+firmware with no such standard to meet, `setjmp` costs nothing where no
+`try` is running, and the generated C is shorter.
+
+**To settle when it is built.** Errors the runtime finds itself (division
+by zero, a bad index, overflow) can happen on almost any line and are not
+declared (1.17, 4.1). In this mode either every function is treated as one
+that can fail, which is the cost 5.5i was written to avoid, or those errors
+stop the program and cannot be caught. Certified firmware usually wants
+the second: such a failure goes to a fault handler, not to an `except`.
+That is the likely answer. It would change 4.1 for this mode only, and be
+the one place where the two modes differ.
+
+Memory needs nothing special in either mode. The collector frees what an
+error leaves behind whichever way the error travels (5.7).
+
 ### 5.6 The checker and the interpreter are separate
 
 **Why.** One stage, one job. The checker decides whether a program is sound;
@@ -1017,3 +1055,76 @@ The interpreter still tests types as it goes, because dynamic values need it.
 A program that passes the checker should never fail one of those tests on
 typed code; the test suite checks this by running every working interpreter
 test through the checker as well.
+
+### 5.7 Memory: a mark-and-sweep garbage collector, in the runtime
+
+A compiled program frees memory by itself. Now and then the runtime stops
+the program, marks every block of memory that can still be reached from a
+variable, and frees the rest. `docs/memory.md` walks through the C.
+
+**Why a collector at all.** Zeno says lists and objects are shared (3.10),
+function values remember variables (3.6c), and errors jump out of
+functions (5.5i). With those three in the language, "when is this last
+used?" has no answer the compiler can work out in general. Something has
+to find out while the program runs.
+
+**Why this kind.** There were three real candidates.
+
+- *Ownership, as in Rust.* No cost at run time and no pauses. But it is a
+  different language: `let b = a` would move or copy, not share, and the
+  checker would need a borrow checker, which is the largest and hardest
+  part of Rust. It would undo 3.10 and make the simplest programs harder
+  to write. Turned down.
+- *Counting references, as in Swift and CPython.* Each block counts how
+  many places point at it and is freed when the count reaches zero. Memory
+  comes back at once and there are no pauses. But the compiler must add
+  code at every place a pointer is copied or dropped, including every early
+  `return`, `break` and temporary; two objects that point at each other
+  are never freed without extra help from the programmer; and a `longjmp`
+  (5.5i) skips the code that lowers the counts, so every `try` would need
+  a list of what to release. That is a great deal of generated code and
+  many places to get wrong. Turned down for now.
+- *Mark and sweep.* The compiler adds almost nothing: one generated
+  function that lists the top-level variables. Cycles are freed like
+  anything else. An error needs no special care. The whole collector is
+  about 200 lines in one place, small enough to read in one sitting, which
+  matters in a compiler that is built to be learned from. Chosen.
+
+**Why it reads the stack instead of being told.** A collector that knows
+exactly which variables are pointers needs the compiler to keep a second,
+shadow stack of them, or a table for every point in every function. Both
+are far more machinery than the collector itself. Reading every word of
+the stack and asking "is this one of my blocks?" needs none, and is what
+MicroPython does on the same class of microcontroller.
+
+**What it costs**, stated plainly.
+
+- *It bends principle 5.* A collector is exactly the "hidden runtime" that
+  principle warns about: work the program did not write, done at a moment
+  it did not choose. What keeps it within bounds is that a program which
+  makes no blocks never runs it, and the first provisional point below.
+- *Pauses*, in proportion to the memory in use. Not suitable inside a loop
+  with a hard deadline. Code that uses only numbers, bools and fixed text
+  never allocates and so never pauses.
+- *It depends on how C compilers behave*, not on what the C standard
+  promises. Reading the stack this way is outside the standard. It is the
+  same bet Boehm's collector, Ruby and MicroPython make.
+- *It can keep too much.* A leftover value in a stack slot, or a number
+  that looks like an address, holds a block that is really garbage. This
+  wastes memory and breaks nothing. (Seen in testing: built without
+  optimisation, one stale slot kept a 300,000-node list alive. With `-O2`,
+  which is what `zeno build` uses, it was freed.)
+- *MISRA* bans `malloc` and `free` as well (Rule 21.3), collector or not.
+  See the first point below.
+
+**Provisional, in three respects.**
+
+1. Certified firmware usually allows no heap at all. The answer for it is
+   not a different collector but a build that proves a program makes no
+   blocks, and says which line does if it cannot. The checker already
+   knows where blocks are made. This belongs with 5.5l.
+2. The blocks come from the C library's `malloc`. On a real board the
+   collector should own one fixed region and hand out pieces of it itself.
+3. If pauses turn out to matter in practice, counting references can be
+   added underneath without changing the language, since nothing in the
+   source depends on which method is used.

@@ -55,6 +55,8 @@ Samples, none of them final:
 - [`examples/styles.zeno`](examples/styles.zeno): one job written typed, untyped, object-oriented and functional.
 - [`examples/primes.zeno`](examples/primes.zeno): no types written, and it compiles to C.
 - [`examples/shapes.zeno`](examples/shapes.zeno): classes, enums, lists and `match`, compiled to C.
+- [`examples/sensor.zeno`](examples/sensor.zeno): values that may be `none`, errors, and functions as values.
+- [`examples/memory.zeno`](examples/memory.zeno): a program that makes far more memory than it keeps, and the collector that gives it back.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
 
 ## One language, every job
@@ -81,6 +83,8 @@ numbers, strings, functions, control flow, classes, lists, enums and `match`,
 values that may be `none`, errors (`try` / `except` / `raise`), and functions
 used as values. A compiled program prints what `zeno run` prints;
 [`docs/compiler.md`](docs/compiler.md) lists the two small exceptions.
+It also frees the memory it no longer uses, with a small garbage collector
+that is compiled in ([`docs/memory.md`](docs/memory.md)).
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -90,6 +94,7 @@ cargo run -- check --strict examples/styles.zeno  # passes with no types written
 cargo run -- build examples/primes.zeno         # compile to primes.c, then to ./primes
 cargo run -- build examples/shapes.zeno         # classes, enums, lists and match, compiled
 cargo run -- build examples/sensor.zeno         # none, errors and functions as values, compiled
+cargo run -- build --memory examples/memory.zeno  # the program reports its memory use as it ends
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -100,7 +105,7 @@ cargo test
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
-  [`docs/compiler.md`](docs/compiler.md).
+  [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md).
 
 ## Roadmap
 
@@ -110,10 +115,12 @@ cargo test
 4. Type checker, `zeno check` (done)
 5. Compile to C, `zeno build` (done: numbers, strings, functions, control flow, classes, lists, enums, `match`)
 6. Compile the rest (done: errors with `try` / `raise`, `none`, functions as values)
-7. Memory management
-8. Bytecode VM
-9. LLVM backend
-10. Extras
+7. Memory management (done: a mark-and-sweep garbage collector in the compiled program)
+8. Errors as values, for firmware and MISRA builds: a build setting that
+   compiles `try` / `raise` to status codes and `if`, with no `setjmp`
+9. Bytecode VM
+10. LLVM backend
+11. Extras
 
 ## Layout
 
