@@ -46,7 +46,7 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
         StmtKind::Function(f) => function(f, depth, out),
         StmtKind::Class(class) => {
             let owned = if class.owned { "owned " } else { "" };
-            line(&format!("{owned}class {}", class.name), depth, out);
+            line(&format!("{owned}class {}{}", class.name, type_params(&class.type_params)), depth, out);
             for f in &class.fields {
                 line(&format!("field {}", field(f)), depth + 1, out);
             }
@@ -143,7 +143,7 @@ fn function(f: &Function, depth: usize, out: &mut String) {
 /// `function name(params) -> type raises Error`
 fn signature(f: &Function) -> String {
     let space = if f.name.is_empty() { "" } else { " " };
-    let mut text = format!("function{space}{}({})", f.name, join(&f.params, param));
+    let mut text = format!("function{space}{}{}({})", f.name, type_params(&f.type_params), join(&f.params, param));
     if let Some(ty) = &f.return_type {
         text += &format!(" -> {}", type_(ty));
     }
@@ -151,6 +151,11 @@ fn signature(f: &Function) -> String {
         text += &format!(" raises {}", f.raises.join(", "));
     }
     text
+}
+
+/// `[T, U]`, or nothing when there are none.
+fn type_params(names: &[String]) -> String {
+    if names.is_empty() { String::new() } else { format!("[{}]", names.join(", ")) }
 }
 
 fn param(p: &Param) -> String {

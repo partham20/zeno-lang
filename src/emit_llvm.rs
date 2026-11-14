@@ -828,6 +828,23 @@ fn at(span: Span) -> String {
     format!("i32 {}, i32 {}", span.line, span.col)
 }
 
+/// The functions to compile for a function written in the program: the
+/// function itself, or, if it is generic, each of its copies.
+fn copies_of_function<'a>(types: &'a Types, decl: &'a Arc<Function>) -> Vec<&'a Arc<Function>> {
+    match decl.type_params.is_empty() {
+        true => vec![decl],
+        false => types.function_copies(decl).iter().collect(),
+    }
+}
+
+/// The same for a class.
+fn copies_of_class<'a>(types: &'a Types, decl: &'a Class) -> Vec<&'a Class> {
+    match decl.type_params.is_empty() {
+        true => vec![decl],
+        false => types.class_copies(decl).iter().map(|copy| &**copy).collect(),
+    }
+}
+
 /// A name in the IR: `sigil` is `%` for something inside a function and
 /// `@` for something global. Names with anything but plain letters and
 /// digits in them are written in quotes, which IR allows.
@@ -923,14 +940,25 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
     // anything is compiled.
     for statement in &program.statements {
         match &statement.kind {
+            // A generic function is not compiled. Its copies are, one
+            // for each set of types the program calls it with. The
+            // checker made them, and each is an ordinary function with a
+            // name of its own: `@"z_first[int]"`, `@"z_first[str]"`.
             StmtKind::Function(decl) => {
-                // `z_` keeps the program's names apart from the runtime's
-                // and from the C library's: a Zeno function may well be
-                // called `main`.
-                let entry = emitter.entry(decl, named('@', "z_", &decl.name), statement.span)?;
-                emitter.functions.insert(decl.name.clone(), entry);
+                for decl in copies_of_function(types, decl) {
+                    // `z_` keeps the program's names apart from the
+                    // runtime's and from the C library's: a Zeno function
+                    // may well be called `main`.
+                    let entry = emitter.entry(decl, named('@', "z_", &decl.name), statement.span)?;
+                    emitter.functions.insert(decl.name.clone(), entry);
+                }
             }
-            StmtKind::Class(decl) => emitter.register_class(decl, statement.span)?,
+            // The same for a generic class: `%"z_Stack[int]"`.
+            StmtKind::Class(decl) => {
+                for decl in copies_of_class(types, decl) {
+                    emitter.register_class(decl, statement.span)?;
+                }
+            }
             StmtKind::Enum(decl) => emitter.register_enum(decl, statement.span)?,
             _ => {}
         }
@@ -1386,6 +1414,12 @@ impl Emitter<'_> {
 
     /// The Zeno type written in the source, as a kind.
     fn kind_of_type(&self, ty: &Type) -> Option<Kind> {
+        // Inside a copy of a generic, `T` is whatever the copy was made
+        // for, and `Stack[int]` is a copy itself. Only the checker knows
+        // those, so its answer is used where it has one.
+        if let Some(kind) = self.types.annotation(ty) {
+            return Some(emit_c::disowned(kind.clone()));
+        }
         let (name, args) = match ty {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how it is held.
@@ -1464,9 +1498,11 @@ impl Emitter<'_> {
                 }
                 // It is written out later. It may use the variables
                 // declared so far and no others, so a copy of them goes
-                // with it.
-                let entry = self.functions[&decl.name].clone();
-                self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                // with it. A generic is written out once for each copy.
+                for decl in copies_of_function(self.types, decl) {
+                    let entry = self.functions[&decl.name].clone();
+                    self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                }
                 Ok(())
             }
             StmtKind::Class(decl) => {
@@ -1474,9 +1510,11 @@ impl Emitter<'_> {
                     return Err(cannot("a class inside a function or a block", span));
                 }
                 // Its methods are functions, and wait like functions.
-                for method in &decl.methods {
-                    let entry = self.classes[&decl.name].methods[&method.name].clone();
-                    self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                for decl in copies_of_class(self.types, decl) {
+                    for method in &decl.methods {
+                        let entry = self.classes[&decl.name].methods[&method.name].clone();
+                        self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                    }
                 }
                 Ok(())
             }
@@ -2182,6 +2220,18 @@ impl Emitter<'_> {
             }
             ExprKind::Compare { first, rest } => self.chain(first, rest)?,
 
+            // A call of a generic goes to one of its copies, and the
+            // checker noted which: `first([1, 2])` calls `first[int]`.
+            ExprKind::Call { args, .. } if self.types.copy_called(expr).is_some() => {
+                let copy = self.types.copy_called(expr).unwrap_or_default().to_string();
+                if let Some(entry) = self.functions.get(&copy).cloned() {
+                    self.call_named(&entry, args, span)?
+                } else if self.classes.contains_key(&copy) {
+                    self.construct(&copy, args, span)?
+                } else {
+                    return Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span));
+                }
+            }
             ExprKind::Call { callee, args } => self.call_expr(callee, args, span)?,
             ExprKind::Field { object, name } => self.field(object, name, span)?,
             ExprKind::Index { object, index } => {
@@ -2831,19 +2881,24 @@ impl Emitter<'_> {
 
     // ---------------------------------------------------------------- Calls
 
+    /// A call of a function of the program by its name.
+    fn call_named(&mut self, entry: &Entry, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let slots = entry
+            .decl
+            .params
+            .iter()
+            .zip(&entry.kind.params)
+            .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
+            .collect();
+        let list = self.bind(&slots, args, span)?;
+        self.call_entry(entry, list, span)
+    }
+
     fn call_expr(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Val, Error> {
         match &callee.kind {
             ExprKind::Name(name) if self.lookup(name).is_none() => {
                 if let Some(entry) = self.functions.get(name).cloned() {
-                    let slots = entry
-                        .decl
-                        .params
-                        .iter()
-                        .zip(&entry.kind.params)
-                        .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
-                        .collect();
-                    let list = self.bind(&slots, args, span)?;
-                    return self.call_entry(&entry, list, span);
+                    return self.call_named(&entry, args, span);
                 }
                 if self.classes.contains_key(name) {
                     return self.construct(name, args, span);
@@ -3279,16 +3334,18 @@ impl Emitter<'_> {
             return Ok(name);
         }
         let fields = self.classes[class].fields.clone();
+        // A `Stack[int]` prints as `Stack(...)`, as `zeno run` prints it.
+        let shown_as = emit_c::shown_name(class);
         self.side(format!("define internal ptr {name}(ptr %self)"), |emitter| {
             let mut pieces = Vec::new();
             for (index, (field, kind, _)) in fields.iter().enumerate() {
-                let label = if index == 0 { format!("{class}({field}=") } else { format!(", {field}=") };
+                let label = if index == 0 { format!("{shown_as}({field}=") } else { format!(", {field}=") };
                 pieces.push(emitter.string(&label));
                 let value = emitter.load_field(class, "%self", index, span)?;
                 pieces.push(emitter.repr(&Val::new(value, kind.clone()), span)?);
             }
             if fields.is_empty() {
-                pieces.push(emitter.string(&format!("{class}(")));
+                pieces.push(emitter.string(&format!("{shown_as}(")));
             }
             pieces.push(emitter.string(")"));
             let shown = emitter.join(&pieces);
@@ -4299,6 +4356,7 @@ pub(crate) mod tests {
         same_as_interpreter("buffer", include_str!("../examples/buffer.zeno"));
         same_as_interpreter("signal", include_str!("../examples/signal.zeno"));
         same_as_interpreter("packet", include_str!("../examples/packet.zeno"));
+        same_as_interpreter("generics", include_str!("../examples/generics.zeno"));
     }
 
     #[test]
@@ -4603,6 +4661,28 @@ pub(crate) mod tests {
         assert!(ir.contains(" = trunc i64 %t"), "{ir}");
         assert!(ir.contains("call i64 @zeno_fit(i64 %t"), "{ir}");
         assert!(ir.contains(", i64 0, i64 255, ptr @.str"), "{ir}");
+    }
+
+    #[test]
+    fn the_ir_for_a_generic() {
+        let source = "function first[T](items: list[T]) -> T {\n    return items[0]\n}\n\
+                      class Cell[T] {\n    value: T\n    function get(self) -> T {\n        return self.value\n    }\n}\n\
+                      function unused[T](x: T) -> T {\n    return x\n}\n\
+                      let small: u8 = 7\n\
+                      print(first([1, 2]), first([\"a\"]), first([3]))\n\
+                      print(Cell(1.5).get(), Cell(small))\n";
+        let ir = compile(source).expect("it compiles");
+        // One function for each type `first` is called with. IR allows
+        // any name in quotes, so the copies keep the names Zeno gives them.
+        assert!(ir.contains("define internal i64 @\"z_first[int]\"(ptr %arg.items) {"), "{ir}");
+        assert!(ir.contains("define internal ptr @\"z_first[str]\"(ptr %arg.items) {"), "{ir}");
+        assert_eq!(ir.matches("define internal i64 @\"z_first[int]\"").count(), 1, "{ir}");
+        // One struct type for each `Cell`, as big as what it holds.
+        assert!(ir.contains("%\"z_Cell[float]\" = type { double }"), "{ir}");
+        assert!(ir.contains("%\"z_Cell[u8]\" = type { i8 }"), "{ir}");
+        assert!(ir.contains("define internal double @\"z_Cell[float].get\"(ptr %arg.self) {"), "{ir}");
+        // Nothing for the generic itself, or for one that nothing calls.
+        assert!(!ir.contains("@z_first(") && !ir.contains("%z_Cell ") && !ir.contains("z_unused"), "{ir}");
     }
 
     #[test]

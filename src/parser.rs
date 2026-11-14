@@ -431,11 +431,32 @@ impl Parser {
     fn function(&mut self) -> Result<Function, Error> {
         self.advance(); // function
         let name = self.name("a name for the function")?;
-        self.function_after_name(name)
+        let type_params = self.type_params()?;
+        self.function_after_name(name, type_params)
+    }
+
+    /// `[T]` or `[Key, Value]` after the name of a function or a class:
+    /// the types that each use of it fills in. Usually there are none.
+    fn type_params(&mut self) -> Result<Vec<String>, Error> {
+        let mut names = Vec::new();
+        if self.eat(TokenKind::LBracket) {
+            loop {
+                names.push(self.name("a name for a type, such as `T`")?);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBracket)?;
+        }
+        Ok(names)
     }
 
     /// Everything from the `(` on, shared by named and nameless functions.
-    fn function_after_name(&mut self, name: String) -> Result<Function, Error> {
+    fn function_after_name(&mut self, name: String, type_params: Vec<String>) -> Result<Function, Error> {
+        if name.is_empty() && self.check(TokenKind::LBracket) {
+            // `function[T](...)`
+            return self.error("a function with no name cannot have type parameters. Give it a name");
+        }
 
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
@@ -461,13 +482,14 @@ impl Parser {
         }
 
         let body = self.block()?;
-        Ok(Function { name, params, return_type, raises, body })
+        Ok(Function { name, type_params, params, return_type, raises, body })
     }
 
     /// `class Name { fields and methods }`, or `owned class Name { ... }`
     fn class(&mut self, owned: bool) -> Result<StmtKind, Error> {
         self.advance(); // class
         let name = self.name("a name for the class")?;
+        let type_params = self.type_params()?;
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -484,7 +506,7 @@ impl Parser {
             self.end_of_statement()?;
         }
         self.advance(); // the }
-        Ok(StmtKind::Class(Class { name, owned, fields, methods }))
+        Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods }))
     }
 
     /// `name`, optionally with `: type` and `= default`
@@ -499,6 +521,9 @@ impl Parser {
     fn enum_(&mut self) -> Result<StmtKind, Error> {
         self.advance(); // enum
         let name = self.name("a name for the enum")?;
+        if self.check(TokenKind::LBracket) {
+            return self.error("an enum cannot have type parameters yet. A class can: `class Box[T]`");
+        }
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -854,7 +879,7 @@ impl Parser {
             }
             TokenKind::Function => {
                 self.advance();
-                ExprKind::Function(Arc::new(self.function_after_name(String::new())?))
+                ExprKind::Function(Arc::new(self.function_after_name(String::new(), Vec::new())?))
             }
             TokenKind::LParen => {
                 // Brackets only group. They leave no node of their own in the tree.
@@ -1284,6 +1309,38 @@ mod tests {
     }
 
     #[test]
+    fn generics() {
+        // The type parameters go in square brackets after the name.
+        assert_eq!(
+            tree("function first[T](items: list[T]) -> T {\n    return items[0]\n}"),
+            "function first[T](items: list[T]) -> T\n    return items[0]\n"
+        );
+        assert_eq!(
+            tree("class Pair[A, B] {\n    left: A\n    right: B\n}"),
+            "class Pair[A, B]\n    field left: A\n    field right: B\n"
+        );
+        assert_eq!(tree("owned class Box[T] {\n    value: T\n}"), "owned class Box[T]\n    field value: T\n");
+        // A type can be a generic class with its types filled in.
+        assert_eq!(
+            tree("let p: Pair[int, list[str]] or none = none"),
+            "let p: Pair[int, list[str]] or none = none\n"
+        );
+        // Square brackets after a name in an expression are still an index.
+        assert_eq!(expr("first[0](x)"), "first[0](x)");
+
+        assert_eq!(error("function f[](x: int) { }"), "expected a name for a type, such as `T`, found `]`");
+        assert_eq!(error("function f[T, 3](x: T) { }"), "expected a name for a type, such as `T`, found a number");
+        assert_eq!(
+            error("enum Maybe[T] {\n    Nothing\n}"),
+            "an enum cannot have type parameters yet. A class can: `class Box[T]`"
+        );
+        assert_eq!(
+            error("let f = function[T](x: T) -> T { return x }"),
+            "a function with no name cannot have type parameters. Give it a name"
+        );
+    }
+
+    #[test]
     fn enums_and_match() {
         assert_eq!(
             tree("enum Shape {\n    Dot\n    Circle(radius: float)\n    Rect(w: float, h: float)\n}"),
@@ -1375,6 +1432,7 @@ mod tests {
             ("tour", include_str!("../examples/tour.zeno")),
             ("blink", include_str!("../examples/blink.zeno")),
             ("packet", include_str!("../examples/packet.zeno")),
+            ("generics", include_str!("../examples/generics.zeno")),
         ] {
             if let Err(e) = parse_source(source) {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);

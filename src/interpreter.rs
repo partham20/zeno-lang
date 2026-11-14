@@ -1228,6 +1228,76 @@ mod tests {
         assert_eq!(error("let x = \"7\"\nlet f = u8\nprint(f(x))"), "`u8` needs a whole number, but this is a str");
     }
 
+    // ----- Generics -----
+
+    #[test]
+    fn generics() {
+        // When a program runs, a generic is one function: values carry
+        // their own types, so there is nothing to fill in.
+        let first = "function first[T](items: list[T]) -> T {\n    return items[0]\n}\n";
+        assert_eq!(output(&format!("{first}print(first([1, 2]), first([\"a\"]), first([[2.5]]))")), "1 a [2.5]\n");
+        let stack = "class Stack[T] {\n    items: list[T]\n    function push(self, item: T) {\n        self.items.append(item)\n    }\n\
+                     \x20   function pop(self) -> T {\n        return self.items.pop()\n    }\n}\n";
+        assert_eq!(
+            output(&format!(
+                "{stack}let a: Stack[int] = Stack(items=[])\na.push(1)\na.push(2)\nlet b = Stack([\"x\"])\nb.push(\"y\")\n\
+                 print(a.pop(), b.pop(), a, b)"
+            )),
+            "2 y Stack(items=[1]) Stack(items=[\"x\"])\n"
+        );
+        // Two type parameters, one of them worked out from a function.
+        assert_eq!(
+            output(
+                "function convert[T, U](items: list[T], change: function(T) -> U) -> list[U] {\n\
+                 \x20   var out: list[U] = []\n    for item in items {\n        out.append(change(item))\n    }\n    return out\n}\n\
+                 print(convert([1, 2], function(n: int) -> str { return f\"<{n}>\" }), convert([\"ab\"], len))"
+            ),
+            "[\"<1>\", \"<2>\"] [2]\n"
+        );
+        // A generic that calls itself, and one that calls another.
+        assert_eq!(
+            output(
+                "function count[T](items: list[T], at: int) -> int {\n    if at >= len(items) {\n        return 0\n    }\n\
+                 \x20   return 1 + count(items, at + 1)\n}\n\
+                 function wrap[T](x: T) -> list[T] {\n    return [x]\n}\n\
+                 function twice[T](x: T) -> list[list[T]] {\n    return wrap(wrap(x))\n}\n\
+                 print(count([1, 2, 3], 0), count([\"a\"], 0), twice(5), twice(\"x\"))"
+            ),
+            "3 1 [[5]] [[\"x\"]]\n"
+        );
+        // A class that mentions itself.
+        assert_eq!(
+            output(
+                "class Node[T] {\n    value: T\n    next: Node[T] or none\n}\n\
+                 function length[T](node: Node[T] or none) -> int {\n    var n = 0\n    var at = node\n\
+                 \x20   while at is not none {\n        n += 1\n        at = at.next\n    }\n    return n\n}\n\
+                 let chain = Node(1, Node(2, none))\nprint(length(chain), chain.next)"
+            ),
+            "2 Node(value=2, next=none)\n"
+        );
+        // With the types left out it still runs.
+        assert_eq!(
+            output("function id[T](x: T) -> T {\n    return x\n}\nfunction loose(x) {\n    return id(x)\n}\nprint(loose(3), loose(\"a\"))"),
+            "3 a\n"
+        );
+    }
+
+    #[test]
+    fn the_generics_example() {
+        assert_eq!(
+            output(include_str!("../examples/generics.zeno")),
+            "bytes: [108, 108, 111, 33] newest 33 dropped 2\n\
+             above 0x60: 3\n\
+             as hex: [\"6c\", \"6c\", \"6f\", \"21\"]\n\
+             no reading yet: none\n\
+             volts: [3.3 V, 2.9 V, 3.2 V] highest 3.3 V\n\
+             low: 1\n\
+             log: [\"sensor ready\", \"first reading\"] last in the alphabet: sensor ready\n\
+             lengths: [12, 13]\n\
+             Ring(slots=[\"first reading\", \"sensor ready\"], next=1, count=2, dropped=1)\n"
+        );
+    }
+
     // ----- The board and the clock -----
 
     #[test]

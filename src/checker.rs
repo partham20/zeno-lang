@@ -114,6 +114,18 @@ pub struct Types {
     /// Each list, written out or built by a comprehension, that begins
     /// life as an owned list. A build with no collector accepts no others.
     fresh: HashSet<usize>,
+    /// For each generic function, the copies made of it: one for each set
+    /// of types it is called with. A copy is an ordinary function with a
+    /// name such as `first[int]`, and the compilers compile it as one.
+    function_copies: HashMap<usize, Vec<Arc<ast::Function>>>,
+    /// The same for each generic class: `Stack[int]`, `Stack[str]`.
+    class_copies: HashMap<usize, Vec<Arc<ast::Class>>>,
+    /// Each call of a generic function or class, with the name of the
+    /// copy that the call reaches.
+    copy_called: HashMap<usize, String>,
+    /// What each type written in the program stands for. Inside a copy,
+    /// `T` is whatever that copy was made for.
+    annotations: HashMap<usize, Kind>,
 }
 
 impl Types {
@@ -149,6 +161,28 @@ impl Types {
 
     pub fn enumeration(&self, decl: &ast::Enum) -> Option<&Vec<Vec<Kind>>> {
         self.enums.get(&(decl as *const ast::Enum as usize))
+    }
+
+    /// The copies of a generic function, in the order they were first needed.
+    pub fn function_copies(&self, decl: &Arc<ast::Function>) -> &[Arc<ast::Function>] {
+        self.function_copies.get(&(Arc::as_ptr(decl) as usize)).map_or(&[], Vec::as_slice)
+    }
+
+    /// The copies of a generic class.
+    pub fn class_copies(&self, decl: &ast::Class) -> &[Arc<ast::Class>] {
+        self.class_copies.get(&(decl as *const ast::Class as usize)).map_or(&[], Vec::as_slice)
+    }
+
+    /// If `call` calls a generic function or builds an object of a generic
+    /// class, the name of the copy it means: `first[int]`.
+    pub fn copy_called(&self, call: &ast::Expr) -> Option<&str> {
+        self.copy_called.get(&(call as *const ast::Expr as usize)).map(String::as_str)
+    }
+
+    /// What the type written at `ty` stands for, if the checker got as far
+    /// as reading it.
+    pub fn annotation(&self, ty: &ast::Type) -> Option<&Kind> {
+        self.annotations.get(&(ty as *const ast::Type as usize))
     }
 
     pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
@@ -267,7 +301,8 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
     checker.run(program);
     let mut errors = checker.errors;
     errors.sort_by_key(|error| (error.span.line, error.span.col));
-    errors.dedup();
+    // Two copies of a generic can find the same mistake. Once is enough.
+    errors.dedup_by(|a, b| a.span == b.span && a.message == b.message);
     (errors, checker.types)
 }
 
@@ -329,6 +364,61 @@ enum Ty {
     ErrorType(Rc<str>),
 
     Module(&'static str),
+
+    // Generics. See the section "Generic functions and classes".
+    /// A function or a class with type parameters, by its name: `first`,
+    /// `Stack`. It is not a type yet, and not something that can run:
+    /// each use of it picks a copy.
+    Generic(Rc<Generic>),
+    /// A type parameter that has not been filled in: the `T` of
+    /// `items: list[T]`, as the generic itself is written. Only seen
+    /// while working out which copy a call means.
+    Param(Rc<str>),
+    /// A generic class given types that are not all filled in yet:
+    /// `Stack[T]`, written in the parameters of a generic function.
+    Applied(Rc<Generic>, Vec<Ty>),
+    /// The name of a type parameter, inside a copy: there `T` is another
+    /// name for the type the copy was made for.
+    Alias(Box<Ty>),
+}
+
+/// A function or a class with type parameters: `function first[T](...)`,
+/// `class Stack[T] { ... }`.
+struct Generic {
+    /// Where its declaration sits in the syntax tree. The compilers ask
+    /// for its copies by this.
+    at: usize,
+    id: DeclId,
+    name: String,
+    /// The names of its type parameters: `T`.
+    params: Vec<String>,
+    template: Template,
+    env: Env,
+    span: Span,
+    above: Rc<[String]>,
+    /// Its parameters and what it returns, with the type parameters still
+    /// in them. Worked out the first time it is called.
+    outline: RefCell<Option<Rc<Outline>>>,
+}
+
+/// What a copy of a generic is copied from.
+enum Template {
+    Function(Arc<ast::Function>),
+    Class(Rc<ast::Class>),
+}
+
+/// A generic as a call sees it before the types are known: `items:
+/// list[T]` and `-> T`.
+struct Outline {
+    slots: Vec<Slot>,
+    returns: Option<Ty>,
+}
+
+/// One copy of a generic.
+#[derive(Clone)]
+enum Made {
+    Function(Rc<FunctionInfo>),
+    Class(Rc<ClassInfo>),
 }
 
 struct CallableType {
@@ -358,6 +448,11 @@ struct ClassInfo {
     env: Env,
     /// Each field that has a default, with the names the default mentions.
     defaults: Vec<(String, Vec<String>)>,
+    /// For a copy of a generic class, the generic and the types this copy
+    /// was made for: `Stack` and `[int]`.
+    origin: Option<(Rc<Generic>, Vec<Ty>)>,
+    /// For a copy, the words that say so under an error found inside it.
+    copy_note: Option<String>,
 }
 
 struct EnumInfo {
@@ -398,6 +493,8 @@ enum Key {
     List(Box<Key>),
     Optional(Box<Key>),
     Class(DeclId),
+    /// A copy of a generic class: the generic, and the types it was made for.
+    Copy(DeclId, Vec<Key>),
     Enum(DeclId),
     Error(String),
 }
@@ -449,6 +546,9 @@ struct FunctionInfo {
     /// The function may use them, so it must not run before they exist
     /// (see `Early`).
     above: Rc<[String]>,
+    /// For a copy of a generic function, or a method of a copy of a
+    /// generic class, the words that say so under an error found inside it.
+    copy_note: Option<String>,
 }
 
 /// A function whose body is being checked, for catching a call that
@@ -510,6 +610,9 @@ impl Ty {
         match self {
             Ty::Owned(_) => true,
             Ty::Instance(class) => class.owned,
+            // `Box[T]`, in the parameters of a generic, where `Box` is an
+            // `owned class`.
+            Ty::Applied(generic, _) => matches!(&generic.template, Template::Class(class) if class.owned),
             _ => false,
         }
     }
@@ -593,7 +696,47 @@ impl fmt::Display for Ty {
             }
             Ty::ErrorType(kind) => write!(f, "the error type {kind}"),
             Ty::Module(name) => write!(f, "the module {name}"),
+            Ty::Generic(generic) => match generic.template {
+                Template::Function(_) => write!(f, "the generic function {}", generic.name),
+                Template::Class(_) => write!(f, "the generic class {}", generic.name),
+            },
+            Ty::Param(name) => write!(f, "{name}"),
+            Ty::Applied(generic, types) => {
+                let types: Vec<String> = types.iter().map(spelled).collect();
+                write!(f, "{}[{}]", generic.name, types.join(", "))
+            }
+            Ty::Alias(inner) => write!(f, "the type {inner}"),
         }
+    }
+}
+
+/// A type as it is spelled inside the name of a copy: `Stack[ms]`,
+/// `first[list[int]]`. The same as in a message, but for a quantity,
+/// which a message calls "a quantity in ms".
+fn spelled(ty: &Ty) -> String {
+    match ty {
+        Ty::Quantity(unit) => unit.to_string(),
+        Ty::List(item) => format!("list[{}]", spelled(item)),
+        Ty::Optional(inner) => format!("{} or none", spelled(inner)),
+        other => other.to_string(),
+    }
+}
+
+/// Is there a type parameter in `ty` that has not been filled in?
+fn has_param(ty: &Ty) -> bool {
+    mentions(ty, None)
+}
+
+/// Is the type parameter `name` in `ty`? With no name, is any?
+fn mentions(ty: &Ty, name: Option<&str>) -> bool {
+    match ty {
+        Ty::Param(param) => name.is_none_or(|name| name == param.as_ref()),
+        Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => mentions(inner, name),
+        Ty::Applied(_, types) => types.iter().any(|ty| mentions(ty, name)),
+        Ty::Callable(callable) => {
+            callable.params.iter().any(|ty| mentions(ty, name)) || mentions(&callable.returns, name)
+        }
+        _ => false,
     }
 }
 
@@ -608,6 +751,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
+        (Ty::Param(a), Ty::Param(b)) => a == b,
         (Ty::List(a), Ty::List(b))
         | (Ty::Optional(a), Ty::Optional(b))
         | (Ty::Owned(a), Ty::Owned(b))
@@ -1007,6 +1151,25 @@ struct Checker {
     /// Which owned values have been given away, in the function body being
     /// checked. See the section "Owned values".
     owned: Ownership,
+    /// Every generic function and class the pass has met.
+    generics: Vec<Rc<Generic>>,
+    /// The copies made so far, by the generic and the types: `first` and
+    /// `int`. Asking twice gives the same copy.
+    copies: HashMap<(usize, String), Made>,
+    /// The generics that something in the program uses.
+    used: HashSet<usize>,
+    /// Copies of classes whose bodies are still to be checked. A copy can
+    /// be asked for in the middle of anything, so its body waits here
+    /// until the checker is between statements again.
+    pending: Vec<(Arc<ast::Class>, Rc<ClassInfo>)>,
+    /// A call that is about to be checked, and the type wanted where its
+    /// result goes: in `let s: Stack[int] = Stack()`, the call `Stack()`
+    /// and `Stack[int]`. A generic that cannot tell its types from its
+    /// arguments looks here.
+    expected: Option<(usize, Ty)>,
+    /// For each function body being checked, innermost last: if it is a
+    /// copy of a generic, the words that say which.
+    copy_notes: Vec<Option<String>>,
 }
 
 /// What the checker tracks about owned values in one function body.
@@ -1049,12 +1212,19 @@ impl Checker {
             raised: vec![Vec::new()],
             owned: Ownership::default(),
             early: Vec::new(),
+            generics: Vec::new(),
+            copies: HashMap::new(),
+            used: HashSet::new(),
+            pending: Vec::new(),
+            expected: None,
+            copy_notes: Vec::new(),
         }
     }
 
     fn run(&mut self, program: &Program) {
         let env = Scope::child(&globals());
         self.statements(&program.statements, &env);
+        self.finish_generics();
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) -> Ty {
@@ -1077,6 +1247,14 @@ impl Checker {
             if !notes.is_empty() {
                 error.note = Some(notes.join("\n"));
             }
+        }
+        // An error inside a copy of a generic depends on the types the
+        // copy was made for. Say which copy this is.
+        if let Some(Some(copy)) = self.copy_notes.last() {
+            error.note = Some(match error.note.take() {
+                Some(note) => format!("{note}\n{copy}"),
+                None => copy.clone(),
+            });
         }
         self.errors.push(error);
         Ty::Invalid
@@ -1242,6 +1420,19 @@ impl Checker {
             Ty::Error(kind) => Key::Error(kind.to_string()),
             // Who owns a value is never guessed: it has to be written down.
             Ty::Instance(class) if class.owned => return Some(Err(())),
+            // A copy of a generic class is named by what it is a copy of,
+            // so that the next pass can make it again.
+            Ty::Instance(class) if class.origin.is_some() => {
+                let (generic, types) = class.origin.as_ref()?;
+                let mut keys = Vec::new();
+                for ty in types {
+                    match self.key(ty)? {
+                        Ok(key) => keys.push(key),
+                        Err(()) => return Some(Err(())),
+                    }
+                }
+                Key::Copy(generic.id.clone(), keys)
+            }
             Ty::Instance(class) => Key::Class(class.id.clone()),
             Ty::EnumValue(info) => Key::Enum(info.id.clone()),
             Ty::List(inner) => match self.key(inner)? {
@@ -1256,7 +1447,7 @@ impl Checker {
         }))
     }
 
-    fn from_key(&self, key: &Key) -> Ty {
+    fn from_key(&mut self, key: &Key) -> Ty {
         match key {
             Key::Int => Ty::Int,
             Key::Float => Ty::Float,
@@ -1270,6 +1461,14 @@ impl Checker {
             Key::List(inner) => Ty::list(self.from_key(inner)),
             Key::Optional(inner) => Ty::Optional(Box::new(self.from_key(inner))),
             Key::Class(id) => self.classes.get(id).map_or(Ty::Dynamic, |class| Ty::Instance(class.clone())),
+            Key::Copy(id, keys) => {
+                let types: Vec<Ty> = keys.iter().map(|key| self.from_key(key)).collect();
+                let generic = self.generics.iter().find(|generic| generic.id == *id).cloned();
+                match generic.and_then(|generic| self.copy_class(&generic, types, None)) {
+                    Some(class) => Ty::Instance(class),
+                    None => Ty::Dynamic,
+                }
+            }
             Key::Enum(id) => self.enums.get(id).map_or(Ty::Dynamic, |info| Ty::EnumValue(info.clone())),
         }
     }
@@ -1394,7 +1593,7 @@ impl Checker {
                 span,
             ),
             ast::Type::Borrow(inner) => match self.resolve_inside(inner, env, span, false) {
-                ty @ (Ty::List(_) | Ty::Instance(_)) => Ty::Borrowed(Box::new(ty)),
+                ty @ (Ty::List(_) | Ty::Instance(_) | Ty::Applied(..)) => Ty::Borrowed(Box::new(ty)),
                 ty if ty.is_loose() => ty,
                 ty => self.error(
                     format!("only a list or an object can be borrowed, and this is {ty}. Pass it as it is"),
@@ -1409,6 +1608,7 @@ impl Checker {
     /// inside `list[ ]`, `or none` and a function type: places that hold
     /// shared values, where an owned one may not go.
     fn resolve_inside(&mut self, ty: &ast::Type, env: &Env, span: Span, nested: bool) -> Ty {
+        let written = ty as *const ast::Type as usize;
         let ty = match ty {
             ast::Type::Owned(_) | ast::Type::Borrow(_) => {
                 return self.error(
@@ -1441,7 +1641,43 @@ impl Checker {
                         return self.error("`any` is not allowed in strict mode", span)
                     }
                     ("any", []) => Ty::Dynamic,
+                    // `Stack[int]`: the copy of a generic class for those types.
+                    (_, written_types) if matches!(env.get(name), Some(Variable { ty: Ty::Generic(_), .. })) => {
+                        let Some(Variable { ty: Ty::Generic(generic), .. }) = env.get(name) else {
+                            return Ty::Invalid;
+                        };
+                        let example = format!("{name}[{}]", vec!["int"; generic.params.len()].join(", "));
+                        if matches!(generic.template, Template::Function(_)) {
+                            return self.error(format!("`{name}` is a function, and this place needs a type"), span);
+                        }
+                        if written_types.len() != generic.params.len() {
+                            return self.error(
+                                format!(
+                                    "`{name}` takes {} type(s) in `[ ]`, as in `{example}`, but {} were written",
+                                    generic.params.len(),
+                                    written_types.len()
+                                ),
+                                span,
+                            );
+                        }
+                        let types: Vec<Ty> =
+                            written_types.iter().map(|ty| self.resolve_inside(ty, env, span, true)).collect();
+                        if types.iter().any(has_param) {
+                            // Still a pattern: the `Stack[T]` of a generic
+                            // function's own parameters.
+                            Ty::Applied(generic, types)
+                        } else if types.iter().any(|ty| matches!(ty, Ty::Invalid)) {
+                            Ty::Invalid
+                        } else {
+                            match self.copy_class(&generic, types, Some(span)) {
+                                Some(class) => Ty::Instance(class),
+                                None => Ty::Invalid,
+                            }
+                        }
+                    }
                     (_, []) => match env.get(name).map(|variable| variable.ty) {
+                        // Inside a copy, `T` is the type it was made for.
+                        Some(Ty::Alias(ty)) => *ty,
                         Some(Ty::Class(class)) => Ty::Instance(class),
                         Some(Ty::Enum(info)) => Ty::EnumValue(info),
                         Some(Ty::ErrorType(kind)) => Ty::Error(kind),
@@ -1481,6 +1717,11 @@ impl Checker {
                 ),
                 span,
             );
+        }
+        // The compilers ask what a written type stands for by where it is
+        // written. Inside a copy of a generic only the checker knows.
+        if !has_param(&ty) {
+            self.types.annotations.insert(written, kind(&ty));
         }
         ty
     }
@@ -1524,26 +1765,26 @@ impl Checker {
         let mut enums = Vec::new();
         for (statement, above) in statements.iter().zip(&above) {
             match &statement.kind {
-                StmtKind::Class(decl) => {
-                    let defaults = decl
-                        .fields
-                        .iter()
-                        .filter_map(|field| {
-                            let mut names = Vec::new();
-                            names_in(field.default.as_ref()?, &mut names);
-                            Some((field.name.clone(), names))
-                        })
-                        .collect();
-                    let info = Rc::new(ClassInfo {
+                // A class with type parameters is not a class yet: each
+                // set of types it is used with gets a copy that is one.
+                StmtKind::Class(decl) if !decl.type_params.is_empty() => {
+                    self.type_params(&decl.type_params, statement.span);
+                    let generic = Rc::new(Generic {
+                        at: decl as *const ast::Class as usize,
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
-                        owned: decl.owned,
-                        fields: RefCell::new(Vec::new()),
-                        methods: RefCell::new(HashMap::new()),
-                        above: above.clone(),
+                        params: decl.type_params.clone(),
+                        template: Template::Class(Rc::new(decl.clone())),
                         env: env.clone(),
-                        defaults,
+                        span: statement.span,
+                        above: above.clone(),
+                        outline: RefCell::new(None),
                     });
+                    self.declare(env, &decl.name, Ty::Generic(generic.clone()), false, statement.span);
+                    self.generics.push(generic);
+                }
+                StmtKind::Class(decl) => {
+                    let info = class_info(decl, env, above, statement.span, None, None);
                     self.declare(env, &decl.name, Ty::Class(info.clone()), false, statement.span);
                     self.classes.insert(info.id.clone(), info.clone());
                     classes.push((decl, info, statement.span));
@@ -1564,50 +1805,7 @@ impl Checker {
 
         // Then what is inside them.
         for (decl, info, span) in classes {
-            let fields: Vec<Slot> =
-                decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
-            if let Some(field) = fields.iter().find(|field| field.ty.is_owned() && !decl.owned) {
-                // Objects of an ordinary class are shared. Each holder would
-                // believe the owned value inside was still there.
-                self.error(
-                    format!(
-                        "`{}` holds an owned value, so `{}` must be an `owned class` itself. \
-                         A shared object cannot own anything",
-                        field.name, decl.name
-                    ),
-                    span,
-                );
-            }
-            self.types
-                .classes
-                .insert(decl as *const ast::Class as usize, fields.iter().map(|slot| kind(&slot.ty)).collect());
-            self.types.widths.insert(
-                decl as *const ast::Class as usize,
-                fields
-                    .iter()
-                    .map(|slot| match &slot.ty {
-                        Ty::Sized(width) => Some(*width),
-                        _ => None,
-                    })
-                    .collect(),
-            );
-            *info.fields.borrow_mut() = fields;
-            for method in &decl.methods {
-                let function = FunctionInfo {
-                    decl: method.clone(),
-                    env: env.clone(),
-                    span,
-                    // A method of an owned class borrows the object it is
-                    // called on: the caller goes on owning it.
-                    self_type: Some(match decl.owned {
-                        true => Ty::Borrowed(Box::new(Ty::Instance(info.clone()))),
-                        false => Ty::Instance(info.clone()),
-                    }),
-                    state: RefCell::new(State::NotChecked),
-                    above: info.above.clone(),
-                };
-                info.methods.borrow_mut().insert(method.name.clone(), Rc::new(function));
-            }
+            self.fill_class(decl, &info, env, span);
         }
         for (decl, info, span) in enums {
             let cases: Vec<CaseInfo> = decl
@@ -1641,6 +1839,23 @@ impl Checker {
 
         for (statement, above) in statements.iter().zip(&above) {
             if let StmtKind::Function(decl) = &statement.kind {
+                if !decl.type_params.is_empty() {
+                    self.type_params(&decl.type_params, statement.span);
+                    let generic = Rc::new(Generic {
+                        at: Arc::as_ptr(decl) as usize,
+                        id: decl_id(statement.span, &decl.name),
+                        name: decl.name.clone(),
+                        params: decl.type_params.clone(),
+                        template: Template::Function(decl.clone()),
+                        env: env.clone(),
+                        span: statement.span,
+                        above: above.clone(),
+                        outline: RefCell::new(None),
+                    });
+                    self.declare(env, &decl.name, Ty::Generic(generic.clone()), false, statement.span);
+                    self.generics.push(generic);
+                    continue;
+                }
                 let function = FunctionInfo {
                     decl: decl.clone(),
                     env: env.clone(),
@@ -1648,8 +1863,83 @@ impl Checker {
                     self_type: None,
                     state: RefCell::new(State::NotChecked),
                     above: above.clone(),
+                    copy_note: None,
                 };
                 self.declare(env, &decl.name, Ty::Function(Rc::new(function)), false, statement.span);
+            }
+        }
+    }
+
+    /// Work out the fields of a class and note its methods. For a class
+    /// written in the program this is part of `hoist`. For a copy of a
+    /// generic class it happens when the copy is first asked for.
+    fn fill_class(&mut self, decl: &ast::Class, info: &Rc<ClassInfo>, env: &Env, span: Span) {
+        {
+            let fields: Vec<Slot> =
+                decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
+            if let Some(field) = fields.iter().find(|field| field.ty.is_owned() && !decl.owned) {
+                // Objects of an ordinary class are shared. Each holder would
+                // believe the owned value inside was still there.
+                self.error(
+                    format!(
+                        "`{}` holds an owned value, so `{}` must be an `owned class` itself. \
+                         A shared object cannot own anything",
+                        field.name, decl.name
+                    ),
+                    span,
+                );
+            }
+            self.types
+                .classes
+                .insert(decl as *const ast::Class as usize, fields.iter().map(|slot| kind(&slot.ty)).collect());
+            self.types.widths.insert(
+                decl as *const ast::Class as usize,
+                fields
+                    .iter()
+                    .map(|slot| match &slot.ty {
+                        Ty::Sized(width) => Some(*width),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            *info.fields.borrow_mut() = fields;
+            for method in &decl.methods {
+                if !method.type_params.is_empty() {
+                    self.error(
+                        format!(
+                            "the method `{}` cannot have type parameters of its own yet. \
+                             The class can have them: `class {}[T]`",
+                            method.name, decl.name
+                        ),
+                        span,
+                    );
+                }
+                // So that the one mistake is not reported again for each
+                // `T` in the method, its names stand for "anything".
+                let env = if method.type_params.is_empty() {
+                    env.clone()
+                } else {
+                    let inner = Scope::child(env);
+                    for name in &method.type_params {
+                        inner.declare(name, Ty::Alias(Box::new(Ty::Invalid)), false);
+                    }
+                    inner
+                };
+                let function = FunctionInfo {
+                    decl: method.clone(),
+                    env,
+                    span,
+                    // A method of an owned class borrows the object it is
+                    // called on: the caller goes on owning it.
+                    self_type: Some(match decl.owned {
+                        true => Ty::Borrowed(Box::new(Ty::Instance(info.clone()))),
+                        false => Ty::Instance(info.clone()),
+                    }),
+                    state: RefCell::new(State::NotChecked),
+                    above: info.above.clone(),
+                    copy_note: info.copy_note.clone(),
+                };
+                info.methods.borrow_mut().insert(method.name.clone(), Rc::new(function));
             }
         }
     }
@@ -1857,6 +2147,14 @@ impl Checker {
                         self.error(format!("an owned or borrowed value cannot be raised, and this is {ty}"), span);
                     }
                     Ty::Error(kind) => self.can_raise(&kind, span),
+                    // `raises` and `except` name a class, and `Problem[int]`
+                    // is not a name that can be written there.
+                    Ty::Instance(class) if class.origin.is_some() => {
+                        self.error(
+                            format!("an object of a generic class cannot be raised yet, and this is a {}", class.name),
+                            span,
+                        );
+                    }
                     Ty::Instance(class) => self.can_raise(&class.name, span),
                     ty if ty.is_loose() => self.can_raise("Error", span),
                     ty => {
@@ -1925,10 +2223,13 @@ impl Checker {
         let span = statement.span;
         // The variable keeps the value. If the value is an owned one held
         // by another variable, that one gives it up.
+        let wanted = annotation.as_ref().map(|annotation| self.resolve(annotation, env, span));
+        if let Some(wanted) = &wanted {
+            self.expecting(value, wanted);
+        }
         let given = self.take(value, env);
-        let ty = match annotation {
-            Some(annotation) => {
-                let wanted = self.resolve(annotation, env, span);
+        let ty = match wanted {
+            Some(wanted) => {
                 let wanted_item = match &wanted {
                     Ty::List(item) => Some(item),
                     Ty::Owned(inner) => match &**inner {
@@ -2440,6 +2741,7 @@ impl Checker {
 
     /// `take`, for a value going somewhere whose type is known.
     fn kept(&mut self, value: &Expr, wanted: &Ty, env: &Env) -> Ty {
+        self.expecting(value, wanted);
         let given = self.take(value, env);
         self.fresh_list(value, given, wanted)
     }
@@ -2494,6 +2796,7 @@ impl Checker {
             Ty::BoundMethod(function) => Some(self.signature(function).params.get(1..).unwrap_or_default().to_vec()),
             Ty::Class(class) => Some(class.fields.borrow().clone()),
             Ty::CaseConstructor(info, index) => Some(info.cases.borrow()[*index].fields.clone()),
+            Ty::Generic(generic) => Some(self.outline(generic).slots.clone()),
             _ => None,
         }
     }
@@ -2627,7 +2930,9 @@ impl Checker {
         self.frames.push(Frame { declared_return: declared_return.clone(), returns: Vec::new(), loops: 0 });
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
+        self.copy_notes.push(function.copy_note.clone());
         let exits = self.statements(&decl.body, &scope);
+        self.copy_notes.pop();
         self.early.pop();
         self.worked_out.pop();
         self.touched = touched;
@@ -2722,6 +3027,16 @@ impl Checker {
     /// The type of an expression.
     fn expr(&mut self, expr: &Expr, env: &Env) -> Ty {
         let ty = self.expr_inner(expr, env);
+        if let Ty::Generic(generic) = &ty {
+            // `let f = first` would need `f` to be every copy at once.
+            return self.error(
+                format!(
+                    "`{0}` is generic. It can be called, as in `{0}(...)`, but it cannot be kept as a value or passed along yet",
+                    generic.name
+                ),
+                expr.span,
+            );
+        }
         if self.strict && matches!(ty, Ty::Dynamic) {
             return self.error(
                 "strict mode: the type of this cannot be worked out before the program runs",
@@ -2857,12 +3172,19 @@ impl Checker {
                     // It is made where it is written, so nothing it can
                     // see is still to come.
                     above: Rc::from(Vec::new()),
+                    copy_note: None,
                 });
                 self.signature(&function);
                 Ty::Function(function)
             }
 
             ExprKind::Call { callee, args } => {
+                // If the place this call's result goes was noted, take the
+                // note now: the arguments may leave notes of their own.
+                let wanted = match self.expected.take() {
+                    Some((call, wanted)) if call == expr as *const Expr as usize => Some(wanted),
+                    _ => None,
+                };
                 let callee = match &callee.kind {
                     // `object.method(...)`: the call looks at the object.
                     ExprKind::Field { object, name } => {
@@ -2875,6 +3197,11 @@ impl Checker {
                             ty => ty,
                         }
                     }
+                    // A generic is only ever met here, by its own name.
+                    ExprKind::Name(_) => match self.expr_inner(callee, env) {
+                        Ty::Dynamic if self.strict => self.expr(callee, env),
+                        ty => ty,
+                    },
                     _ => self.expr(callee, env),
                 };
                 // Where each argument is going decides what passing it
@@ -2902,7 +3229,12 @@ impl Checker {
                         // Anything else is checked against the parameter
                         // by `call`. A look at an owned value fits there
                         // only if the parameter says `borrow`.
-                        _ => self.expr(&arg.value, env),
+                        _ => {
+                            if let Some(slot) = slot {
+                                self.expecting(&arg.value, &slot.ty);
+                            }
+                            self.expr(&arg.value, env)
+                        }
                     };
                     arguments.push(Argument {
                         name: arg.name.clone(),
@@ -2910,6 +3242,9 @@ impl Checker {
                         span: arg.value.span,
                         written: written(&arg.value),
                     });
+                }
+                if let Ty::Generic(generic) = &callee {
+                    return self.call_generic(generic, arguments, expr, wanted, span);
                 }
                 self.call(&callee, arguments, span)
             }
@@ -3099,6 +3434,10 @@ impl Checker {
                 }
                 ty.clone()
             }
+            Ty::Generic(generic) => self.error(
+                format!("`{}` is generic, so it is called by its own name and cannot be kept as a value yet", generic.name),
+                span,
+            ),
             ty => self.error(format!("{ty} cannot be called"), span),
         }
     }
@@ -3359,6 +3698,495 @@ impl Checker {
         }
     }
 
+    // ------------------------------------------- Generic functions and classes
+    //
+    // `function first[T](items: list[T]) -> T` is not one function. It is
+    // a pattern for as many as the program needs: one for lists of ints,
+    // one for lists of strs. Each is a **copy**: the function's own
+    // syntax tree, copied, with `T` standing for one type, under a name
+    // such as `first[int]`. A copy is an ordinary function. It is checked
+    // like one, and the compilers compile it like one, which is why none
+    // of the stages after this one needed to learn what `T` is.
+    //
+    // The work here is in three steps:
+    //
+    // 1. `infer`: at a call, find what each type parameter must be, by
+    //    laying the written parameter types over the types of the
+    //    arguments (`bind`).
+    // 2. `copy_function` / `copy_class`: make the copy for those types,
+    //    or find the one made earlier.
+    // 3. Carry on as if the copy had been called by name.
+    //
+    // A generic class works the same way, with its fields as the
+    // parameters. `Stack[int]` written as a type asks for a copy too.
+
+    /// Check the names in `[T, U]` after a function's or class's name.
+    /// The capital letter keeps them apart from `int`, `str` and `list`.
+    /// Inside the generic the name wins over anything else called the
+    /// same, so `A` and `V` are type parameters there and not amperes
+    /// and volts.
+    fn type_params(&mut self, names: &[String], span: Span) {
+        for (index, name) in names.iter().enumerate() {
+            if !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                self.error(
+                    format!("a type parameter starts with a capital letter, as in `T` or `Item`, and this is `{name}`"),
+                    span,
+                );
+            } else if names[..index].contains(name) {
+                self.error(format!("the type parameter `{name}` is written twice"), span);
+            }
+        }
+    }
+
+    /// Note that `value` is going where a `wanted` is wanted, in case it
+    /// is a call that needs to know: `let s: Stack[int] = Stack()`.
+    fn expecting(&mut self, value: &Expr, wanted: &Ty) {
+        let says_something = !matches!(wanted, Ty::Dynamic) && !has_param(wanted);
+        if matches!(value.kind, ExprKind::Call { .. }) && says_something {
+            // `Invalid` is noted too: a mistake in the written type was
+            // reported there, and the call should not complain as well.
+            self.expected = Some((value as *const Expr as usize, wanted.clone()));
+        }
+    }
+
+    /// The parameters of a generic function (or the fields of a generic
+    /// class) and what it returns, with the type parameters left in.
+    fn outline(&mut self, generic: &Rc<Generic>) -> Rc<Outline> {
+        if let Some(outline) = generic.outline.borrow().clone() {
+            return outline;
+        }
+        // While this is worked out, `T` means "the type parameter T".
+        let env = Scope::child(&generic.env);
+        for name in &generic.params {
+            env.declare(name, Ty::Alias(Box::new(Ty::Param(Rc::from(name.as_str())))), false);
+        }
+        let span = generic.span;
+        let mut slots = Vec::new();
+        let returns = match &generic.template {
+            Template::Function(decl) => {
+                for param in &decl.params {
+                    let ty = match &param.ty {
+                        Some(ty) => self.resolve_for(ty, &env, span, true),
+                        None => Ty::Invalid,
+                    };
+                    slots.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id: None });
+                }
+                decl.return_type.as_ref().map(|ty| self.resolve(ty, &env, span))
+            }
+            Template::Class(decl) => {
+                for field in &decl.fields {
+                    let ty = match &field.ty {
+                        Some(ty) => self.resolve(ty, &env, span),
+                        None => Ty::Invalid,
+                    };
+                    slots.push(Slot { name: field.name.clone(), ty, has_default: field.default.is_some(), id: None });
+                }
+                // Building one gives the class with every parameter in place.
+                let params = generic.params.iter().map(|name| Ty::Param(Rc::from(name.as_str()))).collect();
+                Some(Ty::Applied(generic.clone(), params))
+            }
+        };
+        let outline = Rc::new(Outline { slots, returns });
+        *generic.outline.borrow_mut() = Some(outline.clone());
+        outline
+    }
+
+    /// A call of a generic function, or the building of an object of a
+    /// generic class. `wanted` is the type of the place the result goes,
+    /// if that is known.
+    fn call_generic(
+        &mut self,
+        generic: &Rc<Generic>,
+        arguments: Vec<Argument>,
+        call: &Expr,
+        wanted: Option<Ty>,
+        span: Span,
+    ) -> Ty {
+        // The compilers find the copy by the call. `expr` has seen to it
+        // that a generic is only ever called by its own name.
+        let Some(types) = self.infer(generic, &arguments, wanted, span) else {
+            return Ty::Invalid;
+        };
+        let copy = match &generic.template {
+            Template::Function(_) => self.copy_function(generic, types, Some(span)).map(|copy| {
+                self.types.copy_called.insert(call as *const Expr as usize, copy.decl.name.clone());
+                Ty::Function(copy)
+            }),
+            Template::Class(_) => self.copy_class(generic, types, Some(span)).map(|copy| {
+                self.types.copy_called.insert(call as *const Expr as usize, copy.name.clone());
+                Ty::Class(copy)
+            }),
+        };
+        match copy {
+            // From here on it is an ordinary call of an ordinary function.
+            Some(copy) => self.call(&copy, arguments, span),
+            None => Ty::Invalid,
+        }
+    }
+
+    /// What each type parameter of `generic` is at this call, in the order
+    /// they are declared. `None` if they cannot all be told, which is an
+    /// error unless a later pass may still settle it.
+    fn infer(
+        &mut self,
+        generic: &Rc<Generic>,
+        arguments: &[Argument],
+        wanted: Option<Ty>,
+        span: Span,
+    ) -> Option<Vec<Ty>> {
+        let outline = self.outline(generic);
+        // Which parameter each argument is for, as `arguments` works it out.
+        let mut pairs: Vec<(&Slot, &Argument)> = Vec::new();
+        let mut next = 0;
+        for argument in arguments {
+            let slot = match &argument.name {
+                None => {
+                    next += 1;
+                    outline.slots.get(next - 1)
+                }
+                Some(name) => outline.slots.iter().find(|slot| slot.name == *name),
+            };
+            pairs.extend(slot.map(|slot| (slot, argument)));
+        }
+
+        // First, what the arguments say. A number that is written out,
+        // such as the `0` of `ring(4, 0)`, waits until last: it can be
+        // an int or a u8, and something else may say which.
+        let mut found: HashMap<String, Ty> = HashMap::new();
+        for (slot, argument) in pairs.iter().filter(|(_, argument)| argument.written.is_none()) {
+            self.bind(&slot.ty, &argument.ty, &mut found);
+        }
+        // An argument that is a function says what it returns only once it
+        // is known what it will be called with: in `apply(5, double)`
+        // with `f: function(T) -> U`, the 5 gives `T`, and `double` called
+        // with a `T` gives `U`.
+        for (slot, argument) in &pairs {
+            let Ty::Callable(pattern) = &slot.ty else {
+                continue;
+            };
+            let takes: Option<Vec<Ty>> = pattern.params.iter().map(|ty| self.filled(ty, &found, span)).collect();
+            let (Some(takes), true) = (takes, self.filled(&pattern.returns, &found, span).is_none()) else {
+                continue;
+            };
+            // A built-in such as `len` says what it returns when called too.
+            let fits = matches!(argument.ty, Ty::Builtin(_))
+                || self.callable(&argument.ty).is_some_and(|(slots, _)| slots.len() == takes.len());
+            if fits {
+                let takes =
+                    takes.into_iter().map(|ty| Argument { name: None, ty, span: argument.span, written: None }).collect();
+                let returns = self.call(&argument.ty, takes, argument.span);
+                self.bind(&pattern.returns, &returns, &mut found);
+            }
+        }
+        // Then, for what no argument has settled, the place the result
+        // goes: `let bytes: Ring[u8] = ring(4, 0)`.
+        if let (Some(returns), Some(wanted)) = (&outline.returns, &wanted) {
+            let mut from_wanted = HashMap::new();
+            self.bind(returns, wanted, &mut from_wanted);
+            for (name, ty) in from_wanted {
+                found.entry(name).or_insert(ty);
+            }
+        }
+        // Last, the written numbers, as the ints they are if nothing
+        // else has spoken.
+        let mut from_written = HashMap::new();
+        for (slot, argument) in pairs.iter().filter(|(_, argument)| argument.written.is_some()) {
+            self.bind(&slot.ty, &argument.ty, &mut from_written);
+        }
+        for (name, ty) in from_written {
+            found.entry(name).or_insert(ty);
+        }
+
+        let unsettled = !self.last_round
+            || matches!(wanted, Some(Ty::Invalid))
+            || arguments.iter().any(|argument| matches!(argument.ty, Ty::Invalid));
+        let loose = arguments.iter().any(|argument| argument.ty.has_dynamic());
+        let mut types = Vec::new();
+        for name in &generic.params {
+            let ty = match found.get(name) {
+                Some(ty) => ty.clone(),
+                // In a program with types left out, an argument whose type
+                // is only known at run time makes `T` the same.
+                None if loose && !self.strict => Ty::Dynamic,
+                None if unsettled => return None,
+                None => {
+                    // An argument that was meant to say, and is the wrong
+                    // shape to: a 5 where a `list[T]` goes. (An empty
+                    // list is the right shape, and says nothing.)
+                    let wrong = pairs
+                        .iter()
+                        .find(|(slot, argument)| mentions(&slot.ty, Some(name)) && !argument.ty.has_dynamic());
+                    if let Some((slot, argument)) = wrong {
+                        self.error(
+                            format!(
+                                "`{}` of `{}` should be {}, but this is {}",
+                                slot.name, generic.name, slot.ty, argument.ty
+                            ),
+                            argument.span,
+                        );
+                        return None;
+                    }
+                    let example = match &generic.template {
+                        Template::Class(_) => format!(
+                            "let x: {0}[{1}] = {0}(...)",
+                            generic.name,
+                            vec!["int"; generic.params.len()].join(", ")
+                        ),
+                        Template::Function(_) => format!("let x: list[int] = {}(...)", generic.name),
+                    };
+                    self.error(
+                        format!(
+                            "`{}` cannot tell what `{name}` is from this call: no argument says. \
+                             Put the result where its type is written, as in `{example}`",
+                            generic.name
+                        ),
+                        span,
+                    );
+                    return None;
+                }
+            };
+            if ty.is_tied() {
+                self.error(format!("`{name}` would be {ty} here. An owned or borrowed value cannot fill a type parameter yet"), span);
+                return None;
+            }
+            types.push(ty);
+        }
+        Some(types)
+    }
+
+    /// Lay the pattern `pattern` over the type `actual`, and note what each
+    /// type parameter in it has to be: `list[T]` over `list[int]` says
+    /// that `T` is `int`. Where the two do not line up, nothing is noted
+    /// and nothing is reported: the ordinary check of the arguments
+    /// against the copy will say what is wrong, in terms of real types.
+    fn bind(&mut self, pattern: &Ty, actual: &Ty, found: &mut HashMap<String, Ty>) {
+        match (pattern, actual) {
+            // Not settled, or only known at run time: it says nothing.
+            (_, Ty::Invalid | Ty::Dynamic) => {}
+            (Ty::Param(name), _) => {
+                // A function is known by what it takes and returns.
+                let actual = match actual {
+                    Ty::Function(_) | Ty::BoundMethod(_) => match self.callable(actual) {
+                        Some((slots, returns)) if !slots.iter().any(|slot| slot.ty.is_loose()) && !returns.is_loose() => {
+                            let params = slots.into_iter().map(|slot| slot.ty).collect();
+                            Ty::Callable(Rc::new(CallableType { params, returns }))
+                        }
+                        _ => return,
+                    },
+                    other => other.clone(),
+                };
+                let merged = match found.get(name.as_ref()) {
+                    None => actual,
+                    // Two arguments, one `T`. A u8 and an int make it an
+                    // int; `none` and an int make it `int or none`. Two
+                    // types with nothing in common leave the first, and
+                    // the check of the arguments reports the second.
+                    Some(old) if fits(&actual, old) => return,
+                    Some(old) if fits(old, &actual) => actual,
+                    Some(old) if matches!(old, Ty::None) || matches!(actual, Ty::None) => join(old, &actual),
+                    Some(_) => return,
+                };
+                found.insert(name.to_string(), merged);
+            }
+            (Ty::List(pattern), Ty::List(actual))
+            | (Ty::Optional(pattern), Ty::Optional(actual))
+            | (Ty::Owned(pattern), Ty::Owned(actual))
+            | (Ty::Borrowed(pattern), Ty::Borrowed(actual)) => self.bind(pattern, actual, found),
+            // A plain value where `T or none` is wanted, a value lent to a
+            // `borrow`, and a result that goes into an `or none`.
+            (Ty::Optional(pattern), actual) if !matches!(actual, Ty::None) => self.bind(pattern, actual, found),
+            (Ty::Borrowed(pattern), actual) => self.bind(pattern, actual, found),
+            (pattern, Ty::Optional(actual)) => self.bind(pattern, actual, found),
+            // `Stack[T]` over `Stack[int]`.
+            (Ty::Applied(generic, patterns), Ty::Instance(class)) => {
+                if let Some((origin, types)) = &class.origin {
+                    if Rc::ptr_eq(origin, generic) {
+                        for (pattern, actual) in patterns.iter().zip(types) {
+                            self.bind(pattern, actual, found);
+                        }
+                    }
+                }
+            }
+            (Ty::Callable(pattern), Ty::Callable(actual)) => {
+                for (pattern, actual) in pattern.params.iter().zip(&actual.params) {
+                    self.bind(pattern, actual, found);
+                }
+                self.bind(&pattern.returns, &actual.returns, found);
+            }
+            (Ty::Callable(pattern), Ty::Function(_) | Ty::BoundMethod(_)) => {
+                if let Some((slots, returns)) = self.callable(actual) {
+                    for (pattern, slot) in pattern.params.iter().zip(&slots) {
+                        self.bind(pattern, &slot.ty, found);
+                    }
+                    self.bind(&pattern.returns, &returns, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `pattern` with each type parameter replaced by what was found for
+    /// it. `None` if one of them has not been found.
+    fn filled(&mut self, pattern: &Ty, found: &HashMap<String, Ty>, span: Span) -> Option<Ty> {
+        Some(match pattern {
+            Ty::Param(name) => found.get(name.as_ref())?.clone(),
+            Ty::List(inner) => Ty::list(self.filled(inner, found, span)?),
+            Ty::Optional(inner) => Ty::Optional(Box::new(self.filled(inner, found, span)?)),
+            Ty::Owned(inner) => Ty::Owned(Box::new(self.filled(inner, found, span)?)),
+            Ty::Borrowed(inner) => Ty::Borrowed(Box::new(self.filled(inner, found, span)?)),
+            Ty::Callable(callable) => {
+                let params: Option<Vec<Ty>> = callable.params.iter().map(|ty| self.filled(ty, found, span)).collect();
+                let returns = self.filled(&callable.returns, found, span)?;
+                Ty::Callable(Rc::new(CallableType { params: params?, returns }))
+            }
+            Ty::Applied(generic, types) => {
+                let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
+                Ty::Instance(self.copy_class(generic, types?, Some(span))?)
+            }
+            other => other.clone(),
+        })
+    }
+
+    /// The name of the copy of `generic` for `types`, the scope in which
+    /// its type parameters mean those types, and the note that goes under
+    /// an error found inside it. `None` if the copies have got out of hand.
+    fn copy_setting(&mut self, generic: &Rc<Generic>, types: &[Ty], asked: Option<Span>) -> Option<(String, Env, String)> {
+        let spelled: Vec<String> = types.iter().map(spelled).collect();
+        let name = format!("{}[{}]", generic.name, spelled.join(", "));
+        // `class Node[T] { next: Node[list[T]] or none }` asks for
+        // Node[int], Node[list[int]], Node[list[list[int]]], with no end.
+        if name.len() > 300 || self.copies.len() > 2000 {
+            let start: String = name.chars().take(60).collect();
+            self.error(
+                format!(
+                    "`{}` needs a copy of itself for a bigger type every time, and that never ends. \
+                     It got as far as `{start}...`",
+                    generic.name
+                ),
+                asked.unwrap_or(generic.span),
+            );
+            return None;
+        }
+        let env = Scope::child(&generic.env);
+        let mut means = Vec::new();
+        for (param, ty) in generic.params.iter().zip(types) {
+            env.declare(param, Ty::Alias(Box::new(ty.clone())), false);
+            means.push(format!("{param} = {}", spelled.get(means.len()).cloned().unwrap_or_default()));
+        }
+        let mut note = format!("this is inside `{name}`: `{}` with {}", generic.name, means.join(", "));
+        if let Some(asked) = asked {
+            note += &format!(", which line {} asks for", asked.line);
+        }
+        Some((name, env, note))
+    }
+
+    /// The copy of a generic function for these types: an ordinary
+    /// function called `first[int]`. `asked` is where the program asks
+    /// for it. With every type `Invalid` it is the generic checked on its
+    /// own (see `finish_generics`), which keeps its plain name.
+    fn copy_function(&mut self, generic: &Rc<Generic>, types: Vec<Ty>, asked: Option<Span>) -> Option<Rc<FunctionInfo>> {
+        let Template::Function(template) = &generic.template else {
+            return None;
+        };
+        let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        let key = (generic.at, if alone { String::new() } else { types.iter().map(spelled).collect::<Vec<_>>().join(", ") });
+        if let Some(Made::Function(copy)) = self.copies.get(&key) {
+            return Some(copy.clone());
+        }
+        let (name, env, note) = self.copy_setting(generic, &types, asked)?;
+        let mut decl = template.fresh();
+        decl.type_params.clear();
+        if !alone {
+            decl.name = name;
+        }
+        let copy = Rc::new(FunctionInfo {
+            decl: Arc::new(decl),
+            env,
+            span: generic.span,
+            self_type: None,
+            state: RefCell::new(State::NotChecked),
+            above: generic.above.clone(),
+            copy_note: (!alone).then_some(note),
+        });
+        self.copies.insert(key, Made::Function(copy.clone()));
+        if !alone {
+            self.used.insert(generic.at);
+            self.types.function_copies.entry(generic.at).or_default().push(copy.decl.clone());
+        }
+        Some(copy)
+    }
+
+    /// The copy of a generic class for these types: an ordinary class
+    /// called `Stack[int]`.
+    fn copy_class(&mut self, generic: &Rc<Generic>, types: Vec<Ty>, asked: Option<Span>) -> Option<Rc<ClassInfo>> {
+        let Template::Class(template) = &generic.template else {
+            return None;
+        };
+        // Checking the generic on its own fills every parameter with
+        // `Invalid`, the type that is accepted everywhere.
+        let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        let key = (generic.at, if alone { String::new() } else { types.iter().map(spelled).collect::<Vec<_>>().join(", ") });
+        if let Some(Made::Class(copy)) = self.copies.get(&key) {
+            return Some(copy.clone());
+        }
+        let (name, env, note) = self.copy_setting(generic, &types, asked)?;
+        let mut decl = template.fresh();
+        decl.type_params.clear();
+        if !alone {
+            decl.name = name;
+        }
+        let decl = Arc::new(decl);
+        let origin = (!alone).then(|| (generic.clone(), types));
+        let copy = class_info(&decl, &env, &generic.above, generic.span, origin, (!alone).then_some(note));
+        // Noted before its fields are worked out: a class may mention itself.
+        self.copies.insert(key, Made::Class(copy.clone()));
+        if !alone {
+            self.used.insert(generic.at);
+            self.classes.insert(copy.id.clone(), copy.clone());
+            self.types.class_copies.entry(generic.at).or_default().push(decl.clone());
+        }
+        self.fill_class(&decl, &copy, &env, generic.span);
+        self.pending.push((decl, copy.clone()));
+        Some(copy)
+    }
+
+    /// The end of a pass: check the bodies of the class copies that were
+    /// made along the way, and every generic that nothing used.
+    fn finish_generics(&mut self) {
+        let mut alone = 0;
+        loop {
+            if let Some((decl, class)) = self.pending.pop() {
+                self.copy_notes.push(class.copy_note.clone());
+                let env = class.env.clone();
+                self.class_body(&decl, &class, &env);
+                self.copy_notes.pop();
+                continue;
+            }
+            // A generic nobody uses has no copy to check. So that a
+            // mistake in it is still found, it is checked once with its
+            // type parameters standing for "anything". That finds a
+            // misspelt name or a wrong number of arguments, though not a
+            // `+` that only some types have.
+            let Some(generic) = self.generics.get(alone).cloned() else {
+                break;
+            };
+            alone += 1;
+            if !self.used.contains(&generic.at) {
+                let anything = vec![Ty::Invalid; generic.params.len()];
+                match &generic.template {
+                    Template::Function(_) => {
+                        if let Some(copy) = self.copy_function(&generic, anything, None) {
+                            self.signature(&copy);
+                        }
+                    }
+                    Template::Class(_) => {
+                        self.copy_class(&generic, anything, None);
+                    }
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------- Operators
 
     /// The type of `left op right`. The rules are the interpreter's, applied
@@ -3492,6 +4320,38 @@ fn elsewhere(name: &str) -> String {
         "`{name}` holds an owned value, which belongs to the block that declares it. \
          A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter"
     )
+}
+
+/// What the checker keeps about a class, before its fields are worked out.
+fn class_info(
+    decl: &ast::Class,
+    env: &Env,
+    above: &Rc<[String]>,
+    span: Span,
+    origin: Option<(Rc<Generic>, Vec<Ty>)>,
+    copy_note: Option<String>,
+) -> Rc<ClassInfo> {
+    let defaults = decl
+        .fields
+        .iter()
+        .filter_map(|field| {
+            let mut names = Vec::new();
+            names_in(field.default.as_ref()?, &mut names);
+            Some((field.name.clone(), names))
+        })
+        .collect();
+    Rc::new(ClassInfo {
+        id: decl_id(span, &decl.name),
+        name: decl.name.clone(),
+        owned: decl.owned,
+        fields: RefCell::new(Vec::new()),
+        methods: RefCell::new(HashMap::new()),
+        above: above.clone(),
+        env: env.clone(),
+        defaults,
+        origin,
+        copy_note,
+    })
 }
 
 fn decl_id(span: Span, name: &str) -> DeclId {
@@ -3873,6 +4733,137 @@ mod tests {
         );
         // A list of a u8 and an int is a list of ints.
         strict_ok("let a: u8 = 1\nlet xs: list[int] = [a, 300]\nlet ys = [a, u16(2)]\nlet zs: list[int] = ys");
+    }
+
+    // ----- Generics -----
+
+    const FIRST: &str = "function first[T](items: list[T]) -> T {\n    return items[0]\n}\n";
+    const STACK: &str = "class Stack[T] {\n    items: list[T]\n    function push(self, item: T) {\n        self.items.append(item)\n    }\n}\n";
+    const SAME: &str = "function same[T](a: T, b: T) -> T {\n    return a\n}\n";
+
+    #[test]
+    fn generics_are_checked() {
+        strict_ok(include_str!("../examples/generics.zeno"));
+        // What comes back is the type that went in.
+        strict_ok(&format!("{FIRST}let a: int = first([1, 2])\nlet b: str = first([\"a\"])\nlet c: list[float] = first([[1.5]])"));
+        strict_ok(&format!(
+            "{STACK}let a = Stack([1])\na.push(2)\nlet b: Stack[str] = Stack(items=[])\nb.push(\"x\")\n\
+             let both: list[Stack[int]] = [a, Stack([3])]\nlet maybe: Stack[str] or none = b\n\
+             function total(s: Stack[int]) -> int {{\n    return sum(s.items)\n}}\nlet n: int = total(a)"
+        ));
+        // Inside a generic the type parameter is a type like any other,
+        // and it wins over a unit of the same name: `A` is not amperes.
+        strict_ok(
+            "class Pair[A, B] {\n    left: A\n    right: B\n}\n\
+             function swap[A, B](p: Pair[A, B]) -> Pair[B, A] {\n    let left: A = p.left\n    return Pair(p.right, left)\n}\n\
+             let q: Pair[str, int] = swap(Pair(1, \"x\"))\nlet amps: A = 2 A",
+        );
+        // A function argument is called with what the others gave.
+        strict_ok(
+            "function apply[T, U](value: T, f: function(T) -> U) -> U {\n    return f(value)\n}\n\
+             let a: int = apply(5, function(n) { return n * 2 })\nlet b: str = apply(\"hi\", function(s) { return s.upper() })\n\
+             let c: int = apply(\"abc\", len)",
+        );
+        // An owned class can be generic, and its copies are owned.
+        strict_ok(
+            "owned class Box[T] {\n    value: T\n}\nfunction look[T](box: borrow Box[T]) -> T {\n    return box.value\n}\n\
+             function open[T](box: Box[T]) -> T {\n    return box.value\n}\nlet b = Box(5)\nlet n: int = look(b)\nlet m: int = open(b)",
+        );
+    }
+
+    #[test]
+    fn the_types_of_a_generic_come_from_the_call() {
+        assert_eq!(error(&format!("{FIRST}let x: str = first([1, 2])")), "`items` of `first[str]` should be list[str], but this is list[int]");
+        assert_eq!(error(&format!("{FIRST}let n = 5\nlet x: str = first([n])")), "`x` should be str, but this is int");
+        assert_eq!(error(&format!("{FIRST}print(first(5))")), "`items` of `first` should be list[T], but this is int");
+        assert_eq!(error(&format!("{STACK}let a: Stack[int] = Stack([1])\nlet b: Stack[str] = a")), "`b` should be Stack[str], but this is Stack[int]");
+        assert_eq!(error(&format!("{STACK}let a = Stack([1])\na.push(\"x\")")), "`item` of `push` should be int, but this is str");
+        assert_eq!(error(&format!("{SAME}let n = 1\nprint(same(n, \"x\"))")), "`b` of `same[int]` should be int, but this is str");
+        // Nothing says what `T` is, until the place the result goes does.
+        let make = "function make[T]() -> list[T] {\n    return []\n}\n";
+        assert_eq!(
+            error(&format!("{make}let a = make()")),
+            "`make` cannot tell what `T` is from this call: no argument says. \
+             Put the result where its type is written, as in `let x: list[int] = make(...)`"
+        );
+        assert_eq!(
+            strict_error(&format!("{STACK}let s = Stack(items=[])")),
+            "`Stack` cannot tell what `T` is from this call: no argument says. \
+             Put the result where its type is written, as in `let x: Stack[int] = Stack(...)`"
+        );
+        strict_ok(&format!("{make}let a: list[int] = make()\nfunction f() -> list[str] {{\n    return make()\n}}"));
+        // `none` and a value make an `or none`. A wider number wins.
+        strict_ok(&format!("{SAME}let n = 3\nlet a: int or none = same(none, n)\nlet small: u8 = 4\nlet wide: int = same(small, n)"));
+    }
+
+    #[test]
+    fn a_written_number_in_a_generic_call_takes_the_size_that_is_wanted() {
+        let ring = "class Ring[T] {\n    slots: list[T]\n}\nfunction ring[T](size: int, empty: T) -> Ring[T] {\n    return Ring([empty])\n}\n";
+        strict_ok(&format!(
+            "{ring}{SAME}{FIRST}let bytes: Ring[u8] = ring(4, 0)\nlet ints: Ring[int] = ring(4, 0)\nlet small: u8 = 4\n\
+             let x: u8 = same(small, 9)\nlet y: u8 = first([1, 2, 3])\nlet z: int = same(1, 2)"
+        ));
+        assert_eq!(error(&format!("{SAME}let small: u8 = 4\nprint(same(small, 300))")), "300 does not fit in a u8 (0 to 255)");
+        assert_eq!(error(&format!("{ring}let bytes: Ring[u8] = ring(4, 256)")), "256 does not fit in a u8 (0 to 255)");
+    }
+
+    #[test]
+    fn a_generic_is_checked_once_for_each_set_of_types() {
+        // The body is checked with `T` as each type it is used with, so
+        // a `*` that a str does not have is found, and the error says
+        // which copy it is in.
+        let source = "class Box[T] {\n    value: T\n    function double(self) -> T {\n        return self.value * 2\n    }\n}\n\
+                      print(Box(2).double())\nprint(Box(2.5).double())\nprint(Box(\"ab\").double())";
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let found = super::check(&program, false);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].message, "`*` does not work between str and int");
+        assert_eq!((found[0].span.line, found[0].span.col), (4, 16));
+        assert_eq!(found[0].note.as_deref(), Some("this is inside `Box[str]`: `Box` with T = str, which line 9 asks for"));
+
+        // A generic nothing uses is still checked, with `T` as anything.
+        assert_eq!(error("function unused[T](x: T) -> T {\n    return y\n}"), "`y` is not defined");
+        ok("function unused[T](x: T) -> T {\n    return x * 2 + len(x)\n}");
+        // A class that needs a bigger copy of itself each time never ends.
+        assert_eq!(
+            error("class Node[T] {\n    value: T\n    next: Node[list[T]] or none\n}\nlet n = Node(1, none)"),
+            "`Node` needs a copy of itself for a bigger type every time, and that never ends. \
+             It got as far as `Node[list[list[list[list[list[list[list[list[list[list[list[...`"
+        );
+    }
+
+    #[test]
+    fn what_a_generic_cannot_do_yet() {
+        assert_eq!(
+            error("function first[t](items: list[t]) -> t {\n    return items[0]\n}"),
+            "a type parameter starts with a capital letter, as in `T` or `Item`, and this is `t`"
+        );
+        assert_eq!(error("function two[T, T](a: T) -> T {\n    return a\n}"), "the type parameter `T` is written twice");
+        assert_eq!(
+            error(&format!("{STACK}let s: Stack[int, str] = Stack(items=[])")),
+            "`Stack` takes 1 type(s) in `[ ]`, as in `Stack[int]`, but 2 were written"
+        );
+        assert_eq!(
+            error(&format!("{STACK}function f(s: Stack) {{ }}")),
+            "`Stack` takes 1 type(s) in `[ ]`, as in `Stack[int]`, but 0 were written"
+        );
+        assert_eq!(error(&format!("{FIRST}let n: first = 4")), "`first` is a function, and this place needs a type");
+        assert_eq!(
+            error(&format!("{FIRST}let f = first")),
+            "`first` is generic. It can be called, as in `first(...)`, but it cannot be kept as a value or passed along yet"
+        );
+        assert_eq!(
+            error("class Box {\n    n: int\n    function get[T](self, x: T) -> T {\n        return x\n    }\n}"),
+            "the method `get` cannot have type parameters of its own yet. The class can have them: `class Box[T]`"
+        );
+        assert_eq!(
+            error("class Problem[T] {\n    what: T\n}\nfunction f() {\n    raise Problem(4)\n}"),
+            "an object of a generic class cannot be raised yet, and this is a Problem[int]"
+        );
+        assert_eq!(
+            error("function keep[T](x: T) -> T {\n    return x\n}\nlet xs: owned list[int] = [1]\nlet ys = keep(xs)"),
+            "`T` would be a borrowed list[int] here. An owned or borrowed value cannot fill a type parameter yet"
+        );
     }
 
     // ----- The board and the clock -----

@@ -70,6 +70,9 @@ pub enum StmtKind {
 pub struct Function {
     /// Empty for a function written as a value: `function(n) { return n * 2 }`
     pub name: String,
+    /// `function first[T](items: list[T]) -> T` has the one type
+    /// parameter `T`: a type that each call fills in.
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     /// The errors named after `raises`.
@@ -88,10 +91,128 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Class {
     pub name: String,
+    /// `class Stack[T]` has the one type parameter `T`.
+    pub type_params: Vec<String>,
     /// `owned class`: every object of it has exactly one owner.
     pub owned: bool,
     pub fields: Vec<Field>,
     pub methods: Vec<Arc<Function>>,
+}
+
+impl Function {
+    /// A copy of this function that shares nothing with it.
+    ///
+    /// The stages after the parser keep notes about a function by where
+    /// its nodes are in memory. A generic function is checked and compiled
+    /// once for each set of types it is used with, and each of those needs
+    /// notes of its own, so each gets a copy of the tree. `clone` alone is
+    /// not enough: a function written inside this one is behind an `Arc`,
+    /// which `clone` shares instead of copying.
+    pub fn fresh(&self) -> Function {
+        let mut copy = self.clone();
+        fresh_block(&mut copy.body);
+        copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(fresh_expr);
+        copy
+    }
+}
+
+impl Class {
+    /// A copy of this class that shares nothing with it. See `Function::fresh`.
+    pub fn fresh(&self) -> Class {
+        let mut copy = self.clone();
+        copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(fresh_expr);
+        for method in &mut copy.methods {
+            *method = Arc::new(method.fresh());
+        }
+        copy
+    }
+}
+
+/// Give every function written inside these statements a copy of its own.
+fn fresh_block(block: &mut Block) {
+    for statement in block {
+        match &mut statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => fresh_expr(value),
+            StmtKind::Assign { target, value, .. } => {
+                fresh_expr(target);
+                fresh_expr(value);
+            }
+            StmtKind::Expr(expr) | StmtKind::Raise(expr) => fresh_expr(expr),
+            StmtKind::Return(value) => value.iter_mut().for_each(fresh_expr),
+            StmtKind::Function(function) => *function = Arc::new(function.fresh()),
+            StmtKind::Class(class) => *class = class.fresh(),
+            StmtKind::Enum(decl) => {
+                let fields = decl.variants.iter_mut().flat_map(|case| &mut case.fields);
+                fields.filter_map(|field| field.default.as_mut()).for_each(fresh_expr);
+            }
+            StmtKind::If { condition, then_block, else_block } => {
+                fresh_expr(condition);
+                fresh_block(then_block);
+                else_block.iter_mut().for_each(fresh_block);
+            }
+            StmtKind::While { condition, body } => {
+                fresh_expr(condition);
+                fresh_block(body);
+            }
+            StmtKind::For { iterable, body, .. } => {
+                fresh_expr(iterable);
+                fresh_block(body);
+            }
+            StmtKind::Match { subject, arms } => {
+                fresh_expr(subject);
+                arms.iter_mut().for_each(|arm| fresh_block(&mut arm.body));
+            }
+            StmtKind::Try { body, handlers } => {
+                fresh_block(body);
+                handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body));
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Import { .. } => {}
+        }
+    }
+}
+
+fn fresh_expr(expr: &mut Expr) {
+    match &mut expr.kind {
+        ExprKind::Function(function) => *function = Arc::new(function.fresh()),
+        ExprKind::FormatStr(parts) => {
+            for part in parts {
+                if let FormatPart::Value { value, .. } = part {
+                    fresh_expr(value);
+                }
+            }
+        }
+        ExprKind::Unit { value, .. } => fresh_expr(value),
+        ExprKind::List(items) => items.iter_mut().for_each(fresh_expr),
+        ExprKind::ListComp { element, iterable, condition, .. } => {
+            fresh_expr(element);
+            fresh_expr(iterable);
+            condition.iter_mut().for_each(|condition| fresh_expr(condition));
+        }
+        ExprKind::Unary { operand, .. } => fresh_expr(operand),
+        ExprKind::Binary { left, right, .. } => {
+            fresh_expr(left);
+            fresh_expr(right);
+        }
+        ExprKind::Compare { first, rest } => {
+            fresh_expr(first);
+            rest.iter_mut().for_each(|(_, operand)| fresh_expr(operand));
+        }
+        ExprKind::Call { callee, args } => {
+            fresh_expr(callee);
+            args.iter_mut().for_each(|arg| fresh_expr(&mut arg.value));
+        }
+        ExprKind::Field { object, .. } => fresh_expr(object),
+        ExprKind::Index { object, index } => {
+            fresh_expr(object);
+            fresh_expr(index);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None
+        | ExprKind::Name(_) => {}
+    }
 }
 
 /// A named slot: a class field, or one value carried by an enum case.

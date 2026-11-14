@@ -147,14 +147,30 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
     // because functions mention them.
     for statement in &program.statements {
         match &statement.kind {
+            // A generic class is not compiled. Its copies are, one for
+            // each set of types the program uses it with: `Stack[int]`
+            // is a class of its own, with its own struct. The checker
+            // made the copies, and each is an ordinary class.
+            StmtKind::Class(decl) if !decl.type_params.is_empty() => {
+                for copy in types.class_copies(decl) {
+                    emitter.register_class(copy, statement.span)?;
+                }
+            }
             StmtKind::Class(decl) => emitter.register_class(decl, statement.span)?,
             StmtKind::Enum(decl) => emitter.register_enum(decl, statement.span)?,
             _ => {}
         }
     }
     for statement in &program.statements {
-        if let StmtKind::Function(decl) = &statement.kind {
-            emitter.register(decl, statement.span)?;
+        match &statement.kind {
+            // The same for a generic function: `first[int]`, `first[str]`.
+            StmtKind::Function(decl) if !decl.type_params.is_empty() => {
+                for copy in types.function_copies(decl) {
+                    emitter.register(copy, statement.span)?;
+                }
+            }
+            StmtKind::Function(decl) => emitter.register(decl, statement.span)?,
+            _ => {}
         }
     }
 
@@ -193,20 +209,30 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
                 _ => {}
             }
         }
-        match &statement.kind {
-            StmtKind::Function(decl) => {
-                let entry = &emitter.functions[&decl.name];
+        // What there is to compile here: the function or class itself,
+        // or, if it is generic, each of its copies.
+        let (functions, classes): (Vec<&Arc<Function>>, Vec<&Class>) = match &statement.kind {
+            StmtKind::Function(decl) if !decl.type_params.is_empty() => {
+                (types.function_copies(decl).iter().collect(), Vec::new())
+            }
+            StmtKind::Function(decl) => (vec![decl], Vec::new()),
+            StmtKind::Class(class) if !class.type_params.is_empty() => {
+                (Vec::new(), types.class_copies(class).iter().map(|copy| &**copy).collect())
+            }
+            StmtKind::Class(class) => (Vec::new(), vec![class]),
+            _ => continue,
+        };
+        for decl in functions {
+            let entry = &emitter.functions[&decl.name];
+            let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
+            emitter.function(decl, &c_name, &kind, &owned, statement.span)?;
+        }
+        for class in classes {
+            for method in &class.methods {
+                let entry = &emitter.classes[&class.name].methods[&method.name];
                 let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
-                emitter.function(decl, &c_name, &kind, &owned, statement.span)?;
+                emitter.function(method, &c_name, &kind, &owned, statement.span)?;
             }
-            StmtKind::Class(class) => {
-                for method in &class.methods {
-                    let entry = &emitter.classes[&class.name].methods[&method.name];
-                    let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
-                    emitter.function(method, &c_name, &kind, &owned, statement.span)?;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -387,6 +413,21 @@ fn disown(kind: Kind) -> (Kind, bool) {
 }
 
 /// The same for everything a function takes and gives back.
+/// `kind` with every "owned" mark taken off, however deep. Who owns a
+/// value does not change how C holds it.
+pub fn disowned(kind: Kind) -> Kind {
+    match kind {
+        Kind::Owned(inner) => disowned(*inner),
+        Kind::List(item) => Kind::List(Box::new(disowned(*item))),
+        Kind::Optional(inner) => Kind::Optional(Box::new(disowned(*inner))),
+        Kind::Function(function) => Kind::Function(Box::new(FunctionKind {
+            params: function.params.into_iter().map(disowned).collect(),
+            returns: disowned(function.returns),
+        })),
+        other => other,
+    }
+}
+
 fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
     let (params, owned) = kind.params.into_iter().map(disown).unzip();
     (FunctionKind { params, returns: disown(kind.returns).0 }, owned)
@@ -396,7 +437,7 @@ fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
 /// still holds one.
 fn free_code(kind: &Kind, place: &str) -> String {
     match kind {
-        Kind::Class(name) => format!("zeno_drop_{name}({place});"),
+        Kind::Class(name) => format!("zeno_drop_{}({place});", ident(name)),
         // An error that an `except` caught, in a build with no collector.
         Kind::Error => format!("zeno_error_drop({place});"),
         _ => format!("zeno_list_drop({place});"),
@@ -572,6 +613,29 @@ fn without_collector(why: impl AsRef<str>, span: Span) -> Error {
 }
 
 /// The error for a part of Zeno this stage does not handle yet.
+/// A Zeno name as it can be written inside a C name. Only the copy of a
+/// generic needs anything done: `Stack[int]` becomes `Stack_int`, and
+/// `Pair[int, list[str]]` becomes `Pair_int_list_str`. Each run of
+/// characters that C does not allow in a name turns into one `_`.
+pub fn ident(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_end_matches('_').to_string()
+}
+
+/// The name a class is shown by. A copy of a generic class is shown as
+/// the class it is a copy of: a `Stack[int]` prints as `Stack(items=[1])`,
+/// which is what `zeno run` prints.
+pub fn shown_name(name: &str) -> &str {
+    name.split('[').next().unwrap_or(name)
+}
+
 fn cannot(what: impl AsRef<str>, span: Span) -> Error {
     Error::new(
         format!("`zeno build` cannot compile {} yet. `zeno run` can still run this program", what.as_ref()),
@@ -595,7 +659,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         Kind::Bool => "bool ".to_string(),
         Kind::Str => "const char *".to_string(),
         Kind::List(_) => "zeno_list *".to_string(),
-        Kind::Class(name) | Kind::Enum(name) => format!("z_{name} *"),
+        Kind::Class(name) | Kind::Enum(name) => format!("z_{} *", ident(name)),
         Kind::Error => "zeno_error *".to_string(),
         Kind::Function(_) => "zeno_closure *".to_string(),
         // A pointer can already say "nothing": it is NULL. A number or a
@@ -709,7 +773,7 @@ fn key(kind: &Kind) -> String {
         Kind::None => "none".to_string(),
         Kind::Quantity(unit) => format!("in_{unit}"),
         Kind::List(item) => format!("list_{}", key(item)),
-        Kind::Class(name) | Kind::Enum(name) => name.clone(),
+        Kind::Class(name) | Kind::Enum(name) => ident(name),
         Kind::Optional(inner) => format!("opt_{}", key(inner)),
         Kind::Error => "error".to_string(),
         Kind::Function(_) => "function".to_string(),
@@ -814,6 +878,7 @@ impl Emitter<'_> {
     /// from the C library. A second `x`, in another block, becomes `z2_x`:
     /// that keeps `let x = x + 1` in an inner block from reading itself.
     fn c_name(&mut self, name: &str) -> String {
+        let name = &ident(name);
         let count = self.used.entry(name.to_string()).or_insert(0);
         *count += 1;
         match *count {
@@ -1057,7 +1122,21 @@ impl Emitter<'_> {
         let (kinds, owned): (Vec<Kind>, Vec<bool>) = kinds.into_iter().map(disown).unzip();
         let widths = self.types.widths(decl).cloned().unwrap_or_default();
         let mut sized = HashMap::new();
-        let name = &decl.name;
+        // `name` goes into C names, `shown` into what the program prints.
+        // They differ only for a copy of a generic class.
+        let (name, shown_as) = (&ident(&decl.name), shown_name(&decl.name));
+        if self.used.contains_key(name) {
+            // `Stack[int]` and a class called `Stack_int`, in one program.
+            return Err(Error::new(
+                format!(
+                    "`{}` and another class of this program would both be called `z_{name}` in C. \
+                     A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. \
+                     Rename one of them, or build with `--llvm`",
+                    decl.name
+                ),
+                span,
+            ));
+        }
         let c_name = self.c_name(name);
 
         self.typedefs.push(format!("typedef struct {c_name} {c_name};"));
@@ -1083,14 +1162,14 @@ impl Emitter<'_> {
                     fill += &format!("    self->{field_name} = {field_name};\n");
                 }
             }
-            let label = if index == 0 { format!("{name}({}=", field.name) } else { format!(", {}=", field.name) };
+            let label = if index == 0 { format!("{shown_as}({}=", field.name) } else { format!(", {}=", field.name) };
             shown.push(c_string(&label));
             shown.push(self.repr(&Val::plain(format!("self->{field_name}"), kind.clone()), span)?);
             tests.push(self.equal(kind, &format!("a->{field_name}"), &format!("b->{field_name}"), span)?);
         }
         if decl.fields.is_empty() {
             body += "    char nothing; /* C does not allow an empty struct */\n";
-            shown.push(c_string(&format!("{name}(")));
+            shown.push(c_string(&format!("{shown_as}(")));
             tests.push("true".to_string());
         }
         shown.push(c_string(")"));
@@ -1134,7 +1213,7 @@ impl Emitter<'_> {
             .zip(kinds)
             .map(|(field, kind)| (field.name.clone(), kind, field.default.clone()))
             .collect();
-        self.classes.insert(name.clone(), ClassEntry { fields, sized, methods, owned_fields, owned: decl.owned });
+        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, owned_fields, owned: decl.owned });
         Ok(())
     }
 
@@ -1991,6 +2070,12 @@ impl Emitter<'_> {
     /// The kind a written type stands for, where the compiler needs to know
     /// it before it has a value to look at: `let xs: list[int] = []`.
     fn kind_of_type(&self, ty: &Type) -> Option<Kind> {
+        // Inside a copy of a generic, `T` is whatever the copy was made
+        // for, and `Stack[int]` is a copy itself. Only the checker knows
+        // those, so its answer is used where it has one.
+        if let Some(kind) = self.types.annotation(ty) {
+            return Some(disowned(kind.clone()));
+        }
         let (name, args) = match ty {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how C holds it.
@@ -2585,6 +2670,16 @@ impl Emitter<'_> {
             ExprKind::Compare { first, rest } => self.chain(first, rest, span),
 
             ExprKind::FormatStr(parts) => self.format_string(parts, span),
+            // A call of a generic goes to one of its copies, and the
+            // checker noted which: `first([1, 2])` calls `first[int]`.
+            ExprKind::Call { args, .. } if self.types.copy_called(expr).is_some() => {
+                let copy = self.types.copy_called(expr).unwrap_or_default().to_string();
+                match self.functions.contains_key(&copy) {
+                    true => self.call_function(&copy, args, span),
+                    false if self.classes.contains_key(&copy) => self.construct(&copy, args, span),
+                    false => Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span)),
+                }
+            }
             ExprKind::Call { callee, args } => self.call(callee, args, span),
 
             ExprKind::Field { object, name } => self.field(object, name, span),
@@ -3465,7 +3560,7 @@ impl Emitter<'_> {
         let entry = &self.classes[class];
         let slots = entry.fields.clone();
         let owned: Vec<bool> = slots.iter().map(|(field, _, _)| entry.owned_fields.contains(field)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{class}"), &slots, &owned, None, args, span)?;
+        let (call, vals) = self.call_c(&format!("zeno_new_{}", ident(class)), &slots, &owned, None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Class(class.to_string()), &parts))
     }
@@ -3688,7 +3783,7 @@ impl Emitter<'_> {
             Kind::Bool => format!("zeno_str_bool({})", val.code),
             Kind::Pin => format!("zeno_str_pin({})", val.code),
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
-            Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{name}({})", val.code),
+            Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
             Kind::Error => format!("{}->message", val.code),
             Kind::Function(_) => format!("zeno_show_function({})", val.code),
@@ -3719,7 +3814,7 @@ impl Emitter<'_> {
         Ok(match kind {
             Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) => format!("({a} == {b})"),
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
-            Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{name}({a}, {b})"),
+            Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
             Kind::Error => format!("zeno_error_same({a}, {b})"),
             Kind::Optional(inner) => format!("{}({a}, {b})", self.optional_same(inner, span)?),
@@ -5069,6 +5164,7 @@ print(word[5])
             ("buffer", include_str!("../examples/buffer.zeno")),
             ("signal", include_str!("../examples/signal.zeno")),
             ("packet", include_str!("../examples/packet.zeno")),
+            ("generics", include_str!("../examples/generics.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -6759,6 +6855,255 @@ match a {
         // A sized number outside an object is an int64_t like any other.
         let c = compile("function next(n: u8) -> u8 { return u8.wrap(n + 1) }\nlet a: u8 = next(255)\n").unwrap();
         assert!(c.contains("static int64_t z_next(int64_t z_n) {\n    return zeno_wrap(zeno_add(z_n, 1, 1, 45), 8, false);\n}"), "{c}");
+    }
+
+    // ----- Generics -----
+
+    /// Generic functions and classes, used with ints, floats, strs, a
+    /// u8, an enum, lists and objects, with errors, defaults, functions
+    /// as arguments, and one generic calling another.
+    const GENERIC: &str = r#"function first[T](items: list[T]) -> T {
+    return items[0]
+}
+
+function largest[T](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+function pair[A, B](a: A, b: B) -> str {
+    return f"({a}, {b})"
+}
+
+function apply[T, U](value: T, f: function(T) -> U) -> U {
+    return f(value)
+}
+
+class Stack[T] {
+    items: list[T]
+
+    function push(self, item: T) {
+        self.items.append(item)
+    }
+
+    function pop(self) -> T {
+        return self.items.pop()
+    }
+
+    function size(self) -> int {
+        return len(self.items)
+    }
+}
+
+class Pair[A, B] {
+    left: A
+    right: B
+}
+
+function swap[A, B](p: Pair[A, B]) -> Pair[B, A] {
+    return Pair(p.right, p.left)
+}
+
+print(first([1, 2, 3]), first(["a", "b"]), first([1.5]))
+print(largest([3, 9, 2]), largest(["pear", "apple"]), largest([2.5, 1.5]))
+print(pair(1, "one"), pair(true, 2.5))
+print(apply(5, function(n: int) -> int { return n * 2 }), apply("hi", function(s) { return s.upper() }))
+
+let numbers: Stack[int] = Stack(items=[])
+numbers.push(1)
+numbers.push(2)
+let words = Stack(items=["a"])
+words.push("b")
+print(numbers.pop(), numbers.size(), words.pop(), words, numbers)
+let p = Pair(1, "x")
+let q = swap(p)
+print(p, q, q.left, q.right + 1)
+enum Colour {
+    Red
+    Green
+}
+
+class Cell[T] {
+    value: T
+    count: u8 = 0
+
+    function set(self, value: T) {
+        self.value = value
+        self.count = u8.wrap(self.count + 1)
+    }
+}
+
+function reversed[T](items: list[T]) -> list[T] {
+    var out: list[T] = []
+    var at = len(items) - 1
+    while at >= 0 {
+        out.append(items[at])
+        at -= 1
+    }
+    return out
+}
+
+function find[T](items: list[T], wanted: T) -> int or none {
+    var at = 0
+    for item in items {
+        if item == wanted {
+            return at
+        }
+        at += 1
+    }
+    return none
+}
+
+function first_or[T](items: list[T], otherwise: T) -> T {
+    if len(items) == 0 {
+        return otherwise
+    }
+    return items[0]
+}
+
+function checked[T](items: list[T], at: int) -> T raises ValueError {
+    if at < 0 or at >= len(items) {
+        raise ValueError(f"no item {at}")
+    }
+    return items[at]
+}
+
+function map[T, U](items: list[T], f: function(T) -> U) -> list[U] {
+    var out: list[U] = []
+    for item in items {
+        out.append(f(item))
+    }
+    return out
+}
+
+function keep[T](items: list[T], want: function(T) -> bool) -> list[T] {
+    return [item for item in items if want(item)]
+}
+
+function make[T](value: T, times: int = 2) -> list[T] {
+    var out: list[T] = []
+    for i in range(times) {
+        out.append(value)
+    }
+    return out
+}
+
+let small: u8 = 200
+let cell = Cell(small)
+cell.set(7)
+let named = Cell("a", 3)
+named.set("b")
+print(cell, named, cell.value + 1, cell == Cell(small), cell == cell)
+print(reversed([1, 2, 3]), reversed(["x", "y"]), reversed([Colour.Red, Colour.Green]))
+print(find([10, 20, 30], 20), find(["a"], "z"), find([2.5], 2.5))
+let nothing: list[str] = []
+print(first_or(nothing, "none there"), first_or([4], 0))
+try {
+    print(checked([1, 2], 1))
+    print(checked(["a"], 5))
+} except ValueError as e {
+    print("caught", e)
+}
+print(map([1, 2, 3], function(n: int) -> str { return f"<{n}>" }), map(["a", "bb"], function(s: str) -> int { return len(s) }))
+print(keep([1, 2, 3, 4], function(n: int) -> bool { return n % 2 == 0 }))
+print(make("z"), make(1.5, times=3), make(Cell(1), 1))
+let cells: list[Cell[int]] = []
+cells.append(Cell(5))
+print(cells, len(cells))
+let maybe: Cell[str] or none = none
+print(maybe)
+
+# A function written inside a generic is copied with it: `both` takes
+# an int in one copy and a str in the other.
+function doubled[T](items: list[T], twice: function(T) -> T) -> list[T] {
+    let both = function(item: T) -> T {
+        return twice(twice(item))
+    }
+    return items.map(both)
+}
+print(doubled([1, 2], function(n: int) -> int { return n * 2 }))
+print(doubled(["a"], function(s: str) -> str { return s + s }))
+"#;
+
+    /// An owned class that is generic: each copy frees its own objects.
+    const GENERIC_OWNED: &str = r#"owned class Box[T] {
+    value: T
+    function get(self) -> T {
+        return self.value
+    }
+}
+function show[T](box: borrow Box[T]) -> T {
+    return box.get()
+}
+function open[T](box: Box[T]) -> T {
+    return box.value
+}
+function boxed[T](value: T) -> Box[T] {
+    return Box(value)
+}
+let a = Box(5)
+let b = Box(2.5)
+print(a.get() + 1, show(b), a.value)
+let c = boxed("in")
+print(show(c))
+print(open(c))
+print(open(b))
+let d: Box[int] = Box(9)
+print(d.value)
+"#;
+
+    #[test]
+    fn generics_match() {
+        same_as_interpreter("generic", GENERIC);
+        no_collector_as_interpreter("generic-owned", GENERIC_OWNED);
+    }
+
+    #[test]
+    fn a_generic_is_compiled_once_for_each_set_of_types() {
+        let source = "function first[T](items: list[T]) -> T {\n    return items[0]\n}\n\
+                      class Cell[T] {\n    value: T\n    function get(self) -> T {\n        return self.value\n    }\n}\n\
+                      function unused[T](x: T) -> T {\n    return x\n}\n\
+                      let small: u8 = 7\n\
+                      print(first([1, 2]), first([\"a\"]), first([3]))\n\
+                      print(Cell(1.5).get(), Cell(small), Cell([1]))\n";
+        let c = compile(source).unwrap();
+        // Two copies of `first`, though it is called three times: an
+        // ordinary C function each, with the type filled in.
+        assert!(c.contains("static int64_t z_first_int(zeno_list *z_items) {\n"), "{c}");
+        assert!(c.contains("static const char *z_first_str(zeno_list *z_items) {\n"), "{c}");
+        assert_eq!(c.matches("z_first_int(zeno_list *z_items) {").count(), 1, "{c}");
+        assert!(c.contains(" = z_first_int(zeno_list_of(2, (zeno_slot){.i = 1}, (zeno_slot){.i = 2}));"), "{c}");
+        // Three structs for `Cell`, each as big as what it holds. A
+        // `Cell[u8]` is one byte.
+        assert!(c.contains("struct z_Cell_float {\n    double z_value;\n};"), "{c}");
+        assert!(c.contains("struct z_Cell_u8 {\n    uint8_t z_value;\n};"), "{c}");
+        assert!(c.contains("struct z_Cell_list_int {\n    zeno_list *z_value;\n};"), "{c}");
+        assert!(c.contains("static double z_Cell_float_get(z_Cell_float *z_self) {\n    return z_self->z_value;\n}"), "{c}");
+        // It still prints as a `Cell`.
+        assert!(c.contains("zeno_join(3, \"Cell(value=\", "), "{c}");
+        // Nothing is written for the generic itself, or for one that
+        // nothing calls.
+        assert!(!c.contains("z_first(") && !c.contains("z_Cell ") && !c.contains("z_unused"), "{c}");
+    }
+
+    #[test]
+    fn what_a_generic_cannot_be_compiled_to_says_so() {
+        let refused = |source: &str| compile(source).err().unwrap_or_else(|| "it compiled".to_string());
+        assert_eq!(
+            refused("class Stack[T] {\n    items: list[T]\n}\nclass Stack_int {\n    n: int\n}\nprint(Stack([1]), Stack_int(2))\n"),
+            "`Stack_int` and another class of this program would both be called `z_Stack_int` in C. \
+             A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. \
+             Rename one of them, or build with `--llvm`"
+        );
+        assert_eq!(
+            refused("function outer() -> int {\n    function id[T](x: T) -> T {\n        return x\n    }\n    return id(4)\n}\nprint(outer())\n"),
+            "`zeno build` cannot compile a function inside a function or block yet. `zeno run` can still run this program"
+        );
     }
 
     // ----- The board and the clock -----

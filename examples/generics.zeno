@@ -1,0 +1,134 @@
+# generics.zeno: one piece of code for many types.
+#
+# A ring buffer keeps the newest few things it was given and forgets the
+# oldest. Firmware is full of them: bytes from a serial port, readings
+# from a sensor, events waiting their turn. The code is the same whatever
+# is kept, so it is written once, with `T` standing for "whatever this
+# ring holds".
+#
+#     zeno run examples/generics.zeno            run it with the interpreter
+#     zeno build examples/generics.zeno          compile it to C
+#     zeno build --llvm examples/generics.zeno   compile it through LLVM
+
+
+# --- A generic class ---
+
+# `Ring[T]` is not one class. It is a pattern for as many as the program
+# uses: `Ring[u8]` for bytes, `Ring[V]` for voltages, `Ring[str]` for text.
+class Ring[T] {
+    slots: list[T]       # one place for each item the ring can hold
+    next: int = 0        # the place the next item goes to
+    count: int = 0       # how many items are in it
+    dropped: int = 0     # how many old items were written over
+
+    function push(self, item: T) {
+        if self.count == len(self.slots) {
+            self.dropped += 1            # full: the oldest is written over
+        } else {
+            self.count += 1
+        }
+        self.slots[self.next] = item
+        self.next = (self.next + 1) % len(self.slots)
+    }
+
+    # What is in the ring, oldest first.
+    function items(self) -> list[T] {
+        let size = len(self.slots)
+        let oldest = (self.next + size - self.count) % size
+        var out: list[T] = []
+        for i in range(self.count) {
+            out.append(self.slots[(oldest + i) % size])
+        }
+        return out
+    }
+
+    # The item pushed last, or `none` while the ring is empty.
+    function newest(self) -> T or none {
+        if self.count == 0 {
+            return none
+        }
+        let size = len(self.slots)
+        return self.slots[(self.next + size - 1) % size]
+    }
+}
+
+
+# --- Generic functions ---
+
+# A ring with room for `size` items. Every place holds `empty` until
+# something is pushed. `T` is whatever `empty` is.
+function ring[T](size: int, empty: T) -> Ring[T] {
+    var slots: list[T] = []
+    for i in range(size) {
+        slots.append(empty)
+    }
+    return Ring(slots)
+}
+
+# The biggest item of a list that has at least one. It works for every
+# type that `>` works for: numbers, text, quantities.
+function largest[T](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+# How many items pass a test.
+function count_where[T](items: list[T], test: function(T) -> bool) -> int {
+    var count = 0
+    for item in items {
+        if test(item) {
+            count += 1
+        }
+    }
+    return count
+}
+
+# Two type parameters: a list of one type becomes a list of another.
+function convert[T, U](items: list[T], change: function(T) -> U) -> list[U] {
+    var out: list[U] = []
+    for item in items {
+        out.append(change(item))
+    }
+    return out
+}
+
+
+# --- Bytes from a serial port ---
+
+# `u8(0)` makes this a Ring[u8]: every place in it is one byte.
+let bytes = ring(4, u8(0))
+for byte in [0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21] {
+    bytes.push(u8(byte))
+}
+print("bytes:", bytes.items(), "newest", bytes.newest(), "dropped", bytes.dropped)
+print("above 0x60:", count_where(bytes.items(), function(b: u8) -> bool { return b > 0x60 }))
+print("as hex:", convert(bytes.items(), function(b: u8) -> str { return f"{b:02x}" }))
+
+
+# --- Voltages from a sensor ---
+
+# The same class, as a Ring[V]. A reading in amps would not go in.
+let volts = ring(3, 0.0 V)
+print("no reading yet:", volts.newest())
+for reading in [3.1 V, 3.3 V, 2.9 V, 3.2 V] {
+    volts.push(reading)
+}
+print("volts:", volts.items(), "highest", largest(volts.items()))
+print("low:", count_where(volts.items(), function(v: V) -> bool { return v < 3.0 V }))
+
+
+# --- Text ---
+
+# The type can be written out where that reads better.
+let log: Ring[str] = ring(2, "")
+log.push("boot")
+log.push("sensor ready")
+log.push("first reading")
+print("log:", log.items(), "last in the alphabet:", largest(log.items()))
+print("lengths:", convert(log.items(), function(line: str) -> int { return len(line) }))
+print(log)
