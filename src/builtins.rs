@@ -392,11 +392,9 @@ fn cos(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
 fn sleep(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     arity("sleep", &args, 1, 1, span)?;
     let seconds = match &args[0] {
-        Value::Quantity(x, unit) => match &**unit {
-            "s" => *x,
-            "ms" => x / 1e3,
-            "us" => x / 1e6,
-            other => return fatal(format!("`sleep` needs a time in s, ms or us, not {other}"), span),
+        Value::Quantity(x, unit) => match crate::units::convert(unit, "s") {
+            Some(scale) => scale.apply(*x),
+            None => return fatal(format!("`sleep` needs a time, such as `500 ms`, not a quantity in {unit}"), span),
         },
         other => return wrong_type("sleep", "a time with a unit, such as `500 ms`", other, span),
     };

@@ -22,6 +22,7 @@ use crate::ast::*;
 use crate::builtins;
 use crate::error::Error;
 use crate::token::Span;
+use crate::units;
 use crate::value::*;
 
 /// How deep function calls may nest before we assume runaway recursion.
@@ -530,7 +531,7 @@ impl Interpreter {
             },
 
             ExprKind::Unit { value, unit } => match self.eval(value, env)?.number() {
-                _ if !crate::units::is_unit(unit) => fatal(crate::units::unknown(unit), span),
+                _ if !units::is_unit(unit) => fatal(crate::units::unknown(unit), span),
                 Some(number) => Ok(Value::Quantity(number, Rc::from(unit.as_str()))),
                 None => fatal("a unit can only follow a number", span),
             },
@@ -705,6 +706,14 @@ impl Interpreter {
                 Some(member) => Ok(member.clone()),
                 None => fatal(format!("module `{}` has no `{name}`", module.name), span),
             },
+            // `(3 s).ms`: the same quantity in another unit.
+            Value::Quantity(x, unit) if units::is_unit(name) => match units::convert(unit, name) {
+                Some(scale) => Ok(Value::Quantity(scale.apply(*x), Rc::from(name))),
+                None => fatal(
+                    format!("a quantity in {unit} cannot be turned into {name}. They measure different things"),
+                    span,
+                ),
+            },
             Value::Error(error) if name == "message" => Ok(Value::str(&error.message)),
             Value::Error(error) if name == "kind" => Ok(Value::str(&error.kind)),
             _ if builtins::has_method(&object, name) => {
@@ -869,16 +878,19 @@ impl Interpreter {
                     items.extend(b.borrow().iter().cloned());
                     Ok(Value::list(items))
                 }
-                (Quantity(a, unit), Quantity(b, other)) if unit == other => {
-                    Ok(Quantity(a + b, unit.clone()))
-                }
+                // `1 s + 500 ms` is `1500 ms`: both sides in the finer unit.
+                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
+                    Some((unit, left, right)) => Ok(Quantity(left.apply(*a) + right.apply(*b), Rc::from(unit))),
+                    None => mismatch(),
+                },
                 _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a + b))),
             },
             Sub => match (&left, &right) {
                 (Int(a), Int(b)) => a.checked_sub(*b).map(Int).map_or_else(overflow, Ok),
-                (Quantity(a, unit), Quantity(b, other)) if unit == other => {
-                    Ok(Quantity(a - b, unit.clone()))
-                }
+                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
+                    Some((unit, left, right)) => Ok(Quantity(left.apply(*a) - right.apply(*b), Rc::from(unit))),
+                    None => mismatch(),
+                },
                 _ => floats.map_or_else(mismatch, |(a, b)| Ok(Float(a - b))),
             },
             Mul => match (&left, &right) {
@@ -894,7 +906,10 @@ impl Interpreter {
             Div => match (&left, &right) {
                 (Quantity(_, _), Quantity(b, _)) | (Quantity(_, _), Float(b)) if *b == 0.0 => by_zero(),
                 (Quantity(_, _), Int(0)) => by_zero(),
-                (Quantity(a, unit), Quantity(b, other)) if unit == other => Ok(Float(a / b)),
+                (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
+                    Some((_, left, right)) => Ok(Float(left.apply(*a) / right.apply(*b))),
+                    None => mismatch(),
+                },
                 (Quantity(a, unit), other) => match other.number() {
                     Some(b) => Ok(Quantity(a / b, unit.clone())),
                     None => mismatch(),
@@ -956,7 +971,10 @@ impl Interpreter {
                 let order = match (&left, &right) {
                     (Int(a), Int(b)) => Some(a.cmp(b)),
                     (Str(a), Str(b)) => Some(a.cmp(b)),
-                    (Quantity(a, unit), Quantity(b, other)) if unit == other => a.partial_cmp(b),
+                    (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
+                        Some((_, left, right)) => left.apply(*a).partial_cmp(&right.apply(*b)),
+                        None => return mismatch(),
+                    },
                     _ => match floats {
                         Some((a, b)) => a.partial_cmp(&b),
                         None => return mismatch(),
@@ -1382,6 +1400,15 @@ mod tests {
              functional:            21.5\n\
              comprehension:         21.5\n"
         );
+    }
+
+    #[test]
+    fn units_of_one_kind_work_together() {
+        assert_eq!(
+            output("let t = 3 s\nlet d = 250 ms\nprint(t + d, t - d, t.ms, d.s, (90 min).h, (1 kWh).J)"),
+            "3250 ms 2750 ms 3000 ms 0.25 s 1.5 h 3600000 J\n"
+        );
+        assert_eq!(output("print(1 s == 1000 ms, 3 s > 250 ms, 999 ms < 1 s, 1 h / 1 min)"), "true true true 60.0\n");
     }
 
     #[test]

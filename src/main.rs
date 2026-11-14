@@ -206,6 +206,11 @@ fn report(path: &str, source: &str, error: &error::Error) {
         .map(|c| if c == '\t' { '\t' } else { ' ' })
         .collect();
     eprintln!("{:gutter$} | {pad}^", "");
+    if let Some(note) = &error.note {
+        for line in note.lines() {
+            eprintln!("{:gutter$} = note: {line}", "");
+        }
+    }
     eprintln!();
 }
 

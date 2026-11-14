@@ -105,10 +105,12 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
     // a pass learns nothing new. Only the final pass reports errors.
     let mut known: HashMap<SlotId, Key> = HashMap::new();
     let mut open: HashSet<SlotId> = HashSet::new();
+    let mut origins: HashMap<SlotId, usize> = HashMap::new();
     let mut settled = false;
     for _ in 0..MAX_ROUNDS {
         let mut checker = Checker::new(strict, false, known.clone(), open.clone());
         checker.run(program);
+        origins = std::mem::take(&mut checker.origins);
 
         let mut next_known = HashMap::new();
         let mut next_open = open.clone(); // once open, always open
@@ -140,6 +142,7 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
     }
 
     let mut checker = Checker::new(strict, true, known, open);
+    checker.known_origins = origins;
     checker.run(program);
     let mut errors = checker.errors;
     errors.sort_by_key(|error| (error.span.line, error.span.col));
@@ -544,6 +547,15 @@ struct Checker {
     open: HashSet<SlotId>,
     /// What this pass has seen arrive at each untyped parameter and field.
     seen: HashMap<SlotId, Seen>,
+    /// The line where each of them was first given a value: by this pass
+    /// (`origins`), and by the pass before (`known_origins`).
+    origins: HashMap<SlotId, usize>,
+    known_origins: HashMap<SlotId, usize>,
+    /// For each function body being checked, innermost last: its parameters
+    /// whose types were worked out, with the type and the line it came from.
+    worked_out: Vec<HashMap<String, (String, usize)>>,
+    /// Which of those the statement being checked has mentioned so far.
+    touched: Vec<String>,
     /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
     classes: HashMap<DeclId, Rc<ClassInfo>>,
     enums: HashMap<DeclId, Rc<EnumInfo>>,
@@ -565,6 +577,10 @@ impl Checker {
             known,
             open,
             seen: HashMap::new(),
+            origins: HashMap::new(),
+            known_origins: HashMap::new(),
+            worked_out: Vec::new(),
+            touched: Vec::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
             types: Types::default(),
@@ -580,7 +596,27 @@ impl Checker {
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) -> Ty {
-        self.errors.push(Error::new(message, span));
+        let mut error = Error::new(message, span);
+        // If this statement used a parameter whose type was worked out from
+        // a call, the real mistake may be that call. Say where it is.
+        if let Some(params) = self.worked_out.last() {
+            let mut notes = Vec::new();
+            for name in &self.touched {
+                if let Some((ty, line)) = params.get(name) {
+                    let note = format!(
+                        "`{name}` was worked out to be {ty} from line {line}. \
+                         Give `{name}` a type to have each call checked against it instead"
+                    );
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+            }
+            if !notes.is_empty() {
+                error.note = Some(notes.join("\n"));
+            }
+        }
+        self.errors.push(error);
         Ty::Invalid
     }
 
@@ -605,6 +641,9 @@ impl Checker {
             match (from, to) {
                 (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
                 (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
+                (Ty::Quantity(from), Ty::Quantity(to)) if units::convert(from, to).is_some() => {
+                    message += &format!(". Convert it with `.{to}`")
+                }
                 _ => {}
             }
             self.error(message, span);
@@ -665,11 +704,16 @@ impl Checker {
         Ty::Dynamic
     }
 
-    /// Note that a value of type `ty` arrives at `slot`.
-    fn sees(&mut self, slot: &Slot, ty: &Ty) {
+    /// Note that a value of type `ty` arrives at `slot`, and where.
+    fn sees(&mut self, slot: &Slot, ty: &Ty, span: Span) {
         let Some(id) = &slot.id else {
             return;
         };
+        // Remember the first place that says anything about this slot, so
+        // that an error caused by what was worked out can point back to it.
+        if !matches!(ty, Ty::Invalid) {
+            self.origins.entry(id.clone()).or_insert(span.line);
+        }
         let seen = match (self.key(ty), self.seen.remove(id)) {
             (None, previous) => previous, // no evidence either way
             (Some(Ok(key)), None) => Some(Seen::Known(key)),
@@ -799,7 +843,7 @@ impl Checker {
         for (slot, given) in params.iter().zip(&wanted.params) {
             // It will be called with these types, which is evidence for an
             // untyped parameter just as a direct call would be.
-            self.sees(slot, given);
+            self.sees(slot, given, span);
             if !fits(given, &slot.ty) {
                 self.error(
                     format!(
@@ -976,6 +1020,7 @@ impl Checker {
     /// Check one statement. Returns true if it always leaves the block.
     fn stmt(&mut self, statement: &Stmt, env: &Env) -> bool {
         let span = statement.span;
+        self.touched.clear();
 
         match &statement.kind {
             StmtKind::Let { name, ty, value, mutable } => {
@@ -994,7 +1039,7 @@ impl Checker {
                 }
                 if let Some(field) = field {
                     // A value stored in an untyped field is evidence of its type.
-                    self.sees(&field, &given);
+                    self.sees(&field, &given, value.span);
                 }
                 self.expect(&given, &wanted, "the new value", value.span);
                 false
@@ -1284,7 +1329,7 @@ impl Checker {
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
                 let given = self.expr(default, env);
-                self.sees(slot, &given);
+                self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
         }
@@ -1505,11 +1550,21 @@ impl Checker {
         });
         *function.state.borrow_mut() = State::Checking(declared);
 
+        let mut worked_out = HashMap::new();
+        for slot in &params {
+            if let Some(line) = slot.id.as_ref().and_then(|id| self.known_origins.get(id)) {
+                if !slot.ty.is_loose() {
+                    worked_out.insert(slot.name.clone(), (slot.ty.to_string(), *line));
+                }
+            }
+        }
+        let touched = std::mem::take(&mut self.touched);
+
         let scope = Scope::child(&function.env);
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
                 let given = self.expr(default, &scope);
-                self.sees(slot, &given);
+                self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
             self.declare(&scope, &param.name, slot.ty.clone(), false, span);
@@ -1517,7 +1572,10 @@ impl Checker {
 
         self.frames.push(Frame { declared_return: declared_return.clone(), returns: Vec::new(), loops: 0 });
         self.raised.push(Vec::new());
+        self.worked_out.push(worked_out);
         let exits = self.statements(&decl.body, &scope);
+        self.worked_out.pop();
+        self.touched = touched;
         let raised = self.raised.pop().unwrap_or_default();
         let frame = self.frames.pop().expect("the frame pushed above");
 
@@ -1637,7 +1695,12 @@ impl Checker {
             }
 
             ExprKind::Name(name) => match env.get(name) {
-                Some(variable) => variable.ty,
+                Some(variable) => {
+                    if self.worked_out.last().is_some_and(|params| params.contains_key(name)) {
+                        self.touched.push(name.clone());
+                    }
+                    variable.ty
+                }
                 None => self.error(format!("`{name}` is not defined"), span),
             },
 
@@ -1793,6 +1856,14 @@ impl Checker {
                 None => self.error(format!("module `{module}` has no `{name}`"), span),
             },
             Ty::Error(_) if name == "message" || name == "kind" => Ty::Str,
+            // `(3 s).ms`: the same quantity in another unit.
+            Ty::Quantity(unit) if units::is_unit(name) => match units::convert(unit, name) {
+                Some(_) => Ty::Quantity(Rc::from(name)),
+                None => self.error(
+                    format!("a quantity in {unit} cannot be turned into {name}. They measure different things"),
+                    span,
+                ),
+            },
             Ty::Str if STR_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Str), Rc::from(name)),
             Ty::List(_) if LIST_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
@@ -1920,7 +1991,7 @@ impl Checker {
                 continue;
             }
             filled[index] = true;
-            self.sees(&slots[index], &argument.ty);
+            self.sees(&slots[index], &argument.ty, argument.span);
             let label = format!("`{}` of `{what}`", slots[index].name);
             self.expect(&argument.ty, &slots[index].ty, &label, argument.span);
         }
@@ -2115,12 +2186,18 @@ impl Checker {
 
         let numbers = left.is_number() && right.is_number();
         let ints = matches!((left, right), (Ty::Int, Ty::Int));
-        let same_unit = matches!((left, right), (Ty::Quantity(a), Ty::Quantity(b)) if a == b);
+        // Two quantities that measure the same thing, such as `s` and `ms`,
+        // work together. The answer is in the finer unit of the two.
+        let shared_unit = match (left, right) {
+            (Ty::Quantity(a), Ty::Quantity(b)) => units::common(a, b).map(|(unit, _, _)| unit),
+            _ => None,
+        };
+        let same_unit = shared_unit.is_some();
 
         let result = match op {
             Add | Sub if ints => Some(Ty::Int),
             Add | Sub if numbers => Some(Ty::Float),
-            Add | Sub if same_unit => Some(left.clone()),
+            Add | Sub if same_unit => shared_unit.map(|unit| Ty::Quantity(Rc::from(unit))),
             Add => match (left, right) {
                 (Ty::Str, Ty::Str) => Some(Ty::Str),
                 (Ty::List(a), Ty::List(b)) => Some(Ty::list(join(a, b))),
@@ -2147,7 +2224,7 @@ impl Checker {
             Eq | NotEq => {
                 // Two types that can never hold the same value: the answer
                 // is already known, which means the comparison is a mistake.
-                if !numbers && !fits(left, right) && !fits(right, left) {
+                if !numbers && !same_unit && !fits(left, right) && !fits(right, left) {
                     let answer = if op == Eq { "false" } else { "true" };
                     self.error(
                         format!("`{}` between {left} and {right} is always {answer}", op.text()),
@@ -2655,7 +2732,15 @@ mod tests {
         ok("function wait(d: ms) { }\nwait(500 ms)\nlet v: mV = 20 mV");
         assert_eq!(
             error("function wait(d: ms) { }\nwait(3 s)"),
-            "`d` of `wait` should be a quantity in ms, but this is a quantity in s"
+            "`d` of `wait` should be a quantity in ms, but this is a quantity in s. Convert it with `.ms`"
+        );
+        ok("function wait(d: ms) { }\nlet t = 3 s\nwait(t.ms)\nwait((2 min).ms)");
+        // Units of one kind work together, and the finer one is the answer.
+        ok("let total: ms = 1 s + 500 ms\nlet late: bool = 1500 ms > 1 s\nlet same: bool = 1 s == 1000 ms\nlet ratio: float = 1 h / 1 min");
+        assert_eq!(error("let x = 1 s + 1 V"), "`+` does not work between a quantity in s and a quantity in V");
+        assert_eq!(
+            error("let v = (1 s).V"),
+            "a quantity in s cannot be turned into V. They measure different things"
         );
         assert_eq!(
             error("function wait(d: ms) { }\nwait(3)"),
@@ -2686,6 +2771,25 @@ mod tests {
         strict_ok("function h(a) {\n if a is none { return 0 }\n return a + 1\n}\nprint(h(1), h(none))");
         // A default value counts as a use.
         assert_eq!(error("function f(a = 3) { return a }\nlet s: str = f()"), "`s` should be str, but this is int");
+    }
+
+    #[test]
+    fn an_error_on_a_worked_out_parameter_names_the_call() {
+        let program = |source: &str| {
+            let tokens = crate::lexer::lex(source).expect("lexes");
+            crate::parser::parse(tokens).expect("parses")
+        };
+        let found = super::check(&program("function f(a) {\n let n: str = 1\n return a.upper()\n}\n\nf(1)"), false);
+        assert_eq!(found.len(), 2);
+        // The mistake that has nothing to do with `a` says nothing about it.
+        assert_eq!(found[0].note, None);
+        assert_eq!(
+            found[1].note.as_deref(),
+            Some("`a` was worked out to be int from line 6. Give `a` a type to have each call checked against it instead")
+        );
+        // With the type written, the call is where the error is.
+        let found = super::check(&program("function f(a: str) {\n return a.upper()\n}\n\nf(1)"), false);
+        assert_eq!((found[0].span.line, &found[0].note), (5, &None));
     }
 
     #[test]

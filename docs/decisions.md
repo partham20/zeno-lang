@@ -127,11 +127,24 @@ all, now passes strict mode and can be compiled without a heap.
 
 **The cost, stated plainly.** There are two.
 1. When a parameter's type was worked out, a wrong call is reported *inside
-   the function*, where the value is misused, not at the call. `f(1)` with
-   `function f(a) { return a.upper() }` says "int has no field or method
-   `upper`" at `a.upper()`. Writing the type moves the error to the call,
-   which is where a library author wants it. This is the reason annotations
-   are still worth writing on anything other people call.
+   the function*, where the value is misused, not at the call. To keep the
+   real mistake findable, the error carries a note naming the line the type
+   came from:
+
+   ```
+   error: int has no field or method `upper`
+    --> main.zeno:2:12
+     |
+   2 |     return a.upper()
+     |            ^
+     = note: `a` was worked out to be int from line 5. Give `a` a type to
+             have each call checked against it instead
+   ```
+
+   The checker cannot know which of the two lines is wrong, so it shows
+   both. Writing the type settles it: then the call is the error. This is
+   the reason annotations are still worth writing on anything other people
+   call.
 2. Adding a call can change what a parameter is worked out to be: a second
    call with a different type turns it dynamic again, which strict mode then
    reports at the function. The message says the type could not be worked
@@ -312,10 +325,32 @@ error. **Why.** If any word after a number were a unit, a typing mistake
 would silently create a new one, which is the very bug units are there to
 prevent. *(Principle 1.)*
 
-**Provisional.** A quantity knows its unit but not its dimension yet, so
-`1 s` and `1000 ms` are different types and there is no conversion between
-them, and no derived units (`V * A = W`). User-defined units are not
-designed either.
+**Units that measure the same thing work together.** `1 s + 500 ms` is
+`1500 ms`, `1 s == 1000 ms` is true, and `1 h / 1 min` is `60.0`. The answer
+is always in the *finer* of the two units.
+
+**Why the finer unit.** Going from seconds to milliseconds multiplies by a
+whole number, which loses nothing. Going the other way divides, and `1 ms`
+is not exactly representable as a number of seconds. So the direction that
+is always exact is the one chosen without being asked.
+
+**Changing unit is written `.ms`.** `(3 s).ms` is `3000 ms`; `delay.s`
+gives seconds. It reads as "delay, in seconds", needs no new keyword, and
+cannot clash with a variable called `s` or `m`. Passing `3 s` where `ms` is
+wanted is still an error, and the message says to write `.ms`.
+
+**Why not convert automatically at a call.** It was tried on paper and
+rejected: the interpreter does not look at type annotations (5.6), so it
+would print `3 s` where the compiled program, which knows the parameter is
+`ms`, would print `3000 ms`. One program, two outputs. An explicit `.ms`
+means the same thing everywhere. *(Principle 1, and 5.5d.)*
+
+**What does not convert.** `degC` and `K` differ by an offset, not a scale,
+so adding them means nothing. `deg` and `rad` have no exact factor between
+them. Both pairs are kept apart on purpose.
+
+**Provisional.** No derived units yet (`V * A` is not `W`), and no
+user-defined units.
 
 ### 1.16 Comparisons chain: `0 <= i < len`
 

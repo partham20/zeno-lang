@@ -35,6 +35,7 @@ use crate::ast::*;
 use crate::checker::{FunctionKind, Kind, Types};
 use crate::error::Error;
 use crate::token::Span;
+use crate::units;
 
 /// The runtime library, pasted in front of every compiled program.
 const RUNTIME: &str = include_str!("runtime.c");
@@ -686,6 +687,18 @@ impl Emitter<'_> {
                 (ExprKind::Name(module), "pi") if module == "math" && self.lookup(module).is_none() => {
                     Ok(Val::plain(format!("{:?}", std::f64::consts::PI), Kind::Float))
                 }
+                // `(3 s).ms`: the same quantity in another unit.
+                _ if units::is_unit(name) => {
+                    let val = self.expr(object)?;
+                    let scale = match &val.kind {
+                        Kind::Quantity(unit) => units::convert(unit, name),
+                        _ => None,
+                    };
+                    match scale {
+                        Some(scale) => Ok(Val::from(scaled(&val.code, scale), Kind::Quantity(name.clone()), &[&val])),
+                        None => Err(cannot(format!("`.{name}` on this"), span)),
+                    }
+                }
                 _ => Err(cannot(format!("`.{name}`"), span)),
             },
 
@@ -717,14 +730,18 @@ impl Emitter<'_> {
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
 
-            // Quantities: the checker has made sure the units agree.
-            (Add | Sub, Quantity(unit), Quantity(_)) => {
-                Val::from(format!("({l} {symbol} {r})"), Quantity(unit.clone()), &parts)
+            // Quantities. The checker has made sure the two measure the
+            // same thing; if the units differ (`1 s + 500 ms`), both sides
+            // are scaled to the finer one.
+            (Add | Sub, Quantity(a), Quantity(b)) => {
+                let (unit, l, r) = in_common(&left, a, &right, b, span)?;
+                Val::from(format!("({l} {symbol} {r})"), Quantity(unit), &parts)
             }
             (Mul, Quantity(unit), Int | Float) | (Mul, Int | Float, Quantity(unit)) => {
                 Val::from(format!("({dl} * {dr})"), Quantity(unit.clone()), &parts)
             }
-            (Div, Quantity(_), Quantity(_)) => {
+            (Div, Quantity(a), Quantity(b)) => {
+                let (_, l, r) = in_common(&left, a, &right, b, span)?;
                 Val::from(format!("zeno_div({l}, {r}, {})", at(span)), Float, &parts).failing()
             }
             (Div, Quantity(unit), Int | Float) => {
@@ -1066,6 +1083,25 @@ fn is_literal(expr: &Expr) -> bool {
     }
 }
 
+/// C for a quantity after it has been scaled to another unit.
+fn scaled(code: &str, scale: units::Scale) -> String {
+    if scale.times != 1.0 {
+        format!("({code} * {:?})", scale.times)
+    } else if scale.over != 1.0 {
+        format!("({code} / {:?})", scale.over)
+    } else {
+        code.to_string()
+    }
+}
+
+/// Two quantities, both scaled to the unit they share.
+fn in_common(left: &Val, a: &str, right: &Val, b: &str, span: Span) -> Result<(String, String, String), Error> {
+    match units::common(a, b) {
+        Some((unit, l, r)) => Ok((unit.to_string(), scaled(&left.code, l), scaled(&right.code, r))),
+        None => Err(cannot(format!("a quantity in {a} with a quantity in {b}"), span)),
+    }
+}
+
 /// `== != < <= > >=` as a C expression.
 fn comparison(op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<String, Error> {
     let symbol = op.text();
@@ -1073,8 +1109,12 @@ fn comparison(op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<Strin
         // C compares strings by where they are in memory. `strcmp` compares
         // what they say.
         (Kind::Str, Kind::Str) => format!("(strcmp({}, {}) {symbol} 0)", left.code, right.code),
-        (Kind::Int, Kind::Int) | (Kind::Float, Kind::Float) | (Kind::Quantity(_), Kind::Quantity(_)) => {
+        (Kind::Int, Kind::Int) | (Kind::Float, Kind::Float) => {
             format!("({} {symbol} {})", left.code, right.code)
+        }
+        (Kind::Quantity(a), Kind::Quantity(b)) => {
+            let (_, l, r) = in_common(left, a, right, b, span)?;
+            format!("({l} {symbol} {r})")
         }
         (Kind::Bool, Kind::Bool) if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) => {
             format!("({} {symbol} {})", left.code, right.code)
@@ -1263,6 +1303,17 @@ mod tests {
              function wait(d: ms) -> ms { return d * 2 }\n\
              print(add(1, 2), fact(10), greet(\"Zeno\"), greet(excited=true, who=\"you\"), area(2.5, 4.0))\n\
              show(\"base is\")\nprint(average(2, 2), average(1, 2), wait(250 ms), 3 s / 2, 1.5 V + 1 V)",
+        );
+    }
+
+    #[test]
+    fn units_convert_the_same_way() {
+        same_as_interpreter(
+            "units",
+            "let t = 3 s\nlet d = 250 ms\n\
+             print(t + d, d + t, t - d, t.ms, d.s, (90 min).h, (1 kWh).J, t.ms.us)\n\
+             print(1 s == 1000 ms, 1 s != 1000 ms, t > d, 999 ms < 1 s, 1 h / 1 min, 2 * t + 0.5 * d)\n\
+             function wait(d: ms) -> ms { return d }\nprint(wait(t.ms), wait((2 min).ms))",
         );
     }
 

@@ -194,7 +194,11 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Str(a), Str(b)) => a == b,
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
-        (Quantity(a, unit_a), Quantity(b, unit_b)) => a == b && unit_a == unit_b,
+        // `1 s == 1000 ms`: compared in the finer unit of the two.
+        (Quantity(a, unit_a), Quantity(b, unit_b)) => match crate::units::common(unit_a, unit_b) {
+            Some((_, left, right)) => left.apply(*a) == right.apply(*b),
+            Option::None => false,
+        },
         (List(a), List(b)) => {
             let (a, b) = (a.borrow(), b.borrow());
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| equal(a, b))

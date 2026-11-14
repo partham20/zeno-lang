@@ -203,8 +203,8 @@ checker. `zeno build` uses it to give every C function its types. See
 - **Generic functions.** `function id(x) { return x }` called with an int
   and with a str leaves `x` dynamic; the checker does not make a separate
   copy of the function for each kind of call.
-- **Unit conversion.** `ms` and `s` are different types with nothing between
-  them, and `V * A` is not `W`. A quantity knows its unit, not its dimension.
+- **Derived units.** `1 s + 500 ms` works, but `V * A` is not `W`: units are
+  grouped by what they measure, with no arithmetic between groups.
 - **Fields of an enum value.** `shape.radius` is `Dynamic`, because which
   case the value is, is not known. Use `match`.
 - **Exact positions inside signatures.** A bad parameter or field type is
@@ -217,6 +217,6 @@ checker. `zeno build` uses it to give every C function its types. See
 1. Make `"abc" * 3` type check (and add it to the interpreter).
 2. Give parameters and fields their own spans in the tree, so that errors
    point at the exact parameter.
-3. Give units a dimension, so that `1 s + 500 ms` works and `1 s + 1 V` does not.
+3. Add a unit of your own to `src/units.rs`, such as `kA` or `um`. What must its size be?
 4. Warn about code that can never run: statements after a `return`.
 5. Narrow on `==`: after `if x == none`. Why is `is none` the form Zeno prefers?
