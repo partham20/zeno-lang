@@ -1723,3 +1723,118 @@ from Rust's own stack.
 it. **Turned down:** making `map`, `filter` and `reduce` instructions of
 their own so that they never leave the loop. It would be right for
 `async`, and it is not needed until then.
+
+### 5.11 An LLVM backend, beside the C backend
+
+`zeno build --llvm` writes the program as LLVM IR and hands it to clang
+(`docs/llvm.md`). `zeno build` without it still writes C.
+
+**Why.** IR is what clang turns C into, so writing it directly takes
+one language out of the path. The order of evaluation, overflow and
+temporaries, which `emit_c.rs` works hard to get right in C, are plain
+in IR. LLVM then gives the optimiser and code for every processor it
+knows, WebAssembly included, which the roadmap wants later.
+
+**Turned down:** replacing the C backend. Firmware is built with the
+vendor's C compiler, a reviewer reads C, and MISRA is a standard for C.
+The two backends are for two jobs.
+
+### 5.11a The IR is written as text, with no LLVM library
+
+`emit_llvm.rs` builds a `.ll` file with `format!`. Zeno still has no
+dependencies.
+
+**Why.** The text is the lesson: every instruction the backend emits can
+be read in the file it writes, and tried by hand with `opt` and `clang`.
+**Turned down:** a binding to LLVM's own library (`inkwell`, `llvm-sys`).
+It needs the LLVM development files of one exact version installed
+before Zeno itself will build, and it hides the IR behind method calls.
+**Cost:** clang must be installed to get a program, mistakes in the IR
+are found only when clang reads it, and the text form changes between
+LLVM versions. This one needs LLVM 15 or later.
+
+### 5.11b A `let` is a value and a `var` is a slot; LLVM builds the SSA
+
+A name in IR is given a value once. A `let` and a parameter are that
+already, so they are IR values with nothing more to do. A `var` gets an
+`alloca`, read with `load` and written with `store`, and LLVM's
+`mem2reg` pass turns it into values and `phi`.
+
+**Why.** Placing `phi` for variables that change in loops and branches
+is the hard part of building SSA, and LLVM has it. Every front end on
+LLVM does this. Zeno gets something extra from its own rule that `let`
+cannot change: most variables need no slot at all, and the IR reads
+close to the program.
+
+`phi` is written by hand in two places, `and`/`or` and `a < b < c`,
+where the shape is always the same.
+
+### 5.11c Overflow is checked in the IR; the rest of arithmetic calls the runtime *(provisional)*
+
+`+`, `-` and `*` on ints use `llvm.sadd.with.overflow` and its
+relations. `//`, `%`, `**` and `/` call `zeno_floordiv`, `zeno_mod`,
+`zeno_pow` and `zeno_div` in `runtime.c`.
+
+**Why.** The three intrinsics are one instruction each on the processor
+and are the commonest arithmetic there is. The others have rules of
+their own (which way `//` rounds, the sign of `%`) that the runtime
+already has right and tested, and a second copy in IR is a second place
+to get them wrong.
+
+**Cost, measured:** the runtime is in another file, so those calls are
+not inlined. A loop of 300 million `%` takes 0.76 s where the C build
+takes 0.29 s. A recursive `fib(38)` takes the same 0.20 s either way.
+**When it changes:** when a real program is slow because of it. Then
+`%` and `//` are written out in IR, or the two files are optimised
+together (`-flto`).
+
+### 5.11d The runtime is the C backend's, with `static` taken off *(provisional)*
+
+An LLVM build links to the same `runtime.c`. `emit_llvm::runtime()`
+removes `static` from the start of each line, so that the functions can
+be called from the IR file, and `zeno build --llvm` writes the result
+beside the IR as `name_runtime.c`.
+
+**Why.** One runtime means text, printing, float formatting and the
+collector behave the same in both backends with nothing to keep in
+step. Writing the file out, instead of piping it to clang, lets the
+build be repeated by hand, which the exercises need.
+
+**Turned down:** a macro in `runtime.c` in place of every `static`
+(a change to 150 lines for the same result), and a runtime rewritten in
+IR. **Cost:** the whole runtime is linked in, used or not, because
+without `static` the compiler cannot tell. A build is about 20 KB
+bigger.
+
+### 5.11e The first version compiles what the C backend began with *(provisional)*
+
+Numbers, bools, text, functions, `if`, `while`, `for` over a range,
+f-strings, and the built-ins and str methods that need only those.
+Everything else is refused where it is met: "`zeno build --llvm` cannot
+compile a class yet. `zeno build` without `--llvm` can".
+
+**Why.** It is the smallest part that teaches all of IR's ideas
+(types, blocks, SSA, `phi`, calls into C) and makes a real program:
+`examples/primes.zeno` builds. The C backend grew the same way, in
+stages 5 and 6. Classes need `getelementptr`, errors need a choice
+between the two ways `emit_c` has, and each is a stage of its own size.
+
+### 5.11f The IR names no processor, and assumes 64 bits
+
+The file has no `target triple` and no `datalayout`. clang supplies the
+machine it is running on.
+
+**Why.** One `.ll` then builds on Linux and macOS, x86 and ARM, with
+nothing to detect. **Cost:** the IR does take a pointer and `size_t` to
+be 64 bits wide, so it is not for a 32-bit microcontroller. The C
+backend is.
+
+### 5.11g An LLVM build must print what the interpreter prints
+
+The tests in `emit_llvm.rs` run each program through `vm::run_both`,
+build it with clang, and require the same output and the same error at
+the same place, with the collector running before every allocation.
+
+**Why.** The reason is the one in 5.10f: the programs are already
+written, and a third engine that disagrees with the other two is wrong
+somewhere.

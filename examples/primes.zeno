@@ -2,8 +2,9 @@
 #
 #     zeno run examples/primes.zeno      run it with the interpreter
 #     zeno build examples/primes.zeno    compile it to primes.c and ./primes
+#     zeno build --llvm examples/primes.zeno    the same through LLVM IR (primes.ll)
 #
-# Both must print exactly the same thing. No types are written anywhere:
+# All three must print exactly the same thing. No types are written anywhere:
 # the checker works them out, and the C that comes out is fully typed.
 
 function is_prime(n) {

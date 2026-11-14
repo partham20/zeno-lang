@@ -70,7 +70,7 @@ piece of the compiler:
 |---|---|
 | Scripts, automation, a REPL | Interpreter and bytecode VM (`zeno run`) |
 | Microcontrollers and firmware | Compile to C, no heap required |
-| Command-line tools, desktop, servers | Native code through C, later LLVM |
+| Command-line tools, desktop, servers | Native code through C or LLVM |
 | Calling existing C libraries | C interop, in both directions |
 | Web front ends | WebAssembly backend |
 | Web back ends, networking | `async` / `await` and a standard library |
@@ -99,6 +99,11 @@ everything is owned, and leaves the collector out of the C altogether
 machine, which is two to three times as fast and prints exactly the same
 ([`docs/vm.md`](docs/vm.md)). Every test program is run on both.
 
+`zeno build --llvm` compiles a second way: to LLVM IR, the input of the
+compiler library behind Clang and Rust, which clang turns into a
+program ([`docs/llvm.md`](docs/llvm.md)). So far it takes numbers, text,
+functions and control flow, and says so when a program uses more.
+
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
 cargo run -- run --vm examples/tour.zeno        # the same, compiled to bytecode and run by the VM
@@ -113,6 +118,7 @@ cargo run -- build --memory examples/memory.zeno  # the program reports its memo
 cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks are freed without the collector
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
+cargo run -- build --llvm examples/primes.zeno  # compile to LLVM IR (primes.ll), then to ./primes with clang
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -125,7 +131,8 @@ cargo test
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
-  [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md).
+  [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md),
+  [`docs/llvm.md`](docs/llvm.md).
 
 ## Roadmap
 
@@ -145,7 +152,8 @@ cargo test
     collector out of the C)
 11. Bytecode VM (done: `zeno run --vm` compiles to bytecode and runs it on a
     stack machine; `zeno bytecode` shows the instructions)
-12. LLVM backend
+12. LLVM backend (done: `zeno build --llvm` writes LLVM IR for numbers,
+    text, functions and control flow, and builds it with clang)
 13. Extras
 
 ## Layout
@@ -167,6 +175,7 @@ src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`
+src/emit_llvm.rs    syntax tree -> LLVM IR, for `zeno build --llvm`
 src/runtime.c       the C library every compiled program carries
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works

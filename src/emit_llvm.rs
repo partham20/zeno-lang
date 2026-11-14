@@ -14,10 +14,10 @@
 //! IR reads like assembly for a machine that does not exist:
 //!
 //! ```text
-//! define internal i64 @z_double(i64 %arg.n) {
+//! define internal double @z_area(double %arg.w, double %arg.h) {
 //! entry:
-//!   %t1 = mul i64 %arg.n, 2
-//!   ret i64 %t1
+//!   %t1 = fmul double %arg.w, %arg.h
+//!   ret double %t1
 //! }
 //! ```
 //!
@@ -28,8 +28,8 @@
 //!    address. The checker's `Types` say which is which, as for the C
 //!    backend.
 //! 2. **There are no nested expressions.** `a + b * c` is two
-//!    instructions, each giving a new name: `%t1 = mul ...` then
-//!    `%t2 = add ...`. The order things happen in is the order they are
+//!    instructions, each giving a new name: `%t1 = fmul ...` then
+//!    `%t2 = fadd ...`. The order things happen in is the order they are
 //!    written, so Zeno's left-to-right rule costs nothing here. (In
 //!    `emit_c` it took `sequence` and `settle`.)
 //! 3. **A name is given a value once, and never again.** This is called
