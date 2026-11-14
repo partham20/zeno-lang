@@ -3,6 +3,7 @@
 #
 #     zeno run examples/shapes.zeno      run it with the interpreter
 #     zeno build examples/shapes.zeno    compile it to shapes.c and ./shapes
+#     zeno build --llvm examples/shapes.zeno    the same through LLVM IR (shapes.ll)
 #
 # Open shapes.c afterwards: a class is a C struct, an enum is a struct with
 # a tag and a union, and `match` is an if / else if chain on the tag.

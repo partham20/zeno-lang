@@ -101,8 +101,8 @@ machine, which is two to three times as fast and prints exactly the same
 
 `zeno build --llvm` compiles a second way: to LLVM IR, the input of the
 compiler library behind Clang and Rust, which clang turns into a
-program ([`docs/llvm.md`](docs/llvm.md)). So far it takes numbers, text,
-functions and control flow, and says so when a program uses more.
+program ([`docs/llvm.md`](docs/llvm.md)). It compiles what the C backend
+compiles, and the tests build every program both ways.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -118,7 +118,7 @@ cargo run -- build --memory examples/memory.zeno  # the program reports its memo
 cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks are freed without the collector
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
-cargo run -- build --llvm examples/primes.zeno  # compile to LLVM IR (primes.ll), then to ./primes with clang
+cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -152,8 +152,8 @@ cargo test
     collector out of the C)
 11. Bytecode VM (done: `zeno run --vm` compiles to bytecode and runs it on a
     stack machine; `zeno bytecode` shows the instructions)
-12. LLVM backend (done: `zeno build --llvm` writes LLVM IR for numbers,
-    text, functions and control flow, and builds it with clang)
+12. LLVM backend (done: `zeno build --llvm` writes LLVM IR for the whole
+    language the C backend compiles, and builds it with clang)
 13. Extras
 
 ## Layout

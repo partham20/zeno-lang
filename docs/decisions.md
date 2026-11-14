@@ -1769,24 +1769,25 @@ close to the program.
 `phi` is written by hand in two places, `and`/`or` and `a < b < c`,
 where the shape is always the same.
 
-### 5.11c Overflow is checked in the IR; the rest of arithmetic calls the runtime *(provisional)*
+### 5.11c Overflow is checked in the IR, and `//`, `%` and `/` are written in IR
 
 `+`, `-` and `*` on ints use `llvm.sadd.with.overflow` and its
-relations. `//`, `%`, `**` and `/` call `zeno_floordiv`, `zeno_mod`,
-`zeno_pow` and `zeno_div` in `runtime.c`.
+relations. `//` and `%` on ints, and `/`, are small functions written
+in IR (`zeno.floordiv`, `zeno.mod`, `zeno.div`, in the table `WRITTEN`),
+copied into a program that uses them. `**`, and `//` and `%` on floats,
+still call `runtime.c`.
 
-**Why.** The three intrinsics are one instruction each on the processor
-and are the commonest arithmetic there is. The others have rules of
-their own (which way `//` rounds, the sign of `%`) that the runtime
-already has right and tested, and a second copy in IR is a second place
-to get them wrong.
+**Why.** The first version called the runtime for all of them, because
+the runtime already had their rules right (which way `//` rounds, the
+sign of `%`). That was measured: the runtime is in another file, so the
+calls were not inlined, and a loop of 300 million `%` took 0.76 s where
+the C build took 0.29 s. Written in IR they are in the same file as the
+program, LLVM inlines them, and the loop takes 0.28 s. They follow the
+C line for line, and the tests compare both with the interpreter.
 
-**Cost, measured:** the runtime is in another file, so those calls are
-not inlined. A loop of 300 million `%` takes 0.76 s where the C build
-takes 0.29 s. A recursive `fib(38)` takes the same 0.20 s either way.
-**When it changes:** when a real program is slow because of it. Then
-`%` and `//` are written out in IR, or the two files are optimised
-together (`-flto`).
+**Turned down:** `-flto`, which optimises the two files together. It
+got the loop to 0.45 s, not 0.29, and needs the LLVM linker installed.
+**Cost:** two copies of three small functions to keep in step.
 
 ### 5.11d The runtime is the C backend's, with `static` taken off *(provisional)*
 
@@ -1806,18 +1807,31 @@ IR. **Cost:** the whole runtime is linked in, used or not, because
 without `static` the compiler cannot tell. A build is about 20 KB
 bigger.
 
-### 5.11e The first version compiles what the C backend began with *(provisional)*
+Three small functions are added at the end for `try` (`FOR_TRY` in
+`emit_llvm.rs`, see 5.11l). They are only in the copy an LLVM build
+writes, so a C build is as it was.
 
-Numbers, bools, text, functions, `if`, `while`, `for` over a range,
-f-strings, and the built-ins and str methods that need only those.
-Everything else is refused where it is met: "`zeno build --llvm` cannot
-compile a class yet. `zeno build` without `--llvm` can".
+### 5.11e The LLVM backend compiles what the C backend compiles
 
-**Why.** It is the smallest part that teaches all of IR's ideas
-(types, blocks, SSA, `phi`, calls into C) and makes a real program:
-`examples/primes.zeno` builds. The C backend grew the same way, in
-stages 5 and 6. Classes need `getelementptr`, errors need a choice
-between the two ways `emit_c` has, and each is a stage of its own size.
+It began with what the C backend began with: numbers, bools, text,
+functions, `if`, `while`, `for` over a range, f-strings. That was the
+smallest part that teaches all of IR's ideas (types, blocks, SSA, `phi`,
+calls into C). The rest of the language followed in one step: classes,
+lists, enums and `match`, `none`, `try` and `raise`, functions as
+values, units and `import math` (5.11h to 5.11n).
+
+**Why in one step.** The pieces lean on each other. Showing an object
+shows its fields, which may be lists of enum values that may be `none`.
+Text, comparing and list slots had to exist for all kinds before any
+one of them could be tested against the interpreter.
+
+What it refuses is what `zeno build` refuses (a named function inside a
+function, the `time` module, a default that is not a literal, a method
+used as a value), and `--firmware`, `--no-collector` and `--memory`.
+One thing it takes that the C backend does not: an assignment through
+any place, such as `grid[0][1] = 5`. In IR the order of the steps is the
+order they are written, so the C backend's reason for refusing it (the
+value must be worked out before the place) does not arise.
 
 ### 5.11f The IR names no processor, and assumes 64 bits
 
@@ -1838,3 +1852,141 @@ the same place, with the collector running before every allocation.
 **Why.** The reason is the one in 5.10f: the programs are already
 written, and a third engine that disagrees with the other two is wrong
 somewhere.
+
+Every program the C backend's tests compile is also built through LLVM
+(`same_as_interpreter` in `emit_c.rs` ends by calling the one in
+`emit_llvm.rs`). **Why.** Those 52 programs were written one hard case
+at a time while the C backend grew: order of evaluation, errors inside
+loops, closures that outlive their function. Writing them again would
+find fewer.
+
+### 5.11h An object is a struct type, and an enum value starts with its tag
+
+A class becomes `%z_Point = type { double, double }`. An object is the
+address of a block from `zeno_alloc`, and a field is reached with
+`getelementptr`. An enum value is the address of a block that starts
+with an `i64` tag. Each case that carries values has a struct type of
+its own (`%z_Shape.Circle = type { i64, ptr, double }`), and a case
+that carries nothing is one fixed constant.
+
+**Why.** It is 5.5g again: in Zeno these values are shared, so they
+are held by address. `getelementptr` with a named struct type lets LLVM
+work out where each field is, on any processor. **Turned down:** a C
+`union` for the cases of an enum, as `emit_c` has. IR has no unions. It
+does not need one: after the tag has been read, the block is simply
+looked at through the struct type of that case. A block is as big as
+its own case, not as big as the biggest.
+
+### 5.11i A list item crosses into the runtime as an `i64` *(provisional)*
+
+Lists are the runtime's (5.5h): one list type, each item in a
+`zeno_slot`, a C union one register wide. The IR calls
+`zeno_list_append(ptr, i64)` and puts an item into the `i64` with
+`bitcast` (a float), `zext` (a bool) or `ptrtoint` (an address).
+
+**Why.** One runtime for both backends (5.11d). **This leans on how C
+hands a small union to a function:** as one whole number in an ordinary
+register. That was checked by asking clang for the IR of `runtime.c` on
+x86-64, and it is the rule on 64-bit ARM too. It also takes the
+processor to be little-endian, where a C `bool` in the union is its
+lowest byte. **When it changes:** on a processor where either is not
+so. Then the runtime gets entry points that take `int64_t`.
+
+### 5.11j `T or none` is null for an address and a `{ i1, T }` pair for a number
+
+As 5.5j. An address can already say "nothing", so `Point or none` is a
+`ptr` that may be null. An `int or none` is the pair `{ i1, i64 }`:
+a flag, then the number. IR passes such a pair to a function and
+returns it like any other value (`insertvalue` and `extractvalue` put a
+part in and take one out).
+
+Inside a list a pair does not fit a slot, so it is put in a small block
+and the slot holds the address. The runtime has functions for that
+(`zeno_box_int`), which take a C struct. **They are not used:** how a
+struct is handed to a C function differs from processor to processor,
+and getting it wrong is silent. The same six functions are written in
+IR (`zeno.box.int` and its relations), where the pair never leaves IR.
+
+### 5.11k What shows and compares a value is written the first time it is needed
+
+`print(point)` calls `@zeno.show.Point`, a function the compiler writes
+in IR. So with `@zeno.same.Point` for `==`, the same two for each enum
+and each `T or none`, and the small functions the runtime's list code
+is handed to show or compare one item. Each is written when the first
+use of it is compiled, and the set `written` remembers.
+
+**Why.** `emit_c` writes show and same for every class as it meets the
+class, used or not, and the C compiler drops the unused ones. Here that
+would be IR the reader has to scroll past. **One care:** a class can
+hold itself (`next: Node or none`), so showing a `Node` needs the
+function that shows a `Node`. The name goes into `written` before the
+body is compiled, and the inner use becomes a plain call.
+
+### 5.11l Errors jump, as in the ordinary C build; slots are `volatile` near a `try`
+
+`try` and `raise` use the runtime's `setjmp` and `longjmp` (5.5i). The
+IR calls `_setjmp` itself, marked `returns_twice`, and the runtime's
+`zeno_raise` does the jump.
+
+**Why.** Errors raised by the runtime (an index out of range, a
+division by zero) already travel this way, and a `try` in IR has to
+catch those too. **Turned down:** LLVM's own exceptions (`invoke` and
+`landingpad`). They are what C++ uses, cost nothing until something is
+raised, and need a "personality" function and the system's unwinder,
+which `runtime.c` would have to be rebuilt around. Also turned down for
+now: errors as values, as in a firmware build (5.5l). That is the way
+to make `--llvm --firmware` one day.
+
+**Two things this costs.**
+
+1. *How big is a `jmp_buf`?* Only C knows, and it differs by processor
+   and C library. The IR asks while the program runs
+   (`zeno_try_size()`), makes that much room on the stack, and leaves
+   the fields to two more small functions. All three are added to the
+   runtime copy an LLVM build writes.
+2. *`volatile`.* After the jump back, a `var` changed inside the `try`
+   may hold its old value, because LLVM kept it in a processor register
+   and the jump puts the registers back. So in a function that has a
+   `try` in it, every slot of the function is read and written
+   `volatile`, which keeps it in memory. The C backend marks only the
+   variables changed inside a `try`. Marking all of them is simpler and
+   costs speed only in those functions. It was tested by taking the
+   word out of the IR by hand: the `except` block then sees the wrong
+   numbers.
+
+*(provisional)* `_setjmp` is the name on Linux and macOS. It is the one
+that does not save the signal mask, which is what C's `setjmp` means
+there.
+
+### 5.11m A function value is a block: its code, its name, its variables
+
+As 5.5k. A function value is the address of a block whose first field
+is the address of its code. It is called with itself as a hidden first
+argument. A function written inside another finds the variables it uses
+after the two fields every function value has. A named function used as
+a value gets a small wrapper that takes the hidden argument and ignores
+it.
+
+A `let` is copied into the block: it cannot change, so a copy is as
+good. A `var` that an inner function mentions lives in a box from
+`zeno_alloc` from the start, and the block holds the box's address, so
+the two functions see each other's changes, and the variable outlives
+the function that declared it.
+
+**Why a box for every such `var`, even one the inner function only
+reads:** finding out whether it is ever changed after the inner
+function was made needs a pass over the outer function that the
+compiler does not have. **Cost:** one small allocation for each such
+variable.
+
+### 5.11n In an LLVM build, an owned value is held like a shared one *(provisional)*
+
+`owned` and `&` are checked as always (5.8). The LLVM backend then
+compiles an owned list or object exactly as a shared one, and the
+collector frees it.
+
+**Why.** An LLVM build always has the collector. Freeing an owned value
+the moment its owner ends matters for a build without one (5.9), which
+`--llvm` does not do yet. The program prints the same either way.
+**Cost:** memory comes back later than in a C build, and `--memory` is
+not offered.
