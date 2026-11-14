@@ -5823,6 +5823,7 @@ print(work(2000))
         for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_mark_words", "_setjmp", "volatile"] {
             assert!(!ir.contains(gone), "`{gone}` is still in a build with no collector");
         }
+        assert_eq!(asks_the_heap(&ir), None, "the IR takes memory from the heap");
         let name = format!("{name}-llvm");
         let Some((compiled, errors, finished)) = build_and_run_as(&name, &ir, Build::NoCollector, &["-DZENO_MEMORY_REPORT"])
         else {
@@ -5831,6 +5832,17 @@ print(work(2000))
         assert!(finished, "the compiled program failed: {errors}");
         assert_eq!(compiled, printed, "\n{source}");
         assert_eq!(errors, report, "the two backends do not use memory alike\n{source}");
+    }
+
+    /// Does this C, or this IR, take memory from the C library's heap?
+    /// The answer is the first of its four names that is found. A build
+    /// with no collector must not: its memory is the pool in runtime.c
+    /// (docs/pool.md). The names are looked for everywhere, comments
+    /// included, because a reviewer's search would look there too. The
+    /// runtime's own `zeno_free` is not the library's `free`.
+    pub(crate) fn asks_the_heap(code: &str) -> Option<&'static str> {
+        let free = code.match_indices("free(").any(|(at, _)| !code[..at].ends_with("zeno_"));
+        ["malloc", "calloc", "realloc"].into_iter().find(|name| code.contains(name)).or(free.then_some("free"))
     }
 
     /// A program that the C build with no collector refused, with these
@@ -6001,6 +6013,12 @@ for n in [1, 5] {
             assert!(ordinary.contains(gone) && firmware.contains(gone) && !bare.contains(gone), "{gone}");
         }
         assert!(bare.contains("char zeno_text_room[") && bare.contains("size_t zeno_text_top"));
+        // And it takes its memory from the pool, where the other two take
+        // it from the heap.
+        assert_eq!(asks_the_heap(&bare), None);
+        assert!(bare.contains("char bytes[ZENO_POOL];"));
+        assert_eq!(asks_the_heap(&ordinary), Some("malloc"));
+        assert_eq!(asks_the_heap(&firmware), Some("malloc"));
     }
 
     #[test]

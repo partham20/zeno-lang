@@ -61,7 +61,8 @@ fn usage() {
     println!("  --no-collector           with build: a firmware build with no garbage");
     println!("                           collector in it. Every list and object must");
     println!("                           be `owned`, and is freed where its owner's");
-    println!("                           block ends");
+    println!("                           block ends. Memory comes from a pool of a");
+    println!("                           fixed size, not from malloc");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");

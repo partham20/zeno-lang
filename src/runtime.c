@@ -48,13 +48,13 @@ static const char *zeno_file = "";
  * memory and breaks nothing.
  */
 
+#ifndef ZENO_NO_COLLECTOR
+
 static void zeno_out_of_memory(void) {
     fflush(stdout);
     fprintf(stderr, "error: out of memory\n");
     exit(1);
 }
-
-#ifndef ZENO_NO_COLLECTOR
 
 /* What sits in front of every block. The first field does two jobs, at
  * different times. Between collections it is the block's `place` in the
@@ -304,17 +304,14 @@ static void zeno_memory_report(void) {
  * places, and each gives it back at a line that can be pointed to:
  *
  *   1. A list or an object has one owner. The line that ends its owner's
- *      block hands it back. zeno_alloc and zeno_free are `calloc` and
- *      `free`, and nothing more.
+ *      block hands it back. Both come from the pool below: one array of a
+ *      fixed size. The C library's heap is not used at all.
  *   2. Text built while the program runs lasts until the statement that
  *      built it is over. It is written into one array of a fixed size, the
  *      text room, and giving it back is setting one number.
  */
 
-/* Numbers for the report that `zeno build --memory` asks for. Counting
- * bytes in use needs the size of each block, so a block carries its size
- * in front of it, but only in a build that asked for the report. (Two
- * words, not one, so that what follows is lined up as `calloc` left it.) */
+/* Numbers for the report that `zeno build --memory` asks for. */
 #ifdef ZENO_MEMORY_REPORT
 static size_t zeno_in_use = 0;
 static size_t zeno_most_in_use = 0;
@@ -324,37 +321,118 @@ static size_t zeno_blocks_held = 0;
 static size_t zeno_most_text = 0;
 #endif
 
+/* The pool: where lists, objects and errors live.
+ *
+ * It is one array, ZENO_POOL bytes long, that is part of the program
+ * from the start. So how much memory the program can ever use is known
+ * when it is built, and no line of it can fail to get memory from the
+ * system, because it never asks.
+ *
+ * Blocks come in fixed sizes, each twice the one before: 16 bytes, 32,
+ * 64 and so on. A request gets the smallest size it fits in.
+ *
+ *     taking    Is there a spare block of that size? Take it. If not,
+ *               cut a new one from the part of the array never used yet
+ *               (everything above `zeno_pool_top`).
+ *     giving    The block goes on the list of spare blocks of its size.
+ *
+ * Both are a few instructions, however full the pool is. A block is never
+ * cut in two and two blocks are never joined, so the pool cannot break up
+ * into pieces too small to use: a size the program has given back can
+ * always be taken again. What that costs is that memory cut for one size
+ * is never used for another. docs/pool.md goes through all of it.
+ *
+ * In front of each block are eight bytes that say which size it is and
+ * how much of it was asked for. */
+#ifndef ZENO_POOL
+#define ZENO_POOL 32768
+#endif
+
+/* How many sizes there are. The largest holds 16 << 23 bytes, which is
+ * more than a pool is likely to be. */
+#ifndef ZENO_POOL_STEPS
+#define ZENO_POOL_STEPS 24
+#endif
+
+typedef struct {
+    uint32_t step;  /* the block holds 16 << step bytes */
+    uint32_t asked; /* how many of them are in use; 0 while the block is spare */
+} zeno_head;
+
+/* A spare block. Its first bytes say where the next spare one of its size
+ * is. (The smallest block is 16 bytes so that this always fits.) */
+typedef struct zeno_spare {
+    zeno_head head;
+    struct zeno_spare *next;
+} zeno_spare;
+
+/* The array. The second member is never used: it is there so that the C
+ * compiler lines the array up for an int or a float. */
+static union {
+    char bytes[ZENO_POOL];
+    uint64_t lined_up;
+} zeno_pool;
+static size_t zeno_pool_top = 0;
+static zeno_spare *zeno_pool_spare[ZENO_POOL_STEPS];
+
+static void zeno_pool_full(void) {
+    fflush(stdout);
+    fprintf(stderr, "error: the memory pool is full (ZENO_POOL is %d bytes)\n", (int)ZENO_POOL);
+    exit(1);
+}
+
 /* Memory for a list, an object or an error. It starts as all zeros. */
 static char *zeno_alloc(size_t size) {
+    if (size == 0) size = 1;
+    uint32_t step = 0;
+    size_t room = 16;
+    while (room < size) {
+        room *= 2;
+        step++;
+        if (step == ZENO_POOL_STEPS) zeno_pool_full();
+    }
+    zeno_spare *block = zeno_pool_spare[step];
+    if (block != NULL) {
+        zeno_pool_spare[step] = block->next;
+    } else {
+        size_t whole = sizeof(zeno_head) + room;
+        if (whole > (size_t)ZENO_POOL - zeno_pool_top) zeno_pool_full();
+        block = (zeno_spare *)(zeno_pool.bytes + zeno_pool_top);
+        zeno_pool_top += whole;
+        block->head.step = step;
+    }
+    block->head.asked = (uint32_t)size;
+    char *memory = (char *)block + sizeof(zeno_head);
+    memset(memory, 0, room);
 #ifdef ZENO_MEMORY_REPORT
-    size_t *block = calloc(1, 2 * sizeof(size_t) + size);
-    if (block == NULL) zeno_out_of_memory();
-    block[0] = size;
     zeno_blocks_made++;
     zeno_blocks_held++;
     zeno_bytes_made += size;
     zeno_in_use += size;
     if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
-    return (char *)(block + 2);
-#else
-    char *memory = calloc(1, size);
-    if (memory == NULL) zeno_out_of_memory();
-    return memory;
 #endif
+    return memory;
 }
 
 /* Give a block back. `memory` is what zeno_alloc returned, or NULL, which
- * does nothing. */
+ * does nothing. The compiler writes one of these for each block, at the
+ * line where its owner ends. If a block ever came here twice, the list of
+ * spare blocks would hand it to two owners, so that is looked for. */
 static void zeno_free(void *memory) {
     if (memory == NULL) return;
+    zeno_spare *block = (zeno_spare *)((char *)memory - sizeof(zeno_head));
+    if (block->head.asked == 0) {
+        fflush(stdout);
+        fprintf(stderr, "error: a block of memory was given back twice\n");
+        exit(1);
+    }
 #ifdef ZENO_MEMORY_REPORT
-    size_t *block = (size_t *)memory - 2;
-    zeno_in_use -= block[0];
+    zeno_in_use -= block->head.asked;
     zeno_blocks_held--;
-    free(block);
-#else
-    free(memory);
 #endif
+    block->head.asked = 0;
+    block->next = zeno_pool_spare[block->head.step];
+    zeno_pool_spare[block->head.step] = block;
 }
 
 /* The text room. Text is written at `zeno_text_top`, which then moves up.
@@ -396,6 +474,7 @@ static void zeno_memory_report(void) {
     fflush(stdout);
     fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, no collector, %zu blocks left at the end\n",
             zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_blocks_held);
+    fprintf(stderr, "pool: %zu bytes taken, in a pool of %d\n", zeno_pool_top, (int)ZENO_POOL);
     fprintf(stderr, "text: at most %zu bytes in use at once, in a room of %d\n", zeno_most_text, (int)ZENO_TEXT_ROOM);
 }
 #endif

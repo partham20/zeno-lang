@@ -6172,6 +6172,8 @@ function main() -> int raises Refused {
         for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_block_count", "setjmp"] {
             assert!(!c.contains(gone), "`{gone}` is still in a build with no collector");
         }
+        // Nor is the heap: lists, objects and errors come from the pool.
+        assert_eq!(crate::emit_llvm::tests::asks_the_heap(&c), None, "a build with no collector uses the heap");
         let name = format!("{name}-no-collector");
         let (compiled, errors, finished) = build_and_run(&name, &c, &["-O1", "-DZENO_MEMORY_REPORT"])?;
         assert!(finished, "the compiled program failed: {errors}");
@@ -6607,6 +6609,112 @@ print(shown, longest, n, label(shown).upper() + "!")
         let Some((printed, _, finished)) = build_and_run("room", &c, &["-DZENO_TEXT_ROOM=400"]) else { return };
         assert!(finished);
         assert_eq!(printed, interpreted(source));
+    }
+
+    /// The number in the line `pool: 2104 bytes taken, in a pool of 32768`
+    /// of a memory report: how much of the pool was ever cut into blocks.
+    fn pool_needed(report: &str) -> usize {
+        let line = report.lines().find(|line| line.starts_with("pool:")).expect("a line about the pool");
+        let number = line.split(|c: char| !c.is_ascii_digit()).find(|word| !word.is_empty()).expect("a number");
+        number.parse().expect("a number")
+    }
+
+    #[test]
+    fn with_no_collector_the_pool_has_an_end() {
+        let source = "var items: owned list[int] = []\nprint(\"before\")\nfor n in range(100) { items.append(n) }\nprint(len(items))";
+        let c = compile_no_collector(source).unwrap();
+        // A pool that is too small stops the program, and says what to change.
+        let Some((printed, errors, finished)) = build_and_run("small-pool", &c, &["-DZENO_POOL=1024"]) else {
+            return;
+        };
+        assert!(!finished);
+        assert_eq!(printed, "before\n");
+        assert_eq!(errors, "error: the memory pool is full (ZENO_POOL is 1024 bytes)\n");
+        // The report says how much of the pool the program took...
+        let Some((_, report, finished)) = build_and_run("pool", &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+        assert!(finished);
+        let needed = pool_needed(&report);
+        assert!(needed > 1024 && needed < 4096, "{report}");
+        // ...and that is exact: it runs in a pool of that size, and not
+        // in one that is a byte smaller.
+        let exact = format!("-DZENO_POOL={needed}");
+        let Some((printed, _, finished)) = build_and_run("exact-pool", &c, &[&exact]) else { return };
+        assert!(finished);
+        assert_eq!(printed, interpreted(source));
+        let short = format!("-DZENO_POOL={}", needed - 1);
+        let Some((_, errors, finished)) = build_and_run("short-pool", &c, &[&short]) else { return };
+        assert!(!finished);
+        assert_eq!(errors, format!("error: the memory pool is full (ZENO_POOL is {} bytes)\n", needed - 1));
+    }
+
+    #[test]
+    fn with_no_collector_the_pool_does_not_fill_up_over_time() {
+        // Lists of forty different lengths, and an object for each, made
+        // and given back over and over. A pool that broke up into pieces,
+        // or lost a block now and then, would need more for more trips.
+        let program = |trips: usize| {
+            format!(
+                "owned class Frame {{
+    id: int
+    bytes: owned list[int]
+}}
+
+var total = 0
+for trip in range({trips}) {{
+    let bytes: owned list[int] = [n for n in range(trip % 40)]
+    let frame = Frame(trip, bytes)
+    total = total + len(frame.bytes)
+}}
+print(total)
+"
+            )
+        };
+        let mut needed = Vec::new();
+        for trips in [80, 4000] {
+            let source = program(trips);
+            let c = compile_no_collector(&source).unwrap();
+            let name = format!("pool-{trips}-trips");
+            let Some((printed, report, finished)) = build_and_run(&name, &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert!(finished, "{report}");
+            assert_eq!(printed, interpreted(&source));
+            assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+            needed.push(pool_needed(&report));
+        }
+        assert_eq!(needed[0], needed[1], "fifty times the trips needed a bigger pool");
+        assert!(needed[0] < 2048, "{needed:?}");
+    }
+
+    #[test]
+    fn the_pool_gives_a_block_back_to_its_own_size() {
+        // The pool on its own, driven from C: what the comments in
+        // runtime.c say it does.
+        let c = runtime(true, false)
+            + r#"
+int main(void) {
+    char *a = zeno_alloc(24);  /* fits the 32-byte size */
+    char *b = zeno_alloc(100); /* fits the 128-byte size */
+    /* Lined up for an int or a float, and 8 bytes of note in front of each. */
+    printf("%d %d\n", (int)((uintptr_t)a % 8), (int)(b - a));
+    memset(a, 'x', 24);
+    zeno_free(a);
+    /* The next request of that size gets the same place, wiped. */
+    char *c = zeno_alloc(17);
+    printf("%d %d\n", c == a, c[0] == 0 && c[23] == 0);
+    /* Another size does not: it is cut from what has never been used. */
+    char *d = zeno_alloc(16);
+    printf("%d %d\n", d == b + 128 + 8, (int)zeno_pool_top);
+    /* NULL is nothing to give back. A block given back twice is caught. */
+    zeno_free(NULL);
+    zeno_free(d);
+    zeno_free(d);
+    printf("not reached\n");
+    return 0;
+}
+"#;
+        let Some((printed, errors, finished)) = build_and_run("pool-alone", &c, &[]) else { return };
+        assert!(!finished);
+        assert_eq!(printed, "0 40\n1 1\n1 200\n");
+        assert_eq!(errors, "error: a block of memory was given back twice\n");
     }
 
     #[test]
