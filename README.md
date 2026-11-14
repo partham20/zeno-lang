@@ -9,21 +9,37 @@ enough never changes. A fitting name for a compiler that will always be almost f
 
 ## The idea
 
-**Python first.** If Python has a way to say something, Zeno says it the same way:
-`def`, `class`, `if / elif / else`, `for x in`, `match / case`, `try / except`, f-strings,
-list comprehensions, and no `main()` needed for a script. Syntax from Rust or Java
-appears only where Python has no answer.
+Zeno should read like plain English and still be checked like Rust. Two rules shape the syntax:
 
-What changes is underneath:
+1. **Words over symbols.** Keywords are whole words you can read aloud: `function`,
+   `and`, `or`, `not`, `match`, `case`, `raise`. No `fn`, `&&`, `=>` or `?`.
+2. **Punctuation has to earn its place.**
 
-- **Type hints are real.** Types are checked before the program runs, and inferred so you rarely write them.
+| Kept | Why |
+|---|---|
+| `{ }` around blocks | You can always see where a block ends, and a stray space can't change what the code does |
+| `( )` for calls, `[ ]` for lists, `,` between items | Everyone already reads these |
+| `:` before a type, `->` before a return type | Separates a name from its type at a glance |
+| `#` for comments | One character, hard to miss |
+
+| Dropped | Why |
+|---|---|
+| `;` at the end of a line | The line break already says it |
+| `:` after `if`, `for`, `function` | The brace already says it |
+| `( )` around conditions | `if x > 0 {` needs no help |
+| `&&`, `||`, `!` | `and`, `or`, `not` read better |
+
+Variables say once whether they can change: `let` for a value that is set once,
+`var` for one that changes, and plain `x = 2` to update. A misspelt name is an
+error, not a new variable.
+
+Underneath:
+
+- **Types are checked before the program runs**, and inferred so you rarely write them.
 - **Errors are checked.** A function says what it `raises`, and the compiler makes sure someone handles it.
-- **No surprise `None`.** A value can be `None` only if its type says `| None`, and you must check before using it.
+- **No surprise `none`.** A value can be `none` only if its type says `or none`, and you must check before using it.
 - **Enums carry data**, and `match` must cover every case.
 - **Compiled, not interpreted**, so it is fast and small enough for a microcontroller.
-
-The borrowed pieces so far: `const` (C/Java), `raises` (Java), enums with data (Rust),
-and units on numbers such as `500 ms` (new).
 
 Samples, none of them final:
 

@@ -4,6 +4,7 @@
 from board import led
 from time import sleep
 
-while True:
+while true {
     led.toggle()
     sleep(500 ms)        # units are part of the number, so 500 ms + 3 V is an error
+}
