@@ -646,10 +646,22 @@ defined". It does not quietly use an `x` from further out, which would
 make the same name mean two variables in two calls of one function.
 JavaScript has the same rule for `let`.
 
-**Known gap.** In that last case, where there *is* an `x` further out,
-the checker passes the program and both engines then stop it. The
-checker looks at the function when it is first called and sees only the
-outer `x`. It is an exercise in `docs/vm.md`.
+**The checker refuses it first.** `zeno check` reports a function used
+above a variable it needs: "`x` is declared further down than the first
+use of `inner`, which needs it". It can do this because it checks a
+function's body at the first place the function is used, so it knows
+which of the variables above the function exist at that moment. The same
+goes for building an object above a variable that a field's default
+uses. At first the checker missed the case where there *is*
+an `x` further out: it took the name for that one and passed a program
+that both engines then stopped.
+
+The check is cautious in one way. A function written as a value,
+`function() { return inner() }`, is checked where it is written, so if
+that is above `x` it is refused even when the value is only called
+later. Telling the two apart needs to know when a function value runs,
+which the checker does not track. Naming a function above the variable
+(`let f = inner`) and calling it below is accepted.
 
 ### 3.7 A class lists its fields, and gets a constructor for free
 

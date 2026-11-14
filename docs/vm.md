@@ -464,10 +464,6 @@ cannot:
 - **It is not the default.** `zeno run` without `--vm` still uses the
   interpreter, which is the simpler statement of what Zeno means
   (decision 5.10g).
-- **The checker has not caught up with one case.** A function called from
-  above a variable it uses stops both engines with "is not defined". If
-  there is a variable of the same name further out, the checker passes
-  the program, thinking the function means that one. See exercise 8.
 
 ## Things to try
 
@@ -497,11 +493,12 @@ cannot:
    name actually resolves to. `resolve_in` already finds it. The hard
    part is that the variable was given its place before the inner
    function was compiled.
-8. The checker gap above. `function outer() { print(inner())` /
-   `let x = 5` / `function inner() { return x } }` with an `x` at the top
-   level passes `zeno check` and stops when run. Where does the checker
-   decide what `x` means in `inner`, and what does it need to know to
-   refuse the call?
+8. `function outer() { print(inner())` / `let x = 5` /
+   `function inner() { return x } }` is refused by `zeno check`, because
+   `inner` is used above the `x` it needs (decision 3.6d). Skip the
+   checker by writing the program in a test that calls `vm::run_both`,
+   and find the instruction in `zeno bytecode` that stops it. How does
+   the VM know the cell is still empty?
 9. The big one: make the bytecode bytes. Give each `Op` a one-byte
    number, write operands after it, and make `execute` read from a
    `Vec<u8>`. Then write the constants and the code to a file, and add

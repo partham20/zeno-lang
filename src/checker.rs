@@ -331,6 +331,13 @@ struct ClassInfo {
     owned: bool,
     fields: RefCell<Vec<Slot>>,
     methods: RefCell<HashMap<String, Rc<FunctionInfo>>>,
+    /// As for a function (`FunctionInfo::above`): the defaults of the
+    /// fields are worked out when an object is built, and may use these.
+    above: Rc<[String]>,
+    /// The scope the class is declared in.
+    env: Env,
+    /// Each field that has a default, with the names the default mentions.
+    defaults: Vec<(String, Vec<String>)>,
 }
 
 struct EnumInfo {
@@ -412,6 +419,32 @@ struct FunctionInfo {
     /// For a method, the type of `self`.
     self_type: Option<Ty>,
     state: RefCell<State>,
+    /// The variables its block declares above the line it is written on.
+    /// The function may use them, so it must not run before they exist
+    /// (see `Early`).
+    above: Rc<[String]>,
+}
+
+/// A function whose body is being checked, for catching a call that
+/// comes too early.
+///
+/// A function can be called from above the line it is written on, and
+/// its body is checked at the first place it is used. If that is above a
+/// variable the function uses, the variable is not declared yet, so a
+/// name in the body would be taken for a variable of the same name
+/// further out. When the program ran, the name would mean the variable
+/// of the function's own block, which has no value at that moment
+/// (decision 3.6d).
+struct Early {
+    name: String,
+    /// The function body being checked, and the one it is written in.
+    body: usize,
+    outer: usize,
+    /// The variables above the function that are not declared yet.
+    missing: Vec<String>,
+    /// The ones of those that have been reported, so that each is
+    /// reported once.
+    told: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -587,6 +620,55 @@ fn join(a: &Ty, b: &Ty) -> Ty {
         (Ty::List(a), Ty::List(b)) => Ty::list(join(a, b)),
         // Unrelated types: only known when the program runs.
         _ => Ty::Dynamic,
+    }
+}
+
+/// The names in `above` that `env` has not declared yet.
+fn not_yet(above: &[String], env: &Env) -> Vec<String> {
+    above.iter().filter(|name| env.get_here(name).is_none()).cloned().collect()
+}
+
+/// Every name an expression mentions, for `ClassInfo::defaults`. It goes
+/// by name alone and does not look inside a function written as a value.
+fn names_in(expr: &Expr, names: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
+        ExprKind::Function(_) => {}
+        ExprKind::Name(name) => names.push(name.clone()),
+        ExprKind::FormatStr(parts) => {
+            for part in parts {
+                if let FormatPart::Value { value, .. } = part {
+                    names_in(value, names);
+                }
+            }
+        }
+        ExprKind::Unit { value, .. } => names_in(value, names),
+        ExprKind::List(items) => items.iter().for_each(|item| names_in(item, names)),
+        ExprKind::ListComp { element, iterable, condition, .. } => {
+            names_in(element, names);
+            names_in(iterable, names);
+            if let Some(condition) = condition {
+                names_in(condition, names);
+            }
+        }
+        ExprKind::Unary { operand, .. } => names_in(operand, names),
+        ExprKind::Binary { left, right, .. } => {
+            names_in(left, names);
+            names_in(right, names);
+        }
+        ExprKind::Compare { first, rest } => {
+            names_in(first, names);
+            rest.iter().for_each(|(_, operand)| names_in(operand, names));
+        }
+        ExprKind::Call { callee, args } => {
+            names_in(callee, names);
+            args.iter().for_each(|arg| names_in(&arg.value, names));
+        }
+        ExprKind::Field { object, .. } => names_in(object, names),
+        ExprKind::Index { object, index } => {
+            names_in(object, names);
+            names_in(index, names);
+        }
     }
 }
 
@@ -778,6 +860,8 @@ struct Checker {
     types: Types,
     errors: Vec<Error>,
     frames: Vec<Frame>,
+    /// The function bodies being checked right now, outermost first.
+    early: Vec<Early>,
     /// The errors that can be raised by the code checked so far, innermost
     /// `try` body or function body last. Each entry is an error kind and
     /// where it comes from.
@@ -826,6 +910,7 @@ impl Checker {
             frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
             raised: vec![Vec::new()],
             owned: Ownership::default(),
+            early: Vec::new(),
         }
     }
 
@@ -1239,18 +1324,44 @@ impl Checker {
     /// Declare the block's functions, classes and enums before checking any
     /// of it, exactly as the interpreter does before running it.
     fn hoist(&mut self, statements: &[Stmt], env: &Env) {
+        // What each statement has above it in the block: the variables
+        // that a function or class written there is allowed to use.
+        let mut lets: Vec<String> = Vec::new();
+        let mut above: Vec<Rc<[String]>> = Vec::new();
+        for statement in statements {
+            above.push(Rc::from(lets.as_slice()));
+            match &statement.kind {
+                StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => lets.push(name.clone()),
+                StmtKind::Import { module, names } if names.is_empty() => lets.extend(module.last().cloned()),
+                StmtKind::Import { names, .. } => lets.extend(names.iter().cloned()),
+                _ => {}
+            }
+        }
+
         // First the names of the new types, so that they can mention each other.
         let mut classes = Vec::new();
         let mut enums = Vec::new();
-        for statement in statements {
+        for (statement, above) in statements.iter().zip(&above) {
             match &statement.kind {
                 StmtKind::Class(decl) => {
+                    let defaults = decl
+                        .fields
+                        .iter()
+                        .filter_map(|field| {
+                            let mut names = Vec::new();
+                            names_in(field.default.as_ref()?, &mut names);
+                            Some((field.name.clone(), names))
+                        })
+                        .collect();
                     let info = Rc::new(ClassInfo {
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
                         owned: decl.owned,
                         fields: RefCell::new(Vec::new()),
                         methods: RefCell::new(HashMap::new()),
+                        above: above.clone(),
+                        env: env.clone(),
+                        defaults,
                     });
                     self.declare(env, &decl.name, Ty::Class(info.clone()), false, statement.span);
                     self.classes.insert(info.id.clone(), info.clone());
@@ -1302,6 +1413,7 @@ impl Checker {
                         false => Ty::Instance(info.clone()),
                     }),
                     state: RefCell::new(State::NotChecked),
+                    above: info.above.clone(),
                 };
                 info.methods.borrow_mut().insert(method.name.clone(), Rc::new(function));
             }
@@ -1336,7 +1448,7 @@ impl Checker {
             *info.cases.borrow_mut() = cases;
         }
 
-        for statement in statements {
+        for (statement, above) in statements.iter().zip(&above) {
             if let StmtKind::Function(decl) = &statement.kind {
                 let function = FunctionInfo {
                     decl: decl.clone(),
@@ -1344,6 +1456,7 @@ impl Checker {
                     span: statement.span,
                     self_type: None,
                     state: RefCell::new(State::NotChecked),
+                    above: above.clone(),
                 };
                 self.declare(env, &decl.name, Ty::Function(Rc::new(function)), false, statement.span);
             }
@@ -1673,19 +1786,20 @@ impl Checker {
     fn assignment_target(&mut self, target: &Expr, env: &Env) -> (Ty, Ty, Option<Slot>) {
         let span = target.span;
         let ty = match &target.kind {
-            ExprKind::Name(name) => match env.get(name) {
-                None => self.error(
+            ExprKind::Name(name) => match (env.get(name), self.too_early(name, env.get(name).as_ref(), env, span)) {
+                (_, Some(mistake)) => mistake,
+                (None, None) => self.error(
                     format!("`{name}` is not declared. Create it with `let` or `var` first"),
                     span,
                 ),
-                Some(variable) if !variable.mutable => self.error(
+                (Some(variable), None) if !variable.mutable => self.error(
                     format!("`{name}` cannot be changed. Declare it with `var` to allow that"),
                     span,
                 ),
-                Some(variable) if variable.ty.is_owned() && variable.function != env.function => {
+                (Some(variable), None) if variable.ty.is_owned() && variable.function != env.function => {
                     self.error(elsewhere(name), span)
                 }
-                Some(variable) => {
+                (Some(variable), None) => {
                     let Some(declared) = variable.declared else {
                         return (variable.ty.clone(), variable.ty, None);
                     };
@@ -2016,6 +2130,40 @@ impl Checker {
     //   `Borrowed`, which fits nowhere. So a place this section forgot is
     //   an error message, never a second owner.
 
+    /// Is `name` being used in a function that was called too early, from
+    /// above the line that declares the variable it means? If so this
+    /// reports it, once for each name, and returns the type of a mistake.
+    /// `variable` is what the name was taken for, if anything.
+    fn too_early(&mut self, name: &str, variable: Option<&Variable>, env: &Env, span: Span) -> Option<Ty> {
+        // Start at the function the name is written in and work outward
+        // through the functions it is written inside.
+        let mut body = env.function;
+        let at = loop {
+            // A variable of this very function is what the name means.
+            if variable.is_some_and(|variable| variable.function == body) {
+                return None;
+            }
+            let at = self.early.iter().rposition(|early| early.body == body)?;
+            if self.early[at].missing.iter().any(|missing| missing == name) {
+                break at;
+            }
+            body = self.early[at].outer;
+        };
+        let checking = &mut self.early[at];
+        if checking.told.iter().any(|told| told == name) {
+            return Some(Ty::Invalid);
+        }
+        checking.told.push(name.to_string());
+        let function = checking.name.clone();
+        Some(self.error(
+            format!(
+                "`{name}` is declared further down than the first use of `{function}`, which needs it. \
+                 Use `{function}` below the line that declares `{name}`"
+            ),
+            span,
+        ))
+    }
+
     /// What reading the variable `name` gives. For an owner, or a `borrow`
     /// parameter, that is a look at the value and no more.
     fn read(&mut self, name: &str, variable: Variable, env: &Env, span: Span) -> Ty {
@@ -2257,6 +2405,13 @@ impl Checker {
         let owned = std::mem::take(&mut self.owned);
 
         let scope = Scope::body(&function.env);
+        self.early.push(Early {
+            name: name.clone(),
+            body: scope.function,
+            outer: function.env.function,
+            missing: not_yet(&function.above, &function.env),
+            told: Vec::new(),
+        });
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
                 let given = self.kept(default, &slot.ty, &scope);
@@ -2270,6 +2425,7 @@ impl Checker {
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
         let exits = self.statements(&decl.body, &scope);
+        self.early.pop();
         self.worked_out.pop();
         self.touched = touched;
         self.owned = owned;
@@ -2401,9 +2557,15 @@ impl Checker {
                         // is the narrower type: it stores the two differently.
                         self.types.narrowed.insert(expr as *const Expr as usize, kind(&variable.ty));
                     }
+                    if let Some(mistake) = self.too_early(name, Some(&variable), env, span) {
+                        return mistake;
+                    }
                     self.read(name, variable, env, span)
                 }
-                None => self.error(format!("`{name}` is not defined"), span),
+                None => match self.too_early(name, None, env, span) {
+                    Some(mistake) => mistake,
+                    None => self.error(format!("`{name}` is not defined"), span),
+                },
             },
 
             ExprKind::Unit { value, unit } => {
@@ -2485,6 +2647,9 @@ impl Checker {
                     span,
                     self_type: None,
                     state: RefCell::new(State::NotChecked),
+                    // It is made where it is written, so nothing it can
+                    // see is still to come.
+                    above: Rc::from(Vec::new()),
                 });
                 self.signature(&function);
                 Ty::Function(function)
@@ -2651,6 +2816,23 @@ impl Checker {
             Ty::Class(class) => {
                 let fields = class.fields.borrow().clone();
                 self.arguments(&class.name, &fields, &arguments, span);
+                // The defaults of the fields are worked out here, where
+                // the object is built. One that uses a variable declared
+                // further down has nothing to use yet.
+                let missing = not_yet(&class.above, &class.env);
+                for (field, names) in &class.defaults {
+                    if let Some(name) = names.iter().find(|name| missing.contains(name)) {
+                        self.error(
+                            format!(
+                                "`{}` cannot be built here yet. The default of its field `{field}` uses `{name}`, \
+                                 which is declared further down. Build it below the line that declares `{name}`",
+                                class.name
+                            ),
+                            span,
+                        );
+                        break;
+                    }
+                }
                 Ty::Instance(class.clone())
             }
             Ty::CaseConstructor(info, index) => {
@@ -3871,6 +4053,68 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
             owned_error("function f(q) { print(q) }\nlet p = make()\nf(p)"),
             "strict mode: the parameter `q` of `f` needs a type. It could not be worked out from how it is used"
         );
+    }
+
+    // ----- A function is not used before what it needs exists -----
+
+    #[test]
+    fn a_function_is_not_called_above_a_variable_it_uses() {
+        // `x` in `inner` means the `x` of `outer`, which has no value yet
+        // at the call. It must not be taken for the `x` further out.
+        assert_eq!(
+            error(
+                "let x = 1\nfunction outer() {\n    print(inner())\n    let x = 5\n    function inner() { return x }\n}\nouter()"
+            ),
+            "`x` is declared further down than the first use of `inner`, which needs it. \
+             Use `inner` below the line that declares `x`"
+        );
+        // The same with nothing of that name further out.
+        assert_eq!(
+            error("print(show())\nlet name = \"zeno\"\nfunction show() { return name }"),
+            "`name` is declared further down than the first use of `show`, which needs it. \
+             Use `show` below the line that declares `name`"
+        );
+        // Reached through another function, and by an assignment. Each
+        // name is reported once.
+        assert_eq!(
+            error(
+                "var n = 1\nfunction outer() {\n    step()\n    var n = 5\n    function add() { n = n + 1 }\n    function step() { add() }\n}\nouter()"
+            ),
+            "`n` is declared further down than the first use of `add`, which needs it. \
+             Use `add` below the line that declares `n`"
+        );
+        // A method is a function of the block its class is in.
+        assert_eq!(
+            error(
+                "let size = 1\nfunction make() {\n    let b = Box(2)\n    print(b.grow())\n    let size = 9\n    class Box {\n        side: int\n        function grow(self) { return self.side + size }\n    }\n}\nmake()"
+            ),
+            "`size` is declared further down than the first use of `grow`, which needs it. \
+             Use `grow` below the line that declares `size`"
+        );
+    }
+
+    #[test]
+    fn a_class_is_not_built_above_a_variable_its_defaults_use() {
+        assert_eq!(
+            error(
+                "let size = 1\nfunction make() {\n    let b = Box()\n    let size = 9\n    class Box {\n        side: int = size\n    }\n    return b.side\n}\nprint(make())"
+            ),
+            "`Box` cannot be built here yet. The default of its field `side` uses `size`, which is declared \
+             further down. Build it below the line that declares `size`"
+        );
+        ok("let size = 9\nclass Box {\n    side: int = size\n}\nprint(Box().side)");
+    }
+
+    #[test]
+    fn a_function_may_be_used_once_what_it_needs_exists() {
+        // Called below the variable, though written above the call.
+        ok("let x = 1\nfunction outer() {\n    let x = 5\n    print(inner())\n    function inner() { return x }\n}\nouter()");
+        // Named above the variable but called below it.
+        ok("let x = 1\nfunction outer() {\n    let f = inner\n    let x = 5\n    function inner() { return x }\n    print(f())\n}\nouter()");
+        // A variable of the function's own, and one further out.
+        ok("let x = 1\nfunction outer() {\n    print(inner())\n    function inner() {\n        let y = x\n        return y\n    }\n}\nouter()");
+        // Two functions that call each other.
+        ok("print(even(4))\nfunction even(n) {\n    if n == 0 { return true }\n    return odd(n - 1)\n}\nfunction odd(n) {\n    if n == 0 { return false }\n    return even(n - 1)\n}");
     }
 
     // ----- Reporting -----

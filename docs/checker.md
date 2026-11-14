@@ -72,6 +72,30 @@ that is mid-check when it is called is being called recursively; that call
 sees what the signature declares, or, if no return type is written, what the
 previous pass worked out (see the next section).
 
+### A use that comes too early
+
+Checking a body at the first use has a second job. A function may use
+the variables its block declares above it, and those must exist before
+it runs:
+
+```
+let x = 1
+function outer() {
+    print(inner())      # too early: the x below has no value yet
+    let x = 5
+    function inner() { return x }
+}
+```
+
+`hoist` gives each function the list of variables its block declares
+above its line (`FunctionInfo::above`). When `signature` starts on the
+body it notes which of those are not declared yet (`Early::missing`).
+A name in the body that is on that list is reported there
+(`too_early`), where it would otherwise be taken for the `x` on the
+first line, and the program would stop when run (decision 3.6d). A
+class keeps the same list for the defaults of its fields, which are
+worked out where an object is built.
+
 ## Working out parameters and fields
 
 ```
