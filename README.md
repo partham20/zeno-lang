@@ -54,6 +54,7 @@ Samples, none of them final:
 - [`examples/tour.zeno`](examples/tour.zeno): the main features.
 - [`examples/styles.zeno`](examples/styles.zeno): one job written typed, untyped, object-oriented and functional.
 - [`examples/primes.zeno`](examples/primes.zeno): no types written, and it compiles to C.
+- [`examples/shapes.zeno`](examples/shapes.zeno): classes, enums, lists and `match`, compiled to C.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
 
 ## One language, every job
@@ -75,9 +76,10 @@ piece of the compiler:
 
 ## Status
 
-Zeno checks and runs programs, and compiles a first slice of the language
-to C: numbers, strings, functions and control flow. Classes, lists, enums and
-error handling run under `zeno run` but are not compiled yet.
+Zeno checks and runs programs, and compiles most of the language to C:
+numbers, strings, functions, control flow, classes, lists, enums and `match`.
+Error handling (`try`), `none` and functions used as values run under
+`zeno run` but are not compiled yet.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -85,6 +87,7 @@ cargo run -- check examples/tour.zeno           # only check it for mistakes
 cargo run -- check --strict examples/tour.zeno  # every type must be known, as firmware needs
 cargo run -- check --strict examples/styles.zeno  # passes with no types written: they are worked out
 cargo run -- build examples/primes.zeno         # compile to primes.c, then to ./primes
+cargo run -- build examples/shapes.zeno         # classes, enums, lists and match, compiled
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -103,8 +106,8 @@ cargo test
 2. Parser and syntax tree (done)
 3. Tree-walking interpreter, `zeno run` (done)
 4. Type checker, `zeno check` (done)
-5. Compile to C, `zeno build` (first slice done: numbers, strings, functions, control flow)
-6. Compile the rest: classes, lists, enums, `match`, errors, functions as values
+5. Compile to C, `zeno build` (done: numbers, strings, functions, control flow, classes, lists, enums, `match`)
+6. Compile the rest: errors (`try` / `raise`), `none`, functions as values
 7. Memory management
 8. Bytecode VM
 9. LLVM backend

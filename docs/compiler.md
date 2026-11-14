@@ -33,14 +33,17 @@ change one side, the tests tell you to change the other.
 
 ## What it compiles so far
 
-Numbers, bools, strings, quantities, variables, `if` / `while` / `for ... in
-range(...)`, functions, f-strings, `print`, and the `math` module.
+Numbers, bools, strings, quantities, variables, `if` / `while` / `for`,
+functions, f-strings, `print`, the `math` module, classes with methods,
+lists (literals, indexing, `append`, `pop`, `+`, `in`, comprehensions),
+enums and `match`.
 
-Classes, lists, enums, `match`, `try` and functions used as values are not
-compiled yet. `zeno build` says so and points at the line:
+`try` / `raise`, `none`, and functions used as values (which `map`,
+`filter` and `reduce` need) are not compiled yet. `zeno build` says so and
+points at the line:
 
 ```
-error: `zeno build` cannot compile lists yet. `zeno run` can still run this program
+error: `zeno build` cannot compile `try` yet. `zeno run` can still run this program
 ```
 
 ## Where the types come from
@@ -126,6 +129,90 @@ the right side must not run at all unless it is needed. C's `&&` does that
 when the right side is a single expression. When the right side needed
 statements of its own, `logic` wraps them in an `if`.
 
+## Classes
+
+```
+class Point {
+    x: float
+    y: float
+    function distance_to(self, other: Point) -> float { ... }
+}
+```
+```c
+struct z_Point { double z_x; double z_y; };
+static z_Point *zeno_new_Point(double z_x, double z_y);       /* Point(3.0, 4.0) */
+static const char *zeno_show_Point(z_Point *self);            /* for print */
+static bool zeno_same_Point(z_Point *a, z_Point *b);          /* for == */
+static double z_Point_distance_to(z_Point *z_self, z_Point *z_other);
+```
+
+A class is a C struct. The compiler writes three functions for it that you
+never wrote: one makes an object, one shows it as text, one compares two.
+A method is an ordinary C function whose first argument is the object.
+
+An object is always handled through a pointer. That is what makes
+`let b = a` a second name for the same object, as Zeno says it is: copying
+a pointer does not copy what it points to.
+
+## Enums and match
+
+```
+enum Shape {
+    Circle(radius: float)
+    Rect(width: float, height: float)
+    Nothing
+}
+```
+```c
+struct z_Shape {
+    int tag;                                   /* which case: 0, 1 or 2 */
+    union {
+        struct { double z_radius; } c0;
+        struct { double z_width; double z_height; } c1;
+    } as;                                      /* room for the biggest case */
+};
+```
+
+A value of an enum is one case at a time, so the cases can share the same
+memory: that is what a C `union` is. The `tag` says which case is in there
+now. This pair, a tag and a union, is how every language with enums like
+these stores them.
+
+`match` then becomes a chain of `if`s on the tag. A pattern such as
+`Rect(w, h)` gives the compiler two things: a test (`tag == 1`) and new
+variables to declare (`w` and `h`, read out of the union). `pattern`
+collects both, and works the same way for a pattern inside a pattern.
+
+Because the checker has already made sure every case is covered, the last
+`case` needs no test and becomes a plain `else`.
+
+## Lists
+
+C has no list that grows, so the runtime provides one: a length, how much
+room there is, and a pointer to the items. `append` moves the items to a
+place twice the size when the room runs out.
+
+A list must hold ints, or floats, or strings, or objects. C would want a
+separate list type for each. Instead every item sits in a `zeno_slot`, a
+union big enough for any single Zeno value:
+
+```c
+typedef union { int64_t i; double f; bool b; const char *s; void *p; } zeno_slot;
+```
+
+The compiler knows what each list holds, so it knows which member to read:
+`xs[0]` on a `list[int]` becomes `(*zeno_list_at(z_xs, 0, 3, 7)).i`.
+`zeno_list_at` is where the position is checked, so `xs[99]` is an
+IndexError, not a read of some other memory.
+
+Showing a list and comparing two lists need to know how to show or compare
+one item. The runtime cannot know that, so the compiler writes a small
+function per kind of item (`zeno_item_repr_float`) and passes it in.
+
+A `for` loop over a list walks a copy of it. That matches `zeno run`, where
+the loop sees the list as it was when the loop began, even if the body adds
+to it.
+
 ## Names
 
 Every Zeno name gets `z_` in front: `count` becomes `z_count`. That way no
@@ -144,10 +231,12 @@ the order the file says.
 ## Memory
 
 A string built while the program runs (`a + b`, an f-string) needs memory,
-which the runtime takes from `malloc` and never gives back. For a program
+and so does every object, list and enum value that carries data. The
+runtime takes it from `malloc` and never gives it back. For a program
 that runs and exits, that is harmless. For firmware that runs for years it
 is not acceptable, and fixing it is the memory management stage. Programs
-that only use numbers, bools and string literals do not allocate at all.
+that only use numbers, bools, string literals and enum cases without data
+do not allocate at all.
 
 ## What differs from `zeno run`, on purpose
 

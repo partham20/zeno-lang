@@ -584,6 +584,18 @@ the cheapest thing for the interpreter. Whether sharing, copying or Rust-style
 ownership is the right default for the compiled language is the central
 question of the memory management stage.
 
+### 3.10a A `for` loop sees the list as it was when the loop began
+
+Adding to a list, or removing from it, inside a loop over that list does
+not change what the loop visits.
+
+**Why.** The other choice, looping over the list as it changes, is the
+source of two classic bugs: a loop that never ends because its body keeps
+appending, and a loop that skips an item because its body removed one.
+*(Principle 1.)* **The cost:** the loop takes a copy of the list first.
+*(Provisional: the copy can be skipped when the compiler can see that the
+body does not touch the list.)*
+
 ### 3.11 Enums carry data, and `match` takes them apart
 
 **Why.** "A reading is either a value or a fault code" is one of the most
@@ -762,6 +774,26 @@ mean redoing it. Until then, memory for strings built at run time is taken
 and never returned. Programs that use only numbers, bools and fixed strings
 take no memory at all. *(Provisional, and not acceptable for firmware that
 builds strings in a loop.)*
+
+### 5.5g In C, objects, enum values and lists are pointers
+
+**Why.** Zeno says objects and lists are shared, not copied (3.10): after
+`let b = a`, changing `b` changes `a`. A C struct is copied on assignment; a
+pointer to one is not. So the pointer is the faithful translation. The cost
+is that each one needs memory from the heap. *(Provisional, with 3.10: a
+value that never changes and is never shared could live on the stack, and
+the memory stage is where that gets decided.)*
+
+### 5.5h One list type in C, not one per kind of item
+
+A compiled list holds `zeno_slot`s, a union the size of one machine word,
+whatever its items are.
+
+**Why.** The alternative is a full copy of the list code for every kind of
+item (`list_int`, `list_float`, `list_Point`, ...), which is what C++ and
+Rust do. That is faster by a little and bigger by a lot, and flash is the
+scarce thing on a microcontroller. Every Zeno value already fits in one
+slot, so one list implementation serves them all. *(Principle 5.)*
 
 ### 5.6 The checker and the interpreter are separate
 
