@@ -66,20 +66,21 @@ piece of the compiler:
 
 ## Status
 
-The lexer works. It turns source text into tokens, and `zeno tokens` shows them:
+The lexer and the parser work. Zeno can read a program and show how it
+understood it, but cannot run one yet. The interpreter is next.
 
 ```sh
-cargo run -- tokens examples/hello.zeno
+cargo run -- tokens examples/hello.zeno   # the tokens the lexer finds
+cargo run -- parse examples/tour.zeno     # the syntax tree the parser builds
 cargo test
 ```
 
-[`docs/lexer.md`](docs/lexer.md) explains how it works. Nothing can run a program yet;
-the parser is next.
+How each stage works: [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md).
 
 ## Roadmap
 
 1. Lexer (done)
-2. Parser and AST
+2. Parser and syntax tree (done)
 3. Tree-walking interpreter (`zeno run`)
 4. Type checker
 5. Bytecode VM
@@ -93,7 +94,11 @@ the parser is next.
 ```
 src/main.rs        the `zeno` command
 src/token.rs       the kinds of token
-src/lexer.rs       source text -> tokens, with its tests
+src/lexer.rs       source text -> tokens
+src/ast.rs         the shapes of the syntax tree
+src/parser.rs      tokens -> syntax tree
+src/printer.rs     syntax tree -> text, for `zeno parse`
+src/error.rs       the error type every stage shares
 docs/              how each stage works
 examples/          sample .zeno programs
 ```
