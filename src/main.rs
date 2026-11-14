@@ -1,10 +1,13 @@
 //! The `zeno` command-line tool.
 //!
-//! The compiler stages get added here one at a time. So far there is only
-//! the lexer, which `zeno tokens <file>` lets you watch at work.
+//! The compiler stages get added here one at a time. So far there are the
+//! lexer and the parser; `zeno tokens` and `zeno parse` show what each one produces.
 
+mod ast;
 mod error;
 mod lexer;
+mod parser;
+mod printer;
 mod token;
 
 use std::env;
@@ -19,34 +22,58 @@ fn usage() {
     println!();
     println!("Usage:");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
+    println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
     println!("  zeno run <file.zeno>     run a program (not implemented yet)");
     println!("  zeno build <file.zeno>   compile to C (not implemented yet)");
     println!("  zeno --version           print the version");
     println!("  zeno --help              print this message");
 }
 
-/// `zeno tokens <file>`: run the lexer and print one token per line.
-fn tokens(path: &str) -> ExitCode {
-    let source = match fs::read_to_string(path) {
-        Ok(source) => source,
+/// Read a source file, or print why it could not be read.
+fn read(path: &str) -> Option<String> {
+    match fs::read_to_string(path) {
+        Ok(source) => Some(source),
         Err(err) => {
             eprintln!("zeno: cannot read `{path}`: {err}");
-            return ExitCode::FAILURE;
+            None
         }
-    };
+    }
+}
 
-    match lexer::lex(&source) {
-        Ok(tokens) => {
-            for token in tokens {
-                println!("{:>4}:{:<3} {:?}", token.span.line, token.span.col, token.kind);
-            }
-            ExitCode::SUCCESS
-        }
+/// Run the lexer, printing any errors it finds.
+fn lex(path: &str, source: &str) -> Option<Vec<token::Token>> {
+    match lexer::lex(source) {
+        Ok(tokens) => Some(tokens),
         Err(errors) => {
             for error in &errors {
-                report(path, &source, error);
+                report(path, source, error);
             }
-            ExitCode::FAILURE
+            None
+        }
+    }
+}
+
+/// `zeno tokens <file>`: run the lexer and print one token per line.
+fn tokens(path: &str) -> Option<()> {
+    let source = read(path)?;
+    for token in lex(path, &source)? {
+        println!("{:>4}:{:<3} {:?}", token.span.line, token.span.col, token.kind);
+    }
+    Some(())
+}
+
+/// `zeno parse <file>`: run the lexer and parser and print the syntax tree.
+fn parse(path: &str) -> Option<()> {
+    let source = read(path)?;
+    let tokens = lex(path, &source)?;
+    match parser::parse(tokens) {
+        Ok(program) => {
+            print!("{}", printer::print(&program));
+            Some(())
+        }
+        Err(error) => {
+            report(path, &source, &error);
+            None
         }
     }
 }
@@ -91,13 +118,17 @@ fn main() -> ExitCode {
             println!("zeno {VERSION}");
             ExitCode::SUCCESS
         }
-        Some("tokens") => match args.get(1) {
-            Some(path) => tokens(path),
-            None => {
-                eprintln!("zeno: `tokens` needs a file, e.g. `zeno tokens examples/hello.zeno`");
-                ExitCode::FAILURE
+        Some(cmd @ ("tokens" | "parse")) => {
+            let Some(path) = args.get(1) else {
+                eprintln!("zeno: `{cmd}` needs a file, e.g. `zeno {cmd} examples/hello.zeno`");
+                return ExitCode::FAILURE;
+            };
+            let done = if cmd == "tokens" { tokens(path) } else { parse(path) };
+            match done {
+                Some(()) => ExitCode::SUCCESS,
+                None => ExitCode::FAILURE,
             }
-        },
+        }
         Some(cmd @ ("run" | "build")) => {
             eprintln!("zeno: `{cmd}` is not implemented yet. Achilles is still catching the tortoise.");
             ExitCode::FAILURE
