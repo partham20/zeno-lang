@@ -5,20 +5,14 @@
 //! (`Lexer::run`) that looks at the next character and decides which kind of
 //! token starts there.
 
+use crate::error::Error;
 use crate::token::{keyword, Span, Token, TokenKind};
-
-/// Something the lexer could not understand, and where.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LexError {
-    pub message: String,
-    pub span: Span,
-}
 
 /// Turn a whole source file into tokens.
 ///
 /// On success the list always ends with `Eof`. On failure you get every error
 /// found, not just the first, so the programmer can fix them in one go.
-pub fn lex(source: &str) -> Result<Vec<Token>, Vec<LexError>> {
+pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Error>> {
     let mut lexer = Lexer::new(source);
     lexer.run();
     if lexer.errors.is_empty() {
@@ -39,7 +33,7 @@ struct Lexer {
     /// ignored, so a long call or list can be split over several lines.
     depth: usize,
     tokens: Vec<Token>,
-    errors: Vec<LexError>,
+    errors: Vec<Error>,
 }
 
 impl Lexer {
@@ -97,7 +91,7 @@ impl Lexer {
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) {
-        self.errors.push(LexError { message: message.into(), span });
+        self.errors.push(Error::new(message, span));
     }
 
     // ----- The main loop -----

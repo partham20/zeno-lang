@@ -3,6 +3,7 @@
 //! The compiler stages get added here one at a time. So far there is only
 //! the lexer, which `zeno tokens <file>` lets you watch at work.
 
+mod error;
 mod lexer;
 mod token;
 
@@ -59,7 +60,7 @@ fn tokens(path: &str) -> ExitCode {
 ///  3 | let x = 1;
 ///    |          ^
 /// ```
-fn report(path: &str, source: &str, error: &lexer::LexError) {
+fn report(path: &str, source: &str, error: &error::Error) {
     let (line, col) = (error.span.line, error.span.col);
     let text = source.lines().nth(line - 1).unwrap_or("");
     let gutter = line.to_string().len();

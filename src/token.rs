@@ -136,6 +136,79 @@ pub fn keyword(word: &str) -> Option<TokenKind> {
 }
 
 impl TokenKind {
+    /// How to name this token in an error message, e.g. "`{`" or "the end of the line".
+    pub fn describe(&self) -> String {
+        use TokenKind::*;
+        let text = match self {
+            Int(_) | Float(_) => return "a number".to_string(),
+            Str { .. } => return "a string".to_string(),
+            Ident(name) => return format!("the name `{name}`"),
+            Newline => return "the end of the line".to_string(),
+            Eof => return "the end of the file".to_string(),
+
+            Let => "let",
+            Var => "var",
+            Const => "const",
+            Function => "function",
+            Return => "return",
+            If => "if",
+            Else => "else",
+            For => "for",
+            In => "in",
+            While => "while",
+            Break => "break",
+            Continue => "continue",
+            Match => "match",
+            Case => "case",
+            Class => "class",
+            Enum => "enum",
+            Try => "try",
+            Except => "except",
+            Raise => "raise",
+            Raises => "raises",
+            As => "as",
+            From => "from",
+            Import => "import",
+            And => "and",
+            Or => "or",
+            Not => "not",
+            Is => "is",
+            True => "true",
+            False => "false",
+            None => "none",
+
+            LParen => "(",
+            RParen => ")",
+            LBracket => "[",
+            RBracket => "]",
+            LBrace => "{",
+            RBrace => "}",
+            Comma => ",",
+            Dot => ".",
+            Colon => ":",
+            Arrow => "->",
+
+            Plus => "+",
+            Minus => "-",
+            Star => "*",
+            Slash => "/",
+            Percent => "%",
+            StarStar => "**",
+            Assign => "=",
+            PlusAssign => "+=",
+            MinusAssign => "-=",
+            StarAssign => "*=",
+            SlashAssign => "/=",
+            Eq => "==",
+            NotEq => "!=",
+            Lt => "<",
+            LtEq => "<=",
+            Gt => ">",
+            GtEq => ">=",
+        };
+        format!("`{text}`")
+    }
+
     /// True if a statement cannot possibly end on this token, so a line break
     /// right after it means "the statement continues on the next line":
     ///
