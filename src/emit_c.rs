@@ -403,7 +403,7 @@ fn free_code(kind: &Kind, place: &str) -> String {
 }
 
 /// Is there a `try` anywhere in these statements?
-fn has_try(statements: &[Stmt]) -> bool {
+pub fn has_try(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match &statement.kind {
         StmtKind::Try { .. } => true,
         StmtKind::If { then_block, else_block, .. } => {
@@ -3865,7 +3865,7 @@ fn is_c_place(code: &str) -> bool {
 }
 
 /// The built-in kinds of error. An object of any class can be raised too.
-const ERROR_KINDS: &[&str] = &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
+pub const ERROR_KINDS: &[&str] = &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
 
 /// Find the variables that are given a new value inside a `try` block.
 ///
@@ -3909,7 +3909,7 @@ fn changed_in_try(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
 /// A `var` whose name turns up here may be changed by the inner function
 /// or by the outer one, and each must see the other's change. See the
 /// `boxed` field of `Variable`.
-fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
+pub fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
     let block = |block: &[Stmt], inside: bool, names: &mut HashSet<String>| {
         for statement in block {
             names_in_functions(statement, inside, names);
@@ -4192,6 +4192,8 @@ mod tests {
                 }
             }
         }
+        // The LLVM backend is held to every program the C backend is.
+        crate::emit_llvm::tests::same_as_interpreter(&format!("{name}-llvm"), source);
     }
 
     #[test]
