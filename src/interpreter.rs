@@ -221,6 +221,7 @@ impl Machine for Interpreter {
 fn scope_of(home: &Home) -> Env {
     match home {
         Home::Scope(scope) => scope.clone(),
+        Home::Code(..) => unreachable!("the interpreter met a function that the VM made"),
     }
 }
 

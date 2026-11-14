@@ -1,13 +1,16 @@
 //! The `zeno` command-line tool.
 //!
-//! The compiler stages get added here one at a time. So far there are the
-//! lexer, the parser, the type checker and the interpreter. `zeno tokens`,
-//! `zeno parse` and `zeno check` show what the first three find, and
-//! `zeno run` checks a program and then runs it.
+//! The compiler stages get added here one at a time. `zeno tokens`,
+//! `zeno parse` and `zeno check` show what the lexer, the parser and the
+//! type checker find. `zeno run` checks a program and then runs it.
+//! `zeno bytecode` shows the program as bytecode. `zeno build` compiles
+//! to C.
 
 mod ast;
 mod builtins;
+mod bytecode;
 mod checker;
+mod emit_bytecode;
 mod emit_c;
 mod error;
 mod interpreter;
@@ -35,6 +38,7 @@ fn usage() {
     println!("  zeno check <file.zeno>   check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
+    println!("  zeno bytecode <file.zeno> show the program compiled to bytecode");
     println!("  zeno build <file.zeno>   compile to C, then to a program you can run");
     println!("  zeno --version           print the version");
     println!("  zeno --help              print this message");
@@ -122,6 +126,13 @@ fn check(path: &str, strict: bool) -> Option<(String, ast::Program)> {
         eprintln!("{} error{s} found. Nothing was run.", errors.len());
         None
     }
+}
+
+/// `zeno bytecode <file>`: print the bytecode the program compiles to.
+fn bytecode(path: &str) -> Option<()> {
+    let (_, program) = load(path)?;
+    print!("{}", bytecode::print(&emit_bytecode::compile(&program)));
+    Some(())
 }
 
 /// `zeno run <file>`: check the program, and if it is sound, run it.
@@ -263,7 +274,7 @@ fn main() -> ExitCode {
             println!("zeno {VERSION}");
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("tokens" | "parse" | "check" | "run")) => {
+        Some(cmd @ ("tokens" | "parse" | "bytecode" | "check" | "run")) => {
             let Some(path) = args.get(1) else {
                 eprintln!("zeno: `{cmd}` needs a file, e.g. `zeno {cmd} examples/hello.zeno`");
                 return ExitCode::FAILURE;
@@ -271,6 +282,7 @@ fn main() -> ExitCode {
             let done = match cmd {
                 "tokens" => tokens(path),
                 "parse" => parse(path),
+                "bytecode" => bytecode(path),
                 "check" => check(path, strict).map(|_| println!("No errors found.")),
                 _ => run(path, strict),
             };

@@ -9,6 +9,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::ast;
+use crate::bytecode::Proto;
 use crate::error::Error;
 use crate::interpreter::Env;
 use crate::token::Span;
@@ -59,18 +60,27 @@ pub struct Closure {
     pub home: Home,
 }
 
-/// Where a function keeps the variables around it. The interpreter has
-/// one answer. An engine that runs the program another way will have its own.
+/// Where a function keeps the variables around it. Each engine has its own
+/// answer, and a program only ever meets the one that is running it.
 pub enum Home {
     /// The interpreter: the scope the function was defined in.
     Scope(Env),
+    /// The VM: the function's bytecode, and the variables it shares with
+    /// the code around it, each in a cell.
+    Code(Rc<Proto>, Rc<[Cell]>),
 }
+
+/// A variable that more than one function can see. `None` until the line
+/// that declares it has run.
+pub type Cell = Rc<RefCell<Option<Value>>>;
 
 pub struct ClassDef {
     pub name: String,
     pub fields: Vec<ast::Field>,
     pub methods: HashMap<String, Rc<Closure>>,
-    /// Where the class was defined, for working out field defaults.
+    /// What works out the defaults of the fields: for the interpreter the
+    /// scope the class was defined in, for the VM the code that builds an
+    /// object.
     pub home: Home,
 }
 
