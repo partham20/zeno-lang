@@ -53,6 +53,11 @@ pub enum Kind {
     None,
     /// A number with a unit; the string is the unit, such as "ms".
     Quantity(String),
+    List(Box<Kind>),
+    /// An object of the class with this name.
+    Class(String),
+    /// A value of the enum with this name.
+    Enum(String),
     /// Anything else, described in words for an error message.
     Other(String),
 }
@@ -73,9 +78,21 @@ pub struct FunctionKind {
 #[derive(Default)]
 pub struct Types {
     functions: HashMap<usize, FunctionKind>,
+    /// The type of each field of each class, in the order they are listed.
+    classes: HashMap<usize, Vec<Kind>>,
+    /// For each enum, the types of the values each case carries.
+    enums: HashMap<usize, Vec<Vec<Kind>>>,
 }
 
 impl Types {
+    pub fn class(&self, decl: &ast::Class) -> Option<&Vec<Kind>> {
+        self.classes.get(&(decl as *const ast::Class as usize))
+    }
+
+    pub fn enumeration(&self, decl: &ast::Enum) -> Option<&Vec<Vec<Kind>>> {
+        self.enums.get(&(decl as *const ast::Enum as usize))
+    }
+
     pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
         self.functions.get(&(Arc::as_ptr(decl) as usize))
     }
@@ -89,6 +106,9 @@ fn kind(ty: &Ty) -> Kind {
         Ty::Bool => Kind::Bool,
         Ty::None => Kind::None,
         Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
+        Ty::List(item) => Kind::List(Box::new(kind(item))),
+        Ty::Instance(class) => Kind::Class(class.name.clone()),
+        Ty::EnumValue(info) => Kind::Enum(info.name.clone()),
         other => Kind::Other(other.to_string()),
     }
 }
@@ -956,7 +976,11 @@ impl Checker {
 
         // Then what is inside them.
         for (decl, info, span) in classes {
-            let fields = decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
+            let fields: Vec<Slot> =
+                decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
+            self.types
+                .classes
+                .insert(decl as *const ast::Class as usize, fields.iter().map(|slot| kind(&slot.ty)).collect());
             *info.fields.borrow_mut() = fields;
             for method in &decl.methods {
                 let function = FunctionInfo {
@@ -989,6 +1013,10 @@ impl Checker {
                     self.declare(env, &case.name, Ty::CaseConstructor(info.clone(), index), false, span);
                 }
             }
+            self.types.enums.insert(
+                decl as *const ast::Enum as usize,
+                cases.iter().map(|case| case.fields.iter().map(|slot| kind(&slot.ty)).collect()).collect(),
+            );
             *info.cases.borrow_mut() = cases;
         }
 
