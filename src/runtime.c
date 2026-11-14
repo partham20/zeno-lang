@@ -22,17 +22,245 @@
 /* The Zeno source file, for error messages. Set at the top of main. */
 static const char *zeno_file = "";
 
-/* Memory for everything built while the program runs. Nothing is freed
- * yet: giving memory back is the job of the memory management stage. */
-static char *zeno_alloc(size_t size) {
-    char *memory = malloc(size);
-    if (memory == NULL) {
-        fflush(stdout);
-        fprintf(stderr, "error: out of memory\n");
-        exit(1);
-    }
-    return memory;
+/* ------------------------------------------------------------------- Memory
+ *
+ * Text built while the program runs, lists, objects and function values
+ * all need memory, and a program that runs for a year must give it back.
+ * Zeno does that with a garbage collector of the simplest kind, called
+ * mark and sweep:
+ *
+ *   1. Every piece of memory handed out (a "block") is written in a table.
+ *   2. Now and then the collector stops the program and MARKS every block
+ *      the program can still reach. It starts from the "roots", which are
+ *      the variables: the C stack and the top-level variables. Whatever a
+ *      root points at is reachable. So is whatever THAT points at, and so
+ *      on.
+ *   3. Then it SWEEPS: every block left unmarked can never be used again,
+ *      and is freed.
+ *
+ * The compiler does not tell the collector where the pointers are. The
+ * collector looks at every word of the stack and of each block and asks
+ * "is this the address of one of my blocks?". If it is, the block is kept.
+ * This is called a conservative collector. A number that happens to look
+ * like an address keeps a block alive for no reason, which wastes a little
+ * memory and breaks nothing.
+ */
+
+/* What sits in front of every block. */
+typedef struct zeno_block {
+    struct zeno_block *next_waiting;        /* see zeno_waiting below */
+    size_t size : sizeof(size_t) * 8 - 2;   /* bytes handed to the program */
+    size_t marked : 1;                      /* reached, during a collection */
+    size_t plain : 1;                       /* holds text or one number: no pointers inside */
+} zeno_block;
+
+/* The table of every block there is. */
+static zeno_block **zeno_blocks = NULL;
+static size_t zeno_block_count = 0;
+static size_t zeno_block_room = 0;
+
+/* How much memory the program holds, and how much it may hold before the
+ * collector runs next. After each run the limit is set to twice what
+ * survived, so a program that needs a lot is not collected all the time. */
+#ifndef ZENO_FIRST_COLLECTION
+#define ZENO_FIRST_COLLECTION (1024 * 1024)
+#endif
+static size_t zeno_in_use = 0;
+static size_t zeno_collect_at = ZENO_FIRST_COLLECTION;
+
+/* Numbers for the report that `zeno build --memory` asks for. */
+static size_t zeno_most_in_use = 0;
+static size_t zeno_collections = 0;
+static size_t zeno_blocks_made = 0;
+static size_t zeno_bytes_made = 0;
+
+/* Where the stack starts. `main` sets it before anything else runs. */
+static void *zeno_stack_base = NULL;
+
+/* The roots that are not on the stack: the top-level variables. The
+ * compiler writes this function, at the end of the file, since only it
+ * knows what they are. */
+static void zeno_roots(void);
+
+static void zeno_out_of_memory(void) {
+    fflush(stdout);
+    fprintf(stderr, "error: out of memory\n");
+    exit(1);
 }
+
+/* Blocks that are marked but whose insides have not been looked at yet,
+ * chained through `next_waiting`. The chain ends at this marker instead
+ * of NULL. Keeping the list inside the blocks means the collector needs
+ * no memory of its own, at the one moment when there may be none. */
+static zeno_block zeno_end_of_waiting;
+static zeno_block *zeno_waiting = &zeno_end_of_waiting;
+
+/* The lowest and highest addresses any block covers. Most words on the
+ * stack are not addresses at all, and these two turn them away quickly. */
+static uintptr_t zeno_lowest = 0;
+static uintptr_t zeno_highest = 0;
+
+/* `word` was found in a variable or inside a block. If it points at, or
+ * into, a block, mark that block. */
+static void zeno_mark(uintptr_t word) {
+    if (word < zeno_lowest || word > zeno_highest) return;
+    /* The table is sorted by address. Find the last block that starts at
+     * or before `word`, by halving the range each time. */
+    size_t low = 0, high = zeno_block_count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if ((uintptr_t)(zeno_blocks[middle] + 1) <= word) low = middle + 1;
+        else high = middle;
+    }
+    if (low == 0) return;
+    zeno_block *block = zeno_blocks[low - 1];
+    /* `<=` and not `<`: C code is allowed to hold a pointer to just past
+     * the end of an array, and a loop over a list may hold only that. */
+    if (word > (uintptr_t)(block + 1) + block->size) return;
+    if (block->marked) return;
+    block->marked = 1;
+    if (!block->plain) {
+        block->next_waiting = zeno_waiting;
+        zeno_waiting = block;
+    }
+}
+
+/* Treat every word from `start` on as something that might be a pointer.
+ * (The attribute is for AddressSanitizer, a tool that reports reads of
+ * memory nobody declared. Reading the whole stack is exactly that, and
+ * here it is on purpose.) */
+#if defined(__GNUC__)
+__attribute__((no_sanitize_address))
+#endif
+static void zeno_mark_words(const void *start, size_t size) {
+    uintptr_t at = ((uintptr_t)start + sizeof(void *) - 1) / sizeof(void *) * sizeof(void *);
+    uintptr_t end = (uintptr_t)start + size;
+    for (; at + sizeof(void *) <= end; at += sizeof(void *)) {
+        zeno_mark(*(const uintptr_t *)at);
+    }
+}
+
+/* Mark from the C stack: every local variable of every function that is
+ * running now lies between this function's own variable and `main`'s. */
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+static void zeno_mark_stack(void) {
+    void *here = NULL;
+    uintptr_t low = (uintptr_t)&here, high = (uintptr_t)zeno_stack_base;
+    if (low > high) { /* a machine whose stack grows upward */
+        uintptr_t swap = low;
+        low = high;
+        high = swap;
+    }
+    zeno_mark_words((const void *)low, high - low + sizeof(void *));
+}
+
+static int zeno_by_address(const void *a, const void *b) {
+    uintptr_t x = (uintptr_t)*(zeno_block *const *)a, y = (uintptr_t)*(zeno_block *const *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void zeno_collect(void) {
+    if (zeno_block_count == 0 || zeno_stack_base == NULL) return;
+    zeno_collections++;
+    qsort(zeno_blocks, zeno_block_count, sizeof(zeno_block *), zeno_by_address);
+    zeno_block *last = zeno_blocks[zeno_block_count - 1];
+    zeno_lowest = (uintptr_t)(zeno_blocks[0] + 1);
+    zeno_highest = (uintptr_t)(last + 1) + last->size;
+
+    /* Mark. A pointer may be nowhere in memory at this moment, only in one
+     * of the processor's registers. This copies the registers onto the
+     * stack, where zeno_mark_stack will see them. GCC and Clang have a
+     * builtin for exactly that; elsewhere `setjmp` does nearly the same. */
+#if defined(__GNUC__)
+    __builtin_unwind_init();
+#else
+    jmp_buf registers;
+    memset(&registers, 0, sizeof registers);
+    (void)setjmp(registers);
+#endif
+    zeno_mark_stack();
+    zeno_roots();
+    /* Then follow the pointers inside each marked block, which marks more
+     * blocks, until none are waiting. */
+    while (zeno_waiting != &zeno_end_of_waiting) {
+        zeno_block *block = zeno_waiting;
+        zeno_waiting = block->next_waiting;
+        zeno_mark_words(block + 1, block->size);
+    }
+
+    /* Sweep: free what was not reached, and close the gaps in the table. */
+    size_t kept = 0;
+    for (size_t i = 0; i < zeno_block_count; i++) {
+        zeno_block *block = zeno_blocks[i];
+        if (block->marked) {
+            block->marked = 0;
+            zeno_blocks[kept++] = block;
+        } else {
+            zeno_in_use -= block->size;
+            free(block);
+        }
+    }
+    zeno_block_count = kept;
+    zeno_collect_at = zeno_in_use * 2 > ZENO_FIRST_COLLECTION ? zeno_in_use * 2 : ZENO_FIRST_COLLECTION;
+}
+
+static char *zeno_new_block(size_t size, bool plain) {
+#ifdef ZENO_COLLECT_ALWAYS
+    zeno_collect(); /* for testing the collector: as hard on it as can be */
+#else
+    if (zeno_in_use + size > zeno_collect_at) zeno_collect();
+#endif
+    if (zeno_block_count == zeno_block_room) {
+        size_t room = zeno_block_room == 0 ? 256 : zeno_block_room * 2;
+        zeno_block **table = realloc(zeno_blocks, room * sizeof(zeno_block *));
+        if (table == NULL) zeno_out_of_memory();
+        zeno_blocks = table;
+        zeno_block_room = room;
+    }
+    /* A block that can hold pointers starts as all zeros, so that what an
+     * earlier owner left behind is not taken for a pointer. */
+    size_t whole = sizeof(zeno_block) + size;
+    zeno_block *block = plain ? malloc(whole) : calloc(1, whole);
+    if (block == NULL) {
+        /* The machine has no more, whatever the limit says. Collect, and
+         * ask once more. */
+        zeno_collect();
+        block = plain ? malloc(whole) : calloc(1, whole);
+        if (block == NULL) zeno_out_of_memory();
+    }
+    block->next_waiting = NULL;
+    block->size = size;
+    block->marked = 0;
+    block->plain = plain;
+    zeno_blocks[zeno_block_count++] = block;
+    zeno_blocks_made++;
+    zeno_bytes_made += size;
+    zeno_in_use += size;
+    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
+    return (char *)(block + 1);
+}
+
+/* Memory for a list, an object or a function value: things with pointers
+ * to other things inside. */
+static char *zeno_alloc(size_t size) {
+    return zeno_new_block(size, false);
+}
+
+/* Memory for text, or for one number. The collector need not look inside. */
+static char *zeno_alloc_text(size_t size) {
+    return zeno_new_block(size, true);
+}
+
+/* What a program built with `zeno build --memory` prints as it ends. */
+#ifdef ZENO_MEMORY_REPORT
+static void zeno_memory_report(void) {
+    fflush(stdout);
+    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, %zu collections\n",
+            zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_collections);
+}
+#endif
 
 /* ------------------------------------------------------------------- Errors
  *
@@ -243,7 +471,7 @@ static double zeno_max_float(double a, double b) { return b > a ? b : a; }
  */
 
 static const char *zeno_copy(const char *text, size_t length) {
-    char *copy = zeno_alloc(length + 1);
+    char *copy = zeno_alloc_text(length + 1);
     memcpy(copy, text, length);
     copy[length] = '\0';
     return copy;
@@ -257,7 +485,7 @@ static const char *zeno_join(int count, ...) {
     for (int i = 0; i < count; i++) length += strlen(va_arg(parts, const char *));
     va_end(parts);
 
-    char *joined = zeno_alloc(length + 1);
+    char *joined = zeno_alloc_text(length + 1);
     char *end = joined;
     va_start(parts, count);
     for (int i = 0; i < count; i++) {
@@ -365,7 +593,7 @@ static const char *zeno_str_quantity(double x, const char *unit) {
 /* `{x:.2f}`: a fixed number of decimals. */
 static const char *zeno_fixed(double x, int decimals) {
     int length = snprintf(NULL, 0, "%.*f", decimals, x);
-    char *text = zeno_alloc((size_t)length + 1);
+    char *text = zeno_alloc_text((size_t)length + 1);
     snprintf(text, (size_t)length + 1, "%.*f", decimals, x);
     return text;
 }
@@ -393,7 +621,7 @@ static const char *zeno_pad(const char *body, int width, char align, bool zeros)
     if (padding <= 0) return body;
 
     size_t length = strlen(body);
-    char *out = zeno_alloc(length + (size_t)padding + 1);
+    char *out = zeno_alloc_text(length + (size_t)padding + 1);
     char *o = out;
     int left = align == '>' ? padding : align == '^' ? padding / 2 : 0;
     if (zeros) {
@@ -447,7 +675,7 @@ static const char *zeno_repr_str(const char *text) {
     for (const char *p = text; *p != '\0'; p++) {
         length += (*p == '"' || *p == '\\' || *p == '\n' || *p == '\t' || *p == '\r') ? 2 : 1;
     }
-    char *out = zeno_alloc(length + 1);
+    char *out = zeno_alloc_text(length + 1);
     char *o = out;
     *o++ = '"';
     for (const char *p = text; *p != '\0'; p++) {
@@ -547,7 +775,11 @@ static zeno_slot *zeno_list_at(zeno_list *list, int64_t i, int line, int col) {
 
 static zeno_slot zeno_list_pop(zeno_list *list, int line, int col) {
     if (list->len == 0) zeno_fail("IndexError", "cannot pop from an empty list", line, col);
-    return list->items[--list->len];
+    zeno_slot item = list->items[--list->len];
+    /* Wipe the place it was in, or the collector would go on thinking the
+     * list holds it. */
+    memset(&list->items[list->len], 0, sizeof(zeno_slot));
+    return item;
 }
 
 /* The three below need to know how to show or compare one item, which
@@ -663,7 +895,7 @@ static const char *zeno_strip(const char *text) {
 static int64_t zeno_parse_int(const char *text, int line, int col) {
     const char *stripped = zeno_strip(text);
     /* Take every `_` out first, then read what is left. */
-    char *digits = zeno_alloc(strlen(stripped) + 1);
+    char *digits = zeno_alloc_text(strlen(stripped) + 1);
     char *end = digits;
     for (const char *p = stripped; *p != '\0'; p++) {
         if (*p != '_') *end++ = *p;
@@ -708,14 +940,14 @@ static double zeno_parse_float(const char *text, int line, int col) {
 
 static const char *zeno_upper(const char *text) {
     size_t length = strlen(text);
-    char *out = zeno_alloc(length + 1);
+    char *out = zeno_alloc_text(length + 1);
     for (size_t i = 0; i <= length; i++) out[i] = (text[i] >= 'a' && text[i] <= 'z') ? text[i] - 32 : text[i];
     return out;
 }
 
 static const char *zeno_lower(const char *text) {
     size_t length = strlen(text);
-    char *out = zeno_alloc(length + 1);
+    char *out = zeno_alloc_text(length + 1);
     for (size_t i = 0; i <= length; i++) out[i] = (text[i] >= 'A' && text[i] <= 'Z') ? text[i] + 32 : text[i];
     return out;
 }
@@ -808,7 +1040,7 @@ typedef struct {
 
 static void *zeno_box_int(zeno_opt_int value) {
     if (!value.present) return NULL;
-    int64_t *box = (int64_t *)zeno_alloc(sizeof(int64_t));
+    int64_t *box = (int64_t *)zeno_alloc_text(sizeof(int64_t));
     *box = value.value;
     return box;
 }
@@ -819,7 +1051,7 @@ static zeno_opt_int zeno_unbox_int(const void *box) {
 
 static void *zeno_box_float(zeno_opt_float value) {
     if (!value.present) return NULL;
-    double *box = (double *)zeno_alloc(sizeof(double));
+    double *box = (double *)zeno_alloc_text(sizeof(double));
     *box = value.value;
     return box;
 }
@@ -830,7 +1062,7 @@ static zeno_opt_float zeno_unbox_float(const void *box) {
 
 static void *zeno_box_bool(zeno_opt_bool value) {
     if (!value.present) return NULL;
-    bool *box = (bool *)zeno_alloc(sizeof(bool));
+    bool *box = (bool *)zeno_alloc_text(sizeof(bool));
     *box = value.value;
     return box;
 }

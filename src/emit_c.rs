@@ -60,6 +60,7 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
         typedefs: Vec::new(),
         structs: Vec::new(),
         globals: Vec::new(),
+        roots: Vec::new(),
         prototypes: Vec::new(),
         definitions: Vec::new(),
         adapters: HashSet::new(),
@@ -135,9 +136,29 @@ pub fn emit(program: &Program, types: &Types, file: &str) -> Result<String, Erro
             c.push('\n');
         }
     }
-    c += "\nint main(void) {\n";
-    c += &format!("    zeno_file = {};\n", c_string(file));
+    // The top-level code. It is kept out of `main` (and `noinline` makes
+    // sure the C compiler leaves it out) so that every variable of the
+    // program lies below `main`'s on the stack, where the collector looks.
+    c += "\n__attribute__((noinline)) static void zeno_program(void) {\n";
     c += &render(&main);
+    c += "}\n";
+
+    // The collector starts from the variables. Those on the stack it finds
+    // by itself; the top-level ones, and an error on its way to an
+    // `except`, are listed here.
+    c += "\nstatic void zeno_roots(void) {\n";
+    c += "    zeno_mark_words(&zeno_raised, sizeof zeno_raised);\n";
+    for root in &emitter.roots {
+        c += &format!("    zeno_mark_words(&{root}, sizeof {root});\n");
+    }
+    c += "}\n";
+
+    c += "\nint main(void) {\n";
+    c += "    void *base = NULL;\n";
+    c += "    zeno_stack_base = &base; /* the stack starts here */\n";
+    c += "#ifdef ZENO_MEMORY_REPORT\n    atexit(zeno_memory_report);\n#endif\n";
+    c += &format!("    zeno_file = {};\n", c_string(file));
+    c += "    zeno_program();\n";
     c += "    return 0;\n}\n";
     Ok(c)
 }
@@ -276,6 +297,9 @@ struct Emitter<'a> {
     typedefs: Vec<String>,
     structs: Vec<String>,
     globals: Vec<String>,
+    /// The C names of the top-level variables that can hold a pointer: the
+    /// places, besides the stack, where the collector starts looking.
+    roots: Vec<String>,
     prototypes: Vec<String>,
     definitions: Vec<String>,
     /// The small show-one-item and compare-two-items functions written so
@@ -378,6 +402,16 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
             (x == y).then(|| a.clone())
         }
         _ => None,
+    }
+}
+
+/// Can a value of this kind be, or contain, a pointer to memory that the
+/// collector looks after? Numbers and bools cannot.
+fn holds_pointer(kind: &Kind) -> bool {
+    match kind {
+        Kind::Int | Kind::Float | Kind::Bool | Kind::Quantity(_) | Kind::None => false,
+        Kind::Optional(inner) => holds_pointer(inner),
+        _ => true,
     }
 }
 
@@ -817,8 +851,12 @@ impl Emitter<'_> {
                 if top_level {
                     // A top-level variable is one that functions can see: a
                     // C global, given its value when `main` gets this far.
+                    let is_root = holds_pointer(&val.kind);
                     let c_name = self.declare(name, val.kind);
                     self.globals.push(format!("static {c_type}{c_name};"));
+                    if is_root {
+                        self.roots.push(c_name.clone());
+                    }
                     self.line(format!("{c_name} = {};", val.code));
                 } else if mutable && self.shared.contains(name) {
                     // A function written inside this one uses the variable
@@ -2980,12 +3018,12 @@ mod tests {
     /// Build the C with the machine's C compiler, run it, and return what it
     /// printed, what it wrote as errors, and whether it finished cleanly.
     /// `None` if there is no C compiler here to try it with.
-    fn build_and_run(name: &str, c: &str) -> Option<(String, String, bool)> {
+    fn build_and_run(name: &str, c: &str, flags: &[&str]) -> Option<(String, String, bool)> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
         let (c_file, binary) = (dir.join("test.c"), dir.join("test"));
         std::fs::write(&c_file, c).expect("the C file is written");
-        let Ok(built) = Command::new("cc").arg("-o").arg(&binary).arg(&c_file).arg("-lm").output() else {
+        let Ok(built) = Command::new("cc").args(flags).arg("-o").arg(&binary).arg(&c_file).arg("-lm").output() else {
             eprintln!("no C compiler found; skipping the compiled half of this test");
             return None;
         };
@@ -3008,7 +3046,10 @@ mod tests {
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (interpreted, result) = crate::interpreter::run(&program, true);
         let c = compile(source).expect("the test program compiles");
-        let Some((compiled, errors, finished)) = build_and_run(name, &c) else {
+        // ZENO_COLLECT_ALWAYS runs the garbage collector before every
+        // single allocation. If the collector ever frees something that
+        // is still in use, this is the setting most likely to show it.
+        let Some((compiled, errors, finished)) = build_and_run(name, &c, &["-DZENO_COLLECT_ALWAYS"]) else {
             return;
         };
         assert_eq!(compiled, interpreted, "\n{source}");
@@ -3264,7 +3305,7 @@ print(f"{a.next} {nx}")
         let source = "var n: int or none = 5\nfunction clear() { n = none }\nif n is not none {\n clear()\n print(n + 1)\n}";
         let c = compile(source).unwrap();
         assert!(c.contains("zeno_still_int(z_n, 5, 8)"));
-        let Some((printed, errors, finished)) = build_and_run("gone", &c) else {
+        let Some((printed, errors, finished)) = build_and_run("gone", &c, &[]) else {
             return;
         };
         assert_eq!(printed, "");
@@ -3733,9 +3774,204 @@ print(word[5])
             ("primes", include_str!("../examples/primes.zeno")),
             ("shapes", include_str!("../examples/shapes.zeno")),
             ("sensor", include_str!("../examples/sensor.zeno")),
+            ("memory", include_str!("../examples/memory.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
+    }
+
+    // ------------------------------------------------------------ Memory
+
+    /// Build with the report switched on and a low first limit, so that
+    /// the collector runs often, and at -O2, which is what `zeno build`
+    /// uses and where the C compiler is most inventive about where it
+    /// keeps a pointer. Gives back what the program printed and the three
+    /// numbers of the report: bytes made, most in use at once, collections.
+    fn memory_of(name: &str, source: &str) -> Option<(String, [usize; 3])> {
+        let c = compile(source).expect("the test program compiles");
+        let flags = ["-O2", "-DZENO_MEMORY_REPORT", "-DZENO_FIRST_COLLECTION=16384"];
+        let (printed, errors, finished) = build_and_run(name, &c, &flags)?;
+        assert!(finished, "the compiled program failed: {errors}");
+        let report = errors.lines().find(|line| line.starts_with("memory:")).expect("a memory report");
+        let numbers: Vec<usize> = report
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|word| !word.is_empty())
+            .map(|word| word.parse().expect("a number"))
+            .collect();
+        Some((printed, [numbers[1], numbers[2], numbers[3]]))
+    }
+
+    fn interpreted(source: &str) -> String {
+        let tokens = crate::lexer::lex(source).expect("the test program lexes");
+        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let (printed, result) = crate::interpreter::run(&program, true);
+        assert!(result.is_ok(), "the interpreter failed");
+        printed
+    }
+
+    #[test]
+    fn memory_that_is_no_longer_used_is_given_back() {
+        // Every trip round the loop makes text, objects, a list, a ring of
+        // objects that point at each other, and a function value, and
+        // keeps almost none of it.
+        let source = r##"class Point {
+    x: int
+    label: str
+}
+class Node {
+    value: int
+    next: Node or none = none
+    back: Node or none = none
+}
+function ring(n: int) -> Node {
+    let first = Node(0)
+    var last = first
+    for i in range(1, n) {
+        let node = Node(i)
+        last.next = node
+        node.back = last
+        last = node
+    }
+    last.next = first
+    first.back = last
+    return first
+}
+function adder(n: int) -> function(int) -> int {
+    return function(x: int) -> int { return x + n }
+}
+var kept: list[str] = []
+var total = 0
+for i in range(20000) {
+    let text = f"item {i} of many"
+    let pair = [Point(i, text), Point(i + 1, text.upper())]
+    let add = adder(i)
+    total += len(text) + pair[1].x + ring(5).value + add(1) - i
+    if i % 5000 == 0 {
+        kept.append(text)
+    }
+}
+print(total, kept)
+"##;
+        let Some((printed, [made, most, collections])) = memory_of("garbage", source) else {
+            return;
+        };
+        assert_eq!(printed, interpreted(source));
+        assert!(made > 4_000_000, "the program made {made} bytes");
+        assert!(collections > 20, "the collector ran {collections} times");
+        // Without a collector `most` would equal `made`.
+        assert!(most < 200_000, "at most {most} bytes were in use at once, of {made} made");
+    }
+
+    #[test]
+    fn memory_that_is_still_used_is_kept() {
+        // The other half: things the program holds on to must come through
+        // every collection untouched. A long chain (which also
+        // shows the collector follows pointers without using the stack to
+        // do it), a list in a top-level variable, a list reachable only
+        // through an object, text in a list, and a function value that
+        // remembers a variable.
+        let source = r##"class Node {
+    value: int
+    next: Node or none = none
+}
+class Store {
+    names: list[str]
+    sizes: list[int or none]
+}
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+function chain(n: int) -> Node or none {
+    var head: Node or none = none
+    for i in range(n) {
+        head = Node(i, head)
+    }
+    return head
+}
+function churn(n: int) -> int {
+    var seen = 0
+    for i in range(n) {
+        let scrap = [f"scrap {i}", f"{i * 2}"]
+        seen += len(scrap[0]) + len(scrap)
+    }
+    return seen
+}
+let store = Store([], [])
+let tick = counter()
+let head = chain(30000)
+var squares: list[int] = []
+for i in range(2000) {
+    squares.append(i * i)
+    if i % 100 == 0 {
+        store.names.append(f"name {i}")
+        if i % 200 == 0 {
+            store.sizes.append(none)
+        } else {
+            store.sizes.append(i)
+        }
+        tick()
+    }
+}
+print(churn(30000))
+var count = 0
+var total = 0
+var node = head
+while node is not none {
+    count += 1
+    total += node.value
+    node = node.next
+}
+print(count, total, len(squares), squares[1999], sum(squares))
+print(store.names, store.sizes, tick())
+"##;
+        let Some((printed, [_, _, collections])) = memory_of("kept", source) else {
+            return;
+        };
+        assert_eq!(printed, interpreted(source));
+        // Fewer runs than in the test above, because the limit grows with
+        // what is kept.
+        assert!(collections > 5, "the collector ran {collections} times");
+    }
+
+    #[test]
+    fn an_error_on_its_way_to_an_except_is_kept() {
+        // Between `raise` and `except` the error is in no variable of the
+        // program's, only in the runtime's own. The handlers here make
+        // garbage before they look at what they caught.
+        same_as_interpreter("raised", r##"class Fault {
+    code: int
+    notes: list[str]
+}
+function risky(i: int) -> int raises Fault {
+    if i % 3 == 0 {
+        raise Fault(i, [f"note {i}", f"again {i}"])
+    }
+    return i
+}
+var total = 0
+var notes: list[str] = []
+for i in range(30) {
+    try {
+        total += risky(i)
+    } except Fault as fault {
+        let filler = [f"filler {i}", f"more {i}"]
+        total += fault.code + len(filler)
+        notes.append(fault.notes[1])
+    }
+}
+print(total, notes)
+try {
+    let n = int("not a number")
+    print(n)
+} except ValueError as err {
+    let filler = [f"{total}", f"{len(notes)}"]
+    print(err, filler)
+}
+"##);
     }
 
     #[test]

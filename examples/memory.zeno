@@ -1,0 +1,58 @@
+# memory.zeno: a program that makes far more than it keeps.
+#
+#     zeno run examples/memory.zeno              run it with the interpreter
+#     zeno build --memory examples/memory.zeno   compile it, with a memory report
+#     ./memory
+#
+# A logger takes a reading every tick. Each reading is an object with some
+# text in it, so every tick takes a little memory. Only the last few
+# readings and the hottest one are kept. The rest is garbage, and the
+# garbage collector in the compiled program gives that memory back.
+
+class Reading {
+    tick: int
+    celsius: float
+    note: str
+}
+
+function describe(reading: Reading) -> str {
+    return f"tick {reading.tick}: {reading.celsius:.1f} C ({reading.note})"
+}
+
+var recent: list[Reading] = []          # the last few readings
+var hottest: Reading or none = none
+var lines = 0
+
+for tick in range(50000) {
+    let celsius = 20.0 + (tick * 37 % 151) / 10.0
+    let reading = Reading(tick, celsius, f"sample {tick}")
+
+    # Start a new list every five readings. The old list, and the readings
+    # only it knew about, can no longer be reached from any variable.
+    if len(recent) == 5 {
+        recent = []
+    }
+    recent.append(reading)
+
+    if hottest is none or reading.celsius > hottest.celsius {
+        hottest = reading
+    }
+
+    # Text that is made, measured and forgotten at once.
+    lines += len(describe(reading).split())
+}
+
+print("words logged:", lines)
+print("still held:")
+for reading in recent {
+    print("  " + describe(reading))
+}
+if hottest is not none {
+    print("hottest: " + describe(hottest))
+}
+
+# Built with --memory, the program ends with a line like this one:
+#
+#   memory: 780027 blocks made (13222784 bytes), at most 1048576 bytes in use at once, 12 collections
+#
+# Thirteen megabytes were asked for. One megabyte at a time was enough.

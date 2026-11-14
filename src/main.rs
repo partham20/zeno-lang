@@ -42,6 +42,9 @@ fn usage() {
     println!("  --strict                 with check or run: every type must be known");
     println!("                           before the program runs, as firmware needs.");
     println!("                           `build` always works this way");
+    println!("  --memory                 with build: the program reports, as it ends,");
+    println!("                           how much memory it used and how often the");
+    println!("                           garbage collector ran");
 }
 
 /// Read a source file, or print why it could not be read.
@@ -132,7 +135,7 @@ fn run(path: &str, strict: bool) -> Option<()> {
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str) -> Option<()> {
+fn build(path: &str, memory_report: bool) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode.
     let (source, program) = load(path)?;
@@ -164,7 +167,13 @@ fn build(path: &str) -> Option<()> {
     // `CC` is the usual way to say which C compiler to use; `cc` is the
     // usual name for whichever one is installed.
     let compiler = env::var("CC").unwrap_or_else(|_| "cc".to_string());
-    match Command::new(&compiler).args(["-O2", "-o", name, &c_file, "-lm"]).status() {
+    let mut command = Command::new(&compiler);
+    if memory_report {
+        // Turns on a few lines in the runtime that say, as the program
+        // ends, how much memory it used and how often the collector ran.
+        command.arg("-DZENO_MEMORY_REPORT");
+    }
+    match command.args(["-O2", "-o", name, &c_file, "-lm"]).status() {
         Ok(status) if status.success() => {
             println!("Built {name}. Run it with ./{name}");
             Some(())
@@ -219,6 +228,9 @@ fn main() -> ExitCode {
     // `--strict` may appear anywhere after the command.
     let strict = args.iter().any(|arg| arg == "--strict");
     args.retain(|arg| arg != "--strict");
+    // `--memory` makes a built program report how much memory it used.
+    let memory_report = args.iter().any(|arg| arg == "--memory");
+    args.retain(|arg| arg != "--memory");
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -250,7 +262,7 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            match build(path) {
+            match build(path, memory_report) {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
             }
