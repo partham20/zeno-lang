@@ -604,8 +604,52 @@ function g() {
 not by what happens to be declared later. This is the rule in nearly every
 modern language (it is called lexical scope), and it is what lets the
 compiler decide, once, which variables a function needs to take with it.
-The exception is the top level of a file, where a function may use a
-variable declared below it (3.4).
+
+An earlier version of this decision made an exception for the top level
+of a file, where a function could use a variable declared below it. The
+checker never allowed that, so no program that `zeno run` accepted used
+it, and it is gone (3.6d).
+
+### 3.6d A function with a name follows the same rule
+
+A named function can be *called* from above the line it is written on
+(3.4). What it can *see* is still decided by that line: every function,
+class and enum of the blocks around it, and the variables declared above
+it. Never a variable declared below it.
+
+```
+let x = 1
+function outer() {
+    function inner() { return x }      # the x above
+    let x = 5
+    return inner()                     # 1, not 5
+}
+```
+
+**Why.** The reasons in 3.6c do not depend on whether the function has a
+name. And the checker already read programs this way, so anything else
+means `zeno check` and `zeno run` disagree about what a program does.
+
+They did disagree, until the bytecode VM was written (5.10). The
+interpreter made a named function at the top of its block and gave it
+the block's scope, which goes on growing, so the function above returned
+5. At the top of a file a `let len = 5` below a function that calls `len`
+broke the function. The VM decides what a name means when it compiles
+the function, could not reproduce either, and the comparison between the
+two engines failed. The interpreter was wrong, and so was `zeno build`
+for the top-level case. Both are fixed.
+
+**A name means one variable.** If a block declares `x` above a function,
+`x` inside that function is that variable, from the start. A call that
+comes before the line declaring `x` has run stops with "`x` is not
+defined". It does not quietly use an `x` from further out, which would
+make the same name mean two variables in two calls of one function.
+JavaScript has the same rule for `let`.
+
+**Known gap.** In that last case, where there *is* an `x` further out,
+the checker passes the program and both engines then stop it. The
+checker looks at the function when it is first called and sees only the
+outer `x`. It is an exercise in `docs/vm.md`.
 
 ### 3.7 A class lists its fields, and gets a constructor for free
 
@@ -1516,3 +1560,154 @@ a moment, and each would be more machinery. None was needed to build the
 example or the tests, so none was built. *(Principle: keep what works.)*
 The error for each names the line, and where there is one, the thing to
 write instead.
+
+### 5.10 A bytecode VM, beside the interpreter
+
+`zeno run --vm` compiles a program to bytecode and runs that. The
+walkthrough is `docs/vm.md`.
+
+**Why build one.** Three reasons, in order of weight.
+
+1. It is the next thing to understand. Python, Java, C#, Lua, Ruby and
+   every JavaScript engine run programs this way. Stacks, frames,
+   closures over cells and handler tables are the working parts of all
+   of them, and they are easier to see in fifty instructions of your own
+   than in someone else's five hundred.
+2. It is a second, independent reading of what a Zeno program means. Two
+   engines that must agree find mistakes that one engine and its tests
+   do not. It found one the day it first ran (3.6d).
+3. It makes `zeno run` faster: about three times on calls, twice on
+   loops. That matters least. Speed on a PC was never the point of Zeno,
+   and `zeno build` is far faster than either.
+
+**Why now, after the C backend and not before.** Decision 5.5a.
+
+### 5.10a A stack machine
+
+Instructions take their inputs from a stack and leave their result on
+it. `a + b` is "push a, push b, add".
+
+**Why.** It is the simplest thing to compile to. The code for an
+expression is the code for its parts followed by one instruction, with
+no decision to make about where anything goes. The JVM, CPython and
+WebAssembly are stack machines for the same reason.
+
+**Turned down:** a register machine, where instructions name the slots
+they read and write (`add r2, r0, r1`), as in Lua 5 and Dalvik. It needs
+fewer instructions for the same work and is faster. It also needs the
+compiler to choose a register for every temporary, which is a problem of
+its own. The LLVM stage will meet that problem properly.
+
+### 5.10b One meaning, written once
+
+The VM uses the interpreter's `Value`, its built-ins, and the same
+functions for every operator, field access, index, call binding and
+error rule. Those functions moved out of the interpreter into
+`src/ops.rs`, and the built-ins now take a `Machine` (the two things
+they need from an engine) and not the interpreter.
+
+**Why.** "Compiled code must behave exactly like interpreted code"
+(5.5d). For the C backend that had to be earned test by test, because C
+cannot call Rust. Here it can be true by construction: if both engines
+call `ops::binary`, they cannot disagree about `7 // -2`. What is left
+for the VM to get wrong is control flow and where variables live, and
+that is what its tests aim at.
+
+**Turned down:** a compact value of the VM's own (8 bytes, with small
+numbers and pointers packed into one word, as fast VMs do). It is where
+most of the missing speed is. It would also mean two of everything, and
+two places for each to go wrong.
+
+### 5.10c An instruction is a Rust enum, not bytes *(provisional)*
+
+`Op::GetLocal(3)` is a value of an enum, 12 bytes wide, in a `Vec<Op>`.
+
+**Why.** The Rust compiler checks every `match` on it for a missing
+case, an operand cannot be read with the wrong width, and the printer is
+nearly free. Real bytes would make the loop a little faster and the code
+a good deal harder to read, for a file format nobody needs yet.
+
+**When it changes:** when compiled programs are saved to disk, or a VM
+has to fit on a microcontroller. Both want the code to be bytes. It is
+the last exercise in the walkthrough.
+
+### 5.10d Variables are stack slots; shared ones are cells
+
+A variable used only by its own function is a slot of the stack, known
+when the program is compiled. A variable that a function written inside
+also uses lives in a cell on the heap, which both hold. Which is which
+is decided by name: if any inner function mentions `count`, every
+`count` in the enclosing function gets a cell.
+
+**Why slots.** A read is one index into an array. No name exists while
+the program runs.
+
+**Why cells.** 3.6c: the inner function can outlive the call that made
+the variable, and both must see one variable, so it cannot stay on the
+stack. The C backend made the same choice for the same reason (5.5k).
+
+**Why by name.** It is one walk over the function before compiling it,
+and it can only err toward a cell that was not needed, which is slower
+and never wrong.
+
+**Turned down:** Lua's upvalues, where a shared variable stays on the
+stack until its function returns and is moved to the heap only then.
+Faster, and a good deal more machinery. **Also turned down for now:**
+working out exactly which variable each inner function uses. It is an
+exercise.
+
+There are no global variables. The program is a function called `main`,
+and a top-level variable that a function uses is a variable of `main` in
+a cell. One mechanism, not two.
+
+### 5.10e The bytecode compiler never refuses a program
+
+A mistake it can see while compiling (a name that does not exist, an
+assignment to a `let`, `break` outside a loop) becomes a `Fatal`
+instruction at the place where the interpreter would have found it.
+
+**Why.** The interpreter runs a program up to its mistake and then
+stops. If the VM refused the whole program, the two would differ for
+every program with a mistake in it, and the tests that compare them
+could not cover those programs. Refusing programs is the checker's job
+(4.4), and `zeno run --vm` runs the checker first.
+
+### 5.10f Every test program runs on both engines
+
+`vm::run_both` runs a program on the interpreter and on the VM and
+requires the same output and, when it stops, the same message at the
+same line and column. The interpreter's tests and the C compiler's
+tests go through it.
+
+**Why.** It is the cheapest strong test there is: about two hundred
+programs that were already written, each now checking the VM with no
+expected output to write. And it works in both directions, as 3.6d
+showed.
+
+### 5.10g The interpreter stays the default *(provisional)*
+
+`zeno run` uses the interpreter unless given `--vm`.
+
+**Why.** The interpreter is the plainest statement of what Zeno means:
+a `while` loop is run by a `while` loop. It is what the VM and the C
+backend are compared against, so it should be the one people meet first
+and the one that is hardest to break. The VM is new.
+
+**When it changes:** when the VM has run everything for a while without
+a difference turning up, the default can flip, and the interpreter stays
+as the reference behind a flag.
+
+### 5.10h A Zeno call does not use the Rust stack, with one exception
+
+A call adds a frame to a list. The loop does not call itself.
+
+**Why.** It is what makes an error cheap to unwind (drop frames) and
+what would let a later stage pause a function and come back to it, for
+generators or `async`. The interpreter cannot do either without help
+from Rust's own stack.
+
+**The exception** is a built-in that calls a Zeno function, such as
+`map`. It is Rust code, so the loop is started a second time underneath
+it. **Turned down:** making `map`, `filter` and `reduce` instructions of
+their own so that they never leave the loop. It would be right for
+`async`, and it is not needed until then.

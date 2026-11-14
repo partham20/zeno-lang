@@ -68,7 +68,7 @@ piece of the compiler:
 
 | Use case | What gets it there |
 |---|---|
-| Scripts, automation, a REPL | Interpreter (`zeno run`) |
+| Scripts, automation, a REPL | Interpreter and bytecode VM (`zeno run`) |
 | Microcontrollers and firmware | Compile to C, no heap required |
 | Command-line tools, desktop, servers | Native code through C, later LLVM |
 | Calling existing C libraries | C interop, in both directions |
@@ -94,8 +94,15 @@ values that every caller tests ([`docs/firmware.md`](docs/firmware.md)).
 everything is owned, and leaves the collector out of the C altogether
 ([`docs/no-collector.md`](docs/no-collector.md)).
 
+`zeno run` has two engines. The interpreter walks the syntax tree. With
+`--vm` the program is compiled to bytecode and run by a small virtual
+machine, which is two to three times as fast and prints exactly the same
+([`docs/vm.md`](docs/vm.md)). Every test program is run on both.
+
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
+cargo run -- run --vm examples/tour.zeno        # the same, compiled to bytecode and run by the VM
+cargo run -- bytecode examples/hello.zeno       # the bytecode, one instruction per line
 cargo run -- check examples/tour.zeno           # only check it for mistakes
 cargo run -- check --strict examples/tour.zeno  # every type must be known, as firmware needs
 cargo run -- check --strict examples/styles.zeno  # passes with no types written: they are worked out
@@ -118,7 +125,7 @@ cargo test
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
-  [`docs/no-collector.md`](docs/no-collector.md).
+  [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md).
 
 ## Roadmap
 
@@ -136,7 +143,8 @@ cargo test
 10. A firmware build with no collector (done: `zeno build --no-collector`
     accepts a program where every list and object is owned, and leaves the
     collector out of the C)
-11. Bytecode VM
+11. Bytecode VM (done: `zeno run --vm` compiles to bytecode and runs it on a
+    stack machine; `zeno bytecode` shows the instructions)
 12. LLVM backend
 13. Extras
 
@@ -151,7 +159,11 @@ src/parser.rs       tokens -> syntax tree
 src/printer.rs      syntax tree -> text, for `zeno parse`
 src/checker.rs      finds type mistakes before the program runs
 src/value.rs        what a value is while a program runs
+src/ops.rs          what each operator and step does, for both engines
 src/interpreter.rs  runs a syntax tree
+src/bytecode.rs     the instructions of the VM, and a printer for them
+src/emit_bytecode.rs  syntax tree -> bytecode
+src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`

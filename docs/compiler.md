@@ -31,6 +31,9 @@ compiles the same program, runs the result, and compares the output byte for
 byte, including the error message when the program is meant to fail. If you
 change one side, the tests tell you to change the other.
 
+Since the bytecode VM ([`vm.md`](vm.md)) the same tests run each program a
+third way, on the VM, which must agree with the interpreter as well.
+
 ## What it compiles so far
 
 Nearly all of the language: numbers, bools, strings and their methods,

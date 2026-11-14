@@ -11,6 +11,9 @@ cargo run -- run examples/tour.zeno
 
 - [`src/value.rs`](../src/value.rs): what a value is while the program runs.
 - [`src/interpreter.rs`](../src/interpreter.rs): scopes, statements, expressions, calls.
+- [`src/ops.rs`](../src/ops.rs): what each operator does, reading fields
+  and items, and lining arguments up with parameters. It is a file of its
+  own because the bytecode VM ([`vm.md`](vm.md)) calls the same code.
 - [`src/builtins.rs`](../src/builtins.rs): `print`, `len`, string and list
   methods, the `math` and `time` modules, f-string formatting.
 
@@ -104,14 +107,20 @@ closure at the moment that expression is evaluated. Since a closure is just
 a `Value`, it can be stored in a variable, passed as an argument, or handed
 to `map`, `filter` and `reduce`, which call it once per item.
 
-One difference: such a function keeps the variables in sight at that
-moment, and not ones declared later in the same block (`Scope::seen_from`).
-Each variable is held through an `Rc`, so the function and the block share
-the very same variable, and a change made by one is seen by the other. Why
-it matters is in `docs/decisions.md` 3.6c.
+A function keeps the variables in sight where it is written, and not ones
+declared further down the same block. So it does not keep the block's
+scope itself, which goes on growing. It keeps a **view** of it
+(`Scope::seen`): a scope with no variables of its own that looks into the
+block's and sees only the first so many declared there. Each variable is
+held through an `Rc`, so the function and the block share the very same
+variable, and a change made by one is seen by the other. Why it matters
+is in `docs/decisions.md` 3.6c and 3.6d.
 
 Before running a block, `hoist` declares all the functions, classes and
 enums in it, so they can be used above the line where they are written.
+None of the block's variables exist yet at that moment. So `hoist` counts
+how many will have been declared by the time the program reaches each
+function's line, and that count is where the function's view ends.
 
 ## Leaving early: break, return, raise
 
@@ -151,7 +160,7 @@ the body can use it.
 - **Free cyclic memory.** A function and its scope can point at each other
   and are never released. That belongs to the memory management stage.
 - **Run fast.** Names are looked up in hash tables on every use. The
-  bytecode VM stage fixes that.
+  bytecode VM does not have to: see [`vm.md`](vm.md).
 
 ## Things to try
 
