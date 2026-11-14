@@ -118,9 +118,13 @@ cargo test
 7. Memory management (done: a mark-and-sweep garbage collector in the compiled program)
 8. Errors as values, for firmware and MISRA builds: a build setting that
    compiles `try` / `raise` to status codes and `if`, with no `setjmp`
-9. Bytecode VM
-10. LLVM backend
-11. Extras
+9. Owned values and borrows, beside the collector: opt-in values with one
+   owner, freed at a known line with no collector involved
+10. A firmware build with no collector: every allocation owned or of fixed
+    size, and the collector left out of the program
+11. Bytecode VM
+12. LLVM backend
+13. Extras
 
 ## Layout
 

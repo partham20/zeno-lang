@@ -1128,3 +1128,64 @@ MicroPython does on the same class of microcontroller.
 3. If pauses turn out to matter in practice, counting references can be
    added underneath without changing the language, since nothing in the
    source depends on which method is used.
+
+### 5.8 Owned values and borrows, beside the collector *(planned)*
+
+Values stay shared and collected by default (3.10, 5.7). A value can
+instead be marked as **owned**:
+
+- It has exactly one owner. Assigning it, or passing it, *moves* it: the
+  old name can no longer be used.
+- It is freed at the end of its owner's block, at a line the programmer
+  can point to. The collector is not involved.
+- It can be *borrowed* for the length of a call: the function may use it
+  and must not keep it. A borrow cannot outlive the call it was passed to.
+  That is the whole borrow checker to begin with. It grows only if real
+  programs need more.
+- **An owned value may hold shared values. A shared value may not hold an
+  owned one.** Otherwise a shared value could still point at an owned one
+  after its owner had freed it.
+
+**Why.** 5.7 lists what the collector costs: pauses, and memory that comes
+back at no particular moment. For most code that is a good trade. For a
+buffer in an interrupt handler or a control loop it is not. This lets the
+programmer pay for precision only where it matters, and write everything
+else the easy way. *(Principles 1 and 5.)*
+
+**Why opt-in, and not ownership everywhere.** 5.7 turned that down: it is
+a different, harder language. Opt-in keeps the first program a beginner
+writes free of it.
+
+**Precedent.** D collects by default and has `@nogc` and `scope`. Nim
+collects by default and has moves (`sink`) and borrows (`lent`). Swift
+counts references by default and has added `consuming`, `borrowing` and
+values that cannot be copied. Mojo has `owned` and `borrowed` arguments.
+All four arrived at "automatic by default, exact where asked for".
+
+**To settle when it is built.**
+
+- *The spelling.* Principle 3 says punctuation has to earn its place, so
+  whole words (`owned`, `borrow`) are more likely than `&x`.
+- *The collector must still look inside owned values* while they are
+  alive, because they may hold the only pointer to a shared one. It just
+  never frees them.
+- *Optionally*, the compiler can notice shared values that never leave the
+  function that made them and free those at the end of the block too
+  (escape analysis). Only if it stays simple.
+
+### 5.9 A firmware build with no collector *(planned)*
+
+In a firmware build, every value that needs memory must be owned (5.8) or
+of a size known when the program is built. If that holds, the collector is
+left out of the program altogether. If it does not, the build stops and
+names the line that makes a shared value.
+
+**Why.** MISRA C bans `malloc` and `free` (Rule 21.3), and certified
+firmware wants to know its worst-case memory before it runs. A collector
+cannot give either, however good it is. With 5.5l (no `setjmp`) this is
+the build that such a project can ship. *(Principle 5: this is where "no
+hidden runtime" is finally true without an exception.)*
+
+**Why after 5.8.** Without owned values, "no collector" would mean "no
+lists, no objects and no built text", which is too little to write real
+firmware in.
