@@ -413,7 +413,8 @@ every test program, as before.
   2000 characters needs a room of 2000, for the moment between the
   `return` and the `let`.
 - **Lists made by `split`, `map`, `filter` and `+`, and `for ch in
-  text`, are still refused.** They are the next step.
+  text`**, were still refused when this page was written. They are the
+  next step, and it is done: [`temporaries.md`](temporaries.md).
 
 ## How it is tested
 

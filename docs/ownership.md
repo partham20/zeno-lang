@@ -185,10 +185,12 @@ is in keeping the set right as the code branches:
   away. Pass it in as a `borrow` parameter. This is what makes it safe to
   free the value when the block ends: nothing outside the block ever knew
   where it was.
-- **An owned value made in the middle of an expression needs a name
-  first.** `print(look(make()))` is refused, because nothing would own what
-  `make()` returns. `let p = make()` gives it an owner. (An owned value
-  made on a line by itself, and kept by nobody, is simply freed there.)
+- **An owned value made in the middle of a statement, and only looked
+  at, belongs to the statement.** In `print(look(make()))` nobody is
+  given what `make()` returns, so the statement frees it when it is
+  over. `let p = make()` gives it an owner that lasts longer. (An owned
+  value made on a line by itself, and kept by nobody, is freed there in
+  the same way.) [`temporaries.md`](temporaries.md) is the walkthrough.
 
 ## What the C looks like
 
@@ -380,9 +382,10 @@ breaking any program that works now.
   method. Somebody else may have been lent the old value at that moment.
   Only the owner of the object may write `packet.data = [...]`. A method
   can still change what is *in* the list (`self.data.append(x)`).
-- **A shared list becoming an owned one.** Only a list written out
-  (`[1, 2]`) or a comprehension can start life owned, because only those
-  are certain to have no other name.
+- **A shared list becoming an owned one.** Only a list that was just
+  made can start life owned: one written out (`[1, 2]`), a
+  comprehension, or what `split`, `map`, `filter` or `+` gives. Only
+  those are certain to have no other name.
 - **`match` on an owned value, raising one, or keeping a method of one as a
   value.**
 

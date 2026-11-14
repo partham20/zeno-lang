@@ -1387,6 +1387,29 @@ for the caller. [`text.md`](text.md), "Through LLVM", shows the IR.
 Each value the emitter makes carries one bit for this (`fixed` in
 `Val`): text that is not fixed is in the room.
 
+**What a statement makes and gives to nobody is the statement's.** In
+`print(count(line.split()))` the list of words has no owner. Its
+address goes into a slot of the statement's own, and the statement
+frees it when it is over:
+
+```llvm
+  store ptr null, ptr %own.1                 ; where the statement begins
+  %t2 = call ptr @zeno_split_blanks(ptr %t1)
+  store ptr %t2, ptr %own.1
+  ...
+  %t5 = load ptr, ptr %own.1                 ; where it ends
+  call void @zeno_list_drop_text(ptr %t5)
+```
+
+The slot is an owner like any other while the statement runs, so a
+`ret i1 false` in the middle of the statement frees the list on its
+way out. It is a slot and not simply `%t2` because the list may be
+made in a block that is skipped (the right side of `and`), and a name
+from such a block cannot be used after it. The `store ptr null` line
+is written where the statement began once the statement is finished,
+as the `%mark` line is. [`temporaries.md`](temporaries.md) is the
+walkthrough; `own_begin`, `own_end` and `belongs` are the code.
+
 **What it refuses** is what the C build refuses, in the same words,
 because both call the same function for the message
 (`emit_c::without_collector`).
@@ -1525,8 +1548,9 @@ file. In a C build they are in the same file and can be inlined.
 
 ## What it does not do yet
 
-- **What `--no-collector` refuses in C it refuses here**: shared
-  lists and objects, function literals, enum cases that carry values
+- **What `--no-collector` refuses in C it refuses here**: lists and
+  objects kept by something that is not an owner, function literals,
+  enum cases that carry values
   ([`no-collector.md`](no-collector.md), "What is refused").
 - **What the C backend also refuses**: a named function, class or enum
   declared inside a function, a default for a parameter that is not

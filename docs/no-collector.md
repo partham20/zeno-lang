@@ -46,26 +46,28 @@ values that are owned. This build is what you get when *every* value is.
 
 ## The files
 
-- [`src/emit_c.rs`](../src/emit_c.rs), the part headed "With no collector
-  to help": `hold`, `text_begin`, `text_end`, `stays`, `list_has_owner`.
-  The refusals are where each kind of value is made: search for
-  `without_collector`.
+- [`src/emit_c.rs`](../src/emit_c.rs), the parts headed "With no collector
+  to help" and "What a statement owns": `hold`, `text_begin`, `text_end`,
+  `stays`, `belongs`. The refusals are where each kind of value is made:
+  search for `without_collector`.
 - [`src/runtime.c`](../src/runtime.c): the parts between
   `#ifdef ZENO_NO_COLLECTOR` and `#endif`. As with `ZENO_FIRMWARE`, the
   compiler keeps one side when it pastes the runtime in (`runtime` in
   `emit_c.rs`).
-- [`src/checker.rs`](../src/checker.rs): one small addition, `fresh`. The
-  checker tells the compiler which lists start life owned.
+- [`src/checker.rs`](../src/checker.rs): three small sets, `fresh`, `made`
+  and `lent`. The checker tells the compiler which lists start life
+  owned, and which owned values are only looked at.
 
 ## Where memory comes from now
 
 With no collector, memory that is taken must be given back by a line of
-the program. There are exactly four ways to get memory in this build, and
+the program. There are exactly five ways to get memory in this build, and
 each has such a line.
 
 | What | Where it lives | When it is given back |
 |---|---|---|
 | An owned list or object | the pool, a fixed array | when its owner's block ends |
+| A list or object that is made and given to nobody | the pool | when the statement that made it is over |
 | Text built while the program runs | the text room, a fixed array | when the statement that built it is over |
 | Text that is kept | the pool | when the variable, field or list that keeps it is done with it |
 | An error that was raised | the pool | when the `except` block that caught it ends |
@@ -195,8 +197,8 @@ after that.
 
 ## A value between two owners
 
-Three times, a value belongs to nobody for a moment. With a collector that
-does not matter. Here each needs an answer, and all three get the same
+Four times, a value belongs to nobody for a moment. With a collector that
+does not matter. Here each needs an answer, and all four get the same
 one: the compiler **holds** the value (`hold` in `emit_c.rs`), which means
 that any early way out of the block frees it, just as it frees what the
 block's owners hold.
@@ -221,6 +223,12 @@ block's owners hold.
 3. **The copy a `for` loop walks** (decision 3.10a). A `return` or a
    failed call inside the loop frees it on the way out.
 
+4. **A value that is made and given to nobody**, as in
+   `print(count(line.split()))`. It belongs to the statement, which
+   frees it when it is over, and a failure half way through the
+   statement frees it too. [`temporaries.md`](temporaries.md) is the
+   walkthrough.
+
 The first and third were small leaks to the collector in stages 1 and 2.
 They are now fixed in every build.
 
@@ -231,25 +239,27 @@ line and says what to write instead where there is something.
 
 | Refused | Why |
 |---|---|
-| A list or object that is not `owned` | nobody frees it |
+| A list that is kept by something that is not an owner: `let xs = [1, 2]`, a plain `list[int]` parameter or field, a list inside a list | nobody frees it |
+| An object of a class that is not an `owned class` | nobody frees it |
 | An error that is kept, passed on, or raised again | its `except` frees it |
 | An error made anywhere but in `raise` | no `except` would free it |
 | An enum case that carries values | it sits in a block of its own |
 | A function written where a value goes | so does it, with the variables it uses |
-| `split`, `map`, `filter`, `+` on lists | each makes a new list with no owner |
-| `for ch in text` | it makes a list of the characters. Use `range(len(text))` and `text[i]` |
 | A list of `int or none` | each item sits in a block of its own |
-| A list written where it is only looked at: `x in [1, 2]`, `look([1, 2])` | nobody owns it |
 
-Three things you might expect on this list are not. A named function
-used as a value (`items.reduce(add, 0)`) is fine: it takes no memory. A
-list written as what a `for` loop walks (`for pin in [2, 3, 5]`) is
-fine: the loop frees it. And text that is kept is fine: the keeper has
-a copy ([`text.md`](text.md)).
+Four things you might expect on this list are not. A named function
+used as a value (`items.reduce(add, 0)`) is fine: it takes no memory.
+Text that is kept is fine: the keeper has a copy
+([`text.md`](text.md)). A list that is made and only looked at is fine,
+whatever makes it (`x in [1, 2]`, `count(line.split())`,
+`len(a + b)`): the statement frees it. And a list that a `for` loop
+walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
+`for ch in text`): the loop frees it. Both are in
+[`temporaries.md`](temporaries.md).
 
-Most of these are provisional. An enum value or a function value could be
-owned, and a literal list could be lent for the length of a call. None is
-needed yet.
+Most of these are provisional. A plain list or class could be owned by
+whoever receives it, and so could an enum value or a function value.
+Those are the next steps.
 
 ## What this does not claim
 
@@ -308,7 +318,7 @@ list, inside another `except`, half way through filling a list, and while
 owned values are on their way into a call; `return`, `break` and
 `continue` out of `except` blocks; and two thousand trips round a loop
 that builds text, which must leave the text room as it found it. A table
-of 29 small programs checks that each refusal says what it should, and
+of 20 small programs checks that each refusal says what it should, and
 that each of them still builds where there is a collector.
 
 They were also run by hand with gcc and clang at several optimisation
@@ -340,9 +350,11 @@ tests of the pool itself.
 6. `print(42)` builds the text `"42"` and then prints it. Give the runtime
    a `zeno_put_int` that prints a number with no text room, and make the
    compiler use it when `print` has one argument.
-7. `look([1, 2, 3])` is refused, where `look` takes a `borrow list[int]`.
-   The list could be held for the length of the call and freed after it.
-   `hold` and `let_go` are most of what that needs.
+7. `look([1, 2, 3])` used to be refused, where `look` takes a
+   `borrow list[int]`. It builds now: find the line in the C that frees
+   the list, then make `look` fail (give it a `raises`) and find the
+   second line that does. [`temporaries.md`](temporaries.md) says how
+   both got there.
 8. `raise e` inside `except ... as e` is refused. It could be a move: the
    error goes back to `zeno_raised` and the block no longer frees it. What
    would the checker have to know?

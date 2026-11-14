@@ -1739,14 +1739,36 @@ release. The collector is already there for it.
   else may have been lent the old value at that moment. Telling "may
   change" borrows from "may only read" borrows would lift this, and is the
   first growth to consider (5.8d).
-- A shared list becoming an owned one. Only a list written out or a
-  comprehension can start life owned: those are the only lists certain to
-  have no other name.
+- A shared list becoming an owned one. Only a list that was just made
+  can start life owned (one written out, a comprehension, or what
+  `split`, `map`, `filter` or `+` gives, since 5.9s): those are the only
+  lists certain to have no other name.
 - `match` on an owned value, raising one, and a method of one kept as a
   value.
 
 Each is an error with a message that says what to do instead. Allowing any
 of them later breaks no program that works now.
+
+One refusal that was on this list is gone. `print(look(make()))` used
+to be "this Packet has no owner yet. Give it a name with `let` first".
+It is accepted since 5.9r: the statement owns the value.
+
+#### 5.8k `xs += ys` on an owned list is `xs = xs + ys`
+
+The checker refused `+=` where the left side was an owned list: `+`
+was asked to add an `owned list[int]` to a `list[int]`. It now looks at
+the left side as any other reader does, and the list that `+` makes
+takes the old one's place, which the owner frees.
+
+**Why.** `x += y` means `x = x + y` for everything else in Zeno, and
+`xs = xs + ys` was already accepted for an owned list. One of the two
+being refused was a surprise with no reason behind it. *(Principle:
+unambiguous and intuitive.)*
+
+**What it does not do.** It does not grow the list in place. `+` makes
+a new list in every build, and `xs.append(y)` is the way to add one
+item without that. Through a borrow (`self.items += more` in a method)
+it is still refused, by 5.8i: replacing an owned field needs the owner.
 
 #### 5.8j No escape analysis; two frees that are always safe instead
 
@@ -1882,14 +1904,16 @@ apply to every build, so every build is a little tidier for it.
 
 ### 5.9g What a build with no collector refuses *(provisional)*
 
-Shared lists and objects; enum cases that carry values; functions written
-as values; `split`, `map`, `filter` and `+` on lists; `for` over the
-characters of a str; lists of numbers that may be `none`; and a list
-written where it is only looked at.
+A list kept by something that is not an owner (a plain variable,
+parameter or field, or another list); objects of a class that is not an
+`owned class`; enum cases that carry values; functions written as
+values; and lists of numbers that may be `none`.
 
-Keeping built text was on this list until 5.9l. The rest are being
-taken off it one step at a time, under one rule: whoever receives a
-value owns it.
+Keeping built text was on this list until 5.9l. `split`, `map`,
+`filter` and `+` on lists, `for` over the characters of a str, and a
+list written where it is only looked at were on it until 5.9r. The
+rest are being taken off it one step at a time, under one rule:
+whoever receives a value owns it.
 
 **Why refuse and not support.** Each could be given an owner or held for
 a moment, and each would be more machinery. None was needed to build the
@@ -2197,6 +2221,171 @@ the LLVM build. What is printed is the same. The test programs avoid
 the mix so that 5.11t can stay strict. The fix is to work each
 argument out into a temporary in order, which changes most of the C
 this project's pages quote, so it waits for the audit stage.
+
+### 5.9r A value that is made and given to nobody belongs to its statement
+
+`print(count(line.split()))` makes a list and gives it to nobody. The
+statement owns it and frees it when the statement is over. The same
+goes for an owned value that a function gives back and that is only
+looked at, `print(size(make()))`, and that one in every build. The
+walkthrough is `docs/temporaries.md`.
+
+**Why.** With no collector the question for every block is "which line
+frees it?". For a value with no name there are few candidates, and the
+end of the statement is the only one that is both certainly late
+enough (nothing in the statement is still looking) and certainly
+reachable (nothing after the statement can mention the value). It is
+also the rule a reader would guess, and the rule Rust and C++ have for
+what they call temporaries. *(Principle: unambiguous and intuitive.
+Nothing new is written in the program, and a line means the same in
+every build.)*
+
+**Turned down: keep refusing, and ask for a name.** That was the rule
+until now. `let words: owned list[str] = line.split()` followed by
+`count(words)` is two lines and a type for what reads as one thought,
+and it holds the list to the end of the block and not the statement.
+The refusal taught nothing that the rule does not.
+
+**Turned down: free it after its last use.** In
+`print(len(a.split()), slow())` the list could go before `slow()`
+runs. That needs the compiler to know which calls keep looking at what
+they were given, for built-ins and for the program's own functions
+alike, and then two lines that look the same would free at different
+moments. One fixed moment is easier to reason about, and a `let` in a
+block of its own says anything else.
+
+**Turned down: free it at the end of the block.** A loop with such a
+statement in it would hold one list per trip until it ended.
+
+**Turned down: count references.** Decision 5.7 turned it down for the
+whole language, and nothing here is different.
+
+**How it leaves early.** The value is held (5.9f) from the line that
+makes it. So a `return`, a `break` or a failed call in the middle of
+the statement frees it by the path that already frees what the owners
+hold. No second mechanism was built.
+
+### 5.9s A made list is the statement's unless an owned list is wanted there
+
+Six things make a new list: writing one out, a comprehension, `split`,
+`map`, `filter` and `+`. The checker notes each (`Types::made`). Where
+the place a made list arrives at wants an **owned** list (a `let` with
+the type, an owned parameter or field, a `return` from a function that
+gives one back), it starts life owned there (`Types::fresh`, which
+5.9e already had for the first two). Anywhere else, in a build with no
+collector, it is the statement's (5.9r), and `stays` refuses to let
+anything keep it: "this list has no owner".
+
+**Why the type of the place decides.** It is already written in the
+program, by the person who knows whether the list is meant to last.
+The alternative is to work out from how a name is used whether it
+needs to own, which is 5.8j's escape analysis, turned down there.
+
+**A plain `list[T]` parameter may not be given a made list**
+*(provisional)*. A `borrow` parameter may: the checker already makes
+sure such a function cannot keep what it was lent. A plain parameter
+makes no such promise, so the list could be kept past the statement.
+The next step makes a plain list in this build an owned one, and then
+the function takes the list over.
+
+**With a collector** nothing changes for a plain made list: it is
+shared, and collected.
+
+### 5.9t A condition is over when it has its answer; a `for` and a `match` are over after their last block
+
+The end of the statement is the end of the line for a `let`, an
+assignment and a call. The others:
+
+- The condition of an `if`, `else if` or `while`, each side of `and`
+  and `or`, and what `not` is in front of, are over as soon as they
+  have their one-bit answer. What they made is freed there, before any
+  block runs, and on every trip of a `while`.
+- One item of a comprehension is over when it is in the list.
+- A `for` and a `match` keep what their first line made until their
+  last block is over.
+
+**Why the conditions free early.** Nothing can be looking: the answer
+is a bool. And a `while` that held its condition's list for the whole
+loop would hold one for every trip.
+
+**Why `for` and `match` hold on, when text is given back before the
+first trip (5.9q).** Text is copied when it is kept, so the loop has
+its own. A list is not. In `for x in make().data` the loop walks the
+very list inside the object the statement owns, so the object must
+outlive the loop. Rust has the same rule for the same reason.
+**Turned down: free what can be freed before the first trip.** Telling
+which values the loop still looks into is the analysis 5.9r turned
+down.
+
+**A change that came with it.** In C, the sides of `and` and `or` used
+to share the statement's text mark. They are conditions now, as they
+always were in the LLVM backend, so the two backends give text back at
+the same points.
+
+### 5.9u The statement's variable is declared where the statement begins, holding nothing
+
+```c
+zeno_list *t1 = NULL;
+t1 = zeno_split_blanks(z_line);
+...
+zeno_list_drop_text(t1);
+```
+
+**Why not `zeno_list *t1 = zeno_split_blanks(z_line);`.** The value
+may be made inside an `if` that the C needs for another reason
+(`a < f(x) < g([1, 2])` is nested `if`s), and the line that frees it
+is after that `if`. A variable declared inside would be out of reach.
+Declared first and set to `NULL`, it is in reach everywhere, and
+freeing `NULL` does nothing if the `if` was skipped. In IR the same
+thing is a slot with `store ptr null` (a name from a block that may be
+skipped cannot be used after it). Both lines are inserted where the
+statement began once it has been compiled: only then is it known how
+many there are.
+
+**Turned down: free at the end of whichever nested block made it.**
+Every place the compilers open a block inside an expression would need
+to know about it, now and whenever one is added. One rule at the
+statement, plus `NULL`, covers them all.
+
+### 5.9v A list that nobody else can reach is walked without a copy
+
+A `for` loop, `map`, `filter` and `reduce` walk a copy of their list
+(3.10a), so that a body which changes the list cannot confuse them.
+Two kinds of list need no copy: one that was made right there (the
+loop frees it after the last trip), and one that the statement owns
+(the statement frees it after the loop). Neither has a name, so no
+body can change it.
+
+**Why bother.** In a build with a pool of a fixed size, the copy of a
+list of text is a block for the list, a block for its items and a
+block for every text. `for word in line.split()` would have made all
+of them twice.
+
+### 5.9w `for ch in text` makes a list of the characters, which the loop owns *(provisional)*
+
+It was refused, with advice to count with `range(len(text))` instead.
+It is accepted: the list is a made list like any other.
+
+**Why provisional.** It costs a block of the pool for every character
+while the loop runs. Walking the text itself, one character at a time,
+would cost none, and is an exercise in `docs/temporaries.md`. It was
+not done here because the text may be in the text room, which a `for`
+gives back before the first trip (5.9q).
+
+### 5.9x Lists made from text have their own copies, made the cheapest way
+
+By 5.9p a list frees the text it holds, so each made list must own
+what it holds. `split` and the characters of a `for` cut their pieces
+straight into the pool (`zeno_piece`), never into the text room.
+`map` copies each answer and gives the text room back before the next
+call, so a `map` over a thousand items needs room for one answer.
+`filter` copies what it takes. `+` joins and then copies
+(`zeno_list_keep_text`).
+
+**Turned down for now: move text out of a list that is about to be
+freed**, as `filter` on a statement's own list could. It saves a copy
+and a free per item and needs each of these loops in two forms. An
+exercise.
 
 ### 5.10 A bytecode VM, beside the interpreter
 

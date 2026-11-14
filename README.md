@@ -62,6 +62,7 @@ Samples, none of them final:
 - [`examples/memory.zeno`](examples/memory.zeno): a program that makes far more memory than it keeps, and the collector that gives it back.
 - [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to. It also builds with no collector at all.
 - [`examples/labels.zeno`](examples/labels.zeno): text that is built and kept, in a build with no collector.
+- [`examples/words.zeno`](examples/words.zeno): a line split into words, with lists that nobody keeps and the statement frees.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -103,7 +104,9 @@ everything is owned, and leaves the collector out of the C altogether
 not use the heap either: its lists and objects live in a pool of a
 fixed size that is part of the program ([`docs/pool.md`](docs/pool.md)).
 Text that such a program keeps is a copy that its keeper frees
-([`docs/text.md`](docs/text.md)).
+([`docs/text.md`](docs/text.md)), and a list that is made and given to
+nobody is freed by the statement that made it
+([`docs/temporaries.md`](docs/temporaries.md)).
 
 `zeno run` has two engines. The interpreter walks the syntax tree. With
 `--vm` the program is compiled to bytecode and run by a small virtual
@@ -133,6 +136,7 @@ cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks ar
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector and no malloc: memory is a fixed pool
 cargo run -- build --no-collector --memory examples/labels.zeno  # text that is kept, with no collector: every copy is freed
+cargo run -- build --no-collector --memory examples/words.zeno   # split, map, filter and + with no collector: each statement frees what it made
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
@@ -168,7 +172,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/pool.md`](docs/pool.md),
-  [`docs/text.md`](docs/text.md),
+  [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -214,9 +218,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       is chosen when the C is compiled)
     - Values owned by whoever receives them, in `--no-collector` builds
       (in progress. Done: text that is built can be kept, returned and
-      stored in objects and lists, as a copy its keeper frees. Next:
-      lists made by `split`, `map` and `filter`; plain lists and
-      classes; enum cases that carry values; function values)
+      stored in objects and lists, as a copy its keeper frees. Done:
+      a list made by `split`, `map`, `filter` or `+`, or written out,
+      and an owned value that is only looked at, belong to the
+      statement that made them, which frees them when it is over.
+      Next: plain lists and classes; enum cases that carry values;
+      function values)
 
 ## Layout
 
