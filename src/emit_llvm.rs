@@ -140,6 +140,15 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_by_zero", "declare void @zeno_by_zero(i32 signext, i32 signext)"),
     ("zeno_gone", "declare void @zeno_gone(i32 signext, i32 signext)"),
     ("zeno_pow", "declare i64 @zeno_pow(i64, i64, i32 signext, i32 signext)"),
+    // The board. A pin is its number.
+    ("zeno_pin", "declare i64 @zeno_pin(i64, i32 signext, i32 signext)"),
+    ("zeno_pin_on", "declare void @zeno_pin_on(i64)"),
+    ("zeno_pin_off", "declare void @zeno_pin_off(i64)"),
+    ("zeno_pin_toggle", "declare void @zeno_pin_toggle(i64)"),
+    ("zeno_pin_is_on", "declare zeroext i1 @zeno_pin_is_on(i64)"),
+    ("zeno_str_pin", "declare ptr @zeno_str_pin(i64)"),
+    ("zeno_sleep", "declare void @zeno_sleep(double)"),
+    ("zeno_now", "declare double @zeno_now()"),
     ("zeno_abs", "declare i64 @zeno_abs(i64, i32 signext, i32 signext)"),
     ("zeno_range_count", "declare i64 @zeno_range_count(i64, i64, i64, i32 signext, i32 signext)"),
     ("zeno_floordiv_float", "declare double @zeno_floordiv_float(double, double, i32 signext, i32 signext)"),
@@ -639,6 +648,10 @@ fn cannot(what: impl AsRef<str>, span: Span) -> Error {
     )
 }
 
+/// The pin the LED is on. The same number as `ZENO_LED` in the runtime
+/// and `board::LED` in the interpreter.
+const LED: i64 = crate::board::LED;
+
 /// A kind in words, for a message.
 fn described(kind: &Kind) -> String {
     match kind {
@@ -646,6 +659,7 @@ fn described(kind: &Kind) -> String {
         Kind::Float => "a float".to_string(),
         Kind::Str => "a str".to_string(),
         Kind::Bool => "a bool".to_string(),
+        Kind::Pin => "a pin".to_string(),
         Kind::None => "a value that is nothing".to_string(),
         Kind::Quantity(unit) => format!("a number with a unit ({unit})"),
         Kind::List(_) => "a list".to_string(),
@@ -668,7 +682,7 @@ fn is_pointer(kind: &Kind) -> bool {
 /// the collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::Bool | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
         Kind::Optional(inner) => holds_pointer(inner),
         _ => true,
     }
@@ -714,6 +728,7 @@ fn key(kind: &Kind) -> String {
         Kind::Int => "int".to_string(),
         Kind::Float => "float".to_string(),
         Kind::Bool => "bool".to_string(),
+        Kind::Pin => "pin".to_string(),
         Kind::Str => "str".to_string(),
         Kind::None => "none".to_string(),
         Kind::Quantity(unit) => format!("in_{unit}"),
@@ -730,7 +745,8 @@ fn key(kind: &Kind) -> String {
 /// The IR type that holds a Zeno value of this kind.
 fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
     Ok(match kind {
-        Kind::Int => "i64",
+        // A pin of the board is its number.
+        Kind::Int | Kind::Pin => "i64",
         // A quantity is a float. Its unit has done its work in the
         // checker and costs nothing in the compiled program.
         Kind::Float | Kind::Quantity(_) => "double",
@@ -746,7 +762,7 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         // a bool cannot, so it travels as a pair with a flag in front.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => "ptr",
-            Kind::Int => "{ i1, i64 }",
+            Kind::Int | Kind::Pin => "{ i1, i64 }",
             Kind::Float | Kind::Quantity(_) => "{ i1, double }",
             Kind::Bool => "{ i1, i1 }",
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -792,7 +808,7 @@ fn zero(ty: &str) -> &'static str {
 /// Which of the three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int => Ok("int"),
+        Kind::Int | Kind::Pin => Ok("int"),
         Kind::Float | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -1341,6 +1357,7 @@ impl Emitter<'_> {
             (name, []) if self.classes.contains_key(name) => Kind::Class(name.to_string()),
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
+            ("Pin", []) => Kind::Pin,
             _ => return None,
         })
     }
@@ -1502,7 +1519,7 @@ impl Emitter<'_> {
 
             StmtKind::Import { module, names } => {
                 let module = module.join(".");
-                if module != "math" {
+                if !matches!(module.as_str(), "math" | "time" | "board") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }
                 for name in names {
@@ -2139,6 +2156,10 @@ impl Emitter<'_> {
             if name == "pi" && self.imported.get(name).is_some_and(|module| module == "math") {
                 return Ok(Val::new(float_code(std::f64::consts::PI), Kind::Float));
             }
+            // `from board import led`: a pin is its number.
+            if name == "led" && self.imported.get(name).is_some_and(|module| module == "board") {
+                return Ok(Val::new(LED.to_string(), Kind::Pin));
+            }
             if self.functions.contains_key(name) {
                 return self.function_value(name, span);
             }
@@ -2463,6 +2484,9 @@ impl Emitter<'_> {
                 if owner == "math" && name == "pi" {
                     return Ok(Val::new(float_code(std::f64::consts::PI), Kind::Float));
                 }
+                if owner == "board" && name == "led" {
+                    return Ok(Val::new(LED.to_string(), Kind::Pin));
+                }
                 // `Shape.Idle`
                 if self.enums.contains_key(owner) && self.cases.get(name).is_some_and(|(of, _)| of == owner) {
                     let index = self.cases[name].1;
@@ -2491,6 +2515,8 @@ impl Emitter<'_> {
                 let at = self.field_at(ERROR, &val.code, if name == "kind" { 0 } else { 1 });
                 Ok(Val::new(self.set(format!("load ptr, ptr {at}")), Kind::Str))
             }
+            // `led.number`: a pin is its number already.
+            Kind::Pin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on {}", described(&val.kind)), span)),
         }
     }
@@ -2504,7 +2530,7 @@ impl Emitter<'_> {
     /// as a whole number, `ptrtoint` does the same for an address.
     fn to_slot(&mut self, val: &Val, span: Span) -> Result<String, Error> {
         Ok(match &val.kind {
-            Kind::Int => val.code.clone(),
+            Kind::Int | Kind::Pin => val.code.clone(),
             Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast double {} to i64", val.code)),
             // "Zero extend": the one bit, with 63 zeros in front.
             Kind::Bool => self.set(format!("zext i1 {} to i64", val.code)),
@@ -2527,7 +2553,7 @@ impl Emitter<'_> {
     /// And out of a list again.
     fn from_slot(&mut self, kind: &Kind, slot: &str, span: Span) -> Result<Val, Error> {
         let code = match kind {
-            Kind::Int => slot.to_string(),
+            Kind::Int | Kind::Pin => slot.to_string(),
             Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast i64 {slot} to double")),
             // "Truncate": keep the lowest bit.
             Kind::Bool => self.set(format!("trunc i64 {slot} to i1")),
@@ -2749,6 +2775,9 @@ impl Emitter<'_> {
                 if self.imported.get(name).is_some_and(|module| module == "math") {
                     return self.math(name, args, span);
                 }
+                if let Some(module) = self.imported.get(name).cloned() {
+                    return self.device(&module, name, args, span);
+                }
                 self.builtin(name, args, span)
             }
             ExprKind::Field { object, name } => {
@@ -2757,6 +2786,10 @@ impl Emitter<'_> {
                         // `math.sqrt(x)`
                         if owner == "math" {
                             return self.math(name, args, span);
+                        }
+                        // `time.sleep(1 s)`, `board.pin(7)`
+                        if owner == "time" || owner == "board" {
+                            return self.device(owner, name, args, span);
                         }
                         // `Shape.Circle(1.0)`
                         let case =
@@ -2827,6 +2860,38 @@ impl Emitter<'_> {
     }
 
     /// `sqrt`, `floor` and the rest of `import math`.
+    /// A function of the `time` or the `board` module. Each is one call
+    /// into the runtime, which passes it on to the board.
+    fn device(&mut self, module: &str, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let mut vals = Vec::new();
+        for arg in args {
+            if arg.name.is_some() {
+                return Err(cannot(format!("`{module}.{name}` called this way"), span));
+            }
+            vals.push(self.expr(&arg.value)?);
+        }
+        match (module, name, vals.as_slice()) {
+            // The board counts in seconds, whatever unit the program wrote.
+            ("time", "sleep", [time]) => {
+                let scale = match &time.kind {
+                    Kind::Quantity(unit) => units::convert(unit, "s"),
+                    _ => None,
+                };
+                let Some(scale) = scale else {
+                    return Err(cannot("`sleep` of something that is not a time", span));
+                };
+                let seconds = self.scaled(&time.code, scale);
+                self.run("zeno_sleep", format!("double {seconds}"));
+                Ok(Val::nothing())
+            }
+            ("time", "now", []) => Ok(Val::new(self.call("double", "zeno_now", ""), Kind::Quantity("ms".to_string()))),
+            ("board", "pin", [number]) if number.kind == Kind::Int => {
+                Ok(Val::new(self.call("i64", "zeno_pin", format!("i64 {}, {}", number.code, at(span))), Kind::Pin))
+            }
+            _ => Err(cannot(format!("`{module}.{name}` called this way"), span)),
+        }
+    }
+
     fn math(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
         let [arg] = args else {
             return Err(cannot(format!("`{name}` called this way"), span));
@@ -2988,6 +3053,22 @@ impl Emitter<'_> {
                 let mut list = vec![format!("ptr {}", receiver.code)];
                 list.extend(self.bind(&slots, args, span)?);
                 self.call_entry(&entry, list, span)
+            }
+            // A pin of the board: `led.on()`. Each is one call into the
+            // runtime, with the pin's number.
+            Kind::Pin => {
+                if !args.is_empty() {
+                    return Err(cannot(format!("`{name}` on a pin with arguments"), span));
+                }
+                let pin = format!("i64 {}", receiver.code);
+                match name {
+                    "on" => self.run("zeno_pin_on", pin),
+                    "off" => self.run("zeno_pin_off", pin),
+                    "toggle" => self.run("zeno_pin_toggle", pin),
+                    "is_on" => return Ok(Val::new(self.call("i1", "zeno_pin_is_on", pin), Kind::Bool)),
+                    _ => return Err(cannot(format!("the method `{name}`"), span)),
+                }
+                Ok(Val::nothing())
             }
             Kind::Str => {
                 let wrong = || cannot(format!("the str method `{name}` called this way"), span);
@@ -3541,6 +3622,7 @@ impl Emitter<'_> {
             Kind::Int => self.call("ptr", "zeno_str_int", format!("i64 {}", val.code)),
             Kind::Float => self.call("ptr", "zeno_str_float", format!("double {}", val.code)),
             Kind::Bool => self.call("ptr", "zeno_str_bool", format!("i1 {}", val.code)),
+            Kind::Pin => self.call("ptr", "zeno_str_pin", format!("i64 {}", val.code)),
             Kind::Quantity(unit) => {
                 let unit = self.string(unit);
                 self.call("ptr", "zeno_str_quantity", format!("double {}, ptr {unit}", val.code))
@@ -3591,7 +3673,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int => self.set(format!("icmp eq i64 {a}, {b}")),
+            Kind::Int | Kind::Pin => self.set(format!("icmp eq i64 {a}, {b}")),
             Kind::Float | Kind::Quantity(_) => self.set(format!("fcmp oeq double {a}, {b}")),
             Kind::Bool => self.set(format!("icmp eq i1 {a}, {b}")),
             Kind::Str => {
@@ -4104,6 +4186,7 @@ pub(crate) mod tests {
         same_as_interpreter("sensor", include_str!("../examples/sensor.zeno"));
         same_as_interpreter("memory", include_str!("../examples/memory.zeno"));
         same_as_interpreter("buffer", include_str!("../examples/buffer.zeno"));
+        same_as_interpreter("signal", include_str!("../examples/signal.zeno"));
     }
 
     #[test]
@@ -4378,13 +4461,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_ir_for_blink() {
+        let ir = compile(include_str!("../examples/blink.zeno")).expect("it compiles");
+        // A pin is its number, and each thing done to it is one call.
+        // 500 ms reaches the board as seconds.
+        let body = "do1:\n\
+                    \x20 call void @zeno_pin_toggle(i64 13)\n\
+                    \x20 %t1 = sitofp i64 500 to double\n\
+                    \x20 %t2 = fdiv double %t1, 1000.0\n\
+                    \x20 call void @zeno_sleep(double %t2)\n\
+                    \x20 br label %while1\n";
+        assert!(ir.contains(body), "{ir}");
+    }
+
+    #[test]
     fn what_is_not_compiled_yet_says_so() {
         let refused = [
             (
                 "function outer() -> int {\n    function inner() -> int { return 1 }\n    return inner()\n}\nprint(outer())\n",
                 "a function with a name inside a function or a block",
             ),
-            ("import time\ntime.sleep(1 s)\n", "the module `time`"),
             ("class Box {\n    function size(self) -> int { return 1 }\n}\nlet f = Box().size\n", "a method used as a value: `size`"),
             (
                 "function f(n: int = 1 + 1) -> int { return n }\nprint(f())\n",

@@ -61,6 +61,8 @@ pub enum Kind {
     Enum(String),
     /// `T or none`: a value of the kind inside, or nothing.
     Optional(Box<Kind>),
+    /// A pin of the board: `led`, `pin(7)`. It is the pin's number.
+    Pin,
     /// An error value, such as what `ValueError("bad")` makes.
     Error,
     /// A function held as a value.
@@ -190,6 +192,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Float => Kind::Float,
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
+        Ty::Pin => Kind::Pin,
         Ty::None => Kind::None,
         Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
         Ty::Instance(class) => Kind::Class(class.name.clone()),
@@ -273,6 +276,8 @@ enum Ty {
     None,
     /// A number with a unit, such as `500 ms`.
     Quantity(Rc<str>),
+    /// A pin of the board, from the `board` module.
+    Pin,
     List(Box<Ty>),
     /// `T or none`
     Optional(Box<Ty>),
@@ -370,6 +375,7 @@ enum Key {
     Float,
     Str,
     Bool,
+    Pin,
     None,
     Quantity(String),
     List(Box<Key>),
@@ -517,6 +523,7 @@ impl fmt::Display for Ty {
             Ty::Float => write!(f, "float"),
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
+            Ty::Pin => write!(f, "Pin"),
             Ty::None => write!(f, "none"),
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
             Ty::List(item) => write!(f, "list[{item}]"),
@@ -555,6 +562,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Float, Ty::Float)
         | (Ty::Str, Ty::Str)
         | (Ty::Bool, Ty::Bool)
+        | (Ty::Pin, Ty::Pin)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::List(a), Ty::List(b))
@@ -811,6 +819,9 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("math", "sin") => Ty::Builtin("sin"),
         ("math", "cos") => Ty::Builtin("cos"),
         ("time", "sleep") => Ty::Builtin("sleep"),
+        ("time", "now") => Ty::Builtin("now"),
+        ("board", "led") => Ty::Pin,
+        ("board", "pin") => Ty::Builtin("pin"),
         _ => return None,
     })
 }
@@ -1075,6 +1086,7 @@ impl Checker {
             Ty::Float => Key::Float,
             Ty::Str => Key::Str,
             Ty::Bool => Key::Bool,
+            Ty::Pin => Key::Pin,
             Ty::None => Key::None,
             Ty::Quantity(unit) => Key::Quantity(unit.to_string()),
             Ty::Error(kind) => Key::Error(kind.to_string()),
@@ -1100,6 +1112,7 @@ impl Checker {
             Key::Float => Ty::Float,
             Key::Str => Ty::Str,
             Key::Bool => Ty::Bool,
+            Key::Pin => Ty::Pin,
             Key::None => Ty::None,
             Key::Quantity(unit) => Ty::Quantity(Rc::from(unit.as_str())),
             Key::Error(kind) => Ty::Error(Rc::from(kind.as_str())),
@@ -1283,6 +1296,9 @@ impl Checker {
                         Some(Ty::ErrorType(kind)) => Ty::Error(kind),
                         // A unit is the type of a quantity measured in it.
                         _ if units::is_unit(name) => Ty::Quantity(Rc::from(name.as_str())),
+                        // A pin of the board. A class of the program's own
+                        // called `Pin` was found above, and comes first.
+                        _ if name == "Pin" => Ty::Pin,
                         _ => return self.error(format!("there is no type called `{name}`"), span),
                     },
                     _ => return self.error(format!("`{name}` does not take types in `[ ]`"), span),
@@ -1686,9 +1702,10 @@ impl Checker {
                 let module = match path.as_str() {
                     "math" => "math",
                     "time" => "time",
+                    "board" => "board",
                     _ => {
                         self.error(
-                            format!("there is no module `{path}`. So far Zeno has `math` and `time`"),
+                            format!("there is no module `{path}`. So far Zeno has `math`, `time` and `board`"),
                             span,
                         );
                         // Declare the names anyway, so each use is not a second error.
@@ -2782,6 +2799,9 @@ impl Checker {
             Ty::List(_) if LIST_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
             }
+            Ty::Pin if PIN_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Pin), Rc::from(name)),
+            // `led.number`: which pin this is.
+            Ty::Pin if name == "number" => Ty::Int,
             Ty::Optional(_) => self.error(
                 format!("this is {object}. Check it with `is not none` before using `.{name}`"),
                 span,
@@ -3016,10 +3036,23 @@ impl Checker {
                 if matches!(name, "floor" | "ceil") { Ty::Int } else { Ty::Float }
             }
             "sleep" => {
-                if self.arity(name, arguments, 1, 1, span) && !matches!(first, Ty::Quantity(_)) && !first.is_loose() {
+                // A time, and not a voltage: `sleep(3 V)` is refused here
+                // and not when the program reaches it.
+                let time = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "s").is_some());
+                if self.arity(name, arguments, 1, 1, span) && !time && !first.is_loose() {
                     wrong(self, "a time with a unit, such as `500 ms`");
                 }
                 Ty::None
+            }
+            "now" => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Quantity(Rc::from("ms"))
+            }
+            "pin" => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Int, "the number of a pin", arguments[0].span);
+                }
+                Ty::Pin
             }
             _ => Ty::Dynamic,
         }
@@ -3042,6 +3075,10 @@ impl Checker {
         };
 
         match (receiver, name) {
+            (Ty::Pin, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
             (Ty::Str, "upper" | "lower" | "strip") => {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::Str
@@ -3193,6 +3230,7 @@ impl Checker {
 
 const STR_METHODS: &[&str] = &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
 const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
+const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 
 /// How much of the matched type a pattern accepts.
 enum Covers {
@@ -3436,7 +3474,7 @@ mod tests {
         assert_eq!(error("print(\"x\".upper(1))"), "`upper` takes 0 argument(s), but 1 were given");
         assert_eq!(error("print(\"x\".nope())"), "str has no field or method `nope`");
         assert_eq!(error("let xs = [1]\nxs.append(\"two\")"), "an item added to this list should be int, but this is str");
-        assert_eq!(error("import board"), "there is no module `board`. So far Zeno has `math` and `time`");
+        assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
     }
@@ -3484,6 +3522,32 @@ mod tests {
     #[test]
     fn a_function_nobody_calls_is_still_checked() {
         assert_eq!(error("function unused() { print(missing) }"), "`missing` is not defined");
+    }
+
+    // ----- The board and the clock -----
+
+    #[test]
+    fn pins_are_checked() {
+        ok("from board import led, pin\nled.on()\nlet relay: Pin = pin(7)\nlet lit: bool = relay.is_on()\nlet n: int = led.number");
+        ok("import board\nfunction flash(light: Pin) { light.toggle() }\nflash(board.led)\nlet pins: list[Pin] = [board.pin(1), board.led]");
+        strict_ok(include_str!("../examples/blink.zeno"));
+        strict_ok(include_str!("../examples/signal.zeno"));
+        assert_eq!(error("from board import pin\npin(\"a\")"), "the number of a pin should be int, but this is str");
+        assert_eq!(error("from board import led\nled.blink()"), "Pin has no field or method `blink`");
+        assert_eq!(error("from board import led\nled.on(1)"), "`on` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("from board import led\nlet n: int = led"), "`n` should be int, but this is Pin");
+        assert_eq!(error("from board import led\nprint(led == 13)"), "`==` between Pin and int is always false");
+        assert_eq!(error("from board import button"), "module `board` has no `button`");
+        // A class of the program's own called `Pin` comes first.
+        ok("class Pin {\n n: int\n}\nlet p: Pin = Pin(1)\nprint(p.n)");
+    }
+
+    #[test]
+    fn the_clock_is_checked() {
+        ok("from time import sleep, now\nlet start: ms = now()\nsleep(1 s)\nsleep(2 min)\nlet took: ms = now() - start");
+        assert_eq!(error("from time import sleep\nsleep(3 V)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is a quantity in V");
+        assert_eq!(error("from time import now\nnow(1)"), "`now` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("from time import now\nlet t: s = now()"), "`t` should be a quantity in s, but this is a quantity in ms. Convert it with `.s`");
     }
 
     // ----- Classes -----

@@ -390,6 +390,8 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
                 span,
             ),
         },
+        // `led.number`: which pin this is.
+        Value::Pin(number) if name == "number" => Ok(Value::Int(*number)),
         Value::Error(error) if name == "message" => Ok(Value::str(&error.message)),
         Value::Error(error) if name == "kind" => Ok(Value::str(&error.kind)),
         _ if builtins::has_method(&object, name) => {

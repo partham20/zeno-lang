@@ -1,5 +1,11 @@
 # blink.zeno: the same language on a microcontroller.
-# Nothing here is final.
+#
+#     zeno run examples/blink.zeno       run it on the simulated board (stop it with Ctrl-C)
+#     zeno build --firmware --no-collector examples/blink.zeno
+#                                        compile it to blink.c: three lines of C in a loop
+#
+# On a computer the board is simulated and prints `led on`, `led off`.
+# docs/board.md shows how a real board is put underneath.
 
 from board import led
 from time import sleep

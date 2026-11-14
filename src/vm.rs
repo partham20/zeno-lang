@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{BinaryOp, Program};
+use crate::board::Board;
 use crate::builtins;
 use crate::bytecode::{From, Op, Proto};
 use crate::emit_bytecode;
@@ -54,6 +55,7 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
                 let main = emit_bytecode::compile(program);
                 let mut vm = Vm {
                     output: capture.then(String::new),
+                    board: Board::new(),
                     // Under every frame's stretch of the stack is the thing
                     // that was called. The program was called by nobody.
                     stack: vec![Value::None],
@@ -92,6 +94,8 @@ pub fn run_both(program: &Program, source: &str) -> (String, Result<(), Error>) 
 struct Vm {
     /// `Some` collects printed text; `None` prints straight to the screen.
     output: Option<String>,
+    /// The simulated board, for the `board` module.
+    board: Board,
     stack: Vec<Value>,
     frames: Vec<Frame>,
     handlers: Vec<Handler>,
@@ -162,6 +166,10 @@ impl Machine for Vm {
             }
             None => println!("{text}"),
         }
+    }
+
+    fn board(&mut self) -> &mut Board {
+        &mut self.board
     }
 
     /// A built-in such as `map` calls a Zeno function. The instruction
@@ -1117,7 +1125,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math` and `time`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time` and `board`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {
@@ -1135,8 +1143,11 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
         for example in std::fs::read_dir("examples").expect("the examples folder") {
             let path = example.expect("an example").path();
             let source = std::fs::read_to_string(&path).expect("the example can be read");
+            // blink.zeno blinks for ever, as firmware does.
+            if path.ends_with("blink.zeno") {
+                continue;
+            }
             // `run` insists that the two engines agree, which is the test.
-            // (blink.zeno stops with an error on both: it needs a board.)
             run(&source);
         }
     }

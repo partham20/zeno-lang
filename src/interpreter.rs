@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::*;
+use crate::board::Board;
 use crate::builtins;
 use crate::error::Error;
 use crate::ops;
@@ -37,7 +38,7 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
-                let mut interpreter = Interpreter { output: capture.then(String::new), depth: 0 };
+                let mut interpreter = Interpreter { output: capture.then(String::new), depth: 0, board: Board::new() };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
@@ -190,6 +191,8 @@ impl Scope {
 pub struct Interpreter {
     /// `Some` collects printed text; `None` prints straight to the screen.
     output: Option<String>,
+    /// The simulated board, for the `board` module.
+    board: Board,
     /// How many function calls are currently in progress.
     depth: usize,
 }
@@ -204,6 +207,10 @@ impl Machine for Interpreter {
             }
             None => println!("{text}"),
         }
+    }
+
+    fn board(&mut self) -> &mut Board {
+        &mut self.board
     }
 
     fn call(
@@ -442,7 +449,7 @@ impl Interpreter {
                 let path = module.join(".");
                 let Some(found) = builtins::module(&path) else {
                     return fatal(
-                        format!("there is no module `{path}`. So far Zeno has `math` and `time`"),
+                        format!("there is no module `{path}`. So far Zeno has `math`, `time` and `board`"),
                         span,
                     );
                 };
@@ -904,7 +911,7 @@ mod tests {
     #[test]
     fn modules() {
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
-        assert_eq!(error("import board"), "there is no module `board`. So far Zeno has `math` and `time`");
+        assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");
     }
@@ -1173,6 +1180,29 @@ mod tests {
         let (output, result) = run("print(\"one\")\nprint(1 / 0)\nprint(\"two\")");
         assert_eq!(output, "one\n");
         assert!(result.is_err());
+    }
+
+    // ----- The board and the clock -----
+
+    #[test]
+    fn a_pin_shows_a_line_when_its_level_changes() {
+        let source = "from board import led, pin\nled.on()\nled.on()\nled.toggle()\npin(7).toggle()\nled.off()\n\
+                      print(led, pin(7), led.is_on(), pin(7).is_on(), led.number, led == pin(13))";
+        assert_eq!(output(source), "led on\nled off\npin 7 on\nPin(13) Pin(7) false true 13 true\n");
+    }
+
+    #[test]
+    fn the_board_has_64_pins() {
+        assert_eq!(output("from board import pin\npin(0).on()\npin(63).on()"), "pin 0 on\npin 63 on\n");
+        assert_eq!(error("from board import pin\npin(64)"), "uncaught ValueError: this board has no pin 64. Its pins are 0 to 63");
+        assert_eq!(output("from board import pin\ntry { pin(-1) } except ValueError as e { print(e.message) }"), "this board has no pin -1. Its pins are 0 to 63\n");
+    }
+
+    #[test]
+    fn the_clock_only_goes_forward() {
+        let source = "from time import sleep, now\nlet start = now()\nsleep(2 ms)\nsleep(0 s)\nsleep(-1 s)\n\
+                      let took = now() - start\nprint(took >= 2 ms, took < 5 s)";
+        assert_eq!(output(source), "true true\n");
     }
 
     #[test]

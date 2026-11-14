@@ -26,6 +26,8 @@ pub enum Value {
     /// A number with a unit: `500 ms`
     Quantity(f64, Rc<str>),
     List(Rc<RefCell<Vec<Value>>>),
+    /// A pin of the board, by its number: `led`, `pin(7)`
+    Pin(i64),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -135,6 +137,9 @@ pub trait Machine {
     /// Print one line.
     fn write_line(&mut self, text: &str);
 
+    /// The board the program runs on, for `led.on()` and the like.
+    fn board(&mut self) -> &mut crate::board::Board;
+
     /// Call a Zeno value, as `map` calls the function it was given.
     fn call(
         &mut self,
@@ -200,6 +205,7 @@ impl Value {
             Value::None => "none".to_string(),
             Value::Quantity(_, unit) => format!("a quantity in {unit}"),
             Value::List(_) => "a list".to_string(),
+            Value::Pin(_) => "a pin".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
                 "a function".to_string()
             }
@@ -233,6 +239,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Str(a), Str(b)) => a == b,
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
+        (Pin(a), Pin(b)) => a == b,
         // `1 s == 1000 ms`: compared in the finer unit of the two.
         (Quantity(a, unit_a), Quantity(b, unit_b)) => match crate::units::common(unit_a, unit_b) {
             Some((_, left, right)) => left.apply(*a) == right.apply(*b),
@@ -280,6 +287,7 @@ impl fmt::Display for Value {
                 let items: Vec<String> = items.borrow().iter().map(Value::repr).collect();
                 write!(f, "[{}]", items.join(", "))
             }
+            Value::Pin(number) => write!(f, "Pin({number})"),
             Value::Function(closure) if closure.decl.name.is_empty() => write!(f, "<function>"),
             Value::Function(closure) => write!(f, "<function {}>", closure.decl.name),
             Value::Builtin(builtin) => write!(f, "<function {}>", builtin.name),

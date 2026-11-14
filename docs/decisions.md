@@ -805,6 +805,63 @@ loops count whole characters, not bytes.
 that have the room. Rust makes the same split, with `to_ascii_uppercase`
 beside `to_uppercase`.
 
+### 3.15 A pin is a kind of value of its own, and a number underneath
+
+`from board import led` gives a `Pin`. It has `on`, `off`, `toggle`,
+`is_on` and `.number`. It is not an `int`: `led + 1` and `led == 13` do
+not compile. `pin(7)` makes one from a number and raises a `ValueError`
+if the board has no such pin.
+
+**Why.** Hardware is where a mixed-up number does real damage, so pins
+get the treatment units got (1.15): the checker keeps them apart from
+plain numbers, and after the checker they cost nothing. A pin is its
+number in every compiled program, so `blink` needs no memory from a
+collector, and builds with `--no-collector`. *(Principles 1 and 5.)*
+
+**Turned down.** A class `Pin` written in Zeno, with the level in a
+field: every stage already has objects, but an object needs the
+collector, and switching an LED must not. A plain `int` with functions
+`on(13)`: free, and `on(count)` would compile.
+
+`Pin` is a type name the language knows, as it knows `int`. A class of
+the program's own called `Pin` is found first, so no existing program
+changes meaning.
+
+### 3.15a `sleep` takes a time with a unit, and `now` gives one
+
+`sleep(500 ms)`, `sleep(2 s)`. `sleep(500)` and `sleep(3 V)` are
+refused by the checker. `now()` is a quantity in `ms`.
+
+**Why.** Whether a bare 500 is seconds or milliseconds is the question
+that every delay function in every C library answers differently. The
+unit answers it in the program text. *(Principle 1.)* Refusing `3 V` at
+check time and not at run time is new in this stage: before it, the
+interpreter found it when it got there.
+
+`now()` counts from a fixed moment that the program cannot know (on a
+microcontroller, power-on). **Why not the time of day:** a
+microcontroller does not know it, and code that measures how long
+something took must not jump when a clock is set. Only the difference
+of two readings is promised to mean anything.
+
+### 3.15b On a computer the board is simulated, and prints a pin when it changes
+
+`zeno run examples/blink.zeno` prints `led on`, `led off`, and so on.
+A pin that is written with the level it already has prints nothing.
+
+**Why.** A program for a board should be runnable, and testable,
+without the board. Printing only changes is what an instrument on the
+pin would show, and it keeps the output of a program that sets a pin
+in a loop readable. **Cost:** the simulated board's output is part of
+the program's output, so a program that also prints mixes the two.
+That is the point for a test, and a real board prints nothing.
+
+The LED is pin 13 on every board, as far as a Zeno program can tell. A
+real board wires that number to wherever its LED is. **Why 13:** it is
+the Arduino Uno's, the number most people have already met.
+*(Provisional: one LED and numbered pins is the least a board can be.
+Named pins, inputs and the rest wait for a real board to ask.)*
+
 ---
 
 ## 4. Errors
@@ -1990,3 +2047,65 @@ the moment its owner ends matters for a build without one (5.9), which
 `--llvm` does not do yet. The program prints the same either way.
 **Cost:** memory comes back later than in a C build, and `--memory` is
 not offered.
+
+### 5.12 The board is four functions
+
+Everything a compiled program does to hardware goes through four C
+functions, and a count:
+
+```c
+void   zeno_board_write(int pin, bool level);
+bool   zeno_board_read(int pin);
+void   zeno_board_sleep(double seconds);
+double zeno_board_now(void);          /* milliseconds */
+#define ZENO_PINS 64
+```
+
+`on`, `off`, `toggle`, `is_on`, the check in `pin(n)` and the check in
+`sleep` are written once in the runtime, on top of these.
+
+**Why so few.** A port to a new board is these four functions and
+nothing else, and each is one call to the vendor's library. Everything
+that can be decided without knowing the board (is the pin number in
+range, is the time positive, what does toggle mean) is decided above
+the line, once, and tested once. **Turned down:** a function for each
+thing a pin can do (`zeno_board_toggle` and so on). Faster on some
+processors, which have a register for toggling, and four more
+functions for every port to get wrong.
+
+### 5.12a The simulated board is written twice, in Rust and in C
+
+`src/board.rs` for `zeno run`, and thirty lines of `runtime.c` for a
+compiled program. Each stage holds its own board: the interpreter and
+the VM through the `Machine` trait, a compiled program in a C array.
+
+**Why twice.** The interpreter is Rust and a compiled program is C, and
+the tests hold the two to the same output, line for line, so they
+cannot drift apart unnoticed. **Why not one board for the whole
+process** in the interpreter: the tests run a program on the
+interpreter and then on the VM, and the second must start with every
+pin low.
+
+### 5.12b A real board is a header, named with `-DZENO_BOARD`
+
+```sh
+cc -O2 -DZENO_BOARD='"my_board.h"' -o blink blink.c -lm
+```
+
+The runtime includes that file in place of the simulated board. A test
+builds a program on a two-pin board of its own this way, for all three
+kinds of C build.
+
+**Why a header and not a library to link.** A Zeno program is one C
+file with nothing to link (5.5). A header keeps that true, and lets
+the C compiler inline a register write into the loop that does it.
+
+### 5.12c `zeno build` does not cross-compile
+
+It writes the C and builds it for the computer it is on. Building for
+a microcontroller is done with that microcontroller's own compiler,
+flags and linker script, by hand or from its project.
+
+**Why.** Those tools exist, differ for every vendor, and are what a
+firmware engineer already has set up. A `--target` option would be a
+second, worse copy of each of them. *(Principle: keep what works.)*

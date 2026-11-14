@@ -58,7 +58,8 @@ Samples, none of them final:
 - [`examples/sensor.zeno`](examples/sensor.zeno): values that may be `none`, errors, and functions as values.
 - [`examples/memory.zeno`](examples/memory.zeno): a program that makes far more memory than it keeps, and the collector that gives it back.
 - [`examples/buffer.zeno`](examples/buffer.zeno): owned values, which are freed at a line you can point to. It also builds with no collector at all.
-- [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
+- [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
+- [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 
 ## One language, every job
 
@@ -119,12 +120,17 @@ cargo run -- build --memory examples/buffer.zeno  # owned values: most blocks ar
 cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjmp, for firmware
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
+cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
+cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
 ```
 
-`examples/blink.zeno` does not run yet, because there is no `board` module.
+`from board import led` and `from time import sleep` give a program pins and a
+clock. On a computer the board is simulated and prints each pin as it changes.
+A compiled program meets the board through four C functions, so a real one
+can be put underneath ([`docs/board.md`](docs/board.md)).
 
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
@@ -132,7 +138,7 @@ cargo test
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/vm.md`](docs/vm.md),
-  [`docs/llvm.md`](docs/llvm.md).
+  [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md).
 
 ## Roadmap
 
@@ -154,7 +160,12 @@ cargo test
     stack machine; `zeno bytecode` shows the instructions)
 12. LLVM backend (done: `zeno build --llvm` writes LLVM IR for the whole
     language the C backend compiles, and builds it with clang)
-13. Extras
+13. Extras:
+    - The `board` and `time` modules (done: pins, `sleep` and `now`, on a
+      simulated board, with a real one put underneath by a header)
+    - Whole numbers with a size, such as `u8` and `i32`
+    - Generics
+    - `--llvm` together with `--firmware`
 
 ## Layout
 
@@ -173,6 +184,7 @@ src/bytecode.rs     the instructions of the VM, and a printer for them
 src/emit_bytecode.rs  syntax tree -> bytecode
 src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
+src/board.rs        the simulated board that `zeno run` uses
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`
 src/emit_llvm.rs    syntax tree -> LLVM IR, for `zeno build --llvm`

@@ -870,6 +870,108 @@ static double zeno_sqrt(double x, int line, int col) {
     return sqrt(x);
 }
 
+/* ---------------------------------------------------------------- The board
+ *
+ * `from board import led` and `from time import sleep` end up here. A
+ * Zeno program touches the world outside it through four functions, and
+ * only these four:
+ *
+ *   zeno_board_write(pin, level)   drive a pin high or low
+ *   zeno_board_read(pin)           is the pin high?
+ *   zeno_board_sleep(seconds)      wait
+ *   zeno_board_now()               a clock that only goes forward, in ms
+ *
+ * together with ZENO_PINS, the number of pins. Below is a simulated
+ * board, for a program that runs on a computer: it keeps the level of
+ * each pin in an array, and prints a line when a level changes, as a
+ * logic analyser on the pin would show it.
+ *
+ * To build for a real board, write the four functions for it in a
+ * header, and compile with -DZENO_BOARD='"my_board.h"'. Nothing else in
+ * this file knows what a pin is made of. See docs/board.md. */
+
+/* The pin the LED is on, as a Zeno program numbers it. A real board is
+ * free to wire that number to whichever pin its LED is really on. */
+#define ZENO_LED ((int64_t)13)
+
+#ifdef ZENO_BOARD
+#include ZENO_BOARD
+#else
+
+#include <time.h>
+
+#define ZENO_PINS 64
+
+static bool zeno_levels[ZENO_PINS];
+
+static bool zeno_board_read(int pin) {
+    return zeno_levels[pin];
+}
+
+static void zeno_board_write(int pin, bool level) {
+    /* A pin that is already there does not move, and shows nothing. */
+    if (zeno_levels[pin] == level) return;
+    zeno_levels[pin] = level;
+    if (pin == ZENO_LED) {
+        printf("led %s\n", level ? "on" : "off");
+    } else {
+        printf("pin %d %s\n", pin, level ? "on" : "off");
+    }
+}
+
+static void zeno_board_sleep(double seconds) {
+    /* What has been printed so far should be seen before the wait, also
+     * when the output goes to a file or another program. */
+    fflush(stdout);
+    struct timespec wait;
+    wait.tv_sec = (time_t)seconds;
+    wait.tv_nsec = (long)((seconds - (double)wait.tv_sec) * 1e9);
+    nanosleep(&wait, NULL);
+}
+
+static double zeno_board_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1e6;
+}
+
+#endif /* ZENO_BOARD */
+
+/* `pin(7)`: the pin with that number, if the board has one. */
+static int64_t zeno_pin(int64_t number, int line, int col) {
+    if (number < 0 || number >= ZENO_PINS) {
+        zeno_fail("ValueError",
+                  zeno_join(4, "this board has no pin ", zeno_str_int(number), ". Its pins are 0 to ",
+                            zeno_str_int(ZENO_PINS - 1)),
+                  line, col);
+    }
+    return number;
+}
+
+static void zeno_pin_on(int64_t pin) { zeno_board_write((int)pin, true); }
+static void zeno_pin_off(int64_t pin) { zeno_board_write((int)pin, false); }
+static void zeno_pin_toggle(int64_t pin) { zeno_board_write((int)pin, !zeno_board_read((int)pin)); }
+static bool zeno_pin_is_on(int64_t pin) { return zeno_board_read((int)pin); }
+
+/* A pin as `print` shows it. */
+static const char *zeno_str_pin(int64_t pin) {
+    return zeno_join(3, "Pin(", zeno_str_int(pin), ")");
+}
+
+/* `sleep(500 ms)`. The compiler has already turned the time into
+ * seconds. A time that is zero, negative or not a number waits for
+ * nothing; one too long to count is cut to about thirty years. */
+static void zeno_sleep(double seconds) {
+    if (!(seconds > 0.0)) return;
+    if (seconds > 1e9) seconds = 1e9;
+    zeno_board_sleep(seconds);
+}
+
+/* `now()`, in milliseconds. */
+static double zeno_now(void) {
+    return zeno_board_now();
+}
+
 /* `int(x)` on a float drops the fraction. Infinity has no int to become. */
 static int64_t zeno_int(double x, int line, int col) {
     if (x != x || x == INFINITY || x == -INFINITY) {

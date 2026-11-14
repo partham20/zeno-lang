@@ -8,6 +8,7 @@
 //! or with `--llvm` to LLVM IR.
 
 mod ast;
+mod board;
 mod builtins;
 mod bytecode;
 mod checker;

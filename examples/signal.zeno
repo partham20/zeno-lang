@@ -1,0 +1,71 @@
+# signal.zeno: a traffic light on three pins, written as a state machine.
+#
+#     zeno run examples/signal.zeno      run it on the simulated board
+#     zeno build --firmware --no-collector examples/signal.zeno
+#                                        the build for a microcontroller:
+#                                        no setjmp, no garbage collector
+#
+# On a computer the board is simulated. A line such as `pin 2 on` is what
+# a logic analyser clipped to that pin would show. The times are short so
+# that the whole run takes a fifth of a second.
+
+from board import pin, led
+from time import sleep, now
+
+enum Light {
+    Red
+    Green
+    Amber
+}
+
+let red = pin(2)
+let amber = pin(3)
+let green = pin(4)
+
+# Switch the lamps over: the old one off, then the new one on.
+function show(light: Light) {
+    match light {
+        case Red {
+            amber.off()
+            red.on()
+        }
+        case Green {
+            red.off()
+            green.on()
+        }
+        case Amber {
+            green.off()
+            amber.on()
+        }
+    }
+}
+
+function after(light: Light) -> Light {
+    match light {
+        case Red { return Green }
+        case Green { return Amber }
+        case Amber { return Red }
+    }
+}
+
+# How long each light stays. The unit is part of the type: a function
+# that returned `40` here would not compile.
+function hold(light: Light) -> ms {
+    match light {
+        case Red { return 40 ms }
+        case Green { return 30 ms }
+        case Amber { return 10 ms }
+    }
+}
+
+let start = now()
+var light = Red
+for step in range(7) {
+    show(light)
+    led.toggle()                 # a heartbeat: the program is alive
+    sleep(hold(light))
+    light = after(light)
+}
+
+# Seven steps hold for 200 ms in all. `now` only ever goes forward.
+print("took at least 200 ms:", now() - start >= 200 ms)

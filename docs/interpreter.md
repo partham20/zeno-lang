@@ -15,7 +15,7 @@ cargo run -- run examples/tour.zeno
   and items, and lining arguments up with parameters. It is a file of its
   own because the bytecode VM ([`vm.md`](vm.md)) calls the same code.
 - [`src/builtins.rs`](../src/builtins.rs): `print`, `len`, string and list
-  methods, the `math` and `time` modules, f-string formatting.
+  methods, the `math`, `time` and `board` modules, f-string formatting.
 
 ## Walking the tree
 
@@ -167,6 +167,6 @@ the body can use it.
 1. Add a `round(x)` built-in. (One function in `builtins.rs`, one line in `globals`.)
 2. Add a `loop { }` statement, if you added it to the parser earlier.
 3. Add `insert(index, item)` and `clear()` to lists.
-4. Add a `board` module whose `led.toggle()` prints `led on` / `led off`, so
-   that `examples/blink.zeno` runs on a PC.
+4. Add a `button` to the `board` module (`src/board.rs`): a pin the program
+   reads and does not drive. ([`board.md`](board.md) is how `led` was done.)
 5. Make `print(a, b, sep=", ")` work. Why does it not already?

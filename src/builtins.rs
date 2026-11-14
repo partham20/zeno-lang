@@ -1,12 +1,13 @@
 //! Everything a Zeno program can use without defining it: functions like
 //! `print` and `len`, methods on strings and lists, the built-in error
-//! types, the `math` and `time` modules, and f-string formatting.
+//! types, the `math`, `time` and `board` modules, and f-string formatting.
 //!
 //! These are written in Rust because they cannot be written in Zeno yet.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::board;
 use crate::interpreter::{Env, Scope};
 use crate::token::Span;
 use crate::value::*;
@@ -221,11 +222,13 @@ fn strip(text: &str) -> &str {
 const STR_METHODS: &[&str] =
     &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
 const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
+const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 
 pub fn has_method(receiver: &Value, name: &str) -> bool {
     match receiver {
         Value::Str(_) => STR_METHODS.contains(&name),
         Value::List(_) => LIST_METHODS.contains(&name),
+        Value::Pin(_) => PIN_METHODS.contains(&name),
         _ => false,
     }
 }
@@ -345,6 +348,22 @@ pub fn call_method(
             }
             _ => fatal(format!("a list has no method `{name}`"), span),
         },
+        // A pin of the board. Driving it goes through `drive`, so that
+        // the line the simulated board prints comes out with the rest of
+        // the program's output.
+        Value::Pin(pin) => {
+            arity(name, &args, 0, 0, span)?;
+            match name {
+                "on" => drive(machine, *pin, true),
+                "off" => drive(machine, *pin, false),
+                "toggle" => {
+                    let level = !machine.board().read(*pin);
+                    drive(machine, *pin, level)
+                }
+                "is_on" => Ok(Value::Bool(machine.board().read(*pin))),
+                _ => fatal(format!("a pin has no method `{name}`"), span),
+            }
+        }
         other => fatal(format!("{} has no method `{name}`", other.type_name()), span),
     }
 }
@@ -365,7 +384,17 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("cos", Value::Builtin(Builtin { name: "cos", call: cos })),
             ],
         ),
-        "time" => ("time", vec![("sleep", Value::Builtin(Builtin { name: "sleep", call: sleep }))]),
+        "time" => (
+            "time",
+            vec![
+                ("sleep", Value::Builtin(Builtin { name: "sleep", call: sleep })),
+                ("now", Value::Builtin(Builtin { name: "now", call: now })),
+            ],
+        ),
+        "board" => (
+            "board",
+            vec![("led", Value::Pin(board::LED)), ("pin", Value::Builtin(Builtin { name: "pin", call: pin }))],
+        ),
         _ => return None,
     };
     Some(Rc::new(Module { name, members: HashMap::from_iter(members) }))
@@ -415,8 +444,39 @@ fn sleep(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         },
         other => return wrong_type("sleep", "a time with a unit, such as `500 ms`", other, span),
     };
-    if seconds.is_finite() && seconds > 0.0 {
-        std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+    // Zero, a negative time and "not a number" wait for nothing. A time
+    // too long to count is cut to about thirty years.
+    if seconds > 0.0 {
+        std::thread::sleep(std::time::Duration::from_secs_f64(seconds.min(1e9)));
+    }
+    Ok(Value::None)
+}
+
+/// `now()`: the reading of a clock that only goes forward, in
+/// milliseconds. Take two readings and subtract.
+fn now(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("now", &args, 0, 0, span)?;
+    Ok(Value::Quantity(board::now(), Rc::from("ms")))
+}
+
+/// `pin(7)`: the pin with that number.
+fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("pin", &args, 1, 1, span)?;
+    match &args[0] {
+        Value::Int(number) if (0..board::PINS).contains(number) => Ok(Value::Pin(*number)),
+        Value::Int(number) => raise(
+            "ValueError",
+            format!("this board has no pin {number}. Its pins are 0 to {}", board::PINS - 1),
+            span,
+        ),
+        other => wrong_type("pin", "an int", other, span),
+    }
+}
+
+/// Set a pin high or low, and print what the simulated board shows.
+fn drive(machine: &mut dyn Machine, pin: i64, level: bool) -> Result {
+    if let Some(line) = machine.board().write(pin, level) {
+        machine.write_line(&line);
     }
     Ok(Value::None)
 }

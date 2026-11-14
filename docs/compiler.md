@@ -38,14 +38,14 @@ third way, on the VM, which must agree with the interpreter as well.
 
 Nearly all of the language: numbers, bools, strings and their methods,
 quantities, variables, `if` / `while` / `for`, functions, f-strings,
-`print`, the `math` module, classes with methods, lists (literals,
+`print`, the `math`, `time` and `board` modules, classes with methods, lists (literals,
 indexing, `append`, `pop`, `+`, `in`, comprehensions, `map`, `filter`,
 `reduce`), enums and `match`, values that may be `none`, errors (`try`,
 `except`, `raise`), functions used as values, and owned values
 ([`docs/ownership.md`](ownership.md)).
 
-Every program in `examples/` builds, except `blink.zeno`, which needs a
-board to run on.
+Every program in `examples/` builds. `blink.zeno` and `signal.zeno` run on
+a simulated board ([`docs/board.md`](board.md)).
 
 A few things are left. `zeno build` names each one and points at the line:
 
@@ -55,8 +55,6 @@ error: `zeno build` cannot compile a function inside a function or block yet. `z
 
 - A **named** function, class or enum declared inside a function. (Write
   `let helper = function(n) { ... }` instead: that one compiles.)
-- The `time` module, and `board`. Both need an answer to "what is this
-  running on?", which is a later stage.
 - A default value that is not a plain literal or `[]`:
   `function f(at = now())`.
 - A method taken off an object without calling it: `let f = point.length`.
