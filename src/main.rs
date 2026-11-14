@@ -52,6 +52,8 @@ fn usage() {
     println!("  --strict                 with check or run: every type must be known");
     println!("                           before the program runs, as firmware needs.");
     println!("                           `build` always works this way");
+    println!("  --no-collector           with check: check as `build --no-collector`");
+    println!("                           would, without building");
     println!("  --vm                     with run: compile the program to bytecode and");
     println!("                           run that, in place of walking the syntax tree.");
     println!("                           The program does the same, faster");
@@ -59,8 +61,8 @@ fn usage() {
     println!("                           caller tests, with no setjmp or longjmp, as");
     println!("                           coding standards for firmware require");
     println!("  --no-collector           with build: a firmware build with no garbage");
-    println!("                           collector in it. Every list and object must");
-    println!("                           be `owned`, and is freed where its owner's");
+    println!("                           collector in it. Every list and object has");
+    println!("                           one owner, and is freed where its owner's");
     println!("                           block ends. Memory comes from a pool of a");
     println!("                           fixed size, not from malloc");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
@@ -127,9 +129,9 @@ fn parse(path: &str) -> Option<()> {
 }
 
 /// `zeno check <file>`: run the type checker, printing every error it finds.
-fn check(path: &str, strict: bool) -> Option<(String, ast::Program)> {
+fn check(path: &str, rules: checker::Rules) -> Option<(String, ast::Program)> {
     let (source, program) = load(path)?;
-    let errors = checker::check(&program, strict);
+    let errors = checker::check_by(&program, rules).0;
     for error in &errors {
         report(path, &source, error);
     }
@@ -153,7 +155,7 @@ fn bytecode(path: &str) -> Option<()> {
 ///
 /// There are two engines to run it with. Both give the same result.
 fn run(path: &str, strict: bool, on_vm: bool) -> Option<()> {
-    let (source, program) = check(path, strict)?;
+    let (source, program) = check(path, checker::Rules { strict, one_owner: false })?;
     let (_, result) = match on_vm {
         true => vm::run(&program, false),
         false => interpreter::run(&program, false),
@@ -175,9 +177,10 @@ fn run(path: &str, strict: bool, on_vm: bool) -> Option<()> {
 /// compiler did.
 fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
-    // always checks in strict mode.
+    // always checks in strict mode. A build with no collector also
+    // checks that every list and object has one owner.
     let (source, program) = load(path)?;
-    let (errors, types) = checker::check_with_types(&program, true);
+    let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
         report(path, &source, error);
     }
@@ -236,7 +239,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
 /// text, printing and memory, which a C build has pasted in front of it.
 fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     let (source, program) = load(path)?;
-    let (errors, types) = checker::check_with_types(&program, true);
+    let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
         report(path, &source, error);
     }
@@ -374,7 +377,10 @@ fn main() -> ExitCode {
                 "tokens" => tokens(path),
                 "parse" => parse(path),
                 "bytecode" => bytecode(path),
-                "check" => check(path, strict).map(|_| println!("No errors found.")),
+                // `check --no-collector` checks as that build would:
+                // every type known, and every list and object owned.
+                "check" => check(path, checker::Rules { strict: strict || no_collector, one_owner: no_collector })
+                    .map(|_| println!("No errors found.")),
                 _ => run(path, strict, on_vm),
             };
             match done {

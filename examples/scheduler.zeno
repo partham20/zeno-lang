@@ -1,0 +1,100 @@
+# A small scheduler: tasks that run every so many ticks.
+#
+# There is not one `owned` in this file, and it still builds with no
+# garbage collector:
+#
+#     zeno run examples/scheduler.zeno
+#     zeno build --no-collector --memory examples/scheduler.zeno && ./scheduler
+#
+# In that build every list and every object has one owner: whoever
+# received it. docs/one-owner.md is the walkthrough.
+
+class Task {
+    name: str
+    every: int            # how many ticks lie between two runs
+    runs: list[int]       # the ticks it ran at. The task owns this list.
+
+    function due(self, tick: int) -> bool {
+        return tick % self.every == 0
+    }
+}
+
+class Scheduler {
+    tasks: list[Task]     # the scheduler owns the list, and the list owns each task
+
+    function add(self, task: Task) {
+        self.tasks.append(task)         # the task is the list's from here
+    }
+
+    # Run what is due at `now`. Returns how many tasks ran.
+    function tick(self, now: int) -> int {
+        var ran = 0
+        for task in self.tasks {        # the loop is lent each task in turn
+            if task.due(now) {
+                task.runs.append(now)
+                ran += 1
+            }
+        }
+        return ran
+    }
+}
+
+# `borrow`: these two only look. The caller goes on owning what it lends.
+function busiest(tasks: borrow list[Task]) -> str {
+    var best = "nothing"
+    var most = 0
+    for task in tasks {
+        if len(task.runs) > most {
+            most = len(task.runs)
+            best = task.name
+        }
+    }
+    return best
+}
+
+function report(task: borrow Task) -> str {
+    return f"{task.name} ran {len(task.runs)} times: {task.runs}"
+}
+
+# No `borrow`: this one takes the task over, and frees it when it returns.
+function retire(task: Task) -> int {
+    print("retiring", task.name)
+    return len(task.runs)
+}
+
+let scheduler = Scheduler([])
+scheduler.add(Task("blink", 2, []))
+scheduler.add(Task("sample", 3, []))
+let slow = Task("log", 5, [])
+scheduler.add(slow)                     # `slow` holds nothing after this line
+
+var total = 0
+for now in range(1, 11) {
+    total += scheduler.tick(now)
+}
+print("runs:", total)
+for task in scheduler.tasks {
+    print(report(task))
+}
+print("busiest:", busiest(scheduler.tasks))
+
+# `[ ]` looks at a task where it is. The task can be changed there.
+scheduler.tasks[0].every = 4
+print(scheduler.tasks[0].name, "now runs every", scheduler.tasks[0].every)
+
+# `pop()` takes a task out of the list. Whoever receives it owns it.
+let last = scheduler.tasks.pop()
+print("left:", len(scheduler.tasks))
+print("it ran", retire(last), "times")
+
+# A new task takes the place of an old one, which is freed on the spot.
+scheduler.tasks[1] = Task("sample fast", 1, [])
+print(scheduler.tick(12), "ran at tick 12")
+
+# A list of lists. Each row belongs to the table.
+var table = [[0, 0, 0], [0, 0, 0]]
+table[1][2] = 7
+table.append([1, 2, 3])
+for row in table {
+    print(row)
+}

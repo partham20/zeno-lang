@@ -32,7 +32,7 @@
 //! `zeno build --firmware` compiles errors a second way, as values that
 //! each caller tests, with no `setjmp`. Look for "Errors as values".
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -55,8 +55,18 @@ pub enum Build {
     /// tests, with no `setjmp`. The collector is still there.
     Firmware,
     /// `zeno build --no-collector`: a firmware build with no collector in
-    /// it. Every list and object must be owned. See docs/no-collector.md.
+    /// it. Every list and object has one owner, whoever received it. See
+    /// docs/no-collector.md and docs/one-owner.md.
     NoCollector,
+}
+
+impl Build {
+    /// How the checker checks a program for this kind of build. Compiled
+    /// code has no room for a value of unknown type, so every build is
+    /// strict. With no collector, every list and object has one owner.
+    pub fn rules(self) -> crate::checker::Rules {
+        crate::checker::Rules { strict: true, one_owner: self == Build::NoCollector }
+    }
 }
 
 /// The runtime as one kind of build needs it. The runtime marks what only
@@ -100,6 +110,8 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
     let firmware = build != Build::Ordinary;
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
+        drops: Drops::of(program, types, collector),
+        drops_written: 0,
         firmware,
         collector,
         built: false,
@@ -236,6 +248,8 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
             }
         }
     }
+
+    emitter.write_drops(Span { line: 0, col: 0 })?;
 
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
@@ -413,6 +427,9 @@ struct Variable {
     /// It owns the list or object it holds, and frees it when its block
     /// ends. In C it is NULL once the value has been given away.
     owner: bool,
+    /// It holds the copy of a list that a loop walks, whose items have
+    /// an owner elsewhere: only the copy itself is freed.
+    looks: bool,
 }
 
 struct FunctionEntry {
@@ -433,8 +450,8 @@ struct FunctionEntry {
 /// `Variable::owner`.
 fn disown(kind: Kind) -> (Kind, bool) {
     match kind {
-        Kind::Owned(inner) => (*inner, true),
-        kind => (kind, false),
+        Kind::Owned(inner) => (disowned(*inner), true),
+        kind => (disowned(kind), false),
     }
 }
 
@@ -459,18 +476,107 @@ fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
     (FunctionKind { params, returns: disown(kind.returns).0 }, owned)
 }
 
-/// The C statement that frees the owned value in `place`, if `place`
-/// still holds one. `texts` says that text is kept by copy (a build with
-/// no collector, docs/text.md): then a str has something to free, and a
-/// list of them frees its items as well as itself.
-fn free_code(kind: &Kind, place: &str, texts: bool) -> String {
-    match kind {
-        Kind::Class(name) => format!("zeno_drop_{}({place});", ident(name)),
-        // An error that an `except` caught, in a build with no collector.
-        Kind::Error => format!("zeno_error_drop({place});"),
-        kind if is_text(kind) => format!("zeno_text_drop({place});"),
-        Kind::List(item) if texts && is_text(item) => format!("zeno_list_drop_text({place});"),
-        _ => format!("zeno_list_drop({place});"),
+/// What it takes to write the C that frees a value.
+pub struct Drops {
+    /// Is text kept by copy (a build with no collector, docs/text.md)?
+    /// Then a str has something to free, and a list of them frees its
+    /// items as well as itself.
+    pub texts: bool,
+    /// Does a list inside a list have one owner, the list it is in? It
+    /// does where every list has one: a build with no collector.
+    pub nested: bool,
+    /// The classes whose objects have one owner each.
+    pub owned: HashSet<String>,
+    /// The functions that free a list together with its items, which
+    /// some line has called and nobody has written yet: the name of
+    /// each, and the kind of its items.
+    wanted: RefCell<Vec<(String, Kind)>>,
+}
+
+impl Drops {
+    /// Which classes have one owner for each object is asked wherever
+    /// something is freed, so it is found before anything is compiled.
+    pub fn of(program: &Program, types: &Types, collector: bool) -> Drops {
+        let mut owned = HashSet::new();
+        for statement in &program.statements {
+            if let StmtKind::Class(decl) = &statement.kind {
+                let copies = types.class_copies(decl).iter().map(|copy| &**copy);
+                for class in std::iter::once(decl).chain(copies) {
+                    if types.owned_class(class) {
+                        owned.insert(class.name.clone());
+                    }
+                }
+            }
+        }
+        Drops { texts: !collector, nested: !collector, owned, wanted: RefCell::new(Vec::new()) }
+    }
+
+    /// Does an item of this kind have one owner, the list it is in? Then
+    /// the end of the list is the end of the item.
+    pub fn owns(&self, item: &Kind) -> bool {
+        match item {
+            Kind::Class(name) => self.owned.contains(name),
+            Kind::List(_) => self.nested,
+            _ => false,
+        }
+    }
+
+    /// The name of the function that frees a value of this kind, and
+    /// does nothing when handed NULL.
+    pub fn name(&self, kind: &Kind) -> String {
+        match kind {
+            Kind::Class(name) => format!("zeno_drop_{}", ident(name)),
+            // An error that an `except` caught, in a build with no collector.
+            Kind::Error => "zeno_error_drop".to_string(),
+            kind if is_text(kind) => "zeno_text_drop".to_string(),
+            Kind::List(item) if self.texts && is_text(item) => "zeno_list_drop_text".to_string(),
+            Kind::List(item) if self.owns(item) => {
+                // How many lists deep the items that are not lists lie,
+                // and what frees one of those.
+                let (mut depth, mut inner) = (1, &**item);
+                while let Kind::List(next) = inner {
+                    if !self.owns(next) {
+                        break;
+                    }
+                    (depth, inner) = (depth + 1, &**next);
+                }
+                // `zeno_list_drop_2_Point` frees a list of lists of
+                // Points. No class can be given a name that makes one
+                // of the other two.
+                let name = match inner {
+                    Kind::Class(name) => format!("zeno_list_drop_{depth}_{}", ident(name)),
+                    Kind::List(text) if self.texts && is_text(text) => format!("zeno_list_drop_texts{depth}"),
+                    _ => format!("zeno_list_drop_lists{depth}"),
+                };
+                let mut wanted = self.wanted.borrow_mut();
+                if !wanted.iter().any(|(known, _)| *known == name) {
+                    wanted.push((name.clone(), (**item).clone()));
+                }
+                name
+            }
+            _ => "zeno_list_drop".to_string(),
+        }
+    }
+
+    /// The statement that frees the owned value in `place`, if `place`
+    /// still holds one.
+    pub fn code(&self, kind: &Kind, place: &str) -> String {
+        format!("{}({place});", self.name(kind))
+    }
+
+    /// The statement that frees a copy of a list which a loop walked. The
+    /// items in the copy are still the first list's.
+    pub fn code_for_copy(&self, item: &Kind, place: &str) -> String {
+        match self.owns(item) {
+            true => format!("zeno_list_drop({place});"),
+            false => self.code(&Kind::List(Box::new(item.clone())), place),
+        }
+    }
+
+    /// The functions that were asked for since the last call, to write:
+    /// the name of each and the kind of the items its list holds.
+    pub fn take_wanted(&self, written: usize) -> Vec<(String, Kind)> {
+        self.wanted.borrow()[written..].to_vec()
     }
 }
 
@@ -540,8 +646,6 @@ struct ClassEntry {
     /// The fields that own what they hold: an object of an `owned class`
     /// frees those along with itself.
     owned_fields: Vec<String>,
-    /// It is an `owned class`: each object has one owner.
-    owned: bool,
 }
 
 /// An enum: each case with the names and types of the values it carries.
@@ -551,6 +655,10 @@ struct EnumEntry {
 
 struct Emitter<'a> {
     types: &'a Types,
+    /// How each kind of value is freed. See `Drops`.
+    drops: Drops,
+    /// How many of the functions `drops` has asked for are written.
+    drops_written: usize,
     /// The functions, classes and enums of the program, by their Zeno names.
     functions: HashMap<String, FunctionEntry>,
     classes: HashMap<String, ClassEntry>,
@@ -957,7 +1065,7 @@ impl Emitter<'_> {
     fn declare(&mut self, name: &str, kind: Kind) -> String {
         let c_name = self.c_name(name);
         let variable =
-            Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: false };
+            Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: false, looks: false };
         self.scopes.last_mut().expect("there is always a scope").insert(name.to_string(), variable);
         c_name
     }
@@ -978,9 +1086,53 @@ impl Emitter<'_> {
         // No Zeno name has a space in it, so this cannot hide a variable.
         let key = format!("held {}", self.holds);
         let variable =
-            Variable { c_name: place.to_string(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: true };
+            Variable { c_name: place.to_string(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: true, looks: false };
         self.scopes.last_mut().expect("there is always a scope").insert(key.clone(), variable);
         key
+    }
+
+    /// `hold`, for the copy of a list that a loop walks. The copy is the
+    /// loop's. The items in it still belong to the list it was made
+    /// from, so leaving early frees the copy and not the items.
+    fn hold_copy(&mut self, item: Kind, place: &str) -> String {
+        let key = self.hold(Kind::List(Box::new(item)), place);
+        if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(&key)) {
+            variable.looks = self.drops.owns(match &variable.kind {
+                Kind::List(item) => item,
+                kind => kind,
+            });
+        }
+        key
+    }
+
+    /// Write the functions that free a list together with its items,
+    /// for each kind of list the program frees that way:
+    ///
+    ///     static void zeno_list_drop_1_Point(zeno_list *list) {
+    ///         if (list == NULL) return;
+    ///         for (int64_t i = 0; i < list->len; i++) zeno_drop_Point(((z_Point *)list->items[i].p));
+    ///         zeno_list_drop(list);
+    ///     }
+    ///
+    /// Writing one can ask for another: a list of lists of Points frees
+    /// each of its items with the function above.
+    fn write_drops(&mut self, span: Span) -> Result<(), Error> {
+        loop {
+            let wanted = self.drops.take_wanted(self.drops_written);
+            if wanted.is_empty() {
+                return Ok(());
+            }
+            self.drops_written += wanted.len();
+            for (name, item) in wanted {
+                let each = self.drops.code(&item, &from_slot(&item, "list->items[i]", span)?);
+                self.helper(
+                    format!("static void {name}(zeno_list *list)"),
+                    format!(
+                        "    if (list == NULL) return;\n    for (int64_t i = 0; i < list->len; i++) {each}\n    zeno_list_drop(list);\n"
+                    ),
+                );
+            }
+        }
     }
 
     /// The value has arrived where it was going, and has an owner again.
@@ -1146,7 +1298,7 @@ impl Emitter<'_> {
         self.passing.push(Passing {
             key,
             declare: format!("{}{name} = NULL;", c_type(&val.kind, expr.span)?),
-            free: free_code(&val.kind, &name, !self.collector),
+            free: self.drops.code(&val.kind, &name),
         });
         let mut own = Val::plain(name, val.kind);
         own.pre_fails = val.pre_fails || val.fails;
@@ -1184,13 +1336,6 @@ impl Emitter<'_> {
                  Copy out what is needed from it",
                 span,
             )),
-            Kind::Class(name) if !self.classes[name].owned => Err(without_collector(
-                format!(
-                    "`{name}` is not an `owned class`, so the only object of it is an error on its way to an \
-                     `except`, and that is freed when the `except` block ends. It cannot be kept"
-                ),
-                span,
-            )),
             _ => Ok(()),
         }
     }
@@ -1225,7 +1370,10 @@ impl Emitter<'_> {
         for scope in self.scopes.iter().skip(from).rev() {
             let mut owners: Vec<&Variable> = scope.values().filter(|variable| variable.owner).collect();
             owners.sort_by(|a, b| a.c_name.cmp(&b.c_name));
-            lines.extend(owners.into_iter().map(|owner| free_code(&owner.kind, &owner.c_name, !self.collector)));
+            lines.extend(owners.into_iter().map(|owner| match owner.looks {
+                true => format!("zeno_list_drop({});", owner.c_name),
+                false => self.drops.code(&owner.kind, &owner.c_name),
+            }));
         }
         lines
     }
@@ -1379,13 +1527,14 @@ impl Emitter<'_> {
         // With no collector every object is freed by a line of the
         // program, and has its own copies of the text in its fields.
         let texts = !self.collector;
-        if decl.owned || texts {
+        let owned_class = self.types.owned_class(decl);
+        if owned_class || texts {
             // The end of an object of an owned class: free what its fields
             // own, then the object. NULL means it was given away.
             let mut body = String::from("    if (self == NULL) return;\n");
             for ((field, kind), owned) in decl.fields.iter().zip(&kinds).zip(&owned) {
                 if *owned || (texts && is_text(kind)) {
-                    body += &format!("    {}\n", free_code(kind, &format!("self->z_{}", field.name), texts));
+                    body += &format!("    {}\n", self.drops.code(kind, &format!("self->z_{}", field.name)));
                 }
                 if *owned {
                     owned_fields.push(field.name.clone());
@@ -1393,9 +1542,9 @@ impl Emitter<'_> {
             }
             body += "    zeno_free(self);\n";
             self.helper(format!("static void zeno_drop_{name}({c_name} *self)"), body);
-            if !decl.owned {
-                // Such a class can only be raised (see `construct`). The
-                // error that carries the object frees it through this.
+            if texts {
+                // An object that is raised travels inside an error, and
+                // the `except` that catches it frees it through this.
                 self.helper(
                     format!("static void zeno_drop_any_{name}(void *object)"),
                     format!("    zeno_drop_{name}(({c_name} *)object);\n"),
@@ -1414,7 +1563,7 @@ impl Emitter<'_> {
             .zip(kinds)
             .map(|(field, kind)| (field.name.clone(), kind, field.default.clone()))
             .collect();
-        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, owned_fields, owned: decl.owned });
+        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, owned_fields });
         Ok(())
     }
 
@@ -1708,6 +1857,7 @@ impl Emitter<'_> {
                         boxed: Some(pointer),
                         used: Cell::new(false),
                         owner: false,
+                        looks: false,
                     };
                     self.scopes.last_mut().expect("there is always a scope").insert(name.clone(), variable);
                 } else {
@@ -1737,7 +1887,7 @@ impl Emitter<'_> {
                 let val = self.expr(expr)?;
                 if self.types.discarded(expr) {
                     // An owned value that nobody keeps is freed on the spot.
-                    self.line(free_code(&val.kind, &val.code, !self.collector));
+                    self.line(self.drops.code(&val.kind, &val.code));
                 } else if !val.code.is_empty() && (val.fails || val.calls) {
                     // What is left may still need to run, for what it does.
                     self.line(format!("{};", val.code));
@@ -2383,16 +2533,20 @@ impl Emitter<'_> {
                     // The new value is made first, since making it may
                     // read the old one. Then the old one is freed.
                     val = self.temp(val, span)?;
-                    self.line(free_code(&kind, &c_name, !self.collector));
+                    self.line(self.drops.code(&kind, &c_name));
                 }
                 self.line(format!("{c_name} = {};", val.code));
             }
             // For the other two, Zeno works the new value out first and then
             // looks up where it goes. If working the value out calls a
             // function, pin it down before touching the place.
-            ExprKind::Field { object, name } if is_place(object) => {
-                let val = if val.calls { self.temp(val, span)? } else { val };
-                let object = self.expr(object)?;
+            // The object may be reached through a list, as in
+            // `points[1].x = 30`. Finding it can fail, so it is found
+            // once, after the value, and pinned down as well.
+            ExprKind::Field { object: reached, name } => {
+                let val = if val.calls || !is_place(reached) { self.temp(val, span)? } else { val };
+                let object = self.expr(reached)?;
+                let object = if is_place(reached) { object } else { self.temp(object, span)? };
                 let field = match &object.kind {
                     Kind::Class(class) => self.classes[class].fields.iter().find(|(field, _, _)| field == name),
                     _ => None,
@@ -2411,7 +2565,7 @@ impl Emitter<'_> {
                     // As for an owner variable: new value first, then free
                     // the one the field held.
                     val = self.temp(val, span)?;
-                    self.line(free_code(&kind, &format!("{}->z_{name}", object.code), !self.collector));
+                    self.line(self.drops.code(&kind, &format!("{}->z_{name}", object.code)));
                 }
                 let sized = match &object.kind {
                     Kind::Class(class) => self.classes[class].sized.get(name).copied(),
@@ -2424,22 +2578,36 @@ impl Emitter<'_> {
                     None => self.line(format!("{}->z_{name} = {};", object.code, val.code)),
                 }
             }
-            ExprKind::Index { object, index } if is_place(object) => {
-                if needs_owner {
-                    return Err(Self::no_owner(value.span));
-                }
+            ExprKind::Index { object, index } => {
                 // A bare `none` is nothing to pin down, and has no C type
                 // until it is known what else the list holds.
                 let val = if val.kind == Kind::None { val } else { self.temp(val, span)? };
-                let object = self.expr(object)?;
-                let index = self.expr(index)?;
+                // The list may itself be an item of a list, as in
+                // `grid[1][0] = 5`: then finding it can fail too.
+                let mut vals = self.sequence(&[object, index])?;
+                let index = vals.pop().expect("two values");
+                let object = vals.pop().expect("two values");
                 let Kind::List(item) = &object.kind else {
                     return Err(cannot("an assignment to this", target.span));
                 };
-                let val = self.coerce(val, &item.clone(), span)?;
+                let item = (**item).clone();
+                // The list owns an item that has one owner. Any other
+                // list has no use for one that was just made.
+                let owns = self.drops.owns(&item);
+                if needs_owner && !owns {
+                    return Err(Self::no_owner(value.span));
+                }
+                let val = self.coerce(val, &item, span)?;
                 self.fits_a_slot(&val.kind, span)?;
                 let slot = to_slot(&val.kind, &val.code, span)?;
-                if !self.collector && is_text(&val.kind) {
+                if owns {
+                    // The item that was there is freed, as a field's
+                    // old value is, and the new one takes its place.
+                    let place = self.new_temp();
+                    self.line(format!("zeno_slot *{place} = zeno_list_at({}, {}, {});", object.code, index.code, at(span)));
+                    self.line(self.drops.code(&item, &from_slot(&item, &format!("(*{place})"), span)?));
+                    self.line(format!("*{place} = {slot};"));
+                } else if !self.collector && is_text(&val.kind) {
                     // The list is done with the text it held there.
                     let place = self.new_temp();
                     self.line(format!("zeno_slot *{place} = zeno_list_at({}, {}, {});", object.code, index.code, at(span)));
@@ -2714,8 +2882,15 @@ impl Emitter<'_> {
         // The list being walked is the loop's own. A `return` or a failed
         // call inside the loop frees it on the way out; `close_loop` does
         // when the loop ends by itself.
-        if !own {
-            self.hold(Kind::List(Box::new(item.clone())), &items);
+        let copied = !(fresh || own) && list.kind != Kind::Str;
+        match (own, copied) {
+            (true, _) => {}
+            (false, true) => {
+                self.hold_copy(item.clone(), &items);
+            }
+            (false, false) => {
+                self.hold(Kind::List(Box::new(item.clone())), &items);
+            }
         }
         let c_type = c_type(&item, span)?;
         let c_name = self.declare(variable, item.clone());
@@ -2724,7 +2899,10 @@ impl Emitter<'_> {
         let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
         self.line(format!("{c_type}{c_name} = {value};"));
         self.indent -= 1;
-        Ok((!own).then(|| free_code(&Kind::List(Box::new(item)), &items, !self.collector)))
+        Ok((!own).then(|| match copied {
+            true => self.drops.code_for_copy(&item, &items),
+            false => self.drops.code(&Kind::List(Box::new(item)), &items),
+        }))
     }
 
     // ---------------------------------------------------------- Expressions
@@ -2982,8 +3160,30 @@ impl Emitter<'_> {
                 Ok(self.lend(val))
             }
             ExprKind::List(items) => {
-                let exprs: Vec<&Expr> = items.iter().collect();
-                let mut vals = self.sequence(&exprs)?;
+                // The items, left to right, as `sequence` would work
+                // them out. One that has an owner of its own has left
+                // that owner and not yet reached the list. In a firmware
+                // build a later item may fail, and the failure leaves
+                // this function at once: hold the item until the list
+                // is made, so that such a failure frees it.
+                let mut vals: Vec<Val> = Vec::new();
+                let mut held = Vec::new();
+                for (index, item) in items.iter().enumerate() {
+                    let mark = self.lines.len();
+                    let mut next = self.expr(item)?;
+                    self.settle(&mut vals, &next, mark, item.span)?;
+                    let later_work = items[index + 1..].iter().any(|item| !is_plain(item));
+                    if self.drops.owns(&next.kind) && !next.passing && later_work && self.firmware {
+                        if !self.types.moves(item) {
+                            next = self.temp(next, item.span)?;
+                        }
+                        held.push(self.hold(next.kind.clone(), &next.code));
+                    }
+                    vals.push(next);
+                }
+                for key in &held {
+                    self.let_go(key);
+                }
                 for (val, item) in vals.iter_mut().zip(items) {
                     self.stays(val, item.span)?;
                     if !self.collector && is_text(&val.kind) && !is_written(item) {
@@ -3045,13 +3245,15 @@ impl Emitter<'_> {
                 self.fits_a_slot(&item.kind, span)?;
                 self.line(format!("zeno_list_append({list}, {});", to_slot(&item.kind, &item.code, span)?));
                 self.own_end(own, true);
-                if !self.collector && is_text(&item.kind) {
-                    // The list has copies of its items, which was not
-                    // known when the lines above were written: a failure
-                    // half way has to free those as well.
-                    let (plain, texts) = (format!("zeno_list_drop({list});"), format!("zeno_list_drop_text({list});"));
+                if (!self.collector && is_text(&item.kind)) || self.drops.owns(&item.kind) {
+                    // The list has copies of its items, or is the owner
+                    // of them, which was not known when the lines above
+                    // were written: a failure half way has to free those
+                    // as well.
+                    let plain = format!("zeno_list_drop({list});");
+                    let whole = self.drops.code(&Kind::List(Box::new(item.kind.clone())), &list);
                     for (_, line) in &mut self.lines[filled_from..] {
-                        *line = line.replace(&plain, &texts);
+                        *line = line.replace(&plain, &whole);
                     }
                 }
                 if condition.is_some() {
@@ -3272,6 +3474,7 @@ impl Emitter<'_> {
                     used: Cell::new(false),
                     // The function around this one goes on owning it.
                     owner: false,
+                    looks: false,
                 };
                 offered.insert(name.clone(), variable);
             }
@@ -3478,7 +3681,7 @@ impl Emitter<'_> {
         self.line("}");
         if !own {
             // The copy that was walked was nobody else's.
-            self.line(free_code(&Kind::List(Box::new(item.clone())), &items, texts));
+            self.line(self.drops.code_for_copy(item, &items));
         }
         result.pre_fails = true;
         result.pre_calls = true;
@@ -3903,16 +4106,6 @@ impl Emitter<'_> {
 
     /// `Point(3.0, 4.0)`: a new object.
     fn construct(&mut self, class: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
-        let entry = &self.classes[class];
-        // With no collector, an object needs an owner. The one exception
-        // is an error being raised, which the `except` that catches it
-        // will free.
-        if !self.collector && !entry.owned && self.raising.take() != Some(span) {
-            return Err(without_collector(
-                format!("`{class}` is not an `owned class`, so this object would have no owner"),
-                span,
-            ));
-        }
         let entry = &self.classes[class];
         let slots = entry.fields.clone();
         let owned: Vec<bool> = slots.iter().map(|(field, _, _)| entry.owned_fields.contains(field)).collect();
@@ -5534,6 +5727,7 @@ print(word[5])
             ("generics", include_str!("../examples/generics.zeno")),
             ("labels", include_str!("../examples/labels.zeno")),
             ("words", include_str!("../examples/words.zeno")),
+            ("scheduler", include_str!("../examples/scheduler.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -6522,8 +6716,11 @@ function main() -> int raises Refused {
     fn compile_no_collector(source: &str) -> Result<String, String> {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
-        let (errors, types) = crate::checker::check_with_types(&program, true);
-        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        if let Some(error) = errors.first() {
+            // Who owns what is the checker's to say in this build.
+            return Err(error.message.clone());
+        }
         emit(&program, &types, "test.zeno", Build::NoCollector).map_err(|error| error.message)
     }
 
@@ -7904,40 +8101,49 @@ let x = 7
             // The LLVM backend refuses the same program in the same words.
             crate::emit_llvm::tests::refuses_as_c(&source, &message);
         };
+        // What the checker turns down, because in this build every list
+        // and object has one owner. It is the same language with fewer
+        // programs in it: each of these is fine where values are shared.
+        let one_owner = |body: &str, why: &str| {
+            let source = format!("{SETTING}{body}\n");
+            let message = compile_no_collector(&source).err().unwrap_or_else(|| "it compiled".to_string());
+            assert!(message.contains(why), "{body}\n{message}");
+            assert!(compile(&source).is_ok(), "{body}");
+            crate::emit_llvm::tests::refuses_as_c(&source, &message);
+        };
 
         // (Text is not in this table: it is kept by copy. See
-        // `with_no_collector_text_is_kept_by_copy`.)
+        // `with_no_collector_text_is_kept_by_copy`. Nor is a plain list
+        // or a plain class: whoever receives one owns it. See
+        // `with_no_collector_a_list_and_an_object_need_no_word`.)
 
         // An error is freed when its `except` ends, so it cannot be kept
         // or raised again, and one can only be made by `raise`.
         let caught = "try { print(risky(5)) } except Bad as e";
-        refused(&format!("{caught} {{ let again = e\nprint(again.id) }}"), "It cannot be kept");
-        refused(&format!("var last: Bad or none = none\n{caught} {{ last = e }}"), "It cannot be kept");
-        refused(
+        one_owner(&format!("{caught} {{ let again = e\nprint(again.id) }}"), "is the error that this `except` caught");
+        one_owner(
             &format!("function pass_on(b: Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e)) }}"),
-            "It cannot be kept",
+            "is the error that this `except` caught",
         );
         refused("try { print(risky(5)) } except Error as e { let again = e\nprint(again) }", "so it cannot be kept");
         refused(
             &format!("function f() -> int raises Bad {{ try {{ return risky(5) }} except Bad as e {{ raise e }} }}\n{caught} {{ print(f()) }}"),
             "`raise` needs a new error here",
         );
-        refused("let b = Bad(1, \"x\")", "this object would have no owner");
-        refused("print(Bad(1, \"x\").id)", "this object would have no owner");
         refused("print(ValueError(\"x\"))", "this makes a `ValueError` that is not raised");
 
-        // A list that is made and only looked at belongs to its statement
-        // (see `with_no_collector_a_statement_owns_the_lists_it_makes`).
-        // One that is kept needs an owner, whatever made it.
-        refused("let xs = [1, 2, 3]\nprint(len(xs))", "this list has no owner");
-        refused("let xs: list[int] = []\nprint(len(xs))", "this list has no owner");
-        refused("let a: owned list[int] = [1]\nlet b = a.map(double)\nprint(b)", "this list has no owner");
-        refused("let a: owned list[int] = [1]\nlet b = a + a\nprint(b)", "this list has no owner");
-        refused("let words = \"a b\".split()\nprint(words)", "this list has no owner");
-        refused("let grid: owned list[list[int]] = [[1], [2]]\nprint(grid)", "this list has no owner");
-        refused("function total(xs: list[int]) -> int { return len(xs) }\nprint(total([1, 2]))", "this list has no owner");
-        refused("function pair() -> list[int] { return [1, 2] }\nprint(len(pair()))", "this list has no owner");
-        refused("class Loose {\n    items: list[int]\n}\nfunction f(l: Loose) { l.items += [1] }", "this list has no owner");
+        // A value that was given away is gone, and a look cannot be kept.
+        one_owner("let xs = [1, 2, 3]\nlet ys = xs\nprint(len(xs))", "was given away on line");
+        one_owner(
+            "function total(xs: list[int]) -> int { return len(xs) }\nlet xs = [1, 2]\nprint(total(xs))\nprint(total(xs))",
+            "was given away on line",
+        );
+        one_owner("let b = Bad(1, \"x\")\nlet c = b\nprint(b.id)", "was given away on line");
+        one_owner("let grid = [[1], [2]]\nlet row = grid[0]\nprint(row)", "`[ ]` only looks at it");
+
+        // What has one owner cannot sit inside an `or none` yet.
+        one_owner("var last: Bad or none = none\nprint(last is none)", "cannot be kept inside an `or none`");
+        one_owner("var xs: list[int] or none = none\nprint(xs is none)", "cannot be kept inside an `or none`");
 
         // Whatever else makes a block that nothing owns.
         refused("let s = Circle(1.0)", "`Circle` carries values");
@@ -7962,6 +8168,14 @@ let a: owned list[int] = [1, 2, 3]
 print(a.reduce(add, 0), look(a), a, Dot == Dot, 3 s, (1500 ms).s)
 print(look([1, 2]), x in [1, 2])      # lists the statement frees when it ends
 print(len(a + a), len("a b".split()), len(a.map(double)))
+let plain = [1, 2, 3]                 # no word needed: `plain` owns it
+let doubled = plain.map(double)
+let words = "a b".split()
+print(look(plain), doubled)
+print(words)
+print(plain + doubled)
+let b = Bad(1, "x")                   # nor for an object
+print(b.id, Bad(2, "y").why, b)
 for ch in "abc" {                     # a list of characters, the loop's own
     print(ch)
 }
@@ -7979,6 +8193,421 @@ try {
 "#
         );
         no_collector_as_interpreter("accepted", &accepted);
+    }
+
+    /// Plain lists and plain classes, lists in lists and objects in
+    /// lists, with not one `owned` in the program.
+    const NO_WORD: &str = r##"class Point {
+    x: int
+    y: int
+    function sum(self) -> int { return self.x + self.y }
+}
+
+function total(ps: borrow list[Point]) -> int {
+    var t = 0
+    for p in ps { t += p.sum() }
+    return t
+}
+
+function sum_of(p: borrow Point) -> int { return p.sum() }
+function add_point(so_far: int, p: borrow Point) -> int { return so_far + p.x }
+function row(n: int) -> list[int] {
+    return [i for i in range(n)]
+}
+
+var grid = [[1, 2], [3, 4]]
+grid.append([5, 6])
+grid.append(row(3))
+print(grid[2][0])
+print(grid)
+grid[0] = [9]
+grid[1].append(7)
+print(grid)
+let last = grid.pop()
+print(last)
+print(len(grid))
+
+var points = [Point(1, 2), Point(3, 4)]
+points.append(Point(5, 6))
+let extra = Point(7, 8)
+points.append(extra)
+for q in points { print(q.sum()) }
+print(total(points))
+print(points[1].x)
+points[1].x = 30
+print(points[1])
+let gone = points.pop()
+print(gone.x)
+points[0] = Point(0, 0)
+print(points)
+print(len([Point(1, 1)]))
+let sums = points.map(sum_of)
+print(sums)
+print(points.reduce(add_point, 0))
+grid[1][0] = 33
+print(grid, [[1], [2, 3]], len([[1], [2]]))
+for r in grid {
+    for c in r { print(c) }
+    r.append(0)
+}
+print(grid)
+for r in [[1, 2], [3]] { print(r) }
+print([Point(i, i) for i in range(3)])
+let made = [row(i) for i in range(3)]
+print(made)
+"##;
+
+    /// The same, where errors and early exits end blocks half way.
+    const NO_WORD_EXITS: &str = r##"class Reading {
+    name: str
+    values: list[int]
+    function peak(self) -> int {
+        var best = 0
+        for v in self.values {
+            if v > best { best = v }
+        }
+        return best
+    }
+}
+
+class Log {
+    title: str
+    readings: list[Reading]
+    function add(self, r: Reading) {
+        self.readings.append(r)
+    }
+    function peak(self) -> int {
+        var best = 0
+        for r in self.readings {
+            if r.peak() > best { best = r.peak() }
+        }
+        return best
+    }
+    function names(self) -> list[str] {
+        return [r.name for r in self.readings]
+    }
+}
+
+function reading(name: str, n: int) -> Reading raises ValueError {
+    if n < 0 { raise ValueError(f"no reading called {name} can have {n} values") }
+    return Reading(name, [i * n for i in range(n)])
+}
+
+function build(sizes: borrow list[int]) -> Log raises ValueError {
+    let log = Log("run", [])
+    for n in sizes {
+        log.add(reading(f"r{n}", n))
+    }
+    return log
+}
+
+function first_big(log: borrow Log, limit: int) -> str {
+    for r in log.readings {
+        if r.peak() > limit { return r.name }
+    }
+    return "none"
+}
+
+function pair(a: int, b: int) -> list[Reading] raises ValueError {
+    return [reading("a", a), reading("b", b)]
+}
+
+let log = build([1, 2, 3, 4])
+print(log.peak())
+print(log.names())
+print(first_big(log, 3))
+print(first_big(log, 100))
+print(log.readings[2])
+log.readings[2].values.append(99)
+log.readings[2].name = "changed" + str(2)
+print(log.readings[2].peak())
+print(log.names())
+
+try {
+    let bad = build([2, -1, 3])
+    print(bad.peak())
+} except ValueError as e {
+    print(e)
+}
+
+try {
+    let two = pair(2, -5)
+    print(len(two))
+} except ValueError as e {
+    print(e)
+}
+let two = pair(2, 3)
+print(len(two), two[1].peak())
+
+var kept = [reading("x", 1)]
+for i in range(6) {
+    let r = reading(f"loop{i}", i)
+    if i == 1 { continue }
+    if i == 4 { break }
+    kept.append(r)
+}
+print(len(kept))
+for r in kept { print(r.name, r.values) }
+while len(kept) > 2 {
+    let r = kept.pop()
+    print("popped", r.name)
+}
+kept.pop()
+print(len(kept))
+kept[0] = reading("fresh", 2)
+kept[0] = reading("fresher", 3)
+print(kept)
+let a = reading("a", 1)
+let b = reading("b", 2)
+let both = [a, b]
+print(len(both), len([reading("t", 2)]), [reading("u", 1)][0].name)
+var table = [[1, 2, 3], [4, 5]]
+table[1] = [6]
+let moved = table.pop()
+table.append(moved)
+let words = ["a b".split(), "c d e".split()]
+print(table, words, len(words[1]))
+"##;
+
+    /// A list that owns its items, said in words: an `owned list` of
+    /// objects of an `owned class`. This one is for every build.
+    const OWNS_ITEMS: &str = r##"owned class Packet {
+    id: int
+    name: str
+    data: owned list[int]
+
+    function size(self) -> int {
+        return len(self.data)
+    }
+}
+
+owned class Queue {
+    waiting: owned list[Packet]
+
+    function add(self, p: Packet) {
+        self.waiting.append(p)
+    }
+
+    function sizes(self) -> list[int] {
+        return [p.size() for p in self.waiting]
+    }
+
+    function biggest(self) -> int {
+        var best = 0
+        for p in self.waiting {
+            if p.size() > best {
+                best = p.size()
+            }
+        }
+        return best
+    }
+}
+
+function make(id: int, count: int) -> Packet raises ValueError {
+    if count < 0 {
+        raise ValueError(f"packet {id} cannot hold {count} items")
+    }
+    return Packet(id, f"p{id}", [n * id for n in range(count)])
+}
+
+function fill(counts: list[int]) -> Queue raises ValueError {
+    let q = Queue([])
+    for count in counts {
+        q.add(make(len(q.waiting) + 1, count))
+    }
+    return q
+}
+
+function describe(p: borrow Packet) -> str {
+    return f"{p.name}: {p.data}"
+}
+
+function first_over(ps: borrow list[Packet], limit: int) -> str {
+    for p in ps {
+        if p.size() > limit {
+            return p.name
+        }
+    }
+    return "none"
+}
+
+function drain(ps: owned list[Packet]) -> int {
+    var total = 0
+    for p in ps {
+        total += p.size()
+    }
+    return total
+}
+
+let q = fill([3, 1, 4])
+print(q.sizes(), q.biggest(), len(q.waiting))
+print(describe(q.waiting[0]), first_over(q.waiting, 3), first_over(q.waiting, 9))
+q.waiting[1].data.append(42)
+q.waiting[1].name = "changed"
+print(q.waiting[1])
+q.waiting[0] = make(9, 2)
+let last = q.waiting.pop()
+print(describe(last), len(q.waiting))
+print(q)
+
+try {
+    let bad = fill([2, -1, 5])
+    print(bad.biggest())
+} except ValueError as e {
+    print(e)
+}
+
+var kept: owned list[Packet] = []
+for i in range(6) {
+    let p = make(i, i)
+    if i == 2 {
+        continue
+    }
+    if i == 5 {
+        break
+    }
+    kept.append(p)
+}
+print(len(kept), first_over(kept, 2))
+let pair = [make(1, 1), make(2, 2)]
+print(len(pair), describe(pair[1]), len([make(3, 3)]), [make(4, 1)][0].name)
+print(drain(pair), drain([make(5, 5), make(6, 6)]))
+while len(kept) > 1 {
+    let p = kept.pop()
+    print("popped", p.name)
+}
+kept[0] = make(7, 1)
+print(kept)
+kept = [make(8, 2)]
+print(kept.map(describe))
+"##;
+
+    #[test]
+    fn with_no_collector_a_list_and_an_object_need_no_word() {
+        no_collector_as_interpreter("no-word", NO_WORD);
+        no_collector_as_interpreter("no-word-exits", NO_WORD_EXITS);
+        no_collector_as_interpreter("scheduler", include_str!("../examples/scheduler.zeno"));
+    }
+
+    #[test]
+    fn a_list_owns_items_that_have_one_owner() {
+        // With a collector, run before every allocation: the list frees
+        // its items itself, and the collector must not free them first.
+        same_as_interpreter("owns-items", OWNS_ITEMS);
+        no_collector_as_interpreter("owns-items", OWNS_ITEMS);
+    }
+
+    #[test]
+    fn with_no_collector_lists_of_objects_do_not_fill_the_pool_over_time() {
+        // A list of objects, and a list of lists, made and dropped on
+        // every trip. A hundred times the trips needs no more of the pool.
+        let program = |trips: usize| r#"class Sample {
+    name: str
+    values: list[int]
+}
+function batch(n: int) -> list[Sample] {
+    return [Sample(f"s{i}", [i, n]) for i in range(4)]
+}
+var total = 0
+for n in range({trips}) {
+    var samples = batch(n)
+    samples.append(Sample("extra", [n]))
+    samples[0] = Sample("first", [])
+    let gone = samples.pop()
+    let rows = [[n, n], [n]]
+    for s in samples {
+        total += len(s.values) + len(rows[0])
+    }
+    total += len(gone.name)
+}
+print(total)
+"#.replace("{trips}", &trips.to_string());
+        let mut needed = Vec::new();
+        for trips in [50, 5000] {
+            let source = program(trips);
+            let c = compile_no_collector(&source).unwrap();
+            let name = format!("items-{trips}-trips");
+            let Some((printed, report, finished)) = build_and_run(&name, &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert!(finished, "{report}");
+            assert_eq!(printed, interpreted(&source));
+            assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+            crate::emit_llvm::tests::no_collector_as_c(&name, &source, &printed, &report);
+            needed.push(pool_needed(&report));
+        }
+        assert_eq!(needed[0], needed[1], "a hundred times the trips needed a bigger pool");
+        assert!(needed[0] < 2048, "{needed:?}");
+    }
+
+    #[test]
+    fn the_c_for_a_list_that_owns_its_items() {
+        let c = compile_no_collector(
+            "class Point {\n    x: int\n}\n\
+             let points = [Point(1), Point(2)]\n\
+             points[0] = Point(3)\n\
+             for p in points {\n    print(p.x)\n}\n\
+             let grid = [[points.pop()]]\n",
+        )
+        .unwrap();
+        // One function for each kind of list that frees its items.
+        assert!(
+            c.contains(
+                "static void zeno_list_drop_1_Point(zeno_list *list) {\n    if (list == NULL) return;\n    \
+                 for (int64_t i = 0; i < list->len; i++) zeno_drop_Point(((z_Point *)list->items[i].p));\n    \
+                 zeno_list_drop(list);\n}\n"
+            ),
+            "{c}"
+        );
+        // A list of lists of Points frees each item with the one above.
+        assert!(
+            c.contains("for (int64_t i = 0; i < list->len; i++) zeno_list_drop_1_Point(((zeno_list *)list->items[i].p));"),
+            "{c}"
+        );
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        // A new item frees the one whose place it takes.
+        assert!(program.contains("zeno_drop_Point(((z_Point *)(*t"), "{program}");
+        // The copy a loop walks is freed alone: its items are the list's.
+        let after_loop = program.split("print").nth(1).expect("a loop");
+        assert!(after_loop.contains("    }\n    zeno_list_drop(t"), "{program}");
+        // The end of the program frees each list with its items.
+        assert!(program.contains("zeno_list_drop_2_Point(z_grid);\n    zeno_list_drop_1_Point(z_points);"), "{program}");
+    }
+
+    #[test]
+    fn an_assignment_can_reach_through_a_list() {
+        // `grid[1][0] = 5` and `points[1].x = 30`: the value first, then
+        // the list or the object, then the index, as `zeno run` does.
+        same_as_interpreter("reach", r##"class Point {
+    x: int
+    y: int
+}
+
+function say(what: str, n: int) -> int {
+    print(what, n)
+    return n
+}
+
+var grid = [[1, 2], [3, 4]]
+grid[1][0] = 5
+grid[say("row", 0)][say("column", 1)] = say("value", 9)
+print(grid)
+let points = [Point(1, 2), Point(3, 4)]
+points[1].x = 30
+points[say("point", 0)].y = say("y", 7)
+print(points)
+grid[0][1] += 4
+points[1].x += 1
+print(grid, points)
+try {
+    grid[say("row", 5)][say("column", 0)] = say("value", 1)
+} except IndexError as e {
+    print(e)
+}
+try {
+    points[say("point", 2)].x = say("x", 1)
+} except IndexError as e {
+    print(e)
+}
+"##);
     }
 
     #[test]

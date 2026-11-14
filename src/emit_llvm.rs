@@ -584,8 +584,6 @@ struct ClassEntry {
     /// For each field: does the object own what the field holds? Only an
     /// object of an `owned class` owns anything.
     owned_fields: Vec<bool>,
-    /// It is an `owned class`: each object has one owner.
-    owned: bool,
 }
 
 /// An enum: each case with the names and kinds of the values it carries.
@@ -729,6 +727,9 @@ impl Code {
 
 struct Emitter<'a> {
     types: &'a Types,
+    /// Which values have one owner, and so what freeing a list frees.
+    /// The C backend's, so that both agree.
+    drops: emit_c::Drops,
     /// `zeno build --llvm --firmware`: errors travel as values that each
     /// caller tests, and nothing jumps. See "Errors as values".
     firmware: bool,
@@ -862,10 +863,7 @@ fn holds_pointer(kind: &Kind) -> bool {
 /// as a shared one is. What differs is who frees it, and that is kept
 /// beside the kind: see `Variable::owner`.
 fn shared(kind: &Kind) -> Kind {
-    match kind {
-        Kind::Owned(inner) => shared(inner),
-        other => other.clone(),
-    }
+    emit_c::disowned(kind.clone())
 }
 
 /// The kind of `[]` before the place it arrives at has said what it holds.
@@ -1081,6 +1079,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: 
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     let mut emitter = Emitter {
         types,
+        drops: emit_c::Drops::of(program, types, collector),
         firmware,
         collector,
         memory,
@@ -1517,7 +1516,7 @@ impl Emitter<'_> {
         let Some(kinds) = self.types.class(decl) else {
             return Err(cannot(format!("the class `{}`", decl.name), span));
         };
-        let owned_fields = kinds.iter().map(|kind| decl.owned && matches!(kind, Kind::Owned(_))).collect();
+        let owned_fields = kinds.iter().map(|kind| self.types.owned_class(decl) && matches!(kind, Kind::Owned(_))).collect();
         let kinds: Vec<Kind> = kinds.iter().map(shared).collect();
         let ty = named('%', "z_", &decl.name);
         let mut sized = self.types.widths(decl).cloned().unwrap_or_default();
@@ -1545,7 +1544,7 @@ impl Emitter<'_> {
         }
         let fields =
             decl.fields.iter().zip(kinds).map(|(field, kind)| (field.name.clone(), kind, field.default.clone())).collect();
-        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, ty, owned_fields, owned: decl.owned });
+        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, ty, owned_fields });
         Ok(())
     }
 
@@ -2046,14 +2045,17 @@ impl Emitter<'_> {
                 self.store_field(&class, &object.code, index, &new.code, span)?;
             }
             ExprKind::Index { object, index } => {
-                if needs_owner {
-                    return Err(no_owner(value.span));
-                }
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
                 let Kind::List(item) = object.kind.clone() else {
                     return Err(cannot("an assignment to this", target.span));
                 };
+                // The list owns an item that has one owner. Any other
+                // list has no use for one that was just made.
+                let owns = self.drops.owns(&item);
+                if needs_owner && !owns {
+                    return Err(no_owner(value.span));
+                }
                 let new = self.fit(new, &item, span)?;
                 self.fits_a_slot(&new.kind, span)?;
                 let slot = self.to_slot(&new, span)?;
@@ -2061,7 +2063,12 @@ impl Emitter<'_> {
                 // of that item's slot.
                 let args = format!("ptr {}, i64 {}, {}", object.code, index.code, at(span));
                 let place = self.call("ptr", "zeno_list_at", args);
-                if !self.collector && is_text(&new.kind) {
+                if owns {
+                    // The item that was there is freed, as a field's old
+                    // value is, and the new one takes its place.
+                    let old = self.set(format!("load ptr, ptr {place}"));
+                    self.free(&item, &old, span)?;
+                } else if !self.collector && is_text(&new.kind) {
                     // The list is done with the text it held there.
                     let old = self.set(format!("load ptr, ptr {place}"));
                     self.run("zeno_text_drop", format!("ptr {old}"));
@@ -2193,13 +2200,6 @@ impl Emitter<'_> {
             Kind::Error => Err(emit_c::without_collector(
                 "an error lasts only until the end of the `except` block that caught it, so it cannot be kept. \
                  Copy out what is needed from it",
-                span,
-            )),
-            Kind::Class(name) if !self.classes[name].owned => Err(emit_c::without_collector(
-                format!(
-                    "`{name}` is not an `owned class`, so the only object of it is an error on its way to an \
-                     `except`, and that is freed when the `except` block ends. It cannot be kept"
-                ),
                 span,
             )),
             _ => Ok(()),
@@ -2335,9 +2335,62 @@ impl Emitter<'_> {
             Kind::List(item) if !self.collector && is_text(item) => {
                 self.run("zeno_list_drop_text", format!("ptr {value}"))
             }
+            // A list of items that have one owner each, the list: its
+            // end is theirs.
+            Kind::List(item) if self.drops.owns(item) => {
+                let drop = self.drop_list(item, span)?;
+                self.ins(format!("call void {drop}(ptr {value})"));
+            }
             _ => self.run("zeno_list_drop", format!("ptr {value}")),
         }
         Ok(())
+    }
+
+    /// The function that ends a list together with its items, for a
+    /// list whose items have one owner each. Null means the list was
+    /// given away, and there is nothing to do.
+    ///
+    /// ```text
+    /// define internal void @zeno_list_drop_1_Point(ptr %list) {
+    /// entry:
+    ///   %t1 = icmp eq ptr %list, null
+    ///   br i1 %t1, label %gone1, label %there1
+    /// gone1:
+    ///   ret void
+    /// there1:
+    ///   ...for each item:
+    ///   call void @zeno.drop.Point(ptr %t9)
+    ///   ...then the list itself:
+    ///   call void @zeno_list_drop(ptr %list)
+    ///   ret void
+    /// }
+    /// ```
+    fn drop_list(&mut self, item: &Kind, span: Span) -> Result<String, Error> {
+        // The C backend's name for it. No class can be given a name
+        // that makes the same one.
+        let name = format!("@{}", self.drops.name(&Kind::List(Box::new(item.clone()))));
+        // Noted as written before it is, as for a class.
+        if !self.written.insert(name.clone()) {
+            return Ok(name);
+        }
+        let item = item.clone();
+        self.side(format!("define internal void {name}(ptr %list)"), |emitter| {
+            let gone = emitter.set("icmp eq ptr %list, null");
+            let n = emitter.number();
+            let (nothing, there) = (format!("gone{n}"), format!("there{n}"));
+            emitter.jump_if(&gone, &nothing, &there);
+            emitter.place(&nothing);
+            emitter.end("ret void");
+            emitter.place(&there);
+            let (count, slot) = emitter.walk_open("item", "%list");
+            let each = emitter.from_slot(&item, &slot, span)?;
+            emitter.free(&item, &each.code, span)?;
+            emitter.count_close(&count);
+            emitter.run("zeno_list_drop", "ptr %list");
+            emitter.end("ret void");
+            Ok(())
+        })?;
+        Ok(name)
     }
 
     /// Free what the owners in `scopes[from..]` still hold, innermost
@@ -2604,8 +2657,11 @@ impl Emitter<'_> {
                 self.text_given_back(begin);
                 let (count, slot) = self.walk_open(variable, &items);
                 // What frees the list: its items too, if they are text
-                // it has copies of.
-                let kind = Kind::List(Box::new(if !self.collector && is_text(&item) { item.clone() } else { Kind::None }));
+                // it has copies of, or if the list is the one that was
+                // made and its items have no other owner. The items in
+                // a copy still belong to the list that was copied.
+                let whole = (!self.collector && is_text(&item)) || (fresh && self.drops.owns(&item));
+                let kind = Kind::List(Box::new(if whole { item.clone() } else { Kind::None }));
                 (count, self.from_slot(&item, &slot, span)?.fixed(), (!own).then_some((items, kind)))
             }
         };
@@ -3859,10 +3915,22 @@ impl Emitter<'_> {
     /// `[1, 2, 3]`
     fn list(&mut self, items: &[Expr], span: Span) -> Result<Val, Error> {
         let mut vals = Vec::new();
-        for item in items {
+        let mut held = Vec::new();
+        for (index, item) in items.iter().enumerate() {
             let val = self.expr(item)?;
             self.stays(&val, item.span)?;
+            // An item that has an owner of its own has left that owner
+            // and not yet reached the list. In a firmware build a later
+            // item may fail, and the failure leaves this function at
+            // once. Hold the item until the list is made, so that such
+            // a failure frees it.
+            if self.firmware && self.drops.owns(&val.kind) && index + 1 < items.len() {
+                held.push(self.hold(val.kind.clone(), &val.code));
+            }
             vals.push(val);
+        }
+        for key in &held {
+            self.let_go(key);
         }
         let Some(first) = vals.first() else {
             // `[]` alone does not say what it will hold. The place it
@@ -3926,18 +3994,24 @@ impl Emitter<'_> {
         self.stays(&item, element.span)?;
         self.fits_a_slot(&item.kind, span)?;
         let item = self.keep(item, is_written(element));
-        if !self.collector && is_text(&item.kind) {
-            // The list has copies of its items, which was not known when
-            // the lines above were written: a failure half way has to
-            // free those as well.
-            let (plain, texts) =
-                (format!("call void @zeno_list_drop(ptr {list})"), format!("call void @zeno_list_drop_text(ptr {list})"));
+        let owns = self.drops.owns(&item.kind);
+        if (!self.collector && is_text(&item.kind)) || owns {
+            // The list has copies of its items, or is the owner of them,
+            // which was not known when the lines above were written: a
+            // failure half way has to free those as well.
+            let whole = match owns {
+                true => self.drop_list(&item.kind, span)?,
+                false => {
+                    self.uses("zeno_list_drop_text");
+                    "@zeno_list_drop_text".to_string()
+                }
+            };
+            let (plain, whole) = (format!("call void @zeno_list_drop(ptr {list})"), format!("call void {whole}(ptr {list})"));
             for line in &mut self.code.lines[filled_from..] {
                 if line.trim_start() == plain {
-                    *line = line.replace(&plain, &texts);
+                    *line = line.replace(&plain, &whole);
                 }
             }
-            self.uses("zeno_list_drop_text");
         }
         let slot = self.to_slot(&item, span)?;
         self.run("zeno_list_append", format!("ptr {list}, i64 {slot}"));
@@ -4539,15 +4613,6 @@ impl Emitter<'_> {
 
     /// `Point(3.0, 4.0)`: a new object.
     fn construct(&mut self, class: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
-        // With no collector, an object needs an owner. The one exception
-        // is an error being raised, which the `except` that catches it
-        // will free.
-        if !self.collector && !self.classes[class].owned && self.raising.take() != Some(span) {
-            return Err(emit_c::without_collector(
-                format!("`{class}` is not an `owned class`, so this object would have no owner"),
-                span,
-            ));
-        }
         let (slots, owned) = (self.classes[class].fields.clone(), self.classes[class].owned_fields.clone());
         let list = self.bind(&slots, &owned, &[], args, span)?;
         let make = self.new_class(class, span)?;
@@ -5102,6 +5167,8 @@ impl Emitter<'_> {
         self.count_close(&count);
         if !own {
             // The copy that was walked was nobody else's.
+            // Its items, if they have one owner each, are still the
+            // first list's.
             self.run(if texts { "zeno_list_drop_text" } else { "zeno_list_drop" }, format!("ptr {items}"));
         }
         Ok(match total {
@@ -5775,6 +5842,7 @@ pub(crate) mod tests {
         same_as_interpreter("generics", include_str!("../examples/generics.zeno"));
         same_as_interpreter("labels", include_str!("../examples/labels.zeno"));
         same_as_interpreter("words", include_str!("../examples/words.zeno"));
+        same_as_interpreter("scheduler", include_str!("../examples/scheduler.zeno"));
     }
 
     #[test]
@@ -6170,8 +6238,10 @@ print(work(2000))
     fn compile_no_collector(source: &str) -> Result<String, String> {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
-        let (errors, types) = crate::checker::check_with_types(&program, true);
-        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        if let Some(error) = errors.first() {
+            return Err(error.message.clone());
+        }
         emit(&program, &types, "test.zeno", Build::NoCollector, true).map_err(|error| error.message)
     }
 
@@ -6317,6 +6387,55 @@ end1:
   call void (i32, ...) @zeno_print(i32 1, ptr %t16)
   store i64 %mark.2, ptr @zeno_text_top
   ret void"
+        );
+    }
+
+    #[test]
+    fn the_ir_for_a_list_that_owns_its_items() {
+        // docs/one-owner.md, in IR.
+        let ir = compile_no_collector(
+            "class Point {\n    x: int\n}\n\
+             let points = [Point(1), Point(2)]\n\
+             points[0] = Point(3)\n\
+             for p in points {\n    print(p.x)\n}\n\
+             let grid = [[points.pop()]]\n",
+        )
+        .unwrap();
+        // One function for each kind of list that frees its items: it
+        // walks the list, frees each item, then frees the list alone.
+        let drop = ir.split("define internal void @zeno_list_drop_1_Point(ptr %list) {\n").nth(1).expect("the function");
+        let drop = drop.split("\n}\n").next().unwrap();
+        assert!(drop.contains("  call void @zeno.drop.Point(ptr %t9)\n"), "{drop}");
+        assert!(drop.ends_with("done2:\n  call void @zeno_list_drop(ptr %list)\n  ret void"), "{drop}");
+        // A list of lists of Points frees each item with the one above.
+        let outer = ir.split("define internal void @zeno_list_drop_2_Point(ptr %list) {\n").nth(1).expect("the function");
+        assert!(outer.split("\n}\n").next().unwrap().contains("  call void @zeno_list_drop_1_Point(ptr %t9)\n"), "{ir}");
+
+        let program = ir.split("define internal void @zeno_program() noinline {\n").nth(1).expect("the program");
+        let program = program.split("\n}\n").next().unwrap();
+        // A new item frees the one whose place it takes.
+        assert!(
+            program.contains(
+                "  %t9 = call ptr @zeno_list_at(ptr %t7, i64 0, i32 5, i32 1)
+  %t10 = load ptr, ptr %t9
+  call void @zeno.drop.Point(ptr %t10)
+  store i64 %t8, ptr %t9
+"
+            ),
+            "{program}"
+        );
+        // The copy a loop walks is freed alone: its items are the list's.
+        assert!(program.contains("done1:\n  call void @zeno_list_drop(ptr %t12)\n"), "{program}");
+        // The end of the program frees each list with its items.
+        assert!(
+            program.ends_with(
+                "  %t33 = load ptr, ptr @z_grid
+  call void @zeno_list_drop_2_Point(ptr %t33)
+  %t34 = load ptr, ptr @z_points
+  call void @zeno_list_drop_1_Point(ptr %t34)
+  ret void"
+            ),
+            "{program}"
         );
     }
 
