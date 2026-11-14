@@ -1,11 +1,13 @@
 //! The `zeno` command-line tool.
 //!
 //! The compiler stages get added here one at a time. So far there are the
-//! lexer, the parser and the interpreter: `zeno tokens` and `zeno parse`
-//! show what the first two produce, and `zeno run` runs a program.
+//! lexer, the parser, the type checker and the interpreter. `zeno tokens`,
+//! `zeno parse` and `zeno check` show what the first three find, and
+//! `zeno run` checks a program and then runs it.
 
 mod ast;
 mod builtins;
+mod checker;
 mod error;
 mod interpreter;
 mod lexer;
@@ -25,11 +27,16 @@ fn usage() {
     println!("Every journey is halfway done. Forever.");
     println!();
     println!("Usage:");
-    println!("  zeno run <file.zeno>     run a program");
+    println!("  zeno run <file.zeno>     check a program, then run it");
+    println!("  zeno check <file.zeno>   check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
     println!("  zeno build <file.zeno>   compile to C (not implemented yet)");
     println!("  zeno --version           print the version");
+    println!();
+    println!("Options:");
+    println!("  --strict                 with check or run: every type must be known");
+    println!("                           before the program runs, as firmware needs");
     println!("  zeno --help              print this message");
 }
 
@@ -86,9 +93,25 @@ fn parse(path: &str) -> Option<()> {
     Some(())
 }
 
-/// `zeno run <file>`: run the program.
-fn run(path: &str) -> Option<()> {
+/// `zeno check <file>`: run the type checker, printing every error it finds.
+fn check(path: &str, strict: bool) -> Option<(String, ast::Program)> {
     let (source, program) = load(path)?;
+    let errors = checker::check(&program, strict);
+    for error in &errors {
+        report(path, &source, error);
+    }
+    if errors.is_empty() {
+        Some((source, program))
+    } else {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was run.", errors.len());
+        None
+    }
+}
+
+/// `zeno run <file>`: check the program, and if it is sound, run it.
+fn run(path: &str, strict: bool) -> Option<()> {
+    let (source, program) = check(path, strict)?;
     let (_, result) = interpreter::run(&program, false);
     match result {
         Ok(()) => Some(()),
@@ -128,7 +151,10 @@ fn report(path: &str, source: &str, error: &error::Error) {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    // `--strict` may appear anywhere after the command.
+    let strict = args.iter().any(|arg| arg == "--strict");
+    args.retain(|arg| arg != "--strict");
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -139,7 +165,7 @@ fn main() -> ExitCode {
             println!("zeno {VERSION}");
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("tokens" | "parse" | "run")) => {
+        Some(cmd @ ("tokens" | "parse" | "check" | "run")) => {
             let Some(path) = args.get(1) else {
                 eprintln!("zeno: `{cmd}` needs a file, e.g. `zeno {cmd} examples/hello.zeno`");
                 return ExitCode::FAILURE;
@@ -147,7 +173,8 @@ fn main() -> ExitCode {
             let done = match cmd {
                 "tokens" => tokens(path),
                 "parse" => parse(path),
-                _ => run(path),
+                "check" => check(path, strict).map(|_| println!("No errors found.")),
+                _ => run(path, strict),
             };
             match done {
                 Some(()) => ExitCode::SUCCESS,

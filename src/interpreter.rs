@@ -933,8 +933,14 @@ impl Interpreter {
                 },
             },
             Pow => match (&left, &right) {
-                // int ** int stays an int when the power is not negative.
-                (Int(a), Int(b)) if *b >= 0 => u32::try_from(*b)
+                // int ** int is always an int, so a negative power, which
+                // would need a fraction, is refused. See docs/decisions.md.
+                (Int(_), Int(b)) if *b < 0 => raise(
+                    "ValueError",
+                    "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`",
+                    span,
+                ),
+                (Int(a), Int(b)) => u32::try_from(*b)
                     .ok()
                     .and_then(|b| a.checked_pow(b))
                     .map(Int)
@@ -1037,8 +1043,13 @@ mod tests {
         (output, result.map_err(|error| error.message))
     }
 
-    /// What a working program prints.
+    /// What a working program prints. A program that runs correctly must
+    /// also get through the type checker, so that is tested here too.
     fn output(source: &str) -> String {
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let complaints = crate::checker::check(&program, false);
+        assert!(complaints.is_empty(), "the checker rejected a working program: {complaints:?}\n{source}");
+
         let (output, result) = run(source);
         if let Err(message) = result {
             panic!("program failed: {message}\noutput so far:\n{output}");
@@ -1056,7 +1067,11 @@ mod tests {
     #[test]
     fn arithmetic() {
         assert_eq!(output("print(1 + 2 * 3, 10 - 4, 2 ** 10, -3 + 1)"), "7 6 1024 -2\n");
-        assert_eq!(output("print(1.5 + 1, 2 * 0.5, 2 ** -1, 2.0 ** 3)"), "2.5 1.0 0.5 8.0\n");
+        assert_eq!(output("print(1.5 + 1, 2 * 0.5, 2.0 ** -1, 2.0 ** 3)"), "2.5 1.0 0.5 8.0\n");
+        assert_eq!(
+            error("print(2 ** -1)"),
+            "uncaught ValueError: a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`"
+        );
     }
 
     #[test]
@@ -1068,7 +1083,10 @@ mod tests {
     #[test]
     fn comparisons_and_equality() {
         assert_eq!(output("print(1 < 2, 2 <= 2, 3 > 4, \"a\" < \"b\", 1 == 1.0, 1 != 2)"), "true true false true true true\n");
-        assert_eq!(output("print(1 == \"1\", [1, 2] == [1, 2], none == none)"), "false true true\n");
+        assert_eq!(output("print([1, 2] == [1, 2], [1] == [2], none == none)"), "true false true\n");
+        // The checker refuses to compare an int with a str, but a value of
+        // unknown type can still meet one when the program runs.
+        assert_eq!(output("function same(a, b) { return a == b }\nprint(same(1, \"1\"), same(1, 1.0))"), "false true\n");
     }
 
     #[test]
@@ -1227,7 +1245,7 @@ mod tests {
 
     #[test]
     fn map_filter_reduce() {
-        let source = "let xs = [1, 2, 3, 4, 5, 6]\nfunction even(n) { return n % 2 == 0 }\nprint(xs.filter(even).map(function(n) { return n * n }).reduce(function(total, n) { return total + n }, 0))\nprint(xs.map(str), [].map(even), [].reduce(even, 7))";
+        let source = "let xs = [1, 2, 3, 4, 5, 6]\nfunction even(n) { return n % 2 == 0 }\nprint(xs.filter(even).map(function(n) { return n * n }).reduce(function(total, n) { return total + n }, 0))\nprint(xs.map(str), [].map(even), [].reduce(function(a, b) { return a }, 7))";
         assert_eq!(output(source), "56\n[\"1\", \"2\", \"3\", \"4\", \"5\", \"6\"] [] 7\n");
         assert_eq!(
             error("[1].filter(function(n) { return n })"),
