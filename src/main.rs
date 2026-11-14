@@ -8,6 +8,7 @@
 mod ast;
 mod builtins;
 mod checker;
+mod emit_c;
 mod error;
 mod interpreter;
 mod lexer;
@@ -19,7 +20,8 @@ mod value;
 
 use std::env;
 use std::fs;
-use std::process::ExitCode;
+use std::path::Path;
+use std::process::{Command, ExitCode};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -32,13 +34,14 @@ fn usage() {
     println!("  zeno check <file.zeno>   check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>  show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>   show the syntax tree the parser builds");
-    println!("  zeno build <file.zeno>   compile to C (not implemented yet)");
+    println!("  zeno build <file.zeno>   compile to C, then to a program you can run");
     println!("  zeno --version           print the version");
     println!("  zeno --help              print this message");
     println!();
     println!("Options:");
     println!("  --strict                 with check or run: every type must be known");
-    println!("                           before the program runs, as firmware needs");
+    println!("                           before the program runs, as firmware needs.");
+    println!("                           `build` always works this way");
 }
 
 /// Read a source file, or print why it could not be read.
@@ -123,6 +126,61 @@ fn run(path: &str, strict: bool) -> Option<()> {
     }
 }
 
+/// `zeno build <file>`: compile the program to C, then hand the C to the
+/// machine's C compiler to make a program that runs by itself.
+///
+/// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
+/// C file is kept, because reading it is the best way to see what the
+/// compiler did.
+fn build(path: &str) -> Option<()> {
+    // Compiled code has no room for values of unknown type, so `build`
+    // always checks in strict mode.
+    let (source, program) = load(path)?;
+    let (errors, types) = checker::check_with_types(&program, true);
+    for error in &errors {
+        report(path, &source, error);
+    }
+    if !errors.is_empty() {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was built.", errors.len());
+        return None;
+    }
+
+    let c = match emit_c::emit(&program, &types, path) {
+        Ok(c) => c,
+        Err(error) => {
+            report(path, &source, &error);
+            return None;
+        }
+    };
+    let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
+    let c_file = format!("{name}.c");
+    if let Err(err) = fs::write(&c_file, c) {
+        eprintln!("zeno: cannot write `{c_file}`: {err}");
+        return None;
+    }
+    println!("Wrote {c_file}");
+
+    // `CC` is the usual way to say which C compiler to use; `cc` is the
+    // usual name for whichever one is installed.
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    match Command::new(&compiler).args(["-O2", "-o", name, &c_file, "-lm"]).status() {
+        Ok(status) if status.success() => {
+            println!("Built {name}. Run it with ./{name}");
+            Some(())
+        }
+        Ok(_) => {
+            eprintln!("zeno: `{compiler}` could not compile `{c_file}`. That is a bug in Zeno, not in your program");
+            None
+        }
+        Err(_) => {
+            eprintln!("zeno: no C compiler found (tried `{compiler}`), so only the C was written.");
+            eprintln!("      Install one, or set CC, then run: cc -O2 -o {name} {c_file} -lm");
+            None
+        }
+    }
+}
+
 /// Print an error with the offending line and a caret under the exact spot:
 ///
 /// ```text
@@ -183,8 +241,14 @@ fn main() -> ExitCode {
             }
         }
         Some("build") => {
-            eprintln!("zeno: `build` is not implemented yet. Achilles is still catching the tortoise.");
-            ExitCode::FAILURE
+            let Some(path) = args.get(1) else {
+                eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
+                return ExitCode::FAILURE;
+            };
+            match build(path) {
+                Some(()) => ExitCode::SUCCESS,
+                None => ExitCode::FAILURE,
+            }
         }
         Some(other) => {
             eprintln!("zeno: unknown command `{other}`\n");

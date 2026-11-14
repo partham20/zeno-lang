@@ -1,0 +1,45 @@
+# primes.zeno: a program small enough for `zeno build` to compile today.
+#
+#     zeno run examples/primes.zeno      run it with the interpreter
+#     zeno build examples/primes.zeno    compile it to primes.c and ./primes
+#
+# Both must print exactly the same thing. No types are written anywhere:
+# the checker works them out, and the C that comes out is fully typed.
+
+function is_prime(n) {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+function count_primes(limit) {
+    var count = 0
+    for n in range(limit) {
+        if is_prime(n) {
+            count += 1
+        }
+    }
+    return count
+}
+
+function average_gap(limit) {
+    return limit / count_primes(limit)
+}
+
+let limit = 10000
+print(f"primes below {limit}: {count_primes(limit)}")
+print(f"one in every {average_gap(limit):.2f} numbers")
+
+var largest = limit
+while not is_prime(largest) {
+    largest -= 1
+}
+print(f"the largest is {largest}, or {largest:x} in hex")
