@@ -144,6 +144,8 @@ at a condition and returns two lists: what is known when it is true, and what
 is known when it is false. It understands `is none`, `is not none`, `not`,
 `and` and `or`.
 
+The body of `while x is not none { ... }` knows it too.
+
 It also follows early exits. After
 
 ```
@@ -157,6 +159,41 @@ check returns one bool: *does this always leave the block?* `return`, `raise`,
 
 That same bool is how the checker catches a function that can run off its
 end without returning what it promised.
+
+### A new value changes what is known
+
+What is known about a variable lasts until the variable is given a new
+value. Then the new value decides:
+
+```
+var node = head                 # Node or none
+while node is not none {
+    total += node.value         # a Node in here
+    node = node.next            # may be none again...
+}                               # ...which the `while` asks about next time
+
+var name = given                # str or none
+if name is none {
+    name = "anon"               # a str from here on
+}
+return name                     # a str on both paths, so a str
+```
+
+Three small rules do this, all in the `Assign` and `If` arms of `stmt`:
+
+- Assigning a value that cannot be `none` narrows the variable. Assigning
+  one that might be takes the knowledge away again (`Scope::widen`), in
+  every block between here and where the variable was declared.
+- After an `if`, the variable is narrowed when both branches end with it
+  narrowed. That is the `name` example above.
+- A loop body is checked once but runs many times, so what was known
+  before the loop may be untrue on the second pass. Before checking the
+  body, `forget_assigned` drops what is known about every variable the
+  body assigns.
+
+The variable keeps its declared type the whole time (`Variable.declared`),
+and that is what an assignment is checked against. A narrowed `int or none`
+can still be given `none`.
 
 ## match must cover everything
 
@@ -197,6 +234,11 @@ built on it stays quiet.
 of every function, in a plain form (`Kind`) with no links back into the
 checker. `zeno build` uses it to give every C function its types. See
 `docs/compiler.md`.
+
+`Types` also lists every place where a variable is read after narrowing.
+The compiler stores an `int or none` differently from an `int`, so it has
+to know that `x` inside `if x is not none { ... }` is the plain number.
+Only the checker knows that, so the checker writes it down.
 
 ## What it does not do yet
 

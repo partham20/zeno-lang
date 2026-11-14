@@ -21,7 +21,7 @@ way to follow this document.
 
 - `src/emit_c.rs` walks the tree and writes C. It is the compiler proper.
 - `src/runtime.c` is a small C library that is pasted in front of every
-  program: checked arithmetic, strings, `print`.
+  program: checked arithmetic, strings, lists, errors, `print`.
 
 ## One rule above all: build must agree with run
 
@@ -33,18 +33,29 @@ change one side, the tests tell you to change the other.
 
 ## What it compiles so far
 
-Numbers, bools, strings, quantities, variables, `if` / `while` / `for`,
-functions, f-strings, `print`, the `math` module, classes with methods,
-lists (literals, indexing, `append`, `pop`, `+`, `in`, comprehensions),
-enums and `match`.
+Nearly all of the language: numbers, bools, strings and their methods,
+quantities, variables, `if` / `while` / `for`, functions, f-strings,
+`print`, the `math` module, classes with methods, lists (literals,
+indexing, `append`, `pop`, `+`, `in`, comprehensions, `map`, `filter`,
+`reduce`), enums and `match`, values that may be `none`, errors (`try`,
+`except`, `raise`), and functions used as values.
 
-`try` / `raise`, `none`, and functions used as values (which `map`,
-`filter` and `reduce` need) are not compiled yet. `zeno build` says so and
-points at the line:
+Every program in `examples/` builds, except `blink.zeno`, which needs a
+board to run on.
+
+A few things are left. `zeno build` names each one and points at the line:
 
 ```
-error: `zeno build` cannot compile `try` yet. `zeno run` can still run this program
+error: `zeno build` cannot compile a function inside a function or block yet. `zeno run` can still run this program
 ```
+
+- A **named** function, class or enum declared inside a function. (Write
+  `let helper = function(n) { ... }` instead: that one compiles.)
+- The `time` module, and `board`. Both need an answer to "what is this
+  running on?", which is a later stage.
+- A default value that is not a plain literal or `[]`:
+  `function f(at = now())`.
+- A method taken off an object without calling it: `let f = point.length`.
 
 ## Where the types come from
 
@@ -213,6 +224,221 @@ A `for` loop over a list walks a copy of it. That matches `zeno run`, where
 the loop sees the list as it was when the loop began, even if the body adds
 to it.
 
+## Values that may be none
+
+`str or none` has to be stored somehow. There are two cases.
+
+A str, a list, an object, an enum value, an error and a function are all
+pointers in C already, and a pointer has a spare value: `NULL`. So for
+those, `none` is `NULL`, and `T or none` costs nothing more than `T`.
+
+A number or a bool has no spare value: every pattern of bits is some
+number. So `int or none` is a number with a flag beside it:
+
+```c
+typedef struct { bool present; int64_t value; } zeno_opt_int;
+```
+
+```
+function half(n: int) -> int or none {
+    if n % 2 == 0 { return n // 2 }
+    return none
+}
+let h = half(8)
+if h is not none { print(h + 1) }
+```
+```c
+static zeno_opt_int z_half(int64_t z_n) {
+    if (zeno_mod(z_n, 2, 2, 8) == 0) {
+        return (zeno_opt_int){true, zeno_floordiv(z_n, 2, 2, 28)};
+    }
+    return (zeno_opt_int){false, 0};
+}
+...
+if (z_h.present) {
+    zeno_print(1, zeno_str_int(zeno_add(z_h.value, 1, 6, 26)));
+}
+```
+
+Three things to see there:
+
+- `return n // 2` puts the flag on, because the function returns
+  `int or none`. Going from `T` into `T or none`, and writing `none`
+  itself, is the one place the two differ, and `coerce` in `emit_c.rs`
+  does it wherever a value arrives somewhere: a `return`, an argument, an
+  assignment, an item of a list.
+- `h is not none` reads the flag.
+- Inside the `if`, `h` is read as `z_h.value`, the plain number. The
+  compiler cannot see for itself that the `if` has ruled `none` out. The
+  checker can (that is narrowing, in `docs/checker.md`), and it passes on
+  a note of every place where a variable is read after such a check.
+
+One more case. A top-level `var`, or a `var` shared with an inner function,
+can be changed by a function that is called between the check and the use:
+
+```
+var limit: int or none = 5
+function clear() { limit = none }
+if limit is not none {
+    clear()
+    print(limit + 1)        # limit is none again by now
+}
+```
+
+For those variables only, the value is looked at once more where it is
+used (`zeno_still_int`), and the program stops with an error if it has
+gone. A local variable that nothing else can reach needs no second look.
+
+A list gives every item one slot, which has no room for a flag. In a list,
+a number that may be `none` is kept as a pointer to a copy of the number.
+
+## Errors: try, except and raise
+
+```
+try {
+    let port = parse_port(text)
+    print(port)
+} except ValueError as err {
+    print(f"error: {err}")
+}
+```
+```c
+zeno_try t1;                        // a place to come back to
+t1.outer = zeno_trying;
+zeno_trying = &t1;                  // from here on, errors come to t1
+if (setjmp(t1.place) == 0) {
+    z_port = z_parse_port(z_text);
+    zeno_print(1, zeno_str_int(z_port));
+    zeno_trying = t1.outer;         // finished with no error
+} else if (zeno_caught("ValueError")) {
+    zeno_error *z_err = zeno_raised;
+    zeno_print(1, zeno_join(2, "error: ", z_err->message));
+} else {
+    zeno_raise_again();             // not ours: pass it outward
+}
+```
+
+`setjmp` is a C library function that remembers "here": where the program
+is, and what is in the processor's registers. It returns 0. Later,
+`longjmp` puts all of that back, and the program finds itself returning
+from that same `setjmp` a second time, now with 1.
+
+So a `try` remembers a place, and tells the runtime about it by putting it
+at the front of a chain (`zeno_trying`). `raise`, or any error the runtime
+finds itself (dividing by zero, a bad index), goes through one function,
+`zeno_raise`. If the chain is empty, nobody is trying: it prints the error
+and stops the program, exactly as before. Otherwise it takes the innermost
+place off the chain and jumps to it, out of however many function calls
+are in the way.
+
+That means code outside a `try` pays nothing, and a `try` in which nothing
+goes wrong pays for one `setjmp`.
+
+Details that the compiler looks after:
+
+- **Leaving early.** A `return`, `break` or `continue` inside a `try` body
+  jumps past the line that takes the place off the chain. So the compiler
+  writes that line before each of them.
+- **Variables changed inside a `try`.** C has a rule here: after the jump
+  back, a local variable that was changed since the `setjmp` may hold its
+  old value or its new one, unless it is declared `volatile`. (The C
+  compiler may have kept the new value in a register, and the jump puts
+  the registers back.) The compiler finds the variables that a `try` body
+  assigns to, and declares those `volatile`. See `changed_in_try`.
+- **Raising an object.** `raise Timeout(30 ms)` wraps the object in an
+  error whose kind is the class's name. `except Timeout as t` gets the
+  object back out. `except Error as e` gets the error it travelled in.
+
+## Functions as values
+
+A function held in a variable is a pointer to a small struct:
+
+```c
+typedef struct zeno_closure { zeno_code code; const char *name; } zeno_closure;
+```
+
+`code` is the C function to run. Calling `f(3)` becomes "call `f`'s code,
+passing `f` itself first":
+
+```c
+((int64_t (*)(zeno_closure *, int64_t))z_f->code)(z_f, 3)
+```
+
+The long bracket in front turns the stored pointer back into the type it
+really is, which the compiler knows from the type of `f`.
+
+Why pass the function to itself? Because of this:
+
+```
+function make_scaler(k: int) {
+    return function(n: int) { return n * k }
+}
+```
+
+The inner function uses `k`, which belongs to a call of `make_scaler` that
+has finished by the time the inner function runs. So when the inner
+function is made, the variables it uses are packed up with it:
+
+```c
+struct zeno_env_1 { zeno_closure base; int64_t z_k; };
+
+static int64_t zeno_fn_1(zeno_closure *zeno_self, int64_t z_n) {
+    struct zeno_env_1 *env = (struct zeno_env_1 *)zeno_self;
+    return zeno_mul(z_n, env->z_k, 2, 38);
+}
+
+static zeno_closure *z_make_scaler(int64_t z_k) {
+    struct zeno_env_1 *t1 = (struct zeno_env_1 *)zeno_alloc(sizeof(struct zeno_env_1));
+    t1->base.code = (zeno_code)zeno_fn_1;
+    t1->base.name = "";
+    t1->z_k = z_k;
+    return (&t1->base);
+}
+```
+
+A function together with the variables it took with it is called a
+**closure**. The header comes first in the struct, so a pointer to the
+whole thing is also a valid pointer to the header, and every function
+value can be handled the same way whatever it carries.
+
+How does the compiler know which variables to pack? While it compiles the
+inner function, every variable of the outer one is on offer as
+`env->name`, and each notes whether it was looked up. The ones that were
+are the ones to pack.
+
+**Sharing a variable.** `k` above is copied, which is fine because it never
+changes. This is different:
+
+```
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+```
+
+`count` changes, and the change has to last. So a `var` that an inner
+function uses is not kept in a C variable at all. It is kept in a box on
+the heap, and the outer function and the inner one both hold a pointer to
+the box:
+
+```c
+int64_t *z_count = (int64_t *)zeno_alloc(sizeof(int64_t));
+*z_count = 0;
+...
+t2->z_count = z_count;              // the inner function gets the box
+```
+
+**Ordinary functions as values.** `xs.map(double)` passes a top-level
+function. It does not take the hidden first argument, so the compiler
+writes a small wrapper that does (`zeno_wrap_double`) and one fixed
+`zeno_closure` that points at it.
+
+**`map`, `filter` and `reduce`** are loops written out where they are
+used, each calling the function on every item.
+
 ## Names
 
 Every Zeno name gets `z_` in front: `count` becomes `z_count`. That way no
@@ -232,7 +458,9 @@ the order the file says.
 
 A string built while the program runs (`a + b`, an f-string) needs memory,
 and so does every object, list and enum value that carries data. The
-runtime takes it from `malloc` and never gives it back. For a program
+runtime takes it from `malloc` and never gives it back. The same goes for
+a function made inside another one, and for the box of a variable they
+share. For a program
 that runs and exits, that is harmless. For firmware that runs for years it
 is not acceptable, and fixing it is the memory management stage. Programs
 that only use numbers, bools, string literals and enum cases without data
@@ -245,6 +473,13 @@ do not allocate at all.
   and if it runs out, the operating system stops it.
 - **The error report** names the file, line and column but does not quote
   the source line, because the compiled program does not carry the source.
+- **A variable that became `none` again after it was checked** (the
+  `limit` example above). Both stop with an error at that line, but the
+  wording differs: the interpreter complains about the operation that was
+  tried, the compiled program about the variable.
+- **`sum` of an empty list of floats** prints `0.0` compiled and `0`
+  interpreted. The compiled answer is the right one: the interpreter does
+  not know what an empty list was meant to hold.
 
 ## Things to try
 
@@ -258,3 +493,9 @@ do not allocate at all.
    microcontroller?
 5. Compile `examples/primes.zeno` with `-O0` and `-O2` and time both against
    `zeno run`. Where does the time go in each?
+6. Build `examples/sensor.zeno` and find the `setjmp` in `sensor.c`. Which
+   variable in `read_all` became `volatile`, and why that one?
+7. In the same file, find the struct that `in_range` packs `low` and `high`
+   into. Then find the box that `counter` keeps `count` in.
+8. Make a named function inside a function compile. Start with the easy
+   half: one that is only used below the line it is written on.

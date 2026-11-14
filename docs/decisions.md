@@ -369,9 +369,26 @@ addition is `raises ValueError` in a function's signature, which lets the
 compiler check that every error is handled or passed on deliberately.
 *(Principle 1.)*
 
-They are not exceptions in the C++ sense. The plan is to compile a raising
-function to one that returns "value or error", so there is no stack
-unwinding and no hidden cost. *(Principle 5.)*
+They are not exceptions in the C++ sense: there are no unwinding tables and
+no cost on code that does not use `try`. How they compile is in 5.5i.
+*(Principle 5.)*
+
+**An object of any class can be raised**, as well as the built-in kinds:
+
+```
+class Timeout { after: ms }
+raise Timeout(30 ms)
+```
+
+**Why.** An error often needs to carry more than a message: how long was
+waited, which pin, what code the device returned. A class already says
+"these named values, together", so no second way to declare an error is
+needed. *(Principle 4.)*
+
+`except Timeout as t` gives the object, with its fields. `except Error as e`
+asks for any error at all, so it always gives an error value, whatever was
+raised: for an object, `e.kind` is the class's name and `e.message` is the
+object as text. Raising `e` again passes the object on untouched.
 
 **How `raises` is checked.** It follows the same rule as every other
 annotation (0.2). If a function writes `raises`, the list must be complete,
@@ -551,6 +568,45 @@ take the readings, keep the valid ones, convert them, add them up. As plain
 functions (Python's `reduce(add, map(to_celsius, filter(valid, readings)))`)
 the same chain has to be read inside out. *(Principle 2.)*
 
+### 3.6c A function written inside another keeps the variables it can see
+
+```
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+```
+
+The inner function uses `count`, and goes on using it after `counter` has
+returned. It keeps the variable itself, not a copy: a change made by
+either function is seen by the other.
+
+**Why.** This is what the code says when read: there is one `count`. A copy
+would make the example above return 1 every time, silently. *(Principle 2.)*
+
+It keeps the variables that were in sight **where it is written**. A
+variable declared further down the same block is not one of them, even if
+it has the same name as an outer variable the function uses:
+
+```
+let y = 1
+function g() {
+    let f = function() { return y }    # the y above
+    let y = 2
+    return f()                         # 1, not 2
+}
+```
+
+**Why.** The meaning of a name should be settled by where it is written,
+not by what happens to be declared later. This is the rule in nearly every
+modern language (it is called lexical scope), and it is what lets the
+compiler decide, once, which variables a function needs to take with it.
+The exception is the top level of a file, where a function may use a
+variable declared below it (3.4).
+
 ### 3.7 A class lists its fields, and gets a constructor for free
 
 **Why.** The fields are the shape of the data, and the shape should be
@@ -631,11 +687,64 @@ present. The programmer writes the `if` they would have written anyway.
 **Turned down.** Rust's `match` / `if let Some(x)` and Swift's `if let x = x`
 need a new construct and a second name for the same thing.
 
+**A new value changes what is known.** `x = 5` makes an `int or none`
+variable an `int` from that line on, and `x = maybe()` makes it uncertain
+again. After `if name is none { name = "anon" }` the name is a `str`, since
+it is one on both paths. A loop body forgets, before it starts, what was
+known about the variables it assigns, since the body runs more than once.
+
+**Why.** Without this, the two most ordinary uses of `none` do not check:
+walking a linked list (`while node is not none { ...; node = node.next }`)
+and filling in a default. The programmer would have to copy the value into
+a second variable only to satisfy the checker. TypeScript and Kotlin follow
+assignments the same way. *(Principles 1 and 3.)*
+
+**Turned down.** Following the value through every path exactly (a full
+data-flow analysis, joining at every loop until nothing changes). The three
+rules above are a page of code, cover the patterns people write, and when
+they are unsure they forget, which is the safe direction: the worst case is
+an extra `if`.
+
+**One gap, closed at run time.** The check is trusted for as long as nothing
+changes the variable. For a local variable the checker can see that. For a
+top-level `var`, or a `var` shared with an inner function (3.6c), a function
+that is called between the check and the use could set it back to `none`.
+The checker does not follow that, so the running program looks at such a
+variable once more where it is used, and stops with an error if the value
+has gone. Variables that nothing else can reach, which is most of them, are
+not looked at twice. *(Provisional: Kotlin refuses to narrow such variables
+at all, which is stricter and needs no check at run time. That may turn out
+to be the better rule.)*
+
 ### 3.13 A function that promises a value must return on every path
 
 **Why.** In C, falling off the end of a non-void function returns garbage.
 In Python it returns `None`, which then fails somewhere else. Here it is an
 error at the function. *(Principle 1.)*
+
+A function whose type says it may return `none` (`-> int or none`) is the
+exception: reaching its end returns `none`, since that is one of the
+answers it promised.
+
+### 3.14 `upper`, `lower`, `strip` and `split` know plain letters and blanks only *(provisional)*
+
+`"straße".upper()` gives `"STRAßE"`: the letters a to z change, and nothing
+else does. `strip`, `split()` with no separator, `int()` and `float()` skip
+the space, the tab, the two line endings and the form feed, and no other
+blank.
+
+**Why.** Doing this for every alphabet needs tables of several kilobytes,
+and a compiled Zeno program has to fit on a microcontroller, where that
+can be most of the flash. The same program must also give the same answer
+under `zeno run` and when built (5.5d), so the interpreter follows the
+same rule even though a PC has room for the tables. *(Principle 5.)*
+
+Text in any language still passes through untouched: `len`, indexing and
+loops count whole characters, not bytes.
+
+**Provisional.** A separate module can offer the full rules to programs
+that have the room. Rust makes the same split, with `to_ascii_uppercase`
+beside `to_uppercase`.
 
 ---
 
@@ -759,6 +868,10 @@ and ship with `zeno build`. It has three direct consequences:
   would leave it open. See `docs/compiler.md`.
 - Where they cannot agree (recursion depth), the difference is written down.
 
+When the two disagreed while the compiler was being written, and the
+compiled answer was the one that followed the rules of the language, it was
+the interpreter that was corrected. 3.6c and 3.14 came about that way.
+
 ### 5.5e The checked arithmetic uses GCC and Clang built-ins
 
 **Why.** `__builtin_add_overflow` compiles to the processor's own overflow
@@ -794,6 +907,104 @@ item (`list_int`, `list_float`, `list_Point`, ...), which is what C++ and
 Rust do. That is faster by a little and bigger by a lot, and flash is the
 scarce thing on a microcontroller. Every Zeno value already fits in one
 slot, so one list implementation serves them all. *(Principle 5.)*
+
+### 5.5i `try` compiles to C's `setjmp` and `longjmp`
+
+A `try` remembers a place with `setjmp`. `raise`, and every error the
+runtime finds itself, jumps back to the innermost such place with
+`longjmp`. `docs/compiler.md` walks through the C.
+
+**This replaces the earlier plan**, which was to compile a function that
+can raise into one that returns "a value or an error", with a test after
+each call.
+
+**Why the plan changed.** That plan assumed errors come only from `raise`.
+But 4.1 lets a program catch a division by zero, a bad index or an
+overflow, and 1.17 says those need not be declared, because they can
+happen on almost any line. With errors as return values, "almost any line"
+means a test after almost every operation, in every function, in case some
+caller far above is inside a `try`. That is the hidden cost the plan was
+meant to avoid. With `setjmp`, code that is not inside a `try` pays
+nothing at all, a `try` in which nothing goes wrong pays for one `setjmp`
+(saving a dozen or so registers), and the compiled code for ordinary
+arithmetic stays as simple as it was. *(Principle 5.)*
+
+It is not C++ exception handling: there are no tables describing every
+function, and nothing is added to code that does not use `try`.
+
+**What it costs.**
+
+- Objects made between the `try` and the `raise` are not tidied up by the
+  jump. Today nothing is freed anyway (5.5f), so nothing is lost. The
+  memory management stage must take this into account: each `try` will
+  have to remember what to release.
+- A local variable changed inside a `try` must be declared `volatile` in C,
+  or its value after the jump is not guaranteed. The compiler finds those
+  variables and does it. They are a little slower to use.
+- Some coding standards for safety-critical C, MISRA C among them, forbid
+  `setjmp` and `longjmp` outright. A project held to such a standard could
+  not use the generated C as it is.
+
+**Provisional**, for that last reason. The syntax does not depend on the
+choice, so a build mode that uses checked returns instead could be added
+for projects that need it, at the price described above.
+
+### 5.5j `T or none` in C: NULL for pointers, a flag for numbers
+
+A str, list, object, enum value, error or function that may be `none` is
+the same C pointer it always was, with `NULL` meaning `none`. A number or
+bool that may be `none` is a small struct: the value and a `present` flag.
+
+**Why.** For pointers this is free: no extra memory and no extra code,
+because C already has a spare value. Numbers have none to spare (every bit
+pattern of an `int64_t` is a real number), so the flag is the least that
+will do. Picking a "magic" number such as -1 to mean `none` is exactly the
+C habit this type exists to end. *(Principles 1 and 5.)*
+
+The checker has already proved that the value is tested before it is used
+(3.12), so the compiled code reads it directly, with no test of its own.
+
+Inside a list, where every item gets one machine word (5.5h), a number that
+may be `none` is stored as a pointer to a copy of the number. That costs an
+allocation per item, which is acceptable for a rare case and keeps every
+other list at one word per item.
+
+### 5.5k A function value is a pointer to its code and its variables
+
+Every function held as a value is a pointer to a struct that starts with
+the same two fields (the C function to run, and a name for `print`),
+followed by whatever outside variables that function uses. It is always
+called the same way: the struct itself is passed as a hidden first
+argument.
+
+**Why one shape for all.** `xs.map(f)` cannot know whether `f` is a
+top-level function, or one made inside another with three variables in
+tow. With one shape and one way of calling, it does not need to.
+*(Principle 4.)* The price is an indirect call, and a small wrapper for
+each top-level function that is used as a value.
+
+**Variables that never change are copied in; a `var` that is shared lives
+in a box on the heap** that both functions point to. Copying is cheaper
+and is safe when nothing changes. Only a variable that can change needs
+the box, and only when an inner function mentions it, so ordinary local
+variables are unaffected. (3.6c is the rule this implements.)
+
+**Each function value is made fresh on the heap**, even one that uses no
+outside variables and could have been a single fixed value. Two function
+values are equal only when they are the very same one, and with fixed
+values a function written in a loop would be equal to itself from the last
+trip round, which is not what `zeno run` says. *(5.5d. Provisional: once
+memory is managed, the fixed value can come back for functions that are
+never compared.)*
+
+**Turned down.** Compiling a separate copy of `map` for every function
+passed to it, as C++ and Rust do, makes the fastest code and the most of
+it. Flash is the scarce thing here (see 5.5h).
+
+**Not done yet.** A *named* function declared inside another function is
+visible from the top of its block, before the variables it uses exist.
+That needs the box treatment for every variable of the block, so for now
+`zeno build` refuses it and asks for `let name = function(...) { ... }`.
 
 ### 5.6 The checker and the interpreter are separate
 

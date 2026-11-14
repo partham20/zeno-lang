@@ -76,10 +76,11 @@ piece of the compiler:
 
 ## Status
 
-Zeno checks and runs programs, and compiles most of the language to C:
-numbers, strings, functions, control flow, classes, lists, enums and `match`.
-Error handling (`try`), `none` and functions used as values run under
-`zeno run` but are not compiled yet.
+Zeno checks and runs programs, and compiles nearly all of the language to C:
+numbers, strings, functions, control flow, classes, lists, enums and `match`,
+values that may be `none`, errors (`try` / `except` / `raise`), and functions
+used as values. A compiled program prints what `zeno run` prints;
+[`docs/compiler.md`](docs/compiler.md) lists the two small exceptions.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -88,6 +89,7 @@ cargo run -- check --strict examples/tour.zeno  # every type must be known, as f
 cargo run -- check --strict examples/styles.zeno  # passes with no types written: they are worked out
 cargo run -- build examples/primes.zeno         # compile to primes.c, then to ./primes
 cargo run -- build examples/shapes.zeno         # classes, enums, lists and match, compiled
+cargo run -- build examples/sensor.zeno         # none, errors and functions as values, compiled
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -107,7 +109,7 @@ cargo test
 3. Tree-walking interpreter, `zeno run` (done)
 4. Type checker, `zeno check` (done)
 5. Compile to C, `zeno build` (done: numbers, strings, functions, control flow, classes, lists, enums, `match`)
-6. Compile the rest: errors (`try` / `raise`), `none`, functions as values
+6. Compile the rest (done: errors with `try` / `raise`, `none`, functions as values)
 7. Memory management
 8. Bytecode VM
 9. LLVM backend

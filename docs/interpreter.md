@@ -100,10 +100,15 @@ function counter() {
 ```
 
 A function written as a value, `function(n) { return n * 2 }`, becomes a
-closure the same way, at the moment that expression is evaluated. Since a
-closure is just a `Value`, it can be stored in a variable, passed as an
-argument, or handed to `map`, `filter` and `reduce`, which call it once per
-item.
+closure at the moment that expression is evaluated. Since a closure is just
+a `Value`, it can be stored in a variable, passed as an argument, or handed
+to `map`, `filter` and `reduce`, which call it once per item.
+
+One difference: such a function keeps the variables in sight at that
+moment, and not ones declared later in the same block (`Scope::seen_from`).
+Each variable is held through an `Rc`, so the function and the block share
+the very same variable, and a change made by one is seen by the other. Why
+it matters is in `docs/decisions.md` 3.6c.
 
 Before running a block, `hoist` declares all the functions, classes and
 enums in it, so they can be used above the line where they are written.
@@ -116,7 +121,9 @@ return `Result<_, Control>`, where `Control` is one of:
 
 - `Break`, `Continue`: caught by the nearest loop.
 - `Return(value)`: caught by the function call.
-- `Raise(error)`: caught by a `try` with a matching `except`.
+- `Raise(error)`: caught by a `try` with a matching `except`. When an
+  object of a class is raised, it is wrapped in an error named after the
+  class, so every `except` deals with the same kind of thing.
 - `Fatal(error)`: a bug in the program; caught by nothing.
 
 Every `?` in the interpreter means "if something is leaving early, pass it
