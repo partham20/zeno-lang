@@ -530,6 +530,7 @@ impl Interpreter {
             },
 
             ExprKind::Unit { value, unit } => match self.eval(value, env)?.number() {
+                _ if !crate::units::is_unit(unit) => fatal(crate::units::unknown(unit), span),
                 Some(number) => Ok(Value::Quantity(number, Rc::from(unit.as_str()))),
                 None => fatal("a unit can only follow a number", span),
             },
@@ -1130,6 +1131,10 @@ mod tests {
         assert_eq!(output("print(500 ms, 500 ms + 250 ms, 2 * 500 ms, 1.5 V / 3, 1 s / 250 s, 3 V > 2 V)"), "500 ms 750 ms 1000 ms 0.5 V 0.004 true\n");
         assert_eq!(error("500 ms + 3 V"), "`+` does not work between a quantity in ms and a quantity in V");
         assert_eq!(error("500 ms + 3"), "`+` does not work between a quantity in ms and an int");
+        assert_eq!(
+            error("print(500 mss)"),
+            "`mss` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC"
+        );
     }
 
     #[test]
@@ -1386,7 +1391,7 @@ mod tests {
             "listening on 8080\n\
              area = 3.14\n\
              area = 6.00\n\
-             Hello, Zeno! 4 [0, 4, 16, 36, 64] 5.0\n"
+             Hello, Zeno! 4 [0, 4, 16, 36, 64] 5.0\n18 waiting 500 ms\n"
         );
     }
 }

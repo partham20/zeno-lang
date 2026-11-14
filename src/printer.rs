@@ -9,6 +9,9 @@ use crate::ast::*;
 /// The whole program as an indented outline.
 pub fn print(program: &Program) -> String {
     let mut out = String::new();
+    if program.strict {
+        out.push_str("strict\n");
+    }
     block(&program.statements, 0, &mut out);
     out
 }
@@ -178,6 +181,13 @@ fn type_(ty: &Type) -> String {
         Type::Named { name, args } if args.is_empty() => name.clone(),
         Type::Named { name, args } => format!("{name}[{}]", join(args, type_)),
         Type::Optional(inner) => format!("{} or none", type_(inner)),
+        Type::Function { params, returns } => {
+            let mut text = format!("function({})", join(params, type_));
+            if let Some(returns) = returns {
+                text += &format!(" -> {}", type_(returns));
+            }
+            text
+        }
     }
 }
 

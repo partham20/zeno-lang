@@ -14,6 +14,7 @@ mod lexer;
 mod parser;
 mod printer;
 mod token;
+mod units;
 mod value;
 
 use std::env;

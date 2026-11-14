@@ -22,11 +22,21 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
     let mut statements = Vec::new();
 
     parser.skip_newlines();
+
+    // A first line that says just `strict` puts the whole file in strict mode.
+    // `strict` is an ordinary name everywhere else.
+    let strict = matches!(parser.peek(), TokenKind::Ident(word) if word == "strict")
+        && matches!(parser.peek_at(1), TokenKind::Newline | TokenKind::Eof);
+    if strict {
+        parser.advance();
+        parser.skip_newlines();
+    }
+
     while !parser.check(TokenKind::Eof) {
         statements.push(parser.statement()?);
         parser.end_of_statement()?;
     }
-    Ok(Program { statements })
+    Ok(Program { strict, statements })
 }
 
 struct Parser {
@@ -501,21 +511,35 @@ impl Parser {
 
     // ---------------------------------------------------------------- Types
 
-    /// `int`, `list[int]`, `str or none`
+    /// `int`, `list[int]`, `str or none`, `function(int) -> int`
     fn type_(&mut self) -> Result<Type, Error> {
-        let name = self.name("a type")?;
-
-        let mut args = Vec::new();
-        if self.eat(TokenKind::LBracket) {
-            loop {
-                args.push(self.type_()?);
+        let ty = if self.eat(TokenKind::Function) {
+            // The type of a function: the types it takes, then what it returns.
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.check(TokenKind::RParen) {
+                params.push(self.type_()?);
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
-            self.expect(TokenKind::RBracket)?;
-        }
-        let ty = Type::Named { name, args };
+            self.expect(TokenKind::RParen)?;
+            let returns = if self.eat(TokenKind::Arrow) { Some(Box::new(self.type_()?)) } else { None };
+            Type::Function { params, returns }
+        } else {
+            let name = self.name("a type")?;
+            let mut args = Vec::new();
+            if self.eat(TokenKind::LBracket) {
+                loop {
+                    args.push(self.type_()?);
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket)?;
+            }
+            Type::Named { name, args }
+        };
 
         if self.eat(TokenKind::Or) {
             if !self.eat(TokenKind::None) {
@@ -1101,6 +1125,28 @@ mod tests {
              let b: dict[str, list[int]] = x\n\
              let c: str or none = none\n"
         );
+    }
+
+    #[test]
+    fn function_types() {
+        assert_eq!(
+            tree("function twice(f: function(int) -> int, x: int) -> int { return f(f(x)) }"),
+            "function twice(f: function(int) -> int, x: int) -> int\n    return f(f(x))\n"
+        );
+        assert_eq!(
+            tree("let a: function() = f\nlet b: function(str, list[int]) -> bool or none = g"),
+            "let a: function() = f\nlet b: function(str, list[int]) -> bool or none = g\n"
+        );
+    }
+
+    #[test]
+    fn a_file_can_declare_itself_strict() {
+        assert!(parse_source("strict\nlet x = 1").unwrap().strict);
+        assert!(parse_source("# a comment first\n\nstrict\n").unwrap().strict);
+        assert!(!parse_source("let x = 1").unwrap().strict);
+        // Anywhere else, `strict` is an ordinary name.
+        assert!(!parse_source("let strict = 1\nprint(strict)").unwrap().strict);
+        assert_eq!(tree("strict\nlet x = 1"), "strict\nlet x = 1\n");
     }
 
     #[test]

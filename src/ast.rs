@@ -14,6 +14,9 @@ use crate::token::Span;
 /// A whole source file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    /// True when the file begins with the line `strict`, which asks for
+    /// every type to be known before the program runs.
+    pub strict: bool,
     pub statements: Vec<Stmt>,
 }
 
@@ -145,6 +148,8 @@ pub enum Type {
     Named { name: String, args: Vec<Type> },
     /// `str or none`
     Optional(Box<Type>),
+    /// The type of a function: `function(int, int) -> int`
+    Function { params: Vec<Type>, returns: Option<Box<Type>> },
 }
 
 // --------------------------------------------------------------- Expressions
