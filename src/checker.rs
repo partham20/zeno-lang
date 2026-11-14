@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::ast::{self, *};
@@ -64,6 +65,10 @@ pub enum Kind {
     Error,
     /// A function held as a value.
     Function(Box<FunctionKind>),
+    /// A list or an object with one owner, which frees it. Seen only on a
+    /// parameter, a field or a return type; a value that is merely borrowed
+    /// has the plain kind inside.
+    Owned(Box<Kind>),
     /// Anything else, described in words for an error message.
     Other(String),
 }
@@ -91,9 +96,32 @@ pub struct Types {
     /// Each place a variable is read after a check such as `is not none`
     /// has narrowed it, with the narrower type it has there.
     narrowed: HashMap<usize, Kind>,
+    /// Each place a variable is read in order to give its owned value
+    /// away. The variable holds nothing afterwards.
+    moves: HashSet<usize>,
+    /// Each `let`, `var` or `const` whose variable owns its value, and so
+    /// frees it when its block ends.
+    owners: HashSet<usize>,
+    /// Each statement that makes an owned value and does nothing with it.
+    discarded: HashSet<usize>,
 }
 
 impl Types {
+    /// Does reading the variable `expr` here give its owned value away?
+    pub fn moves(&self, expr: &ast::Expr) -> bool {
+        self.moves.contains(&(expr as *const ast::Expr as usize))
+    }
+
+    /// Does the variable this statement declares own its value?
+    pub fn owner(&self, statement: &ast::Stmt) -> bool {
+        self.owners.contains(&(statement as *const ast::Stmt as usize))
+    }
+
+    /// Is `expr`, written as a statement, an owned value nobody keeps?
+    pub fn discarded(&self, expr: &ast::Expr) -> bool {
+        self.discarded.contains(&(expr as *const ast::Expr as usize))
+    }
+
     pub fn class(&self, decl: &ast::Class) -> Option<&Vec<Kind>> {
         self.classes.get(&(decl as *const ast::Class as usize))
     }
@@ -129,6 +157,13 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
     match ty {
         Ty::Optional(inner) => Kind::Optional(Box::new(kind_within(inner, depth))),
         Ty::List(item) => Kind::List(Box::new(kind_within(item, depth))),
+        Ty::Owned(inner) => Kind::Owned(Box::new(kind_within(inner, depth))),
+        Ty::Instance(class) if class.owned => Kind::Owned(Box::new(Kind::Class(class.name.clone()))),
+        // Looking at a value is not owning it.
+        Ty::Borrowed(inner) => match kind_within(inner, depth) {
+            Kind::Owned(inner) => *inner,
+            inner => inner,
+        },
         Ty::Error(_) => Kind::Error,
         Ty::Callable(callable) if depth < 4 => function(callable.params.iter().collect(), &callable.returns),
         Ty::Function(info) if depth < 4 && info.self_type.is_none() => match &*info.state.borrow() {
@@ -240,6 +275,15 @@ enum Ty {
     /// A built-in error value, such as a `ValueError`.
     Error(Rc<str>),
 
+    /// `owned list[int]`: a list with exactly one owner. (An object of an
+    /// `owned class` is an `Instance` whose class says so.)
+    Owned(Box<Ty>),
+    /// A look at a value that something else owns: what reading an owner
+    /// gives, and the type of a `borrow` parameter. Inside is the plain
+    /// type. It fits nowhere that would keep the value, which is the whole
+    /// point: only the places that just look take the wrapper off.
+    Borrowed(Box<Ty>),
+
     /// A function known only by its written type: `function(int) -> int`
     Callable(Rc<CallableType>),
 
@@ -275,6 +319,8 @@ type SlotId = (DeclId, String);
 struct ClassInfo {
     id: DeclId,
     name: String,
+    /// Declared `owned class`: every object of it has exactly one owner.
+    owned: bool,
     fields: RefCell<Vec<Slot>>,
     methods: RefCell<HashMap<String, Rc<FunctionInfo>>>,
 }
@@ -387,8 +433,31 @@ impl Ty {
     fn has_dynamic(&self) -> bool {
         match self {
             Ty::Dynamic => true,
-            Ty::List(inner) | Ty::Optional(inner) => inner.has_dynamic(),
+            Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => inner.has_dynamic(),
             _ => false,
+        }
+    }
+
+    /// Is this a value with exactly one owner?
+    fn is_owned(&self) -> bool {
+        match self {
+            Ty::Owned(_) => true,
+            Ty::Instance(class) => class.owned,
+            _ => false,
+        }
+    }
+
+    /// Owned, or a look at something owned: a value that cannot be shared.
+    fn is_tied(&self) -> bool {
+        self.is_owned() || matches!(self, Ty::Borrowed(_))
+    }
+
+    /// The type as it is to somebody who only looks: an `owned list[int]`
+    /// is read, indexed and printed exactly like a `list[int]`.
+    fn looked_at(self) -> Ty {
+        match self {
+            Ty::Owned(inner) | Ty::Borrowed(inner) => *inner,
+            other => other,
         }
     }
 
@@ -411,6 +480,8 @@ impl fmt::Display for Ty {
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
             Ty::List(item) => write!(f, "list[{item}]"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
+            Ty::Owned(inner) => write!(f, "owned {inner}"),
+            Ty::Borrowed(inner) => write!(f, "a borrowed {inner}"),
             Ty::Instance(class) => write!(f, "{}", class.name),
             Ty::EnumValue(info) => write!(f, "{}", info.name),
             Ty::Error(kind) => write!(f, "{kind}"),
@@ -445,7 +516,10 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Bool, Ty::Bool)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
-        (Ty::List(a), Ty::List(b)) | (Ty::Optional(a), Ty::Optional(b)) => same(a, b),
+        (Ty::List(a), Ty::List(b))
+        | (Ty::Optional(a), Ty::Optional(b))
+        | (Ty::Owned(a), Ty::Owned(b))
+        | (Ty::Borrowed(a), Ty::Borrowed(b)) => same(a, b),
         (Ty::Instance(a), Ty::Instance(b)) => Rc::ptr_eq(a, b),
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
@@ -464,6 +538,13 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         return true;
     }
     match (from, to) {
+        // Lending. A `borrow` parameter takes a look at an owned value, or
+        // a shared value, which anyone may look at. It does not take an
+        // owned value that has no owner yet: nobody would ever free it.
+        (Ty::Borrowed(from), Ty::Borrowed(to)) => fits(from, to),
+        (from, Ty::Borrowed(to)) => !from.is_owned() && fits(from, to),
+        (Ty::Borrowed(_), _) => false,
+        (Ty::Owned(from), Ty::Owned(to)) => fits(from, to),
         // `none` and a plain T both fit `T or none`.
         (Ty::None, Ty::Optional(_)) => true,
         (from, Ty::Optional(inner)) => fits(from, inner),
@@ -507,6 +588,16 @@ fn join(a: &Ty, b: &Ty) -> Ty {
 struct Scope {
     variables: RefCell<HashMap<String, Variable>>,
     parent: Option<Env>,
+    /// Which function body this scope is part of. An owned value may only
+    /// be used by the function whose block it lives in.
+    function: usize,
+}
+
+/// A number nothing else has: for telling variables, and function bodies,
+/// apart. Later ones are larger, which says what was declared before what.
+fn fresh_id() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 type Env = Rc<Scope>;
@@ -524,11 +615,24 @@ struct Variable {
     /// view of it, to record what is known about it in there. This marks
     /// such a view, as opposed to the declaration itself.
     view: bool,
+    /// Which variable this is, whatever it is called. See `fresh_id`.
+    id: usize,
+    /// The function body it was declared in.
+    function: usize,
 }
 
 impl Scope {
     fn child(parent: &Env) -> Env {
-        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: Some(parent.clone()) })
+        Rc::new(Scope {
+            variables: RefCell::new(HashMap::new()),
+            parent: Some(parent.clone()),
+            function: parent.function,
+        })
+    }
+
+    /// The outermost scope of a function's body.
+    fn body(parent: &Env) -> Env {
+        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: Some(parent.clone()), function: fresh_id() })
     }
 
     fn declare(&self, name: &str, ty: Ty, mutable: bool) -> bool {
@@ -536,7 +640,9 @@ impl Scope {
         if variables.contains_key(name) {
             return false;
         }
-        variables.insert(name.to_string(), Variable { ty, mutable, case: None, declared: None, view: false });
+        let variable =
+            Variable { ty, mutable, case: None, declared: None, view: false, id: fresh_id(), function: self.function };
+        variables.insert(name.to_string(), variable);
         true
     }
 
@@ -595,7 +701,7 @@ impl Scope {
 
 /// The outermost scope: the built-in functions and error types.
 fn globals() -> Env {
-    let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None });
+    let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0 });
     for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum"] {
         env.declare(name, Ty::Builtin(name), false);
     }
@@ -668,7 +774,30 @@ struct Checker {
     /// `try` body or function body last. Each entry is an error kind and
     /// where it comes from.
     raised: Vec<Vec<(String, Span)>>,
+    /// Which owned values have been given away, in the function body being
+    /// checked. See the section "Owned values".
+    owned: Ownership,
 }
+
+/// What the checker tracks about owned values in one function body.
+#[derive(Default)]
+struct Ownership {
+    /// The owners that hold nothing at this point in the code, because
+    /// their value was given away: each one's name, and where it went.
+    moved: Moved,
+    /// The owned and borrowed variables the statement being checked has
+    /// looked at so far. None of them may be given away by the same
+    /// statement: the look might still be in use.
+    looking: Vec<usize>,
+    /// For each loop around this point, what had been given away at each
+    /// `break` and at each `continue` in it.
+    loops: Vec<(Moved, Moved)>,
+    /// For each `try` around this point, everything its body has given
+    /// away so far. An error can leave the body after any of them.
+    tries: Vec<Moved>,
+}
+
+type Moved = HashMap<usize, (String, Span)>;
 
 impl Checker {
     fn new(strict: bool, last_round: bool, known: HashMap<SlotId, Key>, open: HashSet<SlotId>) -> Checker {
@@ -688,6 +817,7 @@ impl Checker {
             errors: Vec::new(),
             frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
             raised: vec![Vec::new()],
+            owned: Ownership::default(),
         }
     }
 
@@ -740,6 +870,20 @@ impl Checker {
         if !fits(from, to) {
             let mut message = format!("{what} should be {to}, but this is {from}");
             match (from, to) {
+                (from, Ty::Borrowed(_)) if from.is_owned() => {
+                    message = format!(
+                        "this {from} has no owner yet, so it cannot be lent. \
+                         Give it a name with `let` first, and pass the name"
+                    )
+                }
+                (Ty::Borrowed(_), _) => {
+                    message += ". A value with an owner can only go to a parameter that borrows it \
+                                (`borrow`) or takes it over (an owned type)"
+                }
+                (Ty::List(_), Ty::Owned(_)) => {
+                    message += ". Only a list written out here, as in `[1, 2]` or `[x for x in xs]`, \
+                                can become an owned one"
+                }
                 (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
                 (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
                 (Ty::Quantity(from), Ty::Quantity(to)) if units::convert(from, to).is_some() => {
@@ -784,9 +928,10 @@ impl Checker {
         what: &str,
         env: &Env,
         span: Span,
+        parameter: bool,
     ) -> Ty {
         if let Some(annotation) = annotation {
-            return self.resolve(annotation, env, span);
+            return self.resolve_for(annotation, env, span, parameter);
         }
         if let Some(key) = self.known.get(id).cloned() {
             return self.from_key(&key);
@@ -840,6 +985,8 @@ impl Checker {
             Ty::None => Key::None,
             Ty::Quantity(unit) => Key::Quantity(unit.to_string()),
             Ty::Error(kind) => Key::Error(kind.to_string()),
+            // Who owns a value is never guessed: it has to be written down.
+            Ty::Instance(class) if class.owned => return Some(Err(())),
             Ty::Instance(class) => Key::Class(class.id.clone()),
             Ty::EnumValue(info) => Key::Enum(info.id.clone()),
             Ty::List(inner) => match self.key(inner)? {
@@ -965,12 +1112,59 @@ impl Checker {
 
     /// Turn a type written in the source into a `Ty`.
     fn resolve(&mut self, ty: &ast::Type, env: &Env, span: Span) -> Ty {
+        self.resolve_for(ty, env, span, false)
+    }
+
+    /// `resolve`, knowing whether the type is a parameter's. `owned` and
+    /// `borrow` are words about the whole value, so they are only looked
+    /// for here, at the front, and `borrow` only on a parameter.
+    fn resolve_for(&mut self, ty: &ast::Type, env: &Env, span: Span, parameter: bool) -> Ty {
         match ty {
-            ast::Type::Optional(inner) => Ty::Optional(Box::new(self.resolve(inner, env, span))),
+            ast::Type::Owned(inner) => match self.resolve_inside(inner, env, span, false) {
+                list @ Ty::List(_) => Ty::Owned(Box::new(list)),
+                // An object of an `owned class` is owned without saying so again.
+                ty if ty.is_owned() || ty.is_loose() => ty,
+                ty => self.error(
+                    format!(
+                        "`owned` goes in front of a list type, as in `owned list[int]`, and this is {ty}. \
+                         A class is made owned where it is declared: `owned class`"
+                    ),
+                    span,
+                ),
+            },
+            ast::Type::Borrow(_) if !parameter => self.error(
+                "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to",
+                span,
+            ),
+            ast::Type::Borrow(inner) => match self.resolve_inside(inner, env, span, false) {
+                ty @ (Ty::List(_) | Ty::Instance(_)) => Ty::Borrowed(Box::new(ty)),
+                ty if ty.is_loose() => ty,
+                ty => self.error(
+                    format!("only a list or an object can be borrowed, and this is {ty}. Pass it as it is"),
+                    span,
+                ),
+            },
+            _ => self.resolve_inside(ty, env, span, false),
+        }
+    }
+
+    /// The part of a type after any `owned` or `borrow`. `nested` is true
+    /// inside `list[ ]`, `or none` and a function type: places that hold
+    /// shared values, where an owned one may not go.
+    fn resolve_inside(&mut self, ty: &ast::Type, env: &Env, span: Span, nested: bool) -> Ty {
+        let ty = match ty {
+            ast::Type::Owned(_) | ast::Type::Borrow(_) => {
+                return self.error(
+                    "`owned` and `borrow` describe a whole value, so they go at the very front of a type, \
+                     and not inside `list[ ]`, `or none` or a function type",
+                    span,
+                )
+            }
+            ast::Type::Optional(inner) => Ty::Optional(Box::new(self.resolve_inside(inner, env, span, true))),
             ast::Type::Function { params, returns } => {
-                let params = params.iter().map(|param| self.resolve(param, env, span)).collect();
+                let params = params.iter().map(|param| self.resolve_inside(param, env, span, true)).collect();
                 let returns = match returns {
-                    Some(returns) => self.resolve(returns, env, span),
+                    Some(returns) => self.resolve_inside(returns, env, span, true),
                     None => Ty::None,
                 };
                 Ty::Callable(Rc::new(CallableType { params, returns }))
@@ -981,7 +1175,7 @@ impl Checker {
                     ("float", []) => Ty::Float,
                     ("str", []) => Ty::Str,
                     ("bool", []) => Ty::Bool,
-                    ("list", [item]) => Ty::list(self.resolve(item, env, span)),
+                    ("list", [item]) => Ty::list(self.resolve_inside(item, env, span, true)),
                     ("list", _) => {
                         return self.error("`list` takes one type, as in `list[int]`", span)
                     }
@@ -1002,7 +1196,19 @@ impl Checker {
                 };
                 ty
             }
+        };
+        if nested && ty.is_owned() {
+            // A shared value can be reached from many places, and each of
+            // them would think it could still use the owned one inside.
+            return self.error(
+                format!(
+                    "an owned {ty} cannot be kept inside a list, an `or none` or a function type yet. \
+                     It lives in a variable, a parameter, or a field of an owned class"
+                ),
+                span,
+            );
         }
+        ty
     }
 
     // ------------------------------------------------------------ Statements
@@ -1034,6 +1240,7 @@ impl Checker {
                     let info = Rc::new(ClassInfo {
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
+                        owned: decl.owned,
                         fields: RefCell::new(Vec::new()),
                         methods: RefCell::new(HashMap::new()),
                     });
@@ -1059,6 +1266,18 @@ impl Checker {
         for (decl, info, span) in classes {
             let fields: Vec<Slot> =
                 decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
+            if let Some(field) = fields.iter().find(|field| field.ty.is_owned() && !decl.owned) {
+                // Objects of an ordinary class are shared. Each holder would
+                // believe the owned value inside was still there.
+                self.error(
+                    format!(
+                        "`{}` holds an owned value, so `{}` must be an `owned class` itself. \
+                         A shared object cannot own anything",
+                        field.name, decl.name
+                    ),
+                    span,
+                );
+            }
             self.types
                 .classes
                 .insert(decl as *const ast::Class as usize, fields.iter().map(|slot| kind(&slot.ty)).collect());
@@ -1068,7 +1287,12 @@ impl Checker {
                     decl: method.clone(),
                     env: env.clone(),
                     span,
-                    self_type: Some(Ty::Instance(info.clone())),
+                    // A method of an owned class borrows the object it is
+                    // called on: the caller goes on owning it.
+                    self_type: Some(match decl.owned {
+                        true => Ty::Borrowed(Box::new(Ty::Instance(info.clone()))),
+                        false => Ty::Instance(info.clone()),
+                    }),
                     state: RefCell::new(State::NotChecked),
                 };
                 info.methods.borrow_mut().insert(method.name.clone(), Rc::new(function));
@@ -1083,6 +1307,9 @@ impl Checker {
                     fields: case.fields.iter().map(|f| self.slot(f, &case.name, env, span)).collect(),
                 })
                 .collect();
+            if cases.iter().any(|case| case.fields.iter().any(|field| field.ty.is_owned())) {
+                self.error(format!("a case of the enum `{}` cannot carry an owned value yet", decl.name), span);
+            }
             for (index, case) in cases.iter().enumerate() {
                 if case.fields.is_empty() {
                     // A bare case is a value of the enum.
@@ -1120,7 +1347,7 @@ impl Checker {
         let id = (decl_id(span, owner), field.name.clone());
         Slot {
             name: field.name.clone(),
-            ty: self.slot_type(&field.ty, &id, &what, env, span),
+            ty: self.slot_type(&field.ty, &id, &what, env, span, false),
             has_default: field.default.is_some(),
             id: field.ty.is_none().then_some(id),
         }
@@ -1130,22 +1357,27 @@ impl Checker {
     fn stmt(&mut self, statement: &Stmt, env: &Env) -> bool {
         let span = statement.span;
         self.touched.clear();
+        self.owned.looking.clear();
 
         match &statement.kind {
             StmtKind::Let { name, ty, value, mutable } => {
-                self.declaration(name, ty, value, *mutable, env, span);
+                self.declaration(name, ty, value, *mutable, env, statement);
                 false
             }
             StmtKind::Const { name, ty, value } => {
-                self.declaration(name, ty, value, false, env, span);
+                self.declaration(name, ty, value, false, env, statement);
                 false
             }
             StmtKind::Assign { target, op, value } => {
                 let (wanted, holds, field) = self.assignment_target(target, env);
-                let mut given = self.expr(value, env);
-                if let Some(op) = op {
-                    given = self.binary(*op, &holds, &given, span);
-                }
+                let given = match op {
+                    // `x = v` keeps `v`. `x += v` only reads it.
+                    None => self.kept(value, &wanted, env),
+                    Some(op) => {
+                        let given = self.look(value, env);
+                        self.binary(*op, &holds, &given, span)
+                    }
+                };
                 if let Some(field) = field {
                     // A value stored in an untyped field is evidence of its type.
                     self.sees(&field, &given, value.span);
@@ -1162,10 +1394,20 @@ impl Checker {
                         env.widen(name);
                     }
                 }
+                // An owner that gave its value away holds one again.
+                if let (ExprKind::Name(name), true) = (&target.kind, wanted.is_owned()) {
+                    if let Some(variable) = env.get(name) {
+                        self.owned.moved.remove(&variable.id);
+                    }
+                }
                 false
             }
             StmtKind::Expr(expr) => {
-                self.expr(expr, env);
+                // An owned value made here and kept by nobody is freed on
+                // the spot. The compiler needs to know to do that.
+                if self.expr(expr, env).is_owned() {
+                    self.types.discarded.insert(expr as *const Expr as usize);
+                }
                 false
             }
 
@@ -1191,7 +1433,9 @@ impl Checker {
 
                 let then_scope = Scope::child(env);
                 narrow_all(&then_scope, &when_true);
+                let before = self.owned.moved.clone();
                 let then_exits = self.statements(then_block, &then_scope);
+                let then_moved = std::mem::replace(&mut self.owned.moved, before);
 
                 let else_scope = Scope::child(env);
                 narrow_all(&else_scope, &when_false);
@@ -1199,6 +1443,13 @@ impl Checker {
                     Some(block) => self.statements(block, &else_scope),
                     None => false,
                 };
+                // What is given away after the `if` is what either branch
+                // gave away, leaving out a branch that never gets there.
+                match (then_exits, else_exits) {
+                    (true, false) => {}
+                    (false, true) => self.owned.moved = then_moved,
+                    _ => self.owned.moved.extend(then_moved),
+                }
 
                 // If one branch always leaves, what follows the `if` only
                 // runs when the other branch's condition held:
@@ -1228,6 +1479,9 @@ impl Checker {
                 then_exits && else_exits
             }
             StmtKind::While { condition, body } => {
+                // The condition runs again on every trip, so it is part of
+                // the loop as far as owned values go.
+                let entry = self.enter_loop();
                 self.condition(condition, env);
                 // Each trip through the body starts just after the
                 // condition held, so what it says is known in there:
@@ -1236,19 +1490,22 @@ impl Checker {
                 forget_assigned(body, &scope);
                 narrow_all(&scope, &self.narrowings(condition, &scope).0);
                 self.frame().loops += 1;
-                self.block(body, &scope);
+                let exits = self.block(body, &scope);
+                self.leave_loop(entry, exits);
                 self.frame().loops -= 1;
                 // `while true` with no `break` never finishes, so nothing follows it.
                 condition.kind == ExprKind::Bool(true) && !has_break(body)
             }
             StmtKind::For { variable, iterable, body } => {
-                let iterable_type = self.expr(iterable, env);
+                let iterable_type = self.look(iterable, env);
                 let item = self.item_type(&iterable_type, iterable.span);
                 let scope = Scope::child(env);
                 forget_assigned(body, &scope);
                 scope.declare(variable, item, false);
                 self.frame().loops += 1;
-                self.statements(body, &scope);
+                let entry = self.enter_loop();
+                let exits = self.statements(body, &scope);
+                self.leave_loop(entry, exits);
                 self.frame().loops -= 1;
                 false
             }
@@ -1256,8 +1513,10 @@ impl Checker {
             StmtKind::Try { body, handlers } => self.try_statement(body, handlers, env, span),
 
             StmtKind::Return(value) => {
+                let declared = self.frame().declared_return.clone();
                 let ty = match value {
-                    Some(value) => self.expr(value, env),
+                    // The caller keeps what is returned.
+                    Some(value) => self.kept(value, declared.as_ref().unwrap_or(&Ty::Invalid), env),
                     None => Ty::None,
                 };
                 if self.frames.len() == 1 {
@@ -1273,6 +1532,11 @@ impl Checker {
             }
             StmtKind::Raise(value) => {
                 match self.expr(value, env) {
+                    // An error travels to wherever it is caught, and can be
+                    // kept there for any length of time.
+                    ty if ty.is_tied() => {
+                        self.error(format!("an owned or borrowed value cannot be raised, and this is {ty}"), span);
+                    }
                     Ty::Error(kind) => self.can_raise(&kind, span),
                     Ty::Instance(class) => self.can_raise(&class.name, span),
                     ty if ty.is_loose() => self.can_raise("Error", span),
@@ -1286,6 +1550,12 @@ impl Checker {
                 if self.frame().loops == 0 {
                     let word = if statement.kind == StmtKind::Break { "break" } else { "continue" };
                     self.error(format!("`{word}` outside a loop"), span);
+                }
+                // Remember what is given away by now: it still is, where
+                // this jump lands.
+                let moved = self.owned.moved.clone();
+                if let Some((breaks, continues)) = self.owned.loops.last_mut() {
+                    if statement.kind == StmtKind::Break { breaks.extend(moved) } else { continues.extend(moved) }
                 }
                 true
             }
@@ -1330,17 +1600,28 @@ impl Checker {
         value: &Expr,
         mutable: bool,
         env: &Env,
-        span: Span,
+        statement: &Stmt,
     ) {
-        let given = self.expr(value, env);
+        let span = statement.span;
+        // The variable keeps the value. If the value is an owned one held
+        // by another variable, that one gives it up.
+        let given = self.take(value, env);
         let ty = match annotation {
             Some(annotation) => {
                 let wanted = self.resolve(annotation, env, span);
-                match (&value.kind, &wanted) {
+                let wanted_item = match &wanted {
+                    Ty::List(item) => Some(item),
+                    Ty::Owned(inner) => match &**inner {
+                        Ty::List(item) => Some(item),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match (&value.kind, wanted_item) {
                     // A list written out in full is checked item by item, so
                     // that `[1, "two"]` is caught rather than passing as a
                     // list of mixed, unknown things.
-                    (ExprKind::List(items), Ty::List(wanted_item)) => {
+                    (ExprKind::List(items), Some(wanted_item)) => {
                         for item in items {
                             let item_type = self.expr(item, env);
                             if !fits(&item_type, wanted_item) {
@@ -1353,7 +1634,10 @@ impl Checker {
                             }
                         }
                     }
-                    _ => self.expect(&given, &wanted, &format!("`{name}`"), value.span),
+                    _ => {
+                        let given = fresh_list(value, given, &wanted);
+                        self.expect(&given, &wanted, &format!("`{name}`"), value.span)
+                    }
                 }
                 wanted
             }
@@ -1363,6 +1647,9 @@ impl Checker {
             ),
             None => given,
         };
+        if ty.is_owned() {
+            self.types.owners.insert(statement as *const Stmt as usize);
+        }
         self.declare(env, name, ty, mutable, span);
     }
 
@@ -1384,6 +1671,9 @@ impl Checker {
                     format!("`{name}` cannot be changed. Declare it with `var` to allow that"),
                     span,
                 ),
+                Some(variable) if variable.ty.is_owned() && variable.function != env.function => {
+                    self.error(elsewhere(name), span)
+                }
                 Some(variable) => {
                     let Some(declared) = variable.declared else {
                         return (variable.ty.clone(), variable.ty, None);
@@ -1393,10 +1683,24 @@ impl Checker {
                     return (declared, variable.ty, None);
                 }
             },
-            ExprKind::Field { object, name } => match self.expr(object, env) {
+            ExprKind::Field { object, name } => match self.look(object, env) {
                 Ty::Instance(class) => {
                     let field = class.fields.borrow().iter().find(|f| f.name == *name).cloned();
+                    // Is `object` the variable that owns the object?
+                    let owner = matches!(&object.kind, ExprKind::Name(name)
+                        if env.get(name).is_some_and(|variable| variable.ty.is_owned()));
                     match field {
+                        // Putting a new owned value in a field frees the
+                        // old one. Somebody who was lent the object may be
+                        // looking at the old one right now, so only the
+                        // owner, who knows nobody is, may do it.
+                        Some(field) if field.ty.is_owned() && !owner => self.error(
+                            format!(
+                                "`{name}` holds an owned value, and only the owner of the object can replace it. \
+                                 Here the object is only borrowed"
+                            ),
+                            span,
+                        ),
                         Some(field) => return (field.ty.clone(), field.ty.clone(), Some(field)),
                         None => self.error(format!("`{}` has no field `{name}`", class.name), span),
                     }
@@ -1405,8 +1709,8 @@ impl Checker {
                 ty => self.error(format!("a field cannot be set on {ty}"), span),
             },
             ExprKind::Index { object, index } => {
-                let object = self.expr(object, env);
-                let index_type = self.expr(index, env);
+                let object = self.look(object, env);
+                let index_type = self.look(index, env);
                 self.expect(&index_type, &Ty::Int, "an index", index.span);
                 match object {
                     Ty::List(item) => *item,
@@ -1420,7 +1724,7 @@ impl Checker {
     }
 
     fn condition(&mut self, condition: &Expr, env: &Env) {
-        let ty = self.expr(condition, env);
+        let ty = self.look(condition, env);
         if !fits(&ty, &Ty::Bool) {
             self.error(format!("a condition must be true or false, but this is {ty}"), condition.span);
         }
@@ -1481,7 +1785,7 @@ impl Checker {
         let fields = class.fields.borrow().clone();
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
-                let given = self.expr(default, env);
+                let given = self.kept(default, &slot.ty, env);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
@@ -1499,8 +1803,19 @@ impl Checker {
     }
 
     fn match_statement(&mut self, subject: &Expr, arms: &[Arm], env: &Env, span: Span) -> bool {
-        let subject_type = self.expr(subject, env);
+        let mut subject_type = self.expr(subject, env);
+        if subject_type.is_tied() {
+            // `case name` would make a second name for the value.
+            subject_type = self.error(
+                format!("`match` cannot take an owned or borrowed value, and this is {subject_type}. Match on one of its fields"),
+                subject.span,
+            );
+        }
         let mut all_exit = true;
+        // What is given away after the `match` is what any case that gets
+        // to its end gave away.
+        let before = self.owned.moved.clone();
+        let mut after: Option<Moved> = None;
         // Does some case accept anything at all?
         let mut catch_all = false;
         // For an enum, the cases that are fully handled.
@@ -1513,8 +1828,14 @@ impl Checker {
                 Covers::Case(index) => covered.push(index),
                 Covers::Some => {}
             }
-            all_exit &= self.statements(&arm.body, &scope);
+            let exits = self.statements(&arm.body, &scope);
+            all_exit &= exits;
+            let moved = std::mem::replace(&mut self.owned.moved, before.clone());
+            if !exits {
+                after.get_or_insert_with(HashMap::new).extend(moved);
+            }
         }
+        self.owned.moved.extend(after.unwrap_or_default());
 
         let complete = match &subject_type {
             _ if catch_all => true,
@@ -1616,8 +1937,19 @@ impl Checker {
         // Collect what the body can raise separately, so the handlers can
         // take out what they catch.
         self.raised.push(Vec::new());
+        let before = self.owned.moved.clone();
+        self.owned.tries.push(HashMap::new());
         let mut all_exit = self.block(body, env);
         let raised = self.raised.pop().unwrap_or_default();
+        // An error can leave the body after any of the things it gives
+        // away, so an `except` block starts with all of them gone.
+        let in_body = self.owned.tries.pop().unwrap_or_default();
+        if let Some(outer) = self.owned.tries.last_mut() {
+            outer.extend(in_body.clone());
+        }
+        let mut after = if all_exit { Moved::new() } else { self.owned.moved.clone() };
+        let mut at_except = before;
+        at_except.extend(in_body);
 
         let mut caught: Vec<&str> = Vec::new();
         for handler in handlers {
@@ -1626,6 +1958,9 @@ impl Checker {
                 None => Ty::Error(Rc::from("Error")),
                 Some(name) => match env.get(name).map(|variable| variable.ty) {
                     Some(Ty::ErrorType(kind)) => Ty::Error(kind),
+                    Some(Ty::Class(class)) if class.owned => {
+                        self.error(format!("`{name}` is an owned class. Its objects cannot be raised, so none can be caught"), span)
+                    }
                     Some(Ty::Class(class)) => Ty::Instance(class),
                     _ => self.error(format!("`{name}` is not a kind of error"), span),
                 },
@@ -1634,8 +1969,14 @@ impl Checker {
             if let Some(binding) = &handler.binding {
                 scope.declare(binding, error_type, false);
             }
-            all_exit &= self.statements(&handler.body, &scope);
+            self.owned.moved = at_except.clone();
+            let exits = self.statements(&handler.body, &scope);
+            all_exit &= exits;
+            if !exits {
+                after.extend(std::mem::take(&mut self.owned.moved));
+            }
         }
+        self.owned.moved = after;
 
         // Whatever no handler catches carries on outward.
         for (kind, at) in raised {
@@ -1644,6 +1985,180 @@ impl Checker {
             }
         }
         all_exit
+    }
+
+    // ----------------------------------------------------------- Owned values
+    //
+    // Most values in Zeno are shared: `let b = a` makes a second name for
+    // the same list, and the collector frees it when no name is left. An
+    // owned value (an `owned list[T]`, or an object of an `owned class`)
+    // has exactly one owner instead, and is freed when its owner's block
+    // ends. For that to be safe the checker has to know, at every line,
+    // who the owner is. Three ways of using a value keep that simple:
+    //
+    // - `take`: the value is about to be kept somewhere (a variable, a
+    //   field, a parameter that takes it, a `return`). If it comes from a
+    //   variable, that variable has given it away and may not be used again.
+    // - `look`: the value is read where it stands (printed, indexed,
+    //   compared, lent to a `borrow` parameter). Nothing changes hands.
+    // - `expr`, used anywhere else, gives an owner's value the type
+    //   `Borrowed`, which fits nowhere. So a place this section forgot is
+    //   an error message, never a second owner.
+
+    /// What reading the variable `name` gives. For an owner, or a `borrow`
+    /// parameter, that is a look at the value and no more.
+    fn read(&mut self, name: &str, variable: Variable, env: &Env, span: Span) -> Ty {
+        if !variable.ty.is_tied() {
+            return variable.ty;
+        }
+        if variable.function != env.function {
+            return self.error(elsewhere(name), span);
+        }
+        if let Some((_, at)) = self.owned.moved.get(&variable.id) {
+            return self.error(
+                format!(
+                    "`{name}` was given away on line {} and holds nothing now. \
+                     Lend it instead (a `borrow` parameter), or use it before it goes",
+                    at.line
+                ),
+                span,
+            );
+        }
+        self.owned.looking.push(variable.id);
+        Ty::Borrowed(Box::new(variable.ty.looked_at()))
+    }
+
+    /// The type of an expression whose value is about to be kept. An owner
+    /// named here gives its value away.
+    fn take(&mut self, expr: &Expr, env: &Env) -> Ty {
+        let owner = match &expr.kind {
+            ExprKind::Name(name) => env.get(name).filter(|variable| variable.ty.is_owned()).map(|v| (name, v)),
+            _ => None,
+        };
+        if let Some((name, variable)) = owner {
+            if self.owned.looking.contains(&variable.id) {
+                return self.error(
+                    format!(
+                        "`{name}` is given away here, on a line that also uses it. \
+                         Do the other thing on a line of its own first"
+                    ),
+                    expr.span,
+                );
+            }
+            // The usual checks: that it still holds something, and that
+            // this is the function it belongs to.
+            if matches!(self.expr(expr, env), Ty::Invalid) {
+                return Ty::Invalid;
+            }
+            let record = (name.clone(), expr.span);
+            for body in &mut self.owned.tries {
+                body.insert(variable.id, record.clone());
+            }
+            self.owned.moved.insert(variable.id, record);
+            self.types.moves.insert(expr as *const Expr as usize);
+            return variable.ty;
+        }
+        match self.expr(expr, env) {
+            Ty::Borrowed(inner) => {
+                let message = match &expr.kind {
+                    ExprKind::Name(name) => format!(
+                        "`{name}` is only borrowed here, so it cannot be kept, returned or given away. \
+                         To keep it, take it as an owned parameter instead"
+                    ),
+                    ExprKind::Field { name, .. } => format!(
+                        "`{name}` holds an owned value, which cannot be taken out of the object it is in. \
+                         Use it where it is, or lend it to a `borrow` parameter"
+                    ),
+                    _ => format!("this is {}, which cannot be kept", Ty::Borrowed(inner)),
+                };
+                self.error(message, expr.span)
+            }
+            ty => ty,
+        }
+    }
+
+    /// `take`, for a value going somewhere whose type is known.
+    fn kept(&mut self, value: &Expr, wanted: &Ty, env: &Env) -> Ty {
+        let given = self.take(value, env);
+        fresh_list(value, given, wanted)
+    }
+
+    /// The type of an expression that is only looked at.
+    fn look(&mut self, expr: &Expr, env: &Env) -> Ty {
+        let ty = self.expr(expr, env);
+        self.looked(ty, expr.span)
+    }
+
+    /// What somebody who only looks sees of a value of type `ty`.
+    fn looked(&mut self, ty: Ty, span: Span) -> Ty {
+        if ty.is_owned() {
+            // Made right here, and owned by nobody: nothing would free it.
+            return self.error(
+                format!("this {ty} has no owner yet. Give it a name with `let` first, and use the name here"),
+                span,
+            );
+        }
+        ty.looked_at()
+    }
+
+    /// The type of an expression whose value goes somewhere shared, such
+    /// as into a list. An owned value cannot.
+    fn shared(&mut self, expr: &Expr, env: &Env) -> Ty {
+        let ty = self.expr(expr, env);
+        if ty.is_tied() {
+            return self.error(format!("a list cannot hold an owned or borrowed value yet, and this is {ty}"), expr.span);
+        }
+        ty
+    }
+
+    /// The parameters a call's arguments are going to, when the thing
+    /// called has parameters with names.
+    fn slots(&mut self, callee: &Ty) -> Option<Vec<Slot>> {
+        match callee {
+            Ty::Function(function) => Some(self.signature(function).params.clone()),
+            Ty::BoundMethod(function) => Some(self.signature(function).params.get(1..).unwrap_or_default().to_vec()),
+            Ty::Class(class) => Some(class.fields.borrow().clone()),
+            Ty::CaseConstructor(info, index) => Some(info.cases.borrow()[*index].fields.clone()),
+            _ => None,
+        }
+    }
+
+    /// A loop begins. Returns what is needed to check it when it ends.
+    fn enter_loop(&mut self) -> (Moved, usize) {
+        self.owned.loops.push((Moved::new(), Moved::new()));
+        (self.owned.moved.clone(), fresh_id())
+    }
+
+    /// A loop has ended. A value given away on one trip round is not
+    /// there on the next, so an owner from outside the loop may only be
+    /// given away on a path that leaves the loop.
+    fn leave_loop(&mut self, (before, first_inside): (Moved, usize), body_exits: bool) {
+        let (breaks, continues) = self.owned.loops.pop().unwrap_or_default();
+        let mut again = continues;
+        if !body_exits {
+            again.extend(std::mem::take(&mut self.owned.moved));
+        }
+        let mut lost: Vec<(String, Span)> = again
+            .iter()
+            .filter(|(id, _)| **id < first_inside && !before.contains_key(id))
+            .map(|(_, record)| record.clone())
+            .collect();
+        lost.sort_by_key(|(_, at)| (at.line, at.col));
+        for (name, at) in lost {
+            self.error(
+                format!(
+                    "`{name}` is given away inside a loop, and the loop may come round again with nothing in it. \
+                     Give it away after the loop, or just before a `break`"
+                ),
+                at,
+            );
+        }
+        // After the loop: whatever was gone before it, during it, or at a
+        // `break`. The loop's own variables no longer exist.
+        self.owned.moved = before;
+        self.owned.moved.extend(again);
+        self.owned.moved.extend(breaks);
+        self.owned.moved.retain(|id, _| *id < first_inside);
     }
 
     // -------------------------------------------------------------- Functions
@@ -1667,7 +2182,7 @@ impl Checker {
                 _ => {
                     let what = format!("the parameter `{}` of `{name}`", param.name);
                     let id = (decl_id(span, &decl.name), param.name.clone());
-                    let ty = self.slot_type(&param.ty, &id, &what, &function.env, span);
+                    let ty = self.slot_type(&param.ty, &id, &what, &function.env, span, true);
                     let id = param.ty.is_none().then_some(id);
                     params.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id });
                     continue;
@@ -1712,11 +2227,14 @@ impl Checker {
             }
         }
         let touched = std::mem::take(&mut self.touched);
+        // Owned values belong to one function body, so what the body
+        // around this one was tracking is set aside.
+        let owned = std::mem::take(&mut self.owned);
 
-        let scope = Scope::child(&function.env);
+        let scope = Scope::body(&function.env);
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
-                let given = self.expr(default, &scope);
+                let given = self.kept(default, &slot.ty, &scope);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
@@ -1729,6 +2247,7 @@ impl Checker {
         let exits = self.statements(&decl.body, &scope);
         self.worked_out.pop();
         self.touched = touched;
+        self.owned = owned;
         let raised = self.raised.pop().unwrap_or_default();
         let frame = self.frames.pop().expect("the frame pushed above");
 
@@ -1841,7 +2360,7 @@ impl Checker {
             ExprKind::FormatStr(parts) => {
                 for part in parts {
                     if let FormatPart::Value { value, .. } = part {
-                        self.expr(value, env);
+                        self.look(value, env);
                     }
                 }
                 Ty::Str
@@ -1857,13 +2376,13 @@ impl Checker {
                         // is the narrower type: it stores the two differently.
                         self.types.narrowed.insert(expr as *const Expr as usize, kind(&variable.ty));
                     }
-                    variable.ty
+                    self.read(name, variable, env, span)
                 }
                 None => self.error(format!("`{name}` is not defined"), span),
             },
 
             ExprKind::Unit { value, unit } => {
-                self.expr(value, env);
+                self.look(value, env);
                 if !units::is_unit(unit) {
                     return self.error(units::unknown(unit), span);
                 }
@@ -1871,24 +2390,28 @@ impl Checker {
             }
 
             ExprKind::List(items) => {
-                let types: Vec<Ty> = items.iter().map(|item| self.expr(item, env)).collect();
+                let types: Vec<Ty> = items.iter().map(|item| self.shared(item, env)).collect();
                 // An empty list holds nothing yet, so its item type is open.
                 Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
             }
             ExprKind::ListComp { element, variable, iterable, condition } => {
-                let iterable_type = self.expr(iterable, env);
+                let iterable_type = self.look(iterable, env);
                 let item = self.item_type(&iterable_type, iterable.span);
                 let scope = Scope::child(env);
                 scope.declare(variable, item, false);
+                // The element is worked out once for every item: a loop.
+                let entry = self.enter_loop();
                 if let Some(condition) = condition {
                     self.condition(condition, &scope);
                     narrow_all(&scope, &self.narrowings(condition, &scope).0);
                 }
-                Ty::list(self.expr(element, &scope))
+                let element = self.shared(element, &scope);
+                self.leave_loop(entry, false);
+                Ty::list(element)
             }
 
             ExprKind::Unary { op, operand } => {
-                let ty = self.expr(operand, env);
+                let ty = self.look(operand, env);
                 match (op, &ty) {
                     (_, ty) if ty.is_loose() => ty.clone(),
                     (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::Quantity(_)) => ty,
@@ -1899,14 +2422,14 @@ impl Checker {
             }
 
             ExprKind::Binary { op: op @ (BinaryOp::And | BinaryOp::Or), left, right } => {
-                let left_type = self.expr(left, env);
+                let left_type = self.look(left, env);
                 // The right side only runs when the left side did not settle
                 // it, so it can rely on what the left side established:
                 //     x is not none and x.upper() == "A"
                 let scope = Scope::child(env);
                 let (when_true, when_false) = self.narrowings(left, env);
                 narrow_all(&scope, if *op == BinaryOp::And { &when_true } else { &when_false });
-                let right_type = self.expr(right, &scope);
+                let right_type = self.look(right, &scope);
 
                 for (ty, operand) in [(left_type, left), (right_type, right)] {
                     if !fits(&ty, &Ty::Bool) {
@@ -1916,14 +2439,14 @@ impl Checker {
                 Ty::Bool
             }
             ExprKind::Binary { op, left, right } => {
-                let left = self.expr(left, env);
-                let right = self.expr(right, env);
+                let left = self.look(left, env);
+                let right = self.look(right, env);
                 self.binary(*op, &left, &right, span)
             }
             ExprKind::Compare { first, rest } => {
-                let mut left = self.expr(first, env);
+                let mut left = self.look(first, env);
                 for (op, operand) in rest {
-                    let right = self.expr(operand, env);
+                    let right = self.look(operand, env);
                     self.binary(*op, &left, &right, span);
                     left = right;
                 }
@@ -1943,16 +2466,47 @@ impl Checker {
             }
 
             ExprKind::Call { callee, args } => {
-                let callee = self.expr(callee, env);
+                let callee = match &callee.kind {
+                    // `object.method(...)`: the call looks at the object.
+                    ExprKind::Field { object, name } => {
+                        let object = self.look(object, env);
+                        match self.field(&object, name, callee.span) {
+                            Ty::Dynamic if self.strict => self.error(
+                                "strict mode: the type of this cannot be worked out before the program runs",
+                                callee.span,
+                            ),
+                            ty => ty,
+                        }
+                    }
+                    _ => self.expr(callee, env),
+                };
+                // Where each argument is going decides what passing it
+                // means, so find that out before looking at any of them.
+                let slots = self.slots(&callee);
+                let only_looks = matches!(callee, Ty::Builtin(_));
                 let mut arguments = Vec::new();
                 let mut named_seen = false;
-                for arg in args {
+                for (position, arg) in args.iter().enumerate() {
                     if arg.name.is_some() {
                         named_seen = true;
                     } else if named_seen {
                         self.error("plain arguments must come before named ones", arg.value.span);
                     }
-                    let ty = self.expr(&arg.value, env);
+                    let slot = slots.as_ref().and_then(|slots| match &arg.name {
+                        None => slots.get(position),
+                        Some(name) => slots.iter().find(|slot| slot.name == *name),
+                    });
+                    let ty = match slot {
+                        // A parameter that takes an owned value keeps it:
+                        // the caller's variable gives it up.
+                        Some(slot) if slot.ty.is_owned() => self.kept(&arg.value, &slot.ty, env),
+                        // `print`, `len` and the rest only look.
+                        _ if only_looks => self.look(&arg.value, env),
+                        // Anything else is checked against the parameter
+                        // by `call`. A look at an owned value fits there
+                        // only if the parameter says `borrow`.
+                        _ => self.expr(&arg.value, env),
+                    };
                     arguments.push(Argument { name: arg.name.clone(), ty, span: arg.value.span });
                 }
                 self.call(&callee, arguments, span)
@@ -1960,11 +2514,23 @@ impl Checker {
 
             ExprKind::Field { object, name } => {
                 let object = self.expr(object, env);
-                self.field(&object, name, span)
+                let tied = object.is_tied();
+                let object = self.looked(object, span);
+                match self.field(&object, name, span) {
+                    // The method would carry the object away inside it.
+                    Ty::BoundMethod(_) | Ty::BuiltinMethod(..) if tied => self.error(
+                        format!("a method of an owned or borrowed value cannot be kept as a value. Call it here: `.{name}(...)`"),
+                        span,
+                    ),
+                    // An owned value in a field stays where it is. This
+                    // is a look at it.
+                    ty if ty.is_owned() => Ty::Borrowed(Box::new(ty.looked_at())),
+                    ty => ty,
+                }
             }
             ExprKind::Index { object, index } => {
-                let object = self.expr(object, env);
-                let index_type = self.expr(index, env);
+                let object = self.look(object, env);
+                let index_type = self.look(index, env);
                 self.expect(&index_type, &Ty::Int, "an index", index.span);
                 match object {
                     Ty::List(item) => *item,
@@ -2429,6 +2995,25 @@ enum Covers {
     Case(usize),
     /// Only some values.
     Some,
+}
+
+/// A list written out in full, or built by a comprehension, is nobody's
+/// yet. So it can begin life as an owned list where one is wanted.
+fn fresh_list(value: &Expr, given: Ty, wanted: &Ty) -> Ty {
+    match (wanted, &value.kind, given) {
+        (Ty::Owned(_), ExprKind::List(_) | ExprKind::ListComp { .. }, given @ Ty::List(_)) => {
+            Ty::Owned(Box::new(given))
+        }
+        (_, _, given) => given,
+    }
+}
+
+/// The error for an owned variable used from another function's body.
+fn elsewhere(name: &str) -> String {
+    format!(
+        "`{name}` holds an owned value, which belongs to the block that declares it. \
+         A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter"
+    )
 }
 
 fn decl_id(span: Span, name: &str) -> DeclId {
@@ -3066,6 +3651,214 @@ mod tests {
         );
     }
 
+    // ----- Owned values -----
+
+    /// A few declarations the tests below all use.
+    const OWNED: &str = "owned class Packet {
+    id: int
+    data: owned list[int]
+    function size(self) -> int { return len(self.data) }
+}
+function make() -> Packet { return Packet(1, [1, 2]) }
+function send(p: Packet) -> int { return p.id }
+function look(p: borrow Packet) -> int { return p.id }
+function total(xs: borrow list[int]) -> int { return len(xs) }
+";
+
+    fn owned_ok(source: &str) {
+        strict_ok(&format!("{OWNED}{source}"));
+    }
+
+    fn owned_error(source: &str) -> String {
+        strict_error(&format!("{OWNED}{source}"))
+    }
+
+    const GONE: &str = "holds nothing now. Lend it instead (a `borrow` parameter), or use it before it goes";
+
+    #[test]
+    fn an_owned_value_can_be_made_lent_and_given_away() {
+        owned_ok("let p = make()\nprint(look(p), p.size(), p.id, p.data[0], p)\nprint(send(p))");
+        owned_ok("let xs: owned list[int] = [1, 2]\nprint(total(xs), len(xs), xs)\nxs.append(3)\nfor x in xs { print(x) }");
+        // A shared list can be lent too: anyone may look at it.
+        owned_ok("let xs = [1, 2]\nprint(total(xs), total([3]))");
+        owned_ok("let p = make()\nlet q = p\nprint(send(q))");
+        // An owned value nobody keeps is simply freed.
+        owned_ok("make()\nPacket(2, [])");
+        owned_ok("function build(n: int) -> owned list[int] {\n let xs: owned list[int] = [i for i in range(n)]\n return xs\n}\nlet ys = build(3)\nprint(ys)");
+    }
+
+    #[test]
+    fn a_value_that_was_given_away_cannot_be_used() {
+        assert_eq!(owned_error("let p = make()\nsend(p)\nprint(p.id)"), format!("`p` was given away on line 11 and {GONE}"));
+        assert_eq!(owned_error("let p = make()\nlet q = p\nlet r = p"), format!("`p` was given away on line 11 and {GONE}"));
+        // Given away on one path is not there afterwards on any path.
+        assert_eq!(
+            owned_error("let p = make()\nif p.id > 0 { send(p) }\nprint(look(p))"),
+            format!("`p` was given away on line 11 and {GONE}")
+        );
+        // Unless that path never reaches what follows.
+        owned_ok("function f(p: Packet) -> int {\n if p.id > 0 { return send(p) }\n return look(p)\n}");
+        // A `var` can be given a new value, and holds something again.
+        owned_ok("var p = make()\nsend(p)\np = make()\nprint(p.id)");
+        // An error can leave a `try` after the value has gone.
+        assert_eq!(
+            owned_error("class Bad { }\nfunction risky(p: Packet) raises Bad { raise Bad() }\nlet p = make()\ntry { risky(p) } except Bad { print(p.id) }"),
+            format!("`p` was given away on line 13 and {GONE}")
+        );
+    }
+
+    #[test]
+    fn giving_away_inside_a_loop() {
+        let again = "is given away inside a loop, and the loop may come round again with nothing in it. \
+                     Give it away after the loop, or just before a `break`";
+        assert_eq!(owned_error("let p = make()\nfor i in range(3) { send(p) }"), format!("`p` {again}"));
+        assert_eq!(owned_error("let p = make()\nwhile send(p) > 0 { }"), format!("`p` {again}"));
+        assert_eq!(owned_error("let p = make()\nlet xs = [send(p) for i in range(3)]"), format!("`p` {again}"));
+        assert_eq!(
+            owned_error("let p = make()\nfor i in range(3) {\n if i == 1 {\n  send(p)\n  continue\n }\n}"),
+            format!("`p` {again}")
+        );
+        // Just before a `break` is fine: the loop does not come round again.
+        owned_ok("let p = make()\nwhile true {\n if p.id > 0 {\n  send(p)\n  break\n }\n}");
+        // But it is gone after the loop.
+        assert_eq!(
+            owned_error("let p = make()\nwhile true {\n if p.id > 0 {\n  send(p)\n  break\n }\n}\nprint(p.id)"),
+            format!("`p` was given away on line 13 and {GONE}")
+        );
+        // A value made inside the loop is a new one every time round.
+        owned_ok("for i in range(3) {\n let p = make()\n send(p)\n}");
+        owned_ok("var p = make()\nfor i in range(3) {\n send(p)\n p = make()\n}");
+    }
+
+    #[test]
+    fn a_borrowed_value_cannot_be_kept() {
+        assert_eq!(
+            owned_error("function keep(p: borrow Packet) -> Packet { return p }"),
+            "`p` is only borrowed here, so it cannot be kept, returned or given away. To keep it, take it as an owned parameter instead"
+        );
+        assert_eq!(
+            owned_error("function pass_on(p: borrow Packet) -> int { return send(p) }"),
+            "`p` is only borrowed here, so it cannot be kept, returned or given away. To keep it, take it as an owned parameter instead"
+        );
+        assert_eq!(
+            owned_error("let p = make()\nlet d = p.data"),
+            "`data` holds an owned value, which cannot be taken out of the object it is in. Use it where it is, or lend it to a `borrow` parameter"
+        );
+        assert_eq!(
+            owned_error("function f(xs: list[int]) -> int { return len(xs) }\nlet ys: owned list[int] = [1]\nprint(f(ys))"),
+            "`xs` of `f` should be list[int], but this is a borrowed list[int]. A value with an owner can only go to a parameter that borrows it (`borrow`) or takes it over (an owned type)"
+        );
+        assert_eq!(
+            owned_error("let p = make()\nlet m = p.size"),
+            "a method of an owned or borrowed value cannot be kept as a value. Call it here: `.size(...)`"
+        );
+        assert_eq!(
+            owned_error("function reset(p: borrow Packet) { p.data = [] }"),
+            "`data` holds an owned value, and only the owner of the object can replace it. Here the object is only borrowed"
+        );
+        owned_ok("let p = make()\np.data = [5, 6]\nprint(p)");
+    }
+
+    #[test]
+    fn a_line_cannot_use_a_value_and_give_it_away() {
+        assert_eq!(
+            owned_error("let p = make()\nprint(look(p) + send(p))"),
+            "`p` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
+        );
+        assert_eq!(owned_error("let p = make()\nprint(send(p) + look(p))"), format!("`p` was given away on line 11 and {GONE}"));
+    }
+
+    #[test]
+    fn an_owned_value_needs_an_owner() {
+        assert_eq!(
+            owned_error("print(look(make()))"),
+            "this Packet has no owner yet, so it cannot be lent. Give it a name with `let` first, and pass the name"
+        );
+        assert_eq!(
+            owned_error("print(make().size())"),
+            "this Packet has no owner yet. Give it a name with `let` first, and use the name here"
+        );
+        assert_eq!(
+            owned_error("let xs = [1, 2]\nlet ys: owned list[int] = xs"),
+            "`ys` should be owned list[int], but this is list[int]. Only a list written out here, as in `[1, 2]` or `[x for x in xs]`, can become an owned one"
+        );
+    }
+
+    #[test]
+    fn an_owned_value_stays_in_the_function_that_holds_it() {
+        let elsewhere = "holds an owned value, which belongs to the block that declares it. \
+                         A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter";
+        assert_eq!(
+            owned_error("let p = make()\nfunction peek() -> int { return p.id }\nprint(peek())"),
+            format!("`p` {elsewhere}")
+        );
+        assert_eq!(owned_error("var p = make()\nfunction swap() { p = make() }"), format!("`p` {elsewhere}"));
+        assert_eq!(
+            owned_error("function f(p: borrow Packet) -> function() -> int {\n return function() -> int { return p.id }\n}"),
+            format!("`p` {elsewhere}")
+        );
+    }
+
+    #[test]
+    fn shared_things_cannot_hold_owned_ones() {
+        let inside = "an owned Packet cannot be kept inside a list, an `or none` or a function type yet. \
+                      It lives in a variable, a parameter, or a field of an owned class";
+        assert_eq!(owned_error("let xs: list[Packet] = []"), inside);
+        assert_eq!(owned_error("let x: Packet or none = none"), inside);
+        assert_eq!(owned_error("let x: owned list[Packet] = []"), inside);
+        assert_eq!(
+            owned_error("let p = make()\nlet xs = [p]"),
+            "a list cannot hold an owned or borrowed value yet, and this is a borrowed Packet"
+        );
+        assert_eq!(
+            owned_error("class Box { inside: Packet }"),
+            "`inside` holds an owned value, so `Box` must be an `owned class` itself. A shared object cannot own anything"
+        );
+        assert_eq!(owned_error("enum E { A(p: Packet) }"), "a case of the enum `E` cannot carry an owned value yet");
+        assert_eq!(
+            owned_error("let p = make()\nraise p"),
+            "an owned or borrowed value cannot be raised, and this is a borrowed Packet"
+        );
+        assert_eq!(
+            owned_error("let p = make()\nmatch p { case _ { print(1) } }"),
+            "`match` cannot take an owned or borrowed value, and this is a borrowed Packet. Match on one of its fields"
+        );
+    }
+
+    #[test]
+    fn where_owned_and_borrow_can_be_written() {
+        assert_eq!(
+            owned_error("let x: borrow list[int] = [1]"),
+            "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to"
+        );
+        assert_eq!(
+            owned_error("function f() -> borrow Packet { return make() }"),
+            "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to"
+        );
+        assert_eq!(
+            owned_error("let x: owned int = 1"),
+            "`owned` goes in front of a list type, as in `owned list[int]`, and this is int. A class is made owned where it is declared: `owned class`"
+        );
+        assert_eq!(
+            owned_error("function f(n: borrow int) { }"),
+            "only a list or an object can be borrowed, and this is int. Pass it as it is"
+        );
+        assert_eq!(
+            owned_error("let x: list[owned list[int]] = []"),
+            "`owned` and `borrow` describe a whole value, so they go at the very front of a type, and not inside `list[ ]`, `or none` or a function type"
+        );
+        // `owned` and `borrow` are ordinary names everywhere else.
+        owned_ok("let owned = 1\nlet borrow = owned + 1\nprint(owned, borrow)");
+    }
+
+    #[test]
+    fn who_owns_a_value_is_never_guessed() {
+        assert_eq!(
+            owned_error("function f(q) { print(q) }\nlet p = make()\nf(p)"),
+            "strict mode: the parameter `q` of `f` needs a type. It could not be worked out from how it is used"
+        );
+    }
+
     // ----- Reporting -----
 
     #[test]
@@ -3087,5 +3880,6 @@ mod tests {
         ok(include_str!("../examples/styles.zeno"));
         // The tour is fully typed, so it passes strict mode as well.
         strict_ok(include_str!("../examples/tour.zeno"));
+        strict_ok(include_str!("../examples/buffer.zeno"));
     }
 }

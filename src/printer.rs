@@ -45,7 +45,8 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
 
         StmtKind::Function(f) => function(f, depth, out),
         StmtKind::Class(class) => {
-            line(&format!("class {}", class.name), depth, out);
+            let owned = if class.owned { "owned " } else { "" };
+            line(&format!("{owned}class {}", class.name), depth, out);
             for f in &class.fields {
                 line(&format!("field {}", field(f)), depth + 1, out);
             }
@@ -181,6 +182,8 @@ fn type_(ty: &Type) -> String {
         Type::Named { name, args } if args.is_empty() => name.clone(),
         Type::Named { name, args } => format!("{name}[{}]", join(args, type_)),
         Type::Optional(inner) => format!("{} or none", type_(inner)),
+        Type::Owned(inner) => format!("owned {}", type_(inner)),
+        Type::Borrow(inner) => format!("borrow {}", type_(inner)),
         Type::Function { params, returns } => {
             let mut text = format!("function({})", join(params, type_));
             if let Some(returns) = returns {

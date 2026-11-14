@@ -1,0 +1,88 @@
+# Owned values: memory that is given back at a line you can point to.
+#
+#     cargo run -- run examples/buffer.zeno
+#     cargo run -- build --memory examples/buffer.zeno && ./buffer
+#
+# Most values in Zeno are shared, and a garbage collector frees them some
+# time after their last use (docs/memory.md). A value marked `owned` has
+# exactly one owner instead, and is freed the moment its owner's block
+# ends. docs/ownership.md explains the rules. This file is the short tour.
+
+# Every Frame has one owner. When that owner's block ends, the frame and
+# the list inside it are freed, there and then.
+owned class Frame {
+    channel: int
+    samples: owned list[int]
+
+    # A method only looks at the object it is called on.
+    function peak(self) -> int {
+        var highest = 0
+        for sample in self.samples {
+            if sample > highest {
+                highest = sample
+            }
+        }
+        return highest
+    }
+}
+
+# An ordinary, shared class. An error to raise.
+class Overload {
+    channel: int
+    peak: int
+}
+
+# Makes a frame and hands it to the caller, who owns it from then on.
+function capture(channel: int, size: int) -> Frame {
+    let samples: owned list[int] = [(n * n + channel * 13) % (400 + channel) for n in range(size)]
+    return Frame(channel, samples)    # `samples` moves into the frame
+}
+
+# `borrow`: this function looks at a list and cannot keep it. Any list
+# will do, owned or shared, and the caller still has it afterwards.
+function average(samples: borrow list[int]) -> int {
+    return sum(samples) // len(samples)
+}
+
+# No `borrow` here: `send` takes the frame over. The caller's variable is
+# empty after the call, and the frame is freed when `send` is done with it.
+function send(frame: Frame) -> int raises Overload {
+    if frame.peak() > 480 {
+        raise Overload(frame.channel, frame.peak())
+    }
+    return len(frame.samples)
+}
+
+var sent = 0
+var quiet = 0
+var refused: list[int] = []
+
+for channel in range(120) {
+    let frame = capture(channel, 600)
+    if average(frame.samples) < 205 {
+        quiet += 1
+        continue                      # `frame` is freed here,
+    }
+    try {
+        sent += send(frame)           # or it moves into `send`, which frees it.
+    } except Overload as overload {
+        refused.append(overload.channel)
+    }
+}
+
+print(f"sent {sent} samples, skipped {quiet} quiet frames")
+print(f"refused {len(refused)} frames, the first on channel {refused[0]}")
+
+# A `var` that owns its value can be given a new one. The old one is freed
+# at that line.
+var window: owned list[int] = [0, 0, 0, 0]
+for round in range(3) {
+    window = [value + round for value in window]
+}
+print(window)
+
+# After a move the old name holds nothing, and the checker says so. Take
+# the `#` off the last line to see the message:
+let last = capture(7, 4)
+print(send(last))
+# print(last.channel)

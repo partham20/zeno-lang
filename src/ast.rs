@@ -88,6 +88,8 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Class {
     pub name: String,
+    /// `owned class`: every object of it has exactly one owner.
+    pub owned: bool,
     pub fields: Vec<Field>,
     pub methods: Vec<Arc<Function>>,
 }
@@ -152,6 +154,11 @@ pub enum Type {
     Optional(Box<Type>),
     /// The type of a function: `function(int, int) -> int`
     Function { params: Vec<Type>, returns: Option<Box<Type>> },
+    /// `owned list[int]`: a value with exactly one owner.
+    Owned(Box<Type>),
+    /// `borrow Packet`, on a parameter: the function may use the value
+    /// for the length of the call, and must not keep it.
+    Borrow(Box<Type>),
 }
 
 // --------------------------------------------------------------- Expressions

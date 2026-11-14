@@ -156,7 +156,13 @@ impl Parser {
             TokenKind::Function if *self.peek_at(1) != TokenKind::LParen => {
                 StmtKind::Function(Arc::new(self.function()?))
             }
-            TokenKind::Class => self.class()?,
+            TokenKind::Class => self.class(false)?,
+            // `owned` is an ordinary name everywhere except in front of
+            // `class` and in front of a type.
+            TokenKind::Ident(word) if word == "owned" && *self.peek_at(1) == TokenKind::Class => {
+                self.advance(); // owned
+                self.class(true)?
+            }
             TokenKind::Enum => self.enum_()?,
             TokenKind::If => self.if_statement()?,
             TokenKind::While => self.while_loop()?,
@@ -453,8 +459,8 @@ impl Parser {
         Ok(Function { name, params, return_type, raises, body })
     }
 
-    /// `class Name { fields and methods }`
-    fn class(&mut self) -> Result<StmtKind, Error> {
+    /// `class Name { fields and methods }`, or `owned class Name { ... }`
+    fn class(&mut self, owned: bool) -> Result<StmtKind, Error> {
         self.advance(); // class
         let name = self.name("a name for the class")?;
         self.expect(TokenKind::LBrace)?;
@@ -473,7 +479,7 @@ impl Parser {
             self.end_of_statement()?;
         }
         self.advance(); // the }
-        Ok(StmtKind::Class(Class { name, fields, methods }))
+        Ok(StmtKind::Class(Class { name, owned, fields, methods }))
     }
 
     /// `name`, optionally with `: type` and `= default`
@@ -530,6 +536,12 @@ impl Parser {
             Type::Function { params, returns }
         } else {
             let name = self.name("a type")?;
+            // `owned list[int]`, `borrow Packet`: the word, then the type
+            // it is about.
+            if (name == "owned" || name == "borrow") && matches!(self.peek(), TokenKind::Ident(_) | TokenKind::Function) {
+                let inner = Box::new(self.type_()?);
+                return Ok(if name == "owned" { Type::Owned(inner) } else { Type::Borrow(inner) });
+            }
             let mut args = Vec::new();
             if self.eat(TokenKind::LBracket) {
                 loop {

@@ -102,6 +102,10 @@ pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Res
         returns: None,
         tries: Vec::new(),
         loops: Vec::new(),
+        base: 0,
+        loop_scopes: Vec::new(),
+        try_scopes: Vec::new(),
+        has_try: false,
         volatile: HashSet::new(),
         shared: HashSet::new(),
         closures: 0,
@@ -135,9 +139,12 @@ pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Res
         }
         names_in_functions(statement, false, &mut emitter.shared);
     }
+    emitter.has_try = has_try(&program.statements);
     for statement in &program.statements {
         emitter.stmt(statement)?;
     }
+    // The end of the file is the end of the outermost block.
+    emitter.free_owned(0);
     let main = std::mem::take(&mut emitter.lines);
 
     // Then each function and method. They are compiled after `main` so that
@@ -146,14 +153,14 @@ pub fn emit(program: &Program, types: &Types, file: &str, firmware: bool) -> Res
         match &statement.kind {
             StmtKind::Function(decl) => {
                 let entry = &emitter.functions[&decl.name];
-                let (c_name, kind) = (entry.c_name.clone(), entry.kind.clone());
-                emitter.function(decl, &c_name, &kind, statement.span)?;
+                let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
+                emitter.function(decl, &c_name, &kind, &owned, statement.span)?;
             }
             StmtKind::Class(class) => {
                 for method in &class.methods {
                     let entry = &emitter.classes[&class.name].methods[&method.name];
-                    let (c_name, kind) = (entry.c_name.clone(), entry.kind.clone());
-                    emitter.function(method, &c_name, &kind, statement.span)?;
+                    let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
+                    emitter.function(method, &c_name, &kind, &owned, statement.span)?;
                 }
             }
             _ => {}
@@ -289,12 +296,65 @@ struct Variable {
     /// Whether anything has looked the variable up. That is how a function
     /// written inside another finds out which outside variables it needs.
     used: Cell<bool>,
+    /// It owns the list or object it holds, and frees it when its block
+    /// ends. In C it is NULL once the value has been given away.
+    owner: bool,
 }
 
 struct FunctionEntry {
     c_name: String,
     decl: Arc<Function>,
     kind: FunctionKind,
+    /// For each parameter: does the function take over an owned value?
+    owned: Vec<bool>,
+}
+
+/// `kind` without the checker's note that the value is owned, and whether
+/// the note was there. C holds an owned value exactly as it holds a shared
+/// one, so everything past this point works with the plain kind. What
+/// differs is who frees it, and that is kept beside the kind: see
+/// `Variable::owner`.
+fn disown(kind: Kind) -> (Kind, bool) {
+    match kind {
+        Kind::Owned(inner) => (*inner, true),
+        kind => (kind, false),
+    }
+}
+
+/// The same for everything a function takes and gives back.
+fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
+    let (params, owned) = kind.params.into_iter().map(disown).unzip();
+    (FunctionKind { params, returns: disown(kind.returns).0 }, owned)
+}
+
+/// The C statement that frees the owned value in `place`, if `place`
+/// still holds one.
+fn free_code(kind: &Kind, place: &str) -> String {
+    match kind {
+        Kind::Class(name) => format!("zeno_drop_{name}({place});"),
+        _ => format!("zeno_list_drop({place});"),
+    }
+}
+
+/// Is there a `try` anywhere in these statements?
+fn has_try(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match &statement.kind {
+        StmtKind::Try { .. } => true,
+        StmtKind::If { then_block, else_block, .. } => {
+            has_try(then_block) || else_block.as_deref().is_some_and(has_try)
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } => has_try(body),
+        StmtKind::Match { arms, .. } => arms.iter().any(|arm| has_try(&arm.body)),
+        _ => false,
+    })
+}
+
+/// Does this statement always leave the block it is in?
+fn leaves(statement: Option<&Stmt>) -> bool {
+    matches!(
+        statement.map(|statement| &statement.kind),
+        Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
+    )
 }
 
 /// A class: its fields in order, each with its type and default value, and
@@ -302,6 +362,9 @@ struct FunctionEntry {
 struct ClassEntry {
     fields: Vec<(String, Kind, Option<Expr>)>,
     methods: HashMap<String, FunctionEntry>,
+    /// The fields that own what they hold: an object of an `owned class`
+    /// frees those along with itself.
+    owned_fields: Vec<String>,
 }
 
 /// An enum: each case with the names and types of the values it carries.
@@ -350,6 +413,17 @@ struct Emitter<'a> {
     /// For each loop around this point, how many `try` blocks were open
     /// when it began. `break` has to close the ones opened since.
     loops: Vec<usize>,
+    /// Which of `scopes` is the first that belongs to the function being
+    /// compiled. A `return` frees what the owners from there inward hold.
+    base: usize,
+    /// For each loop around this point, how many scopes there were when it
+    /// began. `break` frees what the owners in the newer ones hold.
+    loop_scopes: Vec<usize>,
+    /// The same for each `try`: an error raised inside one leaves the
+    /// scopes opened since it began.
+    try_scopes: Vec<usize>,
+    /// The function being compiled has a `try` in it. See `stmt`, on `let`.
+    has_try: bool,
     /// In the function being compiled: the variables given a new value
     /// inside a `try`. See `changed_in_try`.
     volatile: HashSet<String>,
@@ -428,6 +502,8 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
             return Err(cannot("a variable that only ever holds `none`. Give it a type, as in `x: int or none`", span))
         }
         Kind::Other(name) => return Err(cannot(format!("a value of type {name}"), span)),
+        // In C an owned value is the same pointer a shared one would be.
+        Kind::Owned(inner) => c_type(inner, span)?,
     })
 }
 
@@ -528,6 +604,7 @@ fn key(kind: &Kind) -> String {
         Kind::Error => "error".to_string(),
         Kind::Function(_) => "function".to_string(),
         Kind::Other(_) => "other".to_string(),
+        Kind::Owned(inner) => key(inner),
     }
 }
 
@@ -542,7 +619,7 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
         // A number and its flag do not fit in a slot; see `zeno_box_int`.
         Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
-        Kind::None | Kind::Other(_) => return Err(cannot("a list of these", span)),
+        Kind::None | Kind::Other(_) | Kind::Owned(_) => return Err(cannot("a list of these", span)),
     };
     Ok(format!("(zeno_slot){{.{member} = {code}}}"))
 }
@@ -559,7 +636,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         }
         Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
         Kind::Optional(inner) => format!("zeno_unbox_{}({slot}.p)", scalar(inner, span)?),
-        Kind::None | Kind::Other(_) => return Err(cannot("a list of these", span)),
+        Kind::None | Kind::Other(_) | Kind::Owned(_) => return Err(cannot("a list of these", span)),
     })
 }
 
@@ -636,9 +713,55 @@ impl Emitter<'_> {
 
     fn declare(&mut self, name: &str, kind: Kind) -> String {
         let c_name = self.c_name(name);
-        let variable = Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false) };
+        let variable =
+            Variable { c_name: c_name.clone(), kind, mutable: false, boxed: None, used: Cell::new(false), owner: false };
         self.scopes.last_mut().expect("there is always a scope").insert(name.to_string(), variable);
         c_name
+    }
+
+    // ---------------------------------------------------------- Owned values
+    //
+    // An owned value is freed by its owner, at the end of the owner's block
+    // (docs/ownership.md). In the C, an owner is an ordinary pointer
+    // variable, with one extra rule: when its value is given away, the
+    // variable is set to NULL. So "free whatever the owners still hold" is
+    // one call per owner, and the call does nothing for NULL. The checker
+    // has already made sure a variable is never read after it gave its
+    // value away.
+
+    /// The C statements that free what the owners in `scopes[from..]`
+    /// still hold, innermost block first.
+    fn frees(&self, from: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        for scope in self.scopes.iter().skip(from).rev() {
+            let mut owners: Vec<&Variable> = scope.values().filter(|variable| variable.owner).collect();
+            owners.sort_by(|a, b| a.c_name.cmp(&b.c_name));
+            lines.extend(owners.into_iter().map(|owner| free_code(&owner.kind, &owner.c_name)));
+        }
+        lines
+    }
+
+    /// Write those statements out: a block is ending, or being left early.
+    fn free_owned(&mut self, from: usize) {
+        for line in self.frees(from) {
+            self.line(line);
+        }
+    }
+
+    /// The innermost block has reached its last statement. Unless that
+    /// statement left the block by itself (and freed on its way out), free
+    /// what the block's owners hold.
+    fn end_of_block(&mut self, statements: &[Stmt]) {
+        if !leaves(statements.last()) {
+            self.free_owned(self.scopes.len() - 1);
+        }
+    }
+
+    /// Mark the variable just declared as an owner.
+    fn owns(&mut self, name: &str) {
+        if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            variable.owner = true;
+        }
     }
 
     /// Which scope `name` is found in: 0 is the top level.
@@ -658,8 +781,9 @@ impl Emitter<'_> {
         let Some(kind) = self.types.function(decl).cloned() else {
             return Err(cannot(format!("the function `{}`", decl.name), span));
         };
+        let (kind, owned) = disown_all(kind);
         let c_name = self.c_name(c_name);
-        Ok(FunctionEntry { c_name, decl: decl.clone(), kind })
+        Ok(FunctionEntry { c_name, decl: decl.clone(), kind, owned })
     }
 
     fn register(&mut self, decl: &Arc<Function>, span: Span) -> Result<(), Error> {
@@ -682,6 +806,7 @@ impl Emitter<'_> {
         let Some(kinds) = self.types.class(decl).cloned() else {
             return Err(cannot(format!("the class `{}`", decl.name), span));
         };
+        let (kinds, owned): (Vec<Kind>, Vec<bool>) = kinds.into_iter().map(disown).unzip();
         let name = &decl.name;
         let c_name = self.c_name(name);
 
@@ -724,6 +849,18 @@ impl Emitter<'_> {
             format!("static bool zeno_same_{name}({c_name} *a, {c_name} *b)"),
             format!("    return {};\n", tests.join(" && ")),
         );
+        let mut owned_fields = Vec::new();
+        if decl.owned {
+            // The end of an object of an owned class: free what its fields
+            // own, then the object. NULL means it was given away.
+            let mut body = String::from("    if (self == NULL) return;\n");
+            for ((field, kind), _) in decl.fields.iter().zip(&kinds).zip(&owned).filter(|(_, owned)| **owned) {
+                body += &format!("    {}\n", free_code(kind, &format!("self->z_{}", field.name)));
+                owned_fields.push(field.name.clone());
+            }
+            body += "    zeno_free(self);\n";
+            self.helper(format!("static void zeno_drop_{name}({c_name} *self)"), body);
+        }
 
         let mut methods = HashMap::new();
         for method in &decl.methods {
@@ -736,7 +873,7 @@ impl Emitter<'_> {
             .zip(kinds)
             .map(|(field, kind)| (field.name.clone(), kind, field.default.clone()))
             .collect();
-        self.classes.insert(name.clone(), ClassEntry { fields, methods });
+        self.classes.insert(name.clone(), ClassEntry { fields, methods, owned_fields });
         Ok(())
     }
 
@@ -818,10 +955,18 @@ impl Emitter<'_> {
     }
 
     /// Compile one function or method, and add it to the output.
-    fn function(&mut self, decl: &Function, c_name: &str, kind: &FunctionKind, span: Span) -> Result<(), Error> {
+    fn function(
+        &mut self,
+        decl: &Function,
+        c_name: &str,
+        kind: &FunctionKind,
+        owned: &[bool],
+        span: Span,
+    ) -> Result<(), Error> {
         // A function sees the top-level variables and its own, nothing else.
         self.scopes.truncate(1);
         self.scopes.push(HashMap::new());
+        self.base = 1;
         self.lines.clear();
         self.indent = 1;
         // Names only have to be told apart within one C function, so the
@@ -831,13 +976,14 @@ impl Emitter<'_> {
         // In a firmware build a function that can raise gives back `true`
         // or `false`, and its answer goes out through one more parameter.
         let fallible = self.firmware && !decl.raises.is_empty();
-        let mut params = self.parameters(decl, kind, span)?;
+        let mut params = self.parameters(decl, kind, owned, span)?;
         if fallible && kind.returns != Kind::None {
             params.push(format!("{}*zeno_result", c_type(&kind.returns, span)?));
         }
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
         self.body(decl, kind, fallible, span)?;
         self.scopes.pop();
+        self.base = 0;
         self.used = used;
 
         let body = render(&std::mem::take(&mut self.lines));
@@ -848,12 +994,29 @@ impl Emitter<'_> {
 
     /// Declare the parameters of a function in the innermost scope, and
     /// return them as they are written in C.
-    fn parameters(&mut self, decl: &Function, kind: &FunctionKind, span: Span) -> Result<Vec<String>, Error> {
+    ///
+    /// A parameter that takes over an owned value is an owner like any
+    /// other: the function frees the value when it ends, unless it has
+    /// passed it on by then.
+    fn parameters(
+        &mut self,
+        decl: &Function,
+        kind: &FunctionKind,
+        owned: &[bool],
+        span: Span,
+    ) -> Result<Vec<String>, Error> {
+        // See `stmt`, on `let`, for what `volatile` is doing here.
+        let careful = if !self.firmware && has_try(&decl.body) { "volatile " } else { "" };
         let mut params = Vec::new();
-        for (param, param_kind) in decl.params.iter().zip(&kind.params) {
+        for (index, (param, param_kind)) in decl.params.iter().zip(&kind.params).enumerate() {
             let param_type = c_type(param_kind, span)?;
             let param_name = self.declare(&param.name, param_kind.clone());
-            params.push(format!("{param_type}{param_name}"));
+            if owned.get(index) == Some(&true) {
+                self.owns(&param.name);
+                params.push(format!("{param_type}{careful}{param_name}"));
+            } else {
+                params.push(format!("{param_type}{param_name}"));
+            }
         }
         Ok(params)
     }
@@ -874,12 +1037,19 @@ impl Emitter<'_> {
         let shared = std::mem::replace(&mut self.shared, shared);
         let tries = std::mem::take(&mut self.tries);
         let loops = std::mem::take(&mut self.loops);
+        let loop_scopes = std::mem::take(&mut self.loop_scopes);
+        let try_scopes = std::mem::take(&mut self.try_scopes);
+        let has_try = std::mem::replace(&mut self.has_try, has_try(&decl.body));
         let returns = self.returns.replace(kind.returns.clone());
         let arriving = std::mem::take(&mut self.arriving);
         let fallible = std::mem::replace(&mut self.fallible, fallible);
 
         let mut result = decl.body.iter().try_for_each(|statement| self.stmt(statement));
         let ends = matches!(decl.body.last().map(|last| &last.kind), Some(StmtKind::Return(_) | StmtKind::Raise(_)));
+        // Reaching the end of the body: free what its owners still hold.
+        if result.is_ok() && !ends {
+            self.free_owned(self.base);
+        }
         // A function that may give back `none` does so if it reaches its
         // end without a `return`.
         if let (Ok(()), Kind::Optional(inner), false) = (&result, &kind.returns, ends) {
@@ -903,6 +1073,9 @@ impl Emitter<'_> {
         self.shared = shared;
         self.tries = tries;
         self.loops = loops;
+        self.loop_scopes = loop_scopes;
+        self.try_scopes = try_scopes;
+        self.has_try = has_try;
         self.returns = returns;
         result
     }
@@ -913,6 +1086,9 @@ impl Emitter<'_> {
         self.scopes.push(HashMap::new());
         self.indent += 1;
         let result = statements.iter().try_for_each(|statement| self.stmt(statement));
+        if result.is_ok() {
+            self.end_of_block(statements);
+        }
         self.indent -= 1;
         self.scopes.pop();
         result
@@ -925,6 +1101,8 @@ impl Emitter<'_> {
         match &statement.kind {
             StmtKind::Let { name, ty, value, .. } | StmtKind::Const { name, ty, value } => {
                 let mutable = matches!(statement.kind, StmtKind::Let { mutable: true, .. });
+                // The checker knows whether this variable owns its value.
+                let owner = self.types.owner(statement);
                 let expected = ty.as_ref().and_then(|ty| self.kind_of_type(ty));
                 let mut val = self.expr_as(value, expected.as_ref())?;
                 if let Some(expected) = &expected {
@@ -961,16 +1139,27 @@ impl Emitter<'_> {
                         mutable,
                         boxed: Some(pointer),
                         used: Cell::new(false),
+                        owner: false,
                     };
                     self.scopes.last_mut().expect("there is always a scope").insert(name.clone(), variable);
                 } else {
                     // See `changed_in_try` for what `volatile` is doing here.
-                    let careful = if mutable && self.volatile.contains(name) { "volatile " } else { "" };
+                    //
+                    // An owner needs the same care for a different reason.
+                    // Giving its value away sets it to NULL. If that
+                    // happens inside a `try` and an error then jumps back
+                    // here, C does not promise the NULL is still there
+                    // unless the variable is `volatile`, and the block's
+                    // end would free a value that is no longer its own.
+                    let changes = mutable && self.volatile.contains(name);
+                    let gives = owner && self.has_try && !self.firmware;
+                    let careful = if changes || gives { "volatile " } else { "" };
                     let c_name = self.declare(name, val.kind);
                     self.line(format!("{c_type}{careful}{c_name} = {};", val.code));
                 }
                 if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
                     variable.mutable = mutable;
+                    variable.owner = owner;
                 }
             }
 
@@ -978,8 +1167,11 @@ impl Emitter<'_> {
 
             StmtKind::Expr(expr) => {
                 let val = self.expr(expr)?;
-                // What is left may still need to run, for what it does.
-                if !val.code.is_empty() && (val.fails || val.calls) {
+                if self.types.discarded(expr) {
+                    // An owned value that nobody keeps is freed on the spot.
+                    self.line(free_code(&val.kind, &val.code));
+                } else if !val.code.is_empty() && (val.fails || val.calls) {
+                    // What is left may still need to run, for what it does.
                     self.line(format!("{};", val.code));
                 }
             }
@@ -1011,10 +1203,11 @@ impl Emitter<'_> {
             }
 
             StmtKind::For { variable, iterable, body } => {
-                self.open_loop(variable, iterable)?;
+                let walked = self.open_loop(variable, iterable)?;
                 self.loop_body(body)?;
                 self.line("}");
                 self.scopes.pop();
+                self.close_loop(walked);
             }
 
             StmtKind::Match { subject, arms } => self.match_statement(subject, arms, span)?,
@@ -1026,7 +1219,14 @@ impl Emitter<'_> {
                 match value {
                     Some(value) if returns != Kind::None => {
                         let val = self.expr_as(value, Some(&returns))?;
-                        let val = self.coerce(val, &returns, span)?;
+                        let mut val = self.coerce(val, &returns, span)?;
+                        // Every block of the function ends here. Work the
+                        // value out first: it may read what is freed next.
+                        let frees = self.frees(self.base);
+                        if !frees.is_empty() {
+                            val = self.temp(val, span)?;
+                            frees.into_iter().for_each(|line| self.line(line));
+                        }
                         if self.fallible {
                             self.line(format!("*zeno_result = {};", val.code));
                             self.line("return true;");
@@ -1044,6 +1244,7 @@ impl Emitter<'_> {
                         return Err(cannot("returning a value from a function that returns nothing", span))
                     }
                     _ => {
+                        self.free_owned(self.base);
                         self.leave_tries(0);
                         self.line(if self.fallible { "return true;" } else { "return;" });
                     }
@@ -1053,6 +1254,9 @@ impl Emitter<'_> {
                 let Some(&opened_before) = self.loops.last() else {
                     return Err(cannot("`break` or `continue` outside a loop", span));
                 };
+                // The blocks opened since the loop began end here.
+                let outside = self.loop_scopes.last().copied().unwrap_or(self.scopes.len());
+                self.free_owned(outside);
                 self.leave_tries(opened_before);
                 self.line(if statement.kind == StmtKind::Break { "break;" } else { "continue;" });
             }
@@ -1102,21 +1306,28 @@ impl Emitter<'_> {
 
             StmtKind::Raise(value) => {
                 let val = self.expr(value)?;
-                match &val.kind {
-                    Kind::Error => self.line(format!("zeno_raise({}, {});", val.code, at(span))),
+                // The jump leaves at least the blocks opened since the
+                // nearest `try` in this function, or all of the function's
+                // if there is none. Free what their owners hold first.
+                // (The functions the jump passes through on its way are
+                // not asked: what they own is left to the collector.)
+                let inside = self.try_scopes.last().copied().unwrap_or(self.base);
+                let frees = self.frees(inside);
+                let error = match &val.kind {
+                    Kind::Error if frees.is_empty() => val.code,
+                    // Making the error may read what is about to be freed.
+                    Kind::Error => self.temp(val, span)?.code,
                     // An object of a class can be raised too. It travels
                     // inside an error value whose kind is the class's name.
                     Kind::Class(name) => {
                         let name = name.clone();
                         let object = self.temp(val, span)?.code;
-                        self.line(format!(
-                            "zeno_raise(zeno_error_new({}, zeno_show_{name}({object}), {object}), {});",
-                            c_string(&name),
-                            at(span)
-                        ));
+                        format!("zeno_error_new({}, zeno_show_{name}({object}), {object})", c_string(&name))
                     }
                     _ => return Err(cannot("`raise` with anything but an error or an object", span)),
-                }
+                };
+                frees.into_iter().for_each(|line| self.line(line));
+                self.line(format!("zeno_raise({error}, {});", at(span)));
             }
         }
         Ok(())
@@ -1126,7 +1337,9 @@ impl Emitter<'_> {
     /// the loop began, for `break` and `continue` to compare against.
     fn loop_body(&mut self, body: &[Stmt]) -> Result<(), Error> {
         self.loops.push(self.tries.len());
+        self.loop_scopes.push(self.scopes.len());
         let result = self.block(body);
+        self.loop_scopes.pop();
         self.loops.pop();
         result
     }
@@ -1173,7 +1386,9 @@ impl Emitter<'_> {
         self.line(format!("zeno_trying = &{place};"));
         self.line(format!("if (setjmp({place}.place) == 0) {{"));
         self.tries.push(place.clone());
+        self.try_scopes.push(self.scopes.len());
         let result = self.block(body);
+        self.try_scopes.pop();
         self.tries.pop();
         result?;
         // Reaching the end of the body means nothing was raised. (If the
@@ -1213,6 +1428,9 @@ impl Emitter<'_> {
                 self.line(format!("{c_type}{c_name} = {value};"));
             }
             let result = handler.body.iter().try_for_each(|statement| self.stmt(statement));
+            if result.is_ok() {
+                self.end_of_block(&handler.body);
+            }
             self.indent -= 1;
             self.scopes.pop();
             result?;
@@ -1248,12 +1466,19 @@ impl Emitter<'_> {
         if let Some(arriving) = self.arriving.last_mut() {
             arriving.extend(kinds.iter().cloned());
         }
+        // Leaving this way ends blocks early, like `break` and `return`
+        // do: free what their owners hold on the way out.
+        let leave = |frees: Vec<String>, jump: String| match frees.is_empty() {
+            true => jump,
+            false => format!("{{ {} {jump} }}", frees.join(" ")),
+        };
         if let Some(label) = self.tries.last() {
             self.jumped.insert(label.clone());
-            return Ok(format!("goto {label};"));
+            let inside = self.try_scopes.last().copied().unwrap_or(self.scopes.len());
+            return Ok(leave(self.frees(inside), format!("goto {label};")));
         }
         if self.fallible {
-            return Ok("return false;".to_string());
+            return Ok(leave(self.frees(self.base), "return false;".to_string()));
         }
         if self.returns.is_none() {
             return Ok("zeno_uncaught();".to_string());
@@ -1318,10 +1543,12 @@ impl Emitter<'_> {
         self.labels += 1;
         let (label, caught) = (format!("zeno_except_{}", self.labels), format!("zeno_caught_{}", self.labels));
         self.tries.push(label.clone());
+        self.try_scopes.push(self.scopes.len());
         self.arriving.push(BTreeSet::new());
         self.line("{");
         let result = self.block(body);
         self.line("}");
+        self.try_scopes.pop();
         self.tries.pop();
         let arrived = self.arriving.pop().unwrap_or_default();
         result?;
@@ -1380,6 +1607,9 @@ impl Emitter<'_> {
                 self.line(format!("(void){c_name};"));
             }
             let result = handler.body.iter().try_for_each(|statement| self.stmt(statement));
+            if result.is_ok() {
+                self.end_of_block(&handler.body);
+            }
             self.indent -= 1;
             self.scopes.pop();
             result?;
@@ -1417,6 +1647,8 @@ impl Emitter<'_> {
     fn kind_of_type(&self, ty: &Type) -> Option<Kind> {
         let (name, args) = match ty {
             Type::Named { name, args } => (name, args),
+            // Who owns a value does not change how C holds it.
+            Type::Owned(inner) | Type::Borrow(inner) => return self.kind_of_type(inner),
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
             Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
@@ -1468,8 +1700,14 @@ impl Emitter<'_> {
                 let Some(variable) = self.lookup(name) else {
                     return Err(cannot(format!("an assignment to `{name}`"), target.span));
                 };
-                let (c_name, kind) = (variable.c_name.clone(), variable.kind.clone());
-                let val = self.coerce(val, &kind, span)?;
+                let (c_name, kind, owner) = (variable.c_name.clone(), variable.kind.clone(), variable.owner);
+                let mut val = self.coerce(val, &kind, span)?;
+                if owner {
+                    // The new value is made first, since making it may
+                    // read the old one. Then the old one is freed.
+                    val = self.temp(val, span)?;
+                    self.line(free_code(&kind, &c_name));
+                }
                 self.line(format!("{c_name} = {};", val.code));
             }
             // For the other two, Zeno works the new value out first and then
@@ -1486,7 +1724,14 @@ impl Emitter<'_> {
                     return Err(cannot("an assignment to this", target.span));
                 };
                 let kind = kind.clone();
-                let val = self.coerce(val, &kind, span)?;
+                let mut val = self.coerce(val, &kind, span)?;
+                let owned = matches!(&object.kind, Kind::Class(class) if self.classes[class].owned_fields.contains(name));
+                if owned {
+                    // As for an owner variable: new value first, then free
+                    // the one the field held.
+                    val = self.temp(val, span)?;
+                    self.line(free_code(&kind, &format!("{}->z_{name}", object.code)));
+                }
                 self.line(format!("{}->z_{name} = {};", object.code, val.code));
             }
             ExprKind::Index { object, index } if is_place(object) => {
@@ -1537,6 +1782,9 @@ impl Emitter<'_> {
                 self.line(format!("{c_type}{c_name} = {code};"));
             }
             let result = arm.body.iter().try_for_each(|statement| self.stmt(statement));
+            if result.is_ok() {
+                self.end_of_block(&arm.body);
+            }
             self.indent -= 1;
             self.scopes.pop();
             result?;
@@ -1634,8 +1882,9 @@ impl Emitter<'_> {
 
     /// The first line of a `for` loop: `for i in range(...)` or `for x in
     /// items`. It declares the loop variable in a scope of its own; the
-    /// caller writes the body, the closing `}`, and drops the scope.
-    fn open_loop(&mut self, variable: &str, iterable: &Expr) -> Result<(), Error> {
+    /// caller writes the body, the closing `}`, drops the scope, and gives
+    /// what this returns to `close_loop`.
+    fn open_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
         let range = match &iterable.kind {
             ExprKind::Call { callee, args }
@@ -1681,13 +1930,24 @@ impl Emitter<'_> {
             }
             _ => return Err(cannot("this `range`", span)),
         }
-        Ok(())
+        Ok(None)
+    }
+
+    /// After the `}` of a `for` loop. A loop over a list walks a copy made
+    /// for it alone (see `open_list_loop`), and `walked` is that copy.
+    /// Nothing else ever saw it, so it can be freed here and now instead
+    /// of being left for the collector. (A `return` from inside the loop
+    /// skips this line, and then the collector does get it.)
+    fn close_loop(&mut self, walked: Option<String>) {
+        if let Some(list) = walked {
+            self.line(format!("zeno_list_drop({list});"));
+        }
     }
 
     /// `for x in items`. The loop walks the list as it was when the loop
     /// began, so a body that adds to the list or removes from it cannot
     /// confuse the loop. That is what `zeno run` does too.
-    fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<(), Error> {
+    fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
         let list = self.expr(iterable)?;
         let item = match &list.kind {
@@ -1715,7 +1975,7 @@ impl Emitter<'_> {
         let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
         self.line(format!("{c_type}{c_name} = {value};"));
         self.indent -= 1;
-        Ok(())
+        Ok(Some(items))
     }
 
     // ---------------------------------------------------------- Expressions
@@ -1803,6 +2063,21 @@ impl Emitter<'_> {
                 Ok(Val::plain(format!("{:?}", std::f64::consts::PI), Kind::Float))
             }
             ExprKind::Name(name) => match self.lookup(name) {
+                // The owner gives its value away here. Take the pointer
+                // out and leave NULL behind, so that the end of the owner's
+                // block finds nothing to free.
+                Some(variable) if self.types.moves(expr) => {
+                    let (c_name, kind) = (variable.c_name.clone(), variable.kind.clone());
+                    let taken = self.new_temp();
+                    self.line(format!("{}{taken} = {c_name};", c_type(&kind, span)?));
+                    self.line(format!("{c_name} = NULL;"));
+                    // Nothing else on this line can be looking at the
+                    // variable (the checker refuses a line that uses an
+                    // owner and gives it away), and no other function can
+                    // reach it. So no order has to be kept: the temporary
+                    // is as plain as a literal.
+                    Ok(Val::plain(taken, kind))
+                }
                 Some(variable) => {
                     let mut val = Val::plain(variable.c_name.clone(), variable.kind.clone());
                     // Only a top-level variable, or one shared with a
@@ -1944,7 +2219,7 @@ impl Emitter<'_> {
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let list = self.new_temp();
                 self.line(format!("zeno_list *{list} = zeno_list_new(0);"));
-                self.open_loop(variable, iterable)?;
+                let walked = self.open_loop(variable, iterable)?;
                 self.indent += 1;
                 if let Some(condition) = condition {
                     let condition = self.expr(condition)?;
@@ -1960,6 +2235,7 @@ impl Emitter<'_> {
                 self.indent -= 1;
                 self.line("}");
                 self.scopes.pop();
+                self.close_loop(walked);
                 let mut val = Val::plain(list, Kind::List(Box::new(item.kind)));
                 val.pre_fails = true;
                 val.pre_calls = true;
@@ -2131,6 +2407,7 @@ impl Emitter<'_> {
         let Some(kind) = self.types.function(decl).cloned() else {
             return Err(cannot("this function", span));
         };
+        let (kind, owned) = disown_all(kind);
         if self.firmware && !decl.raises.is_empty() {
             return Err(raises_as_value(span));
         }
@@ -2149,20 +2426,29 @@ impl Emitter<'_> {
                     Some(_) => (format!("(*env->z_{name})"), Some(format!("env->z_{name}"))),
                     None => (format!("env->z_{name}"), None),
                 };
-                let variable =
-                    Variable { c_name, kind: variable.kind.clone(), mutable: variable.mutable, boxed, used: Cell::new(false) };
+                let variable = Variable {
+                    c_name,
+                    kind: variable.kind.clone(),
+                    mutable: variable.mutable,
+                    boxed,
+                    used: Cell::new(false),
+                    // The function around this one goes on owning it.
+                    owner: false,
+                };
                 offered.insert(name.clone(), variable);
             }
         }
         self.scopes = vec![globals, offered, HashMap::new()];
+        let base = std::mem::replace(&mut self.base, 2);
         let lines = std::mem::take(&mut self.lines);
         let indent = std::mem::replace(&mut self.indent, 1);
         let used = self.used.clone();
 
-        let result = match self.parameters(decl, &kind, span) {
+        let result = match self.parameters(decl, &kind, &owned, span) {
             Ok(params) => self.body(decl, &kind, false, span).map(|()| params),
             Err(error) => Err(error),
         };
+        self.base = base;
 
         // Put everything back as it was.
         let body = render(&std::mem::replace(&mut self.lines, lines));
@@ -2317,6 +2603,8 @@ impl Emitter<'_> {
         self.line(inside);
         self.indent -= 1;
         self.line("}");
+        // The copy that was walked was nobody else's.
+        self.line(format!("zeno_list_drop({items});"));
         result.pre_fails = true;
         result.pre_calls = true;
         Ok(result)
@@ -2812,6 +3100,7 @@ impl Emitter<'_> {
             // `none` itself, or a call that gave nothing back.
             Kind::None => "\"none\"".to_string(),
             Kind::Other(name) => return Err(cannot(format!("printing a value of type {name}"), span)),
+            Kind::Owned(_) => return Err(cannot("printing this", span)),
         })
     }
 
@@ -2838,7 +3127,7 @@ impl Emitter<'_> {
             Kind::None => "true".to_string(),
             // Two function values are equal only if they are the same one.
             Kind::Function(_) => format!("({a} == {b})"),
-            Kind::Other(_) => return Err(cannot("comparing these", span)),
+            Kind::Other(_) | Kind::Owned(_) => return Err(cannot("comparing these", span)),
         })
     }
 
@@ -4127,6 +4416,7 @@ print(word[5])
             ("shapes", include_str!("../examples/shapes.zeno")),
             ("sensor", include_str!("../examples/sensor.zeno")),
             ("memory", include_str!("../examples/memory.zeno")),
+            ("buffer", include_str!("../examples/buffer.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -4686,6 +4976,425 @@ try {
     print(err, filler)
 }
 "##);
+    }
+
+    // ----------------------------------------------------------- Owned values
+
+    #[test]
+    fn owned_values_match() {
+        // Making, lending, giving away, replacing, and leaving a block
+        // early with `continue`.
+        same_as_interpreter(
+            "owned",
+            r##"owned class Packet {
+    id: int
+    data: owned list[int]
+
+    function size(self) -> int {
+        return len(self.data)
+    }
+
+    function add(self, value: int) {
+        self.data.append(value)
+    }
+}
+
+function total(xs: borrow list[int]) -> int {
+    var sum_of = 0
+    for x in xs {
+        sum_of += x
+    }
+    return sum_of
+}
+
+function make(id: int, count: int) -> Packet {
+    let data: owned list[int] = [n * id for n in range(count)]
+    return Packet(id, data)
+}
+
+function send(p: Packet) -> int {
+    print(f"sending {p.id} with {p.size()} items, total {total(p.data)}")
+    return p.size()
+}
+
+function describe(p: borrow Packet) -> str {
+    return f"packet {p.id}: {p.data}"
+}
+
+let first = make(1, 4)
+first.add(99)
+print(describe(first))
+print(first)
+let sent = send(first)
+print(sent)
+
+var buffer: owned list[int] = [1, 2, 3]
+print(total(buffer), len(buffer), buffer[0])
+buffer = [4, 5]
+print(buffer)
+let shared = [7, 8, 9]
+print(total(shared))
+
+for i in range(3) {
+    let p = make(i + 1, 3)
+    if i == 1 {
+        print(send(p))
+        continue
+    }
+    print(describe(p))
+}
+"##,
+        );
+    }
+
+    #[test]
+    fn owned_values_match_when_errors_and_early_exits_end_their_blocks() {
+        // Owners in scope when a function raises, when a `try` catches,
+        // and when `return`, `break` and `continue` leave from deep inside.
+        same_as_interpreter(
+            "owned-exits",
+            r##"# Errors, early exits and owners.
+owned class Frame {
+    id: int
+    bytes: owned list[int]
+
+    function checksum(self) -> int {
+        var total = 0
+        for b in self.bytes {
+            total = (total + b) % 256
+        }
+        return total
+    }
+}
+
+owned class Link {
+    name: str
+    last: Frame
+    sent: int
+}
+
+class Timeout {
+    after: int
+}
+
+function build(id: int, size: int) -> Frame {
+    return Frame(id, [(id * 7 + n) % 256 for n in range(size)])
+}
+
+function transmit(frame: Frame) -> int raises Timeout {
+    if frame.id % 4 == 3 {
+        raise Timeout(frame.id)
+    }
+    return frame.checksum()
+}
+
+function parse(text: str, into: borrow list[int]) raises ValueError {
+    for part in text.split(",") {
+        into.append(int(part))
+    }
+}
+
+function longest(a: borrow list[int], b: borrow list[int]) -> int {
+    if len(a) > len(b) {
+        return len(a)
+    }
+    return len(b)
+}
+
+function first_big(limit: int) -> Frame {
+    var n = 0
+    while true {
+        let candidate = build(n, n)
+        if candidate.checksum() > limit {
+            return candidate
+        }
+        n += 1
+    }
+}
+
+function drain(frames: int) -> int {
+    var good = 0
+    for id in range(frames) {
+        let frame = build(id, 5)
+        if id % 5 == 4 {
+            continue
+        }
+        try {
+            let sum = transmit(frame)
+            good += 1
+            print(f"frame {id} ok, checksum {sum}")
+        } except Timeout as t {
+            print(f"frame {t.after} timed out")
+        }
+    }
+    return good
+}
+
+print(drain(10))
+
+let numbers: owned list[int] = []
+try {
+    parse("1,2,3", numbers)
+    parse("4,five,6", numbers)
+} except ValueError as e {
+    print("bad:", e.message)
+}
+print(numbers, longest(numbers, [1, 2]))
+
+let big = first_big(100)
+print(big.id, big.checksum(), len(big.bytes))
+
+var link = Link("uart0", build(1, 3), 0)
+print(link)
+link.last = build(2, 4)
+link.sent += 1
+print(link.last.checksum(), link)
+link = Link("uart1", build(9, 2), 0)
+print(link.name, link.last)
+
+function swap_in(link: Link, frame: Frame) -> Link {
+    link.last = frame
+    link.sent += 1
+    return link
+}
+let again = swap_in(link, build(5, 1))
+print(again)
+
+var kept: owned list[str] = ["a"]
+for round in range(4) {
+    let next: owned list[str] = [s + str(round) for s in kept]
+    next.append("x")
+    kept = next
+}
+print(kept)
+"##,
+        );
+        // A value moved into a function that frees it and then raises;
+        // owners in `match` cases, in a function value, in nested loops.
+        same_as_interpreter(
+            "owned-raises",
+            r##"owned class Buf {
+    tag: str
+    data: owned list[int]
+}
+
+class Refused {
+    why: str
+}
+
+enum Mode {
+    Fast
+    Slow(factor: int)
+}
+
+function fresh(tag: str, n: int) -> Buf {
+    return Buf(tag, [i for i in range(n)])
+}
+
+# Takes the buffer, frees it itself, and then raises.
+function swallow(b: Buf, fail: bool) -> int raises Refused {
+    let size = len(b.data)
+    if fail {
+        let inner = b
+        print("swallowed", inner.tag)
+        raise Refused("too big: " + str(size))
+    }
+    return size
+}
+
+function attempt(n: int, fail: bool) -> str {
+    let b = fresh("b" + str(n), n)
+    let spare = fresh("spare", 2)
+    var result = "none"
+    try {
+        let got = swallow(b, fail)
+        result = "took " + str(got)
+    } except Refused as r {
+        result = r.why
+    }
+    return result + " / " + spare.tag
+}
+
+function takes_and_tries(b: Buf, fail: bool) -> int {
+    try {
+        return swallow(b, fail)
+    } except Refused {
+        return -1
+    }
+}
+
+function regrow(b: Buf) -> Buf {
+    b.data.append(len(b.data))
+    return b
+}
+
+function by_mode(mode: Mode) -> int {
+    match mode {
+        case Fast {
+            let b = fresh("fast", 3)
+            return len(b.data)
+        }
+        case Slow(factor) {
+            let b = fresh("slow", factor)
+            if factor > 3 {
+                return -len(b.data)
+            }
+            print("slow", b.tag)
+        }
+    }
+    return 0
+}
+
+function counter() -> function() -> int {
+    var count = 0
+    return function() -> int {
+        let scratch: owned list[int] = [count, count + 1]
+        count += len(scratch)
+        return count
+    }
+}
+
+function search(limit: int) -> int {
+    var found = -1
+    for i in range(limit) {
+        let outer = fresh("o", i)
+        var j = 0
+        while j < 3 {
+            let inner = fresh("i", j)
+            j += 1
+            if len(inner.data) + len(outer.data) == 4 {
+                found = i * 10 + j
+                break
+            }
+            if j == 2 {
+                continue
+            }
+            inner.data.append(1)
+        }
+        if found >= 0 {
+            break
+        }
+    }
+    return found
+}
+
+print(attempt(3, false))
+print(attempt(4, true))
+print(takes_and_tries(fresh("t", 5), false), takes_and_tries(fresh("t", 6), true))
+
+var b = fresh("grow", 1)
+for i in range(3) {
+    b = regrow(b)
+}
+print(b)
+
+print(by_mode(Fast), by_mode(Slow(2)), by_mode(Slow(5)))
+let next = counter()
+print(next(), next(), next())
+print(search(6))
+
+fresh("nobody", 3)
+Buf("nobody either", [])
+
+if len(b.data) > 2 {
+    let local = fresh("local", 2)
+    try {
+        print(swallow(local, true))
+    } except Refused as r {
+        print("top level:", r.why)
+    }
+}
+
+var count = 0
+function bump() -> int {
+    var count = 10
+    let adder = function() -> int {
+        count += 1
+        return count
+    }
+    return adder()
+}
+var scratch: owned list[int] = [1]
+scratch = [n for n in range(bump())]
+print(len(scratch), count)
+"##,
+        );
+    }
+
+    #[test]
+    fn an_owned_value_is_freed_without_the_collector() {
+        // The same work twice. With shared lists the collector has to run
+        // to get the memory back. With owned lists it never needs to.
+        let work = |list_type: &str| {
+            format!(
+                "function work(rounds: int) -> int {{
+    var total = 0
+    for round in range(rounds) {{
+        let samples: {list_type} = [n * round for n in range(500)]
+        total += samples[499] % 7
+    }}
+    return total
+}}
+print(work(400))
+"
+            )
+        };
+        let Some((shared_printed, [_, shared_most, shared_collections])) = memory_of("shared-work", &work("list[int]"))
+        else {
+            return;
+        };
+        let Some((owned_printed, [made, owned_most, owned_collections])) =
+            memory_of("owned-work", &work("owned list[int]"))
+        else {
+            return;
+        };
+        assert_eq!(owned_printed, shared_printed);
+        assert_eq!(owned_printed, interpreted(&work("owned list[int]")));
+        assert!(made > 2_000_000, "the program made {made} bytes");
+        assert!(shared_collections > 20, "with shared lists the collector ran {shared_collections} times");
+        assert_eq!(owned_collections, 0, "with owned lists the collector should have nothing to do");
+        assert!(owned_most < 8_192, "at most {owned_most} bytes were in use at once");
+        assert!(owned_most < shared_most);
+    }
+
+    #[test]
+    fn the_c_for_an_owned_value() {
+        let source = "owned class Frame {
+    id: int
+    bytes: owned list[int]
+}
+class Refused {
+    id: int
+}
+function check(frame: borrow Frame) -> int raises Refused {
+    if frame.id > 9 {
+        raise Refused(frame.id)
+    }
+    return len(frame.bytes)
+}
+function send(frame: Frame) -> int raises Refused {
+    let size = check(frame)
+    return size + 1
+}
+function main() -> int raises Refused {
+    let frame = Frame(1, [1, 2, 3])
+    return send(frame)
+}
+";
+        let c = compile(source).expect("the program compiles");
+        // An object of an owned class frees what its fields own, then itself.
+        assert!(c.contains("static void zeno_drop_Frame(z_Frame *self) {\n    if (self == NULL) return;\n    zeno_list_drop(self->z_bytes);\n    zeno_free(self);\n}"), "{c}");
+        // Giving a value away takes the pointer and leaves NULL behind.
+        assert!(c.contains(" = z_frame;\n    z_frame = NULL;\n"), "{c}");
+        // The one that took it over frees it before it returns.
+        assert!(c.contains("    zeno_drop_Frame(z_frame);\n    return t"), "{c}");
+        // A borrowed value is an ordinary pointer, and nothing frees it.
+        let check = c.split("static int64_t z_check(z_Frame *z_frame) {").nth(1).expect("the C for `check`");
+        assert!(!check.split("\n}\n").next().expect("its body").contains("zeno_drop"), "{c}");
+
+        // In a firmware build, a failed call frees on its way out too.
+        let c = compile_firmware(source).expect("the program compiles for firmware");
+        assert!(c.contains(")) { zeno_drop_Frame(z_frame); return false; }"), "{c}");
     }
 
     #[test]

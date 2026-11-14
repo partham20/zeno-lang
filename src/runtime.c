@@ -48,9 +48,16 @@ static const char *zeno_file = "";
  * memory and breaks nothing.
  */
 
-/* What sits in front of every block. */
+/* What sits in front of every block. The first field does two jobs, at
+ * different times. Between collections it is the block's `place` in the
+ * table, so that zeno_free can take the block out without searching. During
+ * a collection it is `next_waiting`. A collection sorts the table anyway,
+ * and writes every place afresh as it finishes. */
 typedef struct zeno_block {
-    struct zeno_block *next_waiting;        /* see zeno_waiting below */
+    union {
+        struct zeno_block *next_waiting;    /* see zeno_waiting below */
+        size_t place;                       /* zeno_blocks[place] is this block */
+    } link;
     size_t size : sizeof(size_t) * 8 - 2;   /* bytes handed to the program */
     size_t marked : 1;                      /* reached, during a collection */
     size_t plain : 1;                       /* holds text or one number: no pointers inside */
@@ -75,6 +82,7 @@ static size_t zeno_most_in_use = 0;
 static size_t zeno_collections = 0;
 static size_t zeno_blocks_made = 0;
 static size_t zeno_bytes_made = 0;
+static size_t zeno_blocks_freed_at_once = 0;
 
 /* Where the stack starts. `main` sets it before anything else runs. */
 static void *zeno_stack_base = NULL;
@@ -122,7 +130,7 @@ static void zeno_mark(uintptr_t word) {
     if (block->marked) return;
     block->marked = 1;
     if (!block->plain) {
-        block->next_waiting = zeno_waiting;
+        block->link.next_waiting = zeno_waiting;
         zeno_waiting = block;
     }
 }
@@ -182,7 +190,7 @@ static void zeno_collect(void) {
      * blocks, until none are waiting. */
     while (zeno_waiting != &zeno_end_of_waiting) {
         zeno_block *block = zeno_waiting;
-        zeno_waiting = block->next_waiting;
+        zeno_waiting = block->link.next_waiting;
         zeno_mark_words(block + 1, block->size);
     }
 
@@ -192,6 +200,7 @@ static void zeno_collect(void) {
         zeno_block *block = zeno_blocks[i];
         if (block->marked) {
             block->marked = 0;
+            block->link.place = kept;
             zeno_blocks[kept++] = block;
         } else {
             zeno_in_use -= block->size;
@@ -226,7 +235,7 @@ static char *zeno_new_block(size_t size, bool plain) {
         block = plain ? malloc(whole) : calloc(1, whole);
         if (block == NULL) zeno_out_of_memory();
     }
-    block->next_waiting = NULL;
+    block->link.place = zeno_block_count;
     block->size = size;
     block->marked = 0;
     block->plain = plain;
@@ -249,12 +258,37 @@ static char *zeno_alloc_text(size_t size) {
     return zeno_new_block(size, true);
 }
 
+/* Give one block back at once, without waiting for the collector. This is
+ * what the end of an owner's block does to an owned value (see
+ * docs/ownership.md): the checker has made sure nothing else can still use
+ * it. `memory` is what zeno_alloc returned, or NULL, which does nothing.
+ *
+ * The block leaves the table by letting the last entry take its place, so
+ * this costs the same however many blocks there are. If a block is never
+ * freed this way (an error jumped past the end of its owner's block, say),
+ * nothing is lost: it is still in the table, and the collector frees it
+ * when it finds nothing pointing at it, like any other block. */
+static void zeno_free(void *memory) {
+    if (memory == NULL) return;
+    zeno_block *block = (zeno_block *)memory - 1;
+    zeno_block *last = zeno_blocks[--zeno_block_count];
+    last->link.place = block->link.place;
+    zeno_blocks[block->link.place] = last;
+    zeno_in_use -= block->size;
+    zeno_blocks_freed_at_once++;
+    free(block);
+}
+
 /* What a program built with `zeno build --memory` prints as it ends. */
 #ifdef ZENO_MEMORY_REPORT
 static void zeno_memory_report(void) {
     fflush(stdout);
-    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, %zu collections\n",
+    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, %zu collections",
             zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_collections);
+    if (zeno_blocks_freed_at_once > 0) {
+        fprintf(stderr, ", %zu blocks freed without the collector", zeno_blocks_freed_at_once);
+    }
+    fprintf(stderr, "\n");
 }
 #endif
 
@@ -763,14 +797,26 @@ static zeno_list *zeno_list_new(int64_t room) {
 
 static void zeno_list_append(zeno_list *list, zeno_slot item) {
     if (list->len == list->room) {
-        /* Full: move to a place twice the size. */
+        /* Full: move to a place twice the size. Only the list itself ever
+         * points at its `items`, so the old place can go back at once. */
         int64_t room = list->room == 0 ? 4 : list->room * 2;
         zeno_slot *items = (zeno_slot *)zeno_alloc((size_t)room * sizeof(zeno_slot));
         if (list->len > 0) memcpy(items, list->items, (size_t)list->len * sizeof(zeno_slot));
+        zeno_free(list->items);
         list->items = items;
         list->room = room;
     }
     list->items[list->len++] = item;
+}
+
+/* The end of an owned list (`owned list[int]`): its owner's block is over,
+ * or its owner was given a new one. What the items point at is shared, and
+ * stays the collector's business. NULL means the owner had already given
+ * the list away, and there is nothing to do. */
+static void zeno_list_drop(zeno_list *list) {
+    if (list == NULL) return;
+    zeno_free(list->items);
+    zeno_free(list);
 }
 
 /* `[a, b, c]`: a list holding `count` items. */
