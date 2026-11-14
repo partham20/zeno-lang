@@ -359,6 +359,14 @@ to be garbage, and both now free it at once:
 Neither needs the word `owned`. Run `examples/memory.zeno` with `--memory`
 and the last number on the line counts them.
 
+## The same, through LLVM
+
+`zeno build --llvm` frees owned values at the same places. The pointer
+lives in a slot (`alloca ptr`), giving it away is a `load` followed by
+`store ptr null`, and each way out of a block loads the slot and calls
+`@zeno_list_drop` or the class's `@zeno.drop.Packet`. [`llvm.md`](llvm.md),
+"Owned values", shows the IR for a small program.
+
 ## What is refused for now
 
 Each of these would need a rule the simple checker does not have. They are
@@ -400,7 +408,9 @@ breaking any program that works now.
   what `zeno run` prints.
 - One test builds the same loop with shared lists and with owned lists, and
   checks that the owned one never needs the collector and stays under 8 KB.
-- One test reads the generated C for the lines shown above.
+- One test reads the generated C for the lines shown above, and one reads
+  the LLVM IR. The LLVM build of the loop of owned lists must also free
+  every block without the collector.
 - While it was being built, the same programs were also run under GCC and
   Clang at several optimisation levels, and under AddressSanitizer, which
   reports any use of a block after it has been freed and any block freed

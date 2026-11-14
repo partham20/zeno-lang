@@ -228,6 +228,9 @@ second trigger is the one that matters.
 counting references and over Rust-style ownership, and what would make
 the choice change.
 
+`--memory` works with `zeno build --llvm` as well, and prints the same
+line.
+
 ## How it is tested
 
 A collector has one unforgivable bug: freeing a block that is still in use.

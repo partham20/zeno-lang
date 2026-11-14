@@ -108,8 +108,10 @@ machine, which is two to three times as fast and prints exactly the same
 `zeno build --llvm` compiles a second way: to LLVM IR, the input of the
 compiler library behind Clang and Rust, which clang turns into a
 program ([`docs/llvm.md`](docs/llvm.md)). It compiles what the C backend
-compiles, and the tests build every program both ways. It goes with
-`--firmware` too: errors as values, and no `setjmp` in the IR.
+compiles, and the tests build every program both ways. It takes the
+same flags: `--firmware` (errors as values, no `setjmp` in the IR),
+`--no-collector` (owned values freed where their owner ends, no
+collector in the program) and `--memory`.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
@@ -127,6 +129,7 @@ cargo run -- build --firmware examples/sensor.zeno  # errors as values, no setjm
 cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage collector in the C at all
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
+cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
 cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
@@ -193,6 +196,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       types)
     - `--llvm` together with `--firmware` (done: errors as values in the
       IR, with no `setjmp`, and the same refusals as the C firmware build)
+    - `--llvm` together with `--no-collector` and `--memory` (done: owned
+      values are freed where their owner ends, text is given back at the
+      end of its statement, and the memory report matches the C build's
+      line for line)
 
 ## Layout
 

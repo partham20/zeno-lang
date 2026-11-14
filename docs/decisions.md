@@ -2141,6 +2141,10 @@ Three small functions are added at the end for `try` (`FOR_TRY` in
 `emit_llvm.rs`, see 5.11l). They are only in the copy an LLVM build
 writes, so a C build is as it was.
 
+There are three runtimes, as for C: ordinary, firmware, and firmware
+with the collector left out (5.9). `emit_llvm::runtime(build)` takes
+whichever `emit_c::runtime` would give that build.
+
 ### 5.11e The LLVM backend compiles what the C backend compiles
 
 It began with what the C backend began with: numbers, bools, text,
@@ -2157,8 +2161,8 @@ one of them could be tested against the interpreter.
 
 What it refuses is what `zeno build` refuses (a named function inside a
 function, the `time` module, a default that is not a literal, a method
-used as a value), and `--no-collector` and `--memory`. `--firmware`
-was refused too at first, and came later (5.11o).
+used as a value). `--firmware`, `--no-collector` and `--memory` were
+refused at first and came later (5.11o, 5.11p, 5.11q).
 One thing it takes that the C backend does not: an assignment through
 any place, such as `grid[0][1] = 5`. In IR the order of the steps is the
 order they are written, so the C backend's reason for refusing it (the
@@ -2311,17 +2315,20 @@ function was made needs a pass over the outer function that the
 compiler does not have. **Cost:** one small allocation for each such
 variable.
 
-### 5.11n In an LLVM build, an owned value is held like a shared one *(provisional)*
+### 5.11n In an LLVM build, an owned value is freed where its owner ends
 
-`owned` and `&` are checked as always (5.8). The LLVM backend then
-compiles an owned list or object exactly as a shared one, and the
-collector frees it.
+At first the LLVM backend compiled an owned list or object exactly as a
+shared one and left it to the collector, because every LLVM build had
+the collector. That was provisional, and it is gone. An owned value is
+now freed where its owner ends, in every LLVM build, as in every C
+build (5.8). 5.11p says how.
 
-**Why.** An LLVM build always has the collector. Freeing an owned value
-the moment its owner ends matters for a build without one (5.9), which
-`--llvm` does not do yet. The program prints the same either way.
-**Cost:** memory comes back later than in a C build, and `--memory` is
-not offered.
+**Why in every build,** and not only where the collector is left out.
+One way of compiling owned values is one thing to test: the ordinary
+and firmware builds exercise the same frees that `--no-collector`
+depends on, with the collector underneath to catch a mistake. And
+`--memory` then means the same in both backends: the same program
+frees the same number of blocks without the collector.
 
 ### 5.11o `--llvm --firmware`: the firmware design again, in IR
 
@@ -2374,11 +2381,166 @@ avoid.
 take new stack on every turn. **Cost:** a function with many such calls
 has that many slots, until `opt` merges them.
 
-**Still refused *(provisional)*:** `--llvm` with `--no-collector` or
-`--memory`. Both need owned values freed where their owner ends, and
-the LLVM backend holds an owned value like a shared one (5.11n). So a
-firmware build through LLVM has the collector in it, and the C backend
-stays the one for a board with no heap to spare.
+`--llvm` with `--no-collector` or `--memory` was still refused when
+this was written. Both needed owned values freed where their owner
+ends. That came next: 5.11p and 5.11q.
+
+### 5.11p An owner is a slot, set to null when it gives its value away
+
+In an LLVM build a variable that owns a value is always memory: an
+`alloca` in a function, a global at the top of the file. That holds
+for a `let` too, and for a parameter that takes a value over, which is
+stored into a slot on the first line of the function. Giving the value
+away is `load` and then `store ptr null`. Each way out of a block
+(its `}`, `return`, `break`, `continue`, `raise`, a failed call in a
+firmware build) loads every owner of the blocks being left and calls
+`zeno_list_drop` or the class's `zeno.drop.Name`, which do nothing for
+null.
+
+**Why a slot,** when 5.11b makes a `let` a plain value. A value in IR
+is written once. "This owner is empty now" is a second write, so it
+needs memory. `mem2reg` turns the slot back into values, and the null
+is then a constant the optimiser can see. It removes the drop of an
+object that is certainly null. The drop of a list stays as a call that
+does nothing, because `zeno_list_drop` is in the runtime file
+*(provisional: a null test written in IR would let it go, and is an
+exercise in `docs/llvm.md`)*.
+
+**Why null, and not working out which owners are full.** The emitter
+could follow each owner through the function and write a drop only
+where one is certainly full. It would need the checker's whole flow
+analysis again (an owner given away in one branch of an `if` is full
+on one path and empty on the other), and a mistake there is a block
+freed twice. With null the pointer answers the question when the
+program runs. This is the C backend's design (5.8), and the two
+backends now free the same blocks at the same lines.
+
+**Turned down: a `phi` for each owner.** That is what the slot becomes
+after `mem2reg`, and writing it by hand is 5.11b's turned-down choice
+again.
+
+**Turned down: drop flags** (a separate `i1` for "still full"), which
+is what Rust uses. The pointer already holds that bit.
+
+**A value between owners is noted** (`hold`, `let_go`): the list a
+comprehension is filling, the copy a `for` walks, an owned argument
+while later arguments are worked out. Whatever is noted is freed with
+the owners when a block is left early. **Why.** Without it a failure
+in that moment leaves a block nobody frees, and with no collector that
+is a leak. The C backend does the same (5.9).
+
+**In an ordinary build a jump still skips frees** in the functions it
+passes over, and the collector takes those, as in C. In the function
+with the `try`, owner slots are covered by the `volatile` rule that
+already applies to every slot there (5.11l), so an owner emptied
+before a call that raises is still empty afterwards.
+
+### 5.11q `--llvm --no-collector`: the same design, the same runtime, the same refusals
+
+`zeno build --llvm --no-collector` is 5.9 in IR. Owned values are
+freed by their owners (5.11p). Built text goes in the text room and is
+given back at the end of its statement. An `except` frees the error it
+caught. The runtime written beside the IR is the C build's no-collector
+runtime. The IR has no `zeno_roots`, no stack base and no call that
+marks anything.
+
+**Why not a design of its own.** The reasons are those of 5.11o. What
+`--no-collector` means stays one thing whichever backend makes it. The
+runtime is used as it is. And the test programs already exist.
+
+**Refusals are made by one function.** Every "this build cannot do
+that" error in both backends goes through `emit_c::without_collector`,
+which adds the same closing words. A table in the tests gives each
+refused program to both backends and requires the same message. **Why.**
+A user who moves a program from one backend to the other should not
+meet a new error, or the old error in new words.
+
+**Text that may be kept is tracked on the value** (`fixed` in `Val`):
+set for a literal, a variable, a field, a list item and the result of
+a call, clear for text the statement built. **Why on the value.** The
+C backend asks the same question of the syntax tree. In the LLVM
+emitter the value is what every "keep" site already has in its hand,
+and the bit travels with it through `if` expressions and `or none`.
+**Cost:** each place that makes a `Val` has to say which it is. The
+default is "built", which is the safe side: a missed case is a refusal
+the C build would not make, and the test table shows it.
+
+**`--memory` is asked for in the IR**: `main` calls
+`atexit(zeno_memory_report)`, and the runtime file is compiled with
+`-DZENO_MEMORY_REPORT`. **Why `atexit`,** and not a call at the end of
+`main`: an error that stops the program should still print the report,
+and the C build does it this way.
+
+### 5.11r The text mark is a `load` put in afterwards
+
+A statement that builds text is compiled with `%mark = load i64, ptr
+@zeno_text_top` before it and `store i64 %mark, ptr @zeno_text_top`
+after it. Whether a statement builds text is known only once it has
+been compiled. So the emitter remembers the line where the statement
+began, and inserts the `load` there afterwards if it is needed.
+
+**Why not write both lines for every statement.** They cannot be
+removed later. `zeno_text_top` is a global the runtime changes, so
+LLVM must assume any call in between touches it, and a loop of
+arithmetic that calls one function would load and store on every trip.
+
+**Why not ask the syntax tree first,** as the C backend does with a
+walk over the expression. The walk has to agree exactly with what the
+emitter then does, for every kind of expression, and a disagreement is
+a leak in the text room. Here the emitter sets one flag at the two
+places where text is made, and cannot disagree with itself.
+
+**Cost:** an instruction is inserted into lines already written. That
+is safe because names in IR do not depend on position, and the mark is
+inserted at a point where the block is open.
+
+**A `for` or a `match` whose first line builds text is refused,** as
+in C: the text would have to last for the whole loop, and a `continue`
+would need to know that. *(provisional)*
+
+### 5.11s In an f-string a number waits to become text
+
+`f"{a} then {next()}"` works out `a`, then `next()`, and only then
+turns the two into text. A list, an object or an optional is still
+turned into text at once.
+
+**Why.** With no collector, text made for `{a}` sits in the text room
+while `next()` runs. If that call builds text of its own, or recurses
+into this line, the room holds more at once than it needs to. The C
+backend had never done that, and one test program used 44 bytes of
+text through LLVM where C used 41. The comparison of memory reports
+(5.11t) found it.
+
+**Why only numbers, bools, quantities and text.** The value read for
+`{a}` cannot be changed by a later call, so showing it later prints
+the same. A list can be appended to by `next()`, and the f-string must
+show it as it was when its turn came *(principle 1: same output as
+the interpreter)*.
+
+It is done in every LLVM build, not only with no collector. **Why.**
+One shape of IR for an f-string, and the order of the runtime calls is
+not something a program can see.
+
+### 5.11t With no collector, the two backends must write the same memory report
+
+Each no-collector test program is built through C and through LLVM
+with `--memory`, and the two reports are compared as text: blocks
+made, bytes, the most in use at once, blocks left, and the most text
+in the room.
+
+**Why so strict.** "Prints the same and leaves no block" does not
+notice a free that comes late, or text held a statement too long. A
+board with a 256-byte text room notices. The C build's numbers were
+checked by hand when 5.9 was built, so they are the reference.
+
+**Turned down: fixed numbers in the tests.** They would have to be
+changed by hand whenever the runtime changes the size of a header.
+Comparing the two builds needs no numbers.
+
+With `ZENO_VALGRIND=1` the same tests run each program under valgrind.
+**Why valgrind and not AddressSanitizer:** clang's sanitizer library
+is not installed everywhere clang is, and valgrind needs nothing at
+build time. It is off by default because it is slow.
 
 ### 5.12 The board is four functions
 

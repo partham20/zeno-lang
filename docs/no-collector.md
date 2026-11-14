@@ -260,6 +260,25 @@ needed yet.
   and `exit`, variable argument lists in the runtime, the GCC builtins for
   checked arithmetic, and the forward `goto`.
 
+## The same, through LLVM
+
+```sh
+cargo run -- build --llvm --no-collector --memory examples/buffer.zeno
+```
+
+`zeno build --llvm --no-collector` is this design written in LLVM IR.
+An owner is a slot that is set to null when it gives its value away
+and dropped where its block ends. The text room's top is a global the
+IR loads before a statement that builds text and stores back after it.
+An `except` drops the error it caught. The runtime file beside the IR
+is the one from this page, and what is refused is refused in the same
+words. [`llvm.md`](llvm.md), "Owned values" and "With no collector",
+walks through the IR.
+
+The two builds do not only print the same. They make the same number
+of blocks, hold the same number of bytes at most, and fill the text
+room to the same height, and the tests require it.
+
 ## How it is tested
 
 Every test program for this build (`no_collector_as_interpreter` in
@@ -272,6 +291,8 @@ Every test program for this build (`no_collector_as_interpreter` in
 3. The C file does not contain `zeno_collect`, `zeno_roots` or `setjmp`.
 4. The same program still agrees with the interpreter in the two builds
    that do have a collector.
+5. Built through LLVM with no collector, it prints the same, and its
+   memory report is the same as the C build's, line for line.
 
 The programs aim at the hard places: an error raised inside a loop over a
 list, inside another `except`, half way through filling a list, and while

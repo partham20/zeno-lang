@@ -238,7 +238,8 @@ file beside the IR is the firmware one, so neither file contains
 `setjmp`. It refuses what this build refuses, in the same words.
 [`llvm.md`](llvm.md), "Errors as values", walks through the IR.
 
-`--no-collector` does not go with `--llvm` yet.
+`--no-collector` goes with `--llvm` too: [`llvm.md`](llvm.md), "With no
+collector".
 
 ## How it is tested
 

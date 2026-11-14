@@ -22,6 +22,9 @@ as values, units and `import math`. The first half of this page is the
 ground floor (values, slots, blocks, overflow). The second half is one
 section for each of those, and each is mostly one new idea in IR.
 
+It also takes the same flags: `--firmware`, `--no-collector` and
+`--memory`. The last sections show what each one changes in the IR.
+
 ## Why
 
 The C backend works, and for firmware it stays the right one: every
@@ -644,6 +647,12 @@ when the loop began, so a body that appends to it does not loop for
 ever. It is left out when nobody else can hold the list: a list literal
 or a comprehension written in the `for` itself.
 
+Nothing else ever sees that copy, so it is freed as soon as the loop is
+over. `done1` begins with `call void @zeno_list_drop(ptr %t1)`, and a
+`return` written inside the body gets the same call just before its
+`ret`. The C backend does the same ([`ownership.md`](ownership.md),
+"Two frees that every program gets").
+
 The `i64` slot is provisional (decision 5.11i). It holds on a 64-bit
 processor that hands a union to a function the way it hands an `i64`,
 which is true of x86-64 and ARM64.
@@ -1115,6 +1124,316 @@ the variables declared so far. Those are the only ones the function
 may use (decision 3.6d), and the copy is what its body is compiled
 against.
 
+## Owned values: a slot, a null and a drop
+
+An `owned` list or object has one owner, and it is freed where that
+owner ends ([`ownership.md`](ownership.md)). The checker has already
+done the hard part: it knows which variables are owners, and which
+expressions give a value away. The emitter asks it two questions
+(`types.owner`, `types.moves`) and writes three small things.
+
+```
+owned class Frame {
+    id: int
+    bytes: owned list[int]
+}
+
+function make(id: int) -> Frame {
+    let bytes: owned list[int] = [id, id * 2]
+    return Frame(id, bytes)
+}
+
+function size(frame: Frame) -> int {
+    return len(frame.bytes)
+}
+
+function first_big(limit: int) -> int {
+    for id in range(100) {
+        let frame = make(id)
+        if frame.bytes[1] > limit { return id }
+    }
+    return -1
+}
+
+let frame = make(7)
+print(size(frame))
+print(first_big(20))
+```
+
+**An owner is always a slot.** Earlier on this page a `let` was a
+value and only a `var` was a slot. An owner is the exception. `bytes`
+is a `let`, and it still gets an `alloca`:
+
+```llvm
+define internal ptr @z_make(i64 %arg.id) {
+entry:
+  %var.bytes = alloca ptr
+  ...
+  %t4 = call ptr (i32, ...) @zeno_list_of(i32 2, i64 %arg.id, i64 %t2)
+  store ptr %t4, ptr %var.bytes
+  %t5 = load ptr, ptr %var.bytes            ; `bytes` gives its list away:
+  store ptr null, ptr %var.bytes            ; copy it out, write null
+  %t6 = call ptr @zeno.new.Frame(i64 %arg.id, ptr %t5)
+  %t7 = load ptr, ptr %var.bytes            ; end of the function:
+  call void @zeno_list_drop(ptr %t7)        ; free whatever is still there
+  ret ptr %t6
+}
+```
+
+The reason is the second line of the pair. **Giving away writes
+null**, and a value in IR cannot be written to twice. Only memory can.
+
+**The end of a block asks each owner.** `zeno_list_drop` does nothing
+when it is handed null. So the emitter does not work out which owners
+still hold something at the end of a block. It loads each one and
+calls the drop, and the pointer is the answer (`free_owned`).
+
+Here `%t7` is always null. `opt -O2` works that out: the slot goes and
+the call becomes `zeno_list_drop(ptr null)`. It cannot take the call
+away, though. `zeno_list_drop` is in the other file, so LLVM does not
+know that it does nothing for null. The C build can, because there the
+runtime is in the same file. Exercise 14 closes the gap.
+
+A parameter that takes a value over is an owner too, so it is moved
+into a slot at the top of the function and dropped at the end:
+
+```llvm
+define internal i64 @z_size(ptr %arg.frame) {
+entry:
+  %var.frame = alloca ptr
+  store ptr %arg.frame, ptr %var.frame
+  ...
+  %t4 = load i64, ptr %t3                   ; the answer is worked out first
+  %t5 = load ptr, ptr %var.frame
+  call void @zeno.drop.Frame(ptr %t5)       ; then the frame is freed
+  ret i64 %t4
+}
+```
+
+**Each owned class gets a drop function**, written the first time it
+is needed (`drop_class`). It frees what the fields own, then the
+object:
+
+```llvm
+define internal void @zeno.drop.Frame(ptr %self) {
+entry:
+  %t1 = icmp eq ptr %self, null
+  br i1 %t1, label %gone1, label %there1
+
+gone1:
+  ret void
+
+there1:
+  %t2 = getelementptr %z_Frame, ptr %self, i32 0, i32 1
+  %t3 = load ptr, ptr %t2
+  call void @zeno_list_drop(ptr %t3)        ; the list the frame owns
+  call void @zeno_free(ptr %self)           ; then the frame
+  ret void
+}
+```
+
+**Every way out of a block is an end of that block.** In `first_big`
+the `return` inside the loop leaves the body early, so it gets the
+same drop the closing `}` gets:
+
+```llvm
+then2:
+  %t10 = load ptr, ptr %var.frame
+  call void @zeno.drop.Frame(ptr %t10)      ; `return id` leaves the body
+  ret i64 %t1
+
+end2:
+  %t11 = load ptr, ptr %var.frame
+  call void @zeno.drop.Frame(ptr %t11)      ; the `}` of the body
+  br label %next1
+```
+
+`break`, `continue`, `raise` and (in a firmware build) the `failed`
+block after a call all do the same. Each one frees the scopes it is
+leaving and no more: a `continue` frees the body's owners, a `return`
+frees the function's.
+
+An assignment to an owner frees the old value, after the new one has
+been made. An owned value that nobody takes, such as `make(3)` written
+as a statement, is freed on the spot.
+
+Some values are owned by nobody for a moment: a list while a
+comprehension fills it, or an owned argument that has been worked out
+while the next argument is still to come. If something fails in that
+moment, nobody would free it. `hold` notes such a value and `let_go`
+forgets it, and whatever is noted is freed with the owners when a
+block is left early ([`no-collector.md`](no-collector.md), "A value
+between two owners").
+
+In an ordinary build an error is a jump, and the jump passes over the
+functions between the `raise` and the `try`. What they owned is left
+for the collector, as in the C build. The one trap is in the function
+that has the `try`: a slot written since `_setjmp` might come back
+with its old value. That is the `volatile` rule from the section on
+errors, and it already covers every slot of such a function, owners
+included.
+
+Build the program with `--llvm --memory` and the last number on the
+line is the blocks freed this way:
+
+```
+memory: 41 blocks made (733 bytes), at most 58 bytes in use at once, 0 collections, 39 blocks freed without the collector
+```
+
+The two that are left are the texts `print` made for its numbers.
+
+## With no collector: `--llvm --no-collector`
+
+```sh
+cargo run -- build --llvm --no-collector --memory examples/buffer.zeno
+./buffer
+grep -c zeno_collect buffer.ll buffer_runtime.c     # 0 and 0
+```
+
+[`no-collector.md`](no-collector.md) is the design: owned values are
+freed by their owners, text lives in a fixed room until the end of the
+statement that built it, and the checker refuses what would need
+anything more. This is that design again in IR. The runtime file
+written beside the IR is the one the C build uses, with the collector
+left out of it.
+
+Three things are missing from the top of the file: `zeno_roots`,
+`@zeno_stack_base` and the `%base` slot in `main`. They were all for
+the collector. One declaration is new:
+
+```llvm
+@zeno_text_top = external global i64
+```
+
+That is how full the text room is. It is the whole of memory
+management for text:
+
+```
+function halve(n: int) -> int raises ValueError {
+    if n % 2 == 1 { raise ValueError(f"{n} is odd") }
+    return n // 2
+}
+
+var total = 0
+for n in range(1, 5) {
+    print(f"reading {n} of 4")
+    try {
+        total = total + halve(n)
+    } except ValueError as error {
+        print("skipped:", error.message)
+    }
+}
+print(f"total {total}")
+```
+
+```llvm
+do1:
+  %mark.1 = load i64, ptr @zeno_text_top    ; how full is the room now?
+  %t3 = call ptr @zeno_str_int(i64 %t1)
+  %t4 = call ptr (i32, ...) @zeno_join(i32 3, ptr @.str.1, ptr %t3, ptr @.str.2)
+  call void (i32, ...) @zeno_print(i32 1, ptr %t4)
+  store i64 %mark.1, ptr @zeno_text_top     ; the statement is over: back to there
+```
+
+**A statement that builds text notes the mark first and puts it back
+after.** Everything it built is gone in one `store`. A statement that
+builds no text gets neither line.
+
+The emitter does not know that a statement builds text until it has
+compiled it, and by then the `load` belongs several lines up. So
+`text_begin` only remembers the line it is at, and `text_end` goes
+back and inserts the `load` there if text was built. An `if`, a
+`while`, a `return` and a `raise` do the same round their own
+expression, and a comprehension does it for each item.
+
+**A `try` puts the mark back where failures arrive.** A failure half
+way through a statement skips that statement's own `store`:
+
+```llvm
+  %t5 = load i64, ptr @zeno_text_top        ; before the body of the `try`
+  ...
+except2:
+  store i64 %t5, ptr @zeno_text_top         ; however the body ended
+  %t12 = load ptr, ptr @zeno_raised
+```
+
+**An error is freed by the `except` that catches it.** The error and
+its message are two blocks from the heap, made by `zeno_error_new`.
+(The message is copied out of the text room, which is why `raise` can
+put the mark back.) The handler holds the error while it runs:
+
+```llvm
+except2.1:
+  ...
+  call void (i32, ...) @zeno_print(i32 2, ptr @.str.4, ptr %t16)
+  ...
+  call void @zeno_error_drop(ptr %t12)      ; the handler is over
+  br label %end2
+```
+
+A `return` or a `continue` inside the handler gets the same call,
+because the error is held with `hold`, like a value between two
+owners.
+
+**Which text may be kept.** Text that was there before the statement
+began can be kept: a literal, a variable, a field. Text the statement
+built cannot, because the room is about to be emptied. Each value the
+emitter makes carries one more bit for this (`fixed` in `Val`), and
+`stays` looks at it wherever a value is kept: a `let`, an assignment,
+a field, a list item, a `return`.
+
+**What it refuses** is what the C build refuses, in the same words,
+because both call the same function for the message
+(`emit_c::without_collector`).
+
+### Why an f-string waits
+
+```
+print(f"{a} then {next()}")
+```
+
+The values are worked out left to right, as always. But a number is
+not turned into text until all the values are known:
+
+```llvm
+  %t1 = load i64, ptr @z_a
+  %t2 = call i64 @z_next()
+  %t7 = call ptr @zeno_str_int(i64 %t1)     ; only now
+  %t8 = call ptr @zeno_str_int(i64 %t2)
+```
+
+Text in the room while `next()` runs is room `next()` cannot use. If
+`next()` is the function this line is in, every level of the recursion
+would hold one text more. The C build never did that, and its numbers
+for "at most N bytes of text in use" were lower until this was done
+the same way.
+
+It is safe for a number, a bool, a quantity and text, because a later
+call cannot change the value that was read. A list or an object is
+turned into text at once: a later call could append to it, and the
+f-string has to show it as it was.
+
+### `--memory`
+
+`zeno build --memory` makes the program print what it used when it
+ends. Through LLVM that is one line in `main` and one flag:
+
+```llvm
+  %asked = call i32 @atexit(ptr @zeno_memory_report)
+```
+
+and `-DZENO_MEMORY_REPORT` for the runtime file, so that it counts.
+With no collector the report has a second line for the text room:
+
+```
+memory: 2 blocks made (66 bytes), at most 33 bytes in use at once, no collector, 0 blocks left at the end
+text: at most 17 bytes in use at once, in a room of 1024
+```
+
+Those are the two errors with their messages, both freed, and the
+longest line the program ever built. The C build of the same program
+prints the same two lines, and the tests require that.
+
 ## The tests
 
 `same_as_interpreter` in `emit_llvm.rs` runs a program on the
@@ -1144,6 +1463,28 @@ in both kinds of build), `the_ir_for_a_try_in_a_firmware_build`,
 The two long programs the C backend uses for errors as values must be
 accepted here too (`firmware_as_interpreter`).
 
+Owned values: `the_ir_for_an_owned_value` reads the IR above, and
+`owned_values_are_freed_without_the_collector` builds a program that
+makes four thousand owned blocks with `--memory` and requires that all
+of them were freed by their owners and none by the collector.
+
+With no collector the test is stricter than "prints the same". Each
+of the C backend's no-collector programs is built both ways with
+`--memory`, and the two **memory reports must be the same line for
+line** (`no_collector_as_c`): blocks made, bytes, the most in use at
+once, nothing left at the end, and the most text in the room. A free
+that is missing, or one that comes a statement late, changes a number.
+Each refusal is tried through LLVM too and must use the C build's
+words (`refuses_as_c`).
+
+Set `ZENO_VALGRIND=1` and the no-collector tests run each program
+under valgrind, which stops at a block freed twice or read after it
+was freed:
+
+```sh
+ZENO_VALGRIND=1 cargo test no_collector
+```
+
 If clang is not installed the compiled half of each test is skipped.
 
 ## How fast
@@ -1169,12 +1510,10 @@ file. In a C build they are in the same file and can be inlined.
 
 ## What it does not do yet
 
-- **`--no-collector` and `--memory`.** They do not go with `--llvm`.
-  A firmware build through LLVM still has the garbage collector in it.
-  For a build with no collector the C backend is the one to use.
-- **Owned values are not freed early.** An `owned` list or object is
-  held like a shared one and the collector frees it. The program
-  prints the same, and uses memory for longer (decision 5.11n).
+- **What `--no-collector` refuses in C it refuses here**: shared
+  lists and objects, function literals, keeping built text, a `for`
+  or a `match` whose first line builds text
+  ([`no-collector.md`](no-collector.md), "What is refused").
 - **What the C backend also refuses**: a named function, class or enum
   declared inside a function, a default for a parameter that is not
   a literal, a method used as a value.
@@ -1243,9 +1582,13 @@ any expression, such as `grid[0][1] = 5`.
     writes `primes.s`. Find an overflow check in it (look for
     `zeno_overflow`). Nothing for RISC-V had to be installed first. Why
     not, and what would be needed to make a program that runs?
-14. A big one: free an `owned` value at the end of its scope, as
-    `zeno build` does ([`ownership.md`](ownership.md)). Start with a
-    list that never leaves the function.
+14. Build the `Frame` program above with `--llvm` and run
+    `opt -O2 -S frame.ll`. Find `zeno_list_drop(ptr null)`: a call
+    that does nothing. The drop of a `Frame` that is null has gone,
+    because `zeno.drop.Frame` is in the IR and LLVM can read its null
+    test. Give lists the same: an entry in `WRITTEN` called
+    `zeno.drop.list` that tests for null and only then calls the
+    runtime, and use it in `free`. Run `opt` again.
 15. Build `examples/sensor.zeno` with `--llvm` and again with
     `--llvm --firmware` (keep the first `sensor.ll` under another
     name). Compare `z_read_all` in the two files. Which has more
@@ -1262,3 +1605,29 @@ any expression, such as `grid[0][1] = 5`.
     Change `function`, the `return` statement and `checked_call` to do
     that, and read `opt -O2 -S` of both. Is the machine code
     different? What would a `list[int]` answer look like?
+18. In `first_big`, write `break` in place of `return id`. Before you
+    build it, write down the IR you expect for the `then` block. Then
+    put a second owner in the function, above the loop. Does `break`
+    free it? Does `return`?
+19. Build the `halve` program above with `--llvm --no-collector
+    --memory`, then again with `-DZENO_TEXT_ROOM=16` added by hand:
+    `clang -O2 -Wno-override-module -DZENO_MEMORY_REPORT
+    -DZENO_TEXT_ROOM=16 -o small room.ll room_runtime.c -lm`. What
+    happens, and at which line of the program? What is the smallest
+    room it runs in?
+20. In `room.ll`, delete the `store i64 %mark.1, ptr @zeno_text_top`
+    that follows the first `zeno_print` in `zeno_program`, and build
+    it by hand as in 19 (without the small room). The output is the
+    same. Which number in the report changes, and by how much for each
+    trip round the loop? What would a thousand trips do? This is the
+    bug the test `no_collector_as_c` is there to catch.
+21. `text_begin` goes back and inserts the `load` only when text was
+    built. The simpler way is to write the `load` and the `store` for
+    every statement. Do that, and look at `opt -O2 -S` of a function
+    that builds no text. Are they still there? Why can LLVM not remove
+    a `load` and a `store` of a global round a call?
+22. A `for` whose first line builds text is refused in both backends,
+    such as `for i in range(len(str(x))) { }`. The text is needed only
+    until the loop begins. Where would the mark have to be put back
+    for this to be allowed? Is that true of every `for`? (Think of a
+    `for` over the characters of built text, were that allowed.)
