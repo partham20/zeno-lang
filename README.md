@@ -66,15 +66,19 @@ piece of the compiler:
 
 ## Status
 
-Nothing works yet. The `zeno` command only prints its version and usage.
+The lexer works. It turns source text into tokens, and `zeno tokens` shows them:
 
 ```sh
-cargo run -- --help
+cargo run -- tokens examples/hello.zeno
+cargo test
 ```
+
+[`docs/lexer.md`](docs/lexer.md) explains how it works. Nothing can run a program yet;
+the parser is next.
 
 ## Roadmap
 
-1. Lexer
+1. Lexer (done)
 2. Parser and AST
 3. Tree-walking interpreter (`zeno run`)
 4. Type checker
@@ -87,6 +91,9 @@ cargo run -- --help
 ## Layout
 
 ```
-src/main.rs        the `zeno` CLI (compiler stages will live under src/)
+src/main.rs        the `zeno` command
+src/token.rs       the kinds of token
+src/lexer.rs       source text -> tokens, with its tests
+docs/              how each stage works
 examples/          sample .zeno programs
 ```
