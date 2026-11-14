@@ -95,12 +95,10 @@ const DECLARED: &[(&str, &str)] = &[
     ("llvm.ssub.with.overflow.i64", "declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)"),
     ("llvm.smul.with.overflow.i64", "declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)"),
     ("zeno_overflow", "declare void @zeno_overflow(i32 signext, i32 signext)"),
-    ("zeno_floordiv", "declare i64 @zeno_floordiv(i64, i64, i32 signext, i32 signext)"),
-    ("zeno_mod", "declare i64 @zeno_mod(i64, i64, i32 signext, i32 signext)"),
+    ("zeno_by_zero", "declare void @zeno_by_zero(i32 signext, i32 signext)"),
     ("zeno_pow", "declare i64 @zeno_pow(i64, i64, i32 signext, i32 signext)"),
     ("zeno_abs", "declare i64 @zeno_abs(i64, i32 signext, i32 signext)"),
     ("zeno_range_count", "declare i64 @zeno_range_count(i64, i64, i64, i32 signext, i32 signext)"),
-    ("zeno_div", "declare double @zeno_div(double, double, i32 signext, i32 signext)"),
     ("zeno_floordiv_float", "declare double @zeno_floordiv_float(double, double, i32 signext, i32 signext)"),
     ("zeno_mod_float", "declare double @zeno_mod_float(double, double, i32 signext, i32 signext)"),
     ("zeno_int", "declare i64 @zeno_int(double, i32 signext, i32 signext)"),
@@ -126,6 +124,107 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_starts_with", "declare zeroext i1 @zeno_starts_with(ptr, ptr)"),
     ("zeno_ends_with", "declare zeroext i1 @zeno_ends_with(ptr, ptr)"),
     ("zeno_mark_words", "declare void @zeno_mark_words(ptr, i64)"),
+];
+
+/// Three functions of the runtime, written again in IR.
+///
+/// A call into `runtime.c` cannot be inlined, because the C is in
+/// another file that LLVM does not see while it compiles this one. For
+/// text that does not matter. For `%`, `//` and `/` it does: a loop of
+/// them ran at a third of the speed of the C build. So these three are
+/// written here, in the same file as the program, where LLVM inlines
+/// them. Each is copied into a program only if the program uses it.
+///
+/// They follow `zeno_mod`, `zeno_floordiv` and `zeno_div` in `runtime.c`
+/// line for line. The dot in the names keeps them apart from anything C
+/// can name.
+const WRITTEN: &[(&str, &str)] = &[
+    (
+        "zeno.floordiv",
+        "; `//` on two ints. The processor rounds toward zero and Zeno rounds
+; down, so step down once more when the signs differ and the division
+; was not exact.
+define internal i64 @zeno.floordiv(i64 %a, i64 %b, i32 %line, i32 %col) {
+entry:
+  %zero = icmp eq i64 %b, 0
+  br i1 %zero, label %by_zero, label %check
+
+by_zero:
+  call void @zeno_by_zero(i32 %line, i32 %col)
+  unreachable
+
+check:
+  ; The one division that does not fit: the smallest int by -1.
+  %smallest = icmp eq i64 %a, -9223372036854775808
+  %minus_one = icmp eq i64 %b, -1
+  %too_big = and i1 %smallest, %minus_one
+  br i1 %too_big, label %overflow, label %divide
+
+overflow:
+  call void @zeno_overflow(i32 %line, i32 %col)
+  unreachable
+
+divide:
+  %quotient = sdiv i64 %a, %b
+  %left_over = srem i64 %a, %b
+  %inexact = icmp ne i64 %left_over, 0
+  ; The sign bit of `a xor b` is set when the two signs differ.
+  %mixed = xor i64 %a, %b
+  %differ = icmp slt i64 %mixed, 0
+  %step_down = and i1 %inexact, %differ
+  %lower = sub i64 %quotient, 1
+  %result = select i1 %step_down, i64 %lower, i64 %quotient
+  ret i64 %result
+}
+",
+    ),
+    (
+        "zeno.mod",
+        "; `%` on two ints. The result takes the sign of the right side, to pair
+; with `//`.
+define internal i64 @zeno.mod(i64 %a, i64 %b, i32 %line, i32 %col) {
+entry:
+  %zero = icmp eq i64 %b, 0
+  br i1 %zero, label %by_zero, label %divide
+
+by_zero:
+  call void @zeno_by_zero(i32 %line, i32 %col)
+  unreachable
+
+divide:
+  ; Anything `% -1` is 0. Dividing by 1 instead gives that, and avoids
+  ; the smallest int `% -1`, which the processor refuses.
+  %minus_one = icmp eq i64 %b, -1
+  %by = select i1 %minus_one, i64 1, i64 %b
+  %left_over = srem i64 %a, %by
+  %inexact = icmp ne i64 %left_over, 0
+  %mixed = xor i64 %left_over, %b
+  %differ = icmp slt i64 %mixed, 0
+  %move = and i1 %inexact, %differ
+  %moved = add i64 %left_over, %b
+  %result = select i1 %move, i64 %moved, i64 %left_over
+  ret i64 %result
+}
+",
+    ),
+    (
+        "zeno.div",
+        "; `/`, which reports a zero on the right.
+define internal double @zeno.div(double %a, double %b, i32 %line, i32 %col) {
+entry:
+  %zero = fcmp oeq double %b, 0.0
+  br i1 %zero, label %by_zero, label %divide
+
+by_zero:
+  call void @zeno_by_zero(i32 %line, i32 %col)
+  unreachable
+
+divide:
+  %result = fdiv double %a, %b
+  ret double %result
+}
+",
+    ),
 ];
 
 // ------------------------------------------------------------------- Pieces
@@ -434,6 +533,12 @@ impl Emitter<'_> {
             }
         }
         out.push('\n');
+        for (name, written) in WRITTEN {
+            if self.used.contains(name) {
+                out += written;
+                out.push('\n');
+            }
+        }
 
         // The functions as they come in the program, then the top of the
         // file, which was written first.
@@ -535,8 +640,14 @@ impl Emitter<'_> {
     }
 
     fn uses(&mut self, name: &'static str) {
-        debug_assert!(DECLARED.iter().any(|(declared, _)| *declared == name), "{name} is not declared");
+        let known = DECLARED.iter().chain(WRITTEN).any(|(declared, _)| *declared == name);
+        debug_assert!(known, "{name} is not declared");
         self.used.insert(name);
+        // The ones written in IR report their errors through the runtime.
+        if name.starts_with("zeno.") {
+            self.used.insert("zeno_by_zero");
+            self.used.insert("zeno_overflow");
+        }
     }
 
     /// The name of a constant holding `text`.
@@ -998,12 +1109,13 @@ impl Emitter<'_> {
             (Sub, Int, Int) => Val::new(self.checked("ssub", &l, &r, span), Int),
             (Mul, Int, Int) => Val::new(self.checked("smul", &l, &r, span), Int),
             // These have more to them than one instruction (`//` rounds
-            // down, `%` follows the right side's sign), and the runtime
-            // already has them right.
+            // down, `%` follows the right side's sign). `//` and `%` are
+            // functions written in IR (see `WRITTEN`), `**` is in the
+            // runtime.
             (FloorDiv | Mod | Pow, Int, Int) => {
                 let name = match op {
-                    FloorDiv => "zeno_floordiv",
-                    Mod => "zeno_mod",
+                    FloorDiv => "zeno.floordiv",
+                    Mod => "zeno.mod",
                     _ => "zeno_pow",
                 };
                 Val::new(self.call("i64", name, format!("i64 {l}, i64 {r}, {}", at(span))), Int)
@@ -1026,7 +1138,7 @@ impl Emitter<'_> {
             (Div | FloorDiv | Mod, _, _) if numbers => {
                 let (l, r) = (self.double(&left), self.double(&right));
                 let name = match op {
-                    Div => "zeno_div",
+                    Div => "zeno.div",
                     FloorDiv => "zeno_floordiv_float",
                     _ => "zeno_mod_float",
                 };
@@ -1473,6 +1585,31 @@ mod tests {
              print(9223372036854775807, -9223372036854775807 - 1)\n\
              print(abs(-5), abs(-2.5), min(3, 1, 2), max(3, 1, 2), min(2.5, 1.5), max(2.5, 1.5))\n\
              print(int(3.9), int(-3.9), int(\"42\"), float(3), float(\"2.5\"), int(7), int(1e30))\n",
+        );
+    }
+
+    #[test]
+    fn division_written_in_ir_matches() {
+        // `//`, `%` and `/` are not the runtime's here (see `WRITTEN`),
+        // so every mix of signs is tried, and the ends of what an int holds.
+        same_as_interpreter(
+            "division",
+            "let small = -9223372036854775807 - 1\n\
+             let big = 9223372036854775807\n\
+             var minus = 0\n\
+             minus -= 1\n\
+             print(big // minus, small // 2, small // big, 0 // 5)\n\
+             print(small % minus, big % minus, small % 7, small % -7, big % small, 0 % 5)\n\
+             print(7 / 2, -7 / 2, 1 / 3, 0 / 5, 7.5 / -2.5)\n\
+             for a in range(-7, 8) {\n\
+             \x20   for b in range(-3, 4) {\n\
+             \x20       if b != 0 { print(a, b, a // b, a % b) }\n\
+             \x20   }\n\
+             }\n",
+        );
+        same_as_interpreter(
+            "division-overflow",
+            "let small = -9223372036854775807 - 1\nvar minus = 0\nminus -= 1\nprint(small // minus)\n",
         );
     }
 
