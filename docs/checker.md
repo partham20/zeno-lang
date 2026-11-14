@@ -191,6 +191,13 @@ expression that has had an error reported gets the type `Invalid`, which, like
 `Dynamic`, fits everywhere. A misspelt name is reported once, and everything
 built on it stays quiet.
 
+## Handing the answers on
+
+`check_with_types` returns the errors and a `Types`: the worked-out signature
+of every function, in a plain form (`Kind`) with no links back into the
+checker. `zeno build` uses it to give every C function its types. See
+`docs/compiler.md`.
+
 ## What it does not do yet
 
 - **Generic functions.** `function id(x) { return x }` called with an int

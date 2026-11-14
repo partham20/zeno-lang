@@ -394,6 +394,20 @@ int in a float variable would leave a value whose written type and real type
 differ, and in compiled code it would hide a conversion instruction.
 *(Principles 1 and 5.)* Kotlin, Swift and Rust draw the same line.
 
+### 2.3b Outside arithmetic, an int is never quietly made a float
+
+`1 + 2.5` mixes the two (2.3). But `[1, 2.5]` is not a `list[float]`, and a
+function that returns `1` on one path and `2.5` on another does not return
+`float`. Both are "a mix", which strict mode asks you to settle by writing
+`1.0` or `float(n)`.
+
+**Why.** The first checker did treat these as float. Compiling to C showed
+what that costs: the compiled function really would return `1.0`, while the
+interpreter, which never looks at types, returns the int `1`, and prints
+`1`. The same program would print different things under `zeno run` and
+`zeno build`. Converting only when asked keeps one answer everywhere, and it
+matches the rule that was already there for `let x: float = 1`. *(Principle 1.)*
+
 ### 2.3a A whole number to a negative power is an error
 
 `2 ** 8` is an int. `2 ** -1` would have to be `0.5`, a float. Then the type
@@ -649,11 +663,70 @@ design works, because programs can be run from the first week. Design
 mistakes are far cheaper to fix before a code generator depends on them. It
 stays useful afterwards as `zeno run` and a future interactive prompt.
 
-### 5.5 The compiler will output C before anything else
+### 5.5 The compiler outputs C before anything else
 
 **Why.** Every microcontroller vendor ships a C compiler, so C output runs
 on every target from day one, works with existing debuggers, and can be read
 to see what the compiler did. Writing an optimiser can wait.
+
+### 5.5a Compiling to C comes before the bytecode VM
+
+The first roadmap had a bytecode VM next. C was moved ahead of it.
+
+**Why.** A VM makes `zeno run` faster on a PC. C output is what puts Zeno on
+a microcontroller, which is the reason the language exists. C also forces
+every question about types to be answered now, while the checker is fresh:
+it has already changed one rule (2.3b).
+
+### 5.5b `zeno build` keeps the C file and calls the machine's C compiler
+
+`zeno build hello.zeno` writes `hello.c`, then runs `cc` (or whatever `CC`
+names) to make `hello`.
+
+**Why.** The C is the compiler's work, shown: reading it is how you learn
+what the compiler did, and how you debug it when it is wrong. It is one
+file, with the runtime pasted in, so it can be copied into any vendor's
+project or IDE with nothing else to carry along.
+
+### 5.5c `zeno build` always checks in strict mode
+
+**Why.** A C variable must have one type. A value whose type is only known
+when the program runs would need a tag and usually heap memory (0.2), which
+the compiler does not have yet. Because parameters and fields are now worked
+out, most programs with no types written still pass. *(Provisional: a
+dynamic value type can be added to the runtime later for PC targets.)*
+
+### 5.5d Compiled code must behave exactly like interpreted code
+
+Same output, same errors, same line numbers. The tests compare the two
+byte for byte.
+
+**Why.** Two implementations that disagree are two languages. The
+interpreter is the definition of what a program means; the compiler is only
+allowed to be faster. This is what makes it safe to develop with `zeno run`
+and ship with `zeno build`. It has three direct consequences:
+- Whole-number arithmetic is checked in compiled code too, at the cost of a
+  test after each operation. *(Principle 1. An unchecked mode for hot loops
+  can be offered later, asked for by name.)*
+- The compiler pins down left-to-right order with temporaries wherever C
+  would leave it open. See `docs/compiler.md`.
+- Where they cannot agree (recursion depth), the difference is written down.
+
+### 5.5e The checked arithmetic uses GCC and Clang built-ins
+
+**Why.** `__builtin_add_overflow` compiles to the processor's own overflow
+flag: one instruction. Checking by hand in plain C is longer, slower and
+easy to get wrong. GCC and Clang cover nearly every microcontroller
+toolchain in use (ARM, RISC-V, AVR, ESP). *(Provisional: a plain-C fallback
+can be added for other compilers.)*
+
+### 5.5f Compiled strings are not freed yet
+
+**Why.** Memory management is its own stage, and guessing at it now would
+mean redoing it. Until then, memory for strings built at run time is taken
+and never returned. Programs that use only numbers, bools and fixed strings
+take no memory at all. *(Provisional, and not acceptable for firmware that
+builds strings in a loop.)*
 
 ### 5.6 The checker and the interpreter are separate
 

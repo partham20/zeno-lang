@@ -53,6 +53,7 @@ Samples, none of them final:
 - [`examples/hello.zeno`](examples/hello.zeno): one line.
 - [`examples/tour.zeno`](examples/tour.zeno): the main features.
 - [`examples/styles.zeno`](examples/styles.zeno): one job written typed, untyped, object-oriented and functional.
+- [`examples/primes.zeno`](examples/primes.zeno): no types written, and it compiles to C.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller.
 
 ## One language, every job
@@ -74,14 +75,16 @@ piece of the compiler:
 
 ## Status
 
-Zeno checks and runs programs. The lexer, parser, type checker and
-interpreter work. Compiling to C is not started.
+Zeno checks and runs programs, and compiles a first slice of the language
+to C: numbers, strings, functions and control flow. Classes, lists, enums and
+error handling run under `zeno run` but are not compiled yet.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it
 cargo run -- check examples/tour.zeno           # only check it for mistakes
 cargo run -- check --strict examples/tour.zeno  # every type must be known, as firmware needs
 cargo run -- check --strict examples/styles.zeno  # passes with no types written: they are worked out
+cargo run -- build examples/primes.zeno         # compile to primes.c, then to ./primes
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
 cargo run -- tokens examples/hello.zeno         # the tokens the lexer finds
 cargo test
@@ -91,7 +94,8 @@ cargo test
 
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
-  [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md).
+  [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
+  [`docs/compiler.md`](docs/compiler.md).
 
 ## Roadmap
 
@@ -99,11 +103,12 @@ cargo test
 2. Parser and syntax tree (done)
 3. Tree-walking interpreter, `zeno run` (done)
 4. Type checker, `zeno check` (done)
-5. Bytecode VM
-6. Compile to C (`zeno build`)
+5. Compile to C, `zeno build` (first slice done: numbers, strings, functions, control flow)
+6. Compile the rest: classes, lists, enums, `match`, errors, functions as values
 7. Memory management
-8. LLVM backend
-9. Extras
+8. Bytecode VM
+9. LLVM backend
+10. Extras
 
 ## Layout
 
@@ -118,6 +123,9 @@ src/checker.rs      finds type mistakes before the program runs
 src/value.rs        what a value is while a program runs
 src/interpreter.rs  runs a syntax tree
 src/builtins.rs     print, len, methods, modules, formatting
+src/units.rs        the units a number can carry
+src/emit_c.rs       syntax tree -> C source, for `zeno build`
+src/runtime.c       the C library every compiled program carries
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs
