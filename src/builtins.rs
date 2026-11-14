@@ -106,7 +106,7 @@ fn int(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) if x.is_finite() => Ok(Value::Int(x.trunc() as i64)),
         Value::Float(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
-        Value::Str(text) => match text.trim().replace('_', "").parse() {
+        Value::Str(text) => match strip(text).replace('_', "").parse() {
             Ok(n) => Ok(Value::Int(n)),
             Err(_) => raise("ValueError", format!("cannot turn {text:?} into an int"), span),
         },
@@ -119,7 +119,7 @@ fn float(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
     match &args[0] {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
         Value::Float(x) => Ok(Value::Float(*x)),
-        Value::Str(text) => match text.trim().parse() {
+        Value::Str(text) => match strip(text).parse() {
             Ok(x) => Ok(Value::Float(x)),
             Err(_) => raise("ValueError", format!("cannot turn {text:?} into a float"), span),
         },
@@ -201,6 +201,18 @@ fn sum(_: &mut Interpreter, args: Vec<Value>, span: Span) -> Result {
 
 // -------------------------------------------------------------------- Methods
 
+/// The blank characters that `strip`, `split`, `int` and `float` skip:
+/// space, tab, the two line endings and the form feed. Only these, so that
+/// the compiled program needs no table of the world's other blanks.
+fn is_blank(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
+}
+
+/// `text` without the blanks at either end.
+fn strip(text: &str) -> &str {
+    text.trim_matches(is_blank)
+}
+
 const STR_METHODS: &[&str] =
     &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
 const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
@@ -232,21 +244,21 @@ pub fn call_method(
         Value::Str(this) => match name {
             "upper" => {
                 arity(name, &args, 0, 0, span)?;
-                Ok(Value::str(this.to_uppercase()))
+                Ok(Value::str(this.to_ascii_uppercase()))
             }
             "lower" => {
                 arity(name, &args, 0, 0, span)?;
-                Ok(Value::str(this.to_lowercase()))
+                Ok(Value::str(this.to_ascii_lowercase()))
             }
             "strip" => {
                 arity(name, &args, 0, 0, span)?;
-                Ok(Value::str(this.trim()))
+                Ok(Value::str(strip(this)))
             }
             "split" => {
                 arity(name, &args, 0, 1, span)?;
                 let parts: Vec<Value> = match args.first() {
                     // With no separator, split on any run of spaces.
-                    None => this.split_whitespace().map(Value::str).collect(),
+                    None => this.split(is_blank).filter(|word| !word.is_empty()).map(Value::str).collect(),
                     Some(separator) => match text(name, separator, span)? {
                         "" => return raise("ValueError", "cannot split on an empty str", span),
                         separator => this.split(separator).map(Value::str).collect(),

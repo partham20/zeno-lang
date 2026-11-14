@@ -93,6 +93,10 @@ impl CaseValue {
 pub struct ErrorValue {
     pub kind: String,
     pub message: String,
+    /// When an object of a class is raised, it travels inside an error
+    /// whose kind is the class's name and whose message is the object as
+    /// text. This is the object.
+    pub object: Option<Value>,
 }
 
 pub struct Module {
@@ -129,7 +133,7 @@ pub fn fatal<T>(message: impl Into<String>, span: Span) -> Result<T, Control> {
 
 /// Raise a built-in error that the program may catch.
 pub fn raise<T>(kind: &str, message: impl Into<String>, span: Span) -> Result<T, Control> {
-    let error = ErrorValue { kind: kind.to_string(), message: message.into() };
+    let error = ErrorValue { kind: kind.to_string(), message: message.into(), object: None };
     Err(Control::Raise(Value::Error(Rc::new(error)), span))
 }
 

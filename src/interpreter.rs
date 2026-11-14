@@ -80,7 +80,7 @@ fn error_kind(value: &Value) -> String {
 /// one whose `parent` is the scope around it. Looking up a name walks outward
 /// until it is found.
 pub struct Scope {
-    variables: RefCell<HashMap<String, Variable>>,
+    variables: RefCell<HashMap<String, Rc<Variable>>>,
     parent: Option<Env>,
 }
 
@@ -88,8 +88,11 @@ pub struct Scope {
 /// was defined in for as long as the function exists.
 pub type Env = Rc<Scope>;
 
+/// One variable. It is shared (`Rc`) because a function written inside
+/// another keeps hold of the variables it uses: both must see the same
+/// variable, so that a change made by one is seen by the other.
 struct Variable {
-    value: Value,
+    value: RefCell<Value>,
     /// True for `var`, false for `let`, `const`, parameters and loop variables.
     mutable: bool,
 }
@@ -114,23 +117,47 @@ impl Scope {
         if variables.contains_key(name) {
             return false;
         }
-        variables.insert(name.to_string(), Variable { value, mutable });
+        variables.insert(name.to_string(), Rc::new(Variable { value: RefCell::new(value), mutable }));
         true
+    }
+
+    /// The scope a function written as a value keeps: the variables in
+    /// sight at this moment, and no others.
+    ///
+    /// Keeping `env` itself would be wrong. A variable declared *later* in
+    /// the same block would then be visible inside the function, and could
+    /// hide an outer variable of the same name that the function was
+    /// written to use. So the function gets a scope of its own holding the
+    /// variables that exist now. They are the same variables, not copies,
+    /// so changes still pass both ways.
+    ///
+    /// The top level of the program is left as it is: a function may use a
+    /// top-level variable that is declared further down the file.
+    fn seen_from(env: &Env) -> Env {
+        let mut seen = HashMap::new();
+        let mut scope = env;
+        while let Some(parent) = scope.parent.as_ref().filter(|parent| parent.parent.is_some()) {
+            for (name, variable) in scope.variables.borrow().iter() {
+                seen.entry(name.clone()).or_insert_with(|| variable.clone());
+            }
+            scope = parent;
+        }
+        Rc::new(Scope { variables: RefCell::new(seen), parent: Some(scope.clone()) })
     }
 
     fn get(&self, name: &str) -> Option<Value> {
         if let Some(variable) = self.variables.borrow().get(name) {
-            return Some(variable.value.clone());
+            return Some(variable.value.borrow().clone());
         }
         self.parent.as_ref()?.get(name)
     }
 
     fn assign(&self, name: &str, value: Value) -> Result<(), AssignError> {
-        if let Some(variable) = self.variables.borrow_mut().get_mut(name) {
+        if let Some(variable) = self.variables.borrow().get(name) {
             if !variable.mutable {
                 return Err(AssignError::Immutable);
             }
-            variable.value = value;
+            *variable.value.borrow_mut() = value;
             return Ok(());
         }
         match &self.parent {
@@ -322,7 +349,17 @@ impl Interpreter {
                     if catches {
                         let scope = Scope::child(env);
                         if let Some(binding) = &handler.binding {
-                            scope.declare(binding, error, false);
+                            // `except Timeout as t` asked for the object
+                            // that was raised, so `t` is that object.
+                            // `except Error as e` asked for any error, so
+                            // `e` is the error the object travelled in.
+                            let caught = match (&handler.error, &error) {
+                                (Some(name), Value::Error(inner)) if name != "Error" => {
+                                    inner.object.clone().unwrap_or_else(|| error.clone())
+                                }
+                                _ => error.clone(),
+                            };
+                            scope.declare(binding, caught, false);
                         }
                         return self.run_statements(&handler.body, &scope);
                     }
@@ -340,7 +377,18 @@ impl Interpreter {
             StmtKind::Raise(value) => {
                 let error = self.eval(value, env)?;
                 match error {
-                    Value::Error(_) | Value::Instance(_) => Err(Control::Raise(error, span)),
+                    Value::Error(_) => Err(Control::Raise(error, span)),
+                    // An object is wrapped in an error named after its
+                    // class, so that every `except` receives the same kind
+                    // of thing whatever was raised.
+                    Value::Instance(ref instance) => {
+                        let wrapped = ErrorValue {
+                            kind: instance.class.name.clone(),
+                            message: error.to_string(),
+                            object: Some(error.clone()),
+                        };
+                        Err(Control::Raise(Value::Error(Rc::new(wrapped)), span))
+                    }
                     other => fatal(
                         format!("only an error can be raised, and this is {}", other.type_name()),
                         span,
@@ -612,7 +660,7 @@ impl Interpreter {
 
             // A function written as a value remembers the scope it was written in.
             ExprKind::Function(decl) => {
-                let closure = Closure { decl: decl.clone(), env: env.clone() };
+                let closure = Closure { decl: decl.clone(), env: Scope::seen_from(env) };
                 Ok(Value::Function(Rc::new(closure)))
             }
 
@@ -791,7 +839,7 @@ impl Interpreter {
                     [message] => message.to_string(),
                     _ => return fatal(format!("`{kind}` takes one message"), span),
                 };
-                Ok(Value::Error(Rc::new(ErrorValue { kind: kind.to_string(), message })))
+                Ok(Value::Error(Rc::new(ErrorValue { kind: kind.to_string(), message, object: None })))
             }
             other => fatal(format!("{} cannot be called", other.type_name()), span),
         }
@@ -1353,6 +1401,36 @@ mod tests {
     fn a_class_can_be_raised() {
         let source = "class Timeout {\n after: int\n}\ntry {\n raise Timeout(30)\n} except Timeout as t {\n print(t.after)\n}";
         assert_eq!(output(source), "30\n");
+    }
+
+    #[test]
+    fn a_raised_object_is_an_error_to_those_who_ask_for_any_error() {
+        // `except Timeout as t` gets the object. `except Error as e` gets
+        // an error named after the class, and raising that again passes
+        // the object on.
+        let source = "class Timeout {\n after: int\n}\n\
+                      try {\n try {\n  raise Timeout(30)\n } except Error as e {\n  print(e.kind, e.message, e)\n  raise e\n }\n\
+                      } except Timeout as t {\n print(t.after)\n}";
+        assert_eq!(output(source), "Timeout Timeout(after=30) Timeout(after=30)\n30\n");
+    }
+
+    #[test]
+    fn text_methods_know_only_plain_letters_and_blanks() {
+        // The compiled program has to do the same on a microcontroller,
+        // with no table of every alphabet to look letters up in.
+        assert_eq!(output("print(\"Stra\u{df}e \u{e9}\".upper(), \"\u{c9}A\".lower())"), "STRA\u{df}E \u{e9} \u{c9}a\n");
+        assert_eq!(output("print(\"\\t a b \\n\".strip(), \" a  b\\tc \".split(), int(\" 1_000\\n\"))"), "a b [\"a\", \"b\", \"c\"] 1000\n");
+    }
+
+    #[test]
+    fn a_function_value_keeps_the_variables_it_was_written_with() {
+        // The `y` declared after `f` must not get into `f`, which was
+        // written when `y` meant the one at the top.
+        let source = "let y = 1\nfunction g() -> int {\n let f = function() { return y }\n let y = 2\n return f() + y\n}\nprint(g())";
+        assert_eq!(output(source), "3\n");
+        // But it does see changes to the variables it kept.
+        let source = "function g() -> int {\n var n = 1\n let f = function() { return n }\n n = 5\n return f()\n}\nprint(g())";
+        assert_eq!(output(source), "5\n");
     }
 
     #[test]
