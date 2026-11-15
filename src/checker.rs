@@ -5170,6 +5170,17 @@ impl Checker {
             Add | Sub if same_unit => shared_unit.map(|unit| Ty::Quantity(Rc::from(unit))),
             Add => match (left, right) {
                 (Ty::Str, Ty::Str) => Some(Ty::Str),
+                // Two lists of known, unrelated things would make a list
+                // of nothing in particular, which `append` already
+                // refuses one item at a time (decision 5.19g).
+                (Ty::List(a), Ty::List(b)) if !a.has_dynamic() && !b.has_dynamic() && join(a, b).has_dynamic() => {
+                    return self.error(
+                        format!(
+                            "`+` joins two lists that hold the same kind of thing, and these are {left} and {right}"
+                        ),
+                        span,
+                    );
+                }
                 (Ty::List(a), Ty::List(b)) => Some(Ty::list(join(a, b))),
                 _ => None,
             },
@@ -5619,6 +5630,15 @@ mod tests {
         assert_eq!(error("print(\"x\".upper(1))"), "`upper` takes 0 arguments, but 1 was given");
         assert_eq!(error("print(\"x\".nope())"), "str has no field or method `nope`");
         assert_eq!(error("let xs = [1]\nxs.append(\"two\")"), "an item added to this list should be int, but this is str");
+        // `+` is held to the same rule as `append`: two lists of known,
+        // unrelated things do not join, with or without `--strict`.
+        let unrelated = "`+` joins two lists that hold the same kind of thing, and these are list[int] and list[str]";
+        assert_eq!(error("let xs = [1] + [\"two\"]"), unrelated);
+        assert_eq!(error("var xs = [1]\nxs += [\"two\"]"), unrelated);
+        assert_eq!(strict_error("let xs: list[int] = [1] + [\"two\"]"), unrelated);
+        // A list that may hold `none` joins one that does not, and a
+        // list that is not known yet joins anything.
+        ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
