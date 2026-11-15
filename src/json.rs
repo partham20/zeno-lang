@@ -60,9 +60,6 @@ impl Json {
         }
     }
 
-    // The tests read numbers with this today. The server will, when it
-    // learns to answer a question about a place in a file.
-    #[allow(dead_code)]
     pub fn as_usize(&self) -> Option<usize> {
         match self {
             Json::Number(number) if *number >= 0.0 && number.fract() == 0.0 => Some(*number as usize),

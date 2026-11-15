@@ -31,8 +31,10 @@ use crate::checker;
 use crate::error::Error;
 use crate::format;
 use crate::json::Json;
+use crate::lexer;
 use crate::modules;
 use crate::package;
+use crate::token::TokenKind;
 
 // ---------------------------------------------------------------- The server
 
@@ -87,6 +89,8 @@ impl Server {
                             // closed, and sends its whole text at every change.
                             ("textDocumentSync", Json::object([("openClose", Json::Bool(true)), ("change", Json::number(1))])),
                             ("documentFormattingProvider", Json::Bool(true)),
+                            ("definitionProvider", Json::Bool(true)),
+                            ("hoverProvider", Json::Bool(true)),
                         ]),
                     ),
                     ("serverInfo", Json::object([("name", Json::text("zeno")), ("version", Json::text(env!("CARGO_PKG_VERSION")))])),
@@ -133,6 +137,26 @@ impl Server {
                     _ => Vec::new(),
                 };
                 answer(Json::List(edits))
+            }
+            // "What is the name under the cursor?" and "where is it declared?"
+            "textDocument/definition" | "textDocument/hover" => {
+                let place = |name: &str| params.at(&["position", name]).and_then(Json::as_usize);
+                let meaning = match (uri.and_then(path_of), place("line"), place("character")) {
+                    (Some(path), Some(line), Some(character)) => self.meaning(&path, line, character),
+                    _ => None,
+                };
+                answer(match (method, meaning) {
+                    ("textDocument/hover", Some(meaning)) => Json::object([(
+                        "contents",
+                        Json::object([("kind", Json::text("plaintext")), ("value", Json::text(format!("{}: {}", meaning.written, meaning.ty)))]),
+                    )]),
+                    ("textDocument/definition", Some(Meaning { declared: Some((path, line, character)), .. })) => {
+                        let uri = self.uris.get(&path).cloned().unwrap_or_else(|| uri_of(&path));
+                        Json::object([("uri", Json::text(uri)), ("range", range(line, character, line, character))])
+                    }
+                    // Not a name, or one that comes with Zeno.
+                    _ => Json::Null,
+                })
             }
             _ => match id {
                 // A request this server has no answer to gets told so.
@@ -246,6 +270,76 @@ impl Server {
             })
             .collect()
     }
+}
+
+/// What a name in an open file means: how it is written there, its
+/// type, and where it was declared (the file, and the line and character
+/// as the protocol counts them).
+struct Meaning {
+    written: String,
+    ty: String,
+    declared: Option<(String, usize, usize)>,
+}
+
+impl Server {
+    /// The meaning of the name at a place in the open file `path`, if a
+    /// name stands there and the checker knows what it is.
+    ///
+    /// The checker does the work: it notes every place a name is used,
+    /// with what the name means there (`checker::Use`). This looks up
+    /// the place the editor asked about. Nothing is guessed from how a
+    /// name is spelled, so a name a function declares for itself is never
+    /// taken for one at the top of the file.
+    fn meaning(&self, path: &str, line: usize, character: usize) -> Option<Meaning> {
+        let source = self.open.get(path)?;
+        // The name under the cursor, and the name its line of dots
+        // begins with: `shapes` for the `area` of `shapes.area`.
+        let written = lexer::lex_written(source).ok()?;
+        let text: Vec<char> = source.lines().nth(line)?.chars().collect();
+        let col = 1 + chars_in(&text, character);
+        let on = |place: usize| {
+            let token = &written.tokens[place];
+            let width = written.texts[place].chars().count();
+            token.span.line == line + 1 && token.span.col <= col && col < token.span.col + width.max(1)
+        };
+        let here = (0..written.tokens.len()).find(|&place| on(place))?;
+        let TokenKind::Ident(word) = &written.tokens[here].kind else { return None };
+        let mut first = here;
+        while first >= 2 && written.tokens[first - 1].kind == TokenKind::Dot && matches!(written.tokens[first - 2].kind, TokenKind::Ident(_)) {
+            first -= 2;
+        }
+
+        let read = |path: &str| self.read(path);
+        let loaded = modules::load_in(&self.folder_of(path), path, source.clone(), &read);
+        let program = loaded.program.as_ref().ok()?;
+        let uses = checker::check_by(program, checker::Rules { strict: false, one_owner: false, firmware: false }).1.uses();
+        // The open file is the first file, so its positions are as written.
+        // A name of a module is one name in the joined program, and it
+        // stands where its line of dots begins.
+        let found = [here, first].into_iter().find_map(|place| {
+            let at = written.tokens[place].span;
+            uses.iter().find(|used| used.at == at && crate::ast::shown_name(&used.name) == word)
+        })?;
+        let declared = found.declared.and_then(|span| {
+            let file = loaded.files.get(span.file())?;
+            let line = span.line_in_file().checked_sub(1)?;
+            let text: Vec<char> = file.source.lines().nth(line)?.chars().collect();
+            let character = text.iter().take(span.col.saturating_sub(1)).map(|c| c.len_utf16()).sum();
+            Some((file.path.clone(), line, character))
+        });
+        Some(Meaning { written: word.clone(), ty: found.ty.clone(), declared })
+    }
+}
+
+/// How many characters of a line come before the place an editor calls
+/// `character`. The editor counts as UTF-16 does, where a character
+/// outside the first 65,536 is two.
+fn chars_in(line: &[char], character: usize) -> usize {
+    let mut units = 0;
+    line.iter().take_while(|c| {
+        units += c.len_utf16();
+        units <= character
+    }).count()
 }
 
 /// A mistake as an editor shows it: from where it is to the end of the
@@ -425,7 +519,7 @@ mod tests {
         assert_eq!(server.workspace, Some(PathBuf::from("/work")));
         // A notification gets no answer. A request it does not know gets told so.
         assert_eq!(server.handle(&message(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#)), []);
-        let unknown = server.handle(&message(r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{}}"#));
+        let unknown = server.handle(&message(r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{}}"#));
         assert_eq!(unknown[0].at(&["error", "code"]), Some(&Json::Number(-32601.0)));
         let stop = server.handle(&message(r#"{"jsonrpc":"2.0","id":3,"method":"shutdown"}"#));
         assert_eq!(stop[0].get("result"), Some(&Json::Null));
@@ -487,6 +581,86 @@ mod tests {
         let close = message(r#"{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///work/drivers/uart.zeno"}}}"#);
         assert_eq!(server.handle(&close), []);
         assert!(!server.open.contains_key("/work/drivers/uart.zeno"));
+    }
+
+    /// Ask about the place one character into the first `word` on a line
+    /// of an open file: `"(p"` asks about the `p` after a bracket.
+    fn ask(server: &mut Server, method: &str, name: &str, line: usize, word: &str) -> Json {
+        let path = format!("/work/{name}");
+        let text: Vec<char> = server.open[&path].lines().nth(line).unwrap().chars().collect();
+        let col = text.iter().collect::<String>().find(word).unwrap_or_else(|| panic!("`{word}` is not on line {line}"));
+        let character: usize = text.iter().collect::<String>()[..col].chars().map(char::len_utf16).sum();
+        let reply = server.handle(&Json::object([
+            ("jsonrpc", Json::text("2.0")),
+            ("id", Json::number(9)),
+            ("method", Json::text(method)),
+            (
+                "params",
+                Json::object([
+                    ("textDocument", Json::object([("uri", Json::text(format!("file:///work/{name}")))])),
+                    ("position", Json::object([("line", Json::number(line)), ("character", Json::number(character + 1))])),
+                ]),
+            ),
+        ]));
+        reply[0].get("result").cloned().unwrap()
+    }
+
+    /// Where a "go to declaration" answer points: the file, line and character.
+    fn points_to(answer: &Json) -> (String, usize, usize) {
+        let number = |name: &str| answer.at(&["range", "start", name]).and_then(Json::as_usize).unwrap();
+        (answer.get("uri").and_then(Json::as_str).unwrap().to_string(), number("line"), number("character"))
+    }
+
+    #[test]
+    fn a_name_says_what_it_is_and_where_it_was_declared() {
+        let mut server = Server::default();
+        open(&mut server, "shapes.zeno", "class Point {\n    x: int\n}\n\nfunction area(side: int) -> int {\n    return side * side\n}\n");
+        open(
+            &mut server,
+            "main.zeno",
+            "import shapes\n\
+             let count = 3\n\
+             function twice(count: int) -> int {\n    return count * 2\n}\n\
+             print(twice(count) + shapes.area(count))\n\
+             for step in [1, 2] {\n    print(step)\n}\n\
+             let p = shapes.Point(1)\nprint(p.x, \"\u{1F600}\", count)\n",
+        );
+        let main = "file:///work/main.zeno".to_string();
+        // A variable, and a function: each goes to its own line.
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 5, "count")), (main.clone(), 1, 0));
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 5, "twice")), (main.clone(), 2, 0));
+        // Inside `twice`, `count` is the parameter and not the variable
+        // above it: the checker knows, and nothing is guessed.
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 3, "count")), (main.clone(), 2, 0));
+        // The variable of a loop.
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 7, "step")), (main.clone(), 6, 0));
+        // A name of a module goes to the module's file.
+        assert_eq!(
+            points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 5, "area")),
+            ("file:///work/shapes.zeno".to_string(), 4, 0)
+        );
+        assert_eq!(
+            points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 9, "Point")),
+            ("file:///work/shapes.zeno".to_string(), 0, 0)
+        );
+        // After a character that counts as two, the place is still found.
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 10, "count")), (main.clone(), 1, 0));
+
+        // What a name is.
+        let says = |server: &mut Server, line: usize, word: &str| {
+            ask(server, "textDocument/hover", "main.zeno", line, word).at(&["contents", "value"]).and_then(Json::as_str).map(str::to_string)
+        };
+        assert_eq!(says(&mut server, 5, "count").as_deref(), Some("count: int"));
+        assert_eq!(says(&mut server, 10, "(p").as_deref(), Some("p: shapes.Point"));
+        assert_eq!(says(&mut server, 5, "twice").as_deref(), Some("twice: function(count: int) -> int"));
+        assert_eq!(says(&mut server, 5, "print").as_deref(), Some("print: a function"));
+        // No answer where the server would have to guess: a field, a
+        // word of the language, a name that comes with Zeno, a module.
+        assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 10, ".x"), Json::Null);
+        assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 1, "let"), Json::Null);
+        assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 5, "print"), Json::Null);
+        assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 5, "shapes"), Json::Null);
+        assert_eq!(says(&mut server, 10, ".x"), None);
     }
 
     #[test]

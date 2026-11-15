@@ -183,6 +183,12 @@ pub struct FunctionKind {
 /// memory), so the tree that was checked must be the tree that is compiled.
 #[derive(Default)]
 pub struct Types {
+    /// Where each variable, function, class, enum and case was declared,
+    /// by the number the checker gave it (`Variable::id`).
+    placed: HashMap<usize, Span>,
+    /// Each place a name is used: where, the name, its type there, and
+    /// the number of what it means. An editor asks about these.
+    used: Vec<(Span, String, String, usize)>,
     functions: HashMap<usize, FunctionKind>,
     /// For each function, which parameters only look at a value that
     /// somebody else owns. Such a parameter may be handed what the
@@ -235,7 +241,28 @@ pub struct Types {
     annotations: HashMap<usize, Kind>,
 }
 
+/// One place where a name is used, for an editor that asks "what is
+/// this, and where is it declared?".
+#[derive(Debug, Clone, PartialEq)]
+pub struct Use {
+    /// Where the name is written.
+    pub at: Span,
+    pub name: String,
+    /// Its type at this place, as a message would show it.
+    pub ty: String,
+    /// Where it was declared. `None` for what comes with Zeno.
+    pub declared: Option<Span>,
+}
+
 impl Types {
+    /// Every place a name is used, in the order the checker met them.
+    pub fn uses(&self) -> Vec<Use> {
+        self.used
+            .iter()
+            .map(|(at, name, ty, id)| Use { at: *at, name: name.clone(), ty: ty.clone(), declared: self.placed.get(id).copied() })
+            .collect()
+    }
+
     /// Does reading the variable `expr` here give its owned value away?
     pub fn moves(&self, expr: &ast::Expr) -> bool {
         self.moves.contains(&(expr as *const ast::Expr as usize))
@@ -1437,6 +1464,11 @@ struct Argument {
 }
 
 struct Checker {
+    /// The uses of a name that mean a function: the place in
+    /// `Types::used`, and the function. What a function takes and gives
+    /// back may not be known yet where it is used, so it is written into
+    /// the record when the whole program has been checked.
+    functions_used: Vec<(usize, Rc<FunctionInfo>)>,
     /// What the function literal that was checked last looks at from
     /// outside itself. See `Capture`.
     captured: Vec<Capture>,
@@ -1579,6 +1611,7 @@ impl Checker {
             pending: Vec::new(),
             expected: None,
             copy_notes: Vec::new(),
+            functions_used: Vec::new(),
             captured: Vec::new(),
         }
     }
@@ -1599,6 +1632,19 @@ impl Checker {
         }
         self.statements(&program.statements, &env);
         self.finish_generics();
+        // Say what each function that was used takes and gives back, as
+        // its first line says it: `function(n: int) -> int`.
+        for (place, function) in std::mem::take(&mut self.functions_used) {
+            if let State::Checked(signature) = &*function.state.borrow() {
+                let params: Vec<String> =
+                    signature.params.iter().map(|slot| format!("{}: {}", slot.name, as_parameter(&slot.ty))).collect();
+                let mut shown = format!("function({})", params.join(", "));
+                if !matches!(signature.returns, Ty::None) {
+                    shown += &format!(" -> {}", signature.returns);
+                }
+                self.types.used[place].2 = shown;
+            }
+        }
     }
 
     fn error(&mut self, message: impl Into<String>, span: Span) -> Ty {
@@ -1660,7 +1706,24 @@ impl Checker {
     fn declare(&mut self, env: &Env, name: &str, ty: Ty, mutable: bool, span: Span) {
         if !env.declare(name, ty, mutable) {
             self.error(format!("`{name}` is already declared in this block"), span);
+        } else {
+            self.placed(env, name, span);
         }
+    }
+
+    /// Note where the name that `scope` has just declared was declared.
+    fn placed(&mut self, scope: &Env, name: &str, span: Span) {
+        if let Some(variable) = scope.get_here(name) {
+            self.types.placed.insert(variable.id, span);
+        }
+    }
+
+    /// Note that `name` is used at `span`, and means `variable`.
+    fn used(&mut self, name: &str, variable: &Variable, span: Span) {
+        if let Ty::Function(function) = &variable.ty {
+            self.functions_used.push((self.types.used.len(), function.clone()));
+        }
+        self.types.used.push((span, name.to_string(), variable.ty.to_string(), variable.id));
     }
 
     /// Report an error unless a `from` can go where a `to` is wanted.
@@ -2708,7 +2771,7 @@ impl Checker {
                 let walks = self.walk(iterable, &item, env);
                 let scope = Scope::child(env);
                 forget_assigned(body, &scope);
-                self.loop_variable(&scope, variable, item);
+                self.loop_variable(&scope, variable, item, span);
                 self.frame().loops += 1;
                 let entry = self.enter_loop();
                 let exits = self.statements(body, &scope);
@@ -2930,6 +2993,11 @@ impl Checker {
     /// is, if it is one.
     fn assignment_target(&mut self, target: &Expr, env: &Env) -> (Ty, Ty, Option<Slot>) {
         let span = target.span;
+        if let ExprKind::Name(name) = &target.kind {
+            if let Some(variable) = env.get(name) {
+                self.used(name, &variable, span);
+            }
+        }
         let ty = match &target.kind {
             ExprKind::Name(name) => match (env.get(name), self.too_early(name, env.get(name).as_ref(), env, span)) {
                 (_, Some(mistake)) => mistake,
@@ -3287,6 +3355,7 @@ impl Checker {
                 } else {
                     scope.declare(name, subject.clone(), false);
                 }
+                self.placed(scope, name, span);
                 Covers::Everything
             }
             Pattern::Variant { name, fields } => {
@@ -3368,6 +3437,7 @@ impl Checker {
             caught.push(handler.error.as_deref().unwrap_or("Error"));
             if let Some(binding) = &handler.binding {
                 scope.declare(binding, error_type, false);
+                self.placed(&scope, binding, span);
             }
             self.owned.moved = at_except.clone();
             let exits = self.statements(&handler.body, &scope);
@@ -3864,9 +3934,10 @@ impl Checker {
 
     /// Declare the variable of a `for` loop, which holds `item` on each
     /// trip.
-    fn loop_variable(&mut self, scope: &Env, variable: &str, item: Ty) {
+    fn loop_variable(&mut self, scope: &Env, variable: &str, item: Ty, span: Span) {
         let looks = item.is_look();
         scope.declare(variable, item, false);
+        self.placed(scope, variable, span);
         if let (true, Some(variable)) = (looks, scope.get_here(variable)) {
             self.owned.items.insert(variable.id);
         }
@@ -4239,6 +4310,7 @@ impl Checker {
 
             ExprKind::Name(name) => match env.get(name) {
                 Some(variable) => {
+                    self.used(name, &variable, span);
                     if self.worked_out.last().is_some_and(|params| params.contains_key(name)) {
                         self.touched.push(name.clone());
                     }
@@ -4292,7 +4364,7 @@ impl Checker {
                 let item = self.item_type(&iterable_type, iterable.span);
                 let walks = self.walk(iterable, &item, env);
                 let scope = Scope::child(env);
-                self.loop_variable(&scope, variable, item);
+                self.loop_variable(&scope, variable, item, span);
                 // The element is worked out once for every item: a loop.
                 let entry = self.enter_loop();
                 if let Some(condition) = condition {
