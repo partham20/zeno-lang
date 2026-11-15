@@ -337,8 +337,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     - A language server (done: `zeno lsp` speaks the Language Server
       Protocol, so VS Code, Neovim, Helix and others show the mistakes
       in a file as it is typed, from the text in the editor, and lay
-      it out on save. It is the `zeno` program itself, running the
-      checker `zeno check` runs. Colours and setup for each editor
+      it out on save. They also jump to where a name was declared
+      and show its type, from what the checker noted about each name.
+      It is the `zeno` program itself, running the checker
+      `zeno check` runs. Colours and setup for each editor
       are in [`editors/`](editors/README.md).
       See [`docs/lsp.md`](docs/lsp.md))
 18. Whatever real programs turn out to need (next)

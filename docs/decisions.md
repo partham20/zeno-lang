@@ -5809,7 +5809,8 @@ program means, and the formatter proves that to itself on every run
 (9.2). Each rule of spacing is the one the examples and the documents
 have used since the first stage, so `zeno format` surprises nobody
 who has read Zeno (9.5). The language server shows what `zeno check`
-shows, and nothing it would have to guess (9.10, 9.11).
+shows, says about a name what the checker knows of it, and answers
+nothing where it would have to guess (9.10, 9.11).
 
 ### 9.1 One layout, and no options
 
@@ -6002,24 +6003,54 @@ library: the protocol is JSON with a length in front, and
 library: quick to start, but a second implementation of "what is a
 mistake in Zeno", which is the one thing that must not exist twice.
 
-### 9.11 The server shows mistakes and lays out, and nothing it has to guess
+### 9.11 The server answers from the checker, and nothing it has to guess
 
 | The editor says | The server does |
 |---|---|
 | a file was opened, or its text changed | checks every open file, and sends the mistakes of each file whose mistakes changed |
 | lay this file out | answers with the file as `zeno format` writes it |
-| what is under the cursor? where is this declared? | says it has no answer |
+| where is this name declared? | answers with the file and the line of its declaration |
+| what is this name? | answers with the name and its type: `count: int` |
+| the same two about a field, a method, or the name of a module | answers "nothing" |
 
 A mistake is marked from where the checker says it is to the end of
 the word there, with the message `zeno check` prints.
 
-**Why no "go to declaration" yet.** *(Provisional.)* To answer it
-rightly the server must know which declaration a name means, with
-every rule of scope the checker applies. Guessing from the spelling
-is right most of the time, and an editor that is wrong some of the
-time teaches you not to trust it. The answer has to come from the
-checker, which does not record it yet. That is the next step for the
-server, and hovering and completion come from the same record.
+**Where the answers about a name come from.** To say rightly where a
+name was declared, the server must know which declaration the name
+means, with every rule of scope the checker applies: inside
+`function twice(count: int)`, `count` is the parameter, and not the
+`count` at the top of the file. Guessing from the spelling is right
+most of the time, and an editor that is wrong some of the time
+teaches you not to trust it. So the checker, which works this out
+anyway, now writes it down: for every place a name is used, what it
+means there, its type, and where it was declared (`checker::Use`).
+The server looks the cursor's place up in that record and adds
+nothing of its own.
+
+For a function the type is shown the way its first line is written,
+`twice: function(count: int) -> int`, with the names of the
+parameters, because Zeno lets a call name them (`twice(count=3)`).
+
+**Why a field gets no answer yet.** *(Provisional.)* The record holds
+names: variables, parameters, functions, classes, enums, and the
+names of a module (`shapes.area` is one name). A field or a method
+(`p.x`, `queue.put`) is found from the type of what stands before the
+dot, and the checker does not write that down yet. An empty answer
+is honest, and an editor shows nothing for it. A guess would be
+shown as if it were known.
+
+**Turned down.**
+- *Finding the declaration by searching the file for `let name` or
+  `function name`.* Wrong as soon as two scopes use one name, which
+  is ordinary code.
+- *A second, small scope walker in the server.* Two sets of scope
+  rules that have to agree for ever. The checker's are the rules.
+- *Completion and rename now.* Completion has to work on a file that
+  does not parse (the line being typed), and the checker never sees
+  such a file. Rename changes many files at once, and needs the uses
+  in files that are not open. Both wait until a real program misses
+  them.
 
 ### 9.12 The editor's text is the program, and its folder is worked out
 

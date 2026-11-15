@@ -4,8 +4,10 @@ Two things make an editor know Zeno:
 
 - **The language server**, `zeno lsp`. It is part of the `zeno` program
   itself. The editor starts it, and from then on shows the mistakes in
-  a file as you type and lays the file out when you ask. Any editor
-  that speaks the Language Server Protocol can use it.
+  a file as you type, lays the file out when you ask, jumps to where a
+  name was declared ("go to definition" in most editors) and shows a
+  name's type when you rest on it. Any editor that speaks the Language
+  Server Protocol can use it.
 - **Colours.** These are per editor: a grammar for VS Code, a syntax
   file for Vim and Neovim.
 
@@ -105,7 +107,8 @@ python3 editors/talk.py target/debug/zeno examples/thermostat/main.zeno
 ```
 
 plays the part of an editor: it opens the file, types a mistake, takes
-it out, asks for the layout, and prints every message both ways.
+it out, asks what a name is and where it was declared, asks for the
+layout, and prints every message both ways.
 
 ## What has been tried
 

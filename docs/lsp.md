@@ -1,7 +1,8 @@
 # The language server
 
 `zeno lsp` lets an editor show the mistakes in a Zeno file as you
-type, and lay the file out when you save. This page says what it does,
+type, lay the file out when you save, jump to where a name was
+declared, and show what a name is. This page says what it does,
 how to watch it work with no editor at all, and walks through
 `src/lsp.rs` and `src/json.rs`.
 
@@ -25,10 +26,14 @@ editor underlines is exactly what `zeno check` would print.
 |---|---|
 | a file was opened, or its text changed | checks every open file, and sends the mistakes of each file whose mistakes changed |
 | lay this file out | answers with the file as `zeno format` writes it |
+| where is this name declared? | answers with the file and the line of its declaration |
+| what is this name? | answers with the name and its type, such as `count: int` |
 | anything else that wants an answer | says it has no answer to that |
 
-It does not yet answer "where is this declared?" or "what is this?".
-Decision 9.11 says why.
+The two questions about a name are answered for variables,
+parameters, functions, classes, enums and the names of a module. A
+field or a method (`p.x`) gets an empty answer for now. Decision 9.11
+says why.
 
 ## Watching it work
 
@@ -43,27 +48,49 @@ python3 editors/talk.py target/debug/zeno examples/thermostat/main.zeno
 ```
 --> {"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"rootUri": "file:///.../examples/thermostat", ...}}
 <-- {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {"textDocumentSync": {"openClose": true, "change": 1},
-     "documentFormattingProvider": true}, "serverInfo": {"name": "zeno", "version": "0.0.1"}}}
+     "documentFormattingProvider": true, "definitionProvider": true, "hoverProvider": true},
+     "serverInfo": {"name": "zeno", "version": "0.0.1"}}}
 --> {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": "file:///.../main.zeno", "text": "# A program..."}}}
 <-- {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": "file:///.../main.zeno", "diagnostics": []}}
 --> {"jsonrpc": "2.0", "method": "textDocument/didChange", ...}
 <-- {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": "file:///.../main.zeno", "diagnostics": [
      {"range": {"start": {"line": 31, "character": 6}, "end": {"line": 31, "character": 18}},
       "severity": 1, "source": "zeno", "message": "`no_such_name` is not defined"}]}}
+--> {"jsonrpc": "2.0", "method": "textDocument/didChange", ...}
+<-- {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": "file:///.../main.zeno", "diagnostics": []}}
+--> {"jsonrpc": "2.0", "method": "textDocument/hover", "id": 4, "params": {"textDocument": {"uri": "file:///.../main.zeno"},
+     "position": {"line": 32, "character": 6}}}
+<-- {"jsonrpc": "2.0", "id": 4, "result": {"contents": {"kind": "plaintext", "value": "answer: int"}}}
+--> {"jsonrpc": "2.0", "method": "textDocument/definition", "id": 5, "params": {... "position": {"line": 32, "character": 6}}}
+<-- {"jsonrpc": "2.0", "id": 5, "result": {"uri": "file:///.../main.zeno",
+     "range": {"start": {"line": 31, "character": 0}, "end": {"line": 31, "character": 0}}}}
 ```
 
 Reading it from the top:
 
 1. **`initialize`.** The editor says hello, and the server answers
    with what it can do: it wants to be told when files open and close,
-   it wants the whole text at every change (`"change": 1`), and it can
-   lay a file out.
+   it wants the whole text at every change (`"change": 1`), it can
+   lay a file out, and it can say where a name was declared and what
+   it is.
 2. **`didOpen`.** The editor sends the file's text. The server checks
    it and sends back its mistakes: an empty list.
 3. **`didChange`.** The script "types" a line, `print(no_such_name)`.
    The server checks again and sends one mistake, with where it is:
    line 31, characters 6 to 18. Both count from 0, so that is line 32
    in your editor. An editor draws the red line from this.
+4. **`didChange` again.** The script takes the mistake out and types
+   two good lines, `let answer = 6 * 7` and `print(answer)`. The
+   server sends an empty list, and the editor takes the red line
+   away.
+5. **`hover`.** The script asks what stands at line 32, character 6:
+   the `answer` inside `print(answer)`. The server says
+   `answer: int`.
+6. **`definition`.** The same place, and the other question: where
+   was it declared? On line 31, the line with the `let`.
+
+After that the script spoils the layout and asks for the file to be
+laid out, which the last lines of its output show.
 
 A message with an `id` is a request and gets an answer with the same
 `id`. A message with none is a notification, and gets none.
@@ -173,6 +200,73 @@ walks up from the file to the nearest folder that has a
 has open. The loader got a second door for this, `modules::load_in`,
 which is told the folder and does not take it from the file.
 
+### What a name means
+
+Put the cursor on a name and press "go to definition", and the editor
+asks `textDocument/definition` with a line and a character. Rest the
+mouse on it, and the editor asks `textDocument/hover`. Both come to
+one question: what does the name at this place mean?
+
+The checker has always known. To check `count * 2` it has to find the
+`count` that is meant, by the rules of scope. It used to forget the
+answer as soon as it had the type. Now it writes each one down:
+
+```rust
+pub struct Use {
+    pub at: Span,                 // where the name is written
+    pub name: String,
+    pub ty: String,               // its type at this place
+    pub declared: Option<Span>,   // where it was declared
+}
+```
+
+Two small pieces in `src/checker.rs` fill the record. `declare`, which
+every `let`, parameter, function and class goes through, notes where
+the declaration is. And the arm of the checker that reads a name
+notes the use (the one for a name that is assigned to does the same):
+
+```rust
+ExprKind::Name(name) => match env.get(name) {
+    Some(variable) => {
+        self.used(name, &variable, span);
+        ...
+```
+
+So `Server::meaning` has little to do:
+
+1. Find the token under the cursor, with the lexer. If it is not a
+   name, there is no answer.
+2. Load and check the program, as `publish` does.
+3. Find the `Use` that stands at that token, and give back its type
+   and where it was declared.
+
+```rust
+let found = [here, first].into_iter().find_map(|place| {
+    let at = written.tokens[place].span;
+    uses.iter().find(|used| used.at == at && shown_name(&used.name) == word)
+})?;
+```
+
+Why two places, `here` and `first`? In `shapes.area(3)` the loader of
+[`modules.md`](modules.md) has made `shapes.area` into one name, and
+the checker sees it at the place of `shapes`, where the line of dots
+begins. So if nothing is used at the cursor's own token, the server
+looks at the start of the dots, and takes what it finds only if it is
+the word under the cursor. That is why `area` has an answer and
+`shapes` has none: `shapes` alone is not a name of anything.
+
+Nothing here reads the spelling of a declaration. In
+
+```zeno
+let count = 3
+function twice(count: int) -> int {
+    return count * 2
+}
+```
+
+the `count` in the third line goes to the parameter, because that is
+what the checker looked up.
+
 ### Where a mistake is
 
 The checker gives a line and a column, both from 1, counted in
@@ -183,8 +277,13 @@ checker gives only where a mistake starts.
 
 ## What is left out
 
-- **Go to declaration, hover, completion, rename.** The checker has
-  to record which declaration each name means first (9.11).
+- **Fields and methods.** `p.x` and `queue.put` get no answer to
+  "where is this declared?". The checker records names, and not yet
+  what stands after a dot (9.11).
+- **Names in other places than code.** A type after a colon
+  (`p: Point`), a case in a `match`, and a name inside an `f"..."`
+  text get no answer either.
+- **Completion and rename** (9.11).
 - **Colours from the server.** A grammar in the editor does that
   (9.13).
 - **Changes sent piece by piece.** The editor sends the whole text
@@ -215,14 +314,21 @@ checker gives only where a mistake starts.
    `a_program_in_several_files_is_checked_from_the_editor_s_text`.
    `shapes.zeno` in it is on no disk. Which three lines of the server
    make that work?
-6. Add a method to `handle`: answer `textDocument/hover` with
-   `{"contents": "Zeno"}` for any place, add
-   `("hoverProvider", Json::Bool(true))` to the capabilities, and try
-   it in your editor or with a line more in `talk.py`.
+6. Add a method to `handle`: answer `textDocument/references` with
+   every place the name under the cursor is used. `Types::uses()` has
+   all of them: the ones you want have the same `declared` as the one
+   `meaning` found. Add `("referencesProvider", Json::Bool(true))` to
+   the capabilities, and try it in your editor or with a line more in
+   `talk.py`.
 7. `Json::Object` keeps its members in a `Vec` and not in a
    `HashMap`. Find the test in `src/json.rs` that would fail with a
    `HashMap`, and say why.
-8. Set your editor up from `editors/README.md`, open
+8. In the test `a_name_says_what_it_is_and_where_it_was_declared`,
+   `count` is asked about on two lines and goes to two places. Which
+   line of the checker made the difference? Then say why asking about
+   `shapes` gives nothing while `area` right after it gives a line of
+   another file.
+9. Set your editor up from `editors/README.md`, open
    `examples/thermostat/main.zeno`, and misspell `filters.lowpass`.
    Then open `examples/filters/lowpass.zeno` and break it. In which
    file does the mistake show?

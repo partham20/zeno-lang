@@ -4,8 +4,8 @@
     python3 editors/talk.py path/to/zeno examples/thermostat/main.zeno
 
 It starts the language server, opens the file, puts a mistake into it,
-takes the mistake out again, asks for the file to be laid out, and stops
-the server. Each message is printed as it is sent (-->) or comes back
+takes the mistake out again, asks what a name is and where it was
+declared, asks for the file to be laid out, and stops the server. Each message is printed as it is sent (-->) or comes back
 (<--). docs/lsp.md walks through what you see.
 """
 import json
@@ -60,10 +60,26 @@ def main():
     send("textDocument/didChange", {"textDocument": {**document, "version": 2}, "contentChanges": [{"text": broken}]})
     found = receive()["params"]["diagnostics"]
 
-    # It is taken out again, and the layout is spoiled instead.
-    untidy = text.replace(" = ", "=", 1)
-    send("textDocument/didChange", {"textDocument": {**document, "version": 3}, "contentChanges": [{"text": untidy}]})
+    # It is taken out again, and two good lines are typed instead. Then
+    # the editor asks about the `answer` in the second of them: what is
+    # it, and where was it declared? Lines and characters count from 0.
+    lines = text.count("\n")
+    typed = text + "let answer = 6 * 7\nprint(answer)\n"
+    send("textDocument/didChange", {"textDocument": {**document, "version": 3}, "contentChanges": [{"text": typed}]})
     receive()
+    cursor = {"textDocument": document, "position": {"line": lines + 1, "character": 6}}
+    send("textDocument/hover", cursor, id=4)
+    what = receive()["result"]
+    send("textDocument/definition", cursor, id=5)
+    where = receive()["result"]
+    named = bool(what) and what["contents"]["value"] == "answer: int"
+    placed = bool(where) and where["uri"] == document["uri"] and where["range"]["start"]["line"] == lines
+
+    # They are taken out again, and the layout is spoiled instead. The
+    # file had no mistakes and still has none, so the server has
+    # nothing new to say and sends nothing.
+    untidy = text.replace(" = ", "=", 1)
+    send("textDocument/didChange", {"textDocument": {**document, "version": 4}, "contentChanges": [{"text": untidy}]})
     send("textDocument/formatting", {"textDocument": document, "options": {"tabSize": 4, "insertSpaces": True}}, id=2)
     edits = receive()["result"]
 
@@ -75,9 +91,11 @@ def main():
 
     print()
     print("mistakes shown for the typed line:", len(found))
+    print("the name was said to be `answer: int`:", named)
+    print("its declaration was found on the line it is on:", placed)
     print("the file was laid out again:", bool(edits) and edits[0]["newText"] == text)
     print("the server stopped with status", status)
-    return 0 if len(found) == 1 and edits and edits[0]["newText"] == text and status == 0 else 1
+    return 0 if len(found) == 1 and named and placed and edits and edits[0]["newText"] == text and status == 0 else 1
 
 
 def shorten(message):
