@@ -267,7 +267,13 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             inner => inner,
         },
         Ty::Error(_) => Kind::Error,
-        Ty::Callable(callable) if depth < 4 => function(callable.params.iter().collect(), &callable.returns),
+        Ty::Callable(callable) if depth < 4 => {
+            let kind = function(callable.params.iter().collect(), &callable.returns);
+            match callable.owned {
+                true => Kind::Owned(Box::new(kind)),
+                false => kind,
+            }
+        }
         Ty::Function(info) if depth < 4 && info.self_type.is_none() => match &*info.state.borrow() {
             State::Checked(signature) | State::Checking(signature) => {
                 function(signature.params.iter().map(|slot| &slot.ty).collect(), &signature.returns)
@@ -481,6 +487,10 @@ enum Made {
 struct CallableType {
     params: Vec<Ty>,
     returns: Ty,
+    /// Does a value of this type have one owner? It does where
+    /// everything has: a function written where a value goes is kept in
+    /// a block of its own, and somebody has to free it.
+    owned: bool,
 }
 
 /// Names a declaration: where it starts in the file, and what it is called.
@@ -635,6 +645,21 @@ struct Early {
     /// The ones of those that have been reported, so that each is
     /// reported once.
     told: Vec<String>,
+    /// Is this a function written where a value goes? Such a function
+    /// may look at the values of the function around it.
+    literal: bool,
+    /// The values with one owner that it looks at, from outside itself.
+    captures: Vec<Capture>,
+}
+
+/// A value from outside a function written where a value goes, which
+/// the function looks at: the variable's name, which variable it is, and
+/// the function body that declares it.
+#[derive(Clone)]
+struct Capture {
+    name: String,
+    id: usize,
+    function: usize,
 }
 
 #[derive(Clone)]
@@ -675,6 +700,7 @@ impl Ty {
             Ty::Owned(_) => true,
             Ty::Instance(class) => class.owned,
             Ty::EnumValue(info) => info.owned,
+            Ty::Callable(callable) => callable.owned,
             // What may be `none` has an owner if what is there has.
             Ty::Optional(inner) => inner.is_owned(),
             // `Box[T]`, in the parameters of a generic, where `Box` is an
@@ -883,6 +909,9 @@ fn fits(from: &Ty, to: &Ty) -> bool {
             Ty::Function(_) | Ty::BoundMethod(_) | Ty::Builtin(_) | Ty::BuiltinMethod(..),
             Ty::Callable(_),
         ) => true,
+        // A function written where a value goes, which has one owner
+        // where everything has.
+        (Ty::Owned(from), Ty::Callable(_)) => matches!(**from, Ty::Function(_)),
         _ => false,
     }
 }
@@ -1038,6 +1067,10 @@ struct Scope {
     /// Which function body this scope is part of. An owned value may only
     /// be used by the function whose block it lives in.
     function: usize,
+    /// Is this the top of the file, outside every function and block?
+    /// A variable declared there is the program's, and every function
+    /// can reach it.
+    top: bool,
 }
 
 /// A number nothing else has: for telling variables, and function bodies,
@@ -1066,6 +1099,8 @@ struct Variable {
     id: usize,
     /// The function body it was declared in.
     function: usize,
+    /// Was it declared at the top of the file? See `Scope::top`.
+    top: bool,
 }
 
 impl Scope {
@@ -1074,12 +1109,28 @@ impl Scope {
             variables: RefCell::new(HashMap::new()),
             parent: Some(parent.clone()),
             function: parent.function,
+            top: false,
+        })
+    }
+
+    /// The scope of the statements at the top of the file.
+    fn program(parent: &Env) -> Env {
+        Rc::new(Scope {
+            variables: RefCell::new(HashMap::new()),
+            parent: Some(parent.clone()),
+            function: parent.function,
+            top: true,
         })
     }
 
     /// The outermost scope of a function's body.
     fn body(parent: &Env) -> Env {
-        Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: Some(parent.clone()), function: fresh_id() })
+        Rc::new(Scope {
+            variables: RefCell::new(HashMap::new()),
+            parent: Some(parent.clone()),
+            function: fresh_id(),
+            top: false,
+        })
     }
 
     fn declare(&self, name: &str, ty: Ty, mutable: bool) -> bool {
@@ -1088,7 +1139,7 @@ impl Scope {
             return false;
         }
         let variable =
-            Variable { ty, mutable, case: None, declared: None, view: false, id: fresh_id(), function: self.function };
+            Variable { ty, mutable, case: None, declared: None, view: false, id: fresh_id(), function: self.function, top: self.top };
         variables.insert(name.to_string(), variable);
         true
     }
@@ -1148,7 +1199,7 @@ impl Scope {
 
 /// The outermost scope: the built-in functions and error types.
 fn globals() -> Env {
-    let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0 });
+    let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0, top: false });
     for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum"] {
         env.declare(name, Ty::Builtin(name), false);
     }
@@ -1201,6 +1252,9 @@ struct Argument {
 }
 
 struct Checker {
+    /// What the function literal that was checked last looks at from
+    /// outside itself. See `Capture`.
+    captured: Vec<Capture>,
     strict: bool,
     /// Does every list and object have one owner, said or not? True for
     /// a build with no collector. See `Rules`.
@@ -1275,9 +1329,6 @@ struct Ownership {
     /// For each `try` around this point, everything its body has given
     /// away so far. An error can leave the body after any of them.
     tries: Vec<Moved>,
-    /// The variables that name an error an `except` caught, where the
-    /// `except` block is the error's owner.
-    caught: HashSet<usize>,
     /// The variables of `for` loops that are a look at an item which has
     /// one owner, the list being walked.
     items: HashSet<usize>,
@@ -1322,11 +1373,12 @@ impl Checker {
             pending: Vec::new(),
             expected: None,
             copy_notes: Vec::new(),
+            captured: Vec::new(),
         }
     }
 
     fn run(&mut self, program: &Program) {
-        let env = Scope::child(&globals());
+        let env = Scope::program(&globals());
         self.statements(&program.statements, &env);
         self.finish_generics();
     }
@@ -1398,6 +1450,11 @@ impl Checker {
                                 as in `[1, 2]` or `[x for x in xs]`, or what `split`, `map`, `filter` or `+` gives"
                 }
                 (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
+                (_, Ty::Function(_)) => {
+                    message += ". A variable that was given a function of the program and no type holds that one \
+                                function only. Write its type to let it hold others, as in \
+                                `var f: function(int) -> int = double`"
+                }
                 (Ty::List(from), Ty::List(to)) if sized_into_int(from, to) => {
                     message += ". The list could then be given a number too big for it. \
                                 Make a list of ints from it with `[int(n) for n in ...]`"
@@ -1443,6 +1500,8 @@ impl Checker {
                 self.arrives(from, to, what, span)
             }
             (from, Ty::Optional(to)) => self.arrives(from, to, what, span),
+            (Ty::Owned(from) | Ty::Borrowed(from), to) => self.arrives(from, to, what, span),
+            (from, Ty::Borrowed(to)) => self.arrives(from, to, what, span),
             (from, Ty::Callable(wanted)) => {
                 if let Some(given) = self.callable(from) {
                     self.expect_function(&given, wanted, to, what, span);
@@ -1583,7 +1642,9 @@ impl Checker {
     fn escapes(&mut self, ty: &Ty) {
         let function = match ty {
             Ty::Function(function) | Ty::BoundMethod(function) => function.clone(),
-            Ty::List(inner) | Ty::Optional(inner) => return self.escapes(inner),
+            Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => {
+                return self.escapes(inner)
+            }
             _ => return,
         };
         for slot in &self.signature(&function).params {
@@ -1704,8 +1765,8 @@ impl Checker {
                 ty if ty.is_loose() => ty,
                 ty => self.error(
                     format!(
-                        "only a list, an object or an enum value that carries values can be borrowed, \
-                         and this is {ty}. Pass it as it is"
+                        "only a list, an object, a function, an error or an enum value that carries values \
+                         can be borrowed, and this is {ty}. Pass it as it is"
                     ),
                     span,
                 ),
@@ -1746,7 +1807,7 @@ impl Checker {
             ast::Type::Owned(_) | ast::Type::Borrow(_) => {
                 return self.error(
                     "`owned` and `borrow` describe a whole value, so they go at the very front of a type, \
-                     and not inside `list[ ]`, `or none` or a function type",
+                     and not inside `list[ ]` or `or none`",
                     span,
                 )
             }
@@ -1767,13 +1828,16 @@ impl Checker {
                 }
                 Ty::Optional(Box::new(inner))
             }
+            // Each parameter of a function type is a parameter: it can
+            // say `borrow`, and a list there has an owner where a
+            // parameter's list would have.
             ast::Type::Function { params, returns } => {
-                let params = params.iter().map(|param| self.resolve_inside(param, env, span, Inside::Other)).collect();
+                let params = params.iter().map(|param| self.resolve_for(param, env, span, true)).collect();
                 let returns = match returns {
-                    Some(returns) => self.resolve_inside(returns, env, span, Inside::Other),
+                    Some(returns) => self.resolve_for(returns, env, span, false),
                     None => Ty::None,
                 };
-                Ty::Callable(Rc::new(CallableType { params, returns }))
+                Ty::Callable(Rc::new(CallableType { params, returns, owned: self.one_owner }))
             }
             ast::Type::Named { name, args } => {
                 let ty = match (name.as_str(), args.as_slice()) {
@@ -1850,7 +1914,7 @@ impl Checker {
                         Some(Ty::Alias(ty)) => *ty,
                         Some(Ty::Class(class)) => Ty::Instance(class),
                         Some(Ty::Enum(info)) => Ty::EnumValue(info),
-                        Some(Ty::ErrorType(kind)) => Ty::Error(kind),
+                        Some(Ty::ErrorType(kind)) => self.an_error(kind),
                         // `u8` the type shares its name with `u8( )` the
                         // conversion, which is how it is found here.
                         Some(Ty::Builtin(name)) if ints::width(name).is_some() => {
@@ -1881,7 +1945,7 @@ impl Checker {
             // Taking the value back out would have to leave a hole.
             return self.error(
                 format!(
-                    "{} cannot be kept inside a function type or the `[ ]` of a generic yet. \
+                    "{} cannot be kept inside the `[ ]` of a generic yet. \
                      It lives in a variable, a parameter, a field, or a list that has an owner",
                     an_owned(&ty)
                 ),
@@ -2328,13 +2392,14 @@ impl Checker {
                 true
             }
             StmtKind::Raise(value) => {
-                let raised = match self.expr(value, env) {
-                    // Where everything has one owner, the error's owner
-                    // is the `except` that catches it. Which object may
-                    // be raised there is for the compiler to say.
-                    ty @ Ty::Instance(_) if self.one_owner => ty,
-                    Ty::Borrowed(inner) if self.one_owner && matches!(*inner, Ty::Instance(_)) => *inner,
-                    ty => ty,
+                // Where everything has one owner, `raise` takes the
+                // error, and the `except` that catches it receives it.
+                let raised = match self.one_owner {
+                    true => match self.take(value, env) {
+                        Ty::Owned(inner) if matches!(*inner, Ty::Error(_)) => *inner,
+                        ty => ty,
+                    },
+                    false => self.expr(value, env),
                 };
                 match raised {
                     // An error travels to wherever it is caught, and can be
@@ -2352,6 +2417,8 @@ impl Checker {
                         );
                     }
                     Ty::Instance(class) => self.can_raise(&class.name, span),
+                    // A mistake that has been reported already.
+                    Ty::Invalid => {}
                     ty if ty.is_loose() => self.can_raise("Error", span),
                     ty => {
                         self.error(format!("only an error can be raised, and this is {ty}"), span);
@@ -2500,6 +2567,9 @@ impl Checker {
                     format!("`{name}` cannot be changed. Declare it with `var` to allow that"),
                     span,
                 ),
+                (Some(variable), None) if self.one_owner && variable.function != env.function && !variable.top => {
+                    self.error(shared(name), span)
+                }
                 (Some(variable), None) if variable.ty.is_owned() && variable.function != env.function => {
                     self.error(elsewhere(name), span)
                 }
@@ -2822,14 +2892,14 @@ impl Checker {
         let mut caught: Vec<&str> = Vec::new();
         for handler in handlers {
             let scope = Scope::child(env);
+            // Where everything has one owner, the `except` that catches
+            // an error receives it, so the name is its owner: the error
+            // is freed when the block ends, unless it was given on.
             let error_type = match &handler.error {
-                None => Ty::Error(Rc::from("Error")),
+                None => self.an_error(Rc::from("Error")),
                 Some(name) => match env.get(name).map(|variable| variable.ty) {
-                    Some(Ty::ErrorType(kind)) => Ty::Error(kind),
-                    // Where everything has one owner, the `except` block
-                    // owns the error it caught, and the name is a look
-                    // at it.
-                    Some(Ty::Class(class)) if self.one_owner => Ty::Borrowed(Box::new(Ty::Instance(class))),
+                    Some(Ty::ErrorType(kind)) => self.an_error(kind),
+                    Some(Ty::Class(class)) if self.one_owner => Ty::Instance(class),
                     Some(Ty::Class(class)) if class.owned => {
                         self.error(format!("`{name}` is an owned class. Its objects cannot be raised, so none can be caught"), span)
                     }
@@ -2839,11 +2909,7 @@ impl Checker {
             };
             caught.push(handler.error.as_deref().unwrap_or("Error"));
             if let Some(binding) = &handler.binding {
-                let caught = matches!(error_type, Ty::Borrowed(_));
                 scope.declare(binding, error_type, false);
-                if let (true, Some(variable)) = (caught, scope.get_here(binding)) {
-                    self.owned.caught.insert(variable.id);
-                }
             }
             self.owned.moved = at_except.clone();
             let exits = self.statements(&handler.body, &scope);
@@ -2920,11 +2986,27 @@ impl Checker {
     fn read(&mut self, name: &str, variable: Variable, env: &Env, span: Span) -> Ty {
         // A bare case of an enum, such as `Stop`, is not a variable that
         // holds a value: each use of the name is the value, new.
+        let outside = variable.function != env.function && variable.case.is_none();
+        if outside && self.one_owner && variable.mutable && !variable.top {
+            return self.error(shared(name), span);
+        }
         if !variable.ty.is_tied() || variable.case.is_some() {
             return variable.ty;
         }
-        if variable.function != env.function {
-            return self.error(elsewhere(name), span);
+        if outside {
+            // A function written where a value goes may look at a value
+            // of the function around it. That makes the function a look
+            // too: see `ExprKind::Function`.
+            let literal = self.early.iter_mut().rev().find(|early| early.body == env.function);
+            return match literal.filter(|early| early.literal) {
+                Some(early) => {
+                    if !early.captures.iter().any(|capture| capture.id == variable.id) {
+                        early.captures.push(Capture { name: name.to_string(), id: variable.id, function: variable.function });
+                    }
+                    lent(&variable.ty)
+                }
+                None => self.error(elsewhere(name), span),
+            };
         }
         if let Some((_, at)) = self.owned.moved.get(&variable.id) {
             return self.error(
@@ -2996,6 +3078,21 @@ impl Checker {
         // statement owns it, and nobody else has seen it.
         let name = root(inside)?;
         let variable = env.get(name)?;
+        if variable.function != env.function {
+            // It belongs to the function around this one. A function
+            // written where a value goes only looks at it. (Any other
+            // function has been told already that it cannot reach it.)
+            if self.early.iter().rev().find(|early| early.body == env.function).is_some_and(|early| early.literal) {
+                self.error(
+                    format!(
+                        "only the owner can {does}: somebody else may have been lent it. \
+                         Here `{name}` belongs to the function around this one, which is only looked at from here"
+                    ),
+                    span,
+                );
+            }
+            return None;
+        }
         if !variable.ty.is_owned() {
             let what = match &inside.kind {
                 ExprKind::Name(_) => format!("`{name}` is"),
@@ -3032,7 +3129,12 @@ impl Checker {
     fn take(&mut self, expr: &Expr, env: &Env) -> Ty {
         let owner = match &expr.kind {
             ExprKind::Name(name) => {
-                env.get(name).filter(|variable| variable.ty.is_owned() && variable.case.is_none()).map(|v| (name, v))
+                // A function written inside another one only looks at
+                // what the outer one owns.
+                env.get(name)
+                    .filter(|variable| variable.ty.is_owned() && variable.case.is_none())
+                    .filter(|variable| variable.function == env.function)
+                    .map(|v| (name, v))
             }
             _ => None,
         };
@@ -3065,7 +3167,6 @@ impl Checker {
         match self.expr(expr, env) {
             look if look.is_look() => {
                 let inner = look.clone().looked_at();
-                let caught = |name: &String| env.get(name).is_some_and(|variable| self.owned.caught.contains(&variable.id));
                 let item = |name: &String| env.get(name).is_some_and(|variable| self.owned.items.contains(&variable.id));
                 let part = |name: &String| env.get(name).is_some_and(|variable| self.owned.parts.contains(&variable.id));
                 let message = match &expr.kind {
@@ -3077,10 +3178,6 @@ impl Checker {
                         "`{name}` is a look at the value that the `match` is looking at, or at a part of it. \
                          Its owner still has it, so it cannot be kept, returned or given away. \
                          Use it here, or lend it to a `borrow` parameter"
-                    ),
-                    ExprKind::Name(name) if caught(name) => format!(
-                        "`{name}` is the error that this `except` caught. It is freed when the block ends, \
-                         so it cannot be kept, returned or given away. Copy out what is needed from it"
                     ),
                     ExprKind::Name(name) => format!(
                         "`{name}` is only borrowed here, so it cannot be kept, returned or given away. \
@@ -3095,6 +3192,11 @@ impl Checker {
                          Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`",
                         an_owned(&inner)
                     ),
+                    ExprKind::Function(_) => "this function uses a value from outside it that has one owner, \
+                         so it must be gone before that value is, and cannot be kept, returned or given away. \
+                         Pass it straight to `map`, `filter`, `reduce` or a `borrow` parameter, \
+                         or give the function what it needs as a parameter of its own"
+                        .to_string(),
                     _ => format!("this is {look}, which cannot be kept"),
                 };
                 self.error(message, expr.span)
@@ -3106,6 +3208,16 @@ impl Checker {
                 self.fresh_list(expr, list.clone(), &Ty::Owned(Box::new(list)))
             }
             ty => ty,
+        }
+    }
+
+    /// The type of an error of one of the kinds Zeno knows, such as a
+    /// `ValueError`. Where everything has one owner, an error has one
+    /// too: it is kept in a block of its own.
+    fn an_error(&self, kind: Rc<str>) -> Ty {
+        match self.one_owner {
+            true => Ty::Owned(Box::new(Ty::Error(kind))),
+            false => Ty::Error(kind),
         }
     }
 
@@ -3197,6 +3309,23 @@ impl Checker {
             Ty::Class(class) => Some(class.fields.borrow().clone()),
             Ty::CaseConstructor(info, index) => Some(info.cases.borrow()[*index].fields.clone()),
             Ty::Generic(generic) => Some(self.outline(generic).slots.clone()),
+            // A function held in a variable: its type says what each
+            // parameter does with what it is given.
+            Ty::Callable(callable) => Some(
+                callable
+                    .params
+                    .iter()
+                    .map(|ty| Slot { name: String::new(), ty: ty.clone(), has_default: false, id: None })
+                    .collect(),
+            ),
+            // `map`, `filter` and `reduce` call the function they are
+            // given and do not keep it.
+            Ty::BuiltinMethod(_, name) if matches!(&**name, "map" | "filter" | "reduce") => Some(vec![Slot {
+                name: String::new(),
+                ty: Ty::Borrowed(Box::new(Ty::Dynamic)),
+                has_default: false,
+                id: None,
+            }]),
             // `append` keeps what it is given. For an item that has one
             // owner that matters: the list becomes the owner.
             Ty::BuiltinMethod(receiver, name) if &**name == "append" => match &**receiver {
@@ -3324,6 +3453,8 @@ impl Checker {
             outer: function.env.function,
             missing: not_yet(&function.above, &function.env),
             told: Vec::new(),
+            literal: decl.name.is_empty(),
+            captures: Vec::new(),
         });
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
@@ -3341,7 +3472,7 @@ impl Checker {
         self.copy_notes.push(function.copy_note.clone());
         let exits = self.statements(&decl.body, &scope);
         self.copy_notes.pop();
-        self.early.pop();
+        self.captured = self.early.pop().map(|early| early.captures).unwrap_or_default();
         self.worked_out.pop();
         self.touched = touched;
         self.owned = owned;
@@ -3597,7 +3728,57 @@ impl Checker {
                     copy_note: None,
                 });
                 self.signature(&function);
-                Ty::Function(function)
+                let captures = std::mem::take(&mut self.captured);
+                let mut looks = false;
+                for capture in captures {
+                    looks = true;
+                    if capture.function != env.function {
+                        // It belongs to a function further out, so the
+                        // function this one is written in looks at it
+                        // too, if it may.
+                        let around = self.early.iter_mut().rev().find(|early| early.body == env.function);
+                        match around.filter(|early| early.literal) {
+                            Some(early) => {
+                                if !early.captures.iter().any(|known| known.id == capture.id) {
+                                    early.captures.push(capture);
+                                }
+                            }
+                            None => {
+                                self.error(elsewhere(&capture.name), span);
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some((_, at)) = self.owned.moved.get(&capture.id) {
+                        self.error(
+                            format!(
+                                "`{}` was given away on line {} and holds nothing now, and this function uses it. \
+                                 Lend it instead (a `borrow` parameter), or use it before it goes",
+                                capture.name, at.line
+                            ),
+                            span,
+                        );
+                    }
+                    // This line is looking at it from here on.
+                    self.owned.looking.push(capture.id);
+                }
+                let function = Ty::Function(function);
+                if looks {
+                    // A function that looks at a value with one owner
+                    // must be gone before the value is. So it is a look
+                    // itself: it can be called or lent on this line, and
+                    // not kept. The statement owns it.
+                    if self.one_owner {
+                        self.types.lent.insert(expr as *const Expr as usize);
+                    }
+                    Ty::Borrowed(Box::new(function))
+                } else if self.one_owner {
+                    // It is kept in a block of its own, and whoever
+                    // receives it owns that.
+                    Ty::Owned(Box::new(function))
+                } else {
+                    function
+                }
             }
 
             ExprKind::Call { callee, args } => {
@@ -3633,6 +3814,11 @@ impl Checker {
                         ty => ty,
                     },
                     _ => self.expr(callee, env),
+                };
+                // Calling a function that has an owner only looks at it.
+                let callee = match callee {
+                    Ty::Owned(_) | Ty::Borrowed(_) => self.looked(callee, &**args_callee(expr)),
+                    callee => callee,
                 };
                 // Where each argument is going decides what passing it
                 // means, so find that out before looking at any of them.
@@ -3852,7 +4038,7 @@ impl Checker {
                 if arguments.len() > 1 || arguments.iter().any(|a| a.name.is_some()) {
                     self.error(format!("`{kind}` takes one message"), span);
                 }
-                Ty::Error(kind.clone())
+                self.an_error(kind.clone())
             }
             Ty::Builtin(name) => {
                 self.no_named(name, &arguments, span);
@@ -4086,7 +4272,7 @@ impl Checker {
                 .into_iter()
                 .map(|ty| Argument { name: None, ty, span: function.span, written: None })
                 .collect();
-            checker.call(&function.ty, arguments, function.span)
+            checker.call(&function.ty.clone().looked_at(), arguments, function.span)
         };
         // What `map` and `reduce` hand the function for each item. An
         // item that has one owner stays in its list, and is lent.
@@ -4442,7 +4628,7 @@ impl Checker {
                     Ty::Function(_) | Ty::BoundMethod(_) => match self.callable(actual) {
                         Some((slots, returns)) if !slots.iter().any(|slot| slot.ty.is_loose()) && !returns.is_loose() => {
                             let params = slots.into_iter().map(|slot| slot.ty).collect();
-                            Ty::Callable(Rc::new(CallableType { params, returns }))
+                            Ty::Callable(Rc::new(CallableType { params, returns, owned: self.one_owner }))
                         }
                         _ => return,
                     },
@@ -4510,7 +4696,7 @@ impl Checker {
             Ty::Callable(callable) => {
                 let params: Option<Vec<Ty>> = callable.params.iter().map(|ty| self.filled(ty, found, span)).collect();
                 let returns = self.filled(&callable.returns, found, span)?;
-                Ty::Callable(Rc::new(CallableType { params: params?, returns }))
+                Ty::Callable(Rc::new(CallableType { params: params?, returns, owned: callable.owned }))
             }
             Ty::Applied(generic, types) => {
                 let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
@@ -4807,7 +4993,7 @@ enum Inside {
     List,
     /// An `or none` that is itself at the front or in a list.
     Optional,
-    /// A function type, or the `[ ]` of a generic.
+    /// The `[ ]` of a generic.
     Other,
 }
 
@@ -4832,7 +5018,7 @@ fn lent(ty: &Ty) -> Ty {
 /// those that may be `none`.
 fn borrowable(ty: &Ty) -> bool {
     match ty {
-        Ty::List(_) | Ty::Instance(_) | Ty::Applied(..) => true,
+        Ty::List(_) | Ty::Instance(_) | Ty::Applied(..) | Ty::Error(_) | Ty::Callable(_) => true,
         Ty::Owned(inner) | Ty::Optional(inner) => borrowable(inner),
         Ty::EnumValue(info) => info.carries,
         _ => false,
@@ -4845,6 +5031,14 @@ fn owns_items(ty: &Ty) -> bool {
     matches!(ty, Ty::List(item) if item.is_owned())
 }
 
+/// What a call calls: the `f` of `f(x)`.
+fn args_callee(call: &Expr) -> &Box<Expr> {
+    match &call.kind {
+        ExprKind::Call { callee, .. } => callee,
+        _ => unreachable!("only asked of a call"),
+    }
+}
+
 /// The variable an expression reaches into: `a` for `a`, for `a.items`
 /// and for `a.rows[2].cells`.
 fn root(expr: &Expr) -> Option<&String> {
@@ -4853,6 +5047,16 @@ fn root(expr: &Expr) -> Option<&String> {
         ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => root(object),
         _ => None,
     }
+}
+
+/// The error for a `var` of one function used by a function written
+/// inside it, where everything has one owner.
+fn shared(name: &str) -> String {
+    format!(
+        "`{name}` is a `var` of the function around this one, so the two functions would share it, \
+         and with no collector nothing is shared. If it does not change, declare it with `let`. \
+         If it does, keep it in an object, which a function written here can look at and change"
+    )
 }
 
 /// The error for an owned variable used from another function's body.
@@ -5961,18 +6165,39 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
             format!("`p` {elsewhere}")
         );
         assert_eq!(owned_error("var p = make()\nfunction swap() { p = make() }"), format!("`p` {elsewhere}"));
+        // A function written where a value goes may look at it, and
+        // is then a look itself: it cannot outlive what it looks at.
         assert_eq!(
             owned_error("function f(p: borrow Packet) -> function() -> int {\n return function() -> int { return p.id }\n}"),
-            format!("`p` {elsewhere}")
+            LOOKS
         );
     }
 
+    const LOOKS: &str = "this function uses a value from outside it that has one owner, so it must be gone before \
+                         that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, \
+                         `reduce` or a `borrow` parameter, or give the function what it needs as a parameter of its own";
+
     #[test]
     fn shared_things_cannot_hold_owned_ones() {
-        let inside = "an owned Packet cannot be kept inside a function type or the `[ ]` of a generic yet. \
-                      It lives in a variable, a parameter, a field, or a list that has an owner";
-        assert_eq!(owned_error("function f(g: function(Packet) -> int) { }"), inside);
-        assert_eq!(owned_error("function f(g: function(Packet or none) -> int) { }"), inside);
+        // A function type can mention one: each of its parameters is a
+        // parameter, and says what it does with what it is given.
+        owned_ok("function f(g: function(Packet) -> int) -> int { return g(make()) }\nprint(f(send))");
+        owned_ok("function f(g: function(borrow Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}\nprint(f(look))");
+        owned_ok("function f(g: function(Packet or none) -> int) { }");
+        owned_ok("function f(g: function(int) -> Packet) -> int { return send(g(1)) }");
+        assert_eq!(
+            owned_error("function f(g: function(Packet) -> int) { }\nf(look)"),
+            "`g` of `f` should be function(Packet) -> int, but the parameter `p` of this function is a borrowed Packet"
+        );
+        assert_eq!(
+            owned_error("function f(g: function(Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}"),
+            "`p` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
+        );
+        assert_eq!(
+            owned_error("class Stack[T] {\n items: list[T]\n}\nfunction f(s: Stack[Packet]) { }"),
+            "an owned Packet cannot be kept inside the `[ ]` of a generic yet. \
+             It lives in a variable, a parameter, a field, or a list that has an owner"
+        );
         // A list may hold them, and is then their owner. So it has to
         // have an owner itself.
         assert_eq!(
@@ -6057,7 +6282,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // `borrow` is for what has, or could have, one owner.
         assert_eq!(
             error("function f(n: borrow int or none) { }"),
-            "only a list, an object or an enum value that carries values can be borrowed, \
+            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
              and this is int or none. Pass it as it is"
         );
     }
@@ -6319,11 +6544,15 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         let maybe = "var xs: list[int] or none = make(2)\nlet ys = xs\nprint(xs is none)";
         assert!(error(maybe).contains(GONE));
         shared(maybe);
-        // Not yet inside a function type.
+        // A function type says what each parameter does with a list or
+        // an object, as a function does.
+        ok("function f(g: borrow function(Point) -> int) -> int { return g(Point(1, 2)) }\nprint(f(take))");
+        ok("function f(g: borrow function(borrow list[int]) -> int) -> int {\n let xs = make(3)\n return g(xs) + g(xs)\n}\nprint(f(total))");
+        ok("function f(g: borrow function(int) -> list[int]) -> int { return eat(g(2)) }\nprint(f(make))");
+        assert!(error("function f(g: borrow function(list[int]) -> int) -> int {\n let xs = make(3)\n print(g(xs))\n return g(xs)\n}").contains(GONE));
         assert_eq!(
-            error("function f(g: function(Point) -> int) { }"),
-            "an owned Point cannot be kept inside a function type or the `[ ]` of a generic yet. \
-             It lives in a variable, a parameter, a field, or a list that has an owner"
+            error("function f(g: borrow function(list[int]) -> int) { }\nf(total)"),
+            "`g` of `f` should be function(owned list[int]) -> int, but the parameter `xs` of this function is a borrowed list[int]"
         );
         // Nor as what a type parameter stands for. An item type is fine.
         ok("function first[T](items: borrow list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
@@ -6367,7 +6596,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         ok("var c = Red\nlet d = c\nc = Green\nprint(c, d, c == d)\nfunction flip() { c = Red }");
         assert_eq!(
             error("function f(c: borrow Color) { }"),
-            "only a list, an object or an enum value that carries values can be borrowed, \
+            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
              and this is Color. Pass it as it is"
         );
 
@@ -6399,16 +6628,142 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     fn with_one_owner_an_except_owns_the_error_it_catches() {
         const BAD: &str = "class Bad {\n id: int\n}\n\
                            function risky(n: int) -> int raises Bad {\n if n > 2 { raise Bad(n) }\n return n\n}\n\
+                           function parse(text: str) -> int raises ValueError {\n if text == \"\" { raise ValueError(\"empty\") }\n return 1\n}\n\
                            function look(b: borrow Bad) -> int { return b.id }\n\
+                           function why(e: borrow ValueError) -> str { return e.message }\n\
                            function take(b: Bad) -> int { return b.id }\n";
-        // The name is a look at it: it can be read and lent.
-        one_owner_ok(&format!("{BAD}try {{ print(risky(5)) }} except Bad as e {{ print(e.id, look(e), e) }}"));
-        let kept = "`e` is the error that this `except` caught. It is freed when the block ends, \
-                    so it cannot be kept, returned or given away. Copy out what is needed from it";
-        assert_eq!(one_owner_error(&format!("{BAD}try {{ print(risky(5)) }} except Bad as e {{ let again = e }}")), kept);
-        assert_eq!(one_owner_error(&format!("{BAD}try {{ print(risky(5)) }} except Bad as e {{ print(take(e)) }}")), kept);
+        let ok = |source: &str| one_owner_ok(&format!("{BAD}{source}"));
+        let error = |source: &str| one_owner_error(&format!("{BAD}{source}"));
+        let caught = "try { print(risky(5)) } except Bad as e";
+        // The name owns the error. It can be read, lent, kept, given
+        // away and raised again.
+        ok(&format!("{caught} {{ print(e.id, look(e), e) }}"));
+        ok(&format!("{caught} {{ let again = e\nprint(again.id) }}"));
+        ok(&format!("{caught} {{ print(take(e)) }}"));
+        ok(&format!("var last: Bad or none = none\n{caught} {{ last = e }}\nprint(last)"));
+        ok(&format!("let seen: list[Bad] = []\n{caught} {{ seen.append(e) }}\nprint(len(seen))"));
+        ok(&format!("function again() -> int raises Bad {{\n {caught} {{ raise e }}\n return 0\n}}"));
+        ok(&format!("function found() -> Bad or none {{\n {caught} {{ return e }}\n return none\n}}"));
+        // Given away is gone, as for any owner.
+        assert!(error(&format!("{caught} {{ let again = e\nprint(e.id) }}")).contains(GONE));
+        assert!(error(&format!("{caught} {{ print(take(e))\nraise e }}")).contains(GONE));
+        // An error of a kind Zeno knows has one owner too.
+        let fault = "try { print(parse(\"\")) } except ValueError as e";
+        ok(&format!("{fault} {{ print(e.message, e.kind, why(e), e) }}"));
+        ok(&format!("var last: ValueError or none = none\n{fault} {{ last = e }}\nprint(last)"));
+        ok(&format!("let faults: list[ValueError] = []\n{fault} {{ faults.append(e) }}"));
+        ok(&format!("function again() -> int raises ValueError {{\n {fault} {{ raise e }}\n return 0\n}}"));
+        ok("let ready = ValueError(\"x\")\nprint(ready.message, why(ready))\nlet other = ready\nprint(other)");
+        ok("function fail(e: ValueError) raises ValueError { raise e }");
+        ok("try { print(parse(\"\")) } except Error as e { var any: Error or none = none\nany = e\nprint(any) }");
+        assert!(error(&format!("{fault} {{ let again = e\nprint(e.message) }}")).contains(GONE));
+        assert!(error("let ready = ValueError(\"x\")\nlet other = ready\nprint(ready)").contains(GONE));
+        // `raise` takes the error: a look cannot be raised.
+        assert_eq!(
+            error("function fail(e: borrow ValueError) raises ValueError { raise e }"),
+            "`e` is only borrowed here, so it cannot be kept, returned or given away. \
+             To keep it, take it as an owned parameter instead"
+        );
         // Where values are shared, an error can be kept like any other.
-        strict_ok(&format!("{BAD}try {{ print(risky(5)) }} except Bad as e {{ let again = e\nprint(take(e)) }}"));
+        strict_ok(&format!("{BAD}{caught} {{ let again = e\nprint(take(e)) }}"));
+        strict_ok(&format!("{BAD}{fault} {{ let again = e\nprint(again, e) }}"));
+    }
+
+    #[test]
+    fn with_one_owner_a_function_value_has_one() {
+        const ADD: &str = "class Task {\n id: int\n}\n\
+                           function double(n: int) -> int { return n * 2 }\n\
+                           function make_adder(n: int) -> function(int) -> int {\n return function(x: int) -> int { return x + n }\n}\n\
+                           function apply(f: borrow function(int) -> int, x: int) -> int { return f(x) }\n\
+                           function keep(f: function(int) -> int) -> int { return f(1) }\n\
+                           function send(xs: list[int]) -> int { return len(xs) }\n";
+        let ok = |source: &str| one_owner_ok(&format!("{ADD}{source}"));
+        let error = |source: &str| one_owner_error(&format!("{ADD}{source}"));
+        let shared = |source: &str| strict_ok(&format!("{ADD}{source}"));
+        // Made, called, lent, given away.
+        ok("let add = make_adder(2)\nprint(add(1), apply(add, 2), apply(add, 3))\nprint(keep(add))");
+        ok("print(apply(double, 1), keep(double), keep(double), keep(make_adder(1)), make_adder(1)(2))");
+        ok("let scale = 3\nlet triple = function(n: int) -> int { return n * scale }\nprint(triple(1), apply(triple, 2))");
+        let gone = "let add = make_adder(2)\nlet other = add\nprint(add(1))";
+        assert!(error(gone).contains(GONE));
+        shared(gone);
+        let kept = "let add = make_adder(2)\nprint(keep(add))\nprint(add(1))";
+        assert!(error(kept).contains(GONE));
+        shared(kept);
+        // A function of the program is a fixed value, like a case of an
+        // enum that carries nothing: its name is never given away.
+        ok("let f = double\nlet g = f\nprint(f(1), g(1), keep(double), keep(double))");
+        // A variable, a field and a list can hold one, and own it.
+        ok("var f: function(int) -> int = double\nf = make_adder(1)\nf = double\nprint(f(1))");
+        ok("class Button {\n on: function(int) -> int\n}\nlet b = Button(make_adder(1))\nb.on = double\nprint(b.on(2))");
+        ok("let fs: list[function(int) -> int] = [double, make_adder(1)]\nfs.append(make_adder(2))\nfor f in fs { print(f(1)) }\nlet f = fs.pop()\nprint(f(1), fs[0](1))");
+        assert_eq!(
+            error("let fs: list[function(int) -> int] = [double]\nlet f = fs[0]"),
+            "this item is an owned function(int) -> int, which has one owner: the list. `[ ]` only looks at it. \
+             Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`"
+        );
+        assert_eq!(
+            error("var f = double\nf = make_adder(1)"),
+            "the new value should be a function, but this is function(int) -> int. A variable that was given a \
+             function of the program and no type holds that one function only. Write its type to let it hold \
+             others, as in `var f: function(int) -> int = double`"
+        );
+
+        // A function that uses a list or an object from outside looks
+        // at it. It is lent on the line that writes it, and cannot be kept.
+        ok("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1), xs)");
+        ok("let xs = [1, 2]\nprint(xs.map(function(n: int) -> int { return n + xs[0] }), xs.filter(function(n: int) -> bool { return n > len(xs) }))");
+        ok("let t = Task(1)\nprint(apply(function(n: int) -> int {\n t.id += n\n return t.id\n}, 1), t)");
+        ok("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return apply(function(m: int) -> int { return m + len(xs) }, n) }, 1))");
+        ok("for t in [Task(1), Task(2)] { print(apply(function(n: int) -> int { return n + t.id }, 1)) }");
+        ok("let add = make_adder(1)\nprint(apply(function(n: int) -> int { return add(n) }, 1), add(2))");
+        assert_eq!(error("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }"), LOOKS);
+        assert_eq!(error("let xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), LOOKS);
+        assert_eq!(
+            error("function f(xs: borrow list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}"),
+            LOOKS
+        );
+        // The line that lends it is looking at what it uses.
+        assert_eq!(
+            error("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, send(xs)))"),
+            "`xs` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
+        );
+        assert_eq!(
+            error("let xs = [1, 2]\nprint(send(xs))\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1))"),
+            format!("`xs` was given away on line 12 and holds nothing now, and this function uses it. \
+                     Lend it instead (a `borrow` parameter), or use it before it goes")
+        );
+        // It only looks: it cannot take an item out, or give the value away.
+        assert_eq!(
+            error("let ts = [Task(1)]\nprint(apply(function(n: int) -> int { return n + ts.pop().id }, 1))"),
+            "only the owner can take an item out of this list: somebody else may have been lent it. \
+             Here `ts` belongs to the function around this one, which is only looked at from here"
+        );
+        assert_eq!(
+            error("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + send(xs) }, 1))"),
+            "`xs` is only borrowed here, so it cannot be kept, returned or given away. \
+             To keep it, take it as an owned parameter instead"
+        );
+        // A function of the program still cannot reach it.
+        assert_eq!(
+            error("let xs = [1, 2]\nfunction f() -> int { return apply(function(n: int) -> int { return n + len(xs) }, 1) }"),
+            "`xs` holds an owned value, which belongs to the block that declares it. \
+             A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter"
+        );
+
+        // Nothing is shared, so a `var` of the function around cannot
+        // be used. A `let` is copied in, and a `var` at the top of the
+        // file is the program's.
+        let var = "function counter() -> function() -> int {\n var count = 0\n return function() -> int { return count }\n}";
+        assert_eq!(
+            error(var),
+            "`count` is a `var` of the function around this one, so the two functions would share it, and with no \
+             collector nothing is shared. If it does not change, declare it with `let`. If it does, keep it in an \
+             object, which a function written here can look at and change"
+        );
+        shared(var);
+        ok("var total = 0\nprint(apply(function(n: int) -> int {\n total += n\n return total\n}, 1), total)");
+        ok("function counter() -> function() -> int {\n let count = 0\n return function() -> int { return count }\n}");
     }
 
     #[test]
@@ -6427,11 +6782,12 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         );
         assert_eq!(
             owned_error("function f(n: borrow int) { }"),
-            "only a list, an object or an enum value that carries values can be borrowed, and this is int. Pass it as it is"
+            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
+             and this is int. Pass it as it is"
         );
         assert_eq!(
             owned_error("let x: list[owned list[int]] = []"),
-            "`owned` and `borrow` describe a whole value, so they go at the very front of a type, and not inside `list[ ]`, `or none` or a function type"
+            "`owned` and `borrow` describe a whole value, so they go at the very front of a type, and not inside `list[ ]` or `or none`"
         );
         // `owned` and `borrow` are ordinary names everywhere else.
         owned_ok("let owned = 1\nlet borrow = owned + 1\nprint(owned, borrow)");
