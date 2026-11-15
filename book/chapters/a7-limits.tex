@@ -1,3 +1,122 @@
 \chapter{What Version 0.1 Leaves Out}\label{app-limits}
 
-To be written.
+Before version 0.1, every decision in \verb|docs/decisions.md| was read
+again, and thirty were answered "a limit of 0.1": the thing is left out
+of this version, and a program that asks for it is told so. Each can
+be added later without changing what any program written now means.
+The numbers are the decisions, for anyone who wants the argument.
+
+\section{On a board}
+
+\begin{description}
+\item[Inputs.] Reading a pin, an analogue converter or a serial port,
+  and interrupts and timers. This was the one item taken off the list
+  for 0.1, because it has to be designed against real hardware. The
+  simulated board can write pins and registers and read registers.
+\end{description}
+
+\section{Numbers}
+
+\begin{description}
+\item[No \texttt{u64}.] Sized numbers stop at 32 bits, and \verb|int| is
+  the 64-bit signed number (2.8d).
+\item[A \texttt{list[u8]} takes eight bytes an item.] The type is
+  checked as bytes, but stored as whole numbers (5.13a).
+\item[Units made of units.] Two quantities cannot be multiplied or
+  divided into a third, as \verb|V| times \verb|A| into \verb|W|, and a
+  program cannot name a unit of its own (1.15).
+\item[No bytes from a file.] Files are read and written as text
+  (6.16).
+\end{description}
+
+\section{Types}
+
+\begin{description}
+\item[Unions.] Only \verb|or none| can follow a type: \verb|int or str|
+  is refused (1.13). An enum that carries data does the same work.
+\item[Generic interfaces and bounds.] An interface cannot take a type
+  parameter, so a generic function cannot ask that its \verb|T| has a
+  method (3.16d).
+\item[Generic enums.] An enum cannot take a type parameter, and a
+  generic function cannot be kept as a value (3.16e).
+\end{description}
+
+\section{The library}
+
+\begin{description}
+\item[\texttt{sort} by a function.] \verb|sort| uses the natural order of
+  numbers and text (6.6).
+\item[Files in pieces.] A file is read whole, or as a list of lines
+  (6.12, 6.20).
+\item[\texttt{program.exit} and the environment.] A program ends at its
+  last line or with an uncaught error, and cannot read environment
+  variables (6.19).
+\item[A few functions of mathematics.] No \verb|hypot|, no hyperbolic
+  functions, no \verb|gcd| or \verb|clamp|, and no random numbers
+  (6.21).
+\item[A library written in Zeno.] The library is built into the
+  compiler, not written in Zeno itself.
+\end{description}
+
+\section{Builds}
+
+\begin{description}
+\item[A named function inside a function] runs under \verb|zeno run|,
+  but is refused by a build. Write it at the top, or as a function
+  value.
+\item[One file at a time.] A build compiles the whole program at once
+  (7.11).
+\item[Another processor in one step.] A build writes C for the C
+  compiler you name; compiling for a board is a second step on the
+  \verb|cc| line.
+\item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
+  wants one of those two compilers (5.5e).
+\item[\texttt{\_setjmp} by its Linux and macOS name.] An ordinary build
+  uses it for \verb|try|, under the name those two systems give it; a
+  firmware build does not use it at all (5.11l).
+\end{description}
+
+\section{Firmware and no collector}
+
+\begin{description}
+\item[A raising function as a value.] In a firmware build, a function
+  that says \verb|raises| cannot be passed around, because a function
+  type does not say whether it raises (5.5l).
+\item[Lists of maybe.] \verb|list[int or none]| is refused with no
+  collector; an enum with a case for the missing value is the answer
+  (5.16h).
+\item[Dicts of lists or objects] with no collector (10.14).
+\item[Some moves of an owned value] that have no rule yet for what is
+  left behind (5.8i, 5.15e, 5.17d).
+\item[\texttt{raise e} with no collector,] raising again an error that
+  was caught (5.9d).
+\item[The pool's size] is set on the C compiler's line, not in the
+  program (5.9j); spare blocks are not filled with a pattern to catch
+  their use (5.9k).
+\end{description}
+
+\section{Interfaces}
+
+\begin{description}
+\item[Functions of an interface] have no defaults for parameters, no
+  type parameters, and cannot be private (10.5).
+\item[An owned class as an interface,] and an interface with type
+  parameters of its own (10.10).
+\end{description}
+
+\section{Tools}
+
+\begin{description}
+\item[Hover on a field.] The language server shows the type of a name,
+  but not yet of a field (9.11).
+\item[Choosing tests.] \verb|zeno test| runs every test in the files it
+  is given, and cannot run one by name or test a compiled program.
+  \verb|assert| takes no message, and is only for tests (10.21).
+\end{description}
+
+\section{Not limits}
+
+Three things are not on this list, because they are decided: Zeno has
+no inheritance, no second way to write a function, and no second name
+for a module. The reasons are in \hyperref[ch-design]{Why Zeno Is as It
+Is}.

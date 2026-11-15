@@ -99,7 +99,7 @@ catches it or the program stops.
 The kinds that Zeno itself raises are these:
 
 \begin{center}
-\begin{tabular}{lp{9cm}}
+\begin{tabular}{lP{9cm}}
 \toprule
 Kind & Raised when \\
 \midrule
@@ -127,7 +127,7 @@ try {
 }
 \end{zeno}
 
-\hyperref[app-errors]{Appendix F} lists every message that the
+\hyperref[app-error-kinds]{Appendix F} lists every message that the
 library and the runtime give.
 
 \section{raise}
@@ -221,8 +221,8 @@ caught, but need not be listed.
 
 \begin{why}
 A division or an index can fail on almost any line. If those had to be
-listed, nearly every function would say \verb|raises ZeroDivisionError,
-IndexError|, and a label that is on everything tells nobody anything.
+listed, nearly every function would say \verb|raises ZeroDivisionError, IndexError|
+, and a label that is on everything tells nobody anything.
 Java's checked exceptions are widely disliked for exactly that.
 (Decision 1.17.)
 \end{why}

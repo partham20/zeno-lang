@@ -232,7 +232,9 @@ type it is used with, and a compiled program has a copy for each.
 \item Write a generic \verb|class Ring[T]| that holds at most
   \verb|size| items and drops the oldest when a new one comes. Use it
   for a ring of \verb|u8| and a ring of \verb|V|.
-\item Write \verb|function count_if[T](items: list[T], test: function(T) -> bool) -> int|.
+\item Write a generic \verb|count_if[T]| that takes
+  \verb|items: list[T]| and \verb|test: function(T) -> bool|, and
+  gives how many items pass the test.
 \item Give \verb|largest| a list of \verb|bool| and read the message.
 \end{enumerate}
 \end{tryit}

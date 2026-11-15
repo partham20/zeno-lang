@@ -410,8 +410,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       or changed, with the reason. They are all in chapter 11 of
       [`docs/decisions.md`](docs/decisions.md).
       See [`docs/version-0.1.md`](docs/version-0.1.md))
-19. The Zeno Book (next): the whole language from the first program to
-    the last corner, written once the language stopped moving.
+19. The Zeno Book (done: 35 chapters and seven appendices, from the
+    first program to the inside of the compiler, with every sample run
+    by the real compiler as the book is built. A printable PDF in
+    [`book/dist/zeno-book.pdf`](book/dist/zeno-book.pdf) and pages for
+    the web in `book/dist/html/`. See [`book/README.md`](book/README.md))
 
 ## Layout
 

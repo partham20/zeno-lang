@@ -303,6 +303,15 @@ def html():
     preface = re.sub(r"\\subsection\*\{(.*?)\}", r"\\begin{prefacehead}\1\\end{prefacehead}", preface)
     (GEN / "chapters/00-preface-html.tex").write_text(preface)
     main = main.replace("chapters/00-preface}", "chapters/00-preface-html}")
+    # A P column is a ragged p column, defined in zeno-book.sty. pandoc
+    # cannot read the definition, and lays out columns its own way, so
+    # its copy of each chapter says p.
+    for chapter in sorted((GEN / "chapters").glob("*.tex")):
+        text = chapter.read_text()
+        plain = re.sub(r"^(\\begin\{(?:longtable|tabular)\}.*)$",
+                       lambda m: m.group(1).replace("P{", "p{"), text, flags=re.M)
+        if plain != text:
+            chapter.write_text(plain)
     (GEN / "zeno-book-html.tex").write_text(main)
     subprocess.run(
         [
@@ -343,6 +352,8 @@ def tidy_names(out):
         for prefix in ("ch-", "app-"):
             if name.startswith(prefix):
                 name = name[len(prefix):]
+        if name in renames.values():
+            sys.exit(f"two pages would both be {name}: give a chapter or appendix another label")
         renames[page.name] = name
     for page in out.glob("*.html"):
         text = page.read_text()

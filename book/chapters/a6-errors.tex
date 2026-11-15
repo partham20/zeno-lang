@@ -1,3 +1,122 @@
-\chapter{Kinds of Error}\label{app-errors}
+\chapter{Kinds of Error}\label{app-error-kinds}
 
-To be written.
+Zeno meets a mistake at one of three times: before the program runs,
+while it runs, or, in a compiled program, as a fault that stops it.
+This appendix lists what can be met at each, with the message.
+
+\section{Before the program runs}
+
+The lexer, the parser and the checker find mistakes in the text. Each
+is reported with the file, the line and the column, the line itself,
+and a mark under the place, and nothing is run:
+
+\begin{zeno}[fails=yes]
+let count: int = "three"
+\end{zeno}
+
+The lexer and the checker report every mistake they are sure of; the
+parser stops at the first (\hyperref[ch-inside]{Inside Zeno}).
+\verb|zeno check| finds the same mistakes as \verb|zeno run| and
+stops there.
+
+\section{The kinds raised while it runs}
+
+An error raised while the program runs has a \emph{kind}, which is
+what \verb|except| names (\hyperref[ch-errors]{When Things Go Wrong}).
+The kinds Zeno raises itself are these:
+
+\begin{longtable}{lP{8.8cm}}
+\toprule
+Kind & Raised when \\
+\midrule
+\endhead
+\verb|ValueError| & \verb|int| or \verb|float| is given text that is not
+  a number; the program raises it for a value it refuses \\
+\verb|IndexError| & a position is past the end of a list or text, or
+  below zero; \verb|pop| on an empty list \\
+\verb|KeyError| & a dict is asked for a key it does not have \\
+\verb|ZeroDivisionError| & \verb|/|, \verb|//| or \verb|%| by zero \\
+\verb|OverflowError| & a result does not fit in its type: an \verb|int|
+  past $2^{63}-1$, or a sized number past its range \\
+\verb|FileError| & a file cannot be read or written: it is not there,
+  or it may not be opened \\
+\bottomrule
+\end{longtable}
+
+A program can raise any of these itself, and an object of any class of
+its own. \verb|except Error| catches every kind, and inside it
+\verb|e.kind| is the kind's name and \verb|e.message| the text.
+
+\section{When nothing catches it}
+
+An error that no \verb|except| catches ends the program. It prints
+\verb|uncaught|, the kind and the message, and where it was raised,
+and the program's exit status is 1:
+
+\begin{zeno}[fails=yes]
+let ages = ["Ada": 36]
+print(ages["Grace"])
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let readings = [3, 4]
+print(readings[2])
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+var n = 9223372036854775807
+n += 1
+\end{zeno}
+
+A compiled program prints these same lines, byte for byte, in every
+kind of build.
+
+\section{Faults in a firmware build}
+
+In a build with \verb|--firmware| or \verb|--no-collector|, only
+\verb|raise|, \verb|int|, \verb|float| and \verb|FileError| travel as
+values that \verb|except| can catch. Every other kind above is a
+\emph{fault}: the program stops with the same message, and a
+\verb|try| that hopes to catch one is refused before anything is built
+(\hyperref[ch-firmware]{Firmware}).
+
+\section{Messages from memory}
+
+These come only from builds, or from \verb|unsafe| code, and are always
+faults:
+
+\begin{longtable}{P{6.2cm}P{6.6cm}}
+\toprule
+Message & Means \\
+\midrule
+\endhead
+\texttt{the memory pool is full} & a build with no collector needed more
+  than \verb|ZENO_POOL| bytes at once
+  (\hyperref[ch-no-collector]{Building with No Collector}) \\
+\texttt{a statement built more text than there is room for} & one
+  statement built more text than \verb|ZENO_TEXT_ROOM| holds \\
+\texttt{a block of memory was given back twice} & the runtime found a
+  double \verb|free| \\
+\texttt{out of memory} & \verb|malloc| failed, in a build with a collector \\
+\texttt{the simulated board remembers} \ldots & more registers were
+  written on the simulated board than it keeps \\
+\bottomrule
+\end{longtable}
+
+Under \verb|zeno run|, \verb|unsafe| code is watched more closely than
+any compiled program can be, and each message says what a compiled
+program would have done instead (\hyperref[ch-unsafe]{Unsafe Code}):
+
+\begin{zeno}[fails=yes]
+let a = allocate(u8, 4)
+unsafe {
+    a[9] = 1
+}
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let a = allocate(u8, 4)
+unsafe {
+    free(a + 1)
+}
+\end{zeno}

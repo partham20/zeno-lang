@@ -75,8 +75,8 @@ does not catch it.
 
 \section{Testing that something fails}
 
-Fault paths are half of what firmware has to get right. \verb|assert
-raises| checks that a block raises an error of a kind:
+Fault paths are half of what firmware has to get right. \verb|assert raises|
+ checks that a block raises an error of a kind:
 
 \begin{zeno}[file=speed.zeno, dir=raises, cmd=zeno test {file}]
 function check_speed(speed: int) -> int raises ValueError {
@@ -102,7 +102,8 @@ test "speeds out of range are refused" {
 \end{zeno}
 
 The test fails if the block raises nothing, or raises another kind,
-and says which. \verb|assert raises Error| takes any kind.
+and says which. To take an error of any kind, name \verb|Error|:
+\verb|assert raises Error|.
 
 \section{Where tests go}
 

@@ -35,8 +35,8 @@ print(count, "primes below 200000")
 \verb|zeno build| wrote \verb|primes.c|, called the C compiler on the
 machine (\verb|cc|, which is usually GCC or Clang), and left the
 program \verb|primes| beside it. On the computer this book was built
-on, \verb|zeno run| takes about two seconds over it, \verb|zeno run
---vm| about one, and \verb|./primes| a fiftieth of a second.
+on, \verb|zeno run| takes about two seconds over it, \verb|zeno run --vm|
+ about one, and \verb|./primes| a fiftieth of a second.
 
 \section{Reading the C}
 
@@ -115,7 +115,7 @@ print(same(1), same("one"))
 \section{The options}
 
 \begin{center}
-\begin{tabular}{lp{8.5cm}}
+\begin{tabular}{lP{8.5cm}}
 \toprule
 Option & Means \\
 \midrule

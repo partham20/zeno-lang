@@ -1,3 +1,43 @@
-\chapter{Units at a Glance}\label{app-units}
+\chapter{Units at a Glance}\label{app-unit-table}
 
-To be written.
+Every unit a number can carry (\hyperref[ch-units]{Numbers with Units}).
+Units in one row work together, and an answer is in the finer of the
+two. Units in different rows never meet.
+
+\begin{center}
+\begin{longtable}{lll}
+\toprule
+Measures & Units, finest first & Each is \\
+\midrule
+\endhead
+time & \verb|ns us ms s min h| & 1000, 1000, 1000, 60, 60 of the one before \\
+frequency & \verb|Hz kHz MHz| & 1000 of the one before \\
+voltage & \verb|uV mV V kV| & 1000 of the one before \\
+current & \verb|uA mA A| & 1000 of the one before \\
+resistance & \verb|ohm kohm Mohm| & 1000 of the one before \\
+power & \verb|mW W kW| & 1000 of the one before \\
+energy & \verb|J Wh kWh| & \verb|1 Wh| is \verb|3600 J|; \verb|1 kWh| is \verb|1000 Wh| \\
+temperature & \verb|degC| & on its own \\
+temperature & \verb|K| & on its own: an offset, not a scale, from \verb|degC| \\
+length & \verb|mm cm m km| & 10, 100, 1000 of the one before \\
+mass & \verb|mg g kg| & 1000 of the one before \\
+angle & \verb|deg| & on its own; \verb|.rad| changes it \\
+angle & \verb|rad| & on its own; \verb|.deg| changes it \\
+rotation & \verb|rpm| & on its own \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Means \\
+\midrule
+\verb|500 ms| & a quantity \\
+\verb|wait.s| & \verb|wait| in seconds \\
+\verb|wait / 1 ms| & the bare number of milliseconds \\
+\verb|function f(t: ms)| & a parameter that takes milliseconds only \\
+\verb|f"{supply:.2f}"| & the format is the number's; the unit stays \\
+\bottomrule
+\end{tabular}
+\end{center}

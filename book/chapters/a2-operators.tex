@@ -1,3 +1,100 @@
 \chapter{Operators}\label{app-operators}
 
-To be written.
+\section*{Every operator}
+
+\begin{center}
+\begin{longtable}{lP{5.4cm}P{4.6cm}}
+\toprule
+Operator & Means & Works on \\
+\midrule
+\endhead
+\verb|a + b| & add; join text; join lists & numbers, quantities, \verb|str|, lists \\
+\verb|a - b| & subtract & numbers, quantities, pointers \\
+\verb|-a| & negate & numbers, quantities \\
+\verb|a * b| & multiply & numbers; a quantity by a number \\
+\verb|a / b| & divide, always giving a \verb|float| & numbers, quantities \\
+\verb|a // b| & divide and round down & numbers \\
+\verb|a % b| & remainder of \verb|//|, with the sign of \verb|b| & numbers \\
+\verb|a ** b| & power & numbers \\
+\verb|a & b| & bit and & whole numbers \\
+\verb!a | b! & bit or & whole numbers \\
+\verb|a ^ b| & bit exclusive or & whole numbers \\
+\verb|~a| & every bit turned over & whole numbers \\
+\verb|a << n|, \verb|a >> n| & shift left, shift right & whole numbers \\
+\verb|a == b|, \verb|a != b| & equal, not equal, by contents & values of one type \\
+\verb|a < b|, \verb|<=|, \verb|>|, \verb|>=| & order; they chain: \verb|0 <= i < n| & numbers, quantities, \verb|str| \\
+\verb|x in xs|, \verb|x not in xs| & is it there? & lists, text, dict keys \\
+\verb|x is none|, \verb|x is not none| & is it nothing? & \verb|T or none| \\
+\verb|a and b|, \verb|a or b|, \verb|not a| & logic, asking the right side only when needed & \verb|bool| \\
+\verb|xs[i]| & item \verb|i|, from 0 & lists, text, dicts, pointers \\
+\verb|x.name| & a field, a method, a module's name, a unit change & \\
+\verb|f(a, b)| & a call & functions, classes, enum cases \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section*{Which goes first}
+
+From the loosest to the tightest:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Operators & \\
+\midrule
+\verb|or| & loosest \\
+\verb|and| & \\
+\verb|not| & \\
+\verb|==  !=  <  <=  >  >=  in  not in  is  is not| & comparisons, which chain \\
+\verb!|! & \\
+\verb|^| & \\
+\verb|&| & \\
+\verb|<<  >>| & \\
+\verb|+  -| & \\
+\verb|*  /  //  %| & \\
+\verb|-x  ~x| & \\
+\verb|**| & tightest; and it groups to the right \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The bit operators bind tighter than the comparisons, as in Python and
+unlike C. So this test means what it looks as if it means,
+\verb|(flags & MASK) == 0|:
+
+\begin{zenofrag}
+let ready = flags & MASK == 0
+\end{zenofrag}
+
+\section*{The = forms}
+
+Every operator on two numbers has an \verb|=| form, which updates a
+\verb|var|, a field or an item:
+
+\begin{center}
+\verb|+=  -=  *=  /=  //=  %=  **=  &=  |\verb!|=!\verb|  ^=  <<=  >>=|
+\end{center}
+
+\verb|x += y| means \verb|x = x + y|, with \verb|x| read first. On a
+sized number the result is checked as it is stored, so
+\verb|count += 1| on a \verb|u8| of 255 is an \verb|OverflowError|.
+\verb|/=| is refused on a whole number, because \verb|/| gives a
+\verb|float|. A list takes \verb|+=| to add another list to its end.
+
+\section*{What raises}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+When & Raises \\
+\midrule
+a whole-number answer does not fit in 64 bits & \verb|OverflowError| \\
+\verb|//| or \verb|%| by zero, or \verb|/| by zero & \verb|ZeroDivisionError| \\
+a whole number to a negative power & \verb|ValueError| \\
+a shift by less than 0 or more than 63 & \verb|ValueError| \\
+a shift left that loses bits & \verb|OverflowError| \\
+\verb|xs[i]| outside the list or text & \verb|IndexError| \\
+\verb|d[key]| of a key that is not there & \verb|KeyError| \\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -162,3 +162,6 @@ footer { margin-top: 30px; color: var(--soft); font-size: 13.5px; font-style: it
 }
 .prefacehead { font-size: 22px; font-weight: 700; margin: 1.6em 0 .4em; }
 .prefacehead p { margin: 0; }
+
+/* Code and output are shown as typed: no ligature turns --> into an arrow. */
+pre, code { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }

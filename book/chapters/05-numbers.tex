@@ -1,7 +1,8 @@
 \chapter{Numbers and Operators}\label{ch-numbers}
 
 Zeno has two kinds of plain number. An \verb|int| is a whole number, of
-64 bits, from $-9223372036854775808$ to $9223372036854775807$. A
+64 bits, from $-2^{63}$ to $2^{63}-1$: a little over nine billion
+billion either way. A
 \verb|float| is a number with a fraction, the 64-bit floating point
 number that every processor with a floating point unit has. Chapters
 later in the book add numbers with a unit and whole numbers with a
@@ -142,7 +143,7 @@ programmer meant, and JavaScript shows where those guesses lead:
 \section{Changing kind on purpose}
 
 \begin{center}
-\begin{tabular}{lp{8cm}}
+\begin{tabular}{lP{8cm}}
 \toprule
 Written & Gives \\
 \midrule

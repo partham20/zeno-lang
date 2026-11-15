@@ -234,9 +234,12 @@ themselves and not copies, as they were in sight where it was written.
 
 \begin{tryit}
 \begin{enumerate}
-\item Write \verb|function apply_all(fs: list[function(int) -> int], x: int) -> list[int]|.
-\item Write \verb|function compose(f: function(int) -> int, g: function(int) -> int) -> function(int) -> int|
-  that gives a function doing \verb|g| and then \verb|f|.
+\item Write a function \verb|apply_all| that takes
+  \verb|fs: list[function(int) -> int]| and \verb|x: int|, and gives
+  each function's answer for \verb|x| in a \verb|list[int]|.
+\item Write a function \verb|compose| that takes two functions of type
+  \verb|function(int) -> int|, \verb|f| and \verb|g|, and gives a
+  function of that type which does \verb|g| and then \verb|f|.
 \item Make a counter that starts from a number and counts up by a step,
   both given to the function that makes it.
 \item Build a small calculator: read lines such as \verb|add 2 3| with

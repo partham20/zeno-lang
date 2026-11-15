@@ -1,3 +1,78 @@
 \chapter{Keywords}\label{app-keywords}
 
-To be written.
+These 37 words are the keywords of Zeno. A keyword is never a name: a
+variable, function or field cannot be called \verb|match| or
+\verb|take|, and the compiler says so if one is.
+
+\begin{center}
+\begin{longtable}{lP{8.2cm}l}
+\toprule
+Word & Means & Chapter \\
+\midrule
+\endhead
+\verb|and| & true when both sides are & \hyperref[ch-numbers]{5} \\
+\verb|as| & names what is caught: \verb|except ValueError as e| & \hyperref[ch-errors]{14} \\
+\verb|assert| & in a test: this must be so & \hyperref[ch-testing]{25} \\
+\verb|break| & leave the loop now & \hyperref[ch-control-flow]{7} \\
+\verb|case| & one arm of a \verb|match| & \hyperref[ch-enums]{12} \\
+\verb|class| & declares a class & \hyperref[ch-classes]{11} \\
+\verb|const| & a value fixed for the whole program & \hyperref[ch-values]{4} \\
+\verb|continue| & go on with the next turn of the loop & \hyperref[ch-control-flow]{7} \\
+\verb|else| & the other branch of an \verb|if| & \hyperref[ch-control-flow]{7} \\
+\verb|enum| & declares an enum & \hyperref[ch-enums]{12} \\
+\verb|except| & catches an error of a kind & \hyperref[ch-errors]{14} \\
+\verb|false| & the \verb|bool| that is not true & \hyperref[ch-numbers]{5} \\
+\verb|for| & goes through the items of something & \hyperref[ch-control-flow]{7} \\
+\verb|from| & \verb|from math import sqrt|; and \verb|needs ... from| in a package & \hyperref[ch-modules]{21} \\
+\verb|function| & declares a function, or writes one in place & \hyperref[ch-functions]{8} \\
+\verb|if| & runs a block when a condition holds & \hyperref[ch-control-flow]{7} \\
+\verb|import| & brings in a module & \hyperref[ch-modules]{21} \\
+\verb|in| & is it in there? and \verb|for x in xs| & \hyperref[ch-lists]{9} \\
+\verb|interface| & declares an interface & \hyperref[ch-interfaces]{20} \\
+\verb|is| & with \verb|none| only: \verb|x is none|; and \verb|class C is I| & \hyperref[ch-none]{13} \\
+\verb|let| & declares a name that keeps its value & \hyperref[ch-values]{4} \\
+\verb|match| & runs the case that fits a value & \hyperref[ch-enums]{12} \\
+\verb|none| & nothing here & \hyperref[ch-none]{13} \\
+\verb|not| & turns a \verb|bool| round & \hyperref[ch-numbers]{5} \\
+\verb|or| & true when either side is; \verb|T or none| & \hyperref[ch-numbers]{5} \\
+\verb|owned| & a class or list with one owner & \hyperref[ch-ownership]{30} \\
+\verb|private| & for its own file only & \hyperref[ch-modules]{21} \\
+\verb|raise| & raises an error & \hyperref[ch-errors]{14} \\
+\verb|raises| & in a heading: the errors a function may raise & \hyperref[ch-errors]{14} \\
+\verb|return| & gives a value back and ends the call & \hyperref[ch-functions]{8} \\
+\verb|strict| & as a file's first line: every type must be known & \hyperref[ch-types]{16} \\
+\verb|take| & on a parameter: the function takes the value over & \hyperref[ch-ownership]{30} \\
+\verb|true| & the \verb|bool| that is & \hyperref[ch-numbers]{5} \\
+\verb|try| & runs a block whose errors may be caught & \hyperref[ch-errors]{14} \\
+\verb|unsafe| & a block for what Zeno cannot check & \hyperref[ch-unsafe]{33} \\
+\verb|var| & declares a name whose value can change & \hyperref[ch-values]{4} \\
+\verb|while| & repeats a block while a condition holds & \hyperref[ch-control-flow]{7} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section*{Words that are not keywords}
+
+A few words have a meaning in one place and are ordinary names
+everywhere else, because in that place no name could stand:
+
+\begin{itemize}
+\item \verb|test|, before a string at the top of a file, starts a test
+  (\hyperref[ch-testing]{Testing}).
+\item \verb|package|, \verb|needs| and \verb|at| are the words of a
+  \verb|zeno.package| file (\hyperref[ch-packages]{Packages}).
+\item The names of the built-in types (\verb|int|, \verb|str|,
+  \verb|list|, \verb|u8| and the rest), of the units (\verb|ms|,
+  \verb|V|) and of the built-in functions (\verb|print|, \verb|len|)
+  are names declared by Zeno, which a program may declare again in an
+  inner block.
+\end{itemize}
+
+\section*{Words from other languages}
+
+These are not Zeno, and each gets a message with the Zeno spelling:
+\verb|def| and \verb|fn| (\verb|function|), \verb|elif|
+(\verb|else if|), \verb|&&|, \verb+||+ and \verb|!| (\verb|and|,
+\verb|or|, \verb|not|), and a \verb|;| at the end of a line. Python's
+\verb|None|, \verb|True| and \verb|False| are written in small letters
+in Zeno: \verb|none|, \verb|true|, \verb|false|.

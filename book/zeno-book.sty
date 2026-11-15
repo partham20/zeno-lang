@@ -20,6 +20,10 @@
 \RequirePackage{microtype}
 \RequirePackage[hidelinks]{hyperref}
 
+% A line may stretch a little more than usual before it sticks out
+% of the margin, which code in running text otherwise makes it do.
+\setlength{\emergencystretch}{2.5em}
+
 % ---- Type -------------------------------------------------------------
 \setmainfont{TeX Gyre Pagella}
 \setsansfont{TeX Gyre Heros}
@@ -170,3 +174,7 @@
   repository, and one command builds both this PDF and the HTML
   version from it.\par\medskip
   https://zeno-lang.org\par}}
+
+% Text in a table column is set ragged right: justified, a narrow
+% column opens wide gaps between words.
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}

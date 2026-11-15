@@ -1,3 +1,112 @@
 \chapter{The zeno Command}\label{app-commands}
 
-To be written.
+Everything Zeno does is done by one command, \verb|zeno|, followed by
+what to do and usually a file. This appendix lists every command and
+every option of version 0.1. \verb|zeno --help| prints the same list.
+
+\section{Commands}
+
+\begin{longtable}{lP{8.6cm}}
+\toprule
+Command & What it does \\
+\midrule
+\endhead
+\verb|zeno run f.zeno| & check the program, then run it. Words after
+  the file are the program's own arguments
+  (\hyperref[ch-reading-writing]{Reading and Writing}) \\
+\verb|zeno check f.zeno| & check the program for mistakes, and run
+  nothing \\
+\verb|zeno build f.zeno| & compile to C and then to a program that runs
+  by itself (\hyperref[ch-compiling]{Compiling}). The C is kept beside
+  it \\
+\verb|zeno test| & run the \verb|test "name" { }| blocks of a file, of
+  every file in a folder, or of this folder when nothing is named
+  (\hyperref[ch-testing]{Testing}) \\
+\verb|zeno format f.zeno| & lay files out the one way Zeno lays them
+  out; several files, or a folder, can be named
+  (\hyperref[ch-tools]{The Tools}) \\
+\verb|zeno new name| & make a folder with a new program in it: a
+  \verb|main.zeno|, a module with a test, and a \verb|zeno.package|
+  (\hyperref[ch-packages]{Packages}) \\
+\verb|zeno new --package name| & make a folder with a new package: modules
+  for other programs to need, and no \verb|main.zeno| \\
+\verb|zeno fetch| & get the packages that the \verb|needs| lines of
+  \verb|zeno.package| list, for this folder or a named one \\
+\verb|zeno tokens f.zeno| & show the tokens the lexer finds
+  (\hyperref[ch-inside]{Inside Zeno}) \\
+\verb|zeno parse f.zeno| & show the syntax tree the parser builds, with
+  brackets around every expression \\
+\verb|zeno join f.zeno| & show the one program that the file and every
+  file it imports are joined into \\
+\verb|zeno bytecode f.zeno| & show the bytecode that \verb|zeno run --vm|
+  runs \\
+\verb|zeno lsp| & the language server. An editor starts it, to show
+  mistakes as you type; you do not run it yourself \\
+\verb|zeno --version| & print the version \\
+\verb|zeno --help| & print the list of commands and options \\
+\bottomrule
+\end{longtable}
+
+\section{Options}
+
+An option goes after the command and before the file.
+
+\begin{longtable}{llP{6.6cm}}
+\toprule
+Option & With & What it does \\
+\midrule
+\endhead
+\verb|--strict| & \verb|run|, \verb|check| & every type must be known
+  before the program runs, as a build needs
+  (\hyperref[ch-types]{Types, Written and Worked Out}). \verb|build| always works so \\
+\verb|--vm| & \verb|run| & compile to bytecode and run that, in place of
+  walking the tree. Same output, about twice as fast \\
+\verb|--no-collector| & \verb|check| & check as
+  \verb|build --no-collector| would, without building \\
+\verb|--firmware| & \verb|build| & errors travel as return values, with
+  no \verb|setjmp| (\hyperref[ch-firmware]{Firmware}) \\
+\verb|--no-collector| & \verb|build| & no garbage collector and no
+  \verb|malloc|: every list and object has one owner, and memory comes
+  from a fixed pool (\hyperref[ch-no-collector]{Building with No
+  Collector}). Turns \verb|--firmware| on \\
+\verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
+  to \verb|clang|. Goes with the three options around it \\
+\verb|--memory| & \verb|build| & the program reports, as it ends, how
+  much memory it used (\hyperref[ch-memory]{Memory}) \\
+\verb|--check| & \verb|format| & change nothing; name the files that are
+  not laid out, and fail if there are any \\
+\verb|--package| & \verb|new| & make a package, not a program \\
+\verb|--update| & \verb|fetch| & look every version up again, and not at
+  the commits that \verb|zeno.lock| pinned \\
+\bottomrule
+\end{longtable}
+
+\section{What a command answers}
+
+Every command ends with an \emph{exit status}, the number a shell
+script or a build tool reads to know how it went: 0 when all went
+well, and 1 when the program had a mistake, an uncaught error, a
+failing test, or a file that \verb|format --check| would change.
+Messages go to the error stream, and what the program prints goes to
+the output stream, so \verb|zeno run f.zeno > out.txt| keeps only what
+the program printed.
+
+\section{Telling the C compiler}
+
+A build writes C, and two names can be set when that C is compiled,
+with \verb|-D| on the \verb|cc| or \verb|clang| line:
+
+\begin{longtable}{lP{8.6cm}}
+\toprule
+Name & What it sets \\
+\midrule
+\endhead
+\verb|ZENO_BOARD| & a header that puts a real board under the program,
+  in place of the simulated one: \verb|-DZENO_BOARD='"my_board.h"'|
+  (\hyperref[ch-firmware]{Firmware}) \\
+\verb|ZENO_POOL| & the size of the pool in bytes for a build with no
+  collector, 32\,768 unless set: \verb|-DZENO_POOL=25384| \\
+\verb|ZENO_TEXT_ROOM| & the size of the text room in bytes, for the same
+  build \\
+\bottomrule
+\end{longtable}

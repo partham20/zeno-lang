@@ -21,7 +21,7 @@ depth and test coverage.
 A firmware build carries errors as ordinary return values instead. The
 Zeno does not change:
 
-\begin{zeno}[file=speed.zeno, cmd=zeno build --firmware {file} ;; ./speed ;; grep -c setjmp speed.c]
+\begin{zeno}[file=speed.zeno, cmd=zeno build --firmware {file} ;; ./speed ;; grep setjmp speed.c | wc -l]
 function parse_speed(text: str) -> int raises ValueError {
     let n = int(text)
     if n < 0 or n > 100 {
@@ -40,7 +40,7 @@ for text in ["40", "fast", "250"] {
 \end{zeno}
 
 It prints what \verb|zeno run| prints, and there is no \verb|setjmp|
-in the C (\verb|grep| counted 0). Here is what \verb|parse_speed|
+in the C (\verb|grep| found 0 lines). Here is what \verb|parse_speed|
 became:
 
 \begin{zeno}[file=speed.zeno, show=no, cmd=zeno build --firmware {file} > /dev/null ;; grep -A11 "^static bool z_parse_speed.*{$" speed.c]
