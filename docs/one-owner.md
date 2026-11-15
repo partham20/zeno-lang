@@ -152,8 +152,7 @@ anyone were still looking at that item, they would be looking at freed
 memory. Three small rules make sure nobody is. Each can be checked by
 reading one function, with no lifetimes to write.
 
-**1. Only the owner.** A parameter that looks cannot pop, and nor can
-`self` in a method, which always looks.
+**1. Only the owner.** A parameter that looks cannot pop.
 
 ```zeno
 function last(tasks: list[Task]) -> Task { return tasks.pop() }
@@ -163,6 +162,22 @@ function last(tasks: list[Task]) -> Task { return tasks.pop() }
 error: only the owner can take an item out of this list: somebody else
 may have been lent it. Here `tasks` only looks at it
 ```
+
+A method is the exception, for what its own object holds. A queue has
+to be able to hand out its own items:
+
+```zeno
+class Queue {
+    tasks: list[Task]
+    function next(self) -> Task { return self.tasks.pop() }
+}
+```
+
+The rule does not go away. It moves to whoever calls the method:
+`queue.next()` is held to these three rules exactly as
+`queue.tasks.pop()` would be, so only the owner of the queue may call
+it, and not inside a loop that walks the queue
+([`audit.md`](audit.md)).
 
 **2. Not while a loop is walking the list.** The loop is looking at an
 item on every trip.
@@ -325,7 +340,7 @@ report, line for line.
 | A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: see below | done in the audit |
-| A method that pops an item or replaces a field that has one owner | `self` only looks (rule 1) | noted |
+| ~~A method that pops an item or replaces a field that has one owner~~ | it builds now, and the caller is held to rule 1 | done in the audit |
 | A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |
 
 The row about the top of the file was the one a firmware program met

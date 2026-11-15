@@ -9327,6 +9327,91 @@ print(grid)
         no_collector_as_interpreter("top-tables", TOP_TABLES);
     }
 
+    /// A class that looks after what it owns through its own methods:
+    /// they take items out, and put new values in the place of old ones.
+    pub(crate) const METHODS_TAKE_OUT: &str = r##"# A class that looks after what it owns, through its own methods.
+class Task {
+    name: str
+    runs: list[int]
+}
+
+class Queue {
+    tasks: list[Task]
+    last: Task or none
+    log: list[int]
+
+    function add(self, task: take Task) {
+        self.tasks.append(task)
+    }
+
+    # Takes an item out of a list the object owns.
+    function next(self) -> Task or none {
+        if len(self.tasks) == 0 { return none }
+        return self.tasks.pop()
+    }
+
+    # Puts a new value in the place of an old one, which is freed.
+    function remember(self, task: take Task) {
+        self.last = task
+    }
+
+    function replace_first(self, task: take Task) {
+        self.tasks[0] = task
+    }
+
+    function reset(self) {
+        self.log = []
+        self.last = none
+    }
+
+    # Calls another method that takes out.
+    function run_one(self) -> bool {
+        let task = self.next()
+        if task is none { return false }
+        task.runs.append(len(self.log))
+        self.log.append(len(task.name))
+        self.remember(task)
+        return true
+    }
+
+    function size(self) -> int { return len(self.tasks) }
+
+    function describe_last(self) -> str {
+        match self.last {
+            case none { return "nothing" }
+            case task { return f"{task.name} {task.runs}" }
+        }
+    }
+}
+
+function drain(queue: take Queue) -> int {
+    var count = 0
+    while queue.run_one() { count += 1 }
+    return count
+}
+
+let queue = Queue([], none, [])
+queue.add(Task("blink", []))
+queue.add(Task("read", []))
+queue.add(Task("send", []))
+queue.replace_first(Task("first", [9]))
+print(queue.size())
+let ran = queue.run_one()
+print(ran, queue.size(), queue.describe_last())
+queue.reset()
+print(queue.log, queue.last is none)
+let taken = queue.next()
+if taken is not none { print(taken.name) }
+print(drain(queue))
+"##;
+
+    #[test]
+    fn a_method_can_take_out_what_its_object_owns() {
+        // Each item that leaves has one new owner, and each value that
+        // is replaced is freed on the spot: 0 blocks left.
+        no_collector_as_interpreter("methods-take-out", METHODS_TAKE_OUT);
+    }
+
     #[test]
     fn what_may_be_none_can_have_one_owner_in_every_build() {
         // With a collector, run before every allocation: the owner frees

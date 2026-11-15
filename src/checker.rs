@@ -698,6 +698,10 @@ struct Signature {
     params: Vec<Slot>,
     returns: Ty,
     raises: Vec<String>,
+    /// For a method: it takes an item out of something `self` holds, or
+    /// puts a new value in the place of one. Then a call of it is held
+    /// to the rule for doing that by hand (see `takes_out`).
+    takes_out: bool,
 }
 
 /// A function and where it was defined. Its signature is worked out the
@@ -1354,6 +1358,9 @@ struct Frame {
     /// inside one starts at none again: the word covers the lines
     /// between its braces, in the function that has them.
     unsafe_blocks: usize,
+    /// For the body of a method: has it taken something out of what
+    /// `self` holds? `None` in any other function.
+    takes_self: Option<bool>,
 }
 
 /// One argument at a call, with where it is written.
@@ -1488,7 +1495,7 @@ impl Checker {
             enums: HashMap::new(),
             types: Types::default(),
             errors: Vec::new(),
-            frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0, unsafe_blocks: 0 }],
+            frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0, unsafe_blocks: 0, takes_self: None }],
             raised: vec![Vec::new()],
             owned: Ownership::default(),
             reached: HashMap::new(),
@@ -2941,10 +2948,13 @@ impl Checker {
         let look = subject_type.is_tied();
         let subject_type = self.looked(subject_type, subject);
         // The owner whose value the names look into, if a variable is.
+        // (In a method, `self` counts: the method may take out what its
+        // object holds, so its loops and cases have to be known too.)
+        let in_method = self.frame().takes_self.is_some();
         let owner = root(subject)
-            .and_then(|name| env.get(name))
-            .filter(|variable| variable.ty.is_owned() && variable.case.is_none())
-            .map(|variable| variable.id);
+            .and_then(|name| env.get(name).map(|variable| (name, variable)))
+            .filter(|(name, variable)| (variable.ty.is_owned() || (in_method && *name == "self")) && variable.case.is_none())
+            .map(|(_, variable)| variable.id);
         let mut all_exit = true;
         // What is given away after the `match` is what any case that gets
         // to its end gave away.
@@ -3401,7 +3411,14 @@ impl Checker {
             }
             return None;
         }
-        if !variable.ty.is_owned() {
+        // A method may take out what its own object holds. Whoever calls
+        // the method is then held to this rule in its place: see
+        // `ExprKind::Call` (decision 5.19k).
+        let method = name == "self" && self.frame().takes_self.is_some();
+        if method {
+            self.frame().takes_self = Some(true);
+        }
+        if !variable.ty.is_owned() && !method {
             let what = match &inside.kind {
                 ExprKind::Name(_) => format!("`{name}` only looks at it"),
                 _ => format!("what `{name}` holds is only looked at"),
@@ -3610,7 +3627,8 @@ impl Checker {
     fn walk(&mut self, iterable: &Expr, item: &Ty, env: &Env) -> usize {
         let before = self.owned.walked.len();
         if let (true, Some(name)) = (item.is_look(), root(iterable)) {
-            if let Some(variable) = env.get(name).filter(|variable| variable.ty.is_owned()) {
+            let in_method = name == "self" && self.frame().takes_self.is_some();
+            if let Some(variable) = env.get(name).filter(|variable| variable.ty.is_owned() || in_method) {
                 self.owned.walked.push((variable.id, iterable.span.line, Looking::Loop));
             }
         }
@@ -3757,6 +3775,9 @@ impl Checker {
             params: params.clone(),
             returns: returns_for_now,
             raises: decl.raises.clone(),
+            // A method that calls itself is not known yet. Say it does,
+            // which can only refuse.
+            takes_out: function.self_type.is_some(),
         });
         *function.state.borrow_mut() = State::Checking(declared);
 
@@ -3793,7 +3814,13 @@ impl Checker {
             self.declare(&scope, &param.name, slot.ty.clone(), false, span);
         }
 
-        self.frames.push(Frame { declared_return: declared_return.clone(), returns: Vec::new(), loops: 0, unsafe_blocks: 0 });
+        self.frames.push(Frame {
+            declared_return: declared_return.clone(),
+            returns: Vec::new(),
+            loops: 0,
+            unsafe_blocks: 0,
+            takes_self: function.self_type.as_ref().filter(|_| decl.params.first().is_some_and(|p| p.name == "self")).map(|_| false),
+        });
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
         self.copy_notes.push(function.copy_note.clone());
@@ -3884,7 +3911,7 @@ impl Checker {
             FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
         );
         self.types.looks.insert(Arc::as_ptr(&function.decl) as usize, params.iter().map(|slot| slot.ty.is_look()).collect());
-        let signature = Rc::new(Signature { name, params, returns, raises });
+        let signature = Rc::new(Signature { name, params, returns, raises, takes_out: frame.takes_self == Some(true) });
         *function.state.borrow_mut() = State::Checked(signature.clone());
         signature
     }
@@ -4130,6 +4157,9 @@ impl Checker {
                     Some((call, wanted)) if call == expr as *const Expr as usize => Some(wanted),
                     _ => None,
                 };
+                // The owner a method takes something out of, and how many
+                // looks the line had made by then.
+                let mut taker = None;
                 let callee = match &callee.kind {
                     // `object.method(...)`: the call looks at the object.
                     ExprKind::Field { object: receiver, name } => {
@@ -4142,7 +4172,16 @@ impl Checker {
                                 self.owned.emptied.push(owner);
                             }
                         }
-                        match self.field(&object, name, callee.span) {
+                        let method = self.field(&object, name, callee.span);
+                        // A method that takes out what its object owns:
+                        // calling it is taking out, for whoever calls.
+                        if let Ty::BoundMethod(function) = &method {
+                            if object.is_tied() && self.signature(function).takes_out {
+                                let does = format!("call `{name}`, which takes out or replaces something the object owns");
+                                taker = self.takes_out(receiver, looked, &does, env, span).map(|owner| (owner, self.owned.looking.len()));
+                            }
+                        }
+                        match method {
                             Ty::Dynamic if self.strict => self.error(
                                 "strict mode: the type of this cannot be worked out before the program runs",
                                 callee.span,
@@ -4216,6 +4255,17 @@ impl Checker {
                 }
                 if let Ty::Generic(generic) = &callee {
                     return self.call_generic(generic, arguments, expr, wanted, span);
+                }
+                // An argument that looks at the same object would be
+                // looking while the method takes something out of it.
+                if let Some((owner, from)) = taker {
+                    if self.owned.looking[from.min(self.owned.looking.len())..].contains(&owner) {
+                        self.error(
+                            "this method takes out or replaces something its object owns, and an argument on this line \
+                             looks at the same object. Work the argument out on a line of its own first",
+                            span,
+                        );
+                    }
                 }
                 let ty = self.call(&callee, arguments, span);
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
@@ -6915,11 +6965,49 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             owned_error("function reset(ps: owned list[Packet]) { ps[0] = make() }"),
             format!("only the owner can replace an item of this list: {looking}")
         );
+        // A method may, for what its own object holds. Then whoever
+        // calls the method is held to the rule in its place.
+        const QUEUE: &str = "owned class Queue {\n waiting: owned list[Packet]\n last: Packet or none\n \
+            function next(self) -> Packet { return self.waiting.pop() }\n \
+            function keep(self, p: take Packet) { self.last = p }\n \
+            function swap(self, p: take Packet) { self.waiting[0] = p }\n \
+            function move_on(self) {\n  let p = self.next()\n  self.keep(p)\n }\n \
+            function drop_like(self, p: Packet) { self.waiting.pop() }\n \
+            function size(self) -> int { return len(self.waiting) }\n}\n\
+            let q = Queue([make()], none)\n";
+        owned_ok(&format!("{QUEUE}let p = q.next()\nq.keep(p)\nq.swap(make())\nq.move_on()\nprint(q.size())"));
+        let calls = |name: &str| format!("call `{name}`, which takes out or replaces something the object owns");
         assert_eq!(
-            owned_error("owned class Queue {\n waiting: owned list[Packet]\n function next(self) -> Packet { return self.waiting.pop() }\n}"),
-            "only the owner can take an item out of this list: somebody else may have been lent it. \
-             Here what `self` holds is only looked at"
+            owned_error(&format!("{QUEUE}function drain(queue: Queue) {{ queue.move_on() }}")),
+            format!("only the owner can {}: somebody else may have been lent it. Here `queue` only looks at it", calls("move_on"))
         );
+        assert_eq!(
+            owned_error(&format!("{QUEUE}for p in q.waiting {{ q.next() }}")),
+            format!(
+                "the `for` on line 24 is walking a list that `q` owns, and is still looking at its items. \
+                 Nothing can {} until the loop is over",
+                calls("next")
+            )
+        );
+        assert_eq!(
+            owned_error(&format!("{QUEUE}print(q.size(), q.next().id)")),
+            "this line has already looked at `q`, and the look might still be in use. Do the other thing on a line of its own first"
+        );
+        assert_eq!(
+            owned_error(&format!("{QUEUE}q.drop_like(q.waiting[0])")),
+            "this method takes out or replaces something its object owns, and an argument on this line looks at \
+             the same object. Work the argument out on a line of its own first"
+        );
+        // Inside the method the other two rules hold for `self`.
+        assert_eq!(
+            owned_error(
+                "owned class Queue {\n waiting: owned list[Packet]\n function clear(self) {\n  for p in self.waiting { self.waiting.pop() }\n }\n}"
+            ),
+            "the `for` on line 13 is walking a list that `self` owns, and is still looking at its items. \
+             Nothing can take an item out of this list until the loop is over"
+        );
+        // A method that only looks can be called by anyone.
+        owned_ok(&format!("{QUEUE}function count(queue: Queue) -> int {{ return queue.size() }}\nfor p in q.waiting {{ print(q.size()) }}"));
         // It can add to it, and change what is inside an item.
         owned_ok("function more(ps: owned list[Packet]) { ps.append(make())\nps[0].id = 4 }");
         // The owner can reach in as far as it likes.
@@ -7042,9 +7130,13 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // A field that holds one belongs to the object.
         ok("class Bag {\n items: list[int]\n spare: Point\n}\nlet b = Bag([1], Point(0, 0))\nb.items = [2]\nb.spare = Point(1, 1)\nprint(b)");
+        // A method may replace what its own object holds, and then only
+        // the owner of the object may call it.
+        ok("class Bag {\n items: list[int]\n function empty(self) { self.items = [] }\n}\nlet b = Bag([1])\nb.empty()\nprint(b)");
         assert_eq!(
-            error("class Bag {\n items: list[int]\n function empty(self) { self.items = [] }\n}"),
-            "only the owner can replace what `items` holds: somebody else may have been lent it. Here `self` only looks at it"
+            error("class Bag {\n items: list[int]\n function empty(self) { self.items = [] }\n}\nfunction f(b: Bag) { b.empty() }"),
+            "only the owner can call `empty`, which takes out or replaces something the object owns: somebody else may \
+             have been lent it. Here `b` only looks at it"
         );
         // What may be `none` has one owner too, when it is there.
         ok("var p: Point or none = none\np = Point(1, 2)\nif p is not none { print(look(p))\nprint(consume(p)) }");

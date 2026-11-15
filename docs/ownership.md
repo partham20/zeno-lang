@@ -405,10 +405,11 @@ breaking any program that works now.
   parameter does with it, as in `function(take Packet) -> int`:
   [`functions-and-errors.md`](functions-and-errors.md).)
 - **Moving a field out of an object** (`let d = packet.data`). Same reason.
-- **Replacing an owned field through a look**, which includes `self` in a
-  method. Somebody else may have been lent the old value at that moment.
-  Only the owner of the object may write `packet.data = [...]`. A method
-  can still change what is *in* the list (`self.data.append(x)`).
+- **Replacing an owned field through a look.** Somebody else may have
+  been lent the old value at that moment. Only the owner of the object
+  may write `packet.data = [...]`. A method may do it for its own object
+  (`self.data = [...]`), and then only the owner of the object may call
+  that method ([`audit.md`](audit.md)).
 - **A shared list becoming an owned one.** Only a list that was just
   made can start life owned: one written out (`[1, 2]`), a
   comprehension, or what `split`, `map`, `filter` or `+` gives. Only
