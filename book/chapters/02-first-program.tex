@@ -1,0 +1,173 @@
+\chapter{A First Program}\label{ch-first-program}
+
+\section{Hello}
+
+Make a file called \verb|hello.zeno| with one line in it:
+
+\begin{zeno}[file=hello.zeno, cmd=zeno run hello.zeno]
+print("Hello, Zeno!")
+\end{zeno}
+
+That is the whole program. There is no \verb|main| function to write,
+nothing to import and no semicolon at the end. Zeno starts at the top
+of the file and does each line in turn, and when it runs out of lines
+the program is over.
+
+\verb|print| shows what it is given and then ends the line. Give it
+several things and it puts a space between each; give it nothing and
+it prints an empty line:
+
+\begin{zeno}
+print("one", "two", 3)
+print()
+print("after an empty line")
+\end{zeno}
+
+Text is written between double quotes, \verb|"like this"|. Numbers
+are written as they are. Each has a chapter of its own later.
+
+\section{Comments}
+
+A \verb|#| starts a comment. Everything from it to the end of the line
+is for the reader, and Zeno skips it:
+
+\begin{zeno}
+# Greet the world. This whole line is a comment.
+print("Hello")   # and so is the end of this one
+\end{zeno}
+
+\section{One line, one statement}
+
+Each line is one \emph{statement}: one thing for the program to do.
+The end of the line ends the statement, so Zeno needs no \verb|;|.
+
+A long statement can go on to the next line when its first line is
+clearly not finished. That is so inside brackets, and after anything
+that cannot end a statement, such as \verb|+|, \verb|,| or \verb|=|:
+
+\begin{zeno}
+let total = 1 +
+    2 +
+    3
+print(total,
+      "is the total")
+\end{zeno}
+
+The other way round does not work. A line that could stand on its own
+\emph{does} stand on its own, so a line that starts with \verb|+| is a
+mistake:
+
+\begin{zeno}[fails=yes]
+let total = 1
+    + 2
+\end{zeno}
+
+\begin{why}
+The line break already means "next statement" to the person reading,
+so a \verb|;| on every line only says it again. The rule for going on
+to the next line, "an unfinished line continues", can never be misread,
+because a line that looks finished is finished.
+\end{why}
+
+\section{Names for things}
+
+\verb|let| gives a value a name, and from then on the name stands for
+the value:
+
+\begin{zeno}
+let name = "Ada"
+let year = 1843
+print(name, "wrote the first program in", year)
+print(f"Hello, {name}!")
+\end{zeno}
+
+The last line is a \emph{formatted string}. The \verb|f| in front of
+the quotes says that what stands inside \verb|{ }| is to be worked out
+and put into the text. \hyperref[ch-values]{Values and Variables} and
+\hyperref[ch-text]{Text} say much more about both.
+
+\section{When something is wrong}
+
+Zeno reads the whole program before it runs any of it, and if it finds
+a mistake it says so and runs nothing. Here is a program with two:
+
+\begin{zeno}[fails=yes]
+let name = "Ada"
+name = "Grace"
+print(nmae)
+\end{zeno}
+
+Each message says what is wrong, and where: the file, the line and the
+column, the line itself, and a \verb|^| under the place. Where Zeno can
+tell what you meant, it says what to write instead. The first mistake
+here is that a name given with \verb|let| cannot be given another
+value, and the message names the word that would allow it. The second
+is a misspelt name.
+
+Habits from other languages get messages of their own:
+
+\begin{zeno}[fails=yes]
+def greet():
+    print("hi")
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let ready = true
+if ready && true {
+    print("go")
+}
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+print("hello");
+\end{zeno}
+
+\begin{why}
+An error message is the language teaching the person who reads it,
+at the moment the lesson is most useful. So every message in Zeno
+aims to say what to write instead, not only what is wrong.
+\end{why}
+
+Notice that the last three programs each showed one message, while the
+one before showed two. A mistake in the \emph{shape} of a program,
+such as a missing brace, leaves Zeno unsure where it is, and what it
+would report after that could be nonsense caused by the first. So it
+stops at the first. A mistake in the \emph{meaning}, such as a
+misspelt name, leaves it sure where it is, so it reports every one it
+finds.
+
+\section{Checking without running}
+
+\verb|zeno run| checks a program and then runs it. \verb|zeno check|
+only checks it:
+
+\begin{zeno}[file=greet.zeno, cmd=zeno check greet.zeno]
+let name = "Ada"
+print(f"Hello, {name}!")
+\end{zeno}
+
+It prints nothing when there is nothing wrong. That makes it useful
+for a program that would take a long time to run, or one that drives
+hardware you do not want to move yet.
+
+\begin{summary}
+A program is a file of statements, done from the top, one to a line.
+\verb|print| shows values, \verb|#| starts a comment, and \verb|let|
+names a value. Zeno checks the whole program before it runs a line of
+it, and a message says what is wrong, where, and usually what to write
+instead.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Print your own name and the year you were born on one line,
+  with one \verb|print|.
+\item Leave the closing quote off a string and read the message. Then
+  leave off a closing bracket.
+\item Write \verb|elif| where Zeno expects \verb|else if|, and
+  \verb|x := 1| for a variable. What does Zeno say to each?
+\item Put two mistakes of meaning in one program and run
+  \verb|zeno check|. How many messages are there? Now add a mistake of
+  shape, such as \verb|print("a"|. How many now, and why?
+\end{enumerate}
+\end{tryit}

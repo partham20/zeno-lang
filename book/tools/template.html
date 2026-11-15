@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="$lang$">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$if(top)$$pagetitle$ · The Zeno Book$else$The Zeno Book$endif$</title>
+  <meta name="description" content="The Zeno Book: the whole Zeno programming language, from the first program to the last corner.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    $styles.html()$
+  </style>
+$for(css)$
+  <link rel="stylesheet" href="$css$">
+$endfor$
+</head>
+<body>
+<header class="bar">
+  <button class="menu" aria-label="Contents" onclick="document.body.classList.toggle('open')">☰</button>
+  <a class="brand" href="index.html">The Zeno Book</a>
+  <span class="version">Zeno 0.1</span>
+  <a class="site" href="https://zeno-lang.org">zeno-lang.org</a>
+</header>
+<div class="layout">
+<aside class="sidebar"><!--SIDEBAR--></aside>
+<main>
+<nav class="pager top">
+$if(previous.url)$<a class="prev" href="$previous.url$" rel="previous">← $previous.title$</a>$endif$
+$if(next.url)$<a class="next" href="$next.url$" rel="next">$next.title$ →</a>$endif$
+</nav>
+$if(top)$
+$else$
+<header class="cover">
+  <p class="kicker">Zeno version 0.1</p>
+  <h1 class="title">The Zeno Book</h1>
+  <p class="subtitle">The whole language, from the first line to the last corner</p>
+  <p class="author">Partha</p>
+  <p class="download"><a href="zeno-book.pdf">The printable PDF</a></p>
+</header>
+<nav id="TOC" class="contents">
+<h2>Contents</h2>
+$table-of-contents$
+</nav>
+$endif$
+<article>
+$body$
+</article>
+<nav class="pager bottom">
+$if(previous.url)$<a class="prev" href="$previous.url$" rel="previous">← $previous.title$</a>$endif$
+$if(next.url)$<a class="next" href="$next.url$" rel="next">$next.title$ →</a>$endif$
+</nav>
+<footer>Every program in this book was run with Zeno while the book was built. Every journey is halfway done. Forever.</footer>
+</main>
+</div>
+</body>
+</html>

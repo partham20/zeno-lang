@@ -13,3 +13,6 @@
 .idea/
 *.swp
 .DS_Store
+
+# The Zeno Book: what the build makes on the way
+/book/build/

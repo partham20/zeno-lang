@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!-- Colours for Zeno in the HTML book: pandoc reads this file. -->
+<language name="Zeno" section="Sources" version="1" kateversion="5.0" extensions="*.zeno" mimetype="text/x-zeno" casesensitive="1">
+  <highlighting>
+    <list name="keywords">
+      <item>let</item><item>var</item><item>const</item><item>function</item>
+      <item>return</item><item>if</item><item>else</item><item>while</item>
+      <item>for</item><item>in</item><item>break</item><item>continue</item>
+      <item>class</item><item>enum</item><item>match</item><item>case</item>
+      <item>try</item><item>except</item><item>raise</item><item>raises</item>
+      <item>import</item><item>from</item><item>as</item><item>and</item>
+      <item>or</item><item>not</item><item>is</item><item>self</item>
+      <item>strict</item><item>owned</item><item>take</item><item>unsafe</item>
+      <item>private</item><item>interface</item><item>assert</item>
+      <item>package</item><item>needs</item>
+    </list>
+    <list name="constants">
+      <item>true</item><item>false</item><item>none</item>
+    </list>
+    <list name="types">
+      <item>int</item><item>float</item><item>bool</item><item>str</item>
+      <item>list</item><item>dict</item><item>u8</item><item>u16</item>
+      <item>u32</item><item>i8</item><item>i16</item><item>i32</item>
+      <item>any</item><item>pointer</item><item>Register</item><item>Pin</item>
+    </list>
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <DetectChar attribute="Comment" context="Comment" char="#"/>
+        <Detect2Chars attribute="String" context="String" char="f" char1="&quot;"/>
+        <DetectChar attribute="String" context="String" char="&quot;"/>
+        <keyword attribute="Keyword" context="#stay" String="keywords"/>
+        <keyword attribute="Constant" context="#stay" String="constants"/>
+        <keyword attribute="Data Type" context="#stay" String="types"/>
+        <RegExpr attribute="Decimal" context="#stay" String="\b(0x[0-9a-fA-F_]+|0b[01_]+|[0-9][0-9_]*(\.[0-9_]+)?([eE][-+]?[0-9]+)?)\b"/>
+      </context>
+      <context name="Comment" attribute="Comment" lineEndContext="#pop"/>
+      <context name="String" attribute="String" lineEndContext="#pop">
+        <DetectChar attribute="String" context="StringEscape" char="\"/>
+        <DetectChar attribute="String" context="#pop" char="&quot;"/>
+      </context>
+      <context name="StringEscape" attribute="String" lineEndContext="#pop">
+        <RegExpr attribute="String" context="#pop" String="."/>
+      </context>
+    </contexts>
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal"/>
+      <itemData name="Keyword" defStyleNum="dsKeyword"/>
+      <itemData name="Constant" defStyleNum="dsConstant"/>
+      <itemData name="Data Type" defStyleNum="dsDataType"/>
+      <itemData name="Decimal" defStyleNum="dsDecVal"/>
+      <itemData name="String" defStyleNum="dsString"/>
+      <itemData name="Comment" defStyleNum="dsComment"/>
+    </itemDatas>
+  </highlighting>
+  <general>
+    <comments>
+      <comment name="singleLine" start="#"/>
+    </comments>
+    <keywords casesensitive="1"/>
+  </general>
+</language>

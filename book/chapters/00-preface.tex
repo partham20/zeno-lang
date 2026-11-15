@@ -1,0 +1,124 @@
+\chapter*{Preface}\label{ch-preface}
+\addcontentsline{toc}{chapter}{Preface}
+\markboth{Preface}{Preface}
+
+Zeno is a programming language that reads like plain English and is
+checked like Rust. It was built from nothing, one stage at a time, by
+a firmware engineer who wanted to know how a language works from the
+inside: the lexer, the parser, the type checker, two engines that run
+programs, two compilers that turn them into machine code, and the
+library and tools around them. This book is the whole of that
+language, written down once it stopped moving.
+
+\subsection*{Who this book is for}
+
+The book starts from nothing. If you have never written a program,
+start at the first page and read in order: every chapter uses only
+what the chapters before it showed you.
+
+If you already know another language, you will find Zeno familiar
+quickly. It takes its spelling from Python wherever Python's spelling
+is clear, its braces from C, its checking from Rust, its sized numbers
+from firmware, and its error messages from the idea that a message
+should say what to write instead. Read Part~I quickly, skim Part~II
+for the places where Zeno differs from what you know, and slow down
+from Part~III on.
+
+If you write firmware, Part~IV is for you: it shows how one Zeno
+program builds for a computer, for a firmware coding standard with no
+\verb|setjmp|, with no garbage collector at all, and with memory
+handled by hand, and how each of those builds is told apart.
+
+If you want to know how the compiler itself works, Part~V walks
+through it, file by file.
+
+\subsection*{How the book is laid out}
+
+\begin{description}
+\item[Part I, Starting] gets Zeno onto your machine, runs a first
+  program, and takes a quick tour of the whole language so you know
+  what is coming.
+\item[Part II, The Language] is everything a program is made of:
+  values, numbers, text, decisions and loops, functions, lists,
+  dicts, classes, enums, values that may be missing, errors, and
+  functions used as values.
+\item[Part III, Growing Programs] is what a program needs once it is
+  more than a page: types written and worked out, units, sized
+  numbers and bits, generics, interfaces, modules, packages, files,
+  mathematics, tests, and the tools.
+\item[Part IV, Zeno on a Machine] is about where a program runs: the
+  board and its pins, compiling to C and to LLVM, memory and the
+  collector, owned values, firmware builds, builds with no collector,
+  and memory by hand.
+\item[Part V, Inside Zeno] is how the compiler is built and how the
+  language is designed.
+\item[The appendices] are for looking things up: every keyword, every
+  operator, the whole library, every unit, every command, every kind
+  of error, and the list of what version 0.1 leaves out.
+\end{description}
+
+Each chapter ends with \emph{Things to try}: small changes to make and
+questions to answer by running Zeno. They are the fastest way to make
+a chapter your own.
+
+\subsection*{The programs in this book are real}
+
+Every program in this book was run by the Zeno compiler when the book
+was built, and every output under a program is what Zeno printed. That
+includes the error messages: when the book shows a mistake, the
+message under it is the one Zeno gives. If a later version of Zeno
+prints something else, the book is rebuilt and the page changes with
+it.
+
+A program looks like this:
+
+\begin{zeno}
+print("Hello, Zeno!")
+\end{zeno}
+
+and what it printed is in the paler box under it. When a program is
+written to a file of its own name, the name is shown above it. A
+command typed into a terminal starts with \verb|$|, and its output
+follows on the next lines.
+
+\subsection*{The boxes}
+
+\begin{note}
+A note says something worth knowing that the text around it does not
+stop to explain.
+\end{note}
+
+\begin{why}
+Zeno has a recorded reason for every choice in it. A box like this
+gives the reason for the rule beside it, and often what was turned
+down. All of the reasons are kept in \verb|docs/decisions.md| in the
+Zeno repository, with a number for each, and the book names the number
+when it is useful.
+\end{why}
+
+\subsection*{The rule above the rules}
+
+One sentence decides more about Zeno than any other: \emph{the entire
+language must be unambiguous and intuitive}. In practice that means
+five things, and you will see each of them again and again in this
+book:
+
+\begin{enumerate}
+\item There is one obvious way to write each thing.
+\item No line can be read two ways, by the compiler or by a person.
+\item Nothing happens that the line does not say.
+\item Every word is a plain word, with one meaning.
+\item When Zeno refuses something, the message says what to write instead.
+\end{enumerate}
+
+\subsection*{The name}
+
+Zeno of Elea argued that Achilles can never catch the tortoise: before
+he reaches it he must cover half the distance, then half of what is
+left, and so on forever. The quantum Zeno effect says that a system
+watched closely enough never changes. Both suit a compiler that will
+always be almost finished. Its motto is the first thing \verb|zeno --help| prints:
+
+\begin{quote}
+\emph{Every journey is halfway done. Forever.}
+\end{quote}

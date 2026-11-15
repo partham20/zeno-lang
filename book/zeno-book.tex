@@ -1,0 +1,80 @@
+% The Zeno Book.
+%
+% This is the one source of the book. `python3 book/tools/build.py`
+% runs every sample in it with the real compiler, and makes the PDF
+% (with xelatex) and the HTML (with pandoc) from what that gives.
+\documentclass[11pt,a4paper,twoside,openany]{book}
+\usepackage[inner=27mm,outer=22mm,top=24mm,bottom=26mm]{geometry}
+\usepackage{zeno-book}
+
+\title{The Zeno Book}
+\author{Partha}
+\date{For Zeno version 0.1}
+
+\begin{document}
+
+\frontmatter
+\zenotitlepage
+\zenocopyright
+\tableofcontents
+
+\input{chapters/00-preface}
+
+\mainmatter
+
+\part{Starting}
+\input{chapters/01-getting-zeno}
+\input{chapters/02-first-program}
+\input{chapters/03-tour}
+
+\part{The Language}
+\input{chapters/04-values}
+\input{chapters/05-numbers}
+\input{chapters/06-text}
+\input{chapters/07-control-flow}
+\input{chapters/08-functions}
+\input{chapters/09-lists}
+\input{chapters/10-dicts}
+\input{chapters/11-classes}
+\input{chapters/12-enums}
+\input{chapters/13-none}
+\input{chapters/14-errors}
+\input{chapters/15-function-values}
+
+\part{Growing Programs}
+\input{chapters/16-types}
+\input{chapters/17-units}
+\input{chapters/18-sized-numbers}
+\input{chapters/19-generics}
+\input{chapters/20-interfaces}
+\input{chapters/21-modules}
+\input{chapters/22-packages}
+\input{chapters/23-reading-writing}
+\input{chapters/24-math}
+\input{chapters/25-testing}
+\input{chapters/26-tools}
+
+\part{Zeno on a Machine}
+\input{chapters/27-board}
+\input{chapters/28-compiling}
+\input{chapters/29-memory}
+\input{chapters/30-ownership}
+\input{chapters/31-firmware}
+\input{chapters/32-no-collector}
+\input{chapters/33-unsafe}
+
+\part{Inside Zeno}
+\input{chapters/34-inside}
+\input{chapters/35-design}
+
+\appendix
+\begin{appendixstart}\end{appendixstart}
+\input{chapters/a1-keywords}
+\input{chapters/a2-operators}
+\input{chapters/a3-library}
+\input{chapters/a4-units}
+\input{chapters/a5-commands}
+\input{chapters/a6-errors}
+\input{chapters/a7-limits}
+
+\end{document}

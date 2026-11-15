@@ -1,0 +1,172 @@
+% zeno-book.sty: how the printed book looks.
+%
+% Only LaTeX reads this file. pandoc does not, so every environment
+% defined here reaches the HTML as a <div> with the environment's name
+% as its class, and book/tools/book.css gives it its look there.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{zeno-book}
+
+\RequirePackage{fontspec}
+\RequirePackage{xcolor}
+\RequirePackage{listings}
+\RequirePackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\RequirePackage{titlesec}
+\RequirePackage{fancyhdr}
+\RequirePackage{booktabs}
+\RequirePackage{longtable}
+\RequirePackage{array}
+\RequirePackage{enumitem}
+\RequirePackage{microtype}
+\RequirePackage[hidelinks]{hyperref}
+
+% ---- Type -------------------------------------------------------------
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{DejaVu Sans Mono}[Scale=0.84]
+
+% ---- Colours: the cobalt of zeno-lang.org ----------------------------
+\definecolor{zenoblue}{HTML}{2F5BEA}
+\definecolor{zenoink}{HTML}{1B2333}
+\definecolor{zenograey}{HTML}{5B6478}
+\definecolor{codeback}{HTML}{F4F6FB}
+\definecolor{outback}{HTML}{FBFBF8}
+\definecolor{outrule}{HTML}{D9DCE3}
+\definecolor{kwcolour}{HTML}{1F45C4}
+\definecolor{strcolour}{HTML}{2E7D32}
+\definecolor{comcolour}{HTML}{7A8194}
+\definecolor{numcolour}{HTML}{A0522D}
+\definecolor{noteback}{HTML}{EEF2FD}
+\definecolor{whyback}{HTML}{FFF7E8}
+\definecolor{whyrule}{HTML}{E8A33D}
+\definecolor{tryback}{HTML}{F1F8F1}
+\definecolor{tryrule}{HTML}{4C9A52}
+
+\hypersetup{colorlinks=true,linkcolor=zenoblue,urlcolor=zenoblue,citecolor=zenoblue}
+
+% ---- Headings ---------------------------------------------------------
+\titleformat{\part}[display]
+  {\centering\sffamily\color{zenoink}}
+  {\large\MakeUppercase{\partname}~\thepart}{1em}{\Huge\bfseries}
+\titleformat{\chapter}[display]
+  {\sffamily\color{zenoink}}
+  {\large\color{zenoblue}\MakeUppercase{\chaptertitlename}~\thechapter}{0.6em}
+  {\huge\bfseries}
+\titlespacing*{\chapter}{0pt}{20pt}{28pt}
+\titleformat{\section}{\sffamily\Large\bfseries\color{zenoink}}{\color{zenoblue}\thesection}{0.8em}{}
+\titleformat{\subsection}{\sffamily\large\bfseries\color{zenoink}}{\color{zenoblue}\thesubsection}{0.8em}{}
+\titleformat{\subsubsection}{\sffamily\normalsize\bfseries\color{zenoink}}{}{0em}{}
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{1}
+
+% ---- Pages ------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\sffamily\small\color{zenograey}\leftmark}
+\fancyhead[RO]{\sffamily\small\color{zenograey}\rightmark}
+\fancyfoot[LE,RO]{\sffamily\small\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[LE,RO]{\sffamily\small\thepage}}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\setlist{itemsep=0.15em,topsep=0.3em}
+\renewcommand{\arraystretch}{1.18}
+
+% ---- Code -------------------------------------------------------------
+\lstdefinelanguage{Zeno}{
+  morekeywords={let,var,const,function,return,if,else,while,for,in,break,
+    continue,class,enum,match,case,try,except,raise,raises,import,from,as,
+    and,or,not,is,none,true,false,self,strict,owned,take,unsafe,private,
+    interface,assert,package,needs},
+  morekeywords=[2]{int,float,bool,str,list,dict,u8,u16,u32,i8,i16,i32,any,
+    pointer,Register,Pin},
+  sensitive=true,
+  morecomment=[l]{\#},
+  morestring=[b]",
+}
+\lstdefinelanguage{Output}{}
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{zenograey}{$\hookrightarrow$}\space},
+  tabsize=4,
+  aboveskip=0.7em,
+  belowskip=0.7em,
+  xleftmargin=0.6em,
+  xrightmargin=0.6em,
+  framexleftmargin=0.6em,
+  framexrightmargin=0.6em,
+  framextopmargin=0.35em,
+  framexbottommargin=0.35em,
+  extendedchars=true,
+}
+\lstdefinestyle{zenostyle}{
+  backgroundcolor=\color{codeback},
+  frame=l, framerule=2pt, rulecolor=\color{zenoblue},
+  keywordstyle=\color{kwcolour}\bfseries,
+  keywordstyle=[2]\color{kwcolour},
+  stringstyle=\color{strcolour},
+  commentstyle=\color{comcolour}\itshape,
+}
+\lstdefinestyle{outputstyle}{
+  backgroundcolor=\color{outback},
+  frame=l, framerule=2pt, rulecolor=\color{outrule},
+  basicstyle=\ttfamily\small\color{zenoink!85},
+}
+\lstset{language=Zeno,style=zenostyle}
+
+% ---- Boxes ------------------------------------------------------------
+% The name of the file a sample is written to, just above it.
+\newenvironment{zenofile}{\par\vspace{0.5em}\noindent\ttfamily\small\color{zenoblue}\nobreak}{\par\nobreak\vspace{-0.9em}}
+% A sample that prints nothing.
+\newenvironment{nooutput}{\par\noindent\small\itshape\color{zenograey}}{\par}
+
+\newtcolorbox{note}{breakable,enhanced,colback=noteback,colframe=noteback,
+  borderline west={2pt}{0pt}{zenoblue},arc=0pt,boxrule=0pt,left=8pt,right=8pt,
+  top=5pt,bottom=5pt,fontupper=\small,before upper={\textbf{\sffamily Note.}\ }}
+\newtcolorbox{why}{breakable,enhanced,colback=whyback,colframe=whyback,
+  borderline west={2pt}{0pt}{whyrule},arc=0pt,boxrule=0pt,left=8pt,right=8pt,
+  top=5pt,bottom=5pt,fontupper=\small,before upper={\textbf{\sffamily Why.}\ }}
+\newtcolorbox{tryit}{breakable,enhanced,colback=tryback,colframe=tryback,
+  borderline west={2pt}{0pt}{tryrule},arc=0pt,boxrule=0pt,left=8pt,right=8pt,
+  top=6pt,bottom=6pt,before upper={{\sffamily\bfseries\large Things to try}\par\smallskip}}
+\newtcolorbox{summary}{breakable,enhanced,colback=codeback,colframe=codeback,
+  arc=0pt,boxrule=0pt,left=8pt,right=8pt,top=6pt,bottom=6pt,
+  before upper={{\sffamily\bfseries What this chapter said}\par\smallskip}}
+% Marks where the appendices start, for the HTML's numbering. Empty here.
+\newenvironment{appendixstart}{}{}
+% The title page. pandoc leaves out a command it does not know, so the
+% HTML has its own title and this stays in the printed book.
+\newcommand{\zenotitlepage}{%
+  \begin{titlepage}
+    \sffamily
+    \vspace*{0.18\textheight}
+    {\color{zenoblue}\rule{\textwidth}{2pt}}\par\vspace{1.4em}
+    {\fontsize{46}{50}\selectfont\bfseries\color{zenoink} The Zeno Book\par}
+    \vspace{0.9em}
+    {\LARGE\color{zenograey} The whole language, from the first line\\to the last corner\par}
+    \vspace{1.4em}
+    {\color{zenoblue}\rule{\textwidth}{2pt}}\par
+    \vfill
+    {\Large\color{zenoink} Partha\par}
+    \vspace{0.5em}
+    {\large\color{zenograey} For Zeno version 0.1\par}
+    \vspace{2em}
+    {\itshape\color{zenograey} Every journey is halfway done. Forever.\par}
+  \end{titlepage}}
+\newcommand{\zenocopyright}{%
+  \thispagestyle{empty}\null\vfill
+  {\small\color{zenograey}
+  \textbf{The Zeno Book}, for Zeno version 0.1.\par\medskip
+  Written by Partha, 2026.\par\medskip
+  Every program in this book was run with the Zeno compiler while the
+  book was built, and every output shown is what it printed. The
+  source of the book is in the \texttt{book/} folder of the Zeno
+  repository, and one command builds both this PDF and the HTML
+  version from it.\par\medskip
+  https://zeno-lang.org\par}}

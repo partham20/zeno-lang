@@ -1,0 +1,125 @@
+\chapter{Getting Zeno}\label{ch-getting-zeno}
+
+Zeno is one program, called \verb|zeno|. It checks your programs, runs
+them, compiles them, tests them, lays them out, and talks to your
+editor. This chapter puts it on your machine.
+
+\section{What you need}
+
+Zeno is written in Rust, and you build it from its source. You need:
+
+\begin{itemize}
+\item \textbf{Rust}, with its build tool \verb|cargo|. The usual way
+  to get both is \verb|rustup|, from \verb|https://rustup.rs|. Zeno
+  uses no libraries beyond Rust itself, so nothing else is
+  downloaded when it is built.
+\item \textbf{git}, to get the source, and later to fetch packages
+  that live in other people's repositories.
+\item \textbf{A C compiler}, \verb|cc|, \verb|gcc| or \verb|clang|, if
+  you want to compile Zeno programs into programs that run on their
+  own (\hyperref[ch-compiling]{Compiling}). \verb|zeno run| needs
+  none.
+\item \textbf{clang}, only if you want the second compiler, which goes
+  through LLVM.
+\end{itemize}
+
+Zeno is built and tested on Linux and macOS. On Windows it builds with
+the same steps in a Linux environment such as WSL.
+
+\section{Building it}
+
+Get the source and build it:
+
+\begin{zenofrag}[lang=shell]
+git clone https://github.com/partham20/zeno-lang
+cd zeno-lang
+cargo build --release
+\end{zenofrag}
+
+The finished program is \verb|target/release/zeno|. To use it from
+any folder, either put that folder on your \verb|PATH|, or let cargo
+copy the program into its own folder of programs, which \verb|rustup|
+has already put on your \verb|PATH|:
+
+\begin{zenofrag}[lang=shell]
+cargo install --path .
+\end{zenofrag}
+
+Check that it works:
+
+\begin{session}
+$ zeno --version
+\end{session}
+
+If you want to be sure that the compiler you built is a good one, run
+its own tests. There are several hundred of them, and each program in
+them is run by every engine and built every way Zeno can build it:
+
+\begin{zenofrag}[lang=shell]
+cargo test --release
+\end{zenofrag}
+
+\section{Your first project}
+
+\verb|zeno new| makes a folder with a small program in it, ready to
+run:
+
+\begin{session}
+$ zeno new greeter
+$ zeno run greeter/main.zeno
+$ zeno test greeter
+\end{session}
+
+Three files were made. \verb|main.zeno| is where the program starts.
+\verb|greeting.zeno| is a \emph{module}, a second file of the program,
+with a test at its end. \verb|zeno.package| names the program and,
+later, the packages it needs. You will meet each of them properly:
+modules in \hyperref[ch-modules]{Programs in Several Files}, packages
+in \hyperref[ch-packages]{Packages}, and tests in
+\hyperref[ch-testing]{Testing}. For now, a program can be a single
+file with any name.
+
+\section{The commands}
+
+Everything Zeno does is a word after \verb|zeno|. These are the ones
+you will use most; \hyperref[app-commands]{The zeno Command} has all
+of them with every option.
+
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+Command & What it does \\
+\midrule
+\verb|zeno run file.zeno| & Check the program, and run it if there is nothing wrong \\
+\verb|zeno check file.zeno| & Only check it, and report every mistake \\
+\verb|zeno test| & Run the tests written in the files of a folder \\
+\verb|zeno build file.zeno| & Compile it to C, and then to a program of its own \\
+\verb|zeno format file.zeno| & Lay the file out the one way Zeno lays programs out \\
+\verb|zeno new name| & Make a new program in a new folder \\
+\verb|zeno fetch| & Get the packages a program needs \\
+\verb|zeno lsp| & The language server that an editor starts \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{An editor}
+
+Any editor that can save plain text will do. Zeno files end in
+\verb|.zeno| and are UTF-8 text. The Zeno repository has colours and
+setup for VS Code, Vim, Neovim and Helix in its \verb|editors| folder,
+and \verb|zeno lsp| lets those editors show mistakes as you type, jump
+to where a name was declared, show a name's type, and lay the file out
+when you save it. \hyperref[ch-tools]{The Tools} shows how to set each
+of them up.
+
+\begin{tryit}
+\begin{enumerate}
+\item Run \verb|zeno --help| and read the list of commands. Which
+  ones need a C compiler?
+\item Change the text that \verb|greeting.zeno| gives back, and run
+  \verb|zeno test greeter| again. Read what a failed test prints, then
+  change the test so that it passes.
+\item Run \verb|zeno new 2fast| and \verb|zeno new while|. What does
+  Zeno say, and what does it suggest instead?
+\end{enumerate}
+\end{tryit}

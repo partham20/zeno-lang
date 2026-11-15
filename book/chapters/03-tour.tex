@@ -1,0 +1,263 @@
+\chapter{A Tour of Zeno}\label{ch-tour}
+
+This chapter runs through the whole language quickly, one small
+program at a time, so that you know what is coming and where it is
+explained. Nothing here has to be understood yet. Each section names
+the chapter that goes through it properly.
+
+\section{Values that change, and values that do not}
+
+\begin{zeno}
+let name = "Zeno"         # let: set once, never changes
+var count = 3             # var: can change later
+count = count + 1         # plain = changes a var
+const LIMIT = 100         # const: fixed when the program is built
+print(name, count, LIMIT)
+\end{zeno}
+
+A name is declared once, with \verb|let|, \verb|var| or \verb|const|,
+and from then on plain \verb|=| changes it. A misspelt name is
+therefore a mistake, and never a new variable.
+(\hyperref[ch-values]{Values and Variables}.)
+
+\section{Lists, and a comprehension}
+
+\begin{zeno}
+let readings = [21.5, 22.0, -99.0, 21.0, 150.0]
+let kept = [r for r in readings if -40.0 <= r <= 85.0]
+print(kept, sum(kept) / len(kept))
+\end{zeno}
+
+Comparisons chain as they do in mathematics: \verb|-40.0 <= r <= 85.0|
+means what it looks like. (\hyperref[ch-lists]{Lists},
+\hyperref[ch-numbers]{Numbers and Operators}.)
+
+\section{Functions, with types or without}
+
+\begin{zeno}
+function describe(t: float) -> str {
+    if t < 18.0 {
+        return "cold"
+    } else if t < 24.0 {
+        return "comfortable"
+    }
+    return "warm"
+}
+
+function average(values) {
+    return sum(values) / len(values)
+}
+
+for t in [12.0, 21.5, 30.0] {
+    print(t, describe(t))
+}
+print(average([1, 2, 3, 4]))
+\end{zeno}
+
+Types are optional. Where they are written, they are checked before
+the program runs. Where they are left out, Zeno works them out from
+how the function is used. (\hyperref[ch-functions]{Functions},
+\hyperref[ch-types]{Types, Written and Worked Out}.)
+
+\section{Classes}
+
+\begin{zeno}
+import math
+
+class Point {
+    x: float
+    y: float
+
+    function distance_to(self, other: Point) -> float {
+        return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
+    }
+}
+
+let origin = Point(0.0, 0.0)
+let here = Point(x=3.0, y=4.0)
+print(origin, here, origin.distance_to(here))
+\end{zeno}
+
+A class lists its fields, and gets a way to build one for free. It has
+no parent class: what classes share is said with an interface.
+(\hyperref[ch-classes]{Classes}, \hyperref[ch-interfaces]{Interfaces}.)
+
+\section{Enums that carry values, and match}
+
+\begin{zeno}
+enum Reading {
+    Value(celsius: float)
+    Fault(code: int)
+    Missing
+}
+
+function show(r: Reading) -> str {
+    match r {
+        case Value(c) { return f"{c:.1f} degrees" }
+        case Fault(code) { return f"fault {code}" }
+        case Missing { return "no reading" }
+    }
+}
+
+for r in [Value(21.5), Fault(7), Missing] {
+    print(show(r))
+}
+\end{zeno}
+
+Leave a \verb|case| out and Zeno names it before the program runs.
+(\hyperref[ch-enums]{Enums and match}.)
+
+\section{No surprise none}
+
+\begin{zeno}[fails=yes]
+function find_user(id: int) -> str or none {
+    if id == 1 {
+        return "ada"
+    }
+    return none
+}
+
+let user = find_user(2)
+print(user.upper())
+\end{zeno}
+
+A value can be \verb|none| only if its type says \verb|or none|, and
+then Zeno will not let it be used until the program has asked:
+
+\begin{zeno}
+function find_user(id: int) -> str or none {
+    if id == 1 {
+        return "ada"
+    }
+    return none
+}
+
+for id in [1, 2] {
+    let user = find_user(id)
+    if user is none {
+        print(id, "nobody")
+    } else {
+        print(id, user.upper())
+    }
+}
+\end{zeno}
+
+(\hyperref[ch-none]{Values That May Be Missing}.)
+
+\section{Errors that are checked}
+
+\begin{zeno}
+function parse_port(text: str) -> int raises ValueError {
+    let port = int(text)
+    if not 1 <= port <= 65535 {
+        raise ValueError(f"{port} is not a port")
+    }
+    return port
+}
+
+for text in ["8080", "99999", "http"] {
+    try {
+        print("port", parse_port(text))
+    } except ValueError as err {
+        print("refused:", err)
+    }
+}
+\end{zeno}
+
+A function says what it \verb|raises|, and Zeno checks that every error
+is either caught or passed on on purpose. (\hyperref[ch-errors]{Errors}.)
+
+\section{Functions are values}
+
+\begin{zeno}
+function counter() {
+    var count = 0
+    return function() {
+        count += 1
+        return count
+    }
+}
+
+let next_id = counter()
+print(next_id(), next_id(), next_id())
+print([1, 2, 3].map(function(n: int) -> int { return n * 2 }))
+\end{zeno}
+
+(\hyperref[ch-function-values]{Functions as Values}.)
+
+\section{Dicts}
+
+\begin{zeno}
+let ages = ["Ada": 36, "Alan": 41]
+ages["Grace"] = 85
+for name, age in ages {
+    print(name, age)
+}
+\end{zeno}
+
+(\hyperref[ch-dicts]{Dicts}.)
+
+\section{Numbers with units, and numbers with a size}
+
+\begin{zeno}
+let delay = 1500 ms
+print(delay, delay.s, 1 s + 250 ms)
+
+let frame: u8 = 200
+print(u8.wrap(frame + 100), frame & 0x0F, frame >> 4)
+\end{zeno}
+
+A number can carry a unit, and units that measure the same thing work
+together. A whole number can have a size, and a number that does not
+fit is an error unless you ask for it to wrap.
+(\hyperref[ch-units]{Units}, \hyperref[ch-sized-numbers]{Sized Numbers
+and Bits}.)
+
+\section{Generics}
+
+\begin{zeno}
+function largest[T](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+print(largest([3, 9, 4]), largest(["pear", "fig"]), largest([3.3 V, 5 V]))
+\end{zeno}
+
+Written once, checked for each type it is used with, and compiled as
+if it had been written by hand for that type.
+(\hyperref[ch-generics]{Generics}.)
+
+\section{And on a board}
+
+\begin{zeno}[file=blink.zeno, cmd=zeno check blink.zeno]
+from board import led
+from time import sleep
+
+while true {
+    led.toggle()
+    sleep(500 ms)
+}
+\end{zeno}
+
+On a computer the board is simulated, and \verb|zeno run| prints each
+change of a pin. The same program builds for firmware with no garbage
+collector, no heap and no \verb|setjmp|. (\hyperref[ch-board]{Pins,
+Time and the Board}, \hyperref[ch-firmware]{Firmware Builds},
+\hyperref[ch-no-collector]{Building with No Collector}.)
+
+\begin{tryit}
+\begin{enumerate}
+\item Take one of the programs in this chapter, break it on purpose,
+  and read the message.
+\item In the enum program, add a fourth case \verb|Calibrating| to
+  \verb|Reading| and run it before changing \verb|show|.
+\item In the error program, take \verb|raises ValueError| off
+  \verb|parse_port| and run \verb|zeno check --strict| on the file.
+\end{enumerate}
+\end{tryit}
