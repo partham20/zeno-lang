@@ -1,3 +1,253 @@
 \chapter{Reading and Writing}\label{ch-reading-writing}
 
-To be written.
+A program is more useful when it can take something in and leave
+something behind: lines typed at a keyboard or sent down a serial
+line, words on the command line, files on a disk. This chapter covers
+all three. \verb|print| has been with us since the first page.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+To & Write & Gives \\
+\midrule
+read a line typed & \verb|input()|, \verb|input("Name: ")| & \verb|str or none| \\
+read the command line & \verb|program.arguments()| & \verb|list[str]| \\
+read a file & \verb|files.read(path)| & \verb|str| \\
+write a file & \verb|files.write(path, text)| & nothing \\
+add to a file & \verb|files.append(path, text)| & nothing \\
+ask if a file is there & \verb|files.exists(path)| & \verb|bool| \\
+remove a file & \verb|files.remove(path)| & nothing \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{print}
+
+\verb|print| shows its values on one line, with a space between them,
+and ends the line. Text is shown as it is; inside a list, it is shown
+in quotes. To lay a line out exactly, build it with an \verb|f| string
+(\hyperref[ch-text]{Text}):
+
+\begin{zeno}
+let volts = 3.3
+print("supply", volts, ["a", 1])
+print(f"supply={volts:.2f}V")
+print()
+print("after an empty line")
+\end{zeno}
+
+\section{Reading lines: input}
+
+\verb|input()| reads the next line, without its line end. Given a
+question, it prints the question first and stays on that line. When
+there are no more lines, it gives \verb|none|: at a keyboard that is
+Ctrl-D (Ctrl-Z then Enter on Windows), and for a file sent in with
+\verb|<| it is the end of the file.
+
+\begin{zeno}[stdin=Ada\n]
+let name = input("Name: ")
+if name is none {
+    print("nobody there")
+} else {
+    print(f"Hello, {name}!")
+}
+\end{zeno}
+
+Here the line \verb|Ada| was sent in rather than typed, so it does
+not appear after the question as it would at a keyboard.
+
+Because the answer may be \verb|none|, it must be asked about before it
+is used as text (\hyperref[ch-none]{Values That May Be Missing}). A
+loop that reads every line breaks on \verb|none|, and after that the
+checker knows the line is a \verb|str|:
+
+\begin{zeno}[stdin=12\n7\nfast\n30\n]
+var total = 0
+while true {
+    let line = input()
+    if line is none {
+        break
+    }
+    try {
+        total += int(line.strip())
+    } except ValueError {
+        print("not a number:", line)
+    }
+}
+print("total", total)
+\end{zeno}
+
+Here the program was given four lines. Run it yourself and type them,
+or put them in a file and send it in: \verb|zeno run total.zeno < numbers.txt|.
+
+\begin{why}
+Python's \verb|input()| raises an error at the end of the input, so a
+loop that reads everything needs a \verb|try|. \verb|none| is the
+answer "there is no line", and the type makes sure the program
+handles it. (Decision 6.18.)
+\end{why}
+
+On a board, a firmware C library usually ties the input to a serial
+line, and then \verb|input()| reads a line from the serial port.
+
+\section{The command line}
+
+\verb|program.arguments()| gives the words written after the file, as
+a list of text. The program's own name is not in it, so the first
+word is \verb|[0]|:
+
+\begin{zeno}[file=greet.zeno, args=Ada Grace]
+import program
+
+let names = program.arguments()
+if len(names) == 0 {
+    print("usage: zeno run greet.zeno <names>")
+}
+for name in names {
+    print("hello,", name)
+}
+\end{zeno}
+
+With \verb|zeno run|, every word after the file belongs to the
+program, even one that looks like an option of Zeno's; Zeno's own
+options go before the file: \verb|zeno run --vm greet.zeno Ada|. A
+compiled program gets the same list from the words after its name:
+\verb|./greet Ada Grace|.
+
+\section{Files}
+
+\begin{zeno}
+import files
+
+files.write("shopping.txt", "milk\neggs\n")
+files.append("shopping.txt", "bread\n")
+print(files.read("shopping.txt").lines())
+print(files.exists("shopping.txt"))
+files.remove("shopping.txt")
+print(files.exists("shopping.txt"))
+\end{zeno}
+
+A file is read whole, as one \verb|str|, and written whole. There is
+no \verb|open| and no \verb|close|, so there is nothing to forget to
+close. \verb|write| makes the file, or empties it first;
+\verb|append| makes it, or adds to its end.
+
+\verb|write| and \verb|append| put down exactly the text they are
+given. A program that wants lines ends each with \verb|"\n"|, and
+reads them back with \verb|lines()|, which knows both kinds of line
+end, so a file from Windows reads the same.
+
+\begin{why}
+Opening and closing is a pair that every program must get right on
+every path, errors included, and a file left open is a classic leak.
+Reading and writing whole files covers what most programs do, with no
+pair to get wrong. Reading a large file in pieces needs an open file
+with an owner, and waits for a program that needs it.
+(Decisions 6.12 and 6.13.)
+\end{why}
+
+\subsection{When a file cannot be used}
+
+A file that cannot be used raises a \verb|FileError|, with a message
+that says why:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+What happened & The message \\
+\midrule
+nothing is at the path & \verb|there is no file `notes.txt`| \\
+it is a folder, or may not be read & \verb|cannot read `notes.txt`| \\
+it is not text & \verb|`notes.txt` does not hold text| \\
+it cannot be made or written & \verb|cannot write `notes.txt`| \\
+it cannot be removed & \verb|cannot remove `notes.txt`| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+import files
+
+function first_line(path: str) -> str raises FileError {
+    let lines = files.read(path).lines()
+    if len(lines) == 0 {
+        return ""
+    }
+    return lines[0]
+}
+
+try {
+    print(first_line("settings.txt"))
+} except FileError as e {
+    print("no settings:", e.message)
+}
+\end{zeno}
+
+A missing file is not a mistake in the program: no check the program
+could make beforehand rules it out, since another program may remove
+the file in between. So \verb|FileError| can always be caught, even in
+a firmware build where other errors stop the program. A function that
+uses a file says \verb|raises FileError|, or catches it.
+(Decision 6.14.)
+
+\subsection{A file holds text}
+
+\verb|files.read| gives a \verb|str|, and a \verb|str| is characters,
+so the file must be UTF-8 text. A picture or any other bytes are
+refused with a \verb|FileError|. Reading bytes is not in version 0.1.
+
+\section{A worked example: a log book}
+
+This program keeps a log of readings in a file. Each run adds the
+readings given on the command line, then prints every reading so far
+and their average:
+
+\begin{zeno}[file=logbook.zeno, cmd=zeno run {file} 21.5 22.0 ;; zeno run {file} 23.5]
+import files
+import program
+
+let path = "readings.txt"
+
+for word in program.arguments() {
+    try {
+        let value = float(word)
+        files.append(path, f"{value}\n")
+    } except ValueError {
+        print("skipped:", word)
+    }
+}
+
+var values: list[float] = []
+if files.exists(path) {
+    for line in files.read(path).lines() {
+        values.append(float(line))
+    }
+}
+print(len(values), "readings:", values)
+if len(values) > 0 {
+    print(f"average {sum(values) / float(len(values)):.2f}")
+}
+\end{zeno}
+
+\begin{summary}
+\verb|print| writes a line. \verb|input()| reads one, and gives
+\verb|none| when there are no more. \verb|program.arguments()| gives
+the words after the file. \verb|files.read|, \verb|write|,
+\verb|append|, \verb|exists| and \verb|remove| work on whole files of
+text, and every one but \verb|exists| may raise a \verb|FileError|,
+which can always be caught.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write a program that counts the lines, words and characters of
+  the text sent to it with \verb|<|.
+\item Write \verb|copy.zeno|, which copies the file named by its first
+  argument to the file named by its second, and says clearly what is
+  wrong when it is given the wrong number of words.
+\item Keep a counter in a file: each run reads it, adds one, writes it
+  back, and prints it. What should the first run do?
+\item Try to read a picture with \verb|files.read| and read the
+  message.
+\end{enumerate}
+\end{tryit}

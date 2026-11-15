@@ -1,3 +1,189 @@
-\chapter{The math Module}\label{ch-math}
+\chapter{Mathematics}\label{ch-math}
 
-To be written.
+The arithmetic operators are in the language itself
+(\hyperref[ch-numbers]{Numbers and Operators}). A few functions sit
+beside them with no import, and the \verb|math| module holds the rest:
+square roots, rounding, angles, logarithms and powers of $e$.
+
+\section{The functions that need no import}
+
+\begin{center}
+\begin{tabular}{lp{8.5cm}}
+\toprule
+Written & Gives \\
+\midrule
+\verb|abs(x)| & \verb|x| without its sign \\
+\verb|min(a, b, ...)|, \verb|min(xs)| & the smallest of the numbers, or of a list \\
+\verb|max(a, b, ...)|, \verb|max(xs)| & the largest \\
+\verb|sum(xs)| & the numbers of a list added up \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print(abs(-3), abs(2.5), min(3, 1, 2), max([4, 9, 2]), sum([1.5, 2.5]))
+\end{zeno}
+
+\section{The math module}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Written & Takes & Gives \\
+\midrule
+\verb|math.pi|, \verb|math.e| & & \verb|float| \\
+\verb|math.sqrt(x)| & a number, 0 or more & \verb|float| \\
+\verb|math.floor(x)|, \verb|ceil|, \verb|round| & a number & \verb|int| \\
+\verb|math.sin(a)|, \verb|cos|, \verb|tan| & an angle & \verb|float| \\
+\verb|math.asin(x)|, \verb|acos| & a number from $-1$ to 1 & \verb|rad| \\
+\verb|math.atan(x)| & a number & \verb|rad| \\
+\verb|math.atan2(y, x)| & two numbers & \verb|rad| \\
+\verb|math.exp(x)| & a number & \verb|float| \\
+\verb|math.log(x)|, \verb|log2|, \verb|log10| & a number above 0 & \verb|float| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+import math
+
+print(math.sqrt(2.0), math.pi)
+print(math.floor(-1.5), math.ceil(1.2), math.round(2.5), math.round(-2.5))
+print(math.log(math.e), math.log2(8.0), math.log10(1000.0), math.exp(0.0))
+\end{zeno}
+
+\subsection{Rounding}
+
+\verb|floor| rounds down, \verb|ceil| rounds up, and \verb|round| goes
+to the nearest whole number, with a half going away from zero. All
+three give an \verb|int|, because an index or a register value is
+usually what is wanted next. To show a number with two decimals,
+don't round it; format it: \verb|f"{x:.2f}"|.
+
+\begin{why}
+Python's \verb|round| sends a half to the nearest even number, so
+\verb|round(2.5)| is 2 and \verb|round(3.5)| is 4. That is better for
+adding up many rounded numbers, and a surprise to nearly everyone who
+meets it. Zeno rounds as school taught, as C and Rust do.
+(Decision 6.25.)
+\end{why}
+
+\subsection{Logarithms}
+
+\verb|log| is the natural logarithm, with base $e$, as in C, Python,
+JavaScript and Java. \verb|log2| and \verb|log10| have their bases in
+their names. There is no \verb|log(x, base)|: \verb|log2(8.0)| is
+exactly 3, while dividing two natural logarithms gives
+\verb|3.0000000000000004|. (Decision 6.26.)
+
+\subsection{A number with no answer}
+
+The square root of a negative number, or the logarithm of 0, has no
+answer, and is a \verb|ValueError| with the number in its message:
+
+\begin{zeno}[fails=yes]
+import math
+try {
+    print(math.sqrt(-1.0))
+} except ValueError as e {
+    print(e.message)
+}
+print(math.log(0.0))
+\end{zeno}
+
+\begin{why}
+C gives a \verb|nan|, "not a number", which spreads through every sum
+it touches and is printed twenty lines later, far from the line that
+made it. An error at the line that asked is easier to find.
+(Decision 6.27.)
+\end{why}
+
+\section{Angles}
+
+Degrees handed to a function that counts in radians is the classic
+mistake with angles, and in C it gives a wrong number with no
+complaint. In Zeno an angle can carry its unit
+(\hyperref[ch-units]{Numbers with Units}), and the functions of
+\verb|math| read it:
+
+\begin{zeno}
+import math
+
+print(math.sin(30 deg), math.sin(0.5 rad), math.sin(0.5))
+print(math.cos(180 deg), math.tan(45 deg))
+\end{zeno}
+
+A plain number is taken too, and means radians, because that is what
+the sine of a number means in mathematics, and signal code is full of
+\verb|math.sin(2.0 * math.pi * f * t)|. The sine of 30 degrees is not
+exactly 0.5, because a float cannot hold $\pi/6$ exactly; Python
+prints the same digits.
+
+The functions that give an angle, \verb|asin|, \verb|acos|,
+\verb|atan| and \verb|atan2|, give it in \verb|rad|, so the value says
+what it is. \verb|.deg| changes it:
+
+\begin{zeno}
+import math
+
+let heading = math.atan2(1.0, -1.0)
+print(heading, heading.deg)
+print(heading / 1 rad)
+\end{zeno}
+
+\verb|atan2(y, x)| takes \verb|y| first. It is the angle of the point
+$(x, y)$ seen from the middle, and unlike \verb|atan(y / x)| it knows
+which side of the circle the point is on.
+
+\section{What is not here}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Elsewhere & In Zeno \\
+\midrule
+\verb|pow(x, y)| & \verb|x ** y| \\
+\verb|trunc(x)| & \verb|int(x)| \\
+\verb|fabs(x)| & \verb|abs(x)| \\
+\verb|degrees(x)|, \verb|radians(x)| & \verb|angle.deg|, \verb|angle.rad| \\
+\verb|round(x, 2)| & \verb|f"{x:.2f}"| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The answers are the C library's, in every way of running a program:
+a compiled program calls \verb|sin| and \verb|log| in the C library,
+and \verb|zeno run| reaches the same functions. Two machines with
+different C libraries can differ in the last digit of an answer that
+is not exact. (Decision 6.28.)
+
+\section{Five small instruments}
+
+This program, from the \verb|examples| folder of Zeno, is five pieces
+of arithmetic that firmware does every day: a compass from a
+magnetometer, a thermistor, a level meter in decibels, a capacitor
+charging, and a sine table for an 8-bit converter.
+
+\begin{zeno}[src=examples/instruments.zeno]
+\end{zeno}
+
+\begin{summary}
+\verb|abs|, \verb|min|, \verb|max| and \verb|sum| need no import.
+\verb|math| holds \verb|pi|, \verb|e|, \verb|sqrt|, \verb|floor|,
+\verb|ceil|, \verb|round| (half away from zero, giving an int), the
+angle functions, \verb|exp| and three logarithms. Angles go in with
+their units, or as radians, and come out in \verb|rad|. A number with
+no answer is a \verb|ValueError|, never \verb|nan|.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function distance(x1: float, y1: float, x2: float, y2: float) -> float|.
+\item Make a sine table of 32 entries for a 10-bit converter (0 to
+  1023).
+\item Work out how many bits are needed to count to a number with
+  \verb|log2| and \verb|ceil|. Check it for 255, 256 and 1000.
+\item What does \verb|math.asin(1.5)| do? Catch it and print the
+  message.
+\end{enumerate}
+\end{tryit}
