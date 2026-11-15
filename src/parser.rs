@@ -600,6 +600,21 @@ impl Parser {
                 names.push(self.name("a name to import")?);
             }
         }
+        // `import drivers.uart as uart`: a module has one name, and a
+        // name it brings in has the name its file gave it (7.3).
+        if *self.peek() == TokenKind::As {
+            let (full, last) = (module.join("."), module.last().cloned().unwrap_or_default());
+            let message = match names.first() {
+                None => format!(
+                    "a module has one name, so there is no `as` after an `import`. `{full}` is used as `{full}.name`. \
+                     For a short name, import what is used: `from {full} import ...`, and then `{last}` is not written at all"
+                ),
+                Some(name) => {
+                    format!("`{name}` keeps the name `{full}` gave it, so there is no `as` after an `import`. Use it as `{name}`")
+                }
+            };
+            return Err(Error::new(message, self.span()));
+        }
         Ok(StmtKind::Import { module, names })
     }
 
@@ -1891,6 +1906,19 @@ mod tests {
         assert_eq!(
             tree("import math\nimport os.path\nfrom board import led, button"),
             "import math\nimport os.path\nfrom board import led, button\n"
+        );
+    }
+
+    #[test]
+    fn a_module_has_one_name() {
+        assert_eq!(
+            error("import drivers.uart as uart"),
+            "a module has one name, so there is no `as` after an `import`. `drivers.uart` is used as `drivers.uart.name`. \
+             For a short name, import what is used: `from drivers.uart import ...`, and then `uart` is not written at all"
+        );
+        assert_eq!(
+            error("from drivers.uart import send as put"),
+            "`send` keeps the name `drivers.uart` gave it, so there is no `as` after an `import`. Use it as `send`"
         );
     }
 
