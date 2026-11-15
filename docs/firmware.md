@@ -194,6 +194,29 @@ That is what `try { print(1 // n) } except ZeroDivisionError { ... }` gets
 in a firmware build. An `except` that names a built-in kind which nothing
 in the body raises as a value is refused the same way.
 
+So is the fault moved one function away, which used to get through:
+
+```zeno
+function half(a: int, b: int) -> int raises ZeroDivisionError { return a // b }
+
+try { print(half(1, 0)) } except ZeroDivisionError { print("no") }
+```
+
+`zeno run` prints `no`. A firmware build compiled this, and then stopped
+at the division. Now it says so before anything is built:
+
+```
+error: `half` says `raises ZeroDivisionError`, but nothing in it raises
+one itself. In a firmware build a division by zero stops the program
+where it happens, and cannot be caught by a caller. Test for it before it
+happens and take `raises ZeroDivisionError` off, or build without
+`--firmware`
+```
+
+A function that raises the error itself (`if b == 0 { raise
+ZeroDivisionError("nothing to halve") }`) is fine: that one travels as a
+value ([`audit.md`](audit.md)).
+
 One case is not refused. `except` with no kind (or `except Error`) around
 a body that *does* raise something as a value is accepted, and catches
 those. A fault in the same body still stops the program. This is the one

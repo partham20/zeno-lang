@@ -198,7 +198,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
   [`docs/one-owner.md`](docs/one-owner.md), [`docs/enums-and-none.md`](docs/enums-and-none.md),
   [`docs/functions-and-errors.md`](docs/functions-and-errors.md),
-  [`docs/unsafe.md`](docs/unsafe.md), [`docs/vm.md`](docs/vm.md),
+  [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md), [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
@@ -259,10 +259,17 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       `allocate` and `free`, and `Register[T]` at a fixed address, in
       every build and through both backends. `zeno run` checks every
       use of a pointer, and a compiled program checks none, as in C)
-    - A pass over the whole language for "unambiguous and intuitive".
-      One change is already decided for it: a plain parameter will look
-      at a list or an object, and a word will mark the one that takes
-      it (next)
+    - A pass over the whole language for "unambiguous and intuitive"
+      (done: a plain parameter looks and `take` takes, the words of the
+      language are never names, the cases after `case none` know the
+      value is there, every function can read a `let` at the top of the
+      file, a method can take out what its object holds, and a firmware
+      build refuses what it cannot do instead of doing something else.
+      See [`docs/audit.md`](docs/audit.md))
+14. A standard library (next)
+15. Modules across files
+16. A package manager
+17. Editor support: a formatter and a language server
 
 ## Layout
 

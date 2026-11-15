@@ -65,7 +65,7 @@ impl Build {
     /// code has no room for a value of unknown type, so every build is
     /// strict. With no collector, every list and object has one owner.
     pub fn rules(self) -> crate::checker::Rules {
-        crate::checker::Rules { strict: true, one_owner: self == Build::NoCollector }
+        crate::checker::Rules { strict: true, one_owner: self == Build::NoCollector, firmware: self != Build::Ordinary }
     }
 }
 

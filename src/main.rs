@@ -155,7 +155,7 @@ fn bytecode(path: &str) -> Option<()> {
 ///
 /// There are two engines to run it with. Both give the same result.
 fn run(path: &str, strict: bool, on_vm: bool) -> Option<()> {
-    let (source, program) = check(path, checker::Rules { strict, one_owner: false })?;
+    let (source, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
     let (_, result) = match on_vm {
         true => vm::run(&program, false),
         false => interpreter::run(&program, false),
@@ -379,7 +379,7 @@ fn main() -> ExitCode {
                 "bytecode" => bytecode(path),
                 // `check --no-collector` checks as that build would:
                 // every type known, and every list and object owned.
-                "check" => check(path, checker::Rules { strict: strict || no_collector, one_owner: no_collector })
+                "check" => check(path, checker::Rules { strict: strict || no_collector, one_owner: no_collector, firmware: no_collector })
                     .map(|_| println!("No errors found.")),
                 _ => run(path, strict, on_vm),
             };

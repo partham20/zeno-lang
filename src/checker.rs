@@ -54,6 +54,10 @@ pub struct Rules {
     /// the program says `owned`. A build with no collector checks this
     /// way: with nothing to collect a shared value, nothing can be shared.
     pub one_owner: bool,
+    /// Errors travel as values, as in `zeno build --firmware`. There a
+    /// division by zero, a bad index or a number that does not fit stops
+    /// the program where it happens, and cannot be raised to a caller.
+    pub firmware: bool,
 }
 
 /// A type, as the stages after the checker see it. The checker's own `Ty`
@@ -389,7 +393,7 @@ fn plain_kind(ty: &Ty) -> Kind {
 /// `check`, also returning what was learned about the program's types.
 #[cfg(test)]
 pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) {
-    check_by(program, Rules { strict, one_owner: false })
+    check_by(program, Rules { strict, one_owner: false, firmware: false })
 }
 
 /// `check_with_types`, by the rules given.
@@ -410,6 +414,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     for _ in 0..MAX_ROUNDS {
         let mut checker = Checker::new(strict, false, known.clone(), open.clone());
         checker.one_owner = one_owner;
+        checker.firmware = rules.firmware;
         checker.run(program);
         origins = std::mem::take(&mut checker.origins);
 
@@ -444,6 +449,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
 
     let mut checker = Checker::new(strict, true, known, open);
     checker.one_owner = one_owner;
+    checker.firmware = rules.firmware;
     checker.types.one_owner = one_owner;
     checker.known_origins = origins;
     checker.run(program);
@@ -1380,6 +1386,8 @@ struct Checker {
     /// Does every list and object have one owner, said or not? True for
     /// a build with no collector. See `Rules`.
     one_owner: bool,
+    /// Do errors travel as values, as in a firmware build? See `Rules`.
+    firmware: bool,
     /// False while types are still being worked out over several passes.
     last_round: bool,
     /// What earlier passes worked out for untyped parameters and fields.
@@ -1483,6 +1491,7 @@ impl Checker {
         Checker {
             strict,
             one_owner: false,
+            firmware: false,
             last_round,
             known,
             open,
@@ -3902,6 +3911,31 @@ impl Checker {
 
         // In strict mode, or once a function says what it raises, the list
         // must be complete. Otherwise it is worked out, like a return type.
+        //
+        // Where errors travel as values, a fault stops the program on the
+        // spot. A function that says it raises one, and has nothing in it
+        // that can, would have an `except` waiting for ever in its caller
+        // while `zeno run` catches the same fault (decision 5.19m).
+        if self.firmware {
+            for declared in &decl.raises {
+                let fault = match declared.as_str() {
+                    "ZeroDivisionError" => "a division by zero",
+                    "IndexError" => "a bad index",
+                    "OverflowError" => "a number that does not fit",
+                    _ => continue,
+                };
+                if !raised.iter().any(|(kind, _)| kind == declared || kind == "Error") {
+                    self.error(
+                        format!(
+                            "`{name}` says `raises {declared}`, but nothing in it raises one itself. In a firmware \
+                             build {fault} stops the program where it happens, and cannot be caught by a caller. \
+                             Test for it before it happens and take `raises {declared}` off, or build without `--firmware`"
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
         let raises = if self.strict || !decl.raises.is_empty() {
             for (kind, at) in &raised {
                 if !decl.raises.iter().any(|declared| declared == "Error" || declared == kind) {
@@ -7091,7 +7125,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
     /// checks it.
     fn one_owner(source: &str) -> Vec<String> {
         let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
-        let rules = super::Rules { strict: true, one_owner: true };
+        let rules = super::Rules { strict: true, one_owner: true, firmware: true };
         super::check_by(&program, rules).0.into_iter().map(|error| error.message).collect()
     }
 
@@ -7497,6 +7531,39 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "`table` is declared on line 2, which is further down. A line can use only what is declared above it, \
              also inside a function. Move the declaration of `table` up"
         );
+    }
+
+    #[test]
+    fn a_firmware_build_cannot_raise_a_fault_to_a_caller() {
+        let firmware = |source: &str| -> Vec<String> {
+            let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
+            let rules = super::Rules { strict: true, one_owner: false, firmware: true };
+            super::check_by(&program, rules).0.into_iter().map(|error| error.message).collect()
+        };
+        // `zeno run` and an ordinary build catch this division by zero in
+        // the caller. A firmware build stops at the division. So there
+        // the `raises` is refused, and the two never disagree in silence.
+        let half = "function half(a: int, b: int) -> int raises ZeroDivisionError { return a // b }\n\
+                    function safe() -> int {\n try { return half(1, 0) } except ZeroDivisionError { return -1 }\n}";
+        assert_eq!(
+            firmware(half),
+            vec![
+                "`half` says `raises ZeroDivisionError`, but nothing in it raises one itself. In a firmware build \
+                 a division by zero stops the program where it happens, and cannot be caught by a caller. Test for \
+                 it before it happens and take `raises ZeroDivisionError` off, or build without `--firmware`"
+            ]
+        );
+        strict_ok(half);
+        assert_eq!(
+            firmware("function narrow(n: int) -> u8 raises OverflowError { return u8(n) }").len(),
+            1
+        );
+        // Raised by the program itself, it travels as a value, and so
+        // does one passed on from a function that raises it.
+        let raised = "function half(a: int, b: int) -> int raises ZeroDivisionError {\n \
+                      if b == 0 { raise ZeroDivisionError(\"nothing to halve\") }\n return a // b\n}\n\
+                      function twice(a: int, b: int) -> int raises ZeroDivisionError { return half(a, b) * 2 }";
+        assert_eq!(firmware(raised), Vec::<String>::new());
     }
 
     #[test]

@@ -3823,6 +3823,8 @@ checker, both backends' tests, every example and every page that shows
 `borrow`, so it is done in one piece and not mixed into another stage.
 The word is to be chosen then, with the reasons written here.
 
+*(Done: 5.19 to 5.19o.)*
+
 **The audit's list**, carried on from 5.16i: functions reaching
 top-level lists and objects, methods taking out what the object owns,
 narrowing after `case none`, the order C evaluates arguments in (5.9q),
@@ -4217,3 +4219,208 @@ writes `owned`, or writes it on every list it means, never meets this.
   (`--no-collector` needs every type written), so the question of what
   it does with an owner does not come up.
 
+
+### 5.19g `+` on two lists follows the rule `append` has
+
+`xs.append("three")` on a `list[int]` was always refused. `xs += ["three"]`
+and `[1, 2] + ["three"]` were not, even under `--strict`. Now `+` and
+`+=` refuse two lists whose item types are both known and have nothing
+in common: "`+` joins two lists that hold the same kind of thing, and
+these are list[int] and list[str]".
+
+**Why.** Two ways to add to a list with two different rules fails
+question 1 of the audit (one way to write each thing, and the same
+answer from each way). The compilers also had to give such a list the
+kind "anything", which a program that wrote types everywhere never
+asked for.
+
+**What still joins.** A list that may hold `none` with one that does
+not (the result may hold `none`), and a list whose items are not known
+yet, such as `[]`. The test is exactly: neither side holds "anything",
+and the joined type would.
+
+**Turned down.** Refusing only under `--strict`. `append` refuses
+without it, so `+` would still disagree with `append` in an ordinary
+check.
+
+### 5.19h After `case none`, the later cases know the value is there
+
+In a `match` on a value that may be `none`, every case after
+`case none` sees the value without the `none`. It works for a new name
+(`case point { point.name }`) and for the variable itself
+(`case _ { found.name }`). If every `case none` leaves (`return`,
+`raise`, `break`, `continue`), the lines after the `match` know too.
+An enum that may be `none` is complete with `case none` and a case for
+each of its own, and needs no `case _`. A missing `none` is named:
+"this `match` does not handle `none`".
+
+**Why.** `if found is none { return } ` already taught the lines below
+it. A `match` that said the same thing and was not believed made the
+writer ask twice, and there were two spellings of one test with two
+different results (questions 1 and 3).
+
+**How.** The checker narrows the name in its scope, the same record
+that `if x is not none` makes, so both compilers unwrap the value with
+the code they already had. A new name is declared with the whole type
+and then narrowed, because the compilers store an `int or none`
+differently from an `int` and need to know that the box is still there.
+
+**Turned down.** Narrowing only the new name and not the variable. The
+`else` of an `if` narrows the variable, so `match` would have been the
+odd one.
+
+### 5.19i Every function can look at a `let` at the top of the file
+
+With one owner (an `owned` value, or any list or object with no
+collector), a `let` at the top of the file can be read by any function,
+any method and any function that is kept in a variable. They may change
+what is inside it (`table[0] = 5`, `tasks.append(t)`), but not take an
+item out or put a new value in an owned field. In return the top of the
+file may never give that `let` away, before or after the function is
+written: "`table` is used by a function, on line 3, so it cannot be
+given away".
+
+**Why.** A table or a configuration object at the top of the file,
+read by the functions below it, is the first thing a firmware program
+writes. The old refusal was sound and nobody would guess it (question
+3: nothing surprising). A `let` cannot be given a new value, so if it
+is never given away it holds the same value until the program ends,
+and a look at it can never outlive it. That is a proof, and it needs no
+new word.
+
+**Why not a `var`.** A `var` can be given a new value, which frees the
+old one while a function may be looking at it. The message says so and
+names `let` as the fix when the value never changes.
+
+**Why a function may not take out of it.** The top of the file owns
+it. A function that popped from it would be doing the owner's work
+from a place that cannot see what the owner's loops are looking at.
+A method of the object can (5.19k), because the call is then checked
+where the owner is.
+
+**Found on the way.** A name used above the line that declares it said
+"`table` is not defined". It now says "`table` is declared on line N,
+which is further down", and that the declaration has to come first.
+The rule itself (a name is usable below its declaration, in functions
+and methods too) stays: one rule for every name.
+
+**Turned down.** A word such as `global` or `static`. `let` at the top
+of the file already says everything the word would.
+
+### 5.19k A method can take out what its own object holds
+
+`function next(self) -> Task { return self.tasks.pop() }` and
+`function remember(self, task: take Task) { self.last = task }` are
+allowed. They were refused because `self` only looks, and taking out or
+replacing is for the owner.
+
+**The rule moves to the caller.** The checker reads the method's body.
+If it takes out or replaces something `self` owns, the method is
+marked, and each call of it is checked as the same act done by hand:
+only the owner of the object may call it, not inside a loop or a
+`match` that is looking at something the object owns, not on a line
+that has already looked at it, and not with an argument that looks at
+the same object. Inside the method the loops and cases over `self`
+count in the same way.
+
+**Why.** A class that cannot pop from its own list cannot look after
+its own parts, and the only way round was a free function that took
+the whole object, which is not what a class is for. The danger (a loop
+is looking at the item that goes) is at the call, so that is where the
+check belongs.
+
+**Why it is not written down.** A word on the method (`function next(take self)`
+or `changes`) would be a second thing to keep in step with the body,
+and a method that said it and did not do it would be a new kind of
+mistake. The checker already works out a return type that is not
+written in the same way. The message at the call names the method and
+says what it does: "call `next`, which takes out or replaces something
+the object owns".
+
+**Turned down.** Letting any parameter that looks do this. `self` is
+special because the call names the object (`queue.next()`), so the
+caller's own checks can be run on it. For a plain parameter the word
+`take` already says "this function is the owner now".
+
+*(There is no 5.19j: the letter is left out so it is not read as an i.)*
+
+### 5.19l `var f = double` gets the type of the function
+
+`let f = double` holds the one function `double`, as before. `var f = double`
+with no type written now has the type `function(int) -> int`, so
+`f = triple` is allowed when `triple` fits.
+
+**Why.** A `var` is something that will be given another value. A type
+that only one value fits made the `var` useless and the message absurd:
+"the new value should be a function, but this is a function". For a
+`let` the narrow type is the useful one, since a call through it is a
+direct call.
+
+**Turned down.** Asking for the type to be written
+(`var f: function(int) -> int = double`). It still can be, but
+`var n = 1` does not need `: int`, and this is the same case.
+
+### 5.19m In a firmware build, `raises` of a fault that nothing raises is refused
+
+A firmware build stops at a division by zero, an index out of range or
+a number that does not fit (5.5l). A `try` around such a line was
+already refused there. A function could still say
+`raises ZeroDivisionError`, divide, and be called inside a `try`:
+`zeno run` caught the error and the firmware program stopped. Now a
+function that declares `ZeroDivisionError`, `IndexError` or
+`OverflowError`, with no `raise` of that kind in its body and no call
+that raises it as a value, is refused when the build is firmware (and
+so with no collector), with what to do: test before it happens and
+take the `raises` off, or build without `--firmware`.
+
+**Why.** The two ways of running a program may differ only where the
+compiler has said so (question 4 of the audit). This was a place where
+they differed in silence.
+
+**Why not make the fault travel as a value.** Then every division and
+every index in a firmware program would carry a status and a branch,
+and a function that divides could fail in a way its type does not say.
+5.5l chose a stop for exactly that reason, and MISRA wants the test
+written before the division anyway.
+
+**What still works.** `raise ZeroDivisionError("...")` written by
+hand travels as a value in every build, so a function that tests
+`b == 0` and raises may say `raises ZeroDivisionError`.
+
+### 5.19n Messages count in words
+
+"takes 2 argument(s), but 1 were given" is now "takes 2 arguments, but
+1 was given", and a compiled program's memory report says "1 block"
+and "2 blocks". Two small functions in `error.rs` (`counted`, `were`)
+do it for the interpreter, the VM and the checker, so the three cannot
+drift apart again.
+
+**Why.** A message is part of the language. One that is not a sentence
+makes the reader stop at the grammar and not at the mistake.
+
+### 5.19o Looked at in the audit and left as it is
+
+Each was held against the five questions of 5.19 and kept.
+
+- **`list[int or none]` with no collector** stays refused (5.16h).
+  Every number would need a block of its own. The message names what
+  to write, so it is a limit and not a surprise.
+- **A function that is kept cannot take over a list or an object from
+  outside it** (5.17c). It may look for one line, or look at a `let`
+  at the top of the file (5.19i). The kept function has no place to
+  say `take`, and a parameter does.
+- **A value made inside `unsafe { }` and used after it needs a `var`
+  before the block** (5.18a). Every pair of braces opens a scope. A
+  block that did not would be the one exception.
+- **The order C works out the arguments of a call** (5.9q). What is
+  printed never depends on it, and calls that change something are
+  already put in order. Only the highest mark of the text room in a
+  `--memory` report can move by a few bytes, when one statement shows
+  a list and builds other text. Fixing it means a temporary for every
+  piece of text, which makes all the C harder to read. The page on the
+  audit says to leave the room some headroom.
+- **A function or a method sees only what is declared above it.** One
+  rule for every name, and the message now names the line (5.19i).
+
+**What is left for later**, none of it part of the audit: the limits
+in 5.19f, and the lists in 5.16i and 5.17g.
