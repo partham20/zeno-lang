@@ -1,0 +1,20 @@
+# The module `control` of the thermostat itself: when the heater goes on
+# and off. It is a file of this program, so `import control` finds it in
+# this folder.
+
+enum Heater {
+    On
+    Off
+}
+
+# The heater goes on under `low` and off over `high`. Between the two it
+# stays as it is, so that it does not flicker around one temperature.
+function decide(now: Heater, temperature: float, low: float, high: float) -> Heater {
+    if temperature < low {
+        return On
+    }
+    if temperature > high {
+        return Off
+    }
+    return now
+}

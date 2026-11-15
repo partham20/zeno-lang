@@ -1,0 +1,31 @@
+# A program that uses a package: a thermostat.
+#
+#     zeno run examples/thermostat/main.zeno
+#
+# The file `zeno.package` beside this one says the program needs the
+# package `filters`, which is the folder examples/filters. An import
+# whose first word is a needed package reads a file of that package:
+# `filters` is its module `filters.zeno`, and `filters.lowpass` is its
+# module `lowpass.zeno`. Any other import is a file of this program.
+import filters
+import filters.lowpass
+import control
+from control import Heater, On, Off
+
+# What the sensor read, once a minute. It is noisy.
+let readings = [18.2, 18.9, 17.6, 19.4, 20.8, 20.1, 21.9, 22.6, 21.8, 23.1]
+
+let smooth = filters.lowpass.start(0.4, readings[0])
+var heater: Heater = Off
+var minutes_on = 0
+
+for reading in readings {
+    let temperature = smooth.step(reading)
+    heater = control.decide(heater, temperature, 19.0, 21.0)
+    if heater == On {
+        minutes_on += 1
+    }
+    print(f"read {reading:>5.1f}  smoothed {temperature:>5.1f}  heater {heater}")
+}
+
+print(f"mean {filters.mean(readings):.2f}, heater on for {minutes_on} of {len(readings)} minutes")

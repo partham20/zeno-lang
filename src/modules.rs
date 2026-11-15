@@ -21,6 +21,14 @@
 //! 3. **Join.** Put the statements of all the files into one program, an
 //!    imported file always before the file that imports it.
 //!
+//! A program can also take modules from a **package**: another folder of
+//! `.zeno` files, with a `zeno.package` in it that gives the package its
+//! name. The program's own `zeno.package` says which packages it needs
+//! (`package.rs` reads that file). `import filters.lowpass` then reads
+//! `lowpass.zeno` from the folder of the package `filters`. Loading is
+//! the only step that knows about packages: it works out which file an
+//! import names, and gives the module its name in the whole program.
+//!
 //! What comes out is one ordinary program. The type checker, the
 //! interpreter, the VM and both compilers take it as they take a program
 //! written in one file, and need no changes to know about modules. A name
@@ -38,6 +46,7 @@ use crate::ast::*;
 use crate::builtins;
 use crate::error::Error;
 use crate::lexer;
+use crate::package;
 use crate::parser;
 use crate::token::{Span, LINES_A_FILE, MOST_FILES};
 
@@ -62,19 +71,21 @@ pub struct Loaded {
 /// `source`. `read` gives the text of another file, or `None` if there is
 /// no such file. (The tests hand in files that exist only in memory.)
 pub fn load(path: &str, source: String, read: &dyn Fn(&str) -> Option<String>) -> Loaded {
-    let root = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
+    let root = tidy(Path::new(path).parent().unwrap_or(Path::new("")));
     let mut loader = Loader {
         read,
-        root,
+        packages: vec![Package { name: String::new(), folder: root, needs: HashMap::new() }],
+        by_name: HashMap::new(),
         files: Vec::new(),
         units: Vec::new(),
         numbers: HashMap::new(),
+        paths: HashMap::from([(tidy(Path::new(path)).display().to_string(), String::new())]),
         order: Vec::new(),
         loading: Vec::new(),
         missing: HashSet::new(),
         errors: Vec::new(),
     };
-    loader.file(String::new(), path.to_string(), source);
+    loader.file(String::new(), 0, path.to_string(), source);
     let program = match loader.errors.is_empty() {
         true => loader.join(),
         false => Err(std::mem::take(&mut loader.errors)),
@@ -86,16 +97,25 @@ pub fn load(path: &str, source: String, read: &dyn Fn(&str) -> Option<String>) -
 
 struct Loader<'a> {
     read: &'a dyn Fn(&str) -> Option<String>,
-    /// The folder of the program's first file. Every module is looked for
-    /// from here, whichever file imports it, so that one name always
-    /// means one file.
-    root: PathBuf,
+    /// The packages of the program. The first is the program itself: its
+    /// folder is the folder of the program's first file, and a module of
+    /// the program is looked for from there, whichever file imports it,
+    /// so that one name always means one file.
+    packages: Vec<Package>,
+    /// The place in `packages` of each package that has a name.
+    by_name: HashMap<String, usize>,
+    /// Every file that was read: the `.zeno` files, and each
+    /// `zeno.package`, so that a mistake in one can be shown too.
     files: Vec<File>,
     /// What was found in each file, in the order of `files`. `None` for a
-    /// file that is still being read, or that has a mistake in it.
+    /// file that is still being read, that has a mistake in it, or that
+    /// is a `zeno.package`.
     units: Vec<Option<Unit>>,
     /// The number of the file each module is.
     numbers: HashMap<String, usize>,
+    /// The module each file is, by the file's path. A file is one module
+    /// and has one name, however it is reached.
+    paths: HashMap<String, String>,
     /// The files in the order their statements go into the program: each
     /// one after the files it imports.
     order: Vec<usize>,
@@ -109,10 +129,24 @@ struct Loader<'a> {
     errors: Vec<Error>,
 }
 
+/// A folder of modules. The program is one, and so is every package it
+/// needs.
+struct Package {
+    /// What its `zeno.package` calls it. Empty for a program that has no
+    /// `zeno.package`.
+    name: String,
+    folder: PathBuf,
+    /// The packages this one needs: where each is in `Loader::packages`,
+    /// by the name this package's files import it by.
+    needs: HashMap<String, usize>,
+}
+
 /// One file, parsed.
 struct Unit {
-    /// `shapes`, or `drivers.uart`. Empty for the program's first file,
-    /// which nothing imports and whose names stay as they are written.
+    /// The module's name in the whole program: `shapes`, `drivers.uart`,
+    /// or `filters.lowpass` for the module `lowpass` of the package
+    /// `filters`. Empty for the program's first file, which nothing
+    /// imports and whose names stay as they are written.
     module: String,
     program: Program,
     /// The files this one imports, in the order it lists them.
@@ -121,14 +155,19 @@ struct Unit {
 
 /// `import shapes` (no names) or `from shapes import area, Point`.
 struct Import {
+    /// The module as the line writes it.
     module: String,
+    /// The module's name in the whole program. The two differ inside a
+    /// package: there `import lowpass` is the module `filters.lowpass`.
+    global: String,
     names: Vec<String>,
     span: Span,
 }
 
 impl Loader<'_> {
     /// Read one file and, before going on, every file it imports.
-    fn file(&mut self, module: String, path: String, source: String) {
+    /// `package` is the package the file is in.
+    fn file(&mut self, module: String, package: usize, path: String, source: String) {
         let number = self.files.len();
         // The first line of this file, for a mistake that is about the
         // file as a whole.
@@ -143,6 +182,16 @@ impl Loader<'_> {
             Ok(program) => program,
             Err(errors) => return self.errors.extend(errors),
         };
+        if number == 0 {
+            // Which packages there are decides what an import means, so
+            // they are found before the first import is followed.
+            self.packages_needed();
+            if !self.errors.is_empty() {
+                // With a package missing, an import of one of its
+                // modules would only be reported as a second mistake.
+                return;
+            }
+        }
 
         // The imports of files are the leading lines of the file. An
         // imported file runs before the file that imports it, wherever
@@ -168,43 +217,76 @@ impl Loader<'_> {
                 ));
                 continue;
             }
-            imports.push(Import { module, names: names.clone(), span: statement.span });
+            imports.push(Import { module, global: String::new(), names: names.clone(), span: statement.span });
         }
 
         self.loading.push(module.clone());
-        for import in &imports {
-            if let Some(first) = self.loading.iter().position(|loading| *loading == import.module) {
+        for import in &mut imports {
+            let span = import.span;
+            let Some(found) = self.find(package, &import.module, span) else { continue };
+            import.global = found.module.clone();
+            if let Some(first) = self.loading.iter().position(|loading| *loading == found.module) {
                 let mut circle: Vec<&str> = self.loading[first..].iter().map(String::as_str).collect();
-                circle.push(&import.module);
-                self.errors.push(Error::new(in_a_circle(&circle), import.span));
+                circle.push(&found.module);
+                self.errors.push(Error::new(in_a_circle(&circle), span));
                 continue;
             }
-            if self.numbers.contains_key(&import.module) || self.missing.contains(&import.module) {
-                continue; // Read already, for another line that imports it.
+            if let Some(&known) = self.numbers.get(&found.module) {
+                // Read already, for another line that imports it. Two
+                // packages can still lead to one name by different files.
+                let other = &self.files[known].path;
+                if *other != found.path {
+                    self.errors.push(Error::new(
+                        format!(
+                            "two files would both be the module `{}` of this program: `{other}` and `{}`. \
+                             A module is one file. Give one of the two another name",
+                            found.module, found.path
+                        ),
+                        span,
+                    ));
+                }
+                continue;
             }
-            let mut path = self.root.clone();
-            import.module.split('.').for_each(|part| path.push(part));
-            let path = format!("{}.zeno", path.display());
-            let Some(source) = (self.read)(&path) else {
-                self.missing.insert(import.module.clone());
-                self.errors.push(Error::new(
-                    format!(
-                        "there is no module `{}`. `import {}` reads the file `{path}`, and there is no such file. \
-                         {}",
-                        import.module,
-                        import.module,
-                        builtins::MODULES
-                    ),
-                    import.span,
-                ));
+            if self.missing.contains(&found.module) {
+                continue;
+            }
+            match self.paths.get(&found.path) {
+                Some(first) if first.is_empty() => {
+                    self.errors.push(Error::new(
+                        format!(
+                            "`{}` is the file the program starts in, and no file imports that one. \
+                             Move what the files share into a file of its own, and import that",
+                            found.path
+                        ),
+                        span,
+                    ));
+                    continue;
+                }
+                Some(other) => {
+                    self.errors.push(Error::new(
+                        format!(
+                            "the file `{}` is already in this program as the module `{other}`, and this line \
+                             would make it a second module, `{}`. A file is one module: import it by one name",
+                            found.path, found.module
+                        ),
+                        span,
+                    ));
+                    continue;
+                }
+                None => {}
+            }
+            let Some(source) = (self.read)(&found.path) else {
+                self.missing.insert(found.module.clone());
+                self.errors.push(Error::new(self.not_found(package, &import.module, &found), span));
                 continue;
             };
             if self.files.len() >= MOST_FILES {
-                self.errors.push(Error::new(format!("a program can have {MOST_FILES} files, and this would be one more"), import.span));
+                self.errors.push(Error::new(format!("a program can have {MOST_FILES} files, and this would be one more"), span));
                 continue;
             }
-            self.numbers.insert(import.module.clone(), self.files.len());
-            self.file(import.module.clone(), path, source);
+            self.numbers.insert(found.module.clone(), self.files.len());
+            self.paths.insert(found.path.clone(), found.module.clone());
+            self.file(found.module, found.package, found.path, source);
         }
         self.loading.pop();
 
@@ -216,7 +298,8 @@ impl Loader<'_> {
 
     /// Rename the names of every file, and join the files into one program.
     fn join(&mut self) -> Result<Program, Vec<Error>> {
-        let mut units: Vec<Unit> = self.units.drain(..).map(|unit| unit.expect("every file was read")).collect();
+        // One for each file, and `None` for a `zeno.package`.
+        let mut units: Vec<Option<Unit>> = std::mem::take(&mut self.units);
 
         // What each module declares at its top: these are the names
         // another file can ask it for.
@@ -224,7 +307,7 @@ impl Loader<'_> {
         let mut cases: HashSet<String> = HashSet::new();
         // The cases of every enum, by the enum's full name.
         let mut enums: HashMap<String, Vec<String>> = HashMap::new();
-        for unit in &units {
+        for unit in units.iter().flatten() {
             let full = |name: &str| match unit.module.is_empty() {
                 true => name.to_string(),
                 false => format!("{}.{name}", unit.module),
@@ -250,11 +333,13 @@ impl Loader<'_> {
         // What the first file declares, and whether each is an enum
         // case. An imported file must not come to mean one of these by
         // an accident of spelling: see `Renamer::plain`.
+        let first = units[0].as_ref().expect("the first file was read");
+        let strict = first.program.strict;
         let first_file: HashMap<String, bool> =
-            declarations(&units[0].program).into_iter().map(|(name, _, is_case)| (name, is_case)).collect();
+            declarations(&first.program).into_iter().map(|(name, _, is_case)| (name, is_case)).collect();
 
         let mut errors = Vec::new();
-        for unit in &mut units {
+        for unit in units.iter_mut().flatten() {
             let mut renamer = Renamer::new(&unit.module, &declared, &cases, &enums, &first_file);
             renamer.imports(&unit.imports);
             renamer.own(&declarations(&unit.program));
@@ -274,16 +359,226 @@ impl Loader<'_> {
 
         let mut statements = Vec::new();
         for &number in &self.order {
-            statements.append(&mut units[number].program.statements);
+            statements.append(&mut units[number].as_mut().expect("a file in the order was read").program.statements);
         }
         let modules = units
             .iter()
             .zip(&self.files)
             .skip(1)
-            .map(|(unit, file)| ModuleFile { path: file.path.clone(), strict: unit.program.strict })
+            .map(|(unit, file)| ModuleFile {
+                path: file.path.clone(),
+                strict: unit.as_ref().is_some_and(|unit| unit.program.strict),
+            })
             .collect();
-        Ok(Program { strict: units[0].program.strict, statements, modules })
+        Ok(Program { strict, statements, modules })
     }
+}
+
+// ------------------------------------------------------------------ Packages
+
+/// The module an import line names.
+struct Found {
+    /// Its name in the whole program.
+    module: String,
+    /// The package it is in.
+    package: usize,
+    /// Its file.
+    path: String,
+}
+
+impl Loader<'_> {
+    /// Read the program's `zeno.package`, if it has one, and through it
+    /// the `zeno.package` of every package the program needs.
+    fn packages_needed(&mut self) {
+        let path = self.packages[0].folder.join(package::FILE).display().to_string();
+        let Some(source) = (self.read)(&path) else {
+            return; // A program needs no `zeno.package` until it needs a package.
+        };
+        let Some(manifest) = self.manifest(path, source) else { return };
+        self.packages[0].name = manifest.name.clone();
+        self.by_name.insert(manifest.name, 0);
+        for need in manifest.needs {
+            self.need(0, need);
+        }
+    }
+
+    /// Read one `zeno.package`. It becomes one of the program's files,
+    /// so that a mistake in it is shown as a mistake in any file is.
+    fn manifest(&mut self, path: String, source: String) -> Option<package::Manifest> {
+        let number = self.files.len();
+        let parsed = package::parse(&source, number);
+        self.files.push(File { path, source });
+        self.units.push(None);
+        match parsed {
+            Ok(manifest) => Some(manifest),
+            Err(errors) => {
+                self.errors.extend(errors);
+                None
+            }
+        }
+    }
+
+    /// One `needs` line of the package `by`: find the package it names.
+    fn need(&mut self, by: usize, need: package::Need) {
+        let folder = match &need.source {
+            package::Source::Folder(path) => tidy(&self.packages[by].folder.join(path)),
+            // Fetched packages are all kept in one folder of the program,
+            // whichever package needs them.
+            package::Source::Git { .. } => self.packages[0].folder.join(package::FOLDER).join(&need.name),
+        };
+        let name = &need.name;
+        if let Some(&known) = self.by_name.get(name) {
+            let other = &self.packages[known].folder;
+            if *other == folder {
+                self.packages[by].needs.insert(need.name, known);
+            } else {
+                self.errors.push(Error::new(
+                    format!(
+                        "two packages called `{name}` are needed: the one in `{}` and the one in `{}`. \
+                         A program has one package of each name. Make the `needs` lines agree",
+                        other.display(),
+                        folder.display()
+                    ),
+                    need.span,
+                ));
+            }
+            return;
+        }
+        let path = folder.join(package::FILE).display().to_string();
+        let Some(source) = (self.read)(&path) else {
+            let message = match &need.source {
+                package::Source::Folder(written) => format!(
+                    "there is no package in `{written}`. This line reads the file `{path}`, and there is no such file"
+                ),
+                package::Source::Git { .. } => format!(
+                    "the package `{name}` has not been fetched: there is no file `{path}`. \
+                     Run `zeno fetch` in the folder of the program"
+                ),
+            };
+            return self.errors.push(Error::new(message, need.span));
+        };
+        if self.files.len() >= MOST_FILES {
+            return self.errors.push(Error::new(format!("a program can have {MOST_FILES} files, and this would be one more"), need.span));
+        }
+        let Some(theirs) = self.manifest(path, source) else { return };
+        if theirs.name != *name {
+            return self.errors.push(Error::new(
+                format!(
+                    "the package in `{}` is called `{}`, not `{name}`. Write `needs {} ...`",
+                    folder.display(),
+                    theirs.name,
+                    theirs.name
+                ),
+                need.span,
+            ));
+        }
+        let number = self.packages.len();
+        self.packages.push(Package { name: theirs.name.clone(), folder, needs: HashMap::new() });
+        self.by_name.insert(theirs.name, number);
+        self.packages[by].needs.insert(need.name, number);
+        for need in theirs.needs {
+            self.need(number, need);
+        }
+    }
+
+    /// What `import a.b` names, written in a file of the package `from`.
+    ///
+    /// If `a` is a package that `from` needs, it is the module `b` of
+    /// that package: the file `b.zeno` in the package's folder. `import a`
+    /// with nothing after it is the module that has the package's own
+    /// name, `a.zeno` in that folder. Otherwise it is `a/b.zeno` in the
+    /// folder of `from` itself.
+    fn find(&mut self, from: usize, written: &str, span: Span) -> Option<Found> {
+        let parts: Vec<&str> = written.split('.').collect();
+        let file = |folder: &Path, parts: &[&str]| {
+            let mut path = folder.to_path_buf();
+            parts.iter().for_each(|part| path.push(part));
+            format!("{}.zeno", path.display())
+        };
+        let own = file(&self.packages[from].folder, &parts);
+        let Some(&needed) = self.packages[from].needs.get(parts[0]) else {
+            return Some(Found { module: self.full(from, written), package: from, path: own });
+        };
+        let name = parts[0];
+        if parts.len() == 2 && parts[1] == name {
+            self.errors.push(Error::new(
+                format!(
+                    "the module of the package `{name}` that has the package's own name is imported as \
+                     `import {name}`. Write that"
+                ),
+                span,
+            ));
+            return None;
+        }
+        let inside = if parts.len() == 1 { &parts[..] } else { &parts[1..] };
+        let path = file(&self.packages[needed].folder, inside);
+        if path != own && (self.read)(&own).is_some() {
+            self.errors.push(Error::new(
+                format!(
+                    "`import {written}` has two readings here: the file `{own}`, and the file `{path}` of the \
+                     package `{name}` that `{}` needs. Give the first another name",
+                    package::FILE
+                ),
+                span,
+            ));
+            return None;
+        }
+        Some(Found { module: self.full(needed, &inside.join(".")), package: needed, path })
+    }
+
+    /// The name, in the whole program, of the module `module` of a
+    /// package. A module of the program itself keeps its name. A module
+    /// of another package gets the package's name in front, and the
+    /// module with the package's own name is just that name.
+    fn full(&self, package: usize, module: &str) -> String {
+        let name = &self.packages[package].name;
+        match package == 0 || module == name {
+            true => module.to_string(),
+            false => format!("{name}.{module}"),
+        }
+    }
+
+    /// The error for an import whose file is not there. `written` is the
+    /// module as the line in a file of the package `from` writes it.
+    fn not_found(&self, from: usize, written: &str, found: &Found) -> String {
+        let path = &found.path;
+        let package = &self.packages[found.package].name;
+        if found.package == from {
+            format!(
+                "there is no module `{written}`. `import {written}` reads the file `{path}`, and there is no such file. {}",
+                builtins::MODULES
+            )
+        } else if written == package {
+            format!(
+                "the package `{package}` has no module of its own name. `import {written}` reads the file `{path}`, \
+                 and there is no such file. Import one of its modules by name, as in `import {package}.name`"
+            )
+        } else {
+            format!(
+                "the package `{package}` has no module `{}`. `import {written}` reads the file `{path}`, \
+                 and there is no such file",
+                &written[package.len() + 1..]
+            )
+        }
+    }
+}
+
+/// A path with its `.` and `..` steps worked out, as far as the path
+/// itself can say: `examples/thermostat/../filters` is `examples/filters`.
+/// Two ways of writing one folder then compare as equal.
+fn tidy(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut tidy = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(tidy.components().next_back(), Some(Component::Normal(_))) => {
+                tidy.pop();
+            }
+            other => tidy.push(other),
+        }
+    }
+    tidy
 }
 
 /// The error for files that import each other. `circle` begins and ends
@@ -367,8 +662,9 @@ struct Renamer<'a> {
     /// What the program's first file declares at its top, and whether
     /// each is an enum case.
     first_file: &'a HashMap<String, bool>,
-    /// The modules this file imports whole, with `import shapes`.
-    whole: HashSet<String>,
+    /// The modules this file imports whole, with `import shapes`: as
+    /// the file writes each, and its name in the whole program.
+    whole: HashMap<String, String>,
     /// Every way the name of one of those begins: `drivers` and
     /// `drivers.uart` for `import drivers.uart`.
     starts: HashSet<String>,
@@ -398,7 +694,7 @@ impl<'a> Renamer<'a> {
             cases,
             enums,
             first_file,
-            whole: HashSet::new(),
+            whole: HashMap::new(),
             starts: HashSet::new(),
             top: HashMap::new(),
             from: HashMap::new(),
@@ -414,28 +710,38 @@ impl<'a> Renamer<'a> {
     /// Note what the file's imports bring in.
     fn imports(&mut self, imports: &[Import]) {
         for import in imports {
-            let module = &import.module;
-            let Some(names) = self.declared.get(module) else { continue };
+            let (module, global) = (&import.module, &import.global);
+            let Some(names) = self.declared.get(global) else { continue };
             if import.names.is_empty() {
-                // `import a` and `import a.b` in one file would give
-                // `a.b.x` two readings.
-                let clash = self.whole.iter().find(|other| {
-                    other.starts_with(&format!("{module}.")) || module.starts_with(&format!("{other}."))
-                });
-                if let Some(other) = clash.cloned() {
-                    let (short, long) = if other.len() < module.len() { (&other, module) } else { (module, &other) };
+                // A file can import `a` and `a.b`: a package's module of
+                // its own name beside another of its modules, say. But if
+                // the module `a` declares a `b`, then `a.b.x` would have
+                // two readings.
+                let mut clash = None;
+                for (other, other_global) in &self.whole {
+                    let (short, short_global, long) = if other.starts_with(&format!("{module}.")) {
+                        (module, global, other)
+                    } else if module.starts_with(&format!("{other}.")) {
+                        (other, other_global, module)
+                    } else {
+                        continue;
+                    };
                     let rest = &long[short.len() + 1..];
-                    self.error(
-                        format!(
-                            "this file imports `{short}` and `{long}`. `{long}.x` would then have two readings: \
+                    let next = rest.split('.').next().unwrap_or(rest);
+                    if self.declared[short_global].iter().any(|declared| declared == next) {
+                        clash = Some(format!(
+                            "this file imports `{short}` and `{long}`, and the module `{short}` declares \
+                             a `{next}` of its own. `{long}.x` would then have two readings: \
                              `x` of the module `{long}`, and `{rest}.x` of the module `{short}`. \
                              Import one of them with `from`, as in `from {long} import x`"
-                        ),
-                        import.span,
-                    );
+                        ));
+                    }
+                }
+                if let Some(message) = clash {
+                    self.error(message, import.span);
                     continue;
                 }
-                self.whole.insert(module.clone());
+                self.whole.insert(module.clone(), global.clone());
                 let mut start = String::new();
                 for part in module.split('.') {
                     start = if start.is_empty() { part.to_string() } else { format!("{start}.{part}") };
@@ -460,7 +766,7 @@ impl<'a> Renamer<'a> {
                     }
                     _ => {
                         self.from.insert(name.clone(), module.clone());
-                        self.top.insert(name.clone(), format!("{module}.{name}"));
+                        self.top.insert(name.clone(), format!("{global}.{name}"));
                     }
                 }
             }
@@ -756,12 +1062,15 @@ impl<'a> Renamer<'a> {
     /// after this one match by.
     fn case(&mut self, name: &mut String, span: Span) {
         if let Some((owner, case)) = name.rsplit_once('.') {
-            let mut owner = owner.to_string();
-            if !owner.contains('.') && !self.is_local(&owner) {
-                if let Some(full) = self.top.get(&owner) {
-                    owner = full.clone();
-                }
-            }
+            let owner = match owner.rsplit_once('.') {
+                // `shapes.Shape.Circle`: an enum of a module this file imports.
+                Some((module, decl)) => match self.whole.get(module) {
+                    Some(global) => format!("{global}.{decl}"),
+                    None => owner.to_string(),
+                },
+                None if self.is_local(owner) => owner.to_string(),
+                None => self.top.get(owner).cloned().unwrap_or_else(|| owner.to_string()),
+            };
             if self.enums.get(&owner).is_some_and(|cases| cases.iter().any(|known| known == case)) {
                 *name = match owner.rsplit_once('.') {
                     Some((module, _)) => format!("{module}.{case}"),
@@ -802,10 +1111,13 @@ impl<'a> Renamer<'a> {
         let Some((module, member)) = name.rsplit_once('.') else {
             return self.plain(name, span);
         };
-        // `shapes.Point` is already the full name. It only has to exist.
-        match self.declared.get(module).filter(|_| self.whole.contains(module)) {
-            Some(names) if names.iter().any(|declared| declared == member) => {}
-            Some(names) => self.error(no_such_name(module, member, names), span),
+        // `shapes.Point` has to exist, and gets the name the module has
+        // in the whole program.
+        match self.whole.get(module).map(|global| (global, &self.declared[global])) {
+            Some((global, names)) if names.iter().any(|declared| declared == member) => {
+                *name = format!("{global}.{member}");
+            }
+            Some((_, names)) => self.error(no_such_name(module, member, names), span),
             None => self.error(
                 format!(
                     "this file imports no module `{module}`, so `{name}` means nothing here. \
@@ -825,10 +1137,12 @@ impl<'a> Renamer<'a> {
             ExprKind::Name(name) if self.starts.contains(name) && !self.is_local(name) => Some(name.clone()),
             ExprKind::Field { object, name } => {
                 let before = self.module_named(object)?;
-                // After a whole module's name comes one of its names, and
-                // that is not part of any module's name.
+                // `drivers.uart` goes on being a module's name as long
+                // as this file imports a module that begins so. (Where it
+                // imports `drivers` as well, `Renamer::imports` has seen
+                // to it that `drivers` declares no `uart` of its own.)
                 let longer = format!("{before}.{name}");
-                (!self.whole.contains(&before) && self.starts.contains(&longer)).then_some(longer)
+                self.starts.contains(&longer).then_some(longer)
             }
             _ => None,
         }
@@ -839,20 +1153,21 @@ impl<'a> Renamer<'a> {
         // `shapes.area`: the parser read a field of a variable `shapes`.
         // It is the name `area` of the module `shapes`.
         if let ExprKind::Field { object, name } = &expr.kind {
-            if let Some(module) = self.module_named(object).filter(|module| self.whole.contains(module)) {
-                let names = &self.declared[&module];
-                match names.contains(name) {
-                    true => expr.kind = ExprKind::Name(format!("{module}.{name}")),
-                    false => self.error(no_such_name(&module, name, names), span),
-                }
-                return;
-            }
-            if let Some(start) = self.module_named(object) {
-                if !self.starts.contains(&format!("{start}.{name}")) {
+            if let Some(module) = self.module_named(object) {
+                if self.starts.contains(&format!("{module}.{name}")) {
+                    // Still the name of a module: seen to just below.
+                } else if let Some(global) = self.whole.get(&module) {
+                    let names = &self.declared[global];
+                    match names.contains(name) {
+                        true => expr.kind = ExprKind::Name(format!("{global}.{name}")),
+                        false => self.error(no_such_name(&module, name, names), span),
+                    }
+                    return;
+                } else {
                     return self.error(
                         format!(
-                            "this file imports no module `{start}.{name}`. \
-                             Write `import {start}.{name}` at the top of the file"
+                            "this file imports no module `{module}.{name}`. \
+                             Write `import {module}.{name}` at the top of the file"
                         ),
                         span,
                     );
@@ -861,7 +1176,7 @@ impl<'a> Renamer<'a> {
         }
         // A module's name with nothing after it.
         if let Some(module) = self.module_named(expr) {
-            let example = match self.declared.get(&module).and_then(|names| names.first()) {
+            let example = match self.whole.get(&module).and_then(|global| self.declared[global].first()) {
                 Some(name) => format!(", as in `{module}.{name}`"),
                 None => String::new(),
             };
@@ -1091,15 +1406,25 @@ mod tests {
         let read = RefCell::new(Vec::new());
         let loaded = super::load("demo/main.zeno", "import a\nimport b\n".to_string(), &|path| {
             read.borrow_mut().push(path.to_string());
-            Some(if path.ends_with("base.zeno") { String::new() } else { "import nested.base\n".to_string() })
+            match path {
+                path if path.ends_with("zeno.package") => None,
+                path if path.ends_with("base.zeno") => Some(String::new()),
+                _ => Some("import nested.base\n".to_string()),
+            }
         });
         assert!(loaded.program.is_ok());
         // A module is looked for from the folder of the first file, and
-        // a dot in its name is a folder.
+        // a dot in its name is a folder. That folder's `zeno.package` is
+        // looked for first, and the program can do without one.
         let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(
             *read.borrow(),
-            [format!("demo{sep}a.zeno"), format!("demo{sep}nested{sep}base.zeno"), format!("demo{sep}b.zeno")]
+            [
+                format!("demo{sep}zeno.package"),
+                format!("demo{sep}a.zeno"),
+                format!("demo{sep}nested{sep}base.zeno"),
+                format!("demo{sep}b.zeno")
+            ]
         );
         let paths: Vec<&str> = loaded.files.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths.len(), 4);
@@ -1184,7 +1509,12 @@ mod tests {
             "`import shapes` goes at the top of the file, not inside a function or a block. \
              Only a module that comes with Zeno, such as `math`, can be imported in here"
         );
-        assert_eq!(error("import test\n"), "there is no module `test`. `import test` reads the file `test.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files` and `program`");
+        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files` and `program`");
+        assert_eq!(
+            error("import test\n"),
+            "`test.zeno` is the file the program starts in, and no file imports that one. \
+             Move what the files share into a file of its own, and import that"
+        );
         assert_eq!(error("import a\n==> a.zeno\nimport a\n"), "`a` imports itself. A file cannot import the file it is");
         assert_eq!(
             mistake("import a\n==> a.zeno\nimport b\n==> b.zeno\nimport c\n==> c.zeno\n\nimport a\n"),
@@ -1242,9 +1572,210 @@ mod tests {
         );
         assert_eq!(
             error("import a\nimport a.b\n==> a.zeno\nlet b = 1\n==> a/b.zeno\nlet x = 2\n"),
-            "this file imports `a` and `a.b`. `a.b.x` would then have two readings: `x` of the module `a.b`, \
-             and `b.x` of the module `a`. Import one of them with `from`, as in `from a.b import x`"
+            "this file imports `a` and `a.b`, and the module `a` declares a `b` of its own. `a.b.x` would then \
+             have two readings: `x` of the module `a.b`, and `b.x` of the module `a`. Import one of them with \
+             `from`, as in `from a.b import x`"
         );
+        // With no `b` in `a` there is one reading, and both are imported.
+        let joined = program("import a\nimport a.b\nprint(a.c + a.b.x)\n==> a.zeno\nlet c = 1\n==> a/b.zeno\nlet x = 2\n");
+        assert!(printer::print(&joined).ends_with("print((a.c + a.b.x))\n"), "{}", printer::print(&joined));
+        assert_eq!(
+            error("import a\nimport a.b\nprint(a.b)\n==> a.zeno\nlet c = 1\n==> a/b.zeno\nlet x = 2\n"),
+            "`a.b` is a module, not a value. Write `a.b.` and then a name from it, as in `a.b.x`"
+        );
+    }
+
+    // ----- Packages -----
+
+    /// A thermostat that needs two packages: `filters`, in a folder of
+    /// its own, and `units`, which `zeno fetch` would have fetched.
+    const THERMOSTAT: &str = "import filters\n\
+        import filters.lowpass\n\
+        import control\n\
+        from filters.lowpass import Lowpass\n\
+        let filter: Lowpass = filters.lowpass.start(filters.clamp(2))\n\
+        print(control.limit)\n\
+        ==> zeno.package\n\
+        # What the thermostat needs.\n\
+        package thermostat\n\
+        needs filters in \"lib/filters\"\n\
+        needs units from \"https://example.com/units\" at \"v1.0.0\"\n\
+        ==> control.zeno\n\
+        import units\n\
+        let limit = units.scale * 2\n\
+        ==> lib/filters/zeno.package\n\
+        package filters\n\
+        needs units from \"https://example.com/units\" at \"v1.0.0\"\n\
+        ==> lib/filters/filters.zeno\n\
+        function clamp(value: int) -> int {\n    return value\n}\n\
+        ==> lib/filters/lowpass.zeno\n\
+        from filters import clamp\n\
+        import units\n\
+        class Lowpass {\n    weight: int\n}\n\
+        function start(weight: int) -> Lowpass {\n    return Lowpass(clamp(weight) * units.scale)\n}\n\
+        ==> packages/units/zeno.package\n\
+        package units\n\
+        ==> packages/units/units.zeno\n\
+        let scale = 10\n";
+
+    #[test]
+    fn an_import_finds_the_module_of_a_package() {
+        // `filters` is the package's module of its own name, and
+        // `filters.lowpass` its module `lowpass`. Inside the package the
+        // same two are `filters` and `lowpass`. Whoever writes them, each
+        // has one name in the joined program, and is read once.
+        let loaded = load(THERMOSTAT);
+        let paths: Vec<&str> = loaded.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "test.zeno",
+                "zeno.package",
+                "lib/filters/zeno.package",
+                "packages/units/zeno.package",
+                "lib/filters/filters.zeno",
+                "lib/filters/lowpass.zeno",
+                "packages/units/units.zeno",
+                "control.zeno",
+            ]
+        );
+        let joined = loaded.program.unwrap_or_else(|errors| panic!("{}", errors[0].message));
+        assert_eq!(
+            printer::print(&joined),
+            "function filters.clamp(value: int) -> int\n    return value\n\
+             let units.scale = 10\n\
+             class filters.lowpass.Lowpass\n    field weight: int\n\
+             function filters.lowpass.start(weight: int) -> filters.lowpass.Lowpass\n    \
+             return filters.lowpass.Lowpass((filters.clamp(weight) * units.scale))\n\
+             let control.limit = (units.scale * 2)\n\
+             let filter: filters.lowpass.Lowpass = filters.lowpass.start(filters.clamp(2))\n\
+             print(control.limit)\n"
+        );
+        // The files of the program are still numbered as they were read,
+        // so that a mistake in any of them is shown in the right one.
+        let modules: Vec<&str> = joined.modules.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(modules, paths[1..]);
+
+        // Two packages may need each other, as long as no two files
+        // import each other.
+        let joined = program(
+            "import a.one\nprint(a.one.x)\n\
+             ==> zeno.package\npackage top\nneeds a in \"a\"\n\
+             ==> a/zeno.package\npackage a\nneeds b in \"../b\"\n\
+             ==> a/one.zeno\nimport b.two\nlet x = b.two.y\n\
+             ==> a/base.zeno\nlet z = 1\n\
+             ==> b/zeno.package\npackage b\nneeds a in \"../a\"\n\
+             ==> b/two.zeno\nimport a.base\nlet y = a.base.z\n",
+        );
+        assert_eq!(printer::print(&joined), "let a.base.z = 1\nlet b.two.y = a.base.z\nlet a.one.x = b.two.y\nprint(a.one.x)\n");
+    }
+
+    #[test]
+    fn a_mistake_about_a_package_says_what_to_do() {
+        // A mistake in a `zeno.package` is shown in that file.
+        let with = |package: &str, rest: &str| format!("print(1)\n==> zeno.package\n{package}{rest}");
+        assert_eq!(
+            mistake(&with("package top\nneeds gone in \"../gone\"\n", "")),
+            (
+                "there is no package in `../gone`. This line reads the file `../gone/zeno.package`, and there is no such file"
+                    .to_string(),
+                1,
+                2
+            )
+        );
+        assert_eq!(
+            mistake(&with("package top\n\nneeds units from \"https://example.com/units\" at \"v1\"\n", "")),
+            (
+                "the package `units` has not been fetched: there is no file `packages/units/zeno.package`. \
+                 Run `zeno fetch` in the folder of the program"
+                    .to_string(),
+                1,
+                3
+            )
+        );
+        assert_eq!(
+            mistake(&with("package top\nneeds a in \"a\"\n", "==> a/zeno.package\npackage a\nneeds b \"b\"\n")).1,
+            2
+        );
+        assert_eq!(
+            error(&with("package top\nneeds filter in \"lib\"\n", "==> lib/zeno.package\npackage filters\n")),
+            "the package in `lib` is called `filters`, not `filter`. Write `needs filters ...`"
+        );
+        assert_eq!(
+            error(&with(
+                "package top\nneeds a in \"a\"\nneeds b in \"b\"\n",
+                "==> a/zeno.package\npackage a\nneeds b in \"b\"\n==> b/zeno.package\npackage b\n==> a/b/zeno.package\npackage b\n"
+            )),
+            "two packages called `b` are needed: the one in `a/b` and the one in `b`. \
+             A program has one package of each name. Make the `needs` lines agree"
+        );
+        // One folder written two ways is one package.
+        assert!(load(&with(
+            "package top\nneeds a in \"a\"\nneeds b in \"./a/../b\"\n",
+            "==> a/zeno.package\npackage a\nneeds b in \"../b\"\n==> b/zeno.package\npackage b\n"
+        ))
+        .program
+        .is_ok());
+
+        // An import that names a package reads a file of that package.
+        let needs = |program: &str, rest: &str| {
+            error(&format!(
+                "{program}==> zeno.package\npackage top\nneeds filters in \"lib\"\n==> lib/zeno.package\npackage filters\n{rest}"
+            ))
+        };
+        assert_eq!(
+            needs("import filters.lowpass\n", ""),
+            "the package `filters` has no module `lowpass`. `import filters.lowpass` reads the file `lib/lowpass.zeno`, \
+             and there is no such file"
+        );
+        assert_eq!(
+            needs("import filters\n", ""),
+            "the package `filters` has no module of its own name. `import filters` reads the file `lib/filters.zeno`, \
+             and there is no such file. Import one of its modules by name, as in `import filters.name`"
+        );
+        assert_eq!(
+            needs("import filters.filters\n", "==> lib/filters.zeno\nlet x = 1\n"),
+            "the module of the package `filters` that has the package's own name is imported as `import filters`. Write that"
+        );
+        assert_eq!(
+            needs("import filters\n", "==> lib/filters.zeno\nlet x = 1\n==> filters.zeno\nlet x = 2\n"),
+            "`import filters` has two readings here: the file `filters.zeno`, and the file `lib/filters.zeno` of the \
+             package `filters` that `zeno.package` needs. Give the first another name"
+        );
+        // Inside the package, a module of the program is not in reach.
+        assert_eq!(
+            needs("import filters\nimport control\n", "==> control.zeno\nlet x = 1\n==> lib/filters.zeno\nimport control\n"),
+            "there is no module `control`. `import control` reads the file `lib/control.zeno`, and there is no such file. \
+             So far Zeno has `math`, `time`, `board`, `files` and `program`"
+        );
+        // A file is one module, and a module is one file.
+        assert_eq!(
+            needs("import filters\nimport lib.filters\n", "==> lib/filters.zeno\nlet x = 1\n"),
+            "the file `lib/filters.zeno` is already in this program as the module `filters`, and this line would make it \
+             a second module, `lib.filters`. A file is one module: import it by one name"
+        );
+        assert_eq!(
+            error(
+                "import units\nimport a.m\n==> units.zeno\nlet x = 1\n\
+                 ==> zeno.package\npackage top\nneeds a in \"a\"\n\
+                 ==> a/zeno.package\npackage a\nneeds units in \"../u\"\n\
+                 ==> a/m.zeno\nimport units\n\
+                 ==> u/zeno.package\npackage units\n==> u/units.zeno\nlet x = 2\n"
+            ),
+            "two files would both be the module `units` of this program: `units.zeno` and `u/units.zeno`. \
+             A module is one file. Give one of the two another name"
+        );
+    }
+
+    #[test]
+    fn a_path_is_tidied() {
+        let tidy = |path: &str| super::tidy(std::path::Path::new(path)).display().to_string();
+        assert_eq!(tidy("examples/thermostat/../filters"), "examples/filters");
+        assert_eq!(tidy("./a/./b"), "a/b");
+        assert_eq!(tidy("../filters"), "../filters");
+        assert_eq!(tidy("a/../../b"), "../b");
+        assert_eq!(tidy("."), "");
+        assert_eq!(tidy("/srv/a/.."), "/srv");
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# A package is also a folder a program can start in. This one tries the
+# package's own modules:
+#
+#     zeno run examples/filters/main.zeno
+#
+# Here `import lowpass` is the file `lowpass.zeno` beside this one. The
+# program in examples/thermostat needs this package, and writes the same
+# module as `import filters.lowpass`.
+import filters
+import lowpass
+
+print(filters.clamp(12.5, 0.0, 10.0))
+print(filters.mean([1.0, 2.0, 6.0]))
+
+let filter = lowpass.start(0.5, 20.0)
+for reading in [20.0, 24.0, 24.0, 24.0] {
+    print(f"{filter.step(reading):.2f}")
+}

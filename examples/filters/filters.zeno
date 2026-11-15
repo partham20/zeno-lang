@@ -1,0 +1,21 @@
+# The module that has the package's own name. `import filters` gets it,
+# from this package or from a program that needs the package.
+
+# `value`, kept between `low` and `high`.
+function clamp(value: float, low: float, high: float) -> float {
+    if value < low {
+        return low
+    }
+    if value > high {
+        return high
+    }
+    return value
+}
+
+function mean(values: list[float]) -> float {
+    var sum = 0.0
+    for value in values {
+        sum += value
+    }
+    return sum / len(values)
+}

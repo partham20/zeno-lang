@@ -1,0 +1,8 @@
+# This file makes the folder a package: a folder of modules that a
+# program in another folder can use. The first line names it. A program
+# that needs it says so in its own `zeno.package`:
+#
+#     needs filters in "../filters"
+#
+# and then imports its modules as `filters` and `filters.lowpass`.
+package filters

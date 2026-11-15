@@ -1,0 +1,12 @@
+# What this program is called, and the packages it needs.
+#
+# `needs filters in "../filters"` uses the package in that folder, where
+# it is. A package that somebody else keeps is named by its git
+# repository and a version of it:
+#
+#     needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
+#
+# and `zeno fetch` gets it into the folder `packages` beside this file.
+package thermostat
+
+needs filters in "../filters"

@@ -1,0 +1,24 @@
+# The module `lowpass` of the package `filters`: a filter that smooths
+# a noisy signal. A program that needs the package writes
+# `import filters.lowpass`.
+#
+# Inside the package an import names a file of the package itself, so
+# this line is `filters.zeno` in this folder, whichever program the
+# package is being used by.
+from filters import clamp
+
+class Lowpass {
+    weight: float       # 0.0 never moves, 1.0 follows the signal at once
+    value: float        # the smoothed signal so far
+
+    # Take one new reading in, and return the smoothed value.
+    function step(self, reading: float) -> float {
+        self.value += self.weight * (reading - self.value)
+        return self.value
+    }
+}
+
+# A filter that starts at `first`.
+function start(weight: float, first: float) -> Lowpass {
+    return Lowpass(clamp(weight, 0.0, 1.0), first)
+}

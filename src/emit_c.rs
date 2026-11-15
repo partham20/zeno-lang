@@ -10579,6 +10579,29 @@ function ratio(a: int, b: int) -> int {
             include_str!("../examples/station/drivers/uart.zeno"),
         ];
         no_collector_as_interpreter("station", &station.concat());
+        // A program that needs a package: its own files, its
+        // `zeno.package`, and the package in the folder beside it.
+        let filters = [
+            ("zeno.package", include_str!("../examples/filters/zeno.package")),
+            ("filters.zeno", include_str!("../examples/filters/filters.zeno")),
+            ("lowpass.zeno", include_str!("../examples/filters/lowpass.zeno")),
+        ];
+        let mut thermostat = [
+            include_str!("../examples/thermostat/main.zeno"),
+            "==> zeno.package\n",
+            include_str!("../examples/thermostat/zeno.package"),
+            "==> control.zeno\n",
+            include_str!("../examples/thermostat/control.zeno"),
+        ]
+        .concat();
+        // The package is also a program of its own.
+        let mut package = include_str!("../examples/filters/main.zeno").to_string();
+        for (name, text) in filters {
+            thermostat += &format!("==> ../filters/{name}\n{text}");
+            package += &format!("==> {name}\n{text}");
+        }
+        no_collector_as_interpreter("thermostat", &thermostat);
+        no_collector_as_interpreter("filters", &package);
         // A fault inside an imported file stops the program in every
         // build with the same words, and names that file and its line.
         same_as_interpreter("modules-fault", &format!("{MODULES_GENERIC}==> more.zeno\n").replace(

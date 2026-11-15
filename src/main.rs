@@ -22,6 +22,7 @@ mod ints;
 mod lexer;
 mod modules;
 mod ops;
+mod package;
 mod parser;
 mod printer;
 mod token;
@@ -50,6 +51,9 @@ fn usage() {
     println!("                            files it imports are joined into");
     println!("  zeno bytecode <file.zeno> show the bytecode `zeno run --vm` runs");
     println!("  zeno build <file.zeno>    compile to C, then to a program you can run");
+    println!("  zeno fetch [folder]       get the packages that the program in this");
+    println!("                            folder (or in that one) needs, as the");
+    println!("                            `needs` lines of its `zeno.package` list them");
     println!("  zeno --version            print the version");
     println!("  zeno --help               print this message");
     println!();
@@ -62,6 +66,8 @@ fn usage() {
     println!("  --vm                     with run: compile the program to bytecode and");
     println!("                           run that, in place of walking the syntax tree.");
     println!("                           The program does the same, faster");
+    println!("  --update                 with fetch: look every version up again, and");
+    println!("                           not at the commits `zeno.lock` has pinned");
     println!("  --firmware               with build: errors travel as values that every");
     println!("                           caller tests, with no setjmp or longjmp, as");
     println!("                           coding standards for firmware require");
@@ -438,6 +444,22 @@ fn main() -> ExitCode {
             match done {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
+            }
+        }
+        Some("fetch") => {
+            // `zeno fetch`, `zeno fetch --update`, `zeno fetch examples/thermostat`
+            let update = args.iter().any(|arg| arg == "--update");
+            args.retain(|arg| arg != "--update");
+            let folder = args.get(1).map(String::as_str).unwrap_or("");
+            match package::fetch(Path::new(folder), update) {
+                Ok(said) => {
+                    said.iter().for_each(|line| println!("{line}"));
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("zeno: {why}");
+                    ExitCode::FAILURE
+                }
             }
         }
         Some("build") => {
