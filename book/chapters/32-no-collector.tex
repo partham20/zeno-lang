@@ -1,3 +1,197 @@
 \chapter{Building with No Collector}\label{ch-no-collector}
 
-To be written.
+\verb|zeno build --no-collector| compiles a program to C that has no
+garbage collector in it. Not a collector that is switched off: the
+code is not in the file. Nor is \verb|malloc|: memory comes from a pool
+of a fixed size that is part of the program. Every block the program
+takes is given back at a line that can be found in the C. This is the
+build for a microcontroller that must run for years.
+
+\section{Why}
+
+The collector is the right default (\hyperref[ch-memory]{Memory}). It
+also has three habits that firmware cannot always live with:
+
+\begin{itemize}
+\item it pauses the program, for a time that depends on how much
+  memory is in use, and a control loop with a deadline cannot plan for
+  that;
+\item it reads the C stack to find what is in use, which no C standard
+  describes;
+\item nobody can say when a block will be freed, so nobody can say how
+  much memory the program needs at worst.
+\end{itemize}
+
+Owned values answer all three for the values that are owned
+(\hyperref[ch-ownership]{Ownership}). This build is what you get when
+every value is.
+
+\section{Every list and object has one owner}
+
+With no collector, there is nothing to free a shared value with. So the
+build follows one rule by itself:
+
+\begin{quote}
+\textbf{With no collector, every list and every object has one owner:
+whoever received it.}
+\end{quote}
+
+In this build \verb|list[int]| means \verb|owned list[int]|, and
+\verb|class Task| means \verb|owned class Task|, with no word written.
+The rules of ownership apply to all of them, and the one that matters
+day to day is that giving a list to another name moves it:
+
+\begin{zeno}[file=moved.zeno, cmd=zeno check --no-collector {file}, fails=yes]
+let a = [1, 2, 3]
+let b = a
+print(a)
+\end{zeno}
+
+\verb|zeno check --no-collector| checks as the build would, without
+building. A parameter only looks, unless it says \verb|take|, so
+passing a list to an ordinary function moves nothing.
+
+\begin{why}
+The same file must mean the same thing under \verb|zeno run|,
+\verb|zeno build| and \verb|zeno build --no-collector|. This build adds
+refusals and nothing else: a program it accepts never gives a value two
+owners, and for such a program "one owner" and "shared" cannot be told
+apart from what it prints. Fewer programs, never different ones.
+(Decision 5.15.)
+\end{why}
+
+\section{An ordinary program, built so}
+
+Most programs need no change at all:
+
+\begin{zeno}[file=names.zeno, cmd=zeno build --no-collector --memory {file} ;; ./names]
+let names = "ada,grace,alan".split(",")
+var lengths: list[int] = []
+for name in names {
+    lengths.append(len(name))
+}
+print(names, lengths)
+print(f"the longest is {max(lengths)} letters")
+\end{zeno}
+
+The report has three lines now. The first says how many blocks were
+made and that none was left at the end. The second is the pool, and the
+third the text room, both below.
+
+\section{Where memory comes from}
+
+\begin{center}
+\begin{tabular}{p{4.6cm}p{2.3cm}p{5cm}}
+\toprule
+What & Lives in & Given back \\
+\midrule
+a list or an object & the pool & when its owner's block ends \\
+an enum value that carries something & the pool & when its owner's block ends \\
+a list made and given to nobody & the pool & when its statement is over \\
+text built while the program runs & the text room & when its statement is over \\
+text that is kept & the pool & when its keeper is done with it \\
+an error & the pool & when the \verb|except| that caught it ends \\
+\verb|allocate| & the pool & at \verb|free|, and not before \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Numbers, bools, quantities, enum cases with nothing in them, and text
+written in the program need no memory at all.
+
+\subsection{The pool}
+
+The pool is one array whose size is fixed when the C is compiled,
+32\,768 bytes unless you say otherwise. It hands out blocks of a few
+fixed sizes, and keeps a list of spare blocks of each size, so a block
+given back is used again for the next of its size and the pool cannot
+break up into pieces too small to use. The report says how much of the
+pool a run used, exactly, and that is the number to give the C
+compiler for the board:
+
+\begin{zenofrag}[lang=shell]
+$ zeno build --no-collector --memory buffer.zeno
+$ ./buffer | grep pool
+pool: 25384 bytes taken, in a pool of 32768
+$ cc -O2 -DZENO_POOL=25384 -o buffer buffer.c -lm
+\end{zenofrag}
+
+It is exact for that run. A program whose lists depend on its input
+needs the report from its worst input, and some room on top. A full
+pool is a fault: the program stops with
+\verb|the memory pool is full|.
+
+\subsection{The text room}
+
+Firmware prints, and \verb|print(f"sent {count} samples")| builds text
+that must live somewhere for a moment. It lives in the \emph{text
+room}, one more fixed array. Building text writes at the top of the
+room; when the statement is over, the top goes back to where it was.
+So a statement takes text room only for as long as it runs, and the
+report says the most any statement needed. Text that is kept, in a
+variable, a field or a list, is copied into the pool and kept there.
+
+\section{What is refused}
+
+Each of these would make memory that no line gives back, so the build
+refuses it, with the line and what to write instead:
+
+\begin{itemize}
+\item a list, object or enum value used after it was given away;
+\item a function that uses a \verb|var| of the function around it,
+  because the two would share it;
+\item keeping a function that uses a list or object from outside it;
+\item a list or object as what a type parameter stands for, and a list
+  of \verb|int or none|, which are limits of version 0.1.
+\end{itemize}
+
+\begin{zeno}[file=items.zeno, cmd=zeno build --no-collector {file}, fails=yes]
+var readings: list[int or none] = [1, none, 3]
+\end{zeno}
+
+The answer the message gives is an enum with a case for the missing
+value, which costs nothing for the case that carries nothing.
+
+That is the whole idea of the build. It does not find leaks while the
+program runs. It refuses to build a program that could have one.
+
+\section{The tour}
+
+\verb|buffer.zeno| from \hyperref[ch-ownership]{Ownership}, built with
+no collector:
+
+\begin{zeno}[src=examples/buffer.zeno, file=buffer.zeno, show=no, cmd=zeno build --no-collector --memory buffer.zeno > /dev/null ;; ./buffer]
+\end{zeno}
+
+It made over 1600 blocks and gave every one back. Search the C for
+\verb|zeno_collect|, \verb|setjmp| or \verb|malloc|: none is there.
+\verb|--no-collector| turns \verb|--firmware| on by itself.
+
+\section{What this does not claim}
+
+Memory is still taken and given back while the program runs, from a
+fixed pool and not from the heap. That meets MISRA's rule against
+\verb|malloc| and \verb|free|, though not its wider advice against
+dynamic memory of any kind. The build does not bound memory for you: a
+loop that appends to a list for ever fills the pool. The rest of the
+list in \hyperref[ch-firmware]{Firmware} stands.
+
+\begin{summary}
+\verb|--no-collector| leaves the collector and \verb|malloc| out.
+Every list and object has one owner, whoever received it, and is freed
+where that owner's block ends. Memory comes from a fixed pool, sized
+with \verb|-DZENO_POOL| from the \verb|--memory| report, and built text
+from a text room that each statement gives back. Whatever could leak is
+refused at build time.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Build a program from an earlier chapter with
+  \verb|--no-collector|. What does it refuse, and how do you fix it?
+\item Build \verb|buffer.zeno| with the pool size from its report, then
+  with one byte less, and run each.
+\item Replace the \verb|list[int or none]| above with an enum
+  \verb|Reading| with a case \verb|Missing|, and build it.
+\end{enumerate}
+\end{tryit}

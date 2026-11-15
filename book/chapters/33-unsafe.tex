@@ -1,3 +1,185 @@
-\chapter{Memory by Hand}\label{ch-unsafe}
+\chapter{Unsafe Code}\label{ch-unsafe}
 
-To be written.
+Zeno looks after memory in two ways: a collector, or one owner for
+every value. This chapter is about the third way, the one C has: ask
+for memory, use it through a \emph{pointer}, and give it back yourself.
+It is for the places where firmware must control every byte, such as a
+buffer that a peripheral fills, and it lives inside \verb|unsafe { }|,
+a block that marks the lines Zeno cannot check.
+
+\section{The block}
+
+\begin{zeno}
+let bytes = allocate(u8, 16)
+
+unsafe {
+    bytes[0] = 0x41
+    bytes[1] = u8(bytes[0] + 1)
+    print(bytes[0], bytes[1])
+    free(bytes)
+}
+\end{zeno}
+
+\verb|unsafe { }| is a block like the body of an \verb|if|. Inside it,
+and only there, a program may do five things:
+
+\begin{center}
+\begin{tabular}{lp{7.8cm}}
+\toprule
+Inside unsafe only & Why Zeno cannot check it \\
+\midrule
+read through a pointer, \verb|p[i]| & a pointer does not know how long
+  its memory is, or whether it was freed \\
+write through a pointer, \verb|p[i] = v| & the same, and a wrong write
+  damages something else \\
+\verb|free(p)| & nothing says whether \verb|p| is still used somewhere \\
+read a register, \verb|r.read()| & the address is taken on trust, and
+  reading can change the hardware \\
+write a register, \verb|r.write(v)| & the same \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Outside the block, the checker says so, and why:
+
+\begin{zeno}[fails=yes]
+let bytes = allocate(u8, 16)
+print(bytes[0])
+\end{zeno}
+
+The block does not turn anything off. Types are still checked inside
+it, numbers still report overflow, and lists are still looked after. It
+only allows those five things. So when a program damages memory, the
+lines to read are the ones inside the blocks, and \verb|grep unsafe|
+finds them all.
+
+\begin{why}
+Rust showed that a language can be safe by default and still let a
+driver do what drivers do, if the unsafe lines are marked and few. The
+mark is a block and not a word on a function, so it can be as small as
+one line. It gives no value, so \verb|let x = unsafe { p[0] }| is
+refused: the block means one thing, "these lines are trusted".
+\end{why}
+
+\section{Pointers}
+
+A pointer's type says what one item is: \verb|pointer[u8]| points at
+bytes. The item is a number of one size: \verb|u8| or \verb|i8| (1
+byte), \verb|u16| or \verb|i16| (2), \verb|u32| or \verb|i32| (4), or
+\verb|int| or \verb|float| (8).
+
+\verb|allocate(u8, 16)| takes the item first and then how many, and
+gives a \verb|pointer[u8]| to sixteen bytes that are all zero.
+\verb|p[i]| is item \verb|i|, counted from 0. \verb|p + 1| is the
+address of the next \emph{item}, not the next byte, as in C.
+\verb|free(p)| gives the memory back, and wants the pointer that
+\verb|allocate| gave, not one worked out from it.
+
+Everything else about a pointer is safe, and needs no block:
+
+\begin{zeno}
+let bytes = allocate(u8, 16)
+let second = bytes + 1
+print(second - 1 == bytes, bytes)
+let all = [bytes, second]
+unsafe {
+    free(bytes)
+}
+\end{zeno}
+
+An address that points nowhere is harmless until somebody reads or
+writes through it.
+
+\section{What zeno run catches}
+
+A compiled program holds an address and nothing more, as a C program
+does. \verb|zeno run| holds more: behind each pointer it keeps the
+block, its length, and whether it was freed. So it catches the four
+classic mistakes at the line that makes them, and says what a compiled
+program would have done instead:
+
+\begin{zeno}[fails=yes]
+let a = allocate(u8, 16)
+let b = allocate(u8, 16)
+unsafe {
+    a[24] = 7
+    print(b[0])
+}
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let a = allocate(u8, 4)
+unsafe {
+    free(a)
+    print(a[0])
+}
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let a = allocate(u8, 4)
+unsafe {
+    free(a)
+    free(a)
+}
+\end{zeno}
+
+Built with \verb|--no-collector|, the first program runs to its end and
+prints 7: in the pool, \verb|b| lies just after \verb|a|, so item 24 of
+\verb|a| is item 0 of \verb|b|. Nothing went wrong that the machine
+could see. That is the whole danger, and the reason to run a program
+under \verb|zeno run| first.
+
+\section{Registers}
+
+A register (\hyperref[ch-board]{The Board}) is made with its size and
+address, \verb|register(u32, 0x4000_4400)|, and its type is
+\verb|Register[u32]|. Making one and passing it around is safe;
+\verb|read()| and \verb|write(v)| go inside the block. On a real board
+a write is one line of C through a \verb|volatile| pointer, which tells
+the C compiler that somebody else is watching this memory: it may not
+skip the access, repeat it or move it.
+
+\section{A driver}
+
+This program from the \verb|examples| folder is a driver for a made-up
+serial port. Bytes wait in a queue whose memory the program asks for
+and gives back by hand, and go out through three registers. Each line
+that Zeno cannot check is inside \verb|unsafe|:
+
+\begin{zeno}[src=examples/driver.zeno]
+\end{zeno}
+
+\verb|zeno run|, the VM, and every kind of compiled build print these
+same lines.
+
+\section{Memory by hand, and the other two}
+
+Memory from \verb|allocate| is apart from the collector and from
+ownership: the collector never looks at it, and no block's end frees
+it. In a build with no collector it comes from the pool, like
+everything else. A list, in the same program, is still looked after
+for you. Only what was asked for with \verb|allocate| is yours to free.
+
+\begin{summary}
+\verb|allocate(T, n)| gives a \verb|pointer[T]| to \verb|n| zeroed
+items, and \verb|free(p)| gives it back. Reading and writing through a
+pointer, \verb|free|, and reading and writing a register go inside
+\verb|unsafe { }|, which allows those and changes nothing else.
+Working out, comparing and keeping addresses is safe. \verb|zeno run|
+catches out-of-bounds use, use after free, double frees and freeing a
+moved pointer; a compiled program does not.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Allocate ten \verb|u16|s, fill them with the squares of 0 to 9,
+  and print them. What happens with the square of 300?
+\item Write a function that copies \verb|n| items from one pointer to
+  another, and test it under \verb|zeno run| with an \verb|n| that is
+  too big.
+\item In \verb|driver.zeno|, find each \verb|unsafe| block and say what
+  could go wrong in it.
+\item Take a pointer one item on with \verb|+ 1| and \verb|free| it.
+  Read the message.
+\end{enumerate}
+\end{tryit}
