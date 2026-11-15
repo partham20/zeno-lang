@@ -645,6 +645,10 @@ struct ClassInfo {
     owned: bool,
     fields: RefCell<Vec<Slot>>,
     methods: RefCell<HashMap<String, Rc<FunctionInfo>>>,
+    /// The fields and methods declared `private`, and the file the class
+    /// is written in: the only file that can use them.
+    private: Vec<String>,
+    file: usize,
     /// As for a function (`FunctionInfo::above`): the defaults of the
     /// fields are worked out when an object is built, and may use these.
     above: Rc<[String]>,
@@ -3033,6 +3037,9 @@ impl Checker {
             ExprKind::Field { object, name } => match self.look(object, env) {
                 Ty::Instance(class) => {
                     let field = class.fields.borrow().iter().find(|f| f.name == *name).cloned();
+                    if self.kept_private(&class, name, span) {
+                        return (Ty::Invalid, Ty::Invalid, None);
+                    }
                     match field {
                         // Putting a new owned value in a field frees the
                         // old one. Somebody who was lent the object may be
@@ -4684,10 +4691,30 @@ impl Checker {
         }
     }
 
+    /// Is `name` a field or a method that `class` keeps to the file it
+    /// is written in, and is `span` in another file? Then this says so.
+    fn kept_private(&mut self, class: &ClassInfo, name: &str, span: Span) -> bool {
+        let kept = span.file() != class.file && class.private.iter().any(|private| private == name);
+        if kept {
+            self.error(
+                format!(
+                    "`{name}` is private in the class `{}`: only the file that declares the class can use it. \
+                     To use it from another file, take the word `private` off where it is declared",
+                    class.name
+                ),
+                span,
+            );
+        }
+        kept
+    }
+
     /// The type of `object.name`.
     fn field(&mut self, object: &Ty, name: &str, span: Span) -> Ty {
         match object {
             Ty::Instance(class) => {
+                if self.kept_private(class, name, span) {
+                    return Ty::Invalid;
+                }
                 if let Some(field) = class.fields.borrow().iter().find(|f| f.name == name) {
                     return field.ty.clone();
                 }
@@ -4785,6 +4812,19 @@ impl Checker {
             }
             Ty::Class(class) => {
                 let fields = class.fields.borrow().clone();
+                // Whoever builds an object fills in its fields, and
+                // another file cannot see the private ones.
+                let kept = fields.iter().find(|field| class.private.contains(&field.name));
+                if let (true, Some(field)) = (span.file() != class.file, kept) {
+                    return self.error(
+                        format!(
+                            "`{}` has the private field `{}`, so only the file that declares the class can build one. \
+                             Write a function in that file that builds one and returns it, and call that function here",
+                            class.name, field.name
+                        ),
+                        span,
+                    );
+                }
                 self.arguments(&class.name, &fields, &arguments, span);
                 // The defaults of the fields are worked out here, where
                 // the object is built. One that uses a variable declared
@@ -6176,6 +6216,8 @@ fn class_info(
         owned: decl.owned || one_owner,
         fields: RefCell::new(Vec::new()),
         methods: RefCell::new(HashMap::new()),
+        private: decl.private.clone(),
+        file: span.file(),
         above: above.clone(),
         env: env.clone(),
         defaults,
@@ -6278,6 +6320,54 @@ mod tests {
 
     fn strict_ok(source: &str) {
         assert_eq!(check(source, true), Vec::<String>::new(), "\n{source}");
+    }
+
+    #[test]
+    fn a_private_field_or_method_is_for_the_file_of_its_class() {
+        let counter = "==> counter.zeno\n\
+            class Counter {\n    private count: int = 0\n    step: int = 1\n\n    \
+            function bump(self) {\n        self.count = self.next()\n    }\n\n    \
+            private function next(self) -> int {\n        return self.count + self.step\n    }\n}\n\n\
+            function counter() -> Counter {\n    return Counter()\n}\n\n\
+            class Open {\n    step: int = 1\n\n    private function inner(self) -> int {\n        return self.step\n    }\n}\n\n\
+            class Stack[T] {\n    private items: list[T]\n\n    function size(self) -> int {\n        return len(self.items)\n    }\n}\n";
+        let check = |main: &str| -> Vec<String> {
+            let program = crate::modules::testing::program(&format!("import counter\n{main}\n{counter}"));
+            super::check(&program, false).into_iter().map(|error| error.message).collect()
+        };
+        let private = |name: &str, class: &str| {
+            vec![format!(
+                "`{name}` is private in the class `{class}`: only the file that declares the class can use it. \
+                 To use it from another file, take the word `private` off where it is declared"
+            )]
+        };
+        let build = |class: &str, field: &str| {
+            vec![format!(
+                "`{class}` has the private field `{field}`, so only the file that declares the class can build one. \
+                 Write a function in that file that builds one and returns it, and call that function here"
+            )]
+        };
+        // What is not private is used as ever.
+        assert_eq!(check("let c = counter.counter()\nc.bump()\nc.step = 2\nprint(counter.Open().step)"), Vec::<String>::new());
+        // A private field cannot be read, given a value, or filled in.
+        assert_eq!(check("let c = counter.counter()\nprint(c.count)"), private("count", "counter.Counter"));
+        assert_eq!(check("let c = counter.counter()\nc.count = 4"), private("count", "counter.Counter"));
+        assert_eq!(check("let c = counter.counter()\nc.count += 4"), private("count", "counter.Counter"));
+        assert_eq!(check("let c = counter.Counter()"), build("counter.Counter", "count"));
+        assert_eq!(check("let s = counter.Stack([1])"), build("counter.Stack[int]", "items"));
+        // A private method cannot be called or kept. A class that has
+        // one can still be built: there is nothing to fill in.
+        assert_eq!(check("let o = counter.Open()\nprint(o.inner())"), private("inner", "counter.Open"));
+        assert_eq!(check("let o = counter.Open()\nlet f = o.inner"), private("inner", "counter.Open"));
+        // A function with no types written is checked with what it is
+        // given, so it does not get round this.
+        assert_eq!(
+            check("function peek(c) {\n    return c.count\n}\nprint(peek(counter.counter()))"),
+            private("count", "counter.Counter")
+        );
+        // In the file of the class nothing is hidden.
+        ok("class Counter {\n    private count: int = 0\n\n    private function next(self) -> int {\n        return self.count + 1\n    }\n}\n\
+            let c = Counter(3)\nc.count = c.next()\nprint(c.count)");
     }
 
     // ----- Written types are checked -----
