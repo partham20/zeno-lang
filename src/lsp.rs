@@ -242,7 +242,7 @@ impl Server {
         let own = Path::new(path).parent().unwrap_or(Path::new("")).to_path_buf();
         let mut folder = own.clone();
         loop {
-            let has = |name: &str| self.read(&folder.join(name).display().to_string()).is_some();
+            let has = |name: &str| self.read(&crate::modules::shown(&folder.join(name))).is_some();
             if has(package::FILE) || has("main.zeno") {
                 return folder;
             }

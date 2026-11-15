@@ -87,7 +87,7 @@ pub fn load_in(folder: &Path, path: &str, source: String, read: &dyn Fn(&str) ->
         files: Vec::new(),
         units: Vec::new(),
         numbers: HashMap::new(),
-        paths: HashMap::from([(tidy(Path::new(path)).display().to_string(), String::new())]),
+        paths: HashMap::from([(shown(&tidy(Path::new(path))), String::new())]),
         order: Vec::new(),
         loading: Vec::new(),
         missing: HashSet::new(),
@@ -406,7 +406,7 @@ impl Loader<'_> {
     /// Read the program's `zeno.package`, if it has one, and through it
     /// the `zeno.package` of every package the program needs.
     fn packages_needed(&mut self) {
-        let path = self.packages[0].folder.join(package::FILE).display().to_string();
+        let path = shown(&self.packages[0].folder.join(package::FILE));
         let Some(source) = (self.read)(&path) else {
             return; // A program needs no `zeno.package` until it needs a package.
         };
@@ -452,15 +452,15 @@ impl Loader<'_> {
                     format!(
                         "two packages called `{name}` are needed: the one in `{}` and the one in `{}`. \
                          A program has one package of each name. Make the `needs` lines agree",
-                        other.display(),
-                        folder.display()
+                        shown(other),
+                        shown(&folder)
                     ),
                     need.span,
                 ));
             }
             return;
         }
-        let path = folder.join(package::FILE).display().to_string();
+        let path = shown(&folder.join(package::FILE));
         let Some(source) = (self.read)(&path) else {
             let message = match &need.source {
                 package::Source::Folder(written) => format!(
@@ -481,7 +481,7 @@ impl Loader<'_> {
             return self.errors.push(Error::new(
                 format!(
                     "the package in `{}` is called `{}`, not `{name}`. Write `needs {} ...`",
-                    folder.display(),
+                    shown(&folder),
                     theirs.name,
                     theirs.name
                 ),
@@ -509,7 +509,7 @@ impl Loader<'_> {
         let file = |folder: &Path, parts: &[&str]| {
             let mut path = folder.to_path_buf();
             parts.iter().for_each(|part| path.push(part));
-            format!("{}.zeno", path.display())
+            format!("{}.zeno", shown(&path))
         };
         let own = file(&self.packages[from].folder, &parts);
         let Some(&needed) = self.packages[from].needs.get(parts[0]) else {
@@ -577,6 +577,22 @@ impl Loader<'_> {
             )
         }
     }
+}
+
+/// A path as Zeno writes it, in a message and wherever it keeps one as
+/// text: with `/` between its parts, on every system.
+///
+/// Windows writes `\` there and takes `/` as well. A path in a
+/// `zeno.package` is written with `/`, so a path made from one and
+/// shown as Windows would show it comes out as `lib/filters\zeno.package`.
+/// And an editor names a file with `/` on every system, so the file it
+/// has open and the file an `import` looks for would be two names for
+/// one file. With one way of writing a path there is one name, and a
+/// message reads the same wherever it is given. (Elsewhere a `\` can
+/// be part of a file's name, so it is only changed on Windows.)
+pub fn shown(path: &Path) -> String {
+    let path = path.display().to_string();
+    if cfg!(windows) { path.replace('\\', "/") } else { path }
 }
 
 /// A path with its `.` and `..` steps worked out, as far as the path
@@ -1828,7 +1844,7 @@ mod tests {
 
     #[test]
     fn a_path_is_tidied() {
-        let tidy = |path: &str| super::tidy(std::path::Path::new(path)).display().to_string();
+        let tidy = |path: &str| super::shown(&super::tidy(std::path::Path::new(path)));
         assert_eq!(tidy("examples/thermostat/../filters"), "examples/filters");
         assert_eq!(tidy("./a/./b"), "a/b");
         assert_eq!(tidy("../filters"), "../filters");

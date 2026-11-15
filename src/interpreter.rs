@@ -1054,7 +1054,7 @@ mod tests {
 
     /// A place for a test's file that no other test uses.
     fn scratch(name: &str) -> String {
-        std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())).display().to_string()
+        crate::modules::shown(&std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())))
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn a_file_that_cannot_be_used_is_a_file_error() {
         let path = scratch("missing.txt");
-        let folder = std::env::temp_dir().display().to_string();
+        let folder = crate::modules::shown(&std::env::temp_dir());
         assert_eq!(
             error(&format!("import files\nprint(files.read(\"{path}\"))")),
             format!("uncaught FileError: there is no file `{path}`")

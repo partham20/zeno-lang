@@ -11567,7 +11567,7 @@ print(flip(["one": 1, "two": 2]), tally(["a": 2.5], "b", 0.0), tally(["a": "x"],
 
     /// A place for a test's file that no other test uses.
     fn scratch(name: &str) -> String {
-        std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())).display().to_string()
+        crate::modules::shown(&std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())))
     }
 
     /// The `files` module: every program here leaves no file behind, so
@@ -11633,7 +11633,7 @@ try {
 
     #[test]
     fn files_are_the_same_in_every_build() {
-        let folder = std::env::temp_dir().display().to_string();
+        let folder = crate::modules::shown(&std::env::temp_dir());
         let source = FILES.replace("PATH", &scratch("every-build.txt")).replace("FOLDER", &folder);
         no_collector_as_interpreter("files", &source);
     }

@@ -31,6 +31,7 @@ use std::process::Command;
 use crate::builtins;
 use crate::error::Error;
 use crate::lexer;
+use crate::modules::shown;
 use crate::token::{Span, Token, TokenKind};
 
 /// The file that makes a folder a package.
@@ -237,7 +238,7 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
     if path.exists() {
         return Err(format!(
             "there is a `{}` here already. `zeno new` makes a new folder, and writes nothing into one that is there",
-            path.display()
+            shown(&path)
         ));
     }
 
@@ -275,7 +276,7 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
              test \"hello says who it greets\" {{\n    assert hello(\"Ada\") == \"Hello, Ada, from {name}.\"\n}}\n"
         )
     };
-    let at = |file: &str| path.join(file).display().to_string();
+    let at = |file: &str| shown(&path.join(file));
     let files: Vec<(&str, String, &str)> = match package {
         false => vec![
             (FILE, manifest, "the name of the program, and the packages it needs"),
@@ -305,7 +306,7 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
         ],
     };
 
-    fs::create_dir_all(path).map_err(|why| format!("cannot make the folder `{}`: {why}", path.display()))?;
+    fs::create_dir_all(path).map_err(|why| format!("cannot make the folder `{}`: {why}", shown(&path)))?;
     let mut said = vec![format!("Made the {what} `{name}` in {}", at(""))];
     for (file, text, purpose) in files {
         // The module of a package is called what the package is called.
@@ -314,8 +315,8 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
         said.push(format!("  {file:<width$}  {purpose}", width = name.len().max(8) + 5));
     }
     said.push(match package {
-        false => format!("Run it with `zeno run {}`, and its tests with `zeno test {}`.", at("main.zeno"), path.display()),
-        true => format!("Run its tests with `zeno test {}`.", path.display()),
+        false => format!("Run it with `zeno run {}`, and its tests with `zeno test {}`.", at("main.zeno"), shown(&path)),
+        true => format!("Run its tests with `zeno test {}`.", shown(&path)),
     });
     Ok(said)
 }
@@ -376,8 +377,8 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
                 let (commit, news) = get(&place, url, at, wanted.map(|package| package.commit.as_str()))?;
                 let short: String = commit.chars().take(7).collect();
                 said.push(match news {
-                    true => format!("Fetched {} {at} ({short}) into {}", need.name, place.display()),
-                    false => format!("{} {at} ({short}) is already in {}", need.name, place.display()),
+                    true => format!("Fetched {} {at} ({short}) into {}", need.name, shown(&place)),
+                    false => format!("{} {at} ({short}) is already in {}", need.name, shown(&place)),
                 });
                 pinned.push(Pinned { name: need.name.clone(), url: url.clone(), at: at.clone(), commit });
             }
@@ -410,8 +411,8 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
         let text = write_lock(&pinned);
         // A fetch that changed nothing leaves the file as it is.
         if fs::read_to_string(&lock_file).ok().as_deref() != Some(text.as_str()) {
-            fs::write(&lock_file, text).map_err(|err| format!("cannot write `{}`: {err}", lock_file.display()))?;
-            said.push(format!("Wrote {}", lock_file.display()));
+            fs::write(&lock_file, text).map_err(|err| format!("cannot write `{}`: {err}", shown(&lock_file)))?;
+            said.push(format!("Wrote {}", shown(&lock_file)));
         }
     }
     Ok(said)
@@ -435,9 +436,9 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 /// The `zeno.package` of the package in `folder`.
 fn read_manifest(folder: &Path) -> Result<Manifest, String> {
     let path = folder.join(FILE);
-    let text = fs::read_to_string(&path).map_err(|_| format!("there is no file `{}`", path.display()))?;
+    let text = fs::read_to_string(&path).map_err(|_| format!("there is no file `{}`", shown(&path)))?;
     parse(&text, 0).map_err(|errors| {
-        format!("`{}` has a mistake on line {}: {}", path.display(), errors[0].span.line_in_file(), errors[0].message)
+        format!("`{}` has a mistake on line {}: {}", shown(&path), errors[0].span.line_in_file(), errors[0].message)
     })
 }
 
@@ -475,11 +476,11 @@ fn get(place: &Path, url: &str, at: &str, pinned: Option<&str>) -> Result<(Strin
         if place.exists() {
             return Err(format!(
                 "`{}` is in the way: it is not a package that `zeno fetch` put there. Move it or remove it",
-                place.display()
+                shown(&place)
             ));
         }
         if let Some(parent) = place.parent() {
-            fs::create_dir_all(parent).map_err(|err| format!("cannot make the folder `{}`: {err}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|err| format!("cannot make the folder `{}`: {err}", shown(&parent)))?;
         }
         git(None, &["clone", "--quiet", url, &place.to_string_lossy()]).map_err(cannot)?;
     }
@@ -602,8 +603,8 @@ mod tests {
         let work = scratch("fetch");
         // Two packages somebody else keeps: `units`, which needs `prefix`.
         let (units, prefix) = (work.join("far/units"), work.join("far/prefix"));
-        let prefix_url = format!("file://{}", prefix.display());
-        let units_url = format!("file://{}", units.display());
+        let prefix_url = format!("file://{}", shown(&prefix));
+        let units_url = format!("file://{}", shown(&units));
         let Some(prefix_first) = repository(&prefix, &[(FILE, "package prefix\n"), ("prefix.zeno", "let kilo = 1000\n")], "one") else {
             eprintln!("no git found; skipping this test");
             return;
