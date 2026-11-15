@@ -94,6 +94,15 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             line("unsafe", depth, out);
             block(body, depth + 1, out);
         }
+        StmtKind::Test { name, body } => {
+            line(&format!("test {name:?}"), depth, out);
+            block(body, depth + 1, out);
+        }
+        StmtKind::Assert(condition) => line(&format!("assert {}", expr(condition)), depth, out),
+        StmtKind::AssertRaises { error, body } => {
+            line(&format!("assert raises {error}"), depth, out);
+            block(body, depth + 1, out);
+        }
         StmtKind::For { variable, second, iterable, body } => {
             let names = match second {
                 Some(second) => format!("{variable}, {second}"),

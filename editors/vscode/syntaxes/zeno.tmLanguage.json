@@ -108,7 +108,11 @@
       "patterns": [
         {
           "name": "keyword.control.zeno",
-          "match": "\\b(if|else|for|in|while|break|continue|match|case|try|except|raise|raises|return|import|from|as)\\b"
+          "match": "\\b(if|else|for|in|while|break|continue|match|case|try|except|raise|raises|return|import|from|as|assert)\\b"
+        },
+        {
+          "name": "keyword.control.zeno",
+          "match": "^\\s*test(?=\\s+[\"'])"
         },
         { "name": "keyword.operator.word.zeno", "match": "\\b(and|or|not|is)\\b" }
       ]

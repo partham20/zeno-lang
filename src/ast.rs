@@ -29,6 +29,17 @@ pub struct Program {
     pub modules: Vec<ModuleFile>,
 }
 
+impl Program {
+    /// A build leaves the tests of a program out. They are not in what
+    /// is built, and they are not held to the rules of the build: a
+    /// test may share a list in a program that is built with no
+    /// collector (decision 10.20).
+    pub fn without_tests(mut self) -> Program {
+        self.statements.retain(|statement| !matches!(statement.kind, StmtKind::Test { .. }));
+        self
+    }
+}
+
 /// A file that the program imports.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModuleFile {
@@ -90,6 +101,14 @@ pub enum StmtKind {
     /// `unsafe { ... }`: the only place where a pointer may be read
     /// through, written through or freed. See docs/unsafe.md.
     Unsafe(Block),
+
+    /// `test "a new ring is empty" { ... }`, at the top of a file. Run
+    /// by `zeno test`, and left out of a build. See docs/testing.md.
+    Test { name: String, body: Block },
+    /// `assert total == 6`: what must be so, in a test.
+    Assert(Expr),
+    /// `assert raises ValueError { ... }`: the block must raise that.
+    AssertRaises { error: String, body: Block },
 
     Return(Option<Expr>),
     Raise(Expr),
@@ -211,6 +230,8 @@ fn fresh_block(block: &mut Block) {
                 handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body));
             }
             StmtKind::Unsafe(body) => fresh_block(body),
+            StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => fresh_block(body),
+            StmtKind::Assert(condition) => fresh_expr(condition),
             StmtKind::Break | StmtKind::Continue | StmtKind::Import { .. } => {}
         }
     }

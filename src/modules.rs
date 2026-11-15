@@ -1016,6 +1016,12 @@ impl<'a> Renamer<'a> {
                 }
             }
             StmtKind::Unsafe(body) => self.block(body),
+            StmtKind::Test { body, .. } => self.block(body),
+            StmtKind::Assert(condition) => self.expr(condition),
+            StmtKind::AssertRaises { error, body } => {
+                self.named(error, span);
+                self.block(body);
+            }
             StmtKind::Break | StmtKind::Continue => {}
 
             // At the top of the file `Loader::file` has seen to it.
@@ -1333,6 +1339,11 @@ pub mod testing {
             Ok(program) => program,
             Err(errors) => panic!("the test program has mistakes: {:?}\n{source}", errors[0].message),
         }
+    }
+
+    /// The program as a build gets it: joined, and without its tests.
+    pub fn built(source: &str) -> Program {
+        program(source).without_tests()
     }
 
     /// Where a compiled program says an error is: `test.zeno:3:5`, or
@@ -1820,6 +1831,29 @@ mod tests {
         assert_eq!(tidy("a/../../b"), "../b");
         assert_eq!(tidy("."), "");
         assert_eq!(tidy("/srv/a/.."), "/srv");
+    }
+
+    #[test]
+    fn a_test_is_its_own_files() {
+        // A test sees what is private to the file it is written in, and
+        // `zeno test` runs the tests of the first file only: those of an
+        // imported file are run when that file is tested.
+        let program = super::testing::program(
+            "import kept\n\
+             test \"from outside\" {\n    assert kept.outer() == 3\n}\n\
+             ==> kept.zeno\n\
+             private let limit = 3\n\
+             function outer() -> int {\n    return limit\n}\n\
+             test \"from inside\" {\n    assert limit == 4\n    assert raises ValueError {\n        outer()\n    }\n}\n",
+        );
+        let complaints = crate::checker::check(&program, true);
+        assert!(complaints.is_empty(), "{complaints:?}");
+        let (output, tested) = crate::interpreter::run_tests(&program, true, crate::value::testing::outside());
+        assert_eq!(output, "  ok      from outside\n");
+        assert_eq!(tested.map(|tested| tested.len()).ok(), Some(1));
+        // A build has no tests in it.
+        let built = program.without_tests();
+        assert!(built.statements.iter().all(|statement| !matches!(statement.kind, crate::ast::StmtKind::Test { .. })));
     }
 
     #[test]

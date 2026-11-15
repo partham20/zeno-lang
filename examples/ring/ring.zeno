@@ -52,11 +52,59 @@ class Ring {
 
 # Only this file can build a `Ring`, because only this file can fill in
 # its private fields. So it gives the others a function that does.
-function ring(size: int) -> Ring {
+function ring(size: int) -> Ring raises ValueError {
+    if size < 1 {
+        raise ValueError("a ring has room for one byte at least")
+    }
     return Ring([0 for slot in range(size)], 0, 0)
 }
 
 # A function the other files have no use for.
 private function wrapped(place: int, size: int) -> int {
     return place % size
+}
+
+# The tests of this module. `zeno test examples/ring` runs them, and a
+# build leaves them out. They stand in the file they test, so they can
+# see what is private to it.
+
+test "a new ring is empty" {
+    let queue = ring(4)
+    assert queue.size() == 0
+    assert queue.room() == 4
+    assert queue.get() is none
+}
+
+test "bytes come out in the order they went in" {
+    let queue = ring(3)
+    queue.put(10)
+    queue.put(20)
+    assert queue.get() == 10
+    assert queue.get() == 20
+    assert queue.size() == 0
+}
+
+test "a full ring keeps what it has" {
+    let queue = ring(2)
+    assert queue.put(1)
+    assert queue.put(2)
+    assert not queue.put(3)
+    assert queue.slots == [1, 2]
+}
+
+test "the ring goes round" {
+    let queue = ring(2)
+    queue.put(1)
+    queue.put(2)
+    queue.get()
+    queue.put(3)
+    assert queue.first == 1
+    assert queue.slots == [3, 2]
+    assert wrapped(5, 4) == 1
+}
+
+test "a ring of no size is refused" {
+    assert raises ValueError {
+        ring(0)
+    }
 }

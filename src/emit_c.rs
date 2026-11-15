@@ -2233,6 +2233,8 @@ impl Emitter<'_> {
 
             // The checker has seen to what is written inside. In C it is
             // a block like any other: C is unsafe all the way through.
+            // A build leaves the tests of a program out (decision 10.20).
+            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
             StmtKind::Unsafe(body) => {
                 self.line("{");
                 self.block(body)?;
@@ -5722,6 +5724,7 @@ pub fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<St
             block(body, inside, names);
         }
         StmtKind::Unsafe(body) => block(body, inside, names),
+        StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
         StmtKind::For { iterable, body, .. } => {
             names_in_expr(iterable, inside, names);
             block(body, inside, names);
@@ -5915,7 +5918,7 @@ pub(crate) mod tests {
     use std::process::Command;
 
     fn compile(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         if let Some(error) = errors.first() {
             let line = source.lines().nth(error.span.line.saturating_sub(1)).unwrap_or_default();
@@ -5926,7 +5929,7 @@ pub(crate) mod tests {
 
     /// The same, as `zeno build --firmware` compiles it.
     fn compile_firmware(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Firmware).map_err(|error| error.message)
@@ -7715,7 +7718,7 @@ function main() -> int raises Refused {
 
     /// The same, as `zeno build --no-collector` compiles it.
     fn compile_no_collector(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
         if let Some(error) = errors.first() {
             // Who owns what is the checker's to say in this build.
@@ -7734,7 +7737,7 @@ function main() -> int raises Refused {
             Ok(c) => c,
             Err(message) => {
                 // Say where, when it is the checker that refused.
-                let program = crate::modules::testing::program(source);
+                let program = crate::modules::testing::built(source);
                 let (errors, _) = crate::checker::check_by(&program, Build::NoCollector.rules());
                 let place = errors.first().map(|error| crate::modules::testing::place(&program, error.span));
                 panic!("the build with no collector refused this: {message}\nat {}", place.unwrap_or_default())
@@ -11484,6 +11487,29 @@ print(flip(["one": 1, "two": 2]), tally(["a": 2.5], "b", 0.0), tally(["a": "x"],
         // The keys are text, and the list the loop walks has copies of them.
         assert!(program.contains("    zeno_list_drop_text(t"), "{program}");
         assert!(program.contains("    zeno_dict_drop(z_ages);\n}"), "{program}");
+    }
+
+    #[test]
+    fn a_build_leaves_the_tests_out() {
+        // The tests of a program are not in what is built, and are not
+        // held to the rules of the build: this one shares a list, which
+        // a build with no collector would refuse in the program itself.
+        let source = "function double(n: int) -> int {\n    return n * 2\n}\n\n\
+                      test \"double\" {\n    let shared = [1, 2]\n    let again = shared\n    \
+                      assert double(len(shared) + len(again)) == 8\n    print(\"tested\")\n}\n\n\
+                      print(double(21))\n";
+        no_collector_as_interpreter("with-tests", source);
+        let c = compile(source).unwrap();
+        assert!(!c.contains("tested"), "the test is in the C");
+        // The example has its tests in the module they test.
+        no_collector_as_interpreter(
+            "ring-tests",
+            &format!(
+                "{}==> ring.zeno\n{}",
+                include_str!("../examples/ring/main.zeno"),
+                include_str!("../examples/ring/ring.zeno")
+            ),
+        );
     }
 
     #[test]

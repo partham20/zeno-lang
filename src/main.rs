@@ -35,7 +35,7 @@ mod vm;
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -54,6 +54,9 @@ fn usage() {
     println!("                            files it imports are joined into");
     println!("  zeno bytecode <file.zeno> show the bytecode `zeno run --vm` runs");
     println!("  zeno build <file.zeno>    compile to C, then to a program you can run");
+    println!("  zeno test [file|folder]   run the tests written in a file: each");
+    println!("                            `test \"name\" {{ ... }}`. A folder stands for");
+    println!("                            the files in it, and no name for this folder");
     println!("  zeno format <file.zeno>   lay the file out the way Zeno lays programs");
     println!("                            out. Several files can be named, and a");
     println!("                            folder stands for the files in it");
@@ -234,9 +237,97 @@ fn format(path: &str, check: bool) -> Option<()> {
     }
 }
 
+/// The folder of the program that the file at `path` belongs to: the
+/// nearest one, from the file's own upward, that has a `zeno.package`
+/// or a `main.zeno` in it. With neither, the file's own folder. This
+/// is where the file's imports are looked for, and the language
+/// server finds it the same way.
+fn program_folder(path: &str) -> PathBuf {
+    let own = Path::new(path).parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut folder = own.clone();
+    loop {
+        if folder.join(package::FILE).is_file() || folder.join("main.zeno").is_file() {
+            return folder;
+        }
+        // The empty path is the folder this is run in, and the last one
+        // looked in: a file named `drivers/uart.zeno` is not looked for
+        // above it.
+        if folder.as_os_str().is_empty() || !folder.pop() {
+            return own;
+        }
+    }
+}
+
+/// How the tests of one file went.
+struct Tally {
+    tests: usize,
+    failed: usize,
+}
+
+/// `zeno test <file>`: run the file as `zeno run` would, and then each
+/// test that is written in it. `asked` says that the file was named on
+/// the command line, and not found in a folder: then a file with no
+/// test in it is worth a line. `None` if the tests could not be run: a
+/// mistake in the program, or an error before its tests.
+fn test(path: &str, strict: bool, asked: bool) -> Option<Tally> {
+    let source = read(path)?;
+    // The file alone says whether it has tests. One with none is not run.
+    let tokens = lex(path, &source)?;
+    let has_tests = match parser::parse(tokens) {
+        Ok(program) => program.statements.iter().any(|statement| matches!(statement.kind, ast::StmtKind::Test { .. })),
+        Err(error) => {
+            report(&alone(path, &source), &error);
+            return None;
+        }
+    };
+    if !has_tests {
+        if asked {
+            value::print_line(&format!("{path} has no tests. A test is written `test \"what it checks\" {{ ... }}`"));
+        }
+        return Some(Tally { tests: 0, failed: 0 });
+    }
+    let loaded = modules::load_in(&program_folder(path), path, source, &|path| fs::read_to_string(path).ok());
+    let files = loaded.files;
+    let program = match loaded.program {
+        Ok(program) => program,
+        Err(errors) => {
+            errors.iter().for_each(|error| report(&files, error));
+            return None;
+        }
+    };
+    let errors = checker::check_by(&program, checker::Rules { strict, one_owner: false, firmware: false }).0;
+    if !errors.is_empty() {
+        errors.iter().for_each(|error| report(&files, error));
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. No test of {path} was run.", errors.len());
+        return None;
+    }
+    value::print_line(path);
+    let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()));
+    let tested = match tested {
+        Ok(tested) => tested,
+        Err(error) => {
+            report(&files, &error);
+            eprintln!("{path} stopped with this error before its tests. None of them was run.");
+            return None;
+        }
+    };
+    // What went wrong in each test that failed, under the list.
+    for test in &tested {
+        if let Some(failure) = &test.failure {
+            value::print_line("");
+            value::print_line(&format!("FAILED: {}", test.name));
+            value::print_text(&shown(&files, failure));
+        }
+    }
+    Some(Tally { tests: tested.len(), failed: tested.iter().filter(|test| test.failure.is_some()).count() })
+}
+
 /// `zeno check <file>`: run the type checker, printing every error it finds.
 fn check(path: &str, rules: checker::Rules) -> Option<(Vec<modules::File>, ast::Program)> {
     let (files, program) = load(path)?;
+    // `check --no-collector` checks what that build would build.
+    let program = if rules.one_owner { program.without_tests() } else { program };
     let errors = checker::check_by(&program, rules).0;
     for error in &errors {
         report(&files, error);
@@ -289,6 +380,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.
     let (files, program) = load(path)?;
+    let program = program.without_tests();
     let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
         report(&files, error);
@@ -348,6 +440,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
 /// text, printing and memory, which a C build has pasted in front of it.
 fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     let (files, program) = load(path)?;
+    let program = program.without_tests();
     let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
         report(&files, error);
@@ -419,28 +512,33 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
 /// The position says which file of the program it is in (`Span::file`),
 /// and the line shown is that file's.
 fn report(files: &[modules::File], error: &error::Error) {
+    eprint!("{}", shown(files, error));
+}
+
+/// An error as it is shown: what is wrong, where, and the line itself
+/// with a mark under the place.
+fn shown(files: &[modules::File], error: &error::Error) -> String {
     let file = &files[error.span.file().min(files.len() - 1)];
     let (path, line, col) = (&file.path, error.span.line_in_file(), error.span.col);
     let text = file.source.lines().nth(line.saturating_sub(1)).unwrap_or("");
     let gutter = line.to_string().len();
-
-    eprintln!("error: {}", error.message);
-    eprintln!("{:gutter$}--> {path}:{line}:{col}", "");
-    eprintln!("{:gutter$} |", "");
-    eprintln!("{line} | {text}");
     // Copy tabs from the source line into the padding so the caret lines up.
     let pad: String = text
         .chars()
         .take(col - 1)
         .map(|c| if c == '\t' { '\t' } else { ' ' })
         .collect();
-    eprintln!("{:gutter$} | {pad}^", "");
+    let mut out = format!("error: {}\n", error.message);
+    out += &format!("{:gutter$}--> {path}:{line}:{col}\n", "");
+    out += &format!("{:gutter$} |\n", "");
+    out += &format!("{line} | {text}\n");
+    out += &format!("{:gutter$} | {pad}^\n", "");
     if let Some(note) = &error.note {
         for line in note.lines() {
-            eprintln!("{:gutter$} = note: {line}", "");
+            out += &format!("{:gutter$} = note: {line}\n", "");
         }
     }
-    eprintln!();
+    out + "\n"
 }
 
 fn main() -> ExitCode {
@@ -535,6 +633,50 @@ fn main() -> ExitCode {
                 _ => ExitCode::FAILURE,
             }
         }
+        Some("test") => {
+            // `zeno test`, `zeno test ring.zeno`, `zeno test examples`. A
+            // folder stands for the `.zeno` files in it and below it,
+            // and no name at all for the folder this is run in.
+            let mut named = args[1..].to_vec();
+            if named.is_empty() {
+                named.push(".".to_string());
+            }
+            let mut files = Vec::new();
+            for path in &named {
+                match Path::new(path).is_dir() {
+                    true => zeno_files(Path::new(path), &mut files),
+                    false => files.push(path.clone()),
+                }
+            }
+            // `./ring.zeno`, found in the folder this is run in, is `ring.zeno`.
+            let mut files: Vec<String> =
+                files.iter().map(|path| path.strip_prefix("./").unwrap_or(path).to_string()).collect();
+            files.sort();
+            let asked = |path: &String| named.contains(path);
+            // Every file is tried, so that one run says everything.
+            let (mut tests, mut failed, mut stopped) = (0, 0, 0);
+            for path in &files {
+                match test(path, strict, asked(path)) {
+                    Some(tally) => {
+                        tests += tally.tests;
+                        failed += tally.failed;
+                    }
+                    None => stopped += 1,
+                }
+            }
+            value::print_line("");
+            value::print_line(&match tests {
+                0 => "No tests were run.".to_string(),
+                _ => format!("{}: {} passed, {} failed.", error::counted(tests, "test"), tests - failed, failed),
+            });
+            if stopped > 0 {
+                value::print_line(&format!("{} could not be run.", error::counted(stopped, "file")));
+            }
+            match failed + stopped {
+                0 => ExitCode::SUCCESS,
+                _ => ExitCode::FAILURE,
+            }
+        }
         Some("fetch") => {
             // `zeno fetch`, `zeno fetch --update`, `zeno fetch examples/thermostat`
             let update = args.iter().any(|arg| arg == "--update");
@@ -570,5 +712,56 @@ fn main() -> ExitCode {
             usage();
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder of files for one test, which no other test uses.
+    fn folder(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = env::temp_dir().join(format!("zeno-main-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (path, text) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().expect("a folder")).expect("the folder can be made");
+            fs::write(path, text).expect("the file can be written");
+        }
+        root
+    }
+
+    #[test]
+    fn zeno_test_runs_the_tests_of_each_file_in_its_own_program() {
+        let root = folder(
+            "tests",
+            &[
+                ("app/main.zeno", "import sensors\nprint(sensors.scale(1))\n"),
+                ("app/sensors.zeno", "function scale(n: int) -> int {\n    return n * 2\n}\n\ntest \"scale\" {\n    assert scale(3) == 6\n}\n"),
+                // A file in a folder below imports as it does in the
+                // program: from the folder that has `main.zeno`.
+                (
+                    "app/drivers/uart.zeno",
+                    "import sensors\n\ntest \"one\" {\n    assert sensors.scale(2) == 4\n}\n\ntest \"two\" {\n    assert sensors.scale(2) == 5\n}\n",
+                ),
+                ("app/broken.zeno", "test \"x\" {\n    assert nothing_here == 1\n}\n"),
+                ("app/stops.zeno", "print(1 // 0)\n\ntest \"x\" {\n    assert true\n}\n"),
+                ("alone/one.zeno", "test \"alone\" {\n    assert 1 + 1 == 2\n}\n"),
+            ],
+        );
+        let at = |path: &str| root.join(path).display().to_string();
+        assert_eq!(program_folder(&at("app/drivers/uart.zeno")), root.join("app"));
+        assert_eq!(program_folder(&at("alone/one.zeno")), root.join("alone"));
+
+        let counts = |path: &str| test(&at(path), false, true).map(|tally| (tally.tests, tally.failed));
+        assert_eq!(counts("app/sensors.zeno"), Some((1, 0)));
+        assert_eq!(counts("app/drivers/uart.zeno"), Some((2, 1)));
+        assert_eq!(counts("alone/one.zeno"), Some((1, 0)));
+        // A file with no test is not run, and is no failure.
+        assert_eq!(counts("app/main.zeno"), Some((0, 0)));
+        // A mistake in the file, or an error before its tests: none is run.
+        assert_eq!(counts("app/broken.zeno"), None);
+        assert_eq!(counts("app/stops.zeno"), None);
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -6,7 +6,9 @@ endif
 syntax keyword zenoDeclare let var const function class enum interface
 syntax keyword zenoModifier owned take strict unsafe private
 syntax keyword zenoControl if else for in while break continue match case
-syntax keyword zenoControl try except raise raises return import from as
+syntax keyword zenoControl try except raise raises return import from as assert
+" `test` is a name anywhere but at the start of a test: `test "what it checks" {`
+syntax match zenoControl "^\s*\zstest\ze\s\+[\"']"
 syntax keyword zenoWord and or not is
 syntax keyword zenoConstant true false none
 syntax keyword zenoSelf self

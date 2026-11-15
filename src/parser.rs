@@ -20,7 +20,7 @@ use crate::token::{Span, Token, TokenKind};
 
 /// Turn the tokens of a whole file into a syntax tree.
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
-    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new() };
+    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new(), in_test: false, tests: Vec::new() };
     let mut statements = Vec::new();
 
     parser.skip_newlines();
@@ -50,6 +50,10 @@ struct Parser {
     depth: usize,
     /// The names declared with `private` at the top of the file.
     private: Vec<String>,
+    /// Is this inside a `test`? Only there is `assert` written.
+    in_test: bool,
+    /// The names of the tests of this file so far.
+    tests: Vec<String>,
 }
 
 impl Parser {
@@ -155,6 +159,8 @@ impl Parser {
                                 type of a parameter: `frame: take Frame`",
             TokenKind::Strict => " `strict` is a word of the language, so it cannot be a name. It goes alone on the \
                                   first line of a file",
+            TokenKind::Assert => " `assert` is a word of the language, so it cannot be a name. It goes in a test: \
+                                  `assert total == 6`",
             _ => "",
         };
         let stop = if place.is_empty() { "" } else { "." };
@@ -231,6 +237,21 @@ impl Parser {
                 self.advance(); // unsafe
                 StmtKind::Unsafe(self.block()?)
             }
+            // `test "a new ring is empty" { ... }`. `test` is not a
+            // reserved word: it starts a test only here, at the start of
+            // a statement with text after it, which could be nothing
+            // else. Everywhere else it is a name (decision 10.16).
+            TokenKind::Ident(word) if word == "test" && matches!(self.peek_at(1), TokenKind::Str { .. }) => self.test()?,
+            TokenKind::Ident(word)
+                if word == "test"
+                    && (*self.peek_at(1) == TokenKind::LBrace
+                        || (matches!(self.peek_at(1), TokenKind::Ident(_)) && *self.peek_at(2) == TokenKind::LBrace)) =>
+            {
+                return self.error(
+                    "a test has a name, in quotes, that says what it checks: `test \"a new ring is empty\" { ... }`",
+                );
+            }
+            TokenKind::Assert => self.assert()?,
             TokenKind::Enum => self.enum_()?,
             TokenKind::If => self.if_statement()?,
             TokenKind::While => self.while_loop()?,
@@ -496,6 +517,67 @@ impl Parser {
             return Err(Error::new("`try` needs at least one `except`", span));
         }
         Ok(StmtKind::Try { body, handlers })
+    }
+
+    /// `test "a new ring is empty" { ... }`
+    fn test(&mut self) -> Result<StmtKind, Error> {
+        let span = self.span();
+        self.advance(); // test
+        let named = self.span();
+        let name = match self.advance() {
+            TokenKind::Str { value, formatted: false } => value,
+            _ => {
+                return Err(Error::new(
+                    "the name of a test is plain text, with nothing worked out in it. Take the `f` away",
+                    named,
+                ))
+            }
+        };
+        if self.depth > 0 {
+            return Err(Error::new(
+                "a test stands at the top of a file, and this one is inside a block. Move it out of the `{ }`",
+                span,
+            ));
+        }
+        if name.trim().is_empty() {
+            return Err(Error::new("a test needs a name that says what it checks", named));
+        }
+        if self.tests.contains(&name) {
+            return Err(Error::new(
+                format!(
+                    "two tests of this file are called \"{name}\". Give each its own name, so that a failure \
+                     says which one it is"
+                ),
+                named,
+            ));
+        }
+        self.tests.push(name.clone());
+        self.in_test = true;
+        let body = self.block();
+        self.in_test = false;
+        Ok(StmtKind::Test { name, body: body? })
+    }
+
+    /// `assert total == 6`, or `assert raises ValueError { ... }`
+    fn assert(&mut self) -> Result<StmtKind, Error> {
+        let span = self.span();
+        self.advance(); // assert
+        if !self.in_test {
+            return Err(Error::new(
+                "`assert` belongs in a test: `test \"name\" { assert total == 6 }`. In the program itself, \
+                 check with `if`, and `raise` an error",
+                span,
+            ));
+        }
+        if self.eat(TokenKind::Raises) {
+            let error = self.name_in_module("the kind of error the block must raise")?;
+            let body = self.block()?;
+            return Ok(StmtKind::AssertRaises { error, body });
+        }
+        if matches!(self.peek(), TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof) {
+            return self.error("`assert` needs what must be so after it: `assert total == 6`");
+        }
+        Ok(StmtKind::Assert(self.expression()?))
     }
 
     /// `import a.b` or `from a.b import x, y`
@@ -1301,7 +1383,7 @@ fn embedded_expression(source: &str, span: Span) -> Result<Expr, Error> {
         token.span = span;
     }
 
-    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new() };
+    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new(), in_test: false, tests: Vec::new() };
     let value = parser.expression().map_err(in_string)?;
     parser.skip_newlines();
     if !parser.check(TokenKind::Eof) {
@@ -1632,6 +1714,55 @@ mod tests {
         );
         // The word is reserved, so it is never a name.
         assert_eq!(error("let private = 1"), "expected a name for the variable, found `private`");
+    }
+
+    #[test]
+    fn tests_and_asserts() {
+        assert_eq!(
+            tree(
+                "test \"a new ring is empty\" {\n    let r = ring(4)\n    assert r.size() == 0\n    \
+                 assert raises ValueError {\n        ring(0)\n    }\n}"
+            ),
+            "test \"a new ring is empty\"\n    let r = ring(4)\n    assert (r.size() == 0)\n    \
+             assert raises ValueError\n        ring(0)\n"
+        );
+        // `test` is a word of the language only at the start of a test.
+        // Anywhere else it is a name like any other.
+        assert_eq!(tree("let test = 1\nprint(test)"), "let test = 1\nprint(test)\n");
+        assert_eq!(tree("test(5)"), "test(5)\n");
+        let named = "a test has a name, in quotes, that says what it checks: `test \"a new ring is empty\" { ... }`";
+        assert_eq!(error("test ring {\n}"), named);
+        assert_eq!(error("test {\n}"), named);
+        assert_eq!(error("test \"\" {\n}"), "a test needs a name that says what it checks");
+        assert_eq!(
+            error("test f\"ring {n}\" {\n}"),
+            "the name of a test is plain text, with nothing worked out in it. Take the `f` away"
+        );
+        assert_eq!(
+            error("test \"a\" {\n}\ntest \"a\" {\n}"),
+            "two tests of this file are called \"a\". Give each its own name, so that a failure says which one it is"
+        );
+        assert_eq!(
+            error("function f() {\n    test \"x\" {\n    }\n}"),
+            "a test stands at the top of a file, and this one is inside a block. Move it out of the `{ }`"
+        );
+        // `assert` is a word of the language, and a test is its place.
+        assert_eq!(
+            error("assert 1 == 1"),
+            "`assert` belongs in a test: `test \"name\" { assert total == 6 }`. In the program itself, check with \
+             `if`, and `raise` an error"
+        );
+        assert_eq!(
+            error("test \"x\" {\n    assert\n}"),
+            "`assert` needs what must be so after it: `assert total == 6`"
+        );
+        assert_eq!(
+            error("let assert = 1"),
+            "expected a name for the variable, found `assert`. `assert` is a word of the language, so it cannot \
+             be a name. It goes in a test: `assert total == 6`"
+        );
+        // Inside a function that is written in a test it is still in the test.
+        tree("test \"x\" {\n    let f = function(n: int) -> bool {\n        assert n > 0\n        return true\n    }\n}");
     }
 
     #[test]

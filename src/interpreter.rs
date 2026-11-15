@@ -55,6 +55,53 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
     })
 }
 
+/// One test, after it was run: its name, and what went wrong if
+/// anything did.
+pub struct Tested {
+    pub name: String,
+    pub failure: Option<Error>,
+}
+
+/// `zeno test`: run the program, and then each test that is written in
+/// its first file, in the order written. The tests of the files it
+/// imports are those files' own, and are run when they are tested.
+/// Each test says `ok` or `FAILED` on a line as it ends. `Err` if the
+/// program itself stopped before its tests could run.
+pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String, Result<Vec<Tested>, Error>) {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_SIZE)
+            .spawn_scoped(scope, || {
+                let mut interpreter =
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), outside };
+                let env = Scope::child(&builtins::globals());
+                let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
+                let mut tested = Vec::new();
+                if started.is_ok() {
+                    for statement in &program.statements {
+                        let StmtKind::Test { name, body } = &statement.kind else {
+                            continue;
+                        };
+                        if statement.span.file() != 0 {
+                            continue;
+                        }
+                        // A test that stopped half way may have left
+                        // calls open.
+                        interpreter.depth = 0;
+                        let failure = interpreter.exec_block(body, &env).map_err(ops::escaped).err();
+                        let word = if failure.is_some() { "FAILED" } else { "ok    " };
+                        interpreter.write_line(&format!("  {word}  {name}"));
+                        tested.push(Tested { name: name.clone(), failure });
+                    }
+                }
+                (interpreter.output.unwrap_or_default(), started.map(|()| tested))
+            })
+            .expect("could not start the interpreter thread")
+            .join()
+            .expect("the interpreter crashed")
+    })
+}
+
 // --------------------------------------------------------------------- Scopes
 
 /// A scope is one set of variables. Scopes nest: each `{ }` block gets a new
@@ -267,6 +314,38 @@ impl Interpreter {
 
     // ------------------------------------------------------------ Statements
 
+    /// `assert total == 6`. A failure is not an error of the program
+    /// that an `except` could catch: it ends the test at once, and says
+    /// what was on each side of a comparison.
+    fn assert(&mut self, condition: &Expr, env: &Env) -> Result<(), Control> {
+        let span = condition.span;
+        let compares = |op: &BinaryOp| {
+            use BinaryOp::*;
+            matches!(op, Eq | NotEq | Lt | LtEq | Gt | GtEq | Is | IsNot | In | NotIn)
+        };
+        match &condition.kind {
+            ExprKind::Binary { op, left, right } if compares(op) => {
+                let left = self.eval(left, env)?;
+                let right = self.eval(right, env)?;
+                let (was_left, was_right) = (left.repr(), right.repr());
+                match ops::binary(*op, left, right, span)? {
+                    Value::Bool(true) => Ok(()),
+                    _ => fatal(
+                        format!(
+                            "this is false. The left of `{}` is {was_left}, and the right is {was_right}",
+                            op.text()
+                        ),
+                        span,
+                    ),
+                }
+            }
+            _ => match self.eval(condition, env)? {
+                Value::Bool(true) => Ok(()),
+                _ => fatal("this is false", span),
+            },
+        }
+    }
+
     /// Run a `{ }` block in a fresh scope of its own.
     fn exec_block(&mut self, statements: &[Stmt], env: &Env) -> Result<(), Control> {
         self.run_statements(statements, &Scope::child(env))
@@ -460,6 +539,30 @@ impl Interpreter {
                 }
                 Err(Control::Raise(error, raised_at))
             }
+
+            // The tests of a program are run by `zeno test`, after the
+            // program (see `run_tests`). `zeno run` goes past them.
+            StmtKind::Test { .. } => Ok(()),
+            StmtKind::Assert(condition) => self.assert(condition, env),
+            StmtKind::AssertRaises { error, body } => match self.exec_block(body, env) {
+                Ok(()) => fatal(format!("this block was expected to raise {error}, and it raised nothing"), span),
+                Err(Control::Raise(raised, at)) => {
+                    let kind = ops::error_kind(&raised);
+                    if ops::catches(Some(error), &kind) {
+                        return Ok(());
+                    }
+                    let mut wrong = Error::new(
+                        format!(
+                            "this block was expected to raise {error}, and it raised {}: {raised}",
+                            crate::ast::shown_name(&kind)
+                        ),
+                        span,
+                    );
+                    wrong.note = Some(format!("that error was raised on line {}", at.line_in_file()));
+                    Err(Control::Fatal(wrong))
+                }
+                other => other,
+            },
 
             StmtKind::Return(value) => {
                 let value = match value {
@@ -1467,6 +1570,73 @@ mod tests {
     fn bugs_cannot_be_caught() {
         assert_eq!(error("try {\n print(\"abc\" - 1)\n} except {\n print(\"caught\")\n}"), "`-` does not work between a str and an int");
         assert_eq!(error("try {\n print(missing)\n} except Error {\n}"), "`missing` is not defined");
+    }
+
+    /// What `zeno test` prints for a program, and how each test went:
+    /// its name, and the message it failed with.
+    fn tested(source: &str) -> (String, Vec<(String, Option<String>)>) {
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let complaints = crate::checker::check(&program, false);
+        assert!(complaints.is_empty(), "the checker rejected the program: {complaints:?}\n{source}");
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside());
+        let tested = tested.expect("the program ran");
+        (output, tested.into_iter().map(|test| (test.name, test.failure.map(|failure| failure.message))).collect())
+    }
+
+    #[test]
+    fn the_tests_of_a_program_are_run_after_it() {
+        let source = "var calls = 0\n\
+             function half(n: int) -> int raises ValueError {\n calls += 1\n if n % 2 == 1 {\n  raise ValueError(\"odd\")\n }\n return n // 2\n}\n\
+             test \"even\" {\n assert half(4) == 2\n print(\"in the test\")\n}\n\
+             test \"wrong\" {\n assert half(4) == 3\n print(\"never\")\n}\n\
+             print(\"the program\")\n\
+             test \"odd\" {\n assert raises ValueError {\n  half(3)\n }\n}\n\
+             test \"nothing raised\" {\n assert raises ValueError {\n  half(2)\n }\n}\n\
+             test \"another kind\" {\n assert raises KeyError {\n  half(3)\n }\n}\n\
+             test \"an error\" {\n half(5)\n}\n\
+             test \"not caught\" {\n try {\n  assert calls == 0\n } except Error {\n  print(\"caught\")\n }\n}\n\
+             test \"plain\" {\n assert calls > 0 and not false\n assert \"a\" in [\"b\"]\n}\n\
+             test \"chain\" {\n assert 1 < 2 < 2\n}";
+        let (output, tests) = tested(source);
+        // The program runs first, whole, and then its tests in order.
+        // Each says how it went as it ends.
+        assert_eq!(
+            output,
+            "the program\nin the test\n  ok      even\n  FAILED  wrong\n  ok      odd\n  FAILED  nothing raised\n  \
+             FAILED  another kind\n  FAILED  an error\n  FAILED  not caught\n  FAILED  plain\n  FAILED  chain\n"
+        );
+        let failures: Vec<&str> = tests.iter().map(|(_, failure)| failure.as_deref().unwrap_or("ok")).collect();
+        assert_eq!(
+            failures,
+            [
+                "ok",
+                // A comparison says what was on each side.
+                "this is false. The left of `==` is 2, and the right is 3",
+                "ok",
+                "this block was expected to raise ValueError, and it raised nothing",
+                "this block was expected to raise KeyError, and it raised ValueError: odd",
+                // An error that leaves a test fails it.
+                "uncaught ValueError: odd",
+                // A failed `assert` is not an error an `except` can catch.
+                "this is false. The left of `==` is 6, and the right is 0",
+                "this is false. The left of `in` is \"a\", and the right is [\"b\"]",
+                "this is false",
+            ]
+        );
+        // `zeno run` goes past the tests, in both engines.
+        assert_eq!(output_of_run(source), "the program\n");
+    }
+
+    fn output_of_run(source: &str) -> String {
+        output(source)
+    }
+
+    #[test]
+    fn a_program_that_stops_runs_no_test() {
+        let program = parser::parse(lexer::lex("print(1 // 0)\ntest \"x\" {\n assert true\n}").unwrap()).unwrap();
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside());
+        assert_eq!(output, "");
+        assert_eq!(tested.err().map(|error| error.message).as_deref(), Some("uncaught ZeroDivisionError: division by zero"));
     }
 
     #[test]

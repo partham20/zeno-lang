@@ -2099,6 +2099,8 @@ impl Emitter<'_> {
 
             // The checker has seen to what is written inside. In IR it
             // is a block like any other.
+            // A build leaves the tests of a program out (decision 10.20).
+            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => Ok(()),
             StmtKind::Unsafe(body) => {
                 let n = self.number();
                 let (inside, after) = (format!("unsafe{n}"), format!("safe{n}"));
@@ -6571,7 +6573,7 @@ pub(crate) mod tests {
     use std::process::Command;
 
     fn compile(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Ordinary, false).map_err(|error| error.message)
@@ -6579,7 +6581,7 @@ pub(crate) mod tests {
 
     /// The same, as `zeno build --llvm --firmware` compiles it.
     fn compile_firmware(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Firmware, false).map_err(|error| error.message)
@@ -7296,7 +7298,7 @@ entry:
     /// What a program built with `--memory` says as it ends: the numbers
     /// of its report, in order.
     fn memory_of(name: &str, source: &str) -> Option<(String, Vec<usize>)> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         let ir = emit(&program, &types, "test.zeno", Build::Ordinary, true).expect("it compiles");
@@ -7348,7 +7350,7 @@ print(work(2000))
 
     /// The same, as `zeno build --llvm --no-collector --memory` compiles it.
     fn compile_no_collector(source: &str) -> Result<String, String> {
-        let program = crate::modules::testing::program(source);
+        let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
         if let Some(error) = errors.first() {
             return Err(error.message.clone());

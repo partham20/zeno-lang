@@ -2949,6 +2949,27 @@ impl Checker {
             StmtKind::Match { subject, arms } => self.match_statement(subject, arms, env, span),
             StmtKind::Try { body, handlers } => self.try_statement(body, handlers, env, span),
 
+            // A test is checked like any block at the top of a file. An
+            // error that leaves it fails that test, and is nobody
+            // else's to catch or to name (decision 10.16).
+            StmtKind::Test { body, .. } => {
+                self.raised.push(Vec::new());
+                self.block(body, env);
+                self.raised.pop();
+                false
+            }
+            StmtKind::Assert(condition) => {
+                self.condition(condition, env);
+                false
+            }
+            // The block must raise that kind of error: a `try` with one
+            // `except` that has nothing in it.
+            StmtKind::AssertRaises { error, body } => {
+                let handler = Handler { error: Some(error.clone()), binding: None, body: Vec::new() };
+                self.try_statement(body, std::slice::from_ref(&handler), env, span);
+                false
+            }
+
             StmtKind::Return(value) => {
                 let declared = self.frame().declared_return.clone();
                 let ty = match value {
@@ -8886,6 +8907,23 @@ function total(xs: owned list[int]) -> int { return len(xs) }
     const TWO_SHAPES: &str = "interface Shape {\n function area(self) -> float\n}\n\
         class Circle is Shape {\n r: float\n function area(self) -> float {\n  return self.r\n }\n}\n\
         class Square is Shape {\n s: float\n function area(self) -> float {\n  return self.s\n }\n}\n";
+
+    #[test]
+    fn a_test_is_checked() {
+        // A test is checked with the program, in strict mode too. What
+        // it declares is its own, and what it raises is nobody's to name.
+        strict_ok(
+            "function half(n: int) -> int raises ValueError {\n if n % 2 == 1 {\n  raise ValueError(\"odd\")\n }\n return n // 2\n}\n\
+             test \"half of an even number\" {\n let got = half(4)\n assert got == 2\n assert half(8) > got\n}\n\
+             test \"half of an odd number\" {\n assert raises ValueError {\n  half(3)\n }\n}\n\
+             let got = \"outside\"\nprint(got)",
+        );
+        assert_eq!(error("test \"x\" {\n let n: int = \"a\"\n}"), "`n` should be int, but this is str");
+        assert_eq!(error("test \"x\" {\n assert 5\n}"), "a condition must be true or false, but this is int");
+        assert_eq!(error("test \"x\" {\n assert raises Nothing {\n }\n}"), "`Nothing` is not a kind of error");
+        assert_eq!(error("test \"x\" {\n return\n}"), "`return` outside a function");
+        assert_eq!(error("test \"x\" {\n let inside = 1\n}\nprint(inside)"), "`inside` is not defined");
+    }
 
     #[test]
     fn a_dict_holds_what_a_list_can() {
