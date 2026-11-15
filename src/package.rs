@@ -198,6 +198,128 @@ pub fn write_lock(pinned: &[Pinned]) -> String {
     text
 }
 
+// ----------------------------------------------------------------- zeno new
+
+/// `zeno new blinker`: make the folder `blinker` with a program in it
+/// that runs and has one test that passes. With `package`, a package:
+/// a folder of modules for other programs to need. Gives the lines to
+/// print, or what went wrong. Nothing is written into a folder that is
+/// there already.
+pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
+    let what = if package { "package" } else { "program" };
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err("`zeno new` makes a new folder, so it needs a name for it, e.g. `zeno new blinker`".to_string());
+    }
+    if name.starts_with('-') {
+        return Err(format!("`zeno new` has no option `{name}`. It has one, `--package`, as in `zeno new --package filters`"));
+    }
+    // The name is what other files write after `import`, so it has to
+    // be a name of the language.
+    let letters = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let starts = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !letters || !starts {
+        let mut tidy: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        if !tidy.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            tidy = format!("my_{}", tidy.trim_start_matches('_'));
+        }
+        return Err(format!(
+            "`{name}` cannot be the name of a {what}. A name is letters, digits and `_`, and does not start \
+             with a digit, as every name in a Zeno program is. Try `{tidy}`"
+        ));
+    }
+    if crate::token::keyword(&name).is_some() {
+        return Err(format!("`{name}` is a word of the language, so a {what} cannot have that name"));
+    }
+    if builtins::comes_with_zeno(&name) {
+        return Err(format!("`{name}` is a module that comes with Zeno, so a {what} cannot have that name"));
+    }
+    if path.exists() {
+        return Err(format!(
+            "there is a `{}` here already. `zeno new` makes a new folder, and writes nothing into one that is there",
+            path.display()
+        ));
+    }
+
+    let manifest = match package {
+        false => format!(
+            "# What this program is called, and the packages it needs.\n\
+             #\n\
+             # A package in another folder is one line:\n\
+             #\n\
+             #     needs filters in \"../filters\"\n\
+             #\n\
+             # One that somebody else keeps is named by its git repository and a\n\
+             # version of it, and `zeno fetch` gets it:\n\
+             #\n\
+             #     needs units from \"https://github.com/someone/zeno-units\" at \"v1.2.0\"\n\
+             package {name}\n"
+        ),
+        true => format!(
+            "# This file makes the folder a package: a folder of modules that a\n\
+             # program in another folder can use. A program that needs it says so\n\
+             # in its own `zeno.package`:\n\
+             #\n\
+             #     needs {name} in \"../{name}\"\n\
+             #\n\
+             # and then writes `import {name}`.\n\
+             package {name}\n"
+        ),
+    };
+    let greeting = |first: &str| {
+        format!(
+            "{first}\n\
+             function hello(who: str) -> str {{\n    return f\"Hello, {{who}}, from {name}.\"\n}}\n\n\
+             # A test stands in the file it tests. `zeno test` runs it, `zeno run`\n\
+             # goes past it, and a build leaves it out.\n\
+             test \"hello says who it greets\" {{\n    assert hello(\"Ada\") == \"Hello, Ada, from {name}.\"\n}}\n"
+        )
+    };
+    let at = |file: &str| path.join(file).display().to_string();
+    let files: Vec<(&str, String, &str)> = match package {
+        false => vec![
+            (FILE, manifest, "the name of the program, and the packages it needs"),
+            (
+                "main.zeno",
+                "# The program starts here. In this folder:\n#\n#     zeno run main.zeno\n#     zeno test\n\
+                 import greeting\n\nprint(greeting.hello(\"world\"))\n"
+                    .to_string(),
+                "the program",
+            ),
+            (
+                "greeting.zeno",
+                greeting("# A module: one file of the program. `main.zeno` imports it, and calls\n# `greeting.hello`.\n"),
+                "a module, with a test",
+            ),
+        ],
+        true => vec![
+            (FILE, manifest, "the name of the package, and the packages it needs"),
+            (
+                "module.zeno",
+                greeting(&format!(
+                    "# The module that has the package's own name. A program that needs the\n\
+                     # package gets it with `import {name}`, and calls `{name}.hello`.\n"
+                )),
+                "the module `import` gets, with a test",
+            ),
+        ],
+    };
+
+    fs::create_dir_all(path).map_err(|why| format!("cannot make the folder `{}`: {why}", path.display()))?;
+    let mut said = vec![format!("Made the {what} `{name}` in {}", at(""))];
+    for (file, text, purpose) in files {
+        // The module of a package is called what the package is called.
+        let file = if file == "module.zeno" { format!("{name}.zeno") } else { file.to_string() };
+        fs::write(path.join(&file), text).map_err(|why| format!("cannot write `{}`: {why}", at(&file)))?;
+        said.push(format!("  {file:<width$}  {purpose}", width = name.len().max(8) + 5));
+    }
+    said.push(match package {
+        false => format!("Run it with `zeno run {}`, and its tests with `zeno test {}`.", at("main.zeno"), path.display()),
+        true => format!("Run its tests with `zeno test {}`.", path.display()),
+    });
+    Ok(said)
+}
+
 // --------------------------------------------------------------- zeno fetch
 
 /// `zeno fetch`: get every package the program in `root` needs, and the

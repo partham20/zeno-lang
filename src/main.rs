@@ -62,6 +62,11 @@ fn usage() {
     println!("                            folder stands for the files in it");
     println!("  zeno lsp                  the language server: an editor starts this to");
     println!("                            show mistakes as you type (docs/lsp.md)");
+    println!("  zeno new <name>           make a folder with a new program in it: a");
+    println!("                            `main.zeno`, a module with a test, and a");
+    println!("                            `zeno.package`");
+    println!("  zeno new --package <name> make a folder with a new package in it: a");
+    println!("                            folder of modules for other programs to need");
     println!("  zeno fetch [folder]       get the packages that the program in this");
     println!("                            folder (or in that one) needs, as the");
     println!("                            `needs` lines of its `zeno.package` list them");
@@ -79,6 +84,8 @@ fn usage() {
     println!("                           The program does the same, faster");
     println!("  --check                  with format: change nothing, and say which");
     println!("                           files are not laid out that way");
+    println!("  --package                with new: make a package, a folder of modules");
+    println!("                           for other programs to need, with no `main.zeno`");
     println!("  --update                 with fetch: look every version up again, and");
     println!("                           not at the commits `zeno.lock` has pinned");
     println!("  --firmware               with build: errors travel as values that every");
@@ -677,6 +684,34 @@ fn main() -> ExitCode {
                 _ => ExitCode::FAILURE,
             }
         }
+        Some("new") => {
+            // `zeno new blinker`, `zeno new --package filters`
+            let package = args.iter().any(|arg| arg == "--package");
+            args.retain(|arg| arg != "--package");
+            // An option it does not have is said, wherever it stands.
+            let path = match (args.iter().skip(1).find(|arg| arg.starts_with('-')), args.get(1), args.get(2)) {
+                (Some(option), _, _) => option,
+                (None, Some(path), None) => path,
+                (None, Some(_), Some(_)) => {
+                    eprintln!("zeno: `new` makes one folder, so it takes one name, e.g. `zeno new blinker`");
+                    return ExitCode::FAILURE;
+                }
+                (None, None, _) => {
+                    eprintln!("zeno: `new` needs a name for the program, e.g. `zeno new blinker`");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match package::new(Path::new(path), package) {
+                Ok(said) => {
+                    said.iter().for_each(|line| println!("{line}"));
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("zeno: {why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("fetch") => {
             // `zeno fetch`, `zeno fetch --update`, `zeno fetch examples/thermostat`
             let update = args.iter().any(|arg| arg == "--update");
@@ -762,6 +797,79 @@ mod tests {
         // A mistake in the file, or an error before its tests: none is run.
         assert_eq!(counts("app/broken.zeno"), None);
         assert_eq!(counts("app/stops.zeno"), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn zeno_new_makes_a_program_that_runs_and_a_package_it_can_need() {
+        let root = folder("new", &[("taken/mine.txt", "keep me\n")]);
+        let at = |path: &str| root.join(path).display().to_string();
+        let text = |path: &str| fs::read_to_string(root.join(path)).expect("the file is there");
+        let files = |folder: &str| {
+            let mut names: Vec<String> =
+                fs::read_dir(root.join(folder)).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().to_string()).collect();
+            names.sort();
+            names
+        };
+        // What a program prints, and how many of its tests pass and fail.
+        let run = |path: &str| {
+            let (_, program) = check(&at(path), checker::Rules { strict: true, one_owner: false, firmware: false }).expect("no mistake");
+            interpreter::run_tests(&program, true, value::Outside::started_with(Vec::new())).0
+        };
+        let counts = |path: &str| test(&at(path), true, true).map(|tally| (tally.tests, tally.failed));
+
+        // A program: its name, where it starts, and a module with a test.
+        let said = package::new(&root.join("blinker"), false).expect("it is made");
+        assert_eq!(said.len(), 5, "{said:?}");
+        assert!(said[0].starts_with("Made the program `blinker` in ") && said[4].starts_with("Run it with `zeno run "), "{said:?}");
+        assert_eq!(files("blinker"), ["greeting.zeno", "main.zeno", "zeno.package"]);
+        let manifest = package::parse(&text("blinker/zeno.package"), 0).expect("it is read");
+        assert_eq!((manifest.name.as_str(), manifest.needs.len()), ("blinker", 0));
+        assert_eq!(run("blinker/main.zeno"), "Hello, world, from blinker.\n");
+        assert_eq!(counts("blinker/greeting.zeno"), Some((1, 0)));
+        // It is checked as a build with no collector checks, too.
+        assert!(check(&at("blinker/main.zeno"), checker::Rules { strict: true, one_owner: true, firmware: true }).is_some());
+
+        // A package: its name, and the module that has the name.
+        let said = package::new(&root.join("filters"), true).expect("it is made");
+        assert_eq!(said.len(), 4, "{said:?}");
+        assert!(said[0].starts_with("Made the package `filters` in ") && said[3].starts_with("Run its tests with `zeno test "), "{said:?}");
+        assert_eq!(files("filters"), ["filters.zeno", "zeno.package"]);
+        assert_eq!(package::parse(&text("filters/zeno.package"), 0).expect("it is read").name, "filters");
+        assert_eq!(counts("filters/filters.zeno"), Some((1, 0)));
+
+        // Each file is laid out as `zeno format` lays it out.
+        for file in ["blinker/main.zeno", "blinker/greeting.zeno", "filters/filters.zeno"] {
+            assert_eq!(format::format(&text(file)).expect("it is read"), text(file), "{file}");
+        }
+
+        // The program can need the package, as the package's file says.
+        fs::write(root.join("blinker/zeno.package"), "package blinker\nneeds filters in \"../filters\"\n").unwrap();
+        fs::write(root.join("blinker/main.zeno"), "import filters\n\nprint(filters.hello(\"blinker\"))\n").unwrap();
+        assert_eq!(run("blinker/main.zeno"), "Hello, blinker, from filters.\n");
+
+        // A folder is made as deep as the path says.
+        package::new(&root.join("deep/down/thing"), false).expect("it is made");
+        assert_eq!(run("deep/down/thing/main.zeno"), "Hello, world, from thing.\n");
+
+        // What cannot be made says why, and nothing is written.
+        let refused = |path: &str, package: bool| package::new(&root.join(path), package).expect_err("it is refused");
+        assert_eq!(
+            refused("my-app", false),
+            "`my-app` cannot be the name of a program. A name is letters, digits and `_`, and does not start with a digit, \
+             as every name in a Zeno program is. Try `my_app`"
+        );
+        assert!(refused("2fast", true).ends_with("Try `my_2fast`"));
+        assert_eq!(refused("while", false), "`while` is a word of the language, so a program cannot have that name");
+        assert_eq!(refused("math", true), "`math` is a module that comes with Zeno, so a package cannot have that name");
+        assert!(refused("--lib", false).starts_with("`zeno new` has no option `--lib`."));
+        assert!(refused("taken", false).ends_with("`zeno new` makes a new folder, and writes nothing into one that is there"));
+        assert_eq!(files("taken"), ["mine.txt"]);
+        assert!(refused("blinker", true).contains("here already"));
+        for gone in ["my-app", "2fast", "while", "math", "--lib"] {
+            assert!(!root.join(gone).exists(), "{gone}");
+        }
+        assert!(package::new(Path::new(""), false).unwrap_err().starts_with("`zeno new` makes a new folder, so it needs a name"));
         let _ = fs::remove_dir_all(&root);
     }
 }
