@@ -70,6 +70,7 @@ Samples, none of them final:
 - [`examples/driver.zeno`](examples/driver.zeno): a driver for a serial port, with a queue of bytes that is allocated and freed by hand and three registers, inside `unsafe { }`.
 - [`examples/sentence.zeno`](examples/sentence.zeno): lines from a sensor, checked and taken apart with `find`, `slice`, `sort`, `join` and `code`, the methods of text and lists.
 - [`examples/logbook.zeno`](examples/logbook.zeno): readings typed at the keyboard, kept in a file named on the command line, and read back: `input`, `files` and `program.arguments`.
+- [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -161,6 +162,7 @@ cargo run -- build --no-collector --memory examples/commands.zeno   # enum cases
 cargo run -- build --no-collector --memory examples/handlers.zeno   # function values and kept errors with no collector: each has one owner
 cargo run -- run examples/sentence.zeno         # the methods of text and lists: find, slice, sort, join, code
 cargo run -- run examples/logbook.zeno bench.txt  # the keyboard, a file and the command line: type readings, then Ctrl-D
+cargo run -- run examples/instruments.zeno      # math: atan2, log, exp, round, and `sin(30 deg)`
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
 cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
@@ -204,7 +206,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/functions-and-errors.md`](docs/functions-and-errors.md),
   [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md),
   [`docs/library.md`](docs/library.md),
-  [`docs/reading-and-writing.md`](docs/reading-and-writing.md), [`docs/vm.md`](docs/vm.md),
+  [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
+  [`docs/math.md`](docs/math.md), [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
@@ -282,8 +285,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       `text.lines()`; `input()`, which gives a line or `none`; and
       `program.arguments()`.
       See [`docs/reading-and-writing.md`](docs/reading-and-writing.md))
-    - More of `math` (next)
-    - A dictionary
+    - More of `math` (done: `tan`, `asin`, `acos`, `atan`, `atan2`,
+      `exp`, `log`, `log2`, `log10`, `round` and `e`. `sin(30 deg)`
+      takes an angle with its unit, `atan2` gives one in `rad`, and
+      `.deg` and `.rad` change between them.
+      See [`docs/math.md`](docs/math.md))
+    - A dictionary (next)
 15. Modules across files
 16. A package manager
 17. Editor support: a formatter and a language server

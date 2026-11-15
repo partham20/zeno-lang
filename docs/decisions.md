@@ -347,7 +347,9 @@ means the same thing everywhere. *(Principle 1, and 5.5d.)*
 
 **What does not convert.** `degC` and `K` differ by an offset, not a scale,
 so adding them means nothing. `deg` and `rad` have no exact factor between
-them. Both pairs are kept apart on purpose.
+them. Both pairs are kept apart on purpose. *(Changed in 6.22: `.rad` and
+`.deg` now change an angle when the program asks. The two still never
+meet by themselves.)*
 
 **Provisional.** No derived units yet (`V * A` is not `W`), and no
 user-defined units.
@@ -4876,3 +4878,172 @@ standard input for `input()`, which firmware C libraries usually tie
 to a serial line. A board with no file system gets a `FileError` from
 every call, which a program can catch. They are not behind
 `ZENO_BOARD` (5.12): a board that has a C library has them already.
+
+### 6.21 What `math` holds
+
+Part 3 fills in the `math` module. It had `pi`, `sqrt`, `floor`, `ceil`,
+`sin` and `cos`.
+
+| Added | What it is |
+|---|---|
+| `math.e` | 2.718281828459045 |
+| `math.tan(angle)` | beside `sin` and `cos` |
+| `math.asin(x)`, `math.acos(x)`, `math.atan(x)`, `math.atan2(y, x)` | an angle from a ratio |
+| `math.exp(x)` | e to the power x |
+| `math.log(x)`, `math.log2(x)`, `math.log10(x)` | logarithms |
+| `math.round(x)` | the nearest whole number |
+
+**How it was chosen.** Each is something firmware arithmetic uses and
+that cannot be written in a line with what was there: a heading from
+two field readings, a temperature from a thermistor, decibels, the
+charge of a capacitor, a sine table (`examples/instruments.zeno`).
+
+**Left out, because Zeno has one way already.**
+
+| In other languages | In Zeno |
+|---|---|
+| `pow(x, y)` | `x ** y` |
+| `trunc(x)` | `int(x)` |
+| `fabs(x)` | `abs(x)` |
+| `degrees(x)`, `radians(x)` | `angle.deg`, `angle.rad` (6.22) |
+| `round(x, 2)` | `f"{x:.2f}"`: digits after the point are a matter of showing |
+| `log(x, base)` | `log2`, `log10`, or `log(x) / log(base)` |
+
+**Left out until something needs it** *(provisional)*: `hypot`, the
+hyperbolic functions, `gcd`, `factorial`, `clamp`, `inf` and `nan` as
+names, and random numbers, which are not arithmetic and want a module
+of their own.
+
+### 6.22 `.rad` and `.deg` change an angle; degrees and radians still never meet by themselves
+
+`(180 deg).rad` is `3.141592653589793 rad`, and
+`math.atan2(1, 1).deg` is `45 deg`.
+
+This changes 1.15, which kept the two apart altogether because the
+factor between them, pi / 180, is not an exact number.
+
+**Why change it.** The functions of 6.24 give radians and people read
+degrees, so every program with an angle in it needs the change, and
+without it each would write `* 180 / math.pi` by hand. `.ms` is
+already how a quantity is changed (1.15), so this is that way and not
+a new one.
+
+**Why they still do not meet in `+` or `<`.** When two units meet, the
+answer is in the finer one, because that loses nothing. Between
+degrees and radians neither is finer and either way loses something,
+so `90 deg + 1 rad` has no answer that is obviously right. The message
+says what to write:
+
+```
+`+` does not work between a quantity in rad and a quantity in deg. Change one of them first, with `.rad` or `.deg`
+```
+
+**The factor is one multiplication**, by `pi / 180` or by `180 / pi`,
+which is what Python's `radians` and `degrees` do, so `(180 deg).rad`
+is exactly `math.pi` and `(math.pi * 1 rad).deg` is exactly `180 deg`.
+
+### 6.23 `sin`, `cos` and `tan` take an angle: a plain number is radians
+
+```zeno
+math.sin(30 deg)       # 0.49999999999999994
+math.sin(0.5 rad)      # 0.479425538604203
+math.sin(0.5)          # the same
+```
+
+**Why a unit is accepted.** Degrees handed to a function that counts
+in radians is the oldest mistake in this corner, and it gives a wrong
+number, not an error. With the unit on the value the function cannot
+be handed the wrong thing.
+
+**Why a plain number is accepted too, when `sleep(500)` is refused.**
+`sleep(500)` is refused because 500 of what is anyone's guess. The
+sine of a plain number is a thing mathematics defines, and it means
+radians in every language and every textbook. Signal code is full of
+it: in `sin(2 * math.pi * f * t)` the argument was worked out and
+never was an angle somebody measured.
+
+**Turned down.** Refusing plain numbers: every formula would need
+`* 1 rad` on the end. A second family, `sind` and `cosd`, as MATLAB
+has: two names for one thing.
+
+A quantity that is not an angle is refused by the checker:
+
+```
+`sin` needs a number or an angle, such as `30 deg`, but this is a quantity in s
+```
+
+### 6.24 `asin`, `acos`, `atan` and `atan2` give an angle in radians *(provisional)*
+
+Their answer is a quantity in `rad`, not a float.
+
+**Why.** A float that is secretly an angle is what units are there to
+end (1.15). `math.atan2(y, x) > 45` would compare radians with a
+number the writer meant as degrees, and run. As a quantity it is
+refused, and `math.atan2(y, x).deg > 45 deg` says what is meant.
+
+**What it costs.** Arithmetic with a plain number needs the unit put
+on or taken off, as with any quantity: `angle + 2 * math.pi * 1 rad`,
+`angle / 1 rad`. Passing it on to `sin` needs nothing.
+
+**Provisional** because it is the first time a library function gives
+a quantity back that is not a time. If it gets in the way of real
+signal code, a plain float is the other choice.
+
+**`atan2(y, x)` takes y first**, as in C, Python, JavaScript and Rust.
+It is the angle of the point (x, y), and the order is the one in
+`atan(y / x)`. It takes plain numbers only *(provisional)*: two
+lengths would be reasonable, and can come later.
+
+### 6.25 `round` sends a half away from zero, and gives an int
+
+`math.round(2.5)` is 3 and `math.round(-2.5)` is -3.
+
+**Why.** It is the rule taught at school, and the one C's `round` and
+Rust's `round` follow. **Turned down.** Python's rule, a half to the
+nearest even number, so that `round(2.5)` is 2 and `round(3.5)` is 4:
+better for adding up many rounded numbers, and a surprise to nearly
+everyone who meets it.
+
+**Why an int.** `floor` and `ceil` give one (their answer is a whole
+number, and an index or a register value is wanted next). A float too
+large for an int gives the largest int, as they do.
+
+### 6.26 `log` is the natural logarithm, with `log2` and `log10` beside it
+
+**Why `log` and not `ln`.** It is `log` in C, Python, JavaScript and
+Java, which is where the people Zeno is for come from. On a calculator
+`log` is base ten, so the two others have their base in their name and
+the walkthrough says which is which.
+
+**Why three functions and not `log(x, base)`.** `math.log(125) /
+math.log(5)` is `3.0000000000000004`. `log2(8)` and `log10(1000)` are
+exactly 3, because the C library works them out directly. Bases other
+than e, 2 and 10 are rare.
+
+### 6.27 A number that has no answer is a `ValueError`
+
+`math.log(0)`, `math.log(-1)`, `math.asin(1.5)` and `math.acos(-2)`
+raise `ValueError`, with the number in the message, as `math.sqrt(-1)`
+always did.
+
+**Why not `nan`.** C gives a `nan` here, which then spreads through
+every sum it touches and is printed twenty lines later. An error at
+the line that asked is easier to find.
+
+**In a firmware build they are faults** and stop the program, as a bad
+index does (5.5l, 6.9): the program can test the number first.
+
+**An answer too big for a float is `inf`**, as it is for `*` and `**`:
+`math.exp(710)` is `inf`.
+
+### 6.28 The answers are the C library's, in every engine
+
+A compiled program calls `sin`, `log` and the rest in the C library.
+`zeno run` and the VM reach the same functions through Rust. So every
+engine and build gives the same digits on one machine, which the tests
+hold them to.
+
+Two machines with different C libraries can differ in the last digit
+of a result that is not exact. **Why accept that.** The other choice
+is Zeno's own `sin`, a few hundred lines that would be slower and no
+more right than the one already on the machine.
