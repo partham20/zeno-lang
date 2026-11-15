@@ -1646,6 +1646,9 @@ struct Checker {
     worked_out: Vec<HashMap<String, (String, usize)>>,
     /// Which of those the statement being checked has mentioned so far.
     touched: Vec<String>,
+    /// The variables that were declared with `const`, by `Variable::id`.
+    /// Another `const` may be written from them.
+    consts: std::collections::HashSet<usize>,
     /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
     classes: HashMap<DeclId, Rc<ClassInfo>>,
     enums: HashMap<DeclId, Rc<EnumInfo>>,
@@ -1746,6 +1749,7 @@ impl Checker {
             known_origins: HashMap::new(),
             worked_out: Vec::new(),
             touched: Vec::new(),
+            consts: std::collections::HashSet::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
             types: Types::default(),
@@ -1919,7 +1923,9 @@ impl Checker {
                     message += ". Only a list made right here can become an owned one: one written out, \
                                 as in `[1, 2]` or `[x for x in xs]`, or what `split`, `map`, `filter` or `+` gives"
                 }
-                (Ty::Int, Ty::Float) => message += ". Write the number with a decimal point, as in `1.0`",
+                (Ty::Int, Ty::Float) => {
+                    message += ". Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`"
+                }
                 (_, Ty::Function(_)) => {
                     message += ". A variable that was given a function of the program and no type holds that one \
                                 function only. Write its type to let it hold others, as in \
@@ -2801,6 +2807,60 @@ impl Checker {
         }
     }
 
+    /// The first part of `value` that the compiler cannot work out by
+    /// itself, if there is one. What it can: numbers, text, a `const`,
+    /// a case of an enum that carries nothing, a constant of a module
+    /// (`math.pi`), operators on those, a list or a dict of them, and
+    /// the conversions between kinds of number (`u8(n)`, `float(n)`).
+    fn not_constant<'a>(&self, value: &'a Expr, env: &Env) -> Option<&'a Expr> {
+        let all = |parts: &mut dyn Iterator<Item = &'a Expr>| {
+            for part in parts {
+                if let Some(found) = self.not_constant(part, env) {
+                    return Some(found);
+                }
+            }
+            None
+        };
+        match &value.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => None,
+            ExprKind::Name(name) => match env.get(name) {
+                Some(variable) if self.consts.contains(&variable.id) || variable.case.is_some() => None,
+                _ => Some(value),
+            },
+            ExprKind::Unit { value: inner, .. } | ExprKind::Unary { operand: inner, .. } => self.not_constant(inner, env),
+            ExprKind::Binary { left, right, .. } | ExprKind::Index { object: left, index: right } => {
+                all(&mut [&**left, &**right].into_iter())
+            }
+            ExprKind::Compare { first, rest } => all(&mut std::iter::once(&**first).chain(rest.iter().map(|(_, operand)| operand))),
+            ExprKind::List(items) => all(&mut items.iter()),
+            ExprKind::Dict(pairs) => all(&mut pairs.iter().flat_map(|(key, item)| [key, item])),
+            ExprKind::FormatStr(parts) => all(&mut parts.iter().filter_map(|part| match part {
+                FormatPart::Value { value, .. } => Some(value),
+                FormatPart::Text(_) => None,
+            })),
+            // `math.pi` and `Mode.Idle`: a name of a module or an enum.
+            ExprKind::Field { object, .. } => match &object.kind {
+                ExprKind::Name(name) if matches!(env.get(name), Some(Variable { ty: Ty::Module(_) | Ty::Enum(_), .. })) => None,
+                _ => Some(value),
+            },
+            // `u8(n)`, `u8.wrap(n)`, `int(x)`, `float(n)`.
+            ExprKind::Call { callee, args } => {
+                let converts = match &callee.kind {
+                    ExprKind::Name(name) => crate::ints::width(name).is_some() || matches!(name.as_str(), "int" | "float"),
+                    ExprKind::Field { object, name } => {
+                        name == "wrap" && matches!(&object.kind, ExprKind::Name(of) if crate::ints::width(of).is_some())
+                    }
+                    _ => false,
+                };
+                match converts {
+                    true => all(&mut args.iter().map(|arg| &arg.value)),
+                    false => Some(value),
+                }
+            }
+            ExprKind::ListComp { .. } | ExprKind::Function(_) => Some(value),
+        }
+    }
+
     /// Check one statement. Returns true if it always leaves the block.
     fn stmt(&mut self, statement: &Stmt, env: &Env) -> bool {
         let span = statement.span;
@@ -2814,7 +2874,20 @@ impl Checker {
                 false
             }
             StmtKind::Const { name, ty, value } => {
+                // A `const` is fixed when the program is built (1.7), so
+                // it is written from what the compiler can work out.
+                if let Some(part) = self.not_constant(value, env) {
+                    self.error(
+                        "this is only known when the program runs, and a `const` is fixed when the program is built. \
+                         A `const` is written from numbers, text, other `const`s and operators. \
+                         For a value that is worked out once while the program runs, use `let`",
+                        part.span,
+                    );
+                }
                 self.declaration(name, ty, value, false, env, statement);
+                if let Some(variable) = env.get_here(name) {
+                    self.consts.insert(variable.id);
+                }
                 false
             }
             StmtKind::Assign { target, op, value } => {
@@ -4173,7 +4246,9 @@ impl Checker {
                         wanted.clone()
                     } else {
                         let advice = match (&given, wanted) {
-                            (Ty::Int, Ty::Float) => ". Write the number with a decimal point, as in `1.0`",
+                            (Ty::Int, Ty::Float) => {
+                                ". Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`"
+                            }
                             _ => "",
                         };
                         return self.error(
@@ -4778,7 +4853,20 @@ impl Checker {
                             ),
                             span,
                         ),
-                        _ => self.error(format!("`{name}` is not defined"), span),
+                        // The same thing under the name another
+                        // language gives it.
+                        _ => {
+                            let zeno = match name.as_str() {
+                                "null" | "nil" | "None" | "NULL" | "nullptr" | "undefined" => Some("none"),
+                                "True" | "TRUE" => Some("true"),
+                                "False" | "FALSE" => Some("false"),
+                                _ => None,
+                            };
+                            match zeno {
+                                Some(zeno) => self.error(format!("`{name}` is not defined. Zeno spells it `{zeno}`"), span),
+                                None => self.error(format!("`{name}` is not defined"), span),
+                            }
+                        }
                     },
                 },
             },
@@ -4869,8 +4957,18 @@ impl Checker {
                 Ty::Bool
             }
             ExprKind::Binary { op, left, right } => {
+                let tested = left;
                 let left = self.look(left, env);
                 let right = self.look(right, env);
+                // A name that may be `none` is known to be there after a
+                // test or a new value. Testing it again is not a mistake,
+                // so `is none` looks at the type it was declared with.
+                let left = match (op, &tested.kind) {
+                    (BinaryOp::Is | BinaryOp::IsNot, ExprKind::Name(name)) => {
+                        env.get(name).and_then(|variable| variable.declared).unwrap_or(left)
+                    }
+                    _ => left,
+                };
                 let ty = self.binary(*op, &left, &right, span);
                 if *op == BinaryOp::Add && owns_items(&ty) {
                     return self.error(
@@ -5019,11 +5117,12 @@ impl Checker {
                 let slots = self.slots(&callee);
                 let only_looks = matches!(callee, Ty::Builtin(_));
                 let mut arguments = Vec::new();
-                let mut named_seen = false;
+                let (mut named_seen, mut misplaced) = (false, false);
                 for (position, arg) in args.iter().enumerate() {
                     if arg.name.is_some() {
                         named_seen = true;
-                    } else if named_seen {
+                    } else if named_seen && !misplaced {
+                        misplaced = true;
                         self.error("plain arguments must come before named ones", arg.value.span);
                     }
                     let slot = slots.as_ref().and_then(|slots| match &arg.name {
@@ -5065,6 +5164,12 @@ impl Checker {
                         span: arg.value.span,
                         written: written(&arg.value),
                     });
+                }
+                // Which parameter a plain argument is for is counted from
+                // the left, so after one out of order nothing more can be
+                // said about the call. One mistake gets one message.
+                if misplaced {
+                    return Ty::Invalid;
                 }
                 if let Ty::Generic(generic) = &callee {
                     return self.call_generic(generic, arguments, expr, wanted, span);
@@ -5194,13 +5299,29 @@ impl Checker {
                 }
                 self.error(format!("`{}` has no field or method `{name}`", class.name), span)
             }
-            // Which case the value is, is only known when the program runs.
+            // Which case the value is, is only known when the program
+            // runs, and a case that is not the one asked has no such
+            // field. `match` is the place where the case is known.
             Ty::EnumValue(info) => {
-                let known = info.cases.borrow().iter().any(|case| case.fields.iter().any(|f| f.name == name));
-                if known {
-                    Ty::Dynamic
-                } else {
-                    self.error(format!("no case of `{}` has a field `{name}`", info.name), span)
+                let cases = info.cases.borrow();
+                match cases.iter().find(|case| case.fields.iter().any(|f| f.name == name)) {
+                    Some(case) => {
+                        let places: Vec<&str> =
+                            case.fields.iter().map(|f| if f.name == name { name } else { "_" }).collect();
+                        let message = format!(
+                            "`{name}` belongs to the case `{0}`, and which case a `{1}` is, is only known inside a `match`. \
+                             Take it out there: `match ... {{ case {0}({2}) {{ ... }} }}`",
+                            case.name,
+                            info.name,
+                            places.join(", ")
+                        );
+                        drop(cases);
+                        self.error(message, span)
+                    }
+                    None => {
+                        drop(cases);
+                        self.error(format!("no case of `{}` has a field `{name}`", info.name), span)
+                    }
                 }
             }
             Ty::Enum(info) => {
@@ -5596,6 +5717,15 @@ impl Checker {
                     _ => arguments.iter().map(|a| a.ty.widened()).collect(),
                 };
                 let joined = self.join_all(&types).unwrap_or(Ty::Int);
+                // Not yet for quantities. What works is said, so that
+                // nobody takes the unit off by hand to get past this.
+                if types.iter().any(|ty| matches!(ty, Ty::Quantity(_))) {
+                    let way = match name {
+                        "sum" => "Add quantities with `+`, which keeps the unit",
+                        _ => "Compare quantities with `<` and `>`, which know the units",
+                    };
+                    return self.error(format!("`{name}` works on plain numbers, and these have a unit. {way}"), span);
+                }
                 if !joined.is_number() && !joined.is_loose() {
                     return self.error(format!("`{name}` needs numbers, but this is {joined}"), span);
                 }
@@ -6574,6 +6704,12 @@ impl Checker {
                 );
             }
 
+            // `none` is tested for with `is`, the one word for it. `==`
+            // compares two values, and `none` is the lack of one.
+            Eq | NotEq if matches!(left, Ty::None) || matches!(right, Ty::None) => {
+                let is = if op == Eq { "is none" } else { "is not none" };
+                return self.error(format!("`none` is tested for with `is`: write `{is}`, not `{} none`", op.text()), span);
+            }
             Eq | NotEq => {
                 // Two types that can never hold the same value: the answer
                 // is already known, which means the comparison is a mistake.
@@ -6598,6 +6734,19 @@ impl Checker {
                 (Ty::Str, Ty::Str) => Some(Ty::Bool),
                 _ => None,
             },
+            // A value whose type has no `or none` in it is never `none`,
+            // so the answer is known, and the test is a mistake.
+            Is | IsNot if !left.is_loose() && !matches!(left, Ty::Optional(_) | Ty::None) => {
+                let answer = if op == Is { "false" } else { "true" };
+                return self.error(
+                    format!(
+                        "`{} none` is always {answer}: this is {left}, which is never `none`. \
+                         Only a value whose type says `or none` can be",
+                        op.text()
+                    ),
+                    span,
+                );
+            }
             Is | IsNot => Some(Ty::Bool),
             _ => None,
         };
@@ -7128,7 +7277,7 @@ mod tests {
         assert_eq!(error("let ys = [\"a\"]\nlet xs: list[int] = ys"), "`xs` should be list[int], but this is list[str]");
         assert_eq!(
             error("let x: float = 1"),
-            "`x` should be float, but this is int. Write the number with a decimal point, as in `1.0`"
+            "`x` should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`"
         );
     }
 
@@ -7211,7 +7360,92 @@ mod tests {
     fn comparisons_that_can_never_be_true() {
         assert_eq!(error("print(1 == \"1\")"), "`==` between int and str is always false");
         assert_eq!(error("print([1] != \"x\")"), "`!=` between list[int] and str is always true");
-        ok("print(1 == 1.0, none == none)\nlet x: int or none = 1\nprint(x == 1, x == none)");
+        ok("print(1 == 1.0)\nlet x: int or none = 1\nprint(x == 1, x is none)");
+    }
+
+    #[test]
+    fn none_is_tested_for_with_is() {
+        let maybe = "let x: int or none = 1\n";
+        assert_eq!(error(&format!("{maybe}print(x == none)")), "`none` is tested for with `is`: write `is none`, not `== none`");
+        assert_eq!(error(&format!("{maybe}print(none != x)")), "`none` is tested for with `is`: write `is not none`, not `!= none`");
+        // Two values that may each be `none` are compared as values.
+        ok(&format!("{maybe}let y: int or none = none\nprint(x == y, x != y)"));
+        // A test whose answer is known is a mistake.
+        assert_eq!(
+            error("let n = 3\nprint(n is none)"),
+            "`is none` is always false: this is int, which is never `none`. Only a value whose type says `or none` can be"
+        );
+        assert_eq!(
+            error("let names = [\"a\"]\nif names is not none { }"),
+            "`is not none` is always true: this is list[str], which is never `none`. Only a value whose type says `or none` can be"
+        );
+        // After a test or a new value the name is known to be there, and
+        // testing it again is not a mistake. Nor is it for a parameter
+        // with no type written that is given a `none` somewhere.
+        ok(&format!("{maybe}if x is not none {{\n if x is none {{ }}\n}}"));
+        ok("var x: int or none = none\nx = 3\nprint(x is none)");
+        ok("function f(x) {\n return x is none\n}\nprint(f(1), f(none))");
+    }
+
+    #[test]
+    fn one_mistake_in_a_call_gets_one_message() {
+        // Before, this said three things: the order, `a` twice, no `b`.
+        let f = "function f(a: int, b: int = 2) -> int {\n return a + b\n}\n";
+        assert_eq!(errors(&format!("{f}print(f(b=5, 1))")), vec!["plain arguments must come before named ones".to_string()]);
+        ok(&format!("{f}print(f(1), f(1, b=5), f(a=1, b=5))"));
+    }
+
+    #[test]
+    fn a_const_is_written_from_what_the_compiler_can_work_out() {
+        ok("import math\nenum Mode {\n Idle\n Run\n}\nconst A = 4\nconst B: u8 = 0xA5\nconst C = A * 2 + 1\nconst TAU = 2 * math.pi\n\
+            const T = [A, C, 10]\nconst W = 500 ms\nconst S = f\"v{A}\"\nconst U = u8(A + 1)\nconst X = u8.wrap(300)\n\
+            const M = Idle\nconst N = Mode.Run\nconst F = float(A)\nprint(A, B, C, TAU, T, W, S, U, X, M, N, F, T[1])");
+        let not = "this is only known when the program runs, and a `const` is fixed when the program is built. \
+                   A `const` is written from numbers, text, other `const`s and operators. \
+                   For a value that is worked out once while the program runs, use `let`";
+        assert_eq!(error("const N = len(\"abc\")"), not);
+        assert_eq!(error("var k = 3\nconst P = k + 1"), not);
+        assert_eq!(error("let k = 3\nconst P = [1, k]"), not);
+        assert_eq!(error("function f() -> int {\n return 1\n}\nconst P = f()"), not);
+        // Inside a function too.
+        ok("function f() -> int {\n const Q = 2\n const R = Q * 2\n return R\n}\nprint(f())");
+        assert_eq!(error("function f(z: int) -> int {\n const BAD = z\n return BAD\n}"), not);
+    }
+
+    #[test]
+    fn a_field_of_a_case_is_taken_out_in_a_match() {
+        let shape = "enum Shape {\n Dot\n Circle(radius: float)\n Rect(w: float, h: float)\n}\n";
+        assert_eq!(
+            error(&format!("{shape}let c = Circle(2.0)\nprint(c.radius)")),
+            "`radius` belongs to the case `Circle`, and which case a `Shape` is, is only known inside a `match`. \
+             Take it out there: `match ... { case Circle(radius) { ... } }`"
+        );
+        assert_eq!(
+            error(&format!("{shape}let r = Rect(1.0, 2.0)\nprint(r.h)")),
+            "`h` belongs to the case `Rect`, and which case a `Shape` is, is only known inside a `match`. \
+             Take it out there: `match ... { case Rect(_, h) { ... } }`"
+        );
+        assert_eq!(error(&format!("{shape}print(Dot.side)")), "no case of `Shape` has a field `side`");
+        ok(&format!("{shape}match Circle(2.0) {{\n case Circle(radius) {{ print(radius) }}\n case Rect(_, h) {{ print(h) }}\n case Dot {{ }}\n}}"));
+    }
+
+    #[test]
+    fn a_mistake_from_another_language_says_what_zeno_writes() {
+        assert_eq!(error("let a = None"), "`None` is not defined. Zeno spells it `none`");
+        assert_eq!(error("let a = null"), "`null` is not defined. Zeno spells it `none`");
+        assert_eq!(error("print(nil)"), "`nil` is not defined. Zeno spells it `none`");
+        assert_eq!(error("let a = True"), "`True` is not defined. Zeno spells it `true`");
+        assert_eq!(error("let a = False"), "`False` is not defined. Zeno spells it `false`");
+        // A program may still use such a name for something of its own.
+        ok("let nil = 0\nprint(nil)");
+        assert_eq!(
+            error("print(min(3 V, 200 mV))"),
+            "`min` works on plain numbers, and these have a unit. Compare quantities with `<` and `>`, which know the units"
+        );
+        assert_eq!(
+            error("print(sum([3 V, 5 V]))"),
+            "`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit"
+        );
     }
 
     #[test]
@@ -8985,7 +9219,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         assert_eq!(
             error("let d: dict[str, float] = [\"a\": 1]"),
-            "the values of this dict are float here, but this one is int. Write the number with a decimal point, as in `1.0`"
+            "the values of this dict are float here, but this one is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`"
         );
         assert_eq!(
             strict_error("let d = [:]"),
@@ -9566,7 +9800,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             ),
             (
                 "let p = allocate(float, 4)\nunsafe { p[0] = 2 }".to_string(),
-                "the new value should be float, but this is int. Write the number with a decimal point, as in `1.0`",
+                "the new value should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`",
             ),
             (format!("{p}unsafe {{ print(p[1.0]) }}"), "an index should be int, but this is float"),
             // `p + n` and `p - n`, and nothing else.

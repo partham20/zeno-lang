@@ -348,6 +348,33 @@ fn check(path: &str, rules: checker::Rules) -> Option<(Vec<modules::File>, ast::
     }
 }
 
+/// `zeno check --no-collector <file>`: say what `zeno build
+/// --no-collector` would say, and build nothing.
+///
+/// Most of what such a build refuses the checker finds: a type that is
+/// not known, a list with two owners. A few things only the compiler
+/// meets, as it works out where each value is kept (a list of numbers
+/// that may be `none` is one). So this runs the compiler too and throws
+/// the C away. "No errors found" then means the build will go through.
+fn check_no_collector(path: &str) -> Option<()> {
+    let kind = emit_c::Build::NoCollector;
+    let (files, program) = load(path)?;
+    let (program, mut errors, types) = checker::checked(program.without_tests(), kind.rules());
+    if errors.is_empty() {
+        errors.extend(emit_c::emit(&program, &types, path, kind).err());
+    }
+    for error in &errors {
+        report(&files, error);
+    }
+    if errors.is_empty() {
+        Some(())
+    } else {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was run.", errors.len());
+        None
+    }
+}
+
 /// `zeno bytecode <file>`: print the bytecode the program compiles to.
 fn bytecode(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
@@ -606,9 +633,8 @@ fn main() -> ExitCode {
                 "parse" => parse(path),
                 "join" => join(path),
                 "bytecode" => bytecode(path),
-                // `check --no-collector` checks as that build would:
-                // every type known, and every list and object owned.
-                "check" => check(path, checker::Rules { strict: strict || no_collector, one_owner: no_collector, firmware: no_collector })
+                "check" if no_collector => check_no_collector(path).map(|_| println!("No errors found.")),
+                "check" => check(path, checker::Rules { strict, one_owner: false, firmware: false })
                     .map(|_| println!("No errors found.")),
                 _ => run(path, strict, on_vm, arguments),
             };
@@ -765,6 +791,24 @@ mod tests {
             fs::write(path, text).expect("the file can be written");
         }
         root
+    }
+
+    #[test]
+    fn check_with_no_collector_says_what_that_build_would_say() {
+        let root = folder(
+            "check-no-collector",
+            &[
+                // The checker passes this, and the compiler refuses it.
+                ("gaps.zeno", "var readings: list[int or none] = [1, none, 3]\nprint(len(readings))\n"),
+                ("fine.zeno", "let readings = [1, 2, 3]\nprint(len(readings))\n"),
+            ],
+        );
+        let at = |name: &str| root.join(name).display().to_string();
+        assert!(check(&at("gaps.zeno"), checker::Rules { strict: true, one_owner: true, firmware: true }).is_some());
+        assert!(check_no_collector(&at("gaps.zeno")).is_none());
+        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector).is_none());
+        assert!(check_no_collector(&at("fine.zeno")).is_some());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -6645,7 +6645,7 @@ so. A message for a number names the fix:
 
 ```
 error: the values of this dict are float here, but this one is int.
-Write the number with a decimal point, as in `1.0`
+Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`
 ```
 
 ### 10.14 With no collector a dict holds plain values *(was provisional: 11.5)*
@@ -7427,7 +7427,7 @@ made.
 **The whole test suite** must pass on Linux before anything is
 released. It is also run on macOS and on Windows, where a failure is
 shown and does not stop the release: those runs are there to find out
-what is different on those systems. For 0.1.0 all 454 tests pass on
+what is different on those systems. For 0.1.0 all the tests pass on
 macOS, and what Windows says is in 12.7. On macOS three examples are
 also compiled through C and through LLVM and must print what `zeno
 run` prints.
@@ -7499,6 +7499,176 @@ limits of 0.1:
   been tried.
 - A path in a `zeno.package` is text, where `\` starts an escape, so
   it is written with `/`, which Windows accepts.
-- Of the 454 tests of Zeno itself, 337 pass on Windows. Nearly all the
+- Of the tests of Zeno itself, about three in four pass on Windows
+  (337 of 454 when it was first tried). Nearly all the
   others fail in the LLVM build above. Ten compare paths written with
   `/`: they test the tests' own folders, not what a program does.
+
+---
+
+## 13. What writing the book found
+
+The Zeno Book runs every sample it prints through the real compiler.
+Writing it was the first time the whole language was used by somebody
+who was trying to explain it and not to build it, and it found places
+where the checker let through what the rest of Zeno then refused, or
+said less than it knew. Each is a place where a program was accepted
+and then failed, which is the thing the checker is for preventing.
+
+### 13.1 `zeno check --no-collector` says what the build would say
+
+`var readings: list[int or none] = [1, none, 3]` passed `zeno check
+--no-collector` and was refused by `zeno build --no-collector`.
+
+Most of what a build with no collector refuses, the checker finds. A
+few things only the compiler meets, as it works out where each value
+is kept. `check --no-collector` now runs the compiler as well and
+throws the C away.
+
+**Why.** "No errors found" from a command named after a build has to
+mean that the build goes through. Otherwise the command answers a
+question nobody asked.
+
+**Turned down.** Teaching the checker each of the compiler's
+refusals: two lists of the same rules, which would drift apart again.
+
+### 13.2 `none` is tested for with `is`, and only where it can be `none`
+
+```zeno
+let x: int or none = find(xs, 3)
+if x is none { ... }       # the way to ask
+if x == none { ... }       # refused: write `is none`
+let n = 3
+if n is none { ... }       # refused: an int is never `none`
+```
+
+Both were accepted before. `x == none` gave the same answer as `x is
+none`, so there were two ways to ask one question. `n is none` gave
+`false` every time, which is a mistake that looks like a test.
+
+**Why `is` only.** `==` compares two values, and `none` is the lack
+of one. Decision 1.13 says absence is tested with `is none`, and the
+parser already refuses `is` in front of anything but `none`. The
+other half belongs with it: `none` is tested with `is` and nothing
+else. Two values that may each be `none`
+are still compared with `==`, because that compares values.
+
+**Why `n is none` is an error.** It is the rule of 2.5a: a comparison
+whose answer is already known is a mistake.
+
+**A name that was narrowed may be tested again.** After `if x is not
+none`, or after `x = 3`, the checker knows `x` is there. `x is none`
+is then also always false, but it is not refused: the name was
+declared `int or none`, and a second test is caution, not a mistake.
+The rule looks at the type the name was declared with.
+
+### 13.3 A field of an enum case is taken out with `match`
+
+```zeno
+enum Shape {
+    Circle(radius: float)
+    Square(side: float)
+}
+let shape = Circle(2.0)
+print(shape.radius)        # refused
+```
+
+This was accepted outside strict mode and failed when the program
+ran, if the value was a `Square`. It is refused now, in every mode,
+and the message writes the `match` out:
+
+```
+`radius` belongs to the case `Circle`, and which case a `Shape` is, is
+only known inside a `match`. Take it out there:
+`match ... { case Circle(radius) { ... } }`
+```
+
+**Why.** An enum value is one of its cases, and `match` is where the
+program finds out which. A field read outside it is a guess about the
+case that nothing checks. There is one way to open an enum value now,
+and it is the one that cannot be wrong.
+
+### 13.4 A `const` is written from what the compiler can work out
+
+Decision 1.7 says a `const` is fixed when the program is built. The
+checker treated it as a `let`, so `const N = len(name)` and `const P
+= k` for a `var k` were accepted.
+
+A `const` is now written from: numbers, text, `true` and `false`,
+quantities, other `const`s, a case of an enum that carries nothing, a
+constant of a module (`math.pi`), operators on those, a list or a
+dict of them, and the conversions between kinds of number (`u8(n)`,
+`u8.wrap(n)`, `int(x)`, `float(n)`). Anything else is refused, with
+`let` named as the word for a value worked out once while the program
+runs.
+
+**Why a list, when the list can still be added to (3.9).** A table of
+numbers is the commonest `const` in firmware, and what `const`
+promises is where the value comes from, not that it never changes.
+A list nobody may change is still the open question of 3.9.
+
+**Why no calls.** `len("abc")` could be worked out by the compiler,
+and so could any function of constants, with enough work. The rule
+that fits in a sentence is "no calls, except to change the kind of a
+number", and nothing has needed more.
+
+### 13.5 A parameter with a default comes after those without
+
+`function f(a = 1, b)` is refused where it is declared.
+
+**Why.** A call gives its arguments in order, so `f(2)` gives `a` and
+leaves `b` without a value: the default of `a` could only ever be
+used by naming every argument after it. It is the rule of Python and
+C++, and for the same reason.
+
+**Not for the fields of a class.** A class lists what it holds in the
+order it holds it, and objects with several fields are usually made
+with names. `class P { x: int = 0  y: int }` stays.
+
+**One mistake, one message.** `f(b=5, 1)` used to give three errors:
+the order, "`b` was given twice", and "needs a value for `a`". The
+second and third came from counting a plain argument that was in the
+wrong place. After the first, nothing more is said about that call.
+
+### 13.6 Messages that say what Zeno writes
+
+- `None`, `null`, `nil`, `NULL`, `nullptr` and `undefined` are "not
+  defined. Zeno spells it `none`", and `True` and `False` the same
+  for `true` and `false`. A program may still use those names for
+  things of its own: the hint is only given when the name means
+  nothing.
+- `elif` at the start of a line gets "Zeno spells `elif` as `else
+  if`". It did only after a `}` on the same line.
+- A whole number where a float goes: "Write a number with a decimal
+  point, as in `1.0`, and convert a value with `float( )`". Before,
+  only the first half was said, also when the number was in a
+  variable and had no decimal point to add.
+- `min`, `max` and `sum` on quantities say that they work on plain
+  numbers, and that quantities are compared with `<` and `>` and
+  added with `+`. They do not take quantities yet (a limit of 0.1).
+
+### 13.7 A whole quantity prints without `.0`
+
+`print(3.0)` is `3.0`, and `print(3 V)` is `3 V`, although a quantity
+is a float inside.
+
+**Settled as it is.** The `.0` of a float is there to say "this is a
+float and not an int", because both exist and behave differently. A
+quantity has only one kind, so there is nothing to tell apart, and
+`3 V` is how a person writes three volts. A format gives the decimals
+when they are wanted: `f"{supply:.1f}"` is `3.0 V` (10.29).
+
+### 13.8 Found and left for later
+
+- For `let x: str = first([1])` the error is reported at the
+  argument (`items` should be `list[str]`), not at `x`. A list that
+  is written out waits for the place to say what kind of number it
+  holds (3.16b, so that `[1, 2]` can be a `list[u8]`), and here the
+  place said `str`. The message is true and in the wrong order.
+- `Box([])` outside strict mode has a `T` that nothing says, and
+  becomes a value of unknown type without a word. Strict mode asks
+  for the type.
+- A method without `self` is reported at the line of its class, as
+  every mistake in a signature is (see checker.md).
+- The message for using a field that may be `none` could say to copy
+  the field into a name first, since a field is never narrowed.

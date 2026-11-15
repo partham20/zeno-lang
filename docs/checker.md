@@ -279,8 +279,9 @@ loops and `try`, are in [`docs/ownership.md`](ownership.md).
   each type: see [`generics.md`](generics.md).
 - **Derived units.** `1 s + 500 ms` works, but `V * A` is not `W`: units are
   grouped by what they measure, with no arithmetic between groups.
-- **Fields of an enum value.** `shape.radius` is `Dynamic`, because which
-  case the value is, is not known. Use `match`.
+- **Fields of an enum value.** `shape.radius` is refused, because which
+  case the value is, is only known inside a `match`. The message shows
+  the `match` to write (decision 13.3).
 - **Exact positions inside signatures.** A bad parameter or field type is
   reported at the start of the function or class, not at the parameter.
 - **Sized integers.** There is one `int`. `u8`, `i32` and friends come with
@@ -293,4 +294,6 @@ loops and `try`, are in [`docs/ownership.md`](ownership.md).
    point at the exact parameter.
 3. Add a unit of your own to `src/units.rs`, such as `kA` or `um`. What must its size be?
 4. Warn about code that can never run: statements after a `return`.
-5. Narrow on `==`: after `if x == none`. Why is `is none` the form Zeno prefers?
+5. Write `if x == none` for an `x` that may be `none`, and read the
+   message. Why does Zeno keep `is none` as the only way to ask
+   (decision 13.2)?

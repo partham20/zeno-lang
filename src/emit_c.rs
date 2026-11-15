@@ -6199,7 +6199,7 @@ pub(crate) mod tests {
 }
 print(find(1), find(2))
 let a = find(1)
-print(a == "one", a == none, a is none)
+print(a == "one", a is none)
 var n: int or none = 5
 if n is not none {
     print(n + 1)
@@ -6213,7 +6213,7 @@ var best: int or none = none
 for x in [3, 9, 4] {
     if best is none or x > best { best = x }
 }
-print(best, best == 9, best != none)
+print(best, best == 9, best is not none)
 function half(n: int) -> float or none {
     if n % 2 == 0 { return n / 2 }
     return none

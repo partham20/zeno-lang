@@ -281,7 +281,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
   [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
   [`docs/gaps.md`](docs/gaps.md), [`docs/version-0.1.md`](docs/version-0.1.md),
-  [`docs/release.md`](docs/release.md),
+  [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -467,6 +467,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `c * 1.8 + 32` differently from `zeno run` on ARM64 and on 32-bit
     x86, which is mended.
     See [`docs/release.md`](docs/release.md))
+21. What writing the book found (done: `zeno check --no-collector`
+    says what the build would say. `none` is tested for with `is`
+    only, and only where a value can be `none`. A field of an enum
+    case is taken out with `match`. A `const` is written from what
+    the compiler can work out. A parameter with a default comes last.
+    `None`, `null`, `True` and `elif` each get a message that says
+    what Zeno writes.
+    See [`docs/found-by-the-book.md`](docs/found-by-the-book.md))
 
 ## Layout
 

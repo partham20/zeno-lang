@@ -7046,7 +7046,7 @@ pub(crate) mod tests {
             "function find(items: list[str], want: str) -> int or none {\n\
              \x20   for i in range(len(items)) { if items[i] == want { return i } }\n}\n\
              let at = find([\"a\", \"b\"], \"b\")\n\
-             print(at, find([\"a\"], \"z\"), at == 1, at != none, at is none, find([], \"a\") is none)\n\
+             print(at, find([\"a\"], \"z\"), at == 1, at is not none, at is none, find([], \"a\") is none)\n\
              if at is not none { print(at + 1) }\n\
              match at {\n    case none { print(\"nothing\") }\n    case 1 { print(\"one\") }\n    case n { print(\"other\", n) }\n}\n\
              let maybe: list[int or none] = [1, none, 3]\n\

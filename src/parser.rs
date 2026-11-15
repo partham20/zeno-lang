@@ -184,6 +184,12 @@ impl Parser {
     fn statement(&mut self) -> Result<Stmt, Error> {
         let span = self.span();
 
+        // `elif` at the start of a line, by somebody who writes Python.
+        // (After a `}` on the same line, `if_statement` says the same.)
+        if matches!(self.peek(), TokenKind::Ident(word) if word == "elif") && *self.peek_at(1) != TokenKind::Assign {
+            return self.error("Zeno spells `elif` as `else if`");
+        }
+
         let kind = match self.peek() {
             TokenKind::Let | TokenKind::Var | TokenKind::Const => self.declaration()?,
             // `function name(...)` declares. `function(...)` with no name is a
@@ -657,11 +663,25 @@ impl Parser {
         }
 
         self.expect(TokenKind::LParen)?;
-        let mut params = Vec::new();
+        let mut params: Vec<Param> = Vec::new();
         while !self.check(TokenKind::RParen) {
+            let at = self.span();
             let name = self.name("a parameter name")?;
             let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
             let default = if self.eat(TokenKind::Assign) { Some(self.expression()?) } else { None };
+            // Arguments are given in order, so a parameter that can be
+            // left out has to be after every one that cannot.
+            if let (None, Some(before)) = (&default, params.iter().find(|param| param.default.is_some())) {
+                return Err(Error::new(
+                    format!(
+                        "`{name}` has no default, and comes after `{0}`, which has one. A call gives its arguments \
+                         in order, so `{0}` could only be left out by naming every argument after it. \
+                         Put the parameters that have a default last",
+                        before.name
+                    ),
+                    at,
+                ));
+            }
             params.push(Param { name, ty, default });
             if !self.eat(TokenKind::Comma) {
                 break;
@@ -1973,6 +1993,25 @@ mod tests {
         assert_eq!(error(r#"f"x}""#), "in f-string: `}` without a `{`. Write `}}` for a literal brace");
         assert_eq!(error(r#"f"{1 +}""#), "in f-string: expected an expression, found the end of the file");
         assert_eq!(error(r#"f"{a b}""#), "in f-string: expected `}`, found the name `b`");
+    }
+
+    #[test]
+    fn a_parameter_with_a_default_comes_after_those_without() {
+        assert_eq!(
+            error("function f(a = 1, b) { }"),
+            "`b` has no default, and comes after `a`, which has one. A call gives its arguments in order, \
+             so `a` could only be left out by naming every argument after it. Put the parameters that have a default last"
+        );
+        assert!(parse_source("function f(a, b = 1, c = 2) { }").is_ok());
+        // A class says what it holds in the order it holds it.
+        assert!(parse_source("class P {\n x: int = 0\n y: int\n}").is_ok());
+    }
+
+    #[test]
+    fn elif_at_the_start_of_a_line_gets_the_hint_too() {
+        assert_eq!(error("if a {\n}\nelif b {\n}"), "Zeno spells `elif` as `else if`");
+        // It is still a name a program may use.
+        assert!(parse_source("let elif = 3\nelif = 4").is_ok());
     }
 
     // ----- The examples -----
