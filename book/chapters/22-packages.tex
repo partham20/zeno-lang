@@ -1,3 +1,231 @@
 \chapter{Packages}\label{ch-packages}
 
-To be written.
+Modules put one program into several files. A \emph{package} lets a
+program use files that are not its own: a folder of modules that lives
+somewhere else, beside the program or in somebody else's git
+repository.
+
+\section{Starting a program with zeno new}
+
+\verb|zeno new| makes a folder with a small program in it, laid out
+the way a program that grows will want:
+
+\begin{session}[dir=new]
+$ zeno new weather
+$ zeno run weather/main.zeno
+$ zeno test weather
+\end{session}
+
+\verb|zeno new --package name| makes a package instead: a folder of
+modules for other programs to use, with no \verb|main.zeno|.
+
+\section{The project file}
+
+A folder is a package when it holds a file called
+\verb|zeno.package|. The one \verb|zeno new| made is comments, which say
+what can be written, and then one line:
+
+\begin{zeno}[file=weather/zeno.package, dir=new, run=no]
+package weather
+\end{zeno}
+
+There are two kinds of line, and that is all the file can say:
+
+\begin{center}
+\begin{tabular}{lp{7.6cm}}
+\toprule
+Line & Means \\
+\midrule
+\verb|package weather| & the name of this package \\
+\verb|needs filters in "../filters"| & it needs the package in that
+  folder, counted from this file's folder. Nothing is copied \\
+\verb|needs units from "address" at "v1.2.0"| & it needs the package in
+  that git repository, at that tag, branch or commit \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A comment starts with \verb|#|, as in a program. A program with no
+\verb|zeno.package| is still a program; the file is needed from the
+day the program needs a package.
+
+\section{A package beside the program}
+
+Here is a package of filters for noisy readings, in a folder of its
+own:
+
+\begin{zeno}[file=filters/zeno.package, dir=thermo, run=no]
+package filters
+\end{zeno}
+
+\begin{zeno}[file=filters/filters.zeno, dir=thermo, run=no]
+function mean(values: list[float]) -> float {
+    return sum(values) / float(len(values))
+}
+
+function clamp(x: float, low: float, high: float) -> float {
+    if x < low {
+        return low
+    }
+    if x > high {
+        return high
+    }
+    return x
+}
+\end{zeno}
+
+\begin{zeno}[file=filters/lowpass.zeno, dir=thermo, run=no]
+from filters import clamp
+
+class Lowpass {
+    weight: float
+    value: float
+
+    function add(self, reading: float) -> float {
+        self.value += self.weight * (reading - self.value)
+        return self.value
+    }
+}
+
+function start(weight: float, first: float) -> Lowpass {
+    return Lowpass(clamp(weight, 0.0, 1.0), first)
+}
+\end{zeno}
+
+And a program, in the folder beside it, that needs the package:
+
+\begin{zeno}[file=thermostat/zeno.package, dir=thermo, run=no]
+package thermostat
+
+needs filters in "../filters"
+\end{zeno}
+
+\begin{zeno}[file=thermostat/main.zeno, dir=thermo, cmd=zeno run thermostat/main.zeno]
+import filters
+import filters.lowpass
+
+let readings = [18.2, 18.9, 19.6, 21.0, 22.4, 23.1]
+let smooth = filters.lowpass.start(0.5, readings[0])
+for r in readings {
+    print(f"read {r:5.1f}  smoothed {smooth.add(r):5.1f}")
+}
+print(f"mean {filters.mean(readings):.2f}")
+\end{zeno}
+
+\subsection{Which file an import names}
+
+The rule for imports has one step more than in the last chapter:
+
+\begin{enumerate}
+\item If the first word of the import is a package that this file's
+  \verb|zeno.package| needs, the rest is a file in that package's
+  folder. \verb|import filters.lowpass| is \verb|lowpass.zeno| there,
+  and \verb|import filters| alone is the file with the package's own
+  name, \verb|filters.zeno|.
+\item Otherwise it is a file of the package the importing file is in.
+\end{enumerate}
+
+Inside the package the same rule holds from the package's own side:
+\verb|lowpass.zeno| writes \verb|from filters import clamp| to get
+its neighbour. A package sees its own files and the packages its own
+\verb|zeno.package| needs, and nothing of the program that uses it, so
+the same package works in every program, and can be run and tested on
+its own.
+
+\section{Other people's packages: zeno fetch}
+
+A package that somebody else keeps is named by its git repository and
+by one exact version of it:
+
+\begin{zenofrag}[lang=shell]
+package logger
+
+needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
+\end{zenofrag}
+
+\verb|at| is a tag, a branch or a commit. There are no ranges such as
+\verb|^1.2|: the version written is the version used. Then, in the
+program's folder:
+
+\begin{zenofrag}[lang=shell]
+$ zeno run main.zeno
+error: the package `units` has not been fetched: there is no file
+`packages/units/zeno.package`. Run `zeno fetch` in the folder of the program
+
+$ zeno fetch
+Fetched units v1.2.0 (1c4e326) into packages/units
+Fetched prefix main (d4461d9) into packages/prefix
+Wrote zeno.lock
+
+$ zeno run main.zeno
+42.0
+\end{zenofrag}
+
+Three things happened.
+
+\begin{itemize}
+\item \textbf{Running never fetches.} \verb|zeno run|, \verb|check|
+  and \verb|build| read files and nothing else. Only \verb|zeno fetch|
+  uses the network, with the \verb|git| that is on the machine.
+\item \textbf{What a package needs comes too.} \verb|units| needs
+  \verb|prefix|, so that was fetched as well. All of them go into one
+  folder, \verb|packages/|, beside the program's \verb|zeno.package|,
+  and a program has one package of each name.
+\item \textbf{zeno.lock was written.} It holds the exact commit each
+  package was at. A branch moves, but the next \verb|zeno fetch|, here
+  or on another machine, gets the commit in the lock.
+  \verb|zeno fetch --update| looks every version up again and writes
+  the lock afresh.
+\end{itemize}
+
+Keep \verb|zeno.package| and \verb|zeno.lock| with the program. The
+folder \verb|packages/| can be made again from them at any time.
+
+\begin{why}
+A range such as \verb|^1.2| means the program built today and the
+program built next month may hold different code, chosen by somebody
+else's release. Firmware that passed its tests on the bench must build
+the same a year later. One exact version and a lock file give that,
+and there is no solver to understand. Fetching only when asked means a
+build never depends on the network, which a factory build machine may
+not have. (Decisions 8.4, 8.9 and 8.10.)
+\end{why}
+
+\section{What can go wrong}
+
+Each mistake in a \verb|zeno.package| is shown with its file and line,
+as a mistake in a program is. A few of the messages:
+
+\begin{zenofrag}[lang=shell]
+error: this does not say which version of `units` is needed. Add `at` and a tag,
+a branch or a commit of that repository, as in `needs units from "..." at "v1.0.0"`
+
+error: the package in `lib` is called `filters`, not `filter`. Write `needs filters ...`
+
+error: two packages called `b` are needed: the one in `a/b` and the one in `b`.
+A program has one package of each name. Make the `needs` lines agree
+\end{zenofrag}
+
+\begin{summary}
+\verb|zeno new| starts a program, \verb|zeno new --package| a package.
+\verb|zeno.package| names a package and lists what it needs: a folder
+with \verb|in|, or a git repository and one exact version with
+\verb|from| and \verb|at|. An import whose first word is a needed
+package reads that package's folder. \verb|zeno fetch| gets git
+packages into \verb|packages/| and pins them in \verb|zeno.lock|;
+nothing else touches the network.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Make a package \verb|units_extra| with a function that turns a
+  temperature in \verb|degC| into Fahrenheit as a float, and use it
+  from a program beside it.
+\item Misspell the package's name in the program's \verb|needs| line,
+  and read the message.
+\item Add a test to \verb|filters.zeno| and run \verb|zeno test| in the
+  package's folder (\hyperref[ch-testing]{Testing}).
+\item Put a package of yours in a git repository, tag it, and need it
+  from a program with \verb|from| and \verb|at|.
+\end{enumerate}
+\end{tryit}

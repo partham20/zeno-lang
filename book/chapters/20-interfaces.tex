@@ -1,3 +1,290 @@
 \chapter{Interfaces}\label{ch-interfaces}
 
-To be written.
+A function that adds up areas should work for circles, for squares,
+and for the shape somebody writes next year. A function that sends a
+message should work through a serial port, a radio, or a log kept in
+memory for testing. An \emph{interface} says what all of them can do,
+and each class says that it is one.
+
+\section{Declaring an interface}
+
+An interface is a list of functions with no bodies: what can be asked,
+not how it is done.
+
+\begin{zeno}
+interface Shape {
+    function area(self) -> float
+    function scale(self, by: float)
+}
+
+class Circle is Shape {
+    radius: float
+
+    function area(self) -> float {
+        return 3.14159 * self.radius * self.radius
+    }
+
+    function scale(self, by: float) {
+        self.radius = self.radius * by
+    }
+}
+
+class Square is Shape {
+    side: float
+
+    function area(self) -> float {
+        return self.side * self.side
+    }
+
+    function scale(self, by: float) {
+        self.side = self.side * by
+    }
+}
+
+function total(shapes: list[Shape]) -> float {
+    var sum = 0.0
+    for shape in shapes {
+        sum += shape.area()
+    }
+    return sum
+}
+
+let shapes: list[Shape] = [Circle(1.0), Square(2.0)]
+print(total(shapes))
+for shape in shapes {
+    shape.scale(2.0)
+}
+print(total(shapes), shapes)
+\end{zeno}
+
+\verb|total| was written once. \verb|shape.area()| runs the
+\verb|area| of whatever class the object is, and that is decided while
+the program runs. An object seen through an interface still prints as
+the class it is.
+
+\section{The rules}
+
+\paragraph{An interface lists functions,} each with \verb|self| first
+and a type on every other parameter and on the result. It has no
+fields and no bodies.
+
+\paragraph{A class says which interfaces it is,} after \verb|is| on
+its first line: \verb|class Box is Named, Sized|. It is not one unless
+it says so.
+
+\paragraph{The class has every function of the interface, written the
+same way}: the same parameter names, the same types, the same result.
+It may have more of its own. A missing function, or one written
+differently, is reported at the class:
+
+\begin{zeno}[fails=yes]
+interface Shape {
+    function area(self) -> float
+    function scale(self, by: float)
+}
+
+class Dot is Shape {
+    function area(self) -> float {
+        return 0.0
+    }
+}
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+interface Shape {
+    function scale(self, by: float)
+}
+
+class Dot is Shape {
+    function scale(self, factor: float) {
+    }
+}
+\end{zeno}
+
+\begin{why}
+In Go, and in Python's protocols, any class that happens to have an
+\verb|area| and a \verb|scale| is a \verb|Shape| without a word. That
+saves a line and costs two things: a class whose \verb|area| means
+something else is a \verb|Shape| by accident, and a class meant to be
+one, with \verb|scale| misspelt, is found out far away, at some call
+that passes it. With \verb|is Shape| the promise is written where the
+reader of the class sees it, and it is checked there. (Decision 10.4.)
+\end{why}
+
+\section{Where an interface goes}
+
+An object of a class goes wherever one of its interfaces is wanted: a
+variable, a parameter, a result, a field, and each of those with
+\verb|or none|.
+
+A list of the class does not go where a list of the interface is
+wanted, because whoever held it as a \verb|list[Shape]| could then
+append a \verb|Square| to a list of circles:
+
+\begin{zeno}[fails=yes]
+interface Shape {
+    function area(self) -> float
+}
+class Circle is Shape {
+    radius: float
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+}
+function total(shapes: list[Shape]) -> float {
+    var sum = 0.0
+    for shape in shapes {
+        sum += shape.area()
+    }
+    return sum
+}
+let circles = [Circle(1.0), Circle(2.0)]
+print(total(circles))
+\end{zeno}
+
+The message says what to do: say what the list holds where it is
+made, \verb|let circles: list[Shape] = [...]|. A list written out in
+place, as in \verb|total([Circle(1.0)])|, is a list of whatever the
+place wants. (Decision 10.7.)
+
+\section{Through an interface, only its functions}
+
+Through an interface, only the interface's functions can be used. Not
+the fields, not the class's other functions, and there is no way back
+from the interface to the class:
+
+\begin{zeno}[fails=yes]
+interface Shape {
+    function area(self) -> float
+}
+class Circle is Shape {
+    radius: float
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+}
+let s: Shape = Circle(1.0)
+print(s.radius)
+\end{zeno}
+
+What else an object has depends on its class, and that is only known
+when the program runs. If code needs it, the interface should have a
+function for it.
+
+\begin{why}
+A way back, such as Java's casts or Rust's \verb|downcast|, lets code
+ask "which class are you really?" and do something different for
+each, which is what the interface was meant to save. When the classes
+are a fixed list known in advance, an enum and \verb|match| say that
+directly. (Decision 10.8.)
+\end{why}
+
+\section{Errors through an interface}
+
+An interface function can say what it raises. A class may raise less
+than the interface says, never more, because whoever calls it through
+the interface would not know:
+
+\begin{zeno}
+class Full {
+    waiting: int
+}
+
+interface Port {
+    function send(self, text: str) -> int raises Full
+    function name(self) -> str
+}
+
+class Uart is Port {
+    speed: int
+    queued: int = 0
+
+    function send(self, text: str) -> int raises Full {
+        if self.queued >= 2 {
+            raise Full(self.queued)
+        }
+        self.queued += 1
+        return len(text)
+    }
+
+    function name(self) -> str {
+        return f"uart at {self.speed}"
+    }
+}
+
+class MemoryLog is Port {
+    lines: list[str] = []
+
+    function send(self, text: str) -> int {
+        self.lines.append(text)
+        return len(text)
+    }
+
+    function name(self) -> str {
+        return "memory log"
+    }
+}
+
+function report(port: Port, text: str) {
+    try {
+        print(port.name(), "sent", port.send(text))
+    } except Full as f {
+        print(port.name(), "is full with", f.waiting)
+    }
+}
+
+let ports: list[Port] = [Uart(9600), MemoryLog()]
+for turn in range(3) {
+    for port in ports {
+        report(port, "hello")
+    }
+}
+\end{zeno}
+
+\verb|MemoryLog| never fills up and raises nothing, and that is fine.
+A class whose \verb|send| raised something \verb|Port| does not list
+would be refused at the class.
+
+\section{No parent classes}
+
+There is no inheritance in Zeno: a class cannot be another class, only
+interfaces. What two classes share is declared as an interface that
+both are (\hyperref[ch-classes]{Classes}).
+
+\begin{why}
+Inheriting fields and code brings the questions every language with it
+has had to answer: which \verb|area| runs, what the object looks like
+in memory, what happens when two parents have the same field. None of
+them is needed to write \verb|total|. (Decision 10.4.)
+\end{why}
+
+\section{What it costs}
+
+In a compiled program, each object carries a small number saying which
+class it is, and a call through an interface is a \verb|switch| on that
+number to the class's function. There are no tables of function
+pointers, and nothing is looked up by name. (Decision 10.9.)
+
+\begin{summary}
+An interface lists functions with no bodies. A class says which
+interfaces it is with \verb|class Name is Interface|, and must have
+each function written the same way. An object goes where its interface
+is wanted, a list of it only where the list was made as one. Through
+an interface only its functions are there. A class may raise less than
+its interface says, never more.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Add a \verb|Triangle| to the shapes, and check that \verb|total|
+  needs no change.
+\item Write \verb|interface Sensor| with \verb|function read(self) -> float|
+  and two classes: a fake sensor that gives values from a list, and
+  one that always gives the same value. Write a function that averages
+  ten readings from any sensor.
+\item Give \verb|Shape| a function \verb|name(self) -> str| and make
+  every class say what it is.
+\item Make \verb|MemoryLog.send| raise a \verb|ValueError| for an
+  empty text, and read the message.
+\end{enumerate}
+\end{tryit}

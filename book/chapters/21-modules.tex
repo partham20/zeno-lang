@@ -1,3 +1,294 @@
 \chapter{Programs in Several Files}\label{ch-modules}
 
-To be written.
+A program of a few hundred lines is easier to read when it is cut into
+files: one for the sensors, one for the report, one for the serial
+port. In Zeno a file is a \emph{module}, and \verb|import| brings one
+file's names into another.
+
+\section{A module is a file}
+
+There is nothing to declare and nothing to register. The file
+\verb|sensors.zeno| is the module \verb|sensors|:
+
+\begin{zeno}[file=sensors.zeno, dir=station, run=no]
+class Reading {
+    name: str
+    value: float
+}
+
+let highest = ["temperature": 60.0, "humidity": 100.0]
+
+function check(reading: Reading) -> str {
+    let limit = highest.get(reading.name)
+    if limit is none {
+        return "no limit is known"
+    }
+    if reading.value > limit {
+        return f"over {limit}"
+    }
+    return "good"
+}
+\end{zeno}
+
+\begin{zeno}[file=main.zeno, dir=station]
+import sensors
+
+let readings = [
+    sensors.Reading("temperature", 21.5),
+    sensors.Reading("humidity", 104.0),
+    sensors.Reading("wind", 12.0),
+]
+for reading in readings {
+    print(reading.name, sensors.check(reading))
+}
+print(readings[0])
+\end{zeno}
+
+\verb|import sensors| reads \verb|sensors.zeno| from the folder of the
+file that \verb|zeno run| was given. Its names are then written with
+the module's name in front: \verb|sensors.check|,
+\verb|sensors.Reading|. A value prints by the name its own file gave
+it, \verb|Reading|.
+
+\section{Two ways to import}
+
+\begin{center}
+\begin{tabular}{lp{8cm}}
+\toprule
+Written & Means \\
+\midrule
+\verb|import sensors| & read \verb|sensors.zeno|; its names are
+  written \verb|sensors.check| \\
+\verb|import drivers.uart| & read \verb|drivers/uart.zeno|; a dot is a
+  folder, and the names are written \verb|drivers.uart.send| \\
+\verb|from sensors import check, Reading| & read \verb|sensors.zeno|,
+  and let these names be written with nothing in front \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These are the same two forms that the modules which come with Zeno
+have: \verb|import math| and \verb|from time import sleep|. A file of
+your own is used exactly as one of those is.
+
+\begin{zeno}[file=drivers/uart.zeno, dir=station, run=no]
+let speed = 9600
+var sent = 0
+
+function send(text: str) {
+    print(f"uart> {text}")
+    sent += len(text) + 1
+}
+\end{zeno}
+
+\begin{zeno}[file=station.zeno, dir=station]
+import drivers.uart
+from sensors import Reading, check
+
+let r = Reading("temperature", 21.5)
+drivers.uart.send(f"{r.name}: {check(r)}")
+drivers.uart.send("done")
+print(drivers.uart.sent, "bytes sent at", drivers.uart.speed)
+\end{zeno}
+
+A type from a module is written the same way, \verb|sensors.Reading|,
+and so is an enum case in a \verb|match|, \verb|case shapes.Circle(r)|,
+and an error class in an \verb|except|.
+
+\begin{why}
+A file is already a unit that people name, open and send to each
+other, so it is the module. A separate declaration of what a module
+is, as in Java's \verb|package| lines or Rust's \verb|mod|, would be a
+second name for the same thing that could disagree with the first.
+(Decision 7.1.)
+\end{why}
+
+\section{The rules}
+
+\paragraph{What can be imported.} Everything a file declares at its
+top: functions, classes, enums and their cases, \verb|let|,
+\verb|var| and \verb|const|. What the file itself imports is not
+passed on. A declaration marked \verb|private| is for its own file
+only, below.
+
+\paragraph{When an imported file runs.} Once, before the file that
+imports it, however many files import it. So imports go at the top
+of a file.
+
+\paragraph{Files cannot import each other,} directly or round a longer
+circle. One of them would have to run first, and none can:
+
+\begin{zeno}[file=a.zeno, dir=circle, run=no]
+import b
+let x = 1
+\end{zeno}
+
+\begin{zeno}[file=b.zeno, dir=circle, fails=yes]
+import a
+let y = 2
+\end{zeno}
+
+What two files share goes into a third, which both import.
+
+\paragraph{Only a module changes its own variables.} Other files read
+them, and ask the module to change them through a function:
+
+\begin{zeno}[file=meddle.zeno, dir=station, fails=yes]
+import drivers.uart
+drivers.uart.sent = 0
+\end{zeno}
+
+\paragraph{No name has two meanings.} Importing \verb|check| from two
+modules, or declaring your own \verb|check| beside an imported one, is
+refused. A name declared inside a function hides an imported one, as
+it hides any name from the top of the file.
+
+\paragraph{A misspelt name is named,} with the names the module does
+have:
+
+\begin{zeno}[file=typo.zeno, dir=station, fails=yes]
+import sensors
+print(sensors.chek)
+\end{zeno}
+
+A mistake inside an imported file is shown in that file, with its
+name and line.
+
+\section{private}
+
+Every module has parts it is for and parts it only uses to get its
+work done. \verb|private| in front of a declaration keeps it to the
+file it is written in. It goes in front of a function, class, enum,
+\verb|let|, \verb|var| or \verb|const| at the top of a file, and in
+front of a field or a method of a class.
+
+Here is a queue of a fixed size whose count must always agree with its
+slots:
+
+\begin{zeno}[file=ring.zeno, dir=ring, run=no]
+class Ring {
+    private slots: list[int]
+    private first: int
+    private count: int
+
+    function put(self, byte: int) -> bool {
+        if self.count == len(self.slots) {
+            return false
+        }
+        self.slots[self.slot(self.count)] = byte
+        self.count += 1
+        return true
+    }
+
+    function get(self) -> int or none {
+        if self.count == 0 {
+            return none
+        }
+        let byte = self.slots[self.first]
+        self.first = wrapped(self.first + 1, len(self.slots))
+        self.count -= 1
+        return byte
+    }
+
+    function size(self) -> int {
+        return self.count
+    }
+
+    private function slot(self, steps: int) -> int {
+        return wrapped(self.first + steps, len(self.slots))
+    }
+}
+
+function ring(size: int) -> Ring raises ValueError {
+    if size < 1 {
+        raise ValueError("a ring has room for one byte at least")
+    }
+    return Ring([0 for slot in range(size)], 0, 0)
+}
+
+private function wrapped(place: int, size: int) -> int {
+    return place % size
+}
+\end{zeno}
+
+\begin{zeno}[file=main.zeno, dir=ring]
+import ring
+
+let queue = ring.ring(3)
+for byte in [10, 20, 30, 40] {
+    print(byte, queue.put(byte))
+}
+print(queue.get(), queue.get(), queue.size())
+\end{zeno}
+
+Each of these, in another file, is refused:
+
+\begin{zeno}[file=bad1.zeno, dir=ring, fails=yes]
+import ring
+let queue = ring.ring(3)
+queue.count = 0
+\end{zeno}
+
+\begin{zeno}[file=bad2.zeno, dir=ring, fails=yes]
+import ring
+print(ring.wrapped(5, 4))
+\end{zeno}
+
+\begin{zeno}[file=bad3.zeno, dir=ring, fails=yes]
+import ring
+let mine = ring.Ring([1, 2], 0, 2)
+\end{zeno}
+
+The last is the important one. A class with a private field can be
+built only by its own file, because only that file can fill the field
+in. So the only way to get a \verb|Ring| is through the function
+\verb|ring|, which checks the size. Every line that changes the count
+is in \verb|ring.zeno|, in front of whoever reads it.
+
+\begin{why}
+One word, in front of the thing it is about, at the place a reader is
+already looking. Python's leading underscore is only a habit that
+nothing checks; Java's four levels of access are three more than a
+file needs. Private is for the file and not for the class because the
+file is what one person writes and reads at a time, and functions
+beside a class often need to see inside it. (Decisions 10.1 to 10.3.)
+\end{why}
+
+\section{How it works}
+
+Before the checker sees anything, a stage of the compiler loads every
+file the program imports, renames each top-level name with its module
+in front, and joins the files into one program, in the order they
+must run. Everything after that, the checker, the interpreter and the
+compilers, sees a single program. \verb|zeno join| shows it:
+
+\begin{zeno}[file=joined.zeno, dir=station, cmd=zeno join {file}]
+import drivers.uart
+drivers.uart.send("hi")
+\end{zeno}
+
+\hyperref[ch-inside]{Inside Zeno} has more on the stages of the
+compiler.
+
+\begin{summary}
+A file is a module. \verb|import name| reads \verb|name.zeno| from the
+program's folder, a dot is a folder, and \verb|from name import a, b|
+brings single names. Imported files run once, first, and cannot import
+each other. Only a module changes its own variables. \verb|private|
+keeps a declaration, a field or a method to its own file, and a class
+with a private field can only be built there.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Move the \verb|Log| class from \hyperref[ch-classes]{Classes}
+  into a file of its own and use it from \verb|main.zeno|.
+\item Make the \verb|readings| field of \verb|Log| private, and give
+  it a function \verb|log(limit: int) -> Log| that refuses a limit
+  below 1.
+\item Make two files import each other, and read the message. Then
+  move what they share into a third.
+\item Run \verb|zeno join| on a program of three files, and find where
+  each file's statements went.
+\end{enumerate}
+\end{tryit}

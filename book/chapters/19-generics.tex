@@ -1,3 +1,238 @@
 \chapter{Generics}\label{ch-generics}
 
-To be written.
+A stack of numbers and a stack of names are the same code. A function
+that gives the first item of a list does the same whatever the items
+are. \emph{Generics} let such code be written once, with the type left
+open, and still be checked for every type it is used with.
+
+\section{A generic function}
+
+A function names the type it leaves open in square brackets after its
+name, and uses that name where a type would go:
+
+\begin{zeno}
+function first[T](items: list[T]) -> T {
+    return items[0]
+}
+
+print(first([3, 1, 2]), first(["ada", "alan"]))
+let n = first([10, 20])
+print(n + 1)
+\end{zeno}
+
+\verb|T| is a \emph{type parameter}. Read the heading as "first, for
+any type T, takes a list of T and gives a T". At each call Zeno works
+out what \verb|T| is, so \verb|first([10, 20])| is known to be an
+\verb|int|, and \verb|n + 1| is checked as an int sum.
+
+Without generics, \verb|first| would be written once for each type, or
+once with no types at all, and then nothing that used its answer could
+be checked.
+
+\begin{why}
+Zeno already writes "a type applied to a type" as \verb|list[int]|.
+\verb|first[T]| is the same sentence, so there is one rule and no new
+punctuation. The angle brackets of C++, Java and Rust would make
+\verb|a < b > c| a puzzle for the parser and the reader; Go chose
+square brackets for that reason. (Decision 3.16.)
+\end{why}
+
+A type parameter starts with a capital letter, so a reader can tell it
+is a type without looking back at the heading:
+
+\begin{zeno}[fails=yes]
+function first[t](items: list[t]) -> t {
+    return items[0]
+}
+\end{zeno}
+
+\section{Several type parameters}
+
+A function can leave several types open. Here \verb|convert| takes a
+list of one type and a function that turns it into another:
+
+\begin{zeno}
+function convert[T, U](items: list[T], change: function(T) -> U) -> list[U] {
+    var out: list[U] = []
+    for item in items {
+        out.append(change(item))
+    }
+    return out
+}
+
+let labels = convert([1, 2, 3], function(n) { return f"#{n}" })
+print(labels, labels[0].upper())
+\end{zeno}
+
+Zeno works out \verb|T| from the list, then calls the function in its
+head with an \verb|int| to find what it gives back, and that is
+\verb|U|.
+
+\section{A generic class}
+
+A class can leave types open the same way. \verb|Stack[T]| is a stack
+of anything, and \verb|Stack[str]| is a stack of text:
+
+\begin{zeno}
+class Stack[T] {
+    items: list[T] = []
+
+    function push(self, item: T) {
+        self.items.append(item)
+    }
+
+    function pop(self) -> T {
+        return self.items.pop()
+    }
+
+    function is_empty(self) -> bool {
+        return len(self.items) == 0
+    }
+}
+
+let names: Stack[str] = Stack()
+names.push("ada")
+names.push("grace")
+print(names.pop().upper(), names.is_empty(), names)
+\end{zeno}
+
+\begin{zeno}
+class Pair[A, B] {
+    left: A
+    right: B
+}
+
+let p = Pair(36, "Ada")
+print(p, p.left + 1, p.right.upper())
+\end{zeno}
+
+Inside \verb|Pair[A, B]|, \verb|A| is the type parameter, even though
+\verb|A| is also the unit of current: the name declared right there in
+the heading is the nearest, and the nearest name wins. A quantity
+inside it is still written \verb|3 A|.
+
+\section{Where the types come from}
+
+A type argument is never written at the call. There is no
+\verb|first[int](xs)|. Zeno finds each type parameter in this order:
+
+\begin{enumerate}
+\item from the arguments;
+\item from an argument that is a function, by calling it in its head
+  with what the others gave;
+\item from the place the result goes, such as a variable with a
+  written type.
+\end{enumerate}
+
+The third is what a stack that starts empty needs: nothing in
+\verb|Stack()| says what it will hold, so the variable says it, as
+\verb|let names: list[str] = []| does for a list. If nothing says,
+strict mode asks for it, and shows how:
+
+\begin{zeno}[fails=yes, cmd=zeno check --strict {file}]
+class Box[T] {
+    items: list[T]
+}
+let box = Box([])
+\end{zeno}
+
+A written number waits for the other arguments to decide. With
+\verb|level| a \verb|u8|, \verb|same(level, 9)| is a \verb|u8|, and
+\verb|same(level, 300)| is an error, so a generic used for bytes never
+needs \verb|u8(0)| where \verb|0| is meant. (Decision 3.16c.)
+
+\section{The body is checked for each type}
+
+\verb|largest| below uses \verb|>|, and nothing in its heading says
+that \verb|T| must have one:
+
+\begin{zeno}
+function largest[T](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+print(largest([3, 9, 2]), largest(["pear", "fig", "apple"]))
+\end{zeno}
+
+Zeno checks the body once for each type the program uses it with. For
+ints and for text it passes. For a class, which has no \verb|>|, the
+mistake is reported inside \verb|largest|, with a note that names the
+type and the line that asked for it:
+
+\begin{zeno}[fails=yes]
+class Point {
+    x: int
+}
+
+function largest[T](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+print(largest([Point(1), Point(2)]))
+\end{zeno}
+
+\begin{why}
+A bound, such as "\verb|T| must be something with \verb|>|", needs a
+name for "something with \verb|>|". Checking each use instead is what
+C++ did for thirty years, and it still finds every mistake before the
+program runs, which is the promise that matters. The note under the
+error is there so that the message points back to the call.
+(Decision 3.16d.)
+\end{why}
+
+\section{What a compiled program does}
+
+In a compiled program each use becomes its own copy:
+\verb|largest| for ints and \verb|largest| for text are two functions
+in the C, each as fast as if it had been written by hand. Nothing is
+looked up while the program runs. The cost is size: each type a
+generic is used with adds a copy to the program, which on a
+microcontroller is flash. That is why an untyped function is not made
+generic by itself: a program asks for copies by writing \verb|[T]|.
+
+\section{What generics leave out}
+
+In version 0.1, these are refused, each with a message that says so:
+an enum with type parameters, a method with type parameters of its
+own, a generic function kept as a value or passed along, and raising
+an object of a generic class.
+
+\begin{zeno}[fails=yes]
+function first[T](items: list[T]) -> T {
+    return items[0]
+}
+let pick = first
+\end{zeno}
+
+The commonest generic enum, "a \verb|T| or nothing", is already
+there: \verb|T or none|. (Decision 3.16e.)
+
+\begin{summary}
+\verb|function name[T](...)| and \verb|class Name[T]| leave a type
+open. Type parameters start with a capital, and are worked out at each
+call from the arguments, from a function argument, or from where the
+result goes, never written at the call. The body is checked for every
+type it is used with, and a compiled program has a copy for each.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function last[T](items: list[T]) -> T or none|,
+  which gives \verb|none| for an empty list.
+\item Write a generic \verb|class Ring[T]| that holds at most
+  \verb|size| items and drops the oldest when a new one comes. Use it
+  for a ring of \verb|u8| and a ring of \verb|V|.
+\item Write \verb|function count_if[T](items: list[T], test: function(T) -> bool) -> int|.
+\item Give \verb|largest| a list of \verb|bool| and read the message.
+\end{enumerate}
+\end{tryit}
