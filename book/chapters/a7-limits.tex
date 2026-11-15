@@ -71,9 +71,9 @@ The numbers are the decisions, for anyone who wants the argument.
   \verb|cc| line.
 \item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
   wants one of those two compilers (5.5e).
-\item[\texttt{\_setjmp} by its Linux and macOS name.] An ordinary build
-  uses it for \verb|try|, under the name those two systems give it; a
-  firmware build does not use it at all (5.11l).
+\item[\texttt{setjmp} in an ordinary build.] An ordinary build uses it
+  for \verb|try|, and a firmware build does not use it at all (5.11l,
+  12.8).
 \end{description}
 
 \section{Firmware and no collector}

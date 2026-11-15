@@ -399,7 +399,7 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> s.last <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
 <span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>    print(s.last + <span class="dv">1.0</span>)</span>
 <span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>error: `+` does not work between float or none and float. Check for `none` first
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `+` does not work between float or none and float. `last` is a field, and a field can be given a new value between a test and its use, so a test of it is not remembered. Copy it into a variable with `let`, and test that for `none`
  --&gt; main.zeno:7:11
   |
 7 |     print(s.last + 1.0)

@@ -492,7 +492,7 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>    Red</span>
 <span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>    White</span>
 <span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>error: `Red` is already declared in this block
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `Red` is already a case of the enum `Light`. A case is written by its name alone, so two enums in one file cannot both have a `Red`. Give one of them another name
  --&gt; main.zeno:5:1
   |
 5 | enum Flag {
