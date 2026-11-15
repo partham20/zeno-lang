@@ -69,6 +69,9 @@ pub enum TokenKind {
     Unsafe,
     /// `private function helper()`: only the file it is in can use it.
     Private,
+    /// `interface Shape { function area(self) -> float }`: what a class
+    /// must have to be used as a `Shape`.
+    Interface,
     /// `owned class`, `owned list[int]`: a value with one owner.
     Owned,
     /// `frame: take Frame`: a parameter that takes the value over.
@@ -161,6 +164,7 @@ pub fn keyword(word: &str) -> Option<TokenKind> {
         "while" => While,
         "unsafe" => Unsafe,
         "private" => Private,
+        "interface" => Interface,
         "owned" => Owned,
         "take" => Take,
         "strict" => Strict,
@@ -211,6 +215,7 @@ impl TokenKind {
             While => "while",
             Unsafe => "unsafe",
             Private => "private",
+            Interface => "interface",
             Owned => "owned",
             Take => "take",
             Strict => "strict",

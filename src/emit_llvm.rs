@@ -640,6 +640,21 @@ struct ClassEntry {
     /// For each field: does the object own what the field holds? Only an
     /// object of an `owned class` owns anything.
     owned_fields: Vec<bool>,
+    /// For a class that is some interface: the number each of its
+    /// objects carries in front of its fields, which says that it is an
+    /// object of this class. See `pass_on`.
+    number: Option<usize>,
+    /// Is this an interface? Then it is the struct `{ i32 }`, the number
+    /// alone, which every object that is seen as one begins with.
+    interface: bool,
+}
+
+impl ClassEntry {
+    /// Where field `index` is in the struct: one further on if the
+    /// number of the class stands in front.
+    fn at(&self, index: usize) -> usize {
+        index + usize::from(self.number.is_some())
+    }
 }
 
 /// An enum: each case with the names and kinds of the values it carries.
@@ -802,6 +817,10 @@ struct Emitter<'a> {
     walked: Option<usize>,
     functions: HashMap<String, Entry>,
     classes: HashMap<String, ClassEntry>,
+    /// For each interface, the classes that are one, each with its number.
+    is_a: HashMap<String, Vec<(usize, String)>>,
+    /// How many classes have been given a number.
+    numbered: usize,
     enums: HashMap<String, EnumEntry>,
     /// Each enum case by name: the enum it belongs to, and its number.
     cases: HashMap<String, (String, usize)>,
@@ -1195,6 +1214,8 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: 
         walked: None,
         functions: HashMap::new(),
         classes: HashMap::new(),
+        is_a: HashMap::new(),
+        numbered: 0,
         enums: HashMap::new(),
         cases: HashMap::new(),
         imported: HashMap::new(),
@@ -1540,7 +1561,7 @@ impl Emitter<'_> {
     /// ones, which is -1 again.
     fn load_field(&mut self, class: &str, object: &str, index: usize, span: Span) -> Result<String, Error> {
         let (ty, kind) = (self.classes[class].ty.clone(), self.classes[class].fields[index].1.clone());
-        let at = self.field_at(&ty, object, index);
+        let at = self.field_at(&ty, object, self.classes[class].at(index));
         Ok(match self.classes[class].sized[index] {
             Some(width) => {
                 let small = self.set(format!("load {}, ptr {at}", width.ir_type()));
@@ -1556,7 +1577,7 @@ impl Emitter<'_> {
     /// checker made sure the number is in range, so none are lost.
     fn store_field(&mut self, class: &str, object: &str, index: usize, value: &str, span: Span) -> Result<(), Error> {
         let (ty, kind) = (self.classes[class].ty.clone(), self.classes[class].fields[index].1.clone());
-        let at = self.field_at(&ty, object, index);
+        let at = self.field_at(&ty, object, self.classes[class].at(index));
         match self.classes[class].sized[index] {
             Some(width) => {
                 let small = self.set(format!("trunc i64 {value} to {}", width.ir_type()));
@@ -1654,6 +1675,20 @@ impl Emitter<'_> {
                 None => ir_type(kind, span)?,
             });
         }
+        // An object that is seen as a `Shape` has to say which class it
+        // really is, so that `shape.area()` can find the right `area`.
+        // It carries its class's number in front of its fields.
+        let mut number = None;
+        if decl.interface || !decl.is.is_empty() {
+            inside.insert(0, "i32");
+        }
+        if !decl.is.is_empty() {
+            self.numbered += 1;
+            number = Some(self.numbered);
+            for interface in &decl.is {
+                self.is_a.entry(interface.clone()).or_default().push((self.numbered, decl.name.clone()));
+            }
+        }
         if inside.is_empty() {
             // An object with no fields still needs an address of its own.
             inside.push("i8");
@@ -1668,7 +1703,107 @@ impl Emitter<'_> {
         }
         let fields =
             decl.fields.iter().zip(kinds).map(|(field, kind)| (field.name.clone(), kind, field.default.clone())).collect();
-        self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, ty, owned_fields });
+        let entry = ClassEntry { fields, sized, methods, ty, owned_fields, number, interface: decl.interface };
+        self.classes.insert(decl.name.clone(), entry);
+        Ok(())
+    }
+
+    /// Inside a function the compiler writes for an interface: read the
+    /// number the object at `object` carries, and leave for the block of
+    /// the class with that number. Returns the label of each class's
+    /// block, in the order of `classes`. The last class is the `default`
+    /// of the `switch`, which has to have one.
+    fn switch_on_class(&mut self, object: &str, classes: &[(usize, String)]) -> Vec<String> {
+        let Some(((_, _), before)) = classes.split_last() else {
+            // No class is this interface, so no object is ever seen as
+            // one, and this is never reached.
+            self.end("unreachable");
+            return Vec::new();
+        };
+        let n = self.number();
+        let number = self.set(format!("load i32, ptr {object}"));
+        let labels: Vec<String> = classes.iter().map(|(class, _)| format!("is{n}.{class}")).collect();
+        let cases: Vec<String> =
+            before.iter().zip(&labels).map(|((class, _), label)| format!("i32 {class}, label %{label}")).collect();
+        self.end(format!("switch i32 {number}, label %{} [ {} ]", labels[labels.len() - 1], cases.join(" ")));
+        labels
+    }
+
+    /// The functions of an interface. Each reads the number the object
+    /// carries and passes the call on to the function of that class:
+    ///
+    /// ```text
+    /// define internal double @z_Shape.area(ptr %a0) {
+    /// entry:
+    ///   %t1 = load i32, ptr %a0
+    ///   switch i32 %t1, label %is1.2 [ i32 1, label %is1.1 ]
+    /// is1.1:
+    ///   %t2 = call double @z_Circle.area(ptr %a0)
+    ///   ret double %t2
+    /// is1.2:
+    ///   %t3 = call double @z_Square.area(ptr %a0)
+    ///   ret double %t3
+    /// }
+    /// ```
+    fn pass_on(&mut self, decl: &Class, span: Span) -> Result<(), Error> {
+        let classes = self.is_a.get(&decl.name).cloned().unwrap_or_default();
+        for method in &decl.methods {
+            let entry = self.classes[&decl.name].methods[&method.name].clone();
+            // In a firmware build a function that can raise gives back
+            // `true` or `false`, and its answer goes out through
+            // `%result`: see `function`.
+            let fallible = self.firmware && !method.raises.is_empty();
+            let gives = entry.kind.returns != Kind::None;
+            let mut params = Vec::new();
+            for (index, kind) in entry.kind.params.iter().enumerate() {
+                params.push(format!("{} %a{index}", ir_type(kind, span)?));
+            }
+            let args = params.join(", ");
+            if fallible && gives {
+                params.push("ptr %result".to_string());
+            }
+            let returns = if fallible { "zeroext i1" } else { return_type(&entry.kind.returns, span)? };
+            let mut own = Vec::new();
+            for (_, class) in &classes {
+                let Some(found) = self.classes.get(class).and_then(|entry| entry.methods.get(&method.name)) else {
+                    return Err(cannot(format!("the class `{class}` as a `{}`", decl.name), span));
+                };
+                own.push(found.clone());
+            }
+            self.side(format!("define internal {returns} {}({})", entry.name, params.join(", ")), |emitter| {
+                let blocks = emitter.switch_on_class("%a0", &classes);
+                for (block, own) in blocks.iter().zip(&own) {
+                    emitter.place(block);
+                    let own_fallible = emitter.firmware && !own.decl.raises.is_empty();
+                    let ty = return_type(&entry.kind.returns, span)?;
+                    match (fallible, own_fallible, gives) {
+                        (false, _, true) => {
+                            let answer = emitter.set(format!("call {ty} {}({args})", own.name));
+                            emitter.end(format!("ret {ty} {answer}"));
+                        }
+                        (false, _, false) => {
+                            emitter.ins(format!("call void {}({args})", own.name));
+                            emitter.end("ret void");
+                        }
+                        (true, true, _) => {
+                            let result = if gives { ", ptr %result" } else { "" };
+                            let worked = emitter.set(format!("call zeroext i1 {}({args}{result})", own.name));
+                            emitter.end(format!("ret i1 {worked}"));
+                        }
+                        (true, false, true) => {
+                            let answer = emitter.set(format!("call {ty} {}({args})", own.name));
+                            emitter.ins(format!("store {ty} {answer}, ptr %result"));
+                            emitter.end("ret i1 true");
+                        }
+                        (true, false, false) => {
+                            emitter.ins(format!("call void {}({args})", own.name));
+                            emitter.end("ret i1 true");
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
@@ -1924,6 +2059,12 @@ impl Emitter<'_> {
                 }
                 // Its methods are functions, and wait like functions.
                 for decl in copies_of_class(self.types, decl) {
+                    if decl.interface {
+                        // Nothing to compile: a function of an interface
+                        // passes the call on to the object's class.
+                        self.pass_on(decl, span)?;
+                        continue;
+                    }
                     for method in &decl.methods {
                         let entry = self.classes[&decl.name].methods[&method.name].clone();
                         self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
@@ -2636,6 +2777,29 @@ impl Emitter<'_> {
         // Noted as written before it is: an object may own another of its
         // own class, and freeing that one calls this same function.
         if !self.written.insert(name.clone()) {
+            return Ok(name);
+        }
+        if self.classes[class].interface {
+            // An object seen as a `Shape` is freed as what it is.
+            let classes = self.is_a.get(class).cloned().unwrap_or_default();
+            let mut drops = Vec::new();
+            for (_, class) in &classes {
+                drops.push(self.drop_class(class, span)?);
+            }
+            self.side(format!("define internal void {name}(ptr %self)"), |emitter| {
+                let gone = emitter.set("icmp eq ptr %self, null");
+                emitter.jump_if(&gone, "gone", "there");
+                emitter.place("gone");
+                emitter.end("ret void");
+                emitter.place("there");
+                let blocks = emitter.switch_on_class("%self", &classes);
+                for (block, drop) in blocks.iter().zip(&drops) {
+                    emitter.place(block);
+                    emitter.ins(format!("call void {drop}(ptr %self)"));
+                    emitter.end("ret void");
+                }
+                Ok(())
+            })?;
             return Ok(name);
         }
         // With no collector an object has its own copies of the text in
@@ -3716,7 +3880,7 @@ impl Emitter<'_> {
                     _ => return Err(cannot(format!("`[ ]` on {}", described(&list.kind)), span)),
                 }
             }
-            ExprKind::List(items) => self.list(items, span)?.made(),
+            ExprKind::List(items) => self.list(expr, items, span)?.made(),
             ExprKind::Dict(entries) => self.dict(entries, span)?.made(),
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 self.comprehension(element, variable, iterable, condition.as_deref(), span)?.made()
@@ -4210,7 +4374,7 @@ impl Emitter<'_> {
     }
 
     /// `[1, 2, 3]`
-    fn list(&mut self, items: &[Expr], span: Span) -> Result<Val, Error> {
+    fn list(&mut self, expr: &Expr, items: &[Expr], span: Span) -> Result<Val, Error> {
         let mut vals = Vec::new();
         let mut held = Vec::new();
         for (index, item) in items.iter().enumerate() {
@@ -4241,6 +4405,11 @@ impl Emitter<'_> {
         let mut item = Some(first.kind.clone());
         for val in &vals {
             item = item.and_then(|item| joined(&item, &val.kind));
+        }
+        // Where a list of an interface is wanted, the checker has said
+        // so: the items are of different classes.
+        if let Some(wanted) = self.types.items(expr) {
+            item = Some(shared(wanted));
         }
         let Some(item) = item else {
             return Err(cannot("a list whose items are not all one type", span));
@@ -4374,6 +4543,14 @@ impl Emitter<'_> {
     fn coerce(&mut self, val: Val, to: &Kind, span: Span) -> Result<Val, Error> {
         if val.kind == *to {
             return Ok(val);
+        }
+        // A Circle arriving where a Shape is wanted: the same address,
+        // seen as a `Shape` from here on.
+        if let (Kind::Class(from), Kind::Class(interface)) = (emit_c::some(&val.kind), emit_c::some(to)) {
+            let is_one = self.is_a.get(interface).is_some_and(|classes| classes.iter().any(|(_, class)| class == from));
+            if from != interface && is_one {
+                return Ok(Val { kind: to.clone(), ..val });
+            }
         }
         // An empty list becomes a list of whatever this place holds.
         let mut val = val;
@@ -4997,7 +5174,7 @@ impl Emitter<'_> {
                     let Some((ty, index, kind @ Kind::Function(_))) = self.field_of(&class, name) else {
                         return Err(cannot(format!("the method `{name}`"), span));
                     };
-                    let at = self.field_at(&ty, &receiver.code, index);
+                    let at = self.field_at(&ty, &receiver.code, self.classes[&class].at(index));
                     let function = Val::new(self.set(format!("load ptr, ptr {at}")), kind);
                     return self.call_value(function, args, span);
                 };
@@ -5351,6 +5528,10 @@ impl Emitter<'_> {
         }
         self.side(format!("define internal ptr {name}({})", params.join(", ")), |emitter| {
             let object = emitter.call("ptr", "zeno_alloc", format!("i64 {}", size_of(&ty)));
+            if let Some(number) = emitter.classes[class].number {
+                // The number of its class, in front of the fields.
+                emitter.ins(format!("store i32 {number}, ptr {object}"));
+            }
             for (index, (_, kind, _)) in fields.iter().enumerate() {
                 let mut value = format!("%f{index}");
                 if !emitter.collector && is_text(kind) {
@@ -5371,6 +5552,24 @@ impl Emitter<'_> {
         // Noted as written before it is: an object may hold another of
         // its own class, and showing that one calls this same function.
         if !self.written.insert(name.clone()) {
+            return Ok(name);
+        }
+        if self.classes[class].interface {
+            // An object seen as a `Shape` is shown as what it is.
+            let classes = self.is_a.get(class).cloned().unwrap_or_default();
+            let mut shows = Vec::new();
+            for (_, class) in &classes {
+                shows.push(self.show_class(class, span)?);
+            }
+            self.side(format!("define internal ptr {name}(ptr %self)"), |emitter| {
+                let blocks = emitter.switch_on_class("%self", &classes);
+                for (block, show) in blocks.iter().zip(&shows) {
+                    emitter.place(block);
+                    let text = emitter.set(format!("call ptr {show}(ptr %self)"));
+                    emitter.end(format!("ret ptr {text}"));
+                }
+                Ok(())
+            })?;
             return Ok(name);
         }
         let fields = self.classes[class].fields.clone();
@@ -5401,6 +5600,32 @@ impl Emitter<'_> {
     fn same_class(&mut self, class: &str, span: Span) -> Result<String, Error> {
         let name = named('@', "zeno.same.", class);
         if !self.written.insert(name.clone()) {
+            return Ok(name);
+        }
+        if self.classes[class].interface {
+            // Two objects seen as a `Shape` are equal if they are of one
+            // class, and equal as objects of that class.
+            let classes = self.is_a.get(class).cloned().unwrap_or_default();
+            let mut sames = Vec::new();
+            for (_, class) in &classes {
+                sames.push(self.same_class(class, span)?);
+            }
+            self.side(format!("define internal i1 {name}(ptr %a, ptr %b)"), |emitter| {
+                let a = emitter.set("load i32, ptr %a");
+                let b = emitter.set("load i32, ptr %b");
+                let alike = emitter.set(format!("icmp eq i32 {a}, {b}"));
+                emitter.jump_if(&alike, "alike", "differ");
+                emitter.place("differ");
+                emitter.end("ret i1 false");
+                emitter.place("alike");
+                let blocks = emitter.switch_on_class("%a", &classes);
+                for (block, same) in blocks.iter().zip(&sames) {
+                    emitter.place(block);
+                    let equal = emitter.set(format!("call i1 {same}(ptr %a, ptr %b)"));
+                    emitter.end(format!("ret i1 {equal}"));
+                }
+                Ok(())
+            })?;
             return Ok(name);
         }
         let fields = self.classes[class].fields.clone();
@@ -6629,6 +6854,7 @@ pub(crate) mod tests {
         same_as_interpreter("commands", include_str!("../examples/commands.zeno"));
         same_as_interpreter("handlers", include_str!("../examples/handlers.zeno"));
         same_as_interpreter("driver", include_str!("../examples/driver.zeno"));
+        same_as_interpreter("ports", include_str!("../examples/ports.zeno"));
     }
 
     #[test]

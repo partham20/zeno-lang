@@ -3,7 +3,7 @@ if exists("b:current_syntax")
   finish
 endif
 
-syntax keyword zenoDeclare let var const function class enum
+syntax keyword zenoDeclare let var const function class enum interface
 syntax keyword zenoModifier owned take strict unsafe private
 syntax keyword zenoControl if else for in while break continue match case
 syntax keyword zenoControl try except raise raises return import from as

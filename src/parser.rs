@@ -218,6 +218,7 @@ impl Parser {
                 declared.kind
             }
             TokenKind::Class => self.class(false)?,
+            TokenKind::Interface => self.interface()?,
             // `owned class`. The word is reserved (decision 5.19c): it
             // stands here and in front of a type, and nowhere else.
             TokenKind::Owned if *self.peek_at(1) == TokenKind::Class => {
@@ -506,7 +507,7 @@ impl Parser {
         self.advance(); // function
         let name = self.name("a name for the function")?;
         let type_params = self.type_params()?;
-        self.function_after_name(name, type_params)
+        self.function_after_name(name, type_params, false)
     }
 
     /// `[T]` or `[Key, Value]` after the name of a function or a class:
@@ -526,7 +527,12 @@ impl Parser {
     }
 
     /// Everything from the `(` on, shared by named and nameless functions.
-    fn function_after_name(&mut self, name: String, type_params: Vec<String>) -> Result<Function, Error> {
+    fn function_after_name(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        in_interface: bool,
+    ) -> Result<Function, Error> {
         if name.is_empty() && self.check(TokenKind::LBracket) {
             // `function[T](...)`
             return self.error("a function with no name cannot have type parameters. Give it a name");
@@ -555,8 +561,97 @@ impl Parser {
             }
         }
 
-        let body = self.block()?;
+        // A function of an interface ends here: it has no body.
+        let body = if in_interface { Vec::new() } else { self.block()? };
         Ok(Function { name, type_params, params, return_type, raises, body })
+    }
+
+    /// `interface Name { function ... }`: the functions a class must have
+    /// to be used as a `Name`, one to a line and each without a body.
+    fn interface(&mut self) -> Result<StmtKind, Error> {
+        self.advance(); // interface
+        let name = self.name("a name for the interface")?;
+        if self.check(TokenKind::LBracket) {
+            return self.error("an interface cannot have type parameters yet. A class can: `class Box[T]`");
+        }
+        if self.check(TokenKind::Is) {
+            return self.error(
+                "an interface cannot be another interface yet. Name both after `is` on the class: `class Circle is Shape, Named`",
+            );
+        }
+        self.expect(TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut methods = Vec::new();
+        while !self.check(TokenKind::RBrace) {
+            let span = self.span();
+            if self.check(TokenKind::Private) {
+                return self.error(
+                    "a function of an interface cannot be private: an interface lists what other code may ask of a class",
+                );
+            }
+            if matches!(self.peek(), TokenKind::Ident(_)) {
+                return self.error(
+                    "an interface has functions and no fields. How a class keeps its data is the class's own business. \
+                     If other code needs the value, give the interface a function that returns it",
+                );
+            }
+            if !self.check(TokenKind::Function) {
+                return self.unexpected("a function");
+            }
+            self.advance(); // function
+            let function_name = self.name("a name for the function")?;
+            if self.check(TokenKind::LBracket) {
+                return self.error("a function of an interface cannot have type parameters yet");
+            }
+            let function = self.function_after_name(function_name, Vec::new(), true)?;
+            if self.check(TokenKind::LBrace) {
+                return self.error(
+                    "a function of an interface has no body. It says what a class must have, and each class writes its own. \
+                     Take the `{ }` away",
+                );
+            }
+            // Everything a caller needs to know is written down here,
+            // because there is no body to work it out from.
+            let needs = |what: String| Err(Error::new(what, span));
+            match function.params.first() {
+                Some(first) if first.name == "self" && first.ty.is_none() => {}
+                _ => {
+                    return needs(format!(
+                        "`{}` needs `self` as its first parameter: it is called on an object, as in `shape.{}()`",
+                        function.name, function.name
+                    ))
+                }
+            }
+            for param in &function.params[1..] {
+                if param.ty.is_none() {
+                    return needs(format!(
+                        "the parameter `{}` of `{}` needs a type, as in `{}: int`. A function of an interface has no body \
+                         to work the type out from",
+                        param.name, function.name, param.name
+                    ));
+                }
+                if param.default.is_some() {
+                    return needs(format!(
+                        "the parameter `{}` of `{}` cannot have a default in an interface yet",
+                        param.name, function.name
+                    ));
+                }
+            }
+            methods.push(Arc::new(function));
+            self.end_of_statement()?;
+        }
+        self.advance(); // the }
+        Ok(StmtKind::Class(Class {
+            name,
+            type_params: Vec::new(),
+            owned: false,
+            fields: Vec::new(),
+            methods,
+            private: Vec::new(),
+            is: Vec::new(),
+            interface: true,
+        }))
     }
 
     /// `class Name { fields and methods }`, or `owned class Name { ... }`
@@ -564,6 +659,19 @@ impl Parser {
         self.advance(); // class
         let name = self.name("a name for the class")?;
         let type_params = self.type_params()?;
+        // `class Circle is Shape, Named`: the interfaces it is.
+        let mut is = Vec::new();
+        if self.eat(TokenKind::Is) {
+            is.push(self.name_in_module("the name of an interface")?);
+            while self.eat(TokenKind::Comma) {
+                let span = self.span();
+                let interface = self.name_in_module("the name of an interface")?;
+                if is.contains(&interface) {
+                    return Err(Error::new(format!("`{interface}` is written twice after `is`. Once is enough"), span));
+                }
+                is.push(interface);
+            }
+        }
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -589,7 +697,7 @@ impl Parser {
             self.end_of_statement()?;
         }
         self.advance(); // the }
-        Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods, private }))
+        Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods, private, is, interface: false }))
     }
 
     /// `name`, optionally with `: type` and `= default`
@@ -995,7 +1103,7 @@ impl Parser {
             }
             TokenKind::Function => {
                 self.advance();
-                ExprKind::Function(Arc::new(self.function_after_name(String::new(), Vec::new())?))
+                ExprKind::Function(Arc::new(self.function_after_name(String::new(), Vec::new(), false)?))
             }
             TokenKind::LParen => {
                 // Brackets only group. They leave no node of their own in the tree.
@@ -1491,6 +1599,70 @@ mod tests {
         );
         // The word is reserved, so it is never a name.
         assert_eq!(error("let private = 1"), "expected a name for the variable, found `private`");
+    }
+
+    #[test]
+    fn interfaces() {
+        // An interface lists functions, each without a body. In the tree
+        // it is a class that says it is an interface.
+        assert_eq!(
+            tree(
+                "interface Port {\n    function send(self, text: str) -> int raises Full\n    function name(self) -> str\n}\n\
+                 class Uart is Port, sys.Named {\n    speed: int\n}"
+            ),
+            "interface Port\n    function send(self, text: str) -> int raises Full\n    function name(self) -> str\n\
+             class Uart is Port, sys.Named\n    field speed: int\n"
+        );
+        assert_eq!(tree("private interface Empty {\n}"), "private interface Empty\n");
+        assert_eq!(tree("owned class Box[T] is Shape {\n}"), "owned class Box[T] is Shape\n");
+        let inside = |body: &str| error(&format!("interface Shape {{\n    {body}\n}}"));
+        // Only functions, and nothing about how they are done.
+        assert_eq!(
+            inside("radius: float"),
+            "an interface has functions and no fields. How a class keeps its data is the class's own business. \
+             If other code needs the value, give the interface a function that returns it"
+        );
+        assert_eq!(
+            inside("function area(self) -> float {\n        return 1.0\n    }"),
+            "a function of an interface has no body. It says what a class must have, and each class writes its own. \
+             Take the `{ }` away"
+        );
+        assert_eq!(
+            inside("private function area(self) -> float"),
+            "a function of an interface cannot be private: an interface lists what other code may ask of a class"
+        );
+        assert_eq!(inside("let x = 1"), "expected a function, found `let`");
+        // There is no body to work anything out from, so all of it is
+        // written.
+        assert_eq!(
+            inside("function area() -> float"),
+            "`area` needs `self` as its first parameter: it is called on an object, as in `shape.area()`"
+        );
+        assert_eq!(
+            inside("function scale(self, by)"),
+            "the parameter `by` of `scale` needs a type, as in `by: int`. A function of an interface has no body \
+             to work the type out from"
+        );
+        // What is left out for now says so.
+        assert_eq!(
+            inside("function scale(self, by: float = 2.0)"),
+            "the parameter `by` of `scale` cannot have a default in an interface yet"
+        );
+        assert_eq!(inside("function scale[T](self, by: T)"), "a function of an interface cannot have type parameters yet");
+        assert_eq!(
+            error("interface Shape[T] {\n}"),
+            "an interface cannot have type parameters yet. A class can: `class Box[T]`"
+        );
+        assert_eq!(
+            error("interface Shape is Named {\n}"),
+            "an interface cannot be another interface yet. Name both after `is` on the class: \
+             `class Circle is Shape, Named`"
+        );
+        // After `is` come the names of interfaces, each once.
+        assert_eq!(error("class Circle is {\n}"), "expected the name of an interface, found `{`");
+        assert_eq!(error("class Circle is Shape, Shape {\n}"), "`Shape` is written twice after `is`. Once is enough");
+        // The word is reserved, so it is never a name.
+        assert_eq!(error("let interface = 1"), "expected a name for the variable, found `interface`");
     }
 
     #[test]

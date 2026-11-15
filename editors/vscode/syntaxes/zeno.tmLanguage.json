@@ -87,7 +87,7 @@
           }
         },
         {
-          "match": "\\b(class|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(class|enum|interface)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.zeno" },
             "2": { "name": "entity.name.type.zeno" }
@@ -100,7 +100,7 @@
             "2": { "name": "entity.name.namespace.zeno" }
           }
         },
-        { "name": "storage.type.zeno", "match": "\\b(let|var|const|function|class|enum)\\b" },
+        { "name": "storage.type.zeno", "match": "\\b(let|var|const|function|class|enum|interface)\\b" },
         { "name": "storage.modifier.zeno", "match": "\\b(owned|take|strict|unsafe|private)\\b" }
       ]
     },

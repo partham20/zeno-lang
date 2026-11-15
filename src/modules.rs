@@ -647,7 +647,7 @@ fn private_names(program: &Program) -> HashSet<String> {
 }
 
 /// "`area`, `Point` and `origin`".
-fn listed(names: &[String]) -> String {
+pub(crate) fn listed(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
     match quoted.split_last() {
         None => String::new(),
@@ -953,6 +953,9 @@ impl<'a> Renamer<'a> {
             StmtKind::Class(class) => {
                 if renamed {
                     class.name = full(&class.name);
+                }
+                for interface in &mut class.is {
+                    self.named(interface, span);
                 }
                 self.scopes.push(class.type_params.iter().cloned().collect());
                 for field in &mut class.fields {
@@ -1847,6 +1850,34 @@ mod tests {
         assert_eq!(error(&format!("import kept\nprint(kept.other)\n{kept}")), "module `kept` has no `other`. It has `outer`");
         // Two files can each keep a name to themselves: they never meet.
         super::testing::program(&format!("import kept\nprivate let limit = 9\nprint(limit + kept.outer())\n{kept}"));
+    }
+
+    #[test]
+    fn a_class_can_be_an_interface_of_another_file() {
+        let ports = "==> ports.zeno\n\
+            interface Port {\n    function send(self, text: str) -> int\n}\n\
+            private interface Inner {\n    function reset(self)\n}\n\
+            class Null is Port, Inner {\n    function send(self, text: str) -> int {\n        return 0\n    }\n\n    function reset(self) {\n    }\n}\n";
+        let uart = |is: &str| {
+            format!("class Uart is {is} {{\n    function send(self, text: str) -> int {{\n        return len(text)\n    }}\n}}\n")
+        };
+        // The name after `is` is looked up as any other name of a module:
+        // with the module in front, or imported by name.
+        let program = super::testing::program(&format!("import ports\n{}{ports}", uart("ports.Port")));
+        assert!(crate::printer::print(&program).contains("class Uart is ports.Port\n"));
+        let program = super::testing::program(&format!("from ports import Port\n{}{ports}", uart("Port")));
+        assert!(crate::printer::print(&program).contains("class Uart is ports.Port\n"));
+        // In its own file the interface is named as it is written.
+        assert!(crate::printer::print(&program).contains("class ports.Null is ports.Port, ports.Inner\n"));
+        assert_eq!(
+            error(&format!("import ports\n{}{ports}", uart("ports.Inner"))),
+            "`Inner` is private in the module `ports`: only its own file can use it. \
+             To use it from another file, take the word `private` off where it is declared"
+        );
+        assert_eq!(
+            error(&format!("import ports\n{}{ports}", uart("ports.Gone"))),
+            "module `ports` has no `Gone`. It has `Port` and `Null`"
+        );
     }
 
     #[test]

@@ -1,0 +1,105 @@
+# A board talks through ports: a UART, a log kept in memory, whatever comes
+# next. The code that sends a report should not care which one it has. An
+# `interface` says what every port can do, and each class says that it is
+# one.
+#
+#     zeno run examples/ports.zeno
+
+# What a port can do. An interface has functions only, with no bodies:
+# it says what can be asked, and each class says how.
+interface Port {
+    function send(self, text: str) -> int raises Full
+    function name(self) -> str
+}
+
+# What a port raises when it cannot take any more.
+class Full {
+    port: str
+}
+
+# A UART with room for 20 characters. `is Port` is a promise, checked right
+# here: every function of `Port` is in the class, written the same way.
+class Uart is Port {
+    speed: int
+    sent: int = 0
+
+    function send(self, text: str) -> int raises Full {
+        if self.sent + len(text) > 20 {
+            raise Full("uart")
+        }
+        self.sent += len(text)
+        return len(text)
+    }
+
+    function name(self) -> str {
+        return f"uart at {self.speed}"
+    }
+}
+
+# A log in memory. It never fills up, so its `send` raises nothing: a
+# class may raise less than its interface allows, never more.
+class Log is Port {
+    lines: list[str]
+
+    function send(self, text: str) -> int {
+        self.lines.append(text)
+        return 0
+    }
+
+    function name(self) -> str {
+        return "log"
+    }
+}
+
+# A board has one port for certain, and perhaps a spare.
+class Board {
+    main: Port
+    spare: Port or none = none
+}
+
+# This works with any port, the ones above and the ones not written yet.
+# Which `send` runs is decided when the program runs, by the class of the
+# object that arrives.
+function report(port: Port, text: str) -> str {
+    try {
+        let count = port.send(text)
+        return f"{port.name()}: {count}"
+    } except Full as full {
+        return f"{port.name()}: full ({full.port})"
+    }
+}
+
+# A function can hand back one class or another as a `Port`.
+function pick(fast: bool) -> Port {
+    if fast {
+        return Uart(115200)
+    }
+    return Log([])
+}
+
+# A list of ports holds objects of different classes. It says so where it
+# is made: the items alone would not.
+var ports: list[Port] = [Uart(9600), Log([])]
+ports.append(pick(true))
+for port in ports {
+    print(report(port, "hello there"))
+    print(report(port, "hello again"))
+}
+
+# A port prints as the class it really is.
+print(ports)
+
+let board = Board(Uart(1200))
+print(board.main.name())
+print(board.spare is none)
+
+let other = Board(Log(["a"]), pick(false))
+print(report(other.main, "more"))
+print(other)
+
+var maybe: Port or none = none
+print(maybe is none)
+maybe = Uart(300)
+if maybe is not none {
+    print(maybe.name())
+}

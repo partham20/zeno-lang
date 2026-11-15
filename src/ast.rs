@@ -132,6 +132,13 @@ pub struct Class {
     /// The fields and methods with `private` in front: only the file
     /// the class is written in can use them.
     pub private: Vec<String>,
+    /// `class Circle is Shape, Named`: the interfaces the class says it
+    /// is. It must have every function they list.
+    pub is: Vec<String>,
+    /// True for `interface Shape { ... }`. An interface is kept as a
+    /// class with no fields, whose functions have no bodies: it is a
+    /// type that objects of other classes are seen as.
+    pub interface: bool,
 }
 
 impl Function {

@@ -58,7 +58,9 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
         StmtKind::Function(f) => function(f, depth, out),
         StmtKind::Class(class) => {
             let owned = if class.owned { "owned " } else { "" };
-            line(&format!("{owned}class {}{}", class.name, type_params(&class.type_params)), depth, out);
+            let word = if class.interface { "interface" } else { "class" };
+            let is = if class.is.is_empty() { String::new() } else { format!(" is {}", class.is.join(", ")) };
+            line(&format!("{owned}{word} {}{}{is}", class.name, type_params(&class.type_params)), depth, out);
             for f in &class.fields {
                 let private = if class.private.contains(&f.name) { "private " } else { "" };
                 line(&format!("{private}field {}", field(f)), depth + 1, out);

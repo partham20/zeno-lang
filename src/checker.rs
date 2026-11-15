@@ -239,6 +239,11 @@ pub struct Types {
     /// What each type written in the program stands for. Inside a copy,
     /// `T` is whatever that copy was made for.
     annotations: HashMap<usize, Kind>,
+    /// Each list written out where the place says more about the items
+    /// than they say themselves, with the kind of its items:
+    /// `[Circle(1.0), Square(2.0)]` is a list of `Shape`, and `[1, 2]` a
+    /// list of `int or none`, where the place wants one.
+    items: HashMap<usize, Kind>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -344,6 +349,12 @@ impl Types {
     /// Which parameters of the function only look (see `looks`).
     pub fn looks(&self, decl: &Arc<ast::Function>) -> Vec<bool> {
         self.looks.get(&(Arc::as_ptr(decl) as usize)).cloned().unwrap_or_default()
+    }
+
+    /// If `expr` is a list written out where a list of an interface, or
+    /// of values that may be `none`, is wanted: the kind of its items.
+    pub fn items(&self, expr: &ast::Expr) -> Option<&Kind> {
+        self.items.get(&(expr as *const ast::Expr as usize))
     }
 
     /// If `expr` is a variable read where a check has narrowed it (`user`
@@ -649,6 +660,11 @@ struct ClassInfo {
     /// is written in: the only file that can use them.
     private: Vec<String>,
     file: usize,
+    /// Is this an `interface`? Then it has no fields, its functions have
+    /// no bodies, and no object is ever built of it.
+    interface: bool,
+    /// The interfaces the class says it is: `class Circle is Shape`.
+    is: RefCell<Vec<Rc<ClassInfo>>>,
     /// As for a function (`FunctionInfo::above`): the defaults of the
     /// fields are worked out when an object is built, and may use these.
     above: Rc<[String]>,
@@ -958,6 +974,7 @@ impl fmt::Display for Ty {
             Ty::Function(_) | Ty::BoundMethod(_) | Ty::Builtin(_) | Ty::BuiltinMethod(..) => {
                 write!(f, "a function")
             }
+            Ty::Class(class) if class.interface => write!(f, "the interface {}", class.name),
             Ty::Class(class) => write!(f, "the class {}", class.name),
             Ty::Enum(info) => write!(f, "the enum {}", info.name),
             Ty::CaseConstructor(info, index) => {
@@ -1006,6 +1023,16 @@ fn mentions(ty: &Ty, name: Option<&str>) -> bool {
         Ty::Callable(callable) => {
             callable.params.iter().any(|ty| mentions(ty, name)) || mentions(&callable.returns, name)
         }
+        _ => false,
+    }
+}
+
+/// Is `ty` a type parameter and nothing around it, give or take a look
+/// and an `or none`? A `T`, and not a `list[T]`.
+fn straight(ty: &Ty) -> bool {
+    match ty {
+        Ty::Param(_) => true,
+        Ty::Optional(inner) | Ty::Borrowed(inner) => straight(inner),
         _ => false,
     }
 }
@@ -1069,13 +1096,15 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         (Ty::Borrowed(_), _) => false,
         (from, _) if from.is_look() => false,
         (Ty::Owned(from), Ty::Owned(to)) => fits(from, to),
+        // A `Circle or none` goes where a `Shape or none` is wanted.
+        (Ty::Optional(from), Ty::Optional(to)) if seen_as_interface(from, to) => fits(from, to),
         // `none` and a plain T both fit `T or none`.
         (Ty::None, Ty::Optional(_)) => true,
         (from, Ty::Optional(inner)) => fits(from, inner),
         // A `list[u8]` is not a `list[int]`: whoever holds it as a list of
         // ints could append 300, and the first holder would then find a
         // u8 that is not one.
-        (Ty::List(from), Ty::List(to)) => !sized_into_int(from, to) && fits(from, to),
+        (Ty::List(from), Ty::List(to)) => !sized_into_int(from, to) && !seen_as_interface(from, to) && fits(from, to),
         // A dict goes where a dict with the same keys and the same values
         // is wanted. `[:]` holds nothing yet, and goes where any dict is.
         (Ty::Dict(from_key, from_value), Ty::Dict(to_key, to_value)) => {
@@ -1097,8 +1126,75 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         // A function written where a value goes, which has one owner
         // where everything has.
         (Ty::Owned(from), Ty::Callable(_)) => matches!(**from, Ty::Function(_)),
+        // `class Circle is Shape`: a Circle goes where a Shape is wanted.
+        (Ty::Instance(from), Ty::Instance(to)) => from.is.borrow().iter().any(|interface| Rc::ptr_eq(interface, to)),
         _ => false,
     }
+}
+
+/// Would this take an object of a class for one of an interface the
+/// class is, somewhere inside the type? A Circle goes where a Shape is
+/// wanted. A `list[Circle]` does not go where a `list[Shape]` is: whoever
+/// holds it as a list of shapes could put a Square in it.
+fn seen_as_interface(from: &Ty, to: &Ty) -> bool {
+    match (from, to) {
+        (Ty::Instance(from), Ty::Instance(to)) => !Rc::ptr_eq(from, to),
+        (Ty::List(from), Ty::List(to))
+        | (Ty::Optional(from), Ty::Optional(to))
+        | (Ty::Owned(from), Ty::Owned(to))
+        | (Ty::Borrowed(from), Ty::Borrowed(to)) => seen_as_interface(from, to),
+        (from, Ty::Optional(to) | Ty::Borrowed(to)) => seen_as_interface(from, to),
+        _ => false,
+    }
+}
+
+/// Is `class` a class that says it is the interface `interface`?
+fn is_one(class: &Ty, interface: &Ty) -> bool {
+    match (class, interface) {
+        (Ty::Instance(class), Ty::Instance(interface)) => class.is.borrow().iter().any(|is| Rc::ptr_eq(is, interface)),
+        _ => false,
+    }
+}
+
+/// Is this an object seen as an interface, or one that may be `none`?
+fn of_an_interface(ty: &Ty) -> bool {
+    match ty {
+        Ty::Instance(class) => class.interface,
+        Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => of_an_interface(inner),
+        _ => false,
+    }
+}
+
+/// Does a list of `ty` hold its items another way than the items say by
+/// themselves? A `Circle` kept as a `Shape`, a `1` kept as an `int or
+/// none`. A list written out for such a place is built item by item, as
+/// a list of what the place wants.
+fn asks_more(ty: &Ty) -> bool {
+    match ty {
+        Ty::Optional(_) => true,
+        Ty::List(item) => asks_more(item),
+        Ty::Owned(inner) | Ty::Borrowed(inner) => asks_more(inner),
+        ty => of_an_interface(ty),
+    }
+}
+
+/// A function as its first line is written:
+/// `function scale(self, by: float) -> float`.
+fn first_line(signature: &Signature) -> String {
+    let params: Vec<String> = signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| match (index, slot.name.as_str()) {
+            (0, "self") => "self".to_string(),
+            _ => format!("{}: {}", slot.name, as_parameter(&slot.ty)),
+        })
+        .collect();
+    let mut line = format!("function {}({})", signature.name, params.join(", "));
+    if !matches!(signature.returns, Ty::None) {
+        line += &format!(" -> {}", signature.returns);
+    }
+    line
 }
 
 /// Is this a sized number (perhaps inside lists) going where the same
@@ -1545,6 +1641,10 @@ struct Checker {
     /// and `Stack[int]`. A generic that cannot tell its types from its
     /// arguments looks here.
     expected: Option<(usize, Ty)>,
+    /// The same for a list that is written out where the place says more
+    /// about the items than they say themselves: the list, and what each
+    /// item is kept as. `[Circle(1.0), Square(2.0)]` for a `list[Shape]`.
+    expected_items: Option<(usize, Ty)>,
     /// For each function body being checked, innermost last: if it is a
     /// copy of a generic, the words that say which.
     copy_notes: Vec<Option<String>>,
@@ -1614,6 +1714,7 @@ impl Checker {
             used: HashSet::new(),
             pending: Vec::new(),
             expected: None,
+            expected_items: None,
             copy_notes: Vec::new(),
             functions_used: Vec::new(),
             captured: Vec::new(),
@@ -1779,6 +1880,20 @@ impl Checker {
                 (Ty::List(from), Ty::List(to)) if sized_into_int(from, to) => {
                     message += ". The list could then be given a number too big for it. \
                                 Make a list of ints from it with `[int(n) for n in ...]`"
+                }
+                (Ty::List(from), Ty::List(to)) if seen_as_interface(from, to) && fits(from, to) => {
+                    message += &format!(
+                        ". Whoever holds it as a list of {to} could append another class to it. \
+                         Say what the list holds where it is made, as in `let items: list[{to}] = [...]`"
+                    )
+                }
+                // There is no way back from an interface to a class.
+                (from, to) if is_one(&to.clone().looked_at(), &from.clone().looked_at()) => {
+                    let interface = from.clone().looked_at();
+                    message += &format!(
+                        ". A {interface} can be an object of any class that is one. \
+                         Keep the object in a variable of its own class as well, or give {interface} a function for what is needed"
+                    )
                 }
                 (Ty::Int | Ty::Sized(_), Ty::Sized(width)) => {
                     message += &format!(". Convert it with `{}(...)`, which checks that it fits", width.name)
@@ -2593,6 +2708,44 @@ impl Checker {
                 info.methods.borrow_mut().insert(method.name.clone(), Rc::new(function));
             }
         }
+        // `class Circle is Shape`: which interfaces those are. Whether
+        // the class has what they list is checked with its body.
+        for name in &decl.is {
+            match env.get(name).map(|variable| variable.ty) {
+                Some(Ty::Class(interface)) if interface.interface => {
+                    if decl.owned {
+                        self.error(
+                            format!(
+                                "an `owned class` cannot be an interface yet. Take `owned` off `{}`, or `is {name}`",
+                                decl.name
+                            ),
+                            span,
+                        );
+                    } else if !info.is.borrow().iter().any(|known| Rc::ptr_eq(known, &interface)) {
+                        info.is.borrow_mut().push(interface);
+                    }
+                }
+                Some(Ty::Class(_) | Ty::Generic(_)) => {
+                    self.error(
+                        format!(
+                            "`{name}` is a class, not an interface, so `{}` cannot be one. A class has no parent class \
+                             in Zeno. Declare what the two share as an `interface`, and let both be it",
+                            decl.name
+                        ),
+                        span,
+                    );
+                }
+                Some(_) => {
+                    self.error(format!("`{name}` is not an interface"), span);
+                }
+                None => {
+                    self.error(
+                        format!("`{name}` is not declared. Declare it with `interface {name} {{ ... }}`"),
+                        span,
+                    );
+                }
+            }
+        }
     }
 
     fn slot(&mut self, field: &ast::Field, owner: &str, env: &Env, span: Span) -> Slot {
@@ -2949,6 +3102,9 @@ impl Checker {
                         if matches!(wanted, Ty::Owned(_)) {
                             self.types.fresh.insert(value as *const Expr as usize);
                         }
+                        if asks_more(wanted_item) {
+                            self.types.items.insert(value as *const Expr as usize, kind(wanted_item));
+                        }
                         for item in items {
                             // The list keeps the item.
                             let item_type = self.kept(item, wanted_item, env);
@@ -3182,6 +3338,86 @@ impl Checker {
                 );
             }
             self.signature(&method);
+        }
+        self.stands_for(class);
+    }
+
+    /// `class Circle is Shape`: the class must have every function that
+    /// `Shape` lists, written the way `Shape` writes it. Whoever calls
+    /// `shape.area()` has only the interface to go by.
+    fn stands_for(&mut self, class: &Rc<ClassInfo>) {
+        let span = Span { line: class.id.0, col: class.id.1 };
+        let interfaces = class.is.borrow().clone();
+        for interface in interfaces {
+            let mut asked: Vec<Rc<FunctionInfo>> = interface.methods.borrow().values().cloned().collect();
+            asked.sort_by(|a, b| a.decl.name.cmp(&b.decl.name));
+            for asked in asked {
+                let want = self.signature(&asked);
+                let name = &asked.decl.name;
+                let method = class.methods.borrow().get(name).cloned();
+                let Some(method) = method else {
+                    self.error(
+                        format!(
+                            "`{0}` says it is a `{1}`, and a `{1}` has `{2}`. Give `{0}` that function",
+                            class.name,
+                            interface.name,
+                            first_line(&want)
+                        ),
+                        span,
+                    );
+                    continue;
+                };
+                if class.private.contains(name) {
+                    self.error(
+                        format!(
+                            "`{name}` of `{}` is private, and `{}` lets every file call it. Take the word `private` off it",
+                            class.name, interface.name
+                        ),
+                        span,
+                    );
+                    continue;
+                }
+                let got = self.signature(&method);
+                let agree = got.params.len() == want.params.len()
+                    && got.params.iter().zip(&want.params).skip(1).all(|(got, want)| got.name == want.name && same(&got.ty, &want.ty))
+                    && same(&got.returns, &want.returns);
+                if !agree {
+                    self.error(
+                        format!(
+                            "`{name}` of `{}` is `{}`, and `{}` asks for `{}`. Write the two the same",
+                            class.name,
+                            first_line(&got),
+                            interface.name,
+                            first_line(&want)
+                        ),
+                        span,
+                    );
+                    continue;
+                }
+                for kind in &got.raises {
+                    if !want.raises.iter().any(|said| said == kind || said == "Error") {
+                        self.error(
+                            format!(
+                                "`{name}` of `{0}` can raise {kind}, and `{name}` of `{1}` does not say so. Whoever calls \
+                                 it through a `{1}` would not know. Add `raises {kind}` to the function in `{1}`, \
+                                 or catch the error in `{0}`",
+                                class.name, interface.name
+                            ),
+                            span,
+                        );
+                    }
+                }
+                if got.takes_out {
+                    self.error(
+                        format!(
+                            "`{name}` of `{}` takes out or replaces something its object owns. A function that \
+                             stands for one of an interface cannot do that yet",
+                            class.name
+                        ),
+                        span,
+                    );
+                }
+            }
         }
     }
 
@@ -3871,6 +4107,11 @@ impl Checker {
 
     /// `take`, for a value going somewhere whose type is known.
     fn kept(&mut self, value: &Expr, wanted: &Ty, env: &Env) -> Ty {
+        // `[Circle(1.0), Square(2.0)]` where a `list[Shape]` is wanted, or
+        // `[1, 2]` where a `list[int or none]` is. The items do not say
+        // that they are shapes, or that one may be `none` later, so each
+        // is checked against what the place wants, and the list is a
+        // list of that.
         self.expecting(value, wanted);
         let given = self.take(value, env);
         self.fresh_list(value, given, wanted)
@@ -3977,9 +4218,11 @@ impl Checker {
                 id: None,
             }]),
             // `append` keeps what it is given. For an item that has one
-            // owner that matters: the list becomes the owner.
+            // owner that matters: the list becomes the owner. So it does
+            // for a list written out as the item, where the items of
+            // that list are kept another way than they say themselves.
             Ty::BuiltinMethod(receiver, name) if &**name == "append" => match &**receiver {
-                Ty::List(item) if item.is_owned() => {
+                Ty::List(item) if item.is_owned() || asks_more(item) => {
                     Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
@@ -3994,7 +4237,7 @@ impl Checker {
             },
             // So does `insert`, after the position.
             Ty::BuiltinMethod(receiver, name) if &**name == "insert" => match &**receiver {
-                Ty::List(item) if item.is_owned() => Some(vec![
+                Ty::List(item) if item.is_owned() || asks_more(item) => Some(vec![
                     Slot { name: "position".to_string(), ty: Ty::Int, has_default: false, id: None },
                     Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None },
                 ]),
@@ -4077,6 +4320,24 @@ impl Checker {
             if !matches!(known, Some(Ty::ErrorType(_) | Ty::Class(_))) {
                 self.error(format!("`{kind}` is not a kind of error"), span);
             }
+        }
+
+        // A function of an interface is all first line: there is no
+        // body to check, and nothing to work out.
+        let of_interface =
+            matches!(function.self_type.clone().map(Ty::looked_at), Some(Ty::Instance(class)) if class.interface);
+        if of_interface {
+            let returns = declared_return.unwrap_or(Ty::None);
+            self.types.functions.insert(
+                Arc::as_ptr(&function.decl) as usize,
+                FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
+            );
+            self.types
+                .looks
+                .insert(Arc::as_ptr(&function.decl) as usize, params.iter().map(|slot| slot.ty.is_look()).collect());
+            let signature = Rc::new(Signature { name, params, returns, raises: decl.raises.clone(), takes_out: false });
+            *function.state.borrow_mut() = State::Checked(signature.clone());
+            return signature;
         }
 
         // Until the body is checked, callers (that is, recursive calls) see
@@ -4361,9 +4622,30 @@ impl Checker {
             }
 
             ExprKind::List(items) => {
-                let types: Vec<Ty> = items.iter().map(|item| self.item(item, env)).collect();
-                // An empty list holds nothing yet, so its item type is open.
-                Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
+                // A place that says more about the items than they say
+                // themselves: each is checked against it, and the list
+                // is a list of what the place wants.
+                let told = self.expected_items.take().filter(|(place, _)| *place == expr as *const Expr as usize);
+                if let Some((_, wanted_item)) = told {
+                    for item in items {
+                        let item_type = self.kept(item, &wanted_item, env);
+                        let item_type = self.adapted(written(item), item_type, &wanted_item, item.span);
+                        if !fits(&item_type, &wanted_item) {
+                            self.error(
+                                format!("this is a list of {wanted_item} here, but this item is {item_type}"),
+                                item.span,
+                            );
+                        } else {
+                            self.arrives(&item_type, &wanted_item, "an item of this list", item.span);
+                        }
+                    }
+                    self.types.items.insert(expr as *const Expr as usize, kind(&wanted_item));
+                    Ty::list(wanted_item)
+                } else {
+                    let types: Vec<Ty> = items.iter().map(|item| self.item(item, env)).collect();
+                    // An empty list holds nothing yet, so its item type is open.
+                    Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
+                }
             }
             ExprKind::Dict(entries) => self.dict_written(entries, env),
             ExprKind::ListComp { element, variable, iterable, condition } => {
@@ -4721,6 +5003,25 @@ impl Checker {
                 if let Some(method) = class.methods.borrow().get(name) {
                     return Ty::BoundMethod(method.clone());
                 }
+                if class.interface {
+                    // The object has more than its interface says, and
+                    // what that is depends on its class.
+                    let mut functions: Vec<String> = class.methods.borrow().keys().cloned().collect();
+                    functions.sort();
+                    let has = match functions.is_empty() {
+                        true => "no functions".to_string(),
+                        false => crate::modules::listed(&functions),
+                    };
+                    return self.error(
+                        format!(
+                            "`{name}` is not a function of the interface `{0}`, which has {has}. \
+                             What else this object has depends on its class, and that is only known when \
+                             the program runs. Give `{0}` a function for it",
+                            class.name
+                        ),
+                        span,
+                    );
+                }
                 self.error(format!("`{}` has no field or method `{name}`", class.name), span)
             }
             // Which case the value is, is only known when the program runs.
@@ -4810,6 +5111,13 @@ impl Checker {
                 }
                 signature.returns.clone()
             }
+            Ty::Class(class) if class.interface => self.error(
+                format!(
+                    "`{0}` is an interface, so there is nothing to build. Build an object of a class that is a `{0}`",
+                    class.name
+                ),
+                span,
+            ),
             Ty::Class(class) => {
                 let fields = class.fields.borrow().clone();
                 // Whoever builds an object fills in its fields, and
@@ -5479,6 +5787,23 @@ impl Checker {
             // reported there, and the call should not complain as well.
             self.expected = Some((value as *const Expr as usize, wanted.clone()));
         }
+        // `[Circle(1.0), Square(2.0)]` where a `list[Shape]` is wanted, or
+        // `[1, 2]` where a `list[int or none]` is. The items do not say
+        // that they are shapes, or that one may be `none` later, so the
+        // list is told what it is a list of.
+        if matches!(value.kind, ExprKind::List(_)) && says_something {
+            let wanted_item = match wanted.clone().looked_at() {
+                Ty::List(item) => Some(*item),
+                Ty::Optional(inner) => match inner.looked_at() {
+                    Ty::List(item) => Some(*item),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(item) = wanted_item.filter(asks_more) {
+                self.expected_items = Some((value as *const Expr as usize, item));
+            }
+        }
     }
 
     /// The parameters of a generic function (or the fields of a generic
@@ -5616,7 +5941,31 @@ impl Checker {
             let mut from_wanted = HashMap::new();
             self.bind(returns, wanted, &mut from_wanted);
             for (name, ty) in from_wanted {
-                found.entry(name).or_insert(ty);
+                // The place can ask for more than the arguments say:
+                // `let pair: Pair[Shape] = Pair(circle, square)` is a pair
+                // of shapes, and `let box: Box[int or none] = Box(count)`
+                // can hold `none` later. That is so when each argument goes
+                // straight into a `T`. A `list[Circle]` given for a
+                // `list[T]` stays what it is: it is not a list of shapes.
+                // A list that is written out says what it holds itself:
+                // `first([1, 2])` is a list of ints, also where the
+                // result goes into an `int or none`.
+                let in_a_list = pairs.iter().any(|(slot, argument)| {
+                    matches!(argument.written, Some(Written::List(_))) && mentions(&slot.ty, Some(&name))
+                });
+                if in_a_list && asks_more(&ty) {
+                    continue;
+                }
+                let wider = found.get(&name).is_some_and(|said| {
+                    !same(said, &ty)
+                        && fits(said, &ty)
+                        && pairs.iter().all(|(slot, _)| !mentions(&slot.ty, Some(&name)) || straight(&slot.ty))
+                });
+                if wider {
+                    found.insert(name, ty);
+                } else {
+                    found.entry(name).or_insert(ty);
+                }
             }
         }
         // Last, the written numbers, as the ints they are if nothing
@@ -6218,6 +6567,8 @@ fn class_info(
         methods: RefCell::new(HashMap::new()),
         private: decl.private.clone(),
         file: span.file(),
+        interface: decl.interface,
+        is: RefCell::new(Vec::new()),
         above: above.clone(),
         env: env.clone(),
         defaults,
@@ -6320,6 +6671,147 @@ mod tests {
 
     fn strict_ok(source: &str) {
         assert_eq!(check(source, true), Vec::<String>::new(), "\n{source}");
+    }
+
+    const SHAPES: &str = "interface Shape {\n    function area(self) -> float\n    function scale(self, by: float)\n}\n\
+        class Circle is Shape {\n    radius: float\n\n    function area(self) -> float {\n        return 3.0 * self.radius * self.radius\n    }\n\n    \
+        function scale(self, by: float) {\n        self.radius = self.radius * by\n    }\n}\n\
+        class Square is Shape {\n    side: float\n\n    function area(self) -> float {\n        return self.side * self.side\n    }\n\n    \
+        function scale(self, by: float) {\n        self.side = self.side * by\n    }\n}\n\
+        class Other {\n    x: int\n}\n";
+
+    #[test]
+    fn a_class_keeps_what_its_interface_asks() {
+        let shape = "interface Shape {\n    function area(self) -> float\n    function scale(self, by: float)\n}\n";
+        let area = "    function area(self) -> float {\n        return 0.0\n    }\n";
+        let scale = "    function scale(self, by: float) {\n    }\n";
+        let dot = |body: &str| format!("{shape}class Dot is Shape {{\n{body}}}\n");
+        // Every function of the interface, written the same way.
+        strict_ok(&dot(&format!("{area}{scale}")));
+        // More than the interface asks is the class's own business.
+        strict_ok(&dot(&format!("    size: int = 1\n{area}{scale}    function grow(self) {{\n        self.size += 1\n    }}\n")));
+        assert_eq!(
+            error(&dot(area)),
+            "`Dot` says it is a `Shape`, and a `Shape` has `function scale(self, by: float)`. Give `Dot` that function"
+        );
+        // The names of the parameters count: `shape.scale(by=2.0)` has
+        // to mean the same for every class.
+        assert_eq!(
+            errors(&dot("    function area(self) -> int {\n        return 0\n    }\n    function scale(self, factor: float) {\n    }\n")),
+            vec![
+                "`area` of `Dot` is `function area(self) -> int`, and `Shape` asks for `function area(self) -> float`. \
+                 Write the two the same",
+                "`scale` of `Dot` is `function scale(self, factor: float)`, and `Shape` asks for \
+                 `function scale(self, by: float)`. Write the two the same",
+            ]
+        );
+        assert_eq!(
+            error(&dot(&format!("{area}    private function scale(self, by: float) {{\n    }}\n"))),
+            "`scale` of `Dot` is private, and `Shape` lets every file call it. Take the word `private` off it"
+        );
+        // A class may raise less than its interface says, never more:
+        // whoever calls through the interface knows only what it says.
+        let port = |says: &str, does: &str| {
+            format!(
+                "interface Port {{\n    function send(self, text: str) -> int{says}\n}}\n\
+                 class Uart is Port {{\n    function send(self, text: str) -> int{does} {{\n        return int(text)\n    }}\n}}\n\
+                 class Quiet is Port {{\n    function send(self, text: str) -> int {{\n        return 0\n    }}\n}}\n"
+            )
+        };
+        let unsaid = "`send` of `Uart` can raise ValueError, and `send` of `Port` does not say so. Whoever calls \
+                      it through a `Port` would not know. Add `raises ValueError` to the function in `Port`, \
+                      or catch the error in `Uart`";
+        strict_ok(&port(" raises ValueError", " raises ValueError"));
+        strict_ok(&port(" raises Error", " raises ValueError"));
+        ok(&port(" raises ValueError", ""));
+        assert_eq!(error(&port("", " raises ValueError")), unsaid);
+        assert_eq!(error(&port("", "")), unsaid);
+        // A call through the interface can raise what the interface
+        // says, whatever the classes do.
+        assert_eq!(
+            strict_error(&format!(
+                "{}function try_it(port: Port) -> int {{\n    return port.send(\"1\")\n}}",
+                port(" raises ValueError", " raises ValueError")
+            )),
+            "`try_it` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        // What comes after `is` is an interface that exists.
+        assert_eq!(
+            error("class A {\n}\nclass B is A {\n}"),
+            "`A` is a class, not an interface, so `B` cannot be one. A class has no parent class in Zeno. \
+             Declare what the two share as an `interface`, and let both be it"
+        );
+        assert_eq!(error("class C is Nothing {\n}"), "`Nothing` is not declared. Declare it with `interface Nothing { ... }`");
+        assert_eq!(
+            one_owner_error(&format!("{shape}owned class Dot is Shape {{\n{area}{scale}}}\n")),
+            "an `owned class` cannot be an interface yet. Take `owned` off `Dot`, or `is Shape`"
+        );
+        // An interface is nothing that can be built.
+        assert_eq!(
+            error(&format!("{shape}let s = Shape()")),
+            "`Shape` is an interface, so there is nothing to build. Build an object of a class that is a `Shape`"
+        );
+    }
+
+    #[test]
+    fn a_class_goes_where_its_interface_is_wanted() {
+        let ok = |source: &str| strict_ok(&format!("{SHAPES}{source}"));
+        let error = |source: &str| error(&format!("{SHAPES}{source}"));
+        // A variable, a parameter, a result, a field, and each with `or none`.
+        ok("let one: Shape = Circle(1.0)\none.scale(by=2.0)\nprint(one.area(), one)");
+        ok("function double(shape: Shape) {\n    shape.scale(2.0)\n}\ndouble(Square(1.0))\nlet c = Circle(1.0)\ndouble(c)");
+        ok("function pick(round: bool) -> Shape {\n    if round {\n        return Circle(1.0)\n    }\n    return Square(1.0)\n}\nprint(pick(true))");
+        ok("class Frame {\n    inside: Shape\n    spare: Shape or none = none\n}\nlet f = Frame(Circle(1.0), Square(2.0))\nf.inside = Square(3.0)\nprint(f)");
+        ok("var maybe: Shape or none = none\nmaybe = Circle(1.0)\nlet c: Circle or none = Circle(2.0)\nmaybe = c\n\
+            if maybe is not none {\n    print(maybe.area())\n}");
+        // Two of them are equal when they are the same class and that
+        // class says they are.
+        ok("let a: Shape = Circle(1.0)\nlet b: Shape = Square(1.0)\nprint(a == b, a != b)");
+        // A list that is written out is a list of the interface where
+        // one is wanted: in a `let`, an argument, a result, a field, an
+        // assignment, an `append`.
+        ok("let shapes: list[Shape] = [Circle(1.0), Square(2.0)]\nfor shape in shapes {\n    print(shape.area())\n}");
+        ok("function total(shapes: list[Shape]) -> int {\n    return len(shapes)\n}\nprint(total([Circle(1.0), Square(2.0)]))");
+        ok("function both() -> list[Shape] {\n    return [Circle(1.0), Square(2.0)]\n}\nprint(both())");
+        ok("class Drawing {\n    shapes: list[Shape]\n}\nlet d = Drawing([Circle(1.0)])\nd.shapes = [Square(1.0), Circle(2.0)]\nd.shapes.append(Circle(3.0))");
+        ok("var rows: list[list[Shape]] = []\nrows.append([Circle(1.0), Square(1.0)])\nrows.insert(0, [Square(2.0)])");
+        assert_eq!(
+            error("let shapes: list[Shape] = [Circle(1.0), Other(1)]"),
+            "`shapes` should be list[Shape], but this item is Other"
+        );
+        assert_eq!(
+            error("function total(shapes: list[Shape]) -> int {\n    return len(shapes)\n}\nprint(total([Circle(1.0), 5]))"),
+            "this is a list of Shape here, but this item is int"
+        );
+        // A list of circles is not a list of shapes: a square could be
+        // appended to it by whoever holds it as shapes.
+        assert_eq!(
+            error("let circles = [Circle(1.0)]\nlet shapes: list[Shape] = circles"),
+            "`shapes` should be list[Shape], but this is list[Circle]. Whoever holds it as a list of Shape could \
+             append another class to it. Say what the list holds where it is made, as in `let items: list[Shape] = [...]`"
+        );
+        assert_eq!(
+            error("let circles = [Circle(1.0)]\nlet others: list[Other] = circles"),
+            "`others` should be list[Other], but this is list[Circle]"
+        );
+        // There is no way back, and nothing but the interface's functions.
+        assert_eq!(
+            error("let s: Shape = Circle(1.0)\nlet c: Circle = s"),
+            "`c` should be Circle, but this is Shape. A Shape can be an object of any class that is one. \
+             Keep the object in a variable of its own class as well, or give Shape a function for what is needed"
+        );
+        assert_eq!(error("let s: Shape = Circle(1.0)\nlet o: Other = s"), "`o` should be Other, but this is Shape");
+        assert_eq!(error("let s: Shape = Other(1)"), "`s` should be Shape, but this is Other");
+        assert_eq!(
+            error("let s: Shape = Circle(1.0)\nprint(s.radius)"),
+            "`radius` is not a function of the interface `Shape`, which has `area` and `scale`. What else this object \
+             has depends on its class, and that is only known when the program runs. Give `Shape` a function for it"
+        );
+        // A generic takes the interface from the place its result goes,
+        // when each argument goes straight into a `T`.
+        ok("class Pair[T] {\n    first: T\n    second: T\n}\nlet pair: Pair[Shape] = Pair(Circle(1.0), Square(2.0))\nprint(pair.second.area())");
+        ok("function same[T](item: T) -> T {\n    return item\n}\nlet s: Shape = same(Circle(1.0))\nlet n: int or none = same(len(\"abc\"))\nprint(s, n)");
+        ok("function first[T](items: list[T]) -> T {\n    return items[0]\n}\nlet s: Shape = first([Circle(1.0)])\nlet n: int or none = first([1, 2])\nprint(s, n)");
     }
 
     #[test]

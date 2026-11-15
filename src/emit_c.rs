@@ -127,6 +127,8 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
         functions: HashMap::new(),
         classes: HashMap::new(),
         enums: HashMap::new(),
+        is_a: HashMap::new(),
+        numbered: 0,
         cases: HashMap::new(),
         imported: HashMap::new(),
         scopes: vec![HashMap::new()],
@@ -241,6 +243,12 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
             emitter.function(decl, &c_name, &kind, &owned, statement.span)?;
         }
         for class in classes {
+            if class.interface {
+                // Nothing to compile: a function of an interface is
+                // one that passes the call on to the object's class.
+                emitter.pass_on(class, statement.span)?;
+                continue;
+            }
             for method in &class.methods {
                 let entry = &emitter.classes[&class.name].methods[&method.name];
                 let (c_name, kind, owned) = (entry.c_name.clone(), entry.kind.clone(), entry.owned.clone());
@@ -489,7 +497,7 @@ fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
 }
 
 /// The kind that is there when a value that may be `none` is not.
-fn some(kind: &Kind) -> &Kind {
+pub fn some(kind: &Kind) -> &Kind {
     match kind {
         Kind::Optional(inner) => inner,
         kind => kind,
@@ -720,6 +728,11 @@ struct Emitter<'a> {
     functions: HashMap<String, FunctionEntry>,
     classes: HashMap<String, ClassEntry>,
     enums: HashMap<String, EnumEntry>,
+    /// For each interface, the classes that are one: each with the
+    /// number its objects carry. See `register_class`.
+    is_a: HashMap<String, Vec<(usize, String)>>,
+    /// How many classes have been given such a number.
+    numbered: usize,
     /// Each enum case, by its own name: which enum it belongs to, and its
     /// number within it.
     cases: HashMap<String, (String, usize)>,
@@ -1583,6 +1596,21 @@ impl Emitter<'_> {
         let mut body = format!("struct {c_name} {{\n");
         let mut params = Vec::new();
         let mut fill = String::new();
+        if decl.interface {
+            return self.register_interface(decl, &c_name, span);
+        }
+        if !decl.is.is_empty() {
+            // An object that is seen as a `Shape` has to say which class
+            // it really is, so that `shape.area()` can find the right
+            // `area`. It carries its class's number in front of its
+            // fields, where every such object has it.
+            self.numbered += 1;
+            body += "    int32_t zeno_class;\n";
+            fill += &format!("    self->zeno_class = {};\n", self.numbered);
+            for interface in &decl.is {
+                self.is_a.entry(interface.clone()).or_default().push((self.numbered, decl.name.clone()));
+            }
+        }
         let mut shown = Vec::new();
         let mut tests = Vec::new();
         for (index, (field, kind)) in decl.fields.iter().zip(&kinds).enumerate() {
@@ -1613,7 +1641,9 @@ impl Emitter<'_> {
             tests.push(self.equal(kind, &format!("a->{field_name}"), &format!("b->{field_name}"), span)?);
         }
         if decl.fields.is_empty() {
-            body += "    char nothing; /* C does not allow an empty struct */\n";
+            if decl.is.is_empty() {
+                body += "    char nothing; /* C does not allow an empty struct */\n";
+            }
             shown.push(c_string(&format!("{shown_as}(")));
             tests.push("true".to_string());
         }
@@ -1676,6 +1706,147 @@ impl Emitter<'_> {
             .collect();
         self.classes.insert(decl.name.clone(), ClassEntry { fields, sized, methods, owned_fields });
         Ok(())
+    }
+
+    /// An interface becomes a C struct with one field, the number of the
+    /// class an object really is. Every class that is this interface
+    /// begins with the same field, so a pointer to one can be read as a
+    /// pointer to this.
+    fn register_interface(&mut self, decl: &Class, c_name: &str, span: Span) -> Result<(), Error> {
+        self.structs.push(format!("struct {c_name} {{\n    int32_t zeno_class;\n}};"));
+        let name = ident(&decl.name);
+        let mut methods = HashMap::new();
+        for method in &decl.methods {
+            let entry = self.entry(method, &format!("{name}_{}", method.name), span)?;
+            methods.insert(method.name.clone(), entry);
+        }
+        let entry = ClassEntry { fields: Vec::new(), sized: HashMap::new(), methods, owned_fields: Vec::new() };
+        self.classes.insert(decl.name.clone(), entry);
+        Ok(())
+    }
+
+    /// The C functions of an interface. Each looks at the number the
+    /// object carries and passes the call on to the function of that
+    /// class:
+    ///
+    /// ```c
+    /// static double z_Shape_area(z_Shape *a0) {
+    ///     switch (a0->zeno_class) {
+    ///     case 1: return z_Circle_area((z_Circle *)a0);
+    ///     default: return z_Square_area((z_Square *)a0);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The same is written for showing an object as text, comparing two,
+    /// and freeing one.
+    fn pass_on(&mut self, decl: &Class, span: Span) -> Result<(), Error> {
+        let name = ident(&decl.name);
+        let c_name = format!("z_{name}");
+        let classes = self.is_a.get(&decl.name).cloned().unwrap_or_default();
+        // `switch` over the classes, the last one as `default`, so that
+        // C sees every path return.
+        let switch = |on: &str, each: &dyn Fn(&str) -> String, none: &str| -> String {
+            if classes.is_empty() {
+                return format!("    (void){on};\n{none}");
+            }
+            let mut body = format!("    switch ({on}->zeno_class) {{\n");
+            for (index, (number, class)) in classes.iter().enumerate() {
+                let label = if index + 1 == classes.len() { "default".to_string() } else { format!("case {number}") };
+                body += &format!("    {label}: {}\n", each(class));
+            }
+            body + "    }\n"
+        };
+
+        for method in &decl.methods {
+            let entry = &self.classes[&decl.name].methods[&method.name];
+            let (function, kind) = (entry.c_name.clone(), entry.kind.clone());
+            // In a firmware build a function that can raise gives back
+            // `true` or `false`, and its answer goes out through one
+            // more parameter: see `function`.
+            let fallible = self.firmware && !method.raises.is_empty();
+            let gives = kind.returns != Kind::None;
+            let mut params = Vec::new();
+            for (index, param) in kind.params.iter().enumerate() {
+                params.push(format!("{}a{index}", c_type(param, span)?));
+            }
+            if fallible && gives {
+                params.push(format!("{}*zeno_result", c_type(&kind.returns, span)?));
+            }
+            let mut calls = HashMap::new();
+            for (_, class) in &classes {
+                let Some(own) = self.classes.get(class).and_then(|entry| entry.methods.get(&method.name)) else {
+                    return Err(cannot(format!("the class `{class}` as a `{}`", decl.name), span));
+                };
+                let mut args = vec![format!("(z_{} *)a0", ident(class))];
+                args.extend((1..kind.params.len()).map(|index| format!("a{index}")));
+                let own_fallible = self.firmware && !own.decl.raises.is_empty();
+                if own_fallible && gives {
+                    args.push("zeno_result".to_string());
+                }
+                let call = format!("{}({})", own.c_name, args.join(", "));
+                let line = match (fallible, own_fallible, gives) {
+                    (false, _, true) | (true, true, _) => format!("return {call};"),
+                    (false, _, false) => format!("{call}; return;"),
+                    (true, false, true) => format!("*zeno_result = {call}; return true;"),
+                    (true, false, false) => format!("{call}; return true;"),
+                };
+                calls.insert(class.clone(), line);
+            }
+            let none = match (fallible, gives) {
+                (true, _) => "    return true;\n".to_string(),
+                (false, false) => String::new(),
+                (false, true) => {
+                    let returns = c_type(&kind.returns, span)?;
+                    format!("    static {returns}nothing;\n    return nothing;\n")
+                }
+            };
+            let returns = if fallible { "bool ".to_string() } else { return_type(&kind.returns, span)? };
+            let body = switch("a0", &|class| calls[class].clone(), &none);
+            self.helper(format!("static {returns}{function}({})", params.join(", ")), body);
+        }
+
+        self.helper(
+            format!("static const char *zeno_show_{name}({c_name} *self)"),
+            switch(
+                "self",
+                &|class| format!("return zeno_show_{0}((z_{0} *)self);", ident(class)),
+                "    return \"\";\n",
+            ),
+        );
+        self.helper(
+            format!("static bool zeno_same_{name}({c_name} *a, {c_name} *b)"),
+            format!(
+                "    if (a->zeno_class != b->zeno_class) return false;\n{}",
+                switch(
+                    "a",
+                    &|class| format!("return zeno_same_{0}((z_{0} *)a, (z_{0} *)b);", ident(class)),
+                    "    return true;\n"
+                )
+            ),
+        );
+        let texts = !self.collector;
+        if self.types.owned_class(decl) || texts {
+            self.helper(
+                format!("static void zeno_drop_{name}({c_name} *self)"),
+                format!(
+                    "    if (self == NULL) return;\n{}",
+                    switch("self", &|class| format!("zeno_drop_{0}((z_{0} *)self); return;", ident(class)), "")
+                ),
+            );
+            if texts {
+                self.helper(
+                    format!("static void zeno_drop_any_{name}(void *object)"),
+                    format!("    zeno_drop_{name}(({c_name} *)object);\n"),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Is an object of the class `from` also a `to`, an interface?
+    fn is_a(&self, from: &str, to: &str) -> bool {
+        self.is_a.get(to).is_some_and(|classes| classes.iter().any(|(_, class)| class == from))
     }
 
     /// An enum becomes a C struct holding a `tag` that says which case the
@@ -3435,10 +3606,15 @@ impl Emitter<'_> {
                     return Ok(val);
                 };
                 // `[1, none]` is a list of `int or none`: find the one kind
-                // that every item can be stored as.
+                // that every item can be stored as. Where a list of an
+                // interface is wanted, the checker has said so: the
+                // items are of different classes.
                 let mut item = Some(first.kind.clone());
                 for val in &vals {
                     item = item.and_then(|item| joined(&item, &val.kind));
+                }
+                if let Some(wanted) = self.types.items(expr) {
+                    item = Some(disown(wanted.clone()).0);
                 }
                 let Some(item) = item else {
                     return Err(cannot("a list whose items are not all one type", span));
@@ -3582,6 +3758,17 @@ impl Emitter<'_> {
                     return Ok(val);
                 }
             }
+        }
+        // A Circle arriving where a Shape is wanted: the same pointer,
+        // which C has to be told is one to a `z_Shape` now.
+        let seen_as = match (some(&val.kind), some(to)) {
+            (Kind::Class(from), Kind::Class(interface)) if from != interface && self.is_a(from, interface) => {
+                Some(interface.clone())
+            }
+            _ => None,
+        };
+        if let Some(interface) = seen_as {
+            return Ok(Val { code: format!("((z_{} *){})", ident(&interface), val.code), kind: to.clone(), ..val });
         }
         let code = match (&val.kind, to) {
             (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
@@ -10561,6 +10748,211 @@ function ratio(a: int, b: int) -> int {
     return a // b
 }
 "#;
+
+    /// Interfaces where objects are shared: two interfaces on one class,
+    /// a function type, a generic class, `==`, lists of lists.
+    const INTERFACES: &str = r##"interface Named {
+    function name(self) -> str
+}
+
+interface Sized {
+    function size(self) -> int
+}
+
+interface Marker {
+}
+
+class Box is Named, Sized, Marker {
+    label: str
+    count: int
+
+    function name(self) -> str {
+        return self.label
+    }
+
+    function size(self) -> int {
+        return self.count
+    }
+}
+
+class Tag is Named, Marker {
+    text: str
+
+    function name(self) -> str {
+        return f"#{self.text}"
+    }
+}
+
+class Plain is Marker {
+}
+
+class Pair[T] {
+    first: T
+    second: T
+}
+
+class Holder[T] is Sized {
+    items: list[T]
+
+    function size(self) -> int {
+        return len(self.items)
+    }
+}
+
+function longest(items: list[Named]) -> Named or none {
+    var best: Named or none = none
+    for item in items {
+        if best is none {
+            best = item
+        } else if len(item.name()) > len(best.name()) {
+            best = item
+        }
+    }
+    return best
+}
+
+function describe(thing: Sized) -> str {
+    return f"size {thing.size()}"
+}
+
+function apply(thing: Named, how: function(Named) -> str) -> str {
+    return how(thing)
+}
+
+let box = Box("crate", 4)
+let tag = Tag("red")
+let named: list[Named] = [box, tag, Tag("a very long one")]
+let best = longest(named)
+if best is not none {
+    print(best.name())
+    print(best)
+}
+print(describe(box), describe(Holder([1, 2, 3])), describe(Holder(["a"])))
+let a: Named = box
+let b: Named = Box("crate", 4)
+let c: Named = tag
+print(a == b, a == c, a != c)
+let pair: Pair[Named] = Pair(box, tag)
+print(pair.first.name(), pair.second.name())
+print(pair)
+print(apply(tag, function(thing: Named) -> str { return thing.name() + "!" }))
+let empty: list[Named] = []
+print(longest(empty) is none)
+var names: list[str] = []
+for item in named {
+    names.append(item.name())
+}
+print(names)
+var lists: list[list[Named]] = [[box], [tag, box]]
+lists.append([Tag("last"), box])
+print(len(lists[1]), lists[2][0].name())
+let marked: list[Marker] = [box, tag, Plain()]
+print(marked, marked[0] == marked[1], marked[2] == marked[2])
+"##;
+
+    /// A list that is written out is built as what the place wants: a
+    /// `1` given where a `list[int or none]` goes is kept as an `int or
+    /// none`, in an argument as in a `let`.
+    const LISTS_AS_WANTED: &str = r#"class Row {
+    cells: list[str or none]
+}
+
+function show(items: list[int or none]) -> int {
+    print(items)
+    return len(items)
+}
+
+function first[T](items: list[T]) -> T {
+    return items[0]
+}
+
+function same[T](item: T) -> T {
+    return item
+}
+
+function make() -> list[float or none] {
+    return [1.5, 2.5]
+}
+
+print(show([1, none]))
+print(show([1, 2]))
+let count = 5
+let n: int or none = first([1, 2])
+let m: int or none = same(count)
+print(n, m)
+let row = Row(["a", "b"])
+row.cells = ["x"]
+print(row)
+let nested: list[list[int or none]] = [[1, 2], [none]]
+print(nested)
+print(make())
+var later: list[int or none] = []
+later = [4, 5]
+later.append(none)
+print(later)
+var grid: list[list[int or none]] = []
+grid.append([7, 8])
+grid.insert(0, [9])
+print(grid)
+let maybe: list[int or none] or none = [1]
+print(maybe)
+"#;
+
+    #[test]
+    fn an_interface_is_the_same_in_every_build() {
+        // The example gives each object one owner, so it goes through
+        // every build: the interpreter, the VM, and C and LLVM of all
+        // three kinds. With no collector every block is given back.
+        let ports = include_str!("../examples/ports.zeno");
+        no_collector_as_interpreter("ports", ports);
+        // Its `send` raises through the interface, and a firmware build
+        // carries that as a value.
+        firmware_as_interpreter("ports-firmware", ports);
+        same_as_interpreter("interfaces", INTERFACES);
+        // An interface in one file and a class that is it in another.
+        no_collector_as_interpreter(
+            "interfaces-modules",
+            "import ports\n\n\
+             class Uart is ports.Port {\n    speed: int\n\n    function send(self, text: str) -> int {\n        return len(text)\n    }\n}\n\n\
+             let all: list[ports.Port] = [Uart(9600), ports.Null()]\n\
+             print(ports.send_all(all, \"hello\"))\n\
+             print(ports.send_all([Uart(1), Uart(2)], \"hi\"))\n\
+             print(all)\n\
+             ==> ports.zeno\n\
+             interface Port {\n    function send(self, text: str) -> int\n}\n\n\
+             class Null is Port {\n    function send(self, text: str) -> int {\n        return 0\n    }\n}\n\n\
+             function send_all(ports: list[Port], text: str) -> int {\n    var sent = 0\n    \
+             for port in ports {\n        sent += port.send(text)\n    }\n    return sent\n}\n",
+        );
+        same_as_interpreter("lists-as-wanted", LISTS_AS_WANTED);
+    }
+
+    #[test]
+    fn an_interface_is_a_number_in_the_object_and_a_switch() {
+        let c = compile(
+            "interface Shape {\n    function area(self) -> float\n}\n\
+             class Circle is Shape {\n    radius: float\n\n    function area(self) -> float {\n        return 3.0 * self.radius * self.radius\n    }\n}\n\
+             class Square is Shape {\n    side: float\n\n    function area(self) -> float {\n        return self.side * self.side\n    }\n}\n\
+             class Other {\n    x: int\n}\n\
+             let shapes: list[Shape] = [Circle(1.0), Square(2.0)]\n\
+             for shape in shapes {\n    print(shape.area())\n}\nprint(Other(1))\n",
+        )
+        .unwrap();
+        // A class that is some interface carries its number first, where
+        // the interface's own struct has it too.
+        assert!(c.contains("struct z_Shape {\n    int32_t zeno_class;\n};"), "{c}");
+        assert!(c.contains("struct z_Circle {\n    int32_t zeno_class;\n    double z_radius;\n};"));
+        assert!(c.contains("    self->zeno_class = 1;\n"));
+        // A class that is no interface is what it always was.
+        assert!(c.contains("struct z_Other {\n    int64_t z_x;\n};"));
+        // A call through the interface looks at the number and calls the
+        // function of that class. No pointer to a function is kept.
+        assert!(c.contains(
+            "static double z_Shape_area(z_Shape *a0) {\n    switch (a0->zeno_class) {\n    \
+             case 1: return z_Circle_area((z_Circle *)a0);\n    \
+             default: return z_Square_area((z_Square *)a0);\n    }\n}\n"
+        ));
+    }
 
     #[test]
     fn a_program_in_several_files_is_the_same_in_every_build() {
