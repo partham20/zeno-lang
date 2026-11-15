@@ -9163,6 +9163,86 @@ print(size(maybe), size(none), describe(find(9)), describe(find(10)))
         no_collector_as_interpreter("commands", include_str!("../examples/commands.zeno"));
     }
 
+    /// `match` on values that may be `none`: an object, a number, an enum
+    /// value and a text, each with a `case none` first.
+    pub(crate) const AFTER_CASE_NONE: &str = r##"class Point {
+    x: int
+}
+enum Shape {
+    Dot
+    Circle(r: float)
+}
+function find(n: int) -> Point or none {
+    if n > 0 { return Point(n) }
+    return none
+}
+function half(n: int) -> int or none {
+    if n % 2 == 0 { return n // 2 }
+    return none
+}
+function pick(n: int) -> Shape or none {
+    if n == 0 { return none }
+    if n == 1 { return Dot }
+    return Circle(2.0)
+}
+function name(n: int) -> str or none {
+    if n == 0 { return none }
+    return "n" + str(n)
+}
+function show(n: int) -> str {
+    let found = find(n)
+    match found {
+        case none { return "nothing" }
+        case p { return "point " + str(p.x) }
+    }
+}
+function twice(n: int) -> int {
+    let h = half(n)
+    match h {
+        case none { return -1 }
+        case 2 { return 200 }
+        case value { return value * 4 }
+    }
+}
+function area(n: int) -> float {
+    let shape = pick(n)
+    match shape {
+        case none { return -1.0 }
+        case Dot { return 0.0 }
+        case Circle(r) { return r * r }
+    }
+}
+function after(n: int) -> int {
+    let h = half(n)
+    match h {
+        case none { return 0 }
+        case _ { }
+    }
+    return h + 1
+}
+function size(n: int) -> int {
+    let text = name(n)
+    match text {
+        case none { return 0 }
+        case "n1" { return 100 }
+        case _ { return len(text) }
+    }
+}
+for n in range(5) {
+    print(show(n), twice(n), area(n), after(n), size(n))
+}
+"##;
+
+    #[test]
+    fn after_case_none_the_value_is_there_in_every_build() {
+        // The cases after `case none` read the value inside, by a new
+        // name or by the variable's own, and so does what follows a
+        // `match` whose `case none` left. A number that may be `none` is
+        // stored differently from a number, so each read has to unwrap.
+        same_as_interpreter("after-case-none", AFTER_CASE_NONE);
+        no_collector_as_interpreter("after-case-none", AFTER_CASE_NONE);
+    }
+
     #[test]
     fn what_may_be_none_can_have_one_owner_in_every_build() {
         // With a collector, run before every allocation: the owner frees

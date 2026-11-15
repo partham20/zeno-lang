@@ -462,10 +462,12 @@ var readings: list[Reading] = []
 
 `Missing` costs nothing, and the list owns each `Value`.
 
-One more thing is not refused but is clumsier than it should be. After
-`case none`, a later `case packet` still has the type `Packet or none`,
-so the body has to ask `if packet is not none` again. The checker
-could know. That is on the audit's list.
+One thing here was clumsier than it should have been, and the audit
+fixed it. After `case none`, a later `case packet` used to have the
+type `Packet or none`, so the body had to ask `if packet is not none`
+again. Now the cases after `case none` know that the value is there,
+and an enum that may be `none` is complete once `none` and each of its
+cases has a `case` ([`audit.md`](audit.md)).
 
 ## How it is tested
 

@@ -2935,14 +2935,46 @@ impl Checker {
         let mut catch_all = false;
         // For an enum, the cases that are fully handled.
         let mut covered = Vec::new();
+        // Once a `case none` has gone by, the cases after it know that
+        // the value is there, as the `else` of `if x is none` does
+        // (decision 5.19h). `remaining` is what is left to match, and
+        // `variable` is the one being matched, if a variable is.
+        let mut remaining = subject_type.clone();
+        let variable = match &subject.kind {
+            ExprKind::Name(name) => match env.get(name) {
+                Some(Variable { ty: Ty::Optional(inner), .. }) => Some((name.clone(), *inner)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut none_gone = false;
+        // After the `match` the variable is known to hold something if
+        // every `case none` left, and no case that carries on changed that.
+        let mut known_after = true;
 
         for arm in arms {
             let scope = Scope::child(env);
+            if let (true, Some((name, inner))) = (none_gone, &variable) {
+                scope.narrow(name, inner.clone());
+            }
+            let is_none = matches!(&arm.pattern, Pattern::Literal(literal) if matches!(literal.kind, ExprKind::None));
             let mut looks = false;
-            match self.pattern(&arm.pattern, &subject_type, look, &mut looks, &scope, span) {
+            // A name for the whole value is declared as what the value
+            // is, and then narrowed, exactly as the variable itself is.
+            // The compilers store `T or none` and `T` differently, and
+            // this is how they are told which one each use reads.
+            let named = match &arm.pattern {
+                Pattern::Name(name) if none_gone => Some(name),
+                _ => None,
+            };
+            let against = if named.is_some() { &subject_type } else { &remaining };
+            match self.pattern(&arm.pattern, against, look, &mut looks, &scope, span) {
                 Covers::Everything => catch_all = true,
                 Covers::Case(index) => covered.push(index),
                 Covers::Some => {}
+            }
+            if let Some(Variable { ty: Ty::Optional(inner), .. }) = named.and_then(|name| scope.get_here(name)) {
+                scope.narrow(named.expect("a name"), *inner);
             }
             // While a name looks into the owner's value, the owner must
             // leave that value where it is.
@@ -2957,13 +2989,38 @@ impl Checker {
             if !exits {
                 after.get_or_insert_with(HashMap::new).extend(moved);
             }
+            match (&remaining, is_none) {
+                (Ty::Optional(inner), true) => {
+                    remaining = (**inner).clone();
+                    none_gone = true;
+                    known_after &= exits;
+                }
+                _ if exits => {}
+                // A case that carries on: does it still know, at its
+                // end, that the variable holds something?
+                _ => {
+                    known_after &= none_gone
+                        && variable.as_ref().is_some_and(|(name, _)| {
+                            matches!(scope.get(name), Some(Variable { ty, declared: Some(_), .. }) if !matches!(ty, Ty::Optional(_) | Ty::None))
+                        });
+                }
+            }
         }
         self.owned.moved.extend(after.unwrap_or_default());
+        if let (true, true, Some((name, inner))) = (none_gone, known_after, variable) {
+            env.narrow(&name, inner);
+        }
 
-        let complete = match &subject_type {
+        // An enum that may be `none` is complete once `none` and every
+        // case of the enum have a `case`.
+        let (of_enum, none_left) = match &remaining {
+            Ty::Optional(inner) => (&**inner, true),
+            other => (other, false),
+        };
+        let complete = match of_enum {
             _ if catch_all => true,
             Ty::EnumValue(info) => {
-                let missing: Vec<String> = info
+                let mut missing: Vec<String> = info
                     .cases
                     .borrow()
                     .iter()
@@ -2971,6 +3028,9 @@ impl Checker {
                     .filter(|(index, _)| !covered.contains(index))
                     .map(|(_, case)| case.name.clone())
                     .collect();
+                if none_left {
+                    missing.insert(0, "`none`".to_string());
+                }
                 if !missing.is_empty() {
                     self.error(
                         format!(
@@ -6020,6 +6080,13 @@ mod tests {
         assert_eq!(error(&format!("{SHAPE}match 5 {{\n case Dot {{ }}\n case _ {{ }}\n}}")), "`Dot` is a case of Shape, which can never match int");
         assert_eq!(error("match 5 {\n case \"five\" { }\n case _ { }\n}"), "this case is str, which can never match int");
         assert_eq!(error("match 5 {\n case 1 { }\n}"), "this `match` needs a final `case _` to handle every other value");
+        // An enum that may be `none` needs a `case none` as well.
+        let maybe = format!("{SHAPE}function pick(n: int) -> Shape or none {{\n if n > 0 {{ return Dot }}\n return none\n}}\n");
+        assert_eq!(
+            error(&format!("{maybe}match pick(1) {{\n case Dot {{ }}\n case Circle(r) {{ }}\n case Rect(w, h) {{ }}\n}}")),
+            "this `match` does not handle `none`. Add a `case` for it, or a final `case _`"
+        );
+        ok(&format!("{maybe}match pick(1) {{\n case none {{ }}\n case Dot {{ }}\n case Circle(r) {{ }}\n case Rect(w, h) {{ }}\n}}"));
         // The values a case carries have the types the enum gave them.
         assert_eq!(
             error(&format!("{SHAPE}match Dot {{\n case Circle(r) {{ let s: str = r }}\n case _ {{ }}\n}}")),
@@ -6085,6 +6152,40 @@ mod tests {
         assert_eq!(
             error("function f(x: int or none) -> int {\n var y = x\n if y is none { return 0 } else { y = none }\n return y + 1\n}"),
             gone
+        );
+    }
+
+    #[test]
+    fn after_case_none_the_value_is_known_to_be_there() {
+        let find = "function find(id: int) -> str or none {\n if id == 1 { return \"partha\" }\n return none\n}\nlet user = find(1)\n";
+        // The cases after `case none` know, as the `else` of
+        // `if user is none` does: by a new name, and by the old one.
+        strict_ok(&format!("{find}match user {{\n case none {{ print(0) }}\n case name {{ print(name.upper()) }}\n}}"));
+        strict_ok(&format!("{find}match user {{\n case none {{ print(0) }}\n case _ {{ print(user.upper()) }}\n}}"));
+        // A case in front of it does not.
+        assert_eq!(
+            error(&format!("{find}match user {{\n case \"x\" {{ print(user.upper()) }}\n case none {{ }}\n case _ {{ }}\n}}")),
+            "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+        // If `case none` always leaves, what follows the `match` knows too.
+        let f = "function shout(user: str or none) -> str {\n match user {\n  case none { return \"\" }\n  case _ { }\n }\n return user.upper()\n}";
+        strict_ok(f);
+        // It does not if `case none` carries on, or if a later case gave
+        // the variable a new value that may be `none`.
+        assert_eq!(
+            error(&format!("{find}match user {{\n case none {{ print(0) }}\n case _ {{ }}\n}}\nprint(user.upper())")),
+            "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+        assert_eq!(
+            error(&format!(
+                "{find}var who = find(2)\nfunction f() -> int {{\n match who {{\n  case none {{ return 0 }}\n  case _ {{ who = find(3) }}\n }}\n return len(who)\n}}"
+            )),
+            "`len` needs a str or a list, but this is str or none"
+        );
+        // A second `case none` can never match.
+        assert_eq!(
+            error(&format!("{find}match user {{\n case none {{ }}\n case none {{ }}\n case _ {{ }}\n}}")),
+            "this case is none, which can never match str"
         );
     }
 
