@@ -7742,6 +7742,8 @@ when they are wanted: `f"{supply:.1f}"` is `3.0 V` (10.29).
 
 ### 13.8 Found and left for later
 
+(Three more were on this list at first, and are in 13.9.)
+
 - For `let x: str = first([1])` the error is reported at the
   argument (`items` should be `list[str]`), not at `x`. A list that
   is written out waits for the place to say what kind of number it
@@ -7750,7 +7752,40 @@ when they are wanted: `f"{supply:.1f}"` is `3.0 V` (10.29).
 - `Box([])` outside strict mode has a `T` that nothing says, and
   becomes a value of unknown type without a word. Strict mode asks
   for the type.
-- A method without `self` is reported at the line of its class, as
-  every mistake in a signature is (see checker.md).
-- The message for using a field that may be `none` could say to copy
-  the field into a name first, since a field is never narrowed.
+- `min`, `max` and `sum` do not take quantities. The message says
+  what does (13.6).
+
+### 13.9 Three messages that were left, and then were not
+
+13.8 first listed five things. Three were mended a few hours later,
+once the release was no longer waiting on them.
+
+**A field that may be `none`.** After `if user.name is not none {`,
+`user.name + "!"` is still refused: a field belongs to an object that
+any call may reach and change, so a test of it is not remembered
+(3.12 is about what a test says of a variable). The message said
+"Check for `none` first", to somebody who just had. Now it says what
+to do:
+
+```
+`name` is a field, and a field can be given a new value between a
+test and its use, so a test of it is not remembered. Copy it into a
+variable with `let`, and test that for `none`
+```
+
+**Why not remember the test.** It would be right only until the
+first call between the test and the use, and the checker would have
+to prove there is none. A variable of the function's own cannot be
+changed by anybody else, which is the whole reason a test of one is
+remembered.
+
+**Two enums with a case of one name.** `Dot` in `Shape` and `Dot` in
+`Mark` gave "`Dot` is already declared in this block", which is true
+of a `let` and says nothing about enums. Now: "`Dot` is already a
+case of the enum `Shape`. A case is written by its name alone, so two
+enums in one file cannot both have a `Dot`".
+
+**A method without `self`.** It was shown on the line of the class,
+with every other mistake in a method's first line. A function in the
+syntax tree now knows where it is written (`ast::Function::span`),
+and the mistake is shown on the method's own line.

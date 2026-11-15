@@ -164,14 +164,56 @@ of its own: the hint is only for a name that means nothing.
 
 ## What was left
 
-Decision 13.8 lists four things that were found and not changed, with
-the reason for each. The one most likely to be met: for `let x: str =
-first([1])` the error is true and points at the argument instead of at
-`x`.
+Decision 13.8 lists three things that were found and not changed,
+with the reason for each. The one most likely to be met: for `let x:
+str = first([1])` the error is true and points at the argument
+instead of at `x`.
+
+## Three more messages
+
+These were on that list for a few hours (decision 13.9).
+
+```zeno
+class User {
+    name: str or none
+}
+
+let user = User("Ada")
+if user.name is not none {
+    print(user.name + "!")          # refused, and it always was
+}
+```
+
+A field is never known to be there. It belongs to an object, and any
+call between the test and the use could reach that object and put
+`none` in the field. The message used to say "Check for `none`
+first", which the program above has just done. Now it says:
+
+```
+error: `+` does not work between str or none and str. `name` is a
+field, and a field can be given a new value between a test and its
+use, so a test of it is not remembered. Copy it into a variable with
+`let`, and test that for `none`
+```
+
+```zeno
+let name = user.name
+if name is not none {
+    print(name + "!")               # fine: nobody else can change `name`
+}
+```
+
+Two enums that both have a `Dot` are told which enum has it already,
+and why that matters: a case is written by its name alone. And a
+method written without `self` is shown on its own line, where it used
+to be shown on the line of its class.
 
 ## The tests
 
-In `src/checker.rs`: `none_is_tested_for_with_is`,
+In `src/checker.rs`: `a_field_that_may_be_none_says_to_copy_it`,
+`a_case_has_one_enum`,
+`a_mistake_in_the_first_line_of_a_method_is_shown_there`,
+`none_is_tested_for_with_is`,
 `a_const_is_written_from_what_the_compiler_can_work_out`,
 `a_field_of_a_case_is_taken_out_in_a_match`,
 `one_mistake_in_a_call_gets_one_message`,

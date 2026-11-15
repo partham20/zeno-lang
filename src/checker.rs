@@ -1649,6 +1649,9 @@ struct Checker {
     /// The variables that were declared with `const`, by `Variable::id`.
     /// Another `const` may be written from them.
     consts: std::collections::HashSet<usize>,
+    /// Where a field that may be `none` was read (line and column), and
+    /// the field's name, for `none_first`.
+    maybe_fields: HashMap<(usize, usize), String>,
     /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
     classes: HashMap<DeclId, Rc<ClassInfo>>,
     enums: HashMap<DeclId, Rc<EnumInfo>>,
@@ -1750,6 +1753,7 @@ impl Checker {
             worked_out: Vec::new(),
             touched: Vec::new(),
             consts: std::collections::HashSet::new(),
+            maybe_fields: HashMap::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
             types: Types::default(),
@@ -1860,6 +1864,24 @@ impl Checker {
         self.raised.last_mut().expect("there is always a top-level list").push((kind.to_string(), span));
     }
 
+    /// What to say to somebody who used a value that may be `none` as
+    /// if it were there. `usual` is the advice for a variable: test it.
+    ///
+    /// For a field that advice is no help, and reads as if the checker
+    /// had not seen the test two lines up. A field is never known to be
+    /// there: it belongs to an object that any call may reach and
+    /// change. So the advice is to copy it into a variable, which
+    /// nothing else can change, and test that.
+    fn none_first(&self, span: Span, usual: &str) -> String {
+        match self.maybe_fields.get(&(span.line, span.col)) {
+            Some(name) => format!(
+                "`{name}` is a field, and a field can be given a new value between a test and its use, \
+                 so a test of it is not remembered. Copy it into a variable with `let`, and test that for `none`"
+            ),
+            None => usual.to_string(),
+        }
+    }
+
     fn declare(&mut self, env: &Env, name: &str, ty: Ty, mutable: bool, span: Span) {
         if !env.declare(name, ty, mutable) {
             self.error(format!("`{name}` is already declared in this block"), span);
@@ -1952,7 +1974,7 @@ impl Checker {
                 (Ty::Int | Ty::Sized(_), Ty::Sized(width)) => {
                     message += &format!(". Convert it with `{}(...)`, which checks that it fits", width.name)
                 }
-                (Ty::Optional(_), _) => message += ". Check it with `is not none` first",
+                (Ty::Optional(_), _) => message += &format!(". {}", self.none_first(span, "Check it with `is not none` first")),
                 (Ty::Quantity(from), Ty::Quantity(to)) if units::convert(from, to).is_some() => {
                     message += &format!(". Convert it with `.{to}`")
                 }
@@ -2634,6 +2656,22 @@ impl Checker {
                 self.error(format!("a case of the enum `{}` cannot carry an owned value yet", decl.name), span);
             }
             for (index, case) in cases.iter().enumerate() {
+                // A case is written by its name alone, `Dot` and not
+                // `Shape.Dot`, so the name can stand for one case only.
+                let taken = env.variables.borrow().get(&case.name).map(|variable| variable.ty.clone());
+                if let Some(Ty::EnumValue(other) | Ty::CaseConstructor(other, _)) = taken {
+                    let name = &case.name;
+                    let message = match Rc::ptr_eq(&other, &info) {
+                        true => format!("the enum `{}` has two cases called `{name}`. Give one of them another name", info.name),
+                        false => format!(
+                            "`{name}` is already a case of the enum `{}`. A case is written by its name alone, \
+                             so two enums in one file cannot both have a `{name}`. Give one of them another name",
+                            other.name
+                        ),
+                    };
+                    self.error(message, span);
+                    continue;
+                }
                 if case.fields.is_empty() {
                     // A bare case is a value of the enum.
                     self.declare(env, &case.name, Ty::EnumValue(info.clone()), false, span);
@@ -2742,7 +2780,9 @@ impl Checker {
                 let function = FunctionInfo {
                     decl: method.clone(),
                     env,
-                    span,
+                    // A mistake in its first line is shown on that line,
+                    // not on the line of the class.
+                    span: method.span,
                     // A method of an owned class looks at the object it is
                     // called on: the caller goes on owning it.
                     self_type: Some(match info.owned {
@@ -4783,6 +4823,11 @@ impl Checker {
     /// The type of an expression.
     fn expr(&mut self, expr: &Expr, env: &Env) -> Ty {
         let ty = self.expr_inner(expr, env);
+        if let (ExprKind::Field { name, .. }, Ty::Optional(_)) = (&expr.kind, &ty) {
+            // Remembered for the message, should this be used as if it
+            // were there (see `none_first`).
+            self.maybe_fields.insert((expr.span.line, expr.span.col), name.clone());
+        }
         if let Ty::Generic(generic) = &ty {
             // `let f = first` would need `f` to be every copy at once.
             return self.error(
@@ -4957,7 +5002,7 @@ impl Checker {
                 Ty::Bool
             }
             ExprKind::Binary { op, left, right } => {
-                let tested = left;
+                let (tested, right_side) = (left, right);
                 let left = self.look(left, env);
                 let right = self.look(right, env);
                 // A name that may be `none` is known to be there after a
@@ -4969,6 +5014,11 @@ impl Checker {
                     }
                     _ => left,
                 };
+                // If it is the right of the two that is a field which may
+                // be `none`, the message is about that field (`none_first`).
+                if let Some(field) = self.maybe_fields.get(&(right_side.span.line, right_side.span.col)).cloned() {
+                    self.maybe_fields.entry((span.line, span.col)).or_insert(field);
+                }
                 let ty = self.binary(*op, &left, &right, span);
                 if *op == BinaryOp::Add && owns_items(&ty) {
                     return self.error(
@@ -5239,7 +5289,7 @@ impl Checker {
                     }
                     ty if ty.is_loose() => ty,
                     Ty::Optional(_) => self.error(
-                        format!("this is {object}. Check it with `is not none` before taking an item"),
+                        format!("this is {object}. {}", self.none_first(span, "Check it with `is not none` before taking an item")),
                         span,
                     ),
                     ty => self.error(format!("an item cannot be taken from {ty}"), span),
@@ -5364,7 +5414,10 @@ impl Checker {
             // `led.number`: which pin this is.
             Ty::Pin if name == "number" => Ty::Int,
             Ty::Optional(_) => self.error(
-                format!("this is {object}. Check it with `is not none` before using `.{name}`"),
+                format!(
+                    "this is {object}. {}",
+                    self.none_first(span, &format!("Check it with `is not none` before using `.{name}`"))
+                ),
                 span,
             ),
             ty if ty.is_loose() => ty.clone(),
@@ -6756,7 +6809,7 @@ impl Checker {
             None => {
                 let mut message = format!("`{}` does not work between {left} and {right}", op.text());
                 if matches!(left, Ty::Optional(_)) || matches!(right, Ty::Optional(_)) {
-                    message += ". Check for `none` first";
+                    message += &format!(". {}", self.none_first(span, "Check for `none` first"));
                 }
                 // Degrees and radians meet only when one is changed.
                 if let (Ty::Quantity(a), Ty::Quantity(b)) = (&left, &right) {
@@ -7427,6 +7480,61 @@ mod tests {
         );
         assert_eq!(error(&format!("{shape}print(Dot.side)")), "no case of `Shape` has a field `side`");
         ok(&format!("{shape}match Circle(2.0) {{\n case Circle(radius) {{ print(radius) }}\n case Rect(_, h) {{ print(h) }}\n case Dot {{ }}\n}}"));
+    }
+
+    #[test]
+    fn a_field_that_may_be_none_says_to_copy_it() {
+        // A field is never known to be there, so "check it first" would
+        // be advice the program has already taken.
+        let copy = "`name` is a field, and a field can be given a new value between a test and its use, \
+                    so a test of it is not remembered. Copy it into a variable with `let`, and test that for `none`";
+        let user = "class User {\n    name: str or none\n}\nfunction shout(text: str) -> str {\n    return text\n}\nlet user = User(none)\n";
+        let inside = |line: &str| format!("{user}if user.name is not none {{\n    {line}\n}}\n");
+        assert_eq!(error(&inside("print(user.name + \"!\")")), format!("`+` does not work between str or none and str. {copy}"));
+        assert_eq!(error(&inside("print(\"!\" + user.name)")), format!("`+` does not work between str and str or none. {copy}"));
+        assert_eq!(error(&inside("print(shout(user.name))")), format!("`text` of `shout` should be str, but this is str or none. {copy}"));
+        assert_eq!(error(&inside("print(user.name.upper())")), format!("this is str or none. {copy}"));
+        assert_eq!(error(&inside("let known: str = user.name")), format!("`known` should be str, but this is str or none. {copy}"));
+        // Copied into a variable, the test is remembered.
+        assert!(errors(&format!("{user}let name = user.name\nif name is not none {{\n    print(shout(name))\n}}\n")).is_empty());
+        // A variable still gets the advice for a variable.
+        assert_eq!(
+            error(&format!("{user}let name = user.name\nprint(shout(name))\n")),
+            "`text` of `shout` should be str, but this is str or none. Check it with `is not none` first"
+        );
+    }
+
+    #[test]
+    fn a_case_has_one_enum() {
+        let shape = "enum Shape {\n    Dot\n    Square(side: int)\n}\n";
+        assert_eq!(
+            error(&format!("{shape}enum Mark {{\n    Dot\n    Dash\n}}\n")),
+            "`Dot` is already a case of the enum `Shape`. A case is written by its name alone, \
+             so two enums in one file cannot both have a `Dot`. Give one of them another name"
+        );
+        assert_eq!(
+            error(&format!("{shape}enum Mark {{\n    Square\n    Dash\n}}\n")),
+            "`Square` is already a case of the enum `Shape`. A case is written by its name alone, \
+             so two enums in one file cannot both have a `Square`. Give one of them another name"
+        );
+        assert_eq!(
+            error("enum Shape {\n    Dot\n    Dot\n}\n"),
+            "the enum `Shape` has two cases called `Dot`. Give one of them another name"
+        );
+        // A name that is something else keeps the message for that.
+        assert_eq!(error(&format!("let Dash = 1\n{shape}enum Mark {{\n    Dash\n}}\n")), "`Dash` is already declared in this block");
+    }
+
+    #[test]
+    fn a_mistake_in_the_first_line_of_a_method_is_shown_there() {
+        let program = parser::parse(
+            lexer::lex("class Counter {\n    count: int\n\n    function bump() {\n        print(1)\n    }\n}\n").expect("lexing failed"),
+        )
+        .expect("parsing failed");
+        let found = super::check(&program, false);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "the method `bump` needs `self` as its first parameter");
+        assert_eq!((found[0].span.line, found[0].span.col), (4, 5));
     }
 
     #[test]

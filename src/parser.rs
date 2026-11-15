@@ -628,10 +628,11 @@ impl Parser {
 
     /// `function name(params) -> type raises Error { }`
     fn function(&mut self) -> Result<Function, Error> {
+        let span = self.span();
         self.advance(); // function
         let name = self.name("a name for the function")?;
         let type_params = self.type_params()?;
-        self.function_after_name(name, type_params, false)
+        Ok(Function { span, ..self.function_after_name(name, type_params, false)? })
     }
 
     /// `[T]` or `[Key, Value]` after the name of a function or a class:
@@ -662,6 +663,7 @@ impl Parser {
             return self.error("a function with no name cannot have type parameters. Give it a name");
         }
 
+        let span = self.span();
         self.expect(TokenKind::LParen)?;
         let mut params: Vec<Param> = Vec::new();
         while !self.check(TokenKind::RParen) {
@@ -701,7 +703,7 @@ impl Parser {
 
         // A function of an interface ends here: it has no body.
         let body = if in_interface { Vec::new() } else { self.block()? };
-        Ok(Function { name, type_params, params, return_type, raises, body })
+        Ok(Function { span, name, type_params, params, return_type, raises, body })
     }
 
     /// `interface Name { function ... }`: the functions a class must have

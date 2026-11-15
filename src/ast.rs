@@ -154,6 +154,11 @@ pub enum StmtKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
+    /// Where it is written: the word `function`, or the `(` of one that
+    /// has no such word in front (a function of an interface, or one
+    /// written as a value). A mistake in the first line of a method is
+    /// shown here.
+    pub span: Span,
     /// Empty for a function written as a value: `function(n) { return n * 2 }`
     pub name: String,
     /// `function first[T](items: list[T]) -> T` has the one type
