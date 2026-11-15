@@ -451,9 +451,10 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
         // ends, how much memory it used and how often the collector ran.
         command.arg("-DZENO_MEMORY_REPORT");
     }
-    match command.args(["-O2", "-o", name, &c_file, "-lm"]).status() {
+    let program_file = emit_c::program_file(name);
+    match command.args(["-O2", "-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
         Ok(status) if status.success() => {
-            println!("Built {name}. Run it with ./{name}");
+            println!("Built {name}. Run it with {}", how_to_run(name));
             Some(())
         }
         Ok(_) => {
@@ -462,10 +463,15 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
         }
         Err(_) => {
             eprintln!("zeno: no C compiler found (tried `{compiler}`), so only the C was written.");
-            eprintln!("      Install one, or set CC, then run: cc -O2 -o {name} {c_file} -lm");
+            eprintln!("      Install one, or set CC, then run: cc -O2 -o {program_file} {c_file} {}", emit_c::LIBRARIES.join(" "));
             None
         }
     }
+}
+
+/// What to type to run the program a build made, in the folder it is in.
+fn how_to_run(name: &str) -> String {
+    if cfg!(windows) { format!(".\\{name}") } else { format!("./{name}") }
 }
 
 /// `zeno build --llvm <file>`: compile the program to LLVM IR, then hand
@@ -515,10 +521,12 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
         // the report. The IR asks for the report to be printed at the end.
         flags.push("-DZENO_MEMORY_REPORT");
     }
-    flags.extend(["-o", name, &ir_file, &runtime_file, "-lm"]);
+    let program_file = emit_c::program_file(name);
+    flags.extend(["-o", &program_file, &ir_file, &runtime_file]);
+    flags.extend(emit_c::LIBRARIES);
     match Command::new(&compiler).args(&flags).status() {
         Ok(status) if status.success() => {
-            println!("Built {name}. Run it with ./{name}");
+            println!("Built {name}. Run it with {}", how_to_run(name));
             Some(())
         }
         Ok(_) => {

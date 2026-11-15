@@ -103,6 +103,18 @@ pub fn runtime(build: Build) -> String {
     text
 }
 
+/// What follows the place in a call to `_setjmp`.
+///
+/// Everywhere but Windows, nothing: `_setjmp(place)`. Microsoft's
+/// `_setjmp` takes a second thing, the frame of the function that calls
+/// it, and its `longjmp` uses that to run the clean-up code of every
+/// function it jumps over, which is how C++ and Windows' own errors
+/// work. A Zeno program has no such code, and `null` there asks for a
+/// plain jump, which is what every other system does. A C compiler adds
+/// this without being asked, because `setjmp` in C is a macro. IR has no
+/// macros, so it is written out.
+const SETJMP_TAKES: &str = if cfg!(windows) { ", ptr null" } else { "" };
+
 /// Three small functions added to the runtime for `try`.
 ///
 /// A `try` needs a `zeno_try` on the stack, which holds a C `jmp_buf`:
@@ -302,8 +314,9 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_try_open", "declare void @zeno_try_open(ptr)"),
     ("zeno_try_close", "declare void @zeno_try_close(ptr)"),
     // `returns_twice` warns LLVM that this call can come back a second
-    // time, much later, when an error jumps to it.
-    ("_setjmp", "declare i32 @_setjmp(ptr) returns_twice"),
+    // time, much later, when an error jumps to it. What it takes is in
+    // `SETJMP_TAKES`.
+    ("_setjmp", if cfg!(windows) { "declare i32 @_setjmp(ptr, ptr) returns_twice" } else { "declare i32 @_setjmp(ptr) returns_twice" }),
     ("zeno_show_function", "declare ptr @zeno_show_function(ptr)"),
     ("zeno_mark_words", "declare void @zeno_mark_words(ptr, i64)"),
 ];
@@ -3361,7 +3374,7 @@ impl Emitter<'_> {
     ///
     /// ```text
     ///   call void @zeno_try_open(ptr %try.1)     ; errors come here now
-    ///   %t1 = call i32 @_setjmp(ptr %try.1) returns_twice
+    ///   %t1 = call i32 @_setjmp(ptr %try.1) returns_twice    ; see `SETJMP_TAKES`
     ///   %t2 = icmp eq i32 %t1, 0
     ///   br i1 %t2, label %try1, label %caught1
     /// try1:
@@ -3392,7 +3405,7 @@ impl Emitter<'_> {
 
         self.run("zeno_try_open", format!("ptr {place}"));
         self.uses("_setjmp");
-        let came = self.set(format!("call i32 @_setjmp(ptr {place}) returns_twice"));
+        let came = self.set(format!("call i32 @_setjmp(ptr {place}{SETJMP_TAKES}) returns_twice"));
         let first = self.set(format!("icmp eq i32 {came}, 0"));
         let (inside, caught, end) = (format!("try{n}"), format!("caught{n}"), format!("end{n}"));
         self.jump_if(&first, &inside, &caught);
@@ -6616,7 +6629,7 @@ pub(crate) mod tests {
     fn build_and_run_as(name: &str, ir: &str, build: Build, flags: &[&str]) -> Option<(String, String, bool)> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-llvm-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
-        let (ir_file, runtime_file, binary) = (dir.join("test.ll"), dir.join("test_runtime.c"), dir.join("test"));
+        let (ir_file, runtime_file, binary) = (dir.join("test.ll"), dir.join("test_runtime.c"), dir.join(emit_c::program_file("test")));
         std::fs::write(&ir_file, ir).expect("the IR file is written");
         std::fs::write(&runtime_file, runtime(build)).expect("the runtime is written");
         let built = Command::new("clang")
@@ -6626,7 +6639,7 @@ pub(crate) mod tests {
             .arg(&binary)
             .arg(&ir_file)
             .arg(&runtime_file)
-            .arg("-lm")
+            .args(emit_c::LIBRARIES)
             .output();
         let Ok(built) = built else {
             eprintln!("no clang found; skipping the compiled half of this test");
@@ -7126,7 +7139,7 @@ pub(crate) mod tests {
         )
         .expect("it compiles");
         assert!(ir.contains("store volatile i64 1, ptr %var.n"), "{ir}");
-        assert!(ir.contains("call i32 @_setjmp(ptr %try.1) returns_twice"), "{ir}");
+        assert!(ir.contains(&format!("call i32 @_setjmp(ptr %try.1{SETJMP_TAKES}) returns_twice")), "{ir}");
         // A function with no `try` in it has no need of that.
         let ir = compile("function f() -> int {\n    var n = 0\n    n = 1\n    return n\n}\nprint(f())\n").expect("it compiles");
         assert!(!ir.contains("volatile"), "{ir}");

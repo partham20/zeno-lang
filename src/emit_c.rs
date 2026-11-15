@@ -103,6 +103,22 @@ pub fn runtime(firmware: bool, collector: bool) -> String {
     text
 }
 
+/// What the C compiler is asked to link beside the C library.
+///
+/// The runtime uses `pow`, `floor` and the rest of C's maths. On Linux
+/// they are in a library of their own, asked for with `-lm`, and macOS
+/// accepts the same. On Windows they are part of the C library, and
+/// Visual Studio's linker, asked for `-lm`, looks for a file `m.lib` and
+/// stops when there is none.
+pub const LIBRARIES: &[&str] = if cfg!(windows) { &[] } else { &["-lm"] };
+
+/// The file a build makes: `hello`, and on Windows `hello.exe`, which is
+/// the only name Windows will run. (gcc adds the `.exe` by itself, and
+/// Visual Studio's clang does not, so it is written out for both.)
+pub fn program_file(name: &str) -> String {
+    if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
+}
+
 /// Turn a checked program into the text of one C file. `file` is the name of
 /// the Zeno source, which the compiled program uses in its error messages.
 /// `build` says which of the three kinds of build this is.
@@ -5947,9 +5963,9 @@ pub(crate) mod tests {
     fn build_and_run(name: &str, c: &str, flags: &[&str]) -> Option<(String, String, bool)> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
-        let (c_file, binary) = (dir.join("test.c"), dir.join("test"));
+        let (c_file, binary) = (dir.join("test.c"), dir.join(program_file("test")));
         std::fs::write(&c_file, c).expect("the C file is written");
-        let Ok(built) = Command::new("cc").args(flags).arg("-o").arg(&binary).arg(&c_file).arg("-lm").output() else {
+        let Ok(built) = Command::new("cc").args(flags).arg("-o").arg(&binary).arg(&c_file).args(LIBRARIES).output() else {
             eprintln!("no C compiler found; skipping the compiled half of this test");
             return None;
         };

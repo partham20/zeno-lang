@@ -9,6 +9,15 @@
  * print the way `zeno run` prints them.
  */
 
+/* Microsoft's C library marks `fopen`, `strcpy` and their like as unsafe
+ * and offers its own in their place, which no other system has. The
+ * runtime checks every size itself, so the warnings are asked not to be
+ * given. It has to be said before the first header is read. */
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#define _CRT_NONSTDC_NO_WARNINGS
+#endif
+
 #include <errno.h>
 #include <inttypes.h>
 #include <math.h>
@@ -1266,6 +1275,41 @@ static void zeno_board_write(int pin, bool level) {
     }
 }
 
+/* Waiting and reading the clock are the two things here that the C
+ * language leaves to the system, and there are two families of system.
+ *
+ * Windows has `Sleep`, in milliseconds, and a counter that goes up
+ * steadily, with a second call that says how many counts make a second.
+ * They are declared here by hand instead of through <windows.h>, which
+ * is very large and defines thousands of names of its own, `min` and
+ * `max` among them. The three lines are exactly what that header says.
+ *
+ * Everything else (Linux, macOS, the BSDs) has `nanosleep` and
+ * `clock_gettime`. MinGW on Windows has those too, but Microsoft's own
+ * C library does not, so on Windows the Windows calls are used whichever
+ * compiler it is. */
+#ifdef _WIN32
+
+__declspec(dllimport) void __stdcall Sleep(unsigned long milliseconds);
+__declspec(dllimport) int __stdcall QueryPerformanceCounter(int64_t *count);
+__declspec(dllimport) int __stdcall QueryPerformanceFrequency(int64_t *counts_a_second);
+
+static void zeno_board_sleep(double seconds) {
+    /* What has been printed so far should be seen before the wait, also
+     * when the output goes to a file or another program. */
+    fflush(stdout);
+    Sleep((unsigned long)(seconds * 1000.0 + 0.5));
+}
+
+static double zeno_board_now(void) {
+    int64_t count, counts_a_second;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&counts_a_second);
+    return (double)count * 1000.0 / (double)counts_a_second;
+}
+
+#else
+
 static void zeno_board_sleep(double seconds) {
     /* What has been printed so far should be seen before the wait, also
      * when the output goes to a file or another program. */
@@ -1281,6 +1325,8 @@ static double zeno_board_now(void) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1e6;
 }
+
+#endif /* _WIN32 */
 
 #endif /* ZENO_BOARD */
 
