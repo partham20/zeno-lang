@@ -76,6 +76,10 @@ pub enum Kind {
     Optional(Box<Kind>),
     /// A pin of the board: `led`, `pin(7)`. It is the pin's number.
     Pin,
+    /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
+    Pointer(Pointee),
+    /// A register of the board at a fixed address. It is the address.
+    Register(Width),
     /// An error value, such as what `ValueError("bad")` makes.
     Error,
     /// A function held as a value.
@@ -86,6 +90,76 @@ pub enum Kind {
     Owned(Box<Kind>),
     /// Anything else, described in words for an error message.
     Other(String),
+}
+
+/// What a `pointer[T]` points at: numbers of one size, side by side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pointee {
+    Int,
+    Float,
+    Sized(Width),
+}
+
+impl Pointee {
+    /// The pointee with this name, if it is one: `u8`, `int`, `float`.
+    pub fn named(name: &str) -> Option<Pointee> {
+        match name {
+            "int" => Some(Pointee::Int),
+            "float" => Some(Pointee::Float),
+            _ => ints::width(name).map(Pointee::Sized),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Pointee::Int => "int",
+            Pointee::Float => "float",
+            Pointee::Sized(width) => width.name,
+        }
+    }
+
+    /// How many bytes one item takes.
+    pub fn bytes(self) -> u32 {
+        match self {
+            Pointee::Int | Pointee::Float => 8,
+            Pointee::Sized(width) => width.bits / 8,
+        }
+    }
+
+    /// The C type of one item.
+    pub fn c_type(self) -> String {
+        match self {
+            Pointee::Int => "int64_t".to_string(),
+            Pointee::Float => "double".to_string(),
+            Pointee::Sized(width) => width.c_type(),
+        }
+    }
+
+    /// The LLVM IR type of one item.
+    pub fn ir_type(self) -> &'static str {
+        match self {
+            Pointee::Int => "i64",
+            Pointee::Float => "double",
+            Pointee::Sized(width) => width.ir_type(),
+        }
+    }
+
+    /// The kind of a value read through the pointer. A sized number
+    /// travels as an ordinary int, as everywhere.
+    pub fn kind(self) -> Kind {
+        match self {
+            Pointee::Float => Kind::Float,
+            Pointee::Int | Pointee::Sized(_) => Kind::Int,
+        }
+    }
+
+    fn ty(self) -> Ty {
+        match self {
+            Pointee::Int => Ty::Int,
+            Pointee::Float => Ty::Float,
+            Pointee::Sized(width) => Ty::Sized(width),
+        }
+    }
 }
 
 /// What a function takes and gives back.
@@ -293,6 +367,8 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
         Ty::Pin => Kind::Pin,
+        Ty::Pointer(pointee) => Kind::Pointer(*pointee),
+        Ty::Register(width) => Kind::Register(*width),
         Ty::None => Kind::None,
         Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
         Ty::Instance(class) => Kind::Class(class.name.clone()),
@@ -391,6 +467,11 @@ enum Ty {
     Pin,
     /// A whole number with a size: `u8`, `i32`. See src/ints.rs.
     Sized(Width),
+    /// A raw pointer to numbers of one size: `pointer[u8]`. Reading
+    /// through it, writing through it and freeing it need `unsafe`.
+    Pointer(Pointee),
+    /// A register of the board at a fixed address: `Register[u32]`.
+    Register(Width),
     List(Box<Ty>),
     /// `T or none`
     Optional(Box<Ty>),
@@ -562,6 +643,10 @@ enum Key {
     Pin,
     /// A sized whole number, by its name: `u8`.
     Sized(&'static str),
+    /// A pointer, by the name of what it points at.
+    Pointer(&'static str),
+    /// A register, by the name of its size.
+    Register(&'static str),
     None,
     Quantity(String),
     List(Box<Key>),
@@ -773,6 +858,8 @@ impl fmt::Display for Ty {
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
+            Ty::Pointer(pointee) => write!(f, "pointer[{}]", pointee.name()),
+            Ty::Register(width) => write!(f, "Register[{}]", width.name),
             Ty::Sized(width) => write!(f, "{}", width.name),
             Ty::None => write!(f, "none"),
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
@@ -856,6 +943,8 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
+        (Ty::Pointer(a), Ty::Pointer(b)) => a == b,
+        (Ty::Register(a), Ty::Register(b)) => a == b,
         (Ty::Param(a), Ty::Param(b)) => a == b,
         (Ty::List(a), Ty::List(b))
         | (Ty::Optional(a), Ty::Optional(b))
@@ -1200,7 +1289,7 @@ impl Scope {
 /// The outermost scope: the built-in functions and error types.
 fn globals() -> Env {
     let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0, top: false });
-    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum"] {
+    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum", "allocate", "free"] {
         env.declare(name, Ty::Builtin(name), false);
     }
     // The sized whole numbers: `u8(n)` converts, and `u8` is also a type.
@@ -1226,6 +1315,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("time", "now") => Ty::Builtin("now"),
         ("board", "led") => Ty::Pin,
         ("board", "pin") => Ty::Builtin("pin"),
+        ("board", "register") => Ty::Builtin("register"),
         _ => return None,
     })
 }
@@ -1240,6 +1330,10 @@ struct Frame {
     returns: Vec<Ty>,
     /// How many loops we are inside, for `break` and `continue`.
     loops: usize,
+    /// How many `unsafe { }` blocks we are inside. A function written
+    /// inside one starts at none again: the word covers the lines
+    /// between its braces, in the function that has them.
+    unsafe_blocks: usize,
 }
 
 /// One argument at a call, with where it is written.
@@ -1363,7 +1457,7 @@ impl Checker {
             enums: HashMap::new(),
             types: Types::default(),
             errors: Vec::new(),
-            frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0 }],
+            frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0, unsafe_blocks: 0 }],
             raised: vec![Vec::new()],
             owned: Ownership::default(),
             early: Vec::new(),
@@ -1418,6 +1512,21 @@ impl Checker {
 
     fn frame(&mut self) -> &mut Frame {
         self.frames.last_mut().expect("there is always a top-level frame")
+    }
+
+    /// `what` is one of the few things that nothing can check: reading
+    /// or writing through a pointer, freeing one, touching a register.
+    /// It has to be written inside `unsafe { }`.
+    fn needs_unsafe(&mut self, what: &str, span: Span) {
+        if self.frame().unsafe_blocks == 0 {
+            self.error(
+                format!(
+                    "{what} goes inside `unsafe {{ }}`. Zeno cannot check that it is right, \
+                     so the block marks the lines where a mistake can damage memory"
+                ),
+                span,
+            );
+        }
     }
 
     fn can_raise(&mut self, kind: &str, span: Span) {
@@ -1578,6 +1687,8 @@ impl Checker {
             Ty::Bool => Key::Bool,
             Ty::Pin => Key::Pin,
             Ty::Sized(width) => Key::Sized(width.name),
+            Ty::Pointer(pointee) => Key::Pointer(pointee.name()),
+            Ty::Register(width) => Key::Register(width.name),
             Ty::None => Key::None,
             Ty::Quantity(unit) => Key::Quantity(unit.to_string()),
             Ty::Error(kind) => Key::Error(kind.to_string()),
@@ -1618,6 +1729,8 @@ impl Checker {
             Key::Bool => Ty::Bool,
             Key::Pin => Ty::Pin,
             Key::Sized(name) => ints::width(name).map_or(Ty::Int, Ty::Sized),
+            Key::Pointer(name) => Pointee::named(name).map_or(Ty::Invalid, Ty::Pointer),
+            Key::Register(name) => ints::width(name).map_or(Ty::Invalid, Ty::Register),
             Key::None => Ty::None,
             Key::Quantity(unit) => Ty::Quantity(Rc::from(unit.as_str())),
             Key::Error(kind) => Ty::Error(Rc::from(kind.as_str())),
@@ -1870,6 +1983,17 @@ impl Checker {
                     ("list", _) => {
                         return self.error("`list` takes one type, as in `list[int]`", span)
                     }
+                    // `pointer[u8]`: a raw pointer to numbers of one size.
+                    ("pointer", [ast::Type::Named { name: item, args }]) if args.is_empty() && Pointee::named(item).is_some() => {
+                        Pointee::named(item).map_or(Ty::Invalid, Ty::Pointer)
+                    }
+                    ("pointer", _) => {
+                        return self.error(
+                            "a pointer points at numbers of one size: `pointer[u8]`, `pointer[int]`, `pointer[float]`, \
+                             or any of u8, u16, u32, i8, i16 and i32",
+                            span,
+                        )
+                    }
                     // `any` asks for a dynamic value on purpose.
                     ("any", []) if self.strict => {
                         return self.error("`any` is not allowed in strict mode", span)
@@ -1925,6 +2049,9 @@ impl Checker {
                         // A pin of the board. A class of the program's own
                         // called `Pin` was found above, and comes first.
                         _ if name == "Pin" => Ty::Pin,
+                        _ if name == "Register" => {
+                            return self.error("`Register` needs the size of the register, as in `Register[u32]`", span)
+                        }
                         _ if name == "i64" || name == "u64" => {
                             return self.error(
                                 format!(
@@ -1936,6 +2063,19 @@ impl Checker {
                         }
                         _ => return self.error(format!("there is no type called `{name}`"), span),
                     },
+                    // A register of the board. A class of the program's
+                    // own called `Register` was found above.
+                    ("Register", [ast::Type::Named { name: size, args }])
+                        if args.is_empty() && ints::width(size).is_some_and(|width| !width.signed) =>
+                    {
+                        ints::width(size).map_or(Ty::Invalid, Ty::Register)
+                    }
+                    ("Register", _) => {
+                        return self.error(
+                            "a register holds a whole number of one size: `Register[u8]`, `Register[u16]` or `Register[u32]`",
+                            span,
+                        )
+                    }
                     _ => return self.error(format!("`{name}` does not take types in `[ ]`"), span),
                 };
                 ty
@@ -2333,6 +2473,12 @@ impl Checker {
                 }
                 then_exits && else_exits
             }
+            StmtKind::Unsafe(body) => {
+                self.frame().unsafe_blocks += 1;
+                let exits = self.block(body, env);
+                self.frame().unsafe_blocks -= 1;
+                exits
+            }
             StmtKind::While { condition, body } => {
                 // The condition runs again on every trip, so it is part of
                 // the loop as far as owned values go.
@@ -2623,6 +2769,10 @@ impl Checker {
                         }
                     }
                     Ty::List(item) => *item,
+                    Ty::Pointer(pointee) => {
+                        self.needs_unsafe("writing through a pointer", span);
+                        pointee.ty()
+                    }
                     ty if ty.is_loose() => ty,
                     ty => self.error(format!("an item cannot be set on {ty}"), span),
                 }
@@ -2648,6 +2798,11 @@ impl Checker {
             Ty::List(item) => (**item).clone(),
             Ty::Str => Ty::Str,
             ty if ty.is_loose() => ty.clone(),
+            Ty::Pointer(_) => self.error(
+                "a pointer does not know how many items it points at, so it cannot be looped over. \
+                 Loop over `range(count)` and read item `i` inside `unsafe { }`",
+                span,
+            ),
             ty => self.error(format!("{ty} cannot be looped over"), span),
         }
     }
@@ -3466,7 +3621,7 @@ impl Checker {
             self.declare(&scope, &param.name, slot.ty.clone(), false, span);
         }
 
-        self.frames.push(Frame { declared_return: declared_return.clone(), returns: Vec::new(), loops: 0 });
+        self.frames.push(Frame { declared_return: declared_return.clone(), returns: Vec::new(), loops: 0, unsafe_blocks: 0 });
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
         self.copy_notes.push(function.copy_note.clone());
@@ -3621,6 +3776,9 @@ impl Checker {
                 }
                 None => match self.too_early(name, None, env, span) {
                     Some(mistake) => mistake,
+                    // `allocate(bool, 4)`, `bool(1)`: the one type name
+                    // that is not also a function that converts to it.
+                    None if name == "bool" => self.error("`bool` is a type and not a value, so it cannot be used here", span),
                     None => self.error(format!("`{name}` is not defined"), span),
                 },
             },
@@ -3911,6 +4069,10 @@ impl Checker {
                     Ty::List(item) if item.is_owned() => lent(&item),
                     Ty::List(item) => *item,
                     Ty::Str => Ty::Str,
+                    Ty::Pointer(pointee) => {
+                        self.needs_unsafe("reading through a pointer", span);
+                        pointee.ty()
+                    }
                     ty if ty.is_loose() => ty,
                     Ty::Optional(_) => self.error(
                         format!("this is {object}. Check it with `is not none` before taking an item"),
@@ -3973,6 +4135,10 @@ impl Checker {
                 Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
             }
             Ty::Pin if PIN_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Pin), Rc::from(name)),
+            Ty::Register(_) if REGISTER_METHODS.contains(&name) => {
+                Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
+            }
+            Ty::Register(_) if name == "address" => Ty::Int,
             // `led.number`: which pin this is.
             Ty::Pin if name == "number" => Ty::Int,
             Ty::Optional(_) => self.error(
@@ -4161,9 +4327,62 @@ impl Checker {
                 self.arity(name, arguments, 1, 1, span);
                 Ty::Str
             }
+            // `allocate(u8, 16)`: memory for sixteen bytes, all zero, and
+            // a pointer to the first. Making it harms nothing. Using it
+            // is what needs `unsafe`.
+            "allocate" => {
+                if !self.arity(name, arguments, 2, 2, span) {
+                    return Ty::Invalid;
+                }
+                self.expect(&arguments[1].ty, &Ty::Int, "the number of items", arguments[1].span);
+                match &arguments[0].ty {
+                    Ty::Builtin(item) if Pointee::named(item).is_some() => {
+                        Pointee::named(item).map_or(Ty::Invalid, Ty::Pointer)
+                    }
+                    ty if ty.is_loose() => Ty::Invalid,
+                    _ => self.error(
+                        "`allocate` needs the type of one item first, and then how many: `allocate(u8, 16)`. \
+                         The type is int, float, or one of u8, u16, u32, i8, i16 and i32",
+                        arguments[0].span,
+                    ),
+                }
+            }
+            "free" => {
+                if self.arity(name, arguments, 1, 1, span) && !matches!(first, Ty::Pointer(_)) && !first.is_loose() {
+                    wrong(self, "a pointer that `allocate` gave");
+                }
+                self.needs_unsafe("`free`", span);
+                Ty::None
+            }
+            // `register(u32, 0x4002_0014)`: the register at that address.
+            "register" => {
+                if !self.arity(name, arguments, 2, 2, span) {
+                    return Ty::Invalid;
+                }
+                self.expect(&arguments[1].ty, &Ty::Int, "the address of a register", arguments[1].span);
+                match &arguments[0].ty {
+                    Ty::Builtin(size) if ints::width(size).is_some_and(|width| !width.signed) => {
+                        ints::width(size).map_or(Ty::Invalid, Ty::Register)
+                    }
+                    ty if ty.is_loose() => Ty::Invalid,
+                    _ => self.error(
+                        "`register` needs the size of the register first, and then its address: \
+                         `register(u32, 0x4002_0014)`. The size is u8, u16 or u32",
+                        arguments[0].span,
+                    ),
+                }
+            }
             "len" => {
                 if self.arity(name, arguments, 1, 1, span) && !matches!(first, Ty::Str | Ty::List(_)) && !first.is_loose() {
-                    wrong(self, "a str or a list");
+                    if matches!(first, Ty::Pointer(_)) {
+                        self.error(
+                            "a pointer does not know how many items it points at, so `len` cannot tell. \
+                             Keep the number you gave `allocate` next to the pointer",
+                            span,
+                        );
+                    } else {
+                        wrong(self, "a str or a list");
+                    }
                 }
                 Ty::Int
             }
@@ -4282,6 +4501,21 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            (Ty::Register(width), "read") => {
+                self.arity(name, arguments, 0, 0, span);
+                self.needs_unsafe("reading a register", span);
+                Ty::Sized(*width)
+            }
+            (Ty::Register(width), _) => {
+                self.needs_unsafe("writing a register", span);
+                if self.arity(name, arguments, 1, 1, span) {
+                    let value = &arguments[0];
+                    let wanted = Ty::Sized(*width);
+                    let given = self.adapted(value.written.clone(), value.ty.clone(), &wanted, value.span);
+                    self.expect(&given, &wanted, "the value written to this register", value.span);
+                }
+                Ty::None
             }
             (Ty::Str, "upper" | "lower" | "strip") => {
                 self.arity(name, arguments, 0, 0, span);
@@ -4881,6 +5115,9 @@ impl Checker {
         let result = match op {
             Add | Sub if ints => Some(Ty::Int),
             Add | Sub if numbers => Some(Ty::Float),
+            // `p + 4`: four items further on. Only looking at where a
+            // pointer points needs `unsafe`, not working out where.
+            Add | Sub if matches!(left, Ty::Pointer(_)) && fits(right, &Ty::Int) => Some(left.clone()),
             Add | Sub if same_unit => shared_unit.map(|unit| Ty::Quantity(Rc::from(unit))),
             Add => match (left, right) {
                 (Ty::Str, Ty::Str) => Some(Ty::Str),
@@ -4953,6 +5190,10 @@ impl Checker {
                 if matches!(left, Ty::Optional(_)) || matches!(right, Ty::Optional(_)) {
                     message += ". Check for `none` first";
                 }
+                // One way to write it: the pointer first, then how far.
+                if matches!(op, Add) && fits(&left, &Ty::Int) && matches!(right, Ty::Pointer(_)) {
+                    message += ". Write the pointer first, as in `p + 1`";
+                }
                 let ty = self.error(message, span);
                 if comparison { Ty::Bool } else { ty }
             }
@@ -4963,6 +5204,7 @@ impl Checker {
 const STR_METHODS: &[&str] = &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
 const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
+const REGISTER_METHODS: &[&str] = &["read", "write"];
 
 /// What is looking at a part of an owner's value, so that the part must
 /// stay where it is.
@@ -5115,7 +5357,9 @@ fn forget_assigned(body: &[Stmt], scope: &Env) {
                 forget_assigned(then_block, scope);
                 forget_assigned(else_block.as_deref().unwrap_or_default(), scope);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } => forget_assigned(body, scope),
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Unsafe(body) => {
+                forget_assigned(body, scope)
+            }
             StmtKind::Match { arms, .. } => arms.iter().for_each(|arm| forget_assigned(&arm.body, scope)),
             StmtKind::Try { body, handlers } => {
                 forget_assigned(body, scope);
@@ -5151,6 +5395,7 @@ fn has_break(statements: &[Stmt]) -> bool {
             has_break(then_block) || else_block.as_deref().is_some_and(has_break)
         }
         StmtKind::Match { arms, .. } => arms.iter().any(|arm| has_break(&arm.body)),
+        StmtKind::Unsafe(body) => has_break(body),
         StmtKind::Try { body, handlers } => {
             has_break(body) || handlers.iter().any(|handler| has_break(&handler.body))
         }
@@ -6887,5 +7132,154 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         strict_ok(include_str!("../examples/buffer.zeno"));
         strict_ok(include_str!("../examples/labels.zeno"));
         strict_ok(include_str!("../examples/words.zeno"));
+    }
+
+    // ----- Memory by hand (docs/unsafe.md) -----
+
+    const POINTER: &str = "let p = allocate(u8, 4)\n";
+    const REGISTER: &str = "from board import register\nlet r = register(u8, 0x4002_0000)\n";
+
+    #[test]
+    fn what_zeno_cannot_check_goes_inside_unsafe() {
+        // Five things can damage memory, and those five need the block.
+        for (source, what) in [
+            (format!("{POINTER}print(p[0])"), "reading through a pointer"),
+            (format!("{POINTER}p[0] = 1"), "writing through a pointer"),
+            (format!("{POINTER}free(p)"), "`free`"),
+            (format!("{REGISTER}print(r.read())"), "reading a register"),
+            (format!("{REGISTER}r.write(1)"), "writing a register"),
+            // A parameter with no type written is covered too: its type
+            // is worked out from the call.
+            ("function peek(p) { return p[0] }\nprint(peek(allocate(u8, 2)))".to_string(), "reading through a pointer"),
+            // A function written inside the block is a new function. It
+            // may be called from anywhere, so it starts safe again.
+            (format!("{POINTER}unsafe {{\n    function first() -> int {{ return p[0] }}\n}}"), "reading through a pointer"),
+            (
+                format!("{POINTER}unsafe {{\n    let f = function() -> int {{ return p[0] }}\n    print(f())\n}}"),
+                "reading through a pointer",
+            ),
+        ] {
+            assert_eq!(
+                error(&source),
+                format!(
+                    "{what} goes inside `unsafe {{ }}`. Zeno cannot check that it is right, \
+                     so the block marks the lines where a mistake can damage memory"
+                ),
+                "\n{source}"
+            );
+        }
+
+        // Everything else is safe: making a pointer or a register,
+        // passing it, keeping it, working out an address, comparing.
+        strict_ok(
+            "from board import register\n\
+             class Buffer {\n    bytes: pointer[u8]\n    size: int\n}\n\
+             function second(p: pointer[u8]) -> pointer[u8] { return p + 1 }\n\
+             let p = allocate(u8, 4)\n\
+             let buffer = Buffer(p, 4)\n\
+             let q: pointer[u8] or none = second(p) - 1\n\
+             let all: list[pointer[u8]] = [p, buffer.bytes]\n\
+             let r: Register[u32] = register(u32, 0x4002_0014)\n\
+             print(p == all[1], q == p, p, r, r.address)\n\
+             unsafe {\n\
+             \x20   p[0] = 255\n\
+             \x20   p[1] = u8(p[0] - 1)\n\
+             \x20   if p[1] > 0 {\n\
+             \x20       r.write(u32(r.read() | 1 << 5))\n\
+             \x20   }\n\
+             \x20   free(p)\n\
+             }",
+        );
+        // The block is an ordinary block: what is declared inside ends
+        // with it, and a `return` inside it counts.
+        assert_eq!(error("unsafe {\n    let inside = 1\n}\nprint(inside)"), "`inside` is not defined");
+        ok("function first(p: pointer[int]) -> int {\n    unsafe { return p[0] }\n}");
+        strict_ok(include_str!("../examples/driver.zeno"));
+        one_owner_ok(include_str!("../examples/driver.zeno"));
+    }
+
+    #[test]
+    fn pointers_and_registers_have_types() {
+        let p = POINTER;
+        let r = REGISTER;
+        for (source, message) in [
+            // What a pointer may point at, and what `allocate` is given.
+            (
+                "let p = allocate(str, 4)".to_string(),
+                "`allocate` needs the type of one item first, and then how many: `allocate(u8, 16)`. \
+                 The type is int, float, or one of u8, u16, u32, i8, i16 and i32",
+            ),
+            ("let p = allocate(bool, 4)".to_string(), "`bool` is a type and not a value, so it cannot be used here"),
+            ("let p = allocate(u8)".to_string(), "`allocate` takes 2 argument(s), but 1 were given"),
+            ("let p = allocate(u8, 2.5)".to_string(), "the number of items should be int, but this is float"),
+            (
+                "let p: pointer[str] = allocate(u8, 4)".to_string(),
+                "a pointer points at numbers of one size: `pointer[u8]`, `pointer[int]`, `pointer[float]`, \
+                 or any of u8, u16, u32, i8, i16 and i32",
+            ),
+            (
+                "let p: pointer = allocate(u8, 4)".to_string(),
+                "a pointer points at numbers of one size: `pointer[u8]`, `pointer[int]`, `pointer[float]`, \
+                 or any of u8, u16, u32, i8, i16 and i32",
+            ),
+            // A pointer to bytes is not a pointer to anything else.
+            ("let p: pointer[u16] = allocate(u8, 4)".to_string(), "`p` should be pointer[u16], but this is pointer[u8]"),
+            // What is written through a pointer follows the rules of the
+            // sized numbers (docs/sized-ints.md).
+            (format!("{p}unsafe {{ p[0] = 300 }}"), "300 does not fit in a u8 (0 to 255)"),
+            (
+                format!("{p}unsafe {{ p[0] = p[1] + 1 }}"),
+                "the new value should be u8, but this is int. Convert it with `u8(...)`, which checks that it fits",
+            ),
+            (
+                "let p = allocate(float, 4)\nunsafe { p[0] = 2 }".to_string(),
+                "the new value should be float, but this is int. Write the number with a decimal point, as in `1.0`",
+            ),
+            (format!("{p}unsafe {{ print(p[1.0]) }}"), "an index should be int, but this is float"),
+            // `p + n` and `p - n`, and nothing else.
+            (format!("{p}print(p + 1.5)"), "`+` does not work between pointer[u8] and float"),
+            (format!("{p}print(p + p)"), "`+` does not work between pointer[u8] and pointer[u8]"),
+            (
+                format!("{p}print(1 + p)"),
+                "`+` does not work between int and pointer[u8]. Write the pointer first, as in `p + 1`",
+            ),
+            (format!("{p}print(p * 2)"), "`*` does not work between pointer[u8] and int"),
+            (format!("{p}print(p < p + 1)"), "`<` does not work between pointer[u8] and pointer[u8]"),
+            // A pointer is an address and nothing more.
+            (
+                format!("{p}for byte in p {{ print(byte) }}"),
+                "a pointer does not know how many items it points at, so it cannot be looped over. \
+                 Loop over `range(count)` and read item `i` inside `unsafe { }`",
+            ),
+            (
+                format!("{p}print(len(p))"),
+                "a pointer does not know how many items it points at, so `len` cannot tell. \
+                 Keep the number you gave `allocate` next to the pointer",
+            ),
+            ("unsafe { free(3) }".to_string(), "`free` needs a pointer that `allocate` gave, but this is int"),
+            // Registers.
+            (
+                "from board import register\nlet r = register(i16, 0x10)".to_string(),
+                "`register` needs the size of the register first, and then its address: `register(u32, 0x4002_0014)`. \
+                 The size is u8, u16 or u32",
+            ),
+            (
+                "from board import register\nlet r = register(u8, \"a\")".to_string(),
+                "the address of a register should be int, but this is str",
+            ),
+            (
+                "from board import register\nlet r: Register[int] = register(u8, 1)".to_string(),
+                "a register holds a whole number of one size: `Register[u8]`, `Register[u16]` or `Register[u32]`",
+            ),
+            (
+                "from board import register\nlet r: Register = register(u8, 1)".to_string(),
+                "`Register` needs the size of the register, as in `Register[u32]`",
+            ),
+            (format!("{r}unsafe {{ r.write(256) }}"), "256 does not fit in a u8 (0 to 255)"),
+            (format!("{r}unsafe {{ r.toggle() }}"), "Register[u8] has no field or method `toggle`"),
+            (format!("{r}r.address = 5"), "a field cannot be set on Register[u8]"),
+        ] {
+            assert_eq!(error(&source), message, "\n{source}");
+        }
     }
 }

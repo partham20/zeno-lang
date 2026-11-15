@@ -1,0 +1,131 @@
+# driver.zeno: memory by hand and registers, the way a C driver does it.
+#
+#     zeno run examples/driver.zeno          every use of a pointer is checked
+#     zeno build --memory examples/driver.zeno && ./driver
+#     zeno build --no-collector --memory examples/driver.zeno && ./driver
+#
+# A driver for a made-up serial port. Bytes wait in a queue whose memory
+# the program asks for and gives back itself, and they go out through
+# three registers at fixed addresses.
+#
+# Zeno cannot check a line that reads or writes through a pointer, frees
+# one, or touches a register. Each such line is inside `unsafe { }`, so
+# those are the blocks to read twice. docs/unsafe.md walks through it.
+
+from board import register
+
+# The port's registers, at the addresses its data sheet would give.
+let control = register(u32, 0x4000_4400)    # bit 0 turns the port on, bit 3 the sender
+let divider = register(u16, 0x4000_4408)    # clock ticks for each bit
+let data = register(u8, 0x4000_440C)        # a byte written here is sent
+
+let PORT_ON = 1 << 0
+let SENDER_ON = 1 << 3
+
+# Bytes that wait to be sent: first in, first out.
+class Queue {
+    bytes: pointer[u8]    # `size` bytes, asked for with `allocate`
+    size: int
+    first: int            # where the oldest byte is
+    count: int            # how many are waiting
+
+    # Add a byte at the end. `false` when there is no room.
+    function put(self, byte: u8) -> bool {
+        if self.count == self.size {
+            return false
+        }
+        let at = (self.first + self.count) % self.size
+        unsafe { self.bytes[at] = byte }
+        self.count += 1
+        return true
+    }
+
+    # Take the oldest byte out. `none` when nothing waits.
+    function take(self) -> u8 or none {
+        if self.count == 0 {
+            return none
+        }
+        let at = self.first
+        self.first = (self.first + 1) % self.size
+        self.count -= 1
+        unsafe { return self.bytes[at] }
+    }
+
+    # Give the memory back. The queue must not be used after this.
+    function close(self) {
+        unsafe { free(self.bytes) }
+        self.size = 0
+        self.count = 0
+    }
+}
+
+function open_queue(size: int) -> Queue {
+    return Queue(allocate(u8, size), size, 0, 0)
+}
+
+# Turn the port on, keeping every other bit of `control` as it was.
+function start(ticks: u16) {
+    unsafe {
+        divider.write(ticks)
+        control.write(u32(control.read() | PORT_ON | SENDER_ON))
+    }
+}
+
+function stop() {
+    unsafe {
+        control.write(u32(control.read() & ~(PORT_ON | SENDER_ON)))
+    }
+}
+
+# Send everything that waits. The answer is how many bytes went out.
+function flush(queue: borrow Queue) -> int {
+    var sent = 0
+    while true {
+        let byte = queue.take()
+        if byte is none {
+            return sent
+        }
+        unsafe { data.write(byte) }
+        sent += 1
+    }
+    return sent
+}
+
+# The sum of `count` bytes from `bytes` on, kept to eight bits.
+function checksum(bytes: pointer[u8], count: int) -> u8 {
+    var sum = 0
+    unsafe {
+        for i in range(count) {
+            sum = (sum + bytes[i]) & 0xFF
+        }
+    }
+    return u8(sum)
+}
+
+let queue = open_queue(4)
+start(104)
+
+# Six bytes into a queue of four: the last two do not fit.
+var refused = 0
+for byte in [0x5A, 0x65, 0x6E, 0x6F, 0x21, 0x0A] {
+    if not queue.put(u8(byte)) {
+        refused += 1
+    }
+}
+print("waiting:", queue.count, "refused:", refused)
+
+# `queue.bytes + 1` is the same memory, one byte further on. Working out
+# an address is safe. Only reading through it is not.
+print("checksum of all four:", checksum(queue.bytes, 4))
+print("checksum of the last three:", checksum(queue.bytes + 1, 3))
+
+print("sent:", flush(queue))
+
+# The queue goes round: two more bytes land where the first two were.
+queue.put(0x21)
+queue.put(0x0A)
+print("sent:", flush(queue))
+
+stop()
+queue.close()
+print(control, data, queue.bytes)

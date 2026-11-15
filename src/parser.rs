@@ -163,6 +163,12 @@ impl Parser {
                 self.advance(); // owned
                 self.class(true)?
             }
+            // `unsafe { ... }`: the lines that Zeno cannot check. The word
+            // is reserved, so it never means anything else (decision 5.18a).
+            TokenKind::Unsafe => {
+                self.advance(); // unsafe
+                StmtKind::Unsafe(self.block()?)
+            }
             TokenKind::Enum => self.enum_()?,
             TokenKind::If => self.if_statement()?,
             TokenKind::While => self.while_loop()?,
@@ -873,6 +879,13 @@ impl Parser {
                 self.advance();
                 ExprKind::None
             }
+            // `let x = unsafe { p[0] }`: the block is a statement.
+            TokenKind::Unsafe => {
+                return self.error(
+                    "`unsafe { }` is a statement and gives no value. Put the whole line inside the block: \
+                     `unsafe { x = p[0] }`",
+                );
+            }
             TokenKind::Ident(name) => {
                 self.advance();
                 ExprKind::Name(name)
@@ -1438,5 +1451,21 @@ mod tests {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);
             }
         }
+    }
+
+    #[test]
+    fn unsafe_is_a_block_and_a_word_of_its_own() {
+        assert_eq!(tree("unsafe {\n    p[0] = 1\n    free(p)\n}\nprint(1)"), "unsafe\n    p[0] = 1\n    free(p)\nprint(1)\n");
+        assert_eq!(tree("if x { unsafe { free(p) } }"), "if x\n    unsafe\n        free(p)\n");
+        assert_eq!(tree("let p: pointer[u8] or none = none"), "let p: pointer[u8] or none = none\n");
+        // The word is reserved: it is never a name, so it never has to
+        // be told apart from one.
+        assert_eq!(error("let unsafe = 3"), "expected a name for the variable, found `unsafe`");
+        assert_eq!(error("unsafe print(1)"), "expected `{`, found the name `print`");
+        // And the block is a statement. It gives no value.
+        assert_eq!(
+            error("let x = unsafe { p[0] }"),
+            "`unsafe { }` is a statement and gives no value. Put the whole line inside the block: `unsafe { x = p[0] }`"
+        );
     }
 }

@@ -70,6 +70,10 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             line(&format!("while {}", expr(condition)), depth, out);
             block(body, depth + 1, out);
         }
+        StmtKind::Unsafe(body) => {
+            line("unsafe", depth, out);
+            block(body, depth + 1, out);
+        }
         StmtKind::For { variable, iterable, body } => {
             line(&format!("for {variable} in {}", expr(iterable)), depth, out);
             block(body, depth + 1, out);

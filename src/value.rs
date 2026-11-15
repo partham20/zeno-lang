@@ -10,7 +10,9 @@ use std::rc::Rc;
 
 use crate::ast;
 use crate::bytecode::Proto;
+use crate::checker::Pointee;
 use crate::error::Error;
+use crate::ints::Width;
 use crate::interpreter::Env;
 use crate::token::Span;
 
@@ -28,6 +30,11 @@ pub enum Value {
     List(Rc<RefCell<Vec<Value>>>),
     /// A pin of the board, by its number: `led`, `pin(7)`
     Pin(i64),
+    /// A raw pointer: the block that `allocate` made, and how many items
+    /// into it this pointer points.
+    Pointer(Rc<Memory>, i64),
+    /// A register of the board: its address and its size.
+    Register(i64, Width),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -53,6 +60,17 @@ pub enum Value {
     Error(Rc<ErrorValue>),
 
     Module(Rc<Module>),
+}
+
+/// A block of memory made by `allocate`.
+///
+/// A compiled program has only the bytes. `zeno run` keeps a little more
+/// beside them, so that it can say what went wrong: how long the block
+/// is, and whether it has been freed.
+pub struct Memory {
+    pub pointee: Pointee,
+    pub items: RefCell<Vec<Value>>,
+    pub freed: std::cell::Cell<bool>,
 }
 
 /// A function together with the variables around it, so that it can still
@@ -216,6 +234,8 @@ impl Value {
             Value::Quantity(_, unit) => format!("a quantity in {unit}"),
             Value::List(_) => "a list".to_string(),
             Value::Pin(_) => "a pin".to_string(),
+            Value::Pointer(..) => "a pointer".to_string(),
+            Value::Register(..) => "a register".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
                 "a function".to_string()
             }
@@ -250,6 +270,9 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
         (Pin(a), Pin(b)) => a == b,
+        // Two pointers are equal when they point at the same item.
+        (Pointer(a, at_a), Pointer(b, at_b)) => Rc::ptr_eq(a, b) && at_a == at_b,
+        (Register(a, size_a), Register(b, size_b)) => a == b && size_a == size_b,
         // `1 s == 1000 ms`: compared in the finer unit of the two.
         (Quantity(a, unit_a), Quantity(b, unit_b)) => match crate::units::common(unit_a, unit_b) {
             Some((_, left, right)) => left.apply(*a) == right.apply(*b),
@@ -298,6 +321,10 @@ impl fmt::Display for Value {
                 write!(f, "[{}]", items.join(", "))
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
+            // Where a pointer points is different on every run, so it is
+            // not shown.
+            Value::Pointer(memory, _) => write!(f, "<pointer[{}]>", memory.pointee.name()),
+            Value::Register(address, _) => write!(f, "Register(0x{address:08x})"),
             Value::Function(closure) if closure.decl.name.is_empty() => write!(f, "<function>"),
             Value::Function(closure) => write!(f, "<function {}>", closure.decl.name),
             Value::Builtin(builtin) => write!(f, "<function {}>", builtin.name),

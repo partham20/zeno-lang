@@ -37,7 +37,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::*;
-use crate::checker::{FunctionKind, Kind, Types};
+use crate::checker::{FunctionKind, Kind, Pointee, Types};
 use crate::error::Error;
 use crate::ints::{self, Width};
 use crate::token::Span;
@@ -646,7 +646,7 @@ pub fn has_try(statements: &[Stmt]) -> bool {
         StmtKind::If { then_block, else_block, .. } => {
             has_try(then_block) || else_block.as_deref().is_some_and(has_try)
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } => has_try(body),
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Unsafe(body) => has_try(body),
         StmtKind::Match { arms, .. } => arms.iter().any(|arm| has_try(&arm.body)),
         _ => false,
     })
@@ -869,6 +869,10 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
         Kind::Int | Kind::Pin => "int64_t ".to_string(),
+        // A register is its address.
+        Kind::Register(_) => "int64_t ".to_string(),
+        // A raw pointer is exactly C's: `uint8_t *`.
+        Kind::Pointer(pointee) => format!("{} *", pointee.c_type()),
         Kind::Float | Kind::Quantity(_) => "double ".to_string(),
         Kind::Bool => "bool ".to_string(),
         Kind::Str => "const char *".to_string(),
@@ -880,7 +884,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // bool cannot, so it is paired with a flag.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
-            Kind::Int | Kind::Pin => "zeno_opt_int ".to_string(),
+            Kind::Int | Kind::Pin | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -896,14 +900,17 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
 
 /// Is this a kind that C holds through a pointer?
 fn is_pointer(kind: &Kind) -> bool {
-    matches!(kind, Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_))
+    matches!(
+        kind,
+        Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_)
+    )
 }
 
 /// The C for "no value" where a `T or none` is wanted, `inner` being the T.
 fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
-        Kind::Int | Kind::Pin => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Int | Kind::Pin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -939,6 +946,8 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
         Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
+        // Memory from `allocate` is not the collector's.
+        Kind::Pointer(_) | Kind::Register(_) => false,
         Kind::Optional(inner) => holds_pointer(inner),
         _ => true,
     }
@@ -983,6 +992,8 @@ fn key(kind: &Kind) -> String {
         Kind::Float => "float".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
+        Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
+        Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
         Kind::None => "none".to_string(),
         Kind::Quantity(unit) => format!("in_{unit}"),
@@ -999,11 +1010,11 @@ fn key(kind: &Kind) -> String {
 /// C that puts a value into a list slot.
 fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
-        Kind::Int | Kind::Pin => "i",
+        Kind::Int | Kind::Pin | Kind::Register(_) => "i",
         Kind::Float | Kind::Quantity(_) => "f",
         Kind::Bool => "b",
         Kind::Str => "s",
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => "p",
+        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_) => "p",
         Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
         // A number and its flag do not fit in a slot; see `zeno_box_int`.
         Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
@@ -1015,11 +1026,11 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
 /// C that takes a value back out of a list slot.
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
-        Kind::Int | Kind::Pin => format!("{slot}.i"),
+        Kind::Int | Kind::Pin | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::Bool => format!("{slot}.b"),
         Kind::Str => format!("{slot}.s"),
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => {
+        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_) => {
             format!("(({}){slot}.p)", c_type(kind, span)?.trim_end())
         }
         Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
@@ -1031,7 +1042,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 /// Which of the runtime's three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -1951,6 +1962,14 @@ impl Emitter<'_> {
                 self.else_part(else_block)?;
             }
 
+            // The checker has seen to what is written inside. In C it is
+            // a block like any other: C is unsafe all the way through.
+            StmtKind::Unsafe(body) => {
+                self.line("{");
+                self.block(body)?;
+                self.line("}");
+            }
+
             StmtKind::While { condition, body } => {
                 let mark = self.lines.len();
                 let condition = self.condition(condition)?;
@@ -2528,6 +2547,8 @@ impl Emitter<'_> {
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
             ("Pin", []) => Kind::Pin,
+            ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
+            ("Register", [Type::Named { name, args }]) if args.is_empty() => Kind::Register(ints::width(name)?),
             // `u8` and the rest: an int that is known to be small.
             (name, []) if ints::width(name).is_some() => Kind::Int,
             _ => return None,
@@ -2632,6 +2653,13 @@ impl Emitter<'_> {
                 let mut vals = self.sequence(&[object, index])?;
                 let index = vals.pop().expect("two values");
                 let object = vals.pop().expect("two values");
+                // Through a pointer: the item is stored at its own size,
+                // and nothing is checked. That is what `unsafe` is for.
+                if let Kind::Pointer(pointee) = &object.kind {
+                    let val = self.coerce(val, &pointee.kind(), span)?;
+                    self.line(format!("{}[{}] = ({}){};", object.code, index.code, pointee.c_type(), val.code));
+                    return Ok(());
+                }
                 let Kind::List(item) = &object.kind else {
                     return Err(cannot("an assignment to this", target.span));
                 };
@@ -3205,6 +3233,17 @@ impl Emitter<'_> {
                     let code = format!("zeno_char_at({}, {}, {})", list.code, index.code, at(span));
                     return Ok(Val::from(code, Kind::Str, &[&list, &index]).failing());
                 }
+                // Through a pointer it is C's own `[ ]`, with no check. A
+                // sized item is made wide again, like a field.
+                if let Kind::Pointer(pointee) = &list.kind {
+                    let code = match pointee {
+                        Pointee::Sized(_) => format!("((int64_t){}[{}])", list.code, index.code),
+                        _ => format!("({}[{}])", list.code, index.code),
+                    };
+                    let mut val = Val::from(code, pointee.kind(), &[&list, &index]);
+                    val.reads = true;
+                    return Ok(val);
+                }
                 let Kind::List(item) = &list.kind else {
                     return Err(cannot("`[ ]` on anything but a list or a str", span));
                 };
@@ -3774,6 +3813,8 @@ impl Emitter<'_> {
         let numbers = left.is_number() && right.is_number();
 
         let val = match (op, &left.kind, &right.kind) {
+            // `p + 4`: C counts in items too.
+            (Add | Sub, Kind::Pointer(_), Int) => Val::from(format!("({l} {symbol} {r})"), left.kind.clone(), &parts),
             // Whole numbers go through the runtime, which checks them.
             (Add, Int, Int) => Val::from(format!("zeno_add({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Sub, Int, Int) => Val::from(format!("zeno_sub({l}, {r}, {})", at(span)), Int, &parts).failing(),
@@ -3939,6 +3980,9 @@ impl Emitter<'_> {
                 if let Some(module) = self.imported.get(name).filter(|module| *module != "math").cloned() {
                     return self.device(&module, name, args, span);
                 }
+                if name == "allocate" {
+                    return self.allocate(args, span);
+                }
                 if args.iter().any(|arg| arg.name.is_some()) {
                     return Err(cannot("named arguments to a built-in", span));
                 }
@@ -4002,9 +4046,44 @@ impl Emitter<'_> {
         ints::width(name).filter(|_| !taken)
     }
 
+    /// The type written as the first argument of `allocate` or `register`.
+    fn written_type<'b>(what: &str, args: &'b [Arg], span: Span) -> Result<(Pointee, &'b Expr), Error> {
+        match args {
+            [Arg { name: None, value: Expr { kind: ExprKind::Name(item), .. } }, Arg { name: None, value }] => {
+                match Pointee::named(item) {
+                    Some(pointee) => Ok((pointee, value)),
+                    None => Err(cannot(format!("`{what}` of `{item}`"), span)),
+                }
+            }
+            _ => Err(cannot(format!("`{what}` called this way"), span)),
+        }
+    }
+
+    /// `allocate(u8, 16)`: sixteen bytes, all zero. The runtime takes
+    /// them from the heap, or from the pool where there is no collector.
+    fn allocate(&mut self, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let (pointee, count) = Self::written_type("allocate", args, span)?;
+        let count = self.expr(count)?;
+        if count.kind != Kind::Int {
+            return Err(cannot("`allocate` of a number of items that is not an int", span));
+        }
+        let item = pointee.c_type();
+        let call = format!("(({item} *)zeno_allocate({}, sizeof({item}), {}))", count.code, at(span));
+        Ok(self.called(call, &[count], Kind::Pointer(pointee)))
+    }
+
     /// A function of the `time` or the `board` module. Each is one call
     /// into the runtime, which passes it on to the board.
     fn device(&mut self, module: &str, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        // `register(u32, 0x4002_0014)`: a register is its address.
+        if (module, name) == ("board", "register") {
+            let (pointee, address) = Self::written_type("register", args, span)?;
+            let address = self.expr(address)?;
+            return match (pointee, &address.kind) {
+                (Pointee::Sized(width), Kind::Int) => Ok(Val { kind: Kind::Register(width), ..address }),
+                _ => Err(cannot("`register` called this way", span)),
+            };
+        }
         let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
         let vals = self.sequence(&exprs)?;
         match (module, name, vals.as_slice()) {
@@ -4232,6 +4311,28 @@ impl Emitter<'_> {
                 }
                 Ok(self.called(call, &vals, returns))
             }
+            // A register of the board: one call into the runtime, with
+            // the address and how many bits wide the register is.
+            Kind::Register(width) => {
+                let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+                let vals = self.sequence_after(vec![receiver], &exprs)?;
+                let bits = width.bits;
+                match (name, vals.as_slice()) {
+                    ("read", [register]) => {
+                        let call = format!("zeno_register_read({}, {bits})", register.code);
+                        let mut val = Val::from(call, Kind::Int, &[register]);
+                        // A register can change by itself, so two reads
+                        // are two reads.
+                        val.calls = true;
+                        Ok(val)
+                    }
+                    ("write", [register, value]) if value.kind == Kind::Int => {
+                        let call = format!("zeno_register_write({}, {bits}, {})", register.code, value.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    _ => Err(cannot(format!("`{name}` on a register called this way"), span)),
+                }
+            }
             // A pin of the board: `led.on()`. Each is one call into the
             // runtime, with the pin's number.
             Kind::Pin => {
@@ -4374,6 +4475,7 @@ impl Emitter<'_> {
             }
             // `led.number`: a pin is its number already.
             Kind::Pin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
+            Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
     }
@@ -4408,6 +4510,10 @@ impl Emitter<'_> {
             Kind::Float => format!("zeno_str_float({})", val.code),
             Kind::Bool => format!("zeno_str_bool({})", val.code),
             Kind::Pin => format!("zeno_str_pin({})", val.code),
+            // Where a pointer points is different on every run, so it
+            // is not shown.
+            Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
+            Kind::Register(_) => format!("zeno_str_register({})", val.code),
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
@@ -4439,6 +4545,8 @@ impl Emitter<'_> {
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
             Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) => format!("({a} == {b})"),
+            // Two pointers are equal when they point at the same item.
+            Kind::Pointer(_) | Kind::Register(_) => format!("({a} == {b})"),
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
@@ -4525,6 +4633,11 @@ impl Emitter<'_> {
                 val
             }
             "str" => Val::from(self.text(one()?, span)?, Kind::Str, &parts),
+            // `free(p)`: back to the heap, or to the pool.
+            "free" if matches!(one(), Ok(val) if matches!(val.kind, Kind::Pointer(_))) => {
+                let call = format!("zeno_release({})", one()?.code);
+                return Ok(self.called(call, &vals, Kind::None));
+            }
             // `u8(n)`: `n` itself, once the runtime has seen that it fits.
             // The size is handed over as the words for the message.
             _ if ints::width(name).is_some() && matches!(one(), Ok(val) if val.kind == Kind::Int) => {
@@ -4765,7 +4878,7 @@ fn changed_in_try(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
             each(then_block, inside);
             each(else_block.as_deref().unwrap_or_default(), inside);
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } => each(body, inside),
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Unsafe(body) => each(body, inside),
         StmtKind::Match { arms, .. } => arms.iter().for_each(|arm| each(&arm.body, inside)),
         StmtKind::Try { body, handlers } => {
             each(body, true);
@@ -4805,6 +4918,7 @@ pub fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<St
             names_in_expr(condition, inside, names);
             block(body, inside, names);
         }
+        StmtKind::Unsafe(body) => block(body, inside, names),
         StmtKind::For { iterable, body, .. } => {
             names_in_expr(iterable, inside, names);
             block(body, inside, names);
@@ -5796,6 +5910,7 @@ print(word[5])
             ("scheduler", include_str!("../examples/scheduler.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
             ("handlers", include_str!("../examples/handlers.zeno")),
+            ("driver", include_str!("../examples/driver.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -10325,4 +10440,244 @@ print(d.value)
         assert!(c.contains("static double z_area(double z_w, double z_h) {\n    return (z_w * z_h);\n}"));
         assert!(c.contains("    z_a = z_area(2.0, 3.0);\n"));
     }
+
+    // ------------------------------------------- Memory by hand (docs/unsafe.md)
+
+    #[test]
+    fn memory_by_hand_is_the_same_in_every_build() {
+        // The ordinary build and `--firmware`, with the collector run
+        // before every allocation of its own, and the build with no
+        // collector, through C and through LLVM. What `allocate` gave
+        // is all given back, so the pool ends with no blocks left.
+        no_collector_as_interpreter("by-hand", BY_HAND);
+        no_collector_as_interpreter("driver", include_str!("../examples/driver.zeno"));
+        // The one check a compiled program does make: how many items.
+        same_as_interpreter("no-items", "let count = 0\nlet p = allocate(u8, count)\nprint(p)");
+    }
+
+    #[test]
+    fn the_memory_report_counts_what_was_made_by_hand() {
+        let source = "let a = allocate(u8, 16)\nlet b = allocate(int, 4)\nlet c = allocate(float, 2)\n\
+                      unsafe {\n    free(a)\n    free(c)\n}\nprint(b)";
+        // Where there is a collector, memory made by hand is the heap's
+        // and gets a line of its own.
+        let c = compile(source).unwrap();
+        let Some((printed, errors, finished)) = build_and_run("by-hand-report", &c, &["-O1", "-DZENO_MEMORY_REPORT"]) else {
+            return;
+        };
+        assert!(finished && printed == "<pointer[int]>\n", "{printed}{errors}");
+        assert!(errors.ends_with("by hand: 3 blocks from `allocate`, 1 of them never freed\n"), "{errors}");
+        // A program that never calls `allocate` has no such line.
+        let c = compile("print([1, 2])").unwrap();
+        let (_, errors, _) = build_and_run("no-by-hand-report", &c, &["-O1", "-DZENO_MEMORY_REPORT"]).unwrap();
+        assert!(!errors.contains("by hand"), "{errors}");
+        // Where there is none, it comes from the pool, and a block that
+        // was never freed is a block left at the end.
+        let c = compile_no_collector(source).unwrap();
+        let (printed, errors, finished) =
+            build_and_run("by-hand-report-no-collector", &c, &["-O1", "-DZENO_MEMORY_REPORT"]).unwrap();
+        assert!(finished && printed == "<pointer[int]>\n", "{printed}{errors}");
+        assert!(errors.contains("3 blocks made (64 bytes)") && errors.contains("no collector, 1 blocks left at the end\n"), "{errors}");
+        assert!(!errors.contains("by hand"), "{errors}");
+    }
+
+    #[test]
+    fn the_c_for_memory_by_hand() {
+        // docs/unsafe.md. A pointer is C's own pointer, `[ ]` is C's own
+        // `[ ]`, and the block is a pair of braces.
+        let c = compile(BY_HAND_C).unwrap();
+        assert!(
+            c.contains(
+                "static int64_t z_sum(uint8_t *z2_bytes, int64_t z_count) {
+    int64_t z_total = 0;
+    {
+        int64_t t5 = z_count;
+        for (int64_t z_i = 0; z_i < t5; z_i++) {
+            z_total = zeno_add(z_total, ((int64_t)z2_bytes[z_i]), 7, 13);
+        }
+    }
+    return z_total;
+}
+
+static void z_set_bit(int64_t z_port, int64_t z_bit) {
+    {
+        int64_t t6 = zeno_register_read(z_port, 32);
+        zeno_register_write(z_port, 32, zeno_fit((t6 | zeno_shl(1, z_bit, 15, 38)), INT64_C(0), INT64_C(4294967295), \"a u32\", 15, 20));
+    }
+}
+"
+            ),
+            "{c}"
+        );
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        assert_eq!(
+            program.split("\n}\n").next().unwrap(),
+            "    z_bytes = ((uint8_t *)zeno_allocate(4, sizeof(uint8_t), 19, 13));
+    z_words = ((int16_t *)zeno_allocate(2, sizeof(int16_t), 20, 13));
+    {
+        int64_t t1 = 200;
+        z_bytes[0] = (uint8_t)t1;
+        int64_t t2 = zeno_fit(zeno_add(((int64_t)z_bytes[0]), 1, 23, 19), INT64_C(0), INT64_C(255), \"a u8\", 23, 16);
+        z_bytes[1] = (uint8_t)t2;
+        int64_t t3 = -300;
+        z_words[1] = (int16_t)t3;
+        int64_t t4 = z_sum((z_bytes + 1), 3);
+        zeno_print(2, zeno_str_int(t4), zeno_str_int(((int64_t)z_words[1])));
+        zeno_release(z_words);
+        zeno_release(z_bytes);
+    }
+    z_set_bit(1073872916, 5);"
+        );
+        // On a real board a register is one access the C compiler may
+        // not remove or repeat, and a board may bring its own.
+        let runtime = runtime(true, false);
+        assert!(runtime.contains("    case 8: *(volatile uint8_t *)(uintptr_t)address = (uint8_t)value; break;\n"));
+        assert!(runtime.contains("    default: return *(volatile uint32_t *)(uintptr_t)address;\n"));
+        assert!(runtime.contains("#ifndef ZENO_BOARD_REGISTERS\n"));
+    }
+
+    pub(crate) const BY_HAND_C: &str = r##"from board import register
+
+function sum(bytes: pointer[u8], count: int) -> int {
+    var total = 0
+    unsafe {
+        for i in range(count) {
+            total += bytes[i]
+        }
+    }
+    return total
+}
+
+function set_bit(port: Register[u32], bit: int) {
+    unsafe {
+        port.write(u32(port.read() | 1 << bit))
+    }
+}
+
+let bytes = allocate(u8, 4)
+let words = allocate(i16, 2)
+unsafe {
+    bytes[0] = 200
+    bytes[1] = u8(bytes[0] + 1)
+    words[1] = -300
+    print(sum(bytes + 1, 3), words[1])
+    free(words)
+    free(bytes)
+}
+set_bit(register(u32, 0x4002_0014), 5)
+"##;
+
+    const BY_HAND: &str = r##"# Memory by hand in every build: each kind of item, a pointer in a
+# field, in a list and where `none` may be, and three registers.
+import board
+
+class Ring {
+    data: pointer[u16]
+    size: int
+    head: int
+
+    function push(self, value: u16) {
+        unsafe {
+            self.data[self.head] = value
+        }
+        self.head = (self.head + 1) % self.size
+    }
+
+    function total(self) -> int {
+        var sum = 0
+        unsafe {
+            for i in range(self.size) {
+                sum += self.data[i]
+            }
+        }
+        return sum
+    }
+}
+
+function find(bytes: pointer[u8], count: int, wanted: u8) -> pointer[u8] or none {
+    for i in range(count) {
+        let here = bytes + i
+        unsafe {
+            if here[0] == wanted {
+                return here
+            }
+        }
+    }
+    return none
+}
+
+function fill(bytes: pointer[u8], count: int, step: int) {
+    unsafe {
+        for i in range(count) {
+            bytes[i] = u8(i * step % 256)
+        }
+    }
+}
+
+function main() {
+    let ring = Ring(allocate(u16, 4), 4, 0)
+    for n in range(6) {
+        ring.push(u16(n * 1000))
+    }
+    print(ring.total(), ring)
+
+    let bytes = allocate(u8, 8)
+    unsafe { print(bytes[0], bytes[7]) }
+    fill(bytes, 8, 40)
+    let found = find(bytes, 8, 120)
+    if found is not none {
+        print(found == bytes + 3, found == bytes, found - 3 == bytes)
+        unsafe { print(found[0], found[1], (found - 1)[0]) }
+    } else {
+        print("not there")
+    }
+    if find(bytes, 8, 13) is none {
+        print("13 is not there")
+    }
+
+    let blocks = [allocate(i32, 2), allocate(i32, 2)]
+    let wide = allocate(int, 2)
+    let small = allocate(i8, 1)
+    unsafe {
+        blocks[0][1] = -70000
+        blocks[1][0] = 5
+        wide[1] = -7000000000
+        wide[1] += blocks[0][1] + blocks[1][0]
+        small[0] = -128
+        print(blocks[0][1] + blocks[1][0], wide[0], wide[1], small[0])
+        for block in blocks {
+            free(block)
+        }
+        free(wide)
+        free(small)
+    }
+
+    let floats = allocate(float, 3)
+    unsafe {
+        floats[0] = 1.5
+        floats[2] = floats[0] * 2.0
+        print(floats[0], floats[1], floats[2])
+        free(floats)
+    }
+
+    let mode = board.register(u32, 0x4002_0000)
+    let speed = board.register(u16, 0x4002_0008)
+    let data = board.register(u8, 0x4002_0014)
+    unsafe {
+        print(mode.read(), speed.read())
+        mode.write(u32(mode.read() | 1 << 10))
+        mode.write(u32(mode.read() | 1 << 31))
+        speed.write(0xBEEF)
+        data.write(0x55)
+        data.write(0x55)
+        mode.write(u32(mode.read() & ~(1 << 10)))
+        print(mode.read(), speed.read(), data.read(), data.address)
+        free(bytes)
+        free(ring.data)
+    }
+    print(mode, bytes, mode == board.register(u32, 0x4002_0000))
+}
+
+main()
+"##;
 }

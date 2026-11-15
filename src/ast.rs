@@ -56,6 +56,9 @@ pub enum StmtKind {
     For { variable: String, iterable: Expr, body: Block },
     Match { subject: Expr, arms: Vec<Arm> },
     Try { body: Block, handlers: Vec<Handler> },
+    /// `unsafe { ... }`: the only place where a pointer may be read
+    /// through, written through or freed. See docs/unsafe.md.
+    Unsafe(Block),
 
     Return(Option<Expr>),
     Raise(Expr),
@@ -166,6 +169,7 @@ fn fresh_block(block: &mut Block) {
                 fresh_block(body);
                 handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body));
             }
+            StmtKind::Unsafe(body) => fresh_block(body),
             StmtKind::Break | StmtKind::Continue | StmtKind::Import { .. } => {}
         }
     }

@@ -377,6 +377,9 @@ impl Interpreter {
                     Ok(())
                 }
             }
+            // The checker has seen to what may be written inside. To
+            // run, it is a block like any other.
+            StmtKind::Unsafe(body) => self.exec_block(body, env),
             StmtKind::While { condition, body } => {
                 while self.condition(condition, env)? {
                     match self.exec_block(body, env) {
@@ -1361,6 +1364,146 @@ mod tests {
              area = 3.14\n\
              area = 6.00\n\
              Hello, Zeno! 4 [0, 4, 16, 36, 64] 5.0\n18 waiting 500 ms\n"
+        );
+    }
+
+    // ----- Memory by hand (docs/unsafe.md) -----
+
+    #[test]
+    fn memory_by_hand() {
+        assert_eq!(
+            output(
+                "let bytes = allocate(u8, 4)\n\
+                 let wide = allocate(int, 2)\n\
+                 let small = allocate(i8, 2)\n\
+                 let samples = allocate(float, 3)\n\
+                 unsafe {\n\
+                 \x20   print(bytes[0], wide[1], samples[2])\n\
+                 \x20   bytes[0] = 0x41\n\
+                 \x20   bytes[3] = u8(bytes[0] + 1)\n\
+                 \x20   wide[1] = -7000000000\n\
+                 \x20   wide[1] += 5\n\
+                 \x20   small[0] = -128\n\
+                 \x20   samples[1] = 2.5\n\
+                 \x20   print(bytes[0], bytes[3], wide[1], small[0], samples[1])\n\
+                 \x20   let last = bytes + 3\n\
+                 \x20   print(last[0], (last - 3)[0], last == bytes + 3, last == bytes)\n\
+                 \x20   free(wide)\n\
+                 \x20   free(small)\n\
+                 \x20   free(samples)\n\
+                 }\n\
+                 print(bytes, [bytes, bytes + 1] == [bytes, bytes + 1])\n\
+                 unsafe { free(bytes) }"
+            ),
+            "0 0 0.0\n65 66 -6999999995 -128 2.5\n66 65 true false\n<pointer[u8]> true\n"
+        );
+    }
+
+    #[test]
+    fn zeno_run_checks_every_use_of_a_pointer() {
+        let p = "let p = allocate(u8, 4)\n";
+        for (source, message) in [
+            (
+                format!("{p}unsafe {{ print(p[4]) }}"),
+                "this reads item 4 of a block that has 4 (0 to 3). `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it reads whatever is beside the block",
+            ),
+            (
+                format!("{p}unsafe {{ p[-1] = 1 }}"),
+                "this writes over item -1 of a block that has 4 (0 to 3). `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it writes over whatever is beside the block",
+            ),
+            // Working out an address past the end is allowed. Using it is
+            // what is caught.
+            (
+                format!("{p}let q = p + 6\nunsafe {{\n    print((q - 3)[0])\n    print(q[0])\n}}"),
+                "this reads item 6 of a block that has 4 (0 to 3). `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it reads whatever is beside the block",
+            ),
+            (
+                format!("{p}unsafe {{\n    free(p)\n    print(p[0])\n}}"),
+                "this reads memory that was freed. `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it reads whatever is there now, which may be somebody else's",
+            ),
+            (
+                format!("{p}unsafe {{\n    free(p)\n    p[0] = 1\n}}"),
+                "this writes over memory that was freed. `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it writes over whatever is there now, which may be somebody else's",
+            ),
+            (
+                format!("{p}unsafe {{\n    free(p)\n    free(p)\n}}"),
+                "this memory was freed already. `zeno run` checks every `free`. \
+                 A compiled program does not: freeing twice damages the memory it hands out next",
+            ),
+            (
+                format!("{p}unsafe {{ free(p + 1) }}"),
+                "`free` needs the pointer that `allocate` gave, and this one points 1 item(s) further on. \
+                 `zeno run` checks every `free`. A compiled program does not",
+            ),
+            ("let n = 0\nlet p = allocate(u8, n)".to_string(), "`allocate` needs at least one item, and this asks for 0"),
+        ] {
+            assert_eq!(error(&source), message, "\n{source}");
+        }
+        // A value that does not fit is an ordinary error, as it is for
+        // any sized number, and can be caught.
+        assert_eq!(
+            output(
+                "let p = allocate(u8, 2)\nlet n = 256\n\
+                 try {\n    unsafe { p[0] = u8(n) }\n} except OverflowError as e {\n    print(e.message)\n}\n\
+                 unsafe {\n    print(p[0])\n    free(p)\n}"
+            ),
+            "256 does not fit in a u8 (0 to 255)\n0\n"
+        );
+    }
+
+    #[test]
+    fn registers_on_the_simulated_board() {
+        // A register nobody wrote to reads as 0. Every write prints a
+        // line, also one that changes nothing.
+        assert_eq!(
+            output(
+                "from board import register\n\
+                 let mode = register(u32, 0x4002_0000)\n\
+                 let data = register(u8, 0x4002_0014)\n\
+                 unsafe {\n\
+                 \x20   print(mode.read())\n\
+                 \x20   mode.write(u32(mode.read() | 1 << 10))\n\
+                 \x20   data.write(0x55)\n\
+                 \x20   data.write(0x55)\n\
+                 \x20   mode.write(u32(mode.read() & ~(1 << 10)))\n\
+                 \x20   print(mode.read(), data.read())\n\
+                 }\n\
+                 print(mode, data.address, mode == register(u32, 0x4002_0004), mode == register(u32, 0x4002_0000))"
+            ),
+            "0\nregister 0x40020000 = 0x00000400\nregister 0x40020014 = 0x55\nregister 0x40020014 = 0x55\n\
+             register 0x40020000 = 0x00000000\n0 85\nRegister(0x40020000) 1073872916 false true\n"
+        );
+        // The module can be used by its name as well.
+        assert_eq!(
+            output("import board\nlet r = board.register(u16, 0x10)\nunsafe { r.write(0xBEEF) }"),
+            "register 0x00000010 = 0xbeef\n"
+        );
+    }
+
+    #[test]
+    fn the_driver_example_runs() {
+        assert_eq!(
+            output(include_str!("../examples/driver.zeno")),
+            "register 0x40004408 = 0x0068\n\
+             register 0x40004400 = 0x00000009\n\
+             waiting: 4 refused: 2\n\
+             checksum of all four: 156\n\
+             checksum of the last three: 66\n\
+             register 0x4000440c = 0x5a\n\
+             register 0x4000440c = 0x65\n\
+             register 0x4000440c = 0x6e\n\
+             register 0x4000440c = 0x6f\n\
+             sent: 4\n\
+             register 0x4000440c = 0x21\n\
+             register 0x4000440c = 0x0a\n\
+             sent: 2\n\
+             register 0x40004400 = 0x00000000\n\
+             Register(0x40004400) Register(0x4000440c) <pointer[u8]>\n"
         );
     }
 }

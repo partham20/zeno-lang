@@ -92,6 +92,10 @@ static size_t zeno_collections = 0;
 static size_t zeno_blocks_made = 0;
 static size_t zeno_bytes_made = 0;
 static size_t zeno_blocks_freed_at_once = 0;
+/* Blocks made by `allocate` and given back by `free`, inside `unsafe`.
+ * They are not the collector's: it never looks at them or frees them. */
+static size_t zeno_by_hand_made = 0;
+static size_t zeno_by_hand_freed = 0;
 
 /* Where the stack starts. `main` sets it before anything else runs. */
 static void *zeno_stack_base = NULL;
@@ -292,6 +296,10 @@ static void zeno_memory_report(void) {
         fprintf(stderr, ", %zu blocks freed without the collector", zeno_blocks_freed_at_once);
     }
     fprintf(stderr, "\n");
+    if (zeno_by_hand_made > 0) {
+        fprintf(stderr, "by hand: %zu blocks from `allocate`, %zu of them never freed\n", zeno_by_hand_made,
+                zeno_by_hand_made - zeno_by_hand_freed);
+    }
 }
 #endif
 
@@ -1176,6 +1184,120 @@ static double zeno_board_now(void) {
 }
 
 #endif /* ZENO_BOARD */
+
+/* Registers: `register(u32, 0x40020014)`, then `.read()` and `.write(v)`
+ * inside `unsafe { }`.
+ *
+ * On a real board a register is a place in memory at a fixed address,
+ * and reading or writing it is one `volatile` access: the compiler may
+ * not skip it, repeat it or move it, because the hardware is watching.
+ * A board header can supply its own two functions and define
+ * ZENO_BOARD_REGISTERS, for a board that reaches its registers some
+ * other way.
+ *
+ * The simulated board has no such memory, and writing to address
+ * 0x40020014 of a computer would stop the program. So it remembers
+ * what was last written to each address, and prints a line for every
+ * write. A register nobody has written to reads as 0. */
+#ifdef ZENO_BOARD
+#ifndef ZENO_BOARD_REGISTERS
+
+static int64_t zeno_register_read(int64_t address, int bits) {
+    switch (bits) {
+    case 8: return *(volatile uint8_t *)(uintptr_t)address;
+    case 16: return *(volatile uint16_t *)(uintptr_t)address;
+    default: return *(volatile uint32_t *)(uintptr_t)address;
+    }
+}
+
+static void zeno_register_write(int64_t address, int bits, int64_t value) {
+    switch (bits) {
+    case 8: *(volatile uint8_t *)(uintptr_t)address = (uint8_t)value; break;
+    case 16: *(volatile uint16_t *)(uintptr_t)address = (uint16_t)value; break;
+    default: *(volatile uint32_t *)(uintptr_t)address = (uint32_t)value; break;
+    }
+}
+
+#endif /* ZENO_BOARD_REGISTERS */
+#else /* ZENO_BOARD */
+
+#define ZENO_REGISTERS 256
+
+static int64_t zeno_register_at[ZENO_REGISTERS];
+static int64_t zeno_register_holds[ZENO_REGISTERS];
+static int zeno_register_count = 0;
+
+static int64_t zeno_register_read(int64_t address, int bits) {
+    (void)bits;
+    for (int i = 0; i < zeno_register_count; i++) {
+        if (zeno_register_at[i] == address) return zeno_register_holds[i];
+    }
+    return 0;
+}
+
+static void zeno_register_write(int64_t address, int bits, int64_t value) {
+    int i = 0;
+    while (i < zeno_register_count && zeno_register_at[i] != address) i++;
+    if (i == zeno_register_count) {
+        if (i == ZENO_REGISTERS) {
+            fflush(stdout);
+            fprintf(stderr, "error: the simulated board remembers %d registers, and this is one more\n", ZENO_REGISTERS);
+            exit(1);
+        }
+        zeno_register_at[i] = address;
+        zeno_register_count++;
+    }
+    zeno_register_holds[i] = value;
+    /* Every write is printed, also one that changes nothing: on real
+     * hardware a write is an event, whatever was there before. */
+    printf("register 0x%08" PRIx64 " = 0x%0*" PRIx64 "\n", (uint64_t)address, bits / 4, (uint64_t)value);
+}
+
+#endif /* ZENO_BOARD */
+
+/* A register as `print` shows it. */
+static const char *zeno_str_register(int64_t address) {
+    char buffer[40];
+    int length = snprintf(buffer, sizeof buffer, "Register(0x%08" PRIx64 ")", (uint64_t)address);
+    return zeno_copy(buffer, (size_t)length);
+}
+
+/* ------------------------------------------------------------ Manual memory
+ *
+ * `allocate` and `free`, for the lines inside `unsafe { }`. See
+ * docs/unsafe.md.
+ *
+ * `allocate(u8, 16)` gives sixteen bytes, all zero. They come from the
+ * heap, and the collector never looks at them: the program said it would
+ * free them itself. Where there is no collector there is no heap either,
+ * so they come from the pool, like everything else.
+ *
+ * Nothing here checks how the memory is used. A pointer in a compiled
+ * program is an address and nothing more, as in C. `zeno run` is where a
+ * read past the end or a use after `free` is caught. */
+static void *zeno_allocate(int64_t count, size_t size, int line, int col) {
+    if (count < 1) {
+        zeno_bug(zeno_join(2, "`allocate` needs at least one item, and this asks for ", zeno_str_int(count)), line, col);
+    }
+#ifdef ZENO_NO_COLLECTOR
+    return zeno_alloc((size_t)count * size);
+#else /* ZENO_NO_COLLECTOR */
+    void *memory = calloc((size_t)count, size);
+    if (memory == NULL) zeno_bug("there is no memory left for this `allocate`", line, col);
+    zeno_by_hand_made++;
+    return memory;
+#endif /* ZENO_NO_COLLECTOR */
+}
+
+/* The other half: `free` gives the memory back, to the heap or the pool. */
+static void zeno_release(void *memory) {
+#ifdef ZENO_NO_COLLECTOR
+    zeno_free(memory);
+#else /* ZENO_NO_COLLECTOR */
+    if (memory != NULL) zeno_by_hand_freed++;
+    free(memory);
+#endif /* ZENO_NO_COLLECTOR */
+}
 
 /* `pin(7)`: the pin with that number, if the board has one. */
 static int64_t zeno_pin(int64_t number, int line, int col) {

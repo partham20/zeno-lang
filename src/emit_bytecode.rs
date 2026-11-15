@@ -585,6 +585,7 @@ impl Compiler {
                     None => self.patch(to_else),
                 }
             }
+            StmtKind::Unsafe(body) => self.scoped(body, span),
             StmtKind::While { condition, body } => {
                 let start = self.f().code.len();
                 self.expr(condition);
@@ -1261,6 +1262,7 @@ impl Names {
                     self.block(else_block);
                 }
             }
+            StmtKind::Unsafe(body) => self.block(body),
             StmtKind::While { condition, body } => {
                 self.expr(condition);
                 self.block(body);

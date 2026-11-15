@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::builtins;
+use crate::checker::Pointee;
 use crate::error::Error;
 use crate::token::Span;
 use crate::units;
@@ -190,6 +191,13 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         (Some(a), Some(b)) => Some((a, b)),
         _ => None,
     };
+
+    // `p + 4`, `p - 1`: the same block, so many items further on or
+    // back. Nothing is read, so nothing is checked until it is.
+    if let (Add | Sub, Value::Pointer(memory, at), Int(n)) = (op, &left, &right) {
+        let n = if op == Add { *n } else { n.wrapping_neg() };
+        return Ok(Value::Pointer(memory.clone(), at.wrapping_add(n)));
+    }
 
     match op {
         Add => match (&left, &right) {
@@ -390,8 +398,46 @@ pub fn item(object: &Value, index: &Value, span: Span) -> Result {
             let i = position(index, chars.len(), "str", span)?;
             Ok(Value::str(chars[i].to_string()))
         }
+        Value::Pointer(memory, at) => {
+            let i = pointed_at(memory, *at, index, "reads", span)?;
+            Ok(memory.items.borrow()[i].clone())
+        }
         other => fatal(format!("cannot take an item from {}", other.type_name()), span),
     }
+}
+
+/// Which item of its block `pointer[index]` means.
+///
+/// This is the difference between `zeno run` and a compiled program. A
+/// compiled program has an address and nothing else, so it reads or
+/// writes whatever is there. `zeno run` knows the block, and stops with
+/// the reason.
+fn pointed_at(memory: &Memory, at: i64, index: &Value, does: &str, span: Span) -> Result<usize> {
+    let Value::Int(index) = index else {
+        return fatal(format!("an index must be an int, but this is {}", index.type_name()), span);
+    };
+    if memory.freed.get() {
+        return fatal(
+            format!(
+                "this {does} memory that was freed. `zeno run` checks every use of a pointer. \
+                 A compiled program does not: it {does} whatever is there now, which may be somebody else's"
+            ),
+            span,
+        );
+    }
+    let len = memory.items.borrow().len() as i64;
+    let item = at.wrapping_add(*index);
+    if !(0..len).contains(&item) {
+        return fatal(
+            format!(
+                "this {does} item {item} of a block that has {len} (0 to {}). `zeno run` checks every use of \
+                 a pointer. A compiled program does not: it {does} whatever is beside the block",
+                len - 1
+            ),
+            span,
+        );
+    }
+    Ok(item as usize)
 }
 
 /// `object[index] = value`
@@ -401,6 +447,25 @@ pub fn set_item(object: Value, index: &Value, value: Value, span: Span) -> Resul
             let len = items.borrow().len();
             let i = position(index, len, "list", span)?;
             items.borrow_mut()[i] = value;
+            Ok(())
+        }
+        Value::Pointer(memory, at) => {
+            let i = pointed_at(&memory, at, index, "writes over", span)?;
+            // The checker lets only the right kind of number through.
+            // Where it could not know, the value is checked here.
+            let value = match (memory.pointee, value) {
+                (Pointee::Float, Value::Int(n)) => Value::Float(n as f64),
+                (Pointee::Float, value @ Value::Float(_)) | (Pointee::Int, value @ Value::Int(_)) => value,
+                (Pointee::Sized(width), Value::Int(n)) if width.holds(n) => Value::Int(n),
+                (Pointee::Sized(width), Value::Int(n)) => return raise("OverflowError", width.does_not_fit(n), span),
+                (pointee, other) => {
+                    return fatal(
+                        format!("this pointer points at {} items, and this is {}", pointee.name(), other.type_name()),
+                        span,
+                    )
+                }
+            };
+            memory.items.borrow_mut()[i] = value;
             Ok(())
         }
         other => fatal(format!("cannot set an item of {}", other.type_name()), span),
@@ -444,6 +509,7 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
         },
         // `led.number`: which pin this is.
         Value::Pin(number) if name == "number" => Ok(Value::Int(*number)),
+        Value::Register(address, _) if name == "address" => Ok(Value::Int(*address)),
         // `u8.wrap`: the conversion that keeps the low bits.
         Value::Builtin(sized) if name == "wrap" && builtins::wrapping(sized).is_some() => {
             Ok(builtins::wrapping(sized).unwrap_or(Value::None))

@@ -22,14 +22,34 @@ pub const PINS: i64 = 64;
 /// makes it the number most people have already met.
 pub const LED: i64 = 13;
 
-/// The level of every pin. All of them start low.
+/// The level of every pin. All of them start low. And what was last
+/// written to each register, by its address. A register nobody has
+/// written to reads as 0.
 pub struct Board {
     levels: [bool; PINS as usize],
+    registers: std::collections::HashMap<i64, i64>,
 }
 
 impl Board {
     pub fn new() -> Board {
-        Board { levels: [false; PINS as usize] }
+        Board { levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
+    }
+
+    /// What the register at `address` holds.
+    pub fn register_read(&self, address: i64) -> i64 {
+        self.registers.get(&address).copied().unwrap_or(0)
+    }
+
+    /// Write to the register at `address`. Gives back the line to print.
+    /// `digits` is how many hex digits the register is wide.
+    ///
+    /// Every write prints, also one that changes nothing. A pin that is
+    /// driven high twice is still high, but on real hardware a write to
+    /// a register is an event: the same byte written twice to a serial
+    /// port is two bytes sent.
+    pub fn register_write(&mut self, address: i64, value: i64, digits: usize) -> String {
+        self.registers.insert(address, value);
+        format!("register 0x{address:08x} = 0x{value:0digits$x}")
     }
 
     /// Is the pin high?

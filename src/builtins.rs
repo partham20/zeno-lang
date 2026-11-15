@@ -4,10 +4,12 @@
 //!
 //! These are written in Rust because they cannot be written in Zeno yet.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::board;
+use crate::checker::Pointee;
 use crate::interpreter::{Env, Scope};
 use crate::ints::{self, Width};
 use crate::token::Span;
@@ -31,6 +33,8 @@ pub fn all() -> Vec<(&'static str, Value)> {
         Builtin { name: "min", call: min },
         Builtin { name: "max", call: max },
         Builtin { name: "sum", call: sum },
+        Builtin { name: "allocate", call: allocate },
+        Builtin { name: "free", call: free },
     ];
 
     let mut all: Vec<(&'static str, Value)> =
@@ -212,6 +216,87 @@ fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 
 // ----------------------------------------------------------------- Sized ints
 
+// ------------------------------------------------------------ Manual memory
+//
+// `allocate` and `free`, for the lines inside `unsafe { }`. See
+// docs/unsafe.md. A compiled program gets real memory. Here a block is a
+// list of values with a note of whether it has been freed, so that a
+// mistake stops the program with its reason instead of damaging something.
+
+/// The most items one block may have here. A compiled program has no
+/// such limit. This one keeps a slip such as `allocate(u8, 1 << 40)`
+/// from taking the whole computer along.
+const MOST_ITEMS: i64 = 1 << 24;
+
+/// The type a built-in such as `u8` or `float` names, where one is
+/// written as the first argument of `allocate` or `register`.
+fn named_type(name: &str, value: &Value, span: Span) -> Result<Pointee> {
+    match value {
+        Value::Builtin(builtin) if Pointee::named(builtin.name).is_some() => {
+            Ok(Pointee::named(builtin.name).unwrap_or(Pointee::Int))
+        }
+        other => wrong_type(name, "a type first, such as u8", other, span),
+    }
+}
+
+/// `allocate(u8, 16)`: a block of sixteen bytes, all zero.
+fn allocate(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("allocate", &args, 2, 2, span)?;
+    let pointee = named_type("allocate", &args[0], span)?;
+    let count = match &args[1] {
+        Value::Int(count) if (1..=MOST_ITEMS).contains(count) => *count as usize,
+        Value::Int(count) if *count < 1 => {
+            return fatal(format!("`allocate` needs at least one item, and this asks for {count}"), span)
+        }
+        Value::Int(count) => {
+            return fatal(format!("`zeno run` allocates at most {MOST_ITEMS} items at once, and this asks for {count}"), span)
+        }
+        other => return wrong_type("allocate", "how many items, as an int", other, span),
+    };
+    let zero = if pointee == Pointee::Float { Value::Float(0.0) } else { Value::Int(0) };
+    let memory = Memory { pointee, items: RefCell::new(vec![zero; count]), freed: std::cell::Cell::new(false) };
+    Ok(Value::Pointer(Rc::new(memory), 0))
+}
+
+/// `free(p)`: give the block back. Every pointer into it is dead from
+/// here on, and `zeno run` remembers that.
+fn free(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("free", &args, 1, 1, span)?;
+    match &args[0] {
+        Value::Pointer(memory, _) if memory.freed.get() => fatal(
+            "this memory was freed already. `zeno run` checks every `free`. \
+             A compiled program does not: freeing twice damages the memory it hands out next",
+            span,
+        ),
+        Value::Pointer(_, at) if *at != 0 => fatal(
+            format!(
+                "`free` needs the pointer that `allocate` gave, and this one points {at} item(s) further on. \
+                 `zeno run` checks every `free`. A compiled program does not"
+            ),
+            span,
+        ),
+        Value::Pointer(memory, _) => {
+            memory.freed.set(true);
+            memory.items.borrow_mut().clear();
+            Ok(Value::None)
+        }
+        other => wrong_type("free", "a pointer that `allocate` gave", other, span),
+    }
+}
+
+/// `register(u32, 0x4002_0014)`: the register of the board at that address.
+fn register(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("register", &args, 2, 2, span)?;
+    let width = match named_type("register", &args[0], span)? {
+        Pointee::Sized(width) if !width.signed => width,
+        _ => return fatal("a register is a u8, a u16 or a u32", span),
+    };
+    match &args[1] {
+        Value::Int(address) => Ok(Value::Register(*address, width)),
+        other => wrong_type("register", "an address, as an int", other, span),
+    }
+}
+
 // A sized whole number is an ordinary `Value::Int` that is known to be in
 // range: nothing about it is different once it exists. So all the work is
 // in the two ways of making one.
@@ -279,12 +364,14 @@ const STR_METHODS: &[&str] =
     &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
 const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
+const REGISTER_METHODS: &[&str] = &["read", "write"];
 
 pub fn has_method(receiver: &Value, name: &str) -> bool {
     match receiver {
         Value::Str(_) => STR_METHODS.contains(&name),
         Value::List(_) => LIST_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
+        Value::Register(..) => REGISTER_METHODS.contains(&name),
         _ => false,
     }
 }
@@ -420,6 +507,26 @@ pub fn call_method(
                 _ => fatal(format!("a pin has no method `{name}`"), span),
             }
         }
+        // A register of the simulated board holds what was last written
+        // to it, and the board prints a line when that changes.
+        Value::Register(address, width) => match name {
+            "read" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(Value::Int(machine.board().register_read(*address)))
+            }
+            "write" => {
+                arity(name, &args, 1, 1, span)?;
+                let value = match &args[0] {
+                    Value::Int(value) if width.holds(*value) => *value,
+                    Value::Int(value) => return raise("OverflowError", width.does_not_fit(value), span),
+                    other => return wrong_type("write", "a whole number", other, span),
+                };
+                let line = machine.board().register_write(*address, value, (width.bits / 4) as usize);
+                machine.write_line(&line);
+                Ok(Value::None)
+            }
+            _ => fatal(format!("a register has no method `{name}`"), span),
+        },
         other => fatal(format!("{} has no method `{name}`", other.type_name()), span),
     }
 }
@@ -449,7 +556,11 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
         ),
         "board" => (
             "board",
-            vec![("led", Value::Pin(board::LED)), ("pin", Value::Builtin(Builtin { name: "pin", call: pin }))],
+            vec![
+                ("led", Value::Pin(board::LED)),
+                ("pin", Value::Builtin(Builtin { name: "pin", call: pin })),
+                ("register", Value::Builtin(Builtin { name: "register", call: register })),
+            ],
         ),
         _ => return None,
     };
