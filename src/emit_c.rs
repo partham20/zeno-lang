@@ -9412,6 +9412,46 @@ print(drain(queue))
         no_collector_as_interpreter("methods-take-out", METHODS_TAKE_OUT);
     }
 
+    /// A `var` that starts with a function of the program and is given
+    /// others: by name, and one that keeps a number.
+    pub(crate) const VAR_FUNCTION: &str = r##"function double(n: int) -> int { return n * 2 }
+function triple(n: int) -> int { return n * 3 }
+function offset_by(k: int) -> function(int) -> int {
+    return function(n: int) -> int { return n + k }
+}
+function total(xs: list[int]) -> int {
+    var sum = 0
+    for x in xs { sum += x }
+    return sum
+}
+function first(xs: list[int]) -> int { return xs[0] }
+
+var f = double
+print(f(2))
+f = triple
+print(f(2))
+f = offset_by(100)
+print(f(2))
+f = double
+print(f(5))
+
+var pick = total
+let data = [4, 5, 6]
+print(pick(data))
+pick = first
+print(pick(data))
+
+let fixed = double
+let again = fixed
+print(fixed(1), again(1))
+"##;
+
+    #[test]
+    fn a_var_that_holds_a_function_can_be_given_another() {
+        same_as_interpreter("var-function", VAR_FUNCTION);
+        no_collector_as_interpreter("var-function", VAR_FUNCTION);
+    }
+
     #[test]
     fn what_may_be_none_can_have_one_owner_in_every_build() {
         // With a collector, run before every allocation: the owner frees

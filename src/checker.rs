@@ -2719,6 +2719,21 @@ impl Checker {
         // looked at once: one that names an owner gives its value away.
         let item_by_item = matches!(value.kind, ExprKind::List(_)) && wanted_item.is_some();
         let given = if item_by_item { Ty::Invalid } else { self.take(value, env) };
+        // `var f = double`: a `var` is there to be given other values, so
+        // it gets the type of the function, `function(int) -> int`, and
+        // not "the function `double`", which a `let` gets
+        // (decision 5.19l).
+        let wanted = match (wanted, &given) {
+            (None, Ty::Function(function)) if mutable && function.self_type.is_none() && !function.decl.name.is_empty() => {
+                let signature = self.signature(function);
+                Some(Ty::Callable(Rc::new(CallableType {
+                    params: signature.params.iter().map(|slot| slot.ty.clone()).collect(),
+                    returns: signature.returns.clone(),
+                    owned: self.one_owner,
+                })))
+            }
+            (wanted, _) => wanted,
+        };
         let ty = match wanted {
             Some(wanted) => {
                 let wanted_item = wanted_item.as_ref();
@@ -7303,11 +7318,14 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "this item is an owned function(int) -> int, which has one owner: the list. `[ ]` only looks at it. \
              Use it where it is, pass it to a parameter that looks, or take it out with `pop()`"
         );
+// A `var` that is given a function of the program can be given
+        // another: it has the function's type. A `let` holds the one.
+        ok("var f = double\nf = make_adder(1)\nf = double\nprint(f(1))");
+        shared("var f = double\nf = make_adder(1)\nf = double\nprint(f(1))");
         assert_eq!(
-            error("var f = double\nf = make_adder(1)"),
-            "the new value should be a function, but this is function(int) -> int. A variable that was given a \
-             function of the program and no type holds that one function only. Write its type to let it hold \
-             others, as in `var f: function(int) -> int = double`"
+            error("var f = double\nlet g = f\nprint(f(1))"),
+            "`f` was given away on line 12 and holds nothing now. Use it before it goes, or give it only to what looks: \
+             a parameter without `take`"
         );
 
         // A function that uses a list or an object from outside looks
