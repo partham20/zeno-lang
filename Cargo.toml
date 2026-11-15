@@ -9,3 +9,8 @@ name = "zeno"
 path = "src/main.rs"
 
 [dependencies]
+
+# A released `zeno` carries no table of names for a debugger, which
+# makes the file about a third smaller.
+[profile.release]
+strip = true

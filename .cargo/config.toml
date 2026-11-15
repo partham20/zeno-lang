@@ -1,0 +1,30 @@
+# How `zeno` itself is built for each kind of machine it is released for
+# (docs/release.md). Building it for the machine you are on needs none of
+# this: `cargo build --release` is enough.
+
+# The Linux builds are linked against musl, a C library that is put into
+# the program, so one file runs on every Linux whatever it has installed.
+# Linking for another processor needs a linker that knows that processor.
+# `rust-lld` comes with Rust and knows them all.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.i686-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+
+[target.arm-unknown-linux-musleabihf]
+linker = "rust-lld"
+
+# On Windows the C library is put into the program too, so `zeno.exe`
+# needs nothing installed beside it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

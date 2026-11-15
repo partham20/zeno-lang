@@ -1,0 +1,150 @@
+# Builds `zeno` for every kind of machine it is released for, checks each
+# build, and makes the release. docs/release.md walks through it.
+#
+# It runs when a tag such as `v0.1.0` is pushed:
+#
+#     git tag v0.1.0
+#     git push origin v0.1.0
+#
+# It can also be started by hand from the Actions page. Then it builds
+# and checks everything and releases nothing, which is the way to try a
+# change to this file.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One machine that fails does not stop the others, so that one run
+      # says everything that is wrong.
+      fail-fast: false
+      matrix:
+        include:
+          # `with` is the program that runs the build where the machine
+          # doing the building has another processor: an emulator. `none`
+          # says the build is not run at all.
+          #
+          # `tests` is `must` where the whole test suite has to pass
+          # before anything is released, and `try` where it is run to
+          # see what it says. `compiled: try` builds an example with
+          # `zeno build` and runs it, also only to see.
+          - { name: linux-x86_64,   target: x86_64-unknown-linux-musl,      os: ubuntu-latest,  tests: must, compiled: must }
+          - { name: linux-arm64,    target: aarch64-unknown-linux-musl,     os: ubuntu-latest,  with: qemu-aarch64-static }
+          - { name: linux-x86,      target: i686-unknown-linux-musl,        os: ubuntu-latest }
+          - { name: linux-armv7,    target: armv7-unknown-linux-musleabihf, os: ubuntu-latest,  with: qemu-arm-static }
+          - { name: linux-armv6,    target: arm-unknown-linux-musleabihf,   os: ubuntu-latest,  with: qemu-arm-static -cpu arm1176 }
+          - { name: macos-arm64,    target: aarch64-apple-darwin,           os: macos-latest,   tests: try, compiled: must }
+          - { name: macos-x86_64,   target: x86_64-apple-darwin,            os: macos-latest }
+          - { name: windows-x86_64, target: x86_64-pc-windows-msvc,         os: windows-latest, tests: try, compiled: try }
+          - { name: windows-x86,    target: i686-pc-windows-msvc,           os: windows-latest }
+          - { name: windows-arm64,  target: aarch64-pc-windows-msvc,        os: windows-latest, with: none }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag names the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag is $GITHUB_REF_NAME and Cargo.toml says $version"
+            exit 1
+          fi
+
+      - name: The whole test suite
+        if: matrix.tests
+        continue-on-error: ${{ matrix.tests == 'try' }}
+        run: cargo test
+
+      - name: Build
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: An emulator, to run a build for another processor
+        if: startsWith(matrix.with, 'qemu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+
+      - name: Check the build
+        if: matrix.with != 'none'
+        run: tools/release-check.sh target/${{ matrix.target }}/release/zeno "${{ matrix.with }}"
+
+      - name: A compiled program prints what `zeno run` prints
+        if: matrix.compiled
+        continue-on-error: ${{ matrix.compiled == 'try' }}
+        run: |
+          zeno=$PWD/target/${{ matrix.target }}/release/zeno
+          # Windows has no `cc`. Its C compiler here is gcc.
+          if [ "$RUNNER_OS" = Windows ]; then export CC=gcc; fi
+          mkdir compiled
+          cd compiled
+          for example in shapes sensor sentence; do
+            "$zeno" run ../examples/$example.zeno > ran.txt
+            "$zeno" build ../examples/$example.zeno
+            ./$example > built.txt
+            diff ran.txt built.txt
+            "$zeno" build --llvm ../examples/$example.zeno
+            ./$example > built.txt
+            diff ran.txt built.txt
+          done
+
+      - name: Pack
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          folder=zeno-$version-${{ matrix.name }}
+          mkdir "$folder"
+          cp -r README.md docs examples editors "$folder"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/${{ matrix.target }}/release/zeno.exe "$folder"
+            7z a "$folder.zip" "$folder"
+          else
+            cp target/${{ matrix.target }}/release/zeno "$folder"
+            tar -czf "$folder.tar.gz" "$folder"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            zeno-*.tar.gz
+            zeno-*.zip
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packed
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          cd packed
+          # One line for each file, to check a download against with
+          # `sha256sum --check`.
+          sha256sum zeno-* > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Zeno $version" \
+            --notes-file "../docs/releases/$version.md" zeno-* SHA256SUMS.txt
