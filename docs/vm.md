@@ -153,17 +153,16 @@ while n > 0 {
 0001    2  GetLocal     0          ; n
 0002    |  Const        1          ; 0
 0003    |  Binary       >
-0004    |  JumpIfFalse  11
-0005    3  Const        2          ; 1
-0006    |  GetLocal     0          ; n
-0007    |  Swap
-0008    |  Binary       -
-0009    |  SetLocal     0          ; n
-0010    2  Jump         1
-0011    |  Const        3          ; none
+0004    |  JumpIfFalse  10
+0005    3  GetLocal     0          ; n
+0006    |  Const        2          ; 1
+0007    |  Binary       -
+0008    |  SetLocal     0          ; n
+0009    2  Jump         1
+0010    |  Const        3          ; none
 ```
 
-`JumpIfFalse 11` leaves the loop, `Jump 1` goes round again. When the
+`JumpIfFalse 10` leaves the loop, `Jump 1` goes round again. When the
 compiler writes the `JumpIfFalse` it does not know yet where the loop
 ends. It writes `JumpIfFalse 0`, remembers where, and fills the number in
 when it gets there (`patch`).
@@ -173,8 +172,9 @@ Either can be deep inside other blocks, with their variables on the
 stack, so each is preceded by `PopTo`: drop everything above the height
 the loop started at.
 
-(`n -= 1` works out the `1` before it reads `n`, because that is the order
-the interpreter does it in. Hence the `Swap`.)
+(`n -= 1` is `n = n - 1`, instruction for instruction: `n` is read,
+then the `1` is worked out. Every engine does it in that order, which
+is decision 10.25.)
 
 `for` keeps two values on the stack that the program cannot see: a copy
 of the list, and how far along it is. `ForNext` pushes the next item or
@@ -268,13 +268,12 @@ and the inner function goes on using `count` after that.
 
 == function() ==
    captures: count
-0001    4  Const        0          ; 1
-0002    |  GetCaptured  0          ; count
-0003    |  Swap
-0004    |  Binary       +
-0005    |  SetCaptured  0          ; count
-0006    5  GetCaptured  0          ; count
-0007    |  Return
+0001    4  GetCaptured  0          ; count
+0002    |  Const        0          ; 1
+0003    |  Binary       +
+0004    |  SetCaptured  0          ; count
+0005    5  GetCaptured  0          ; count
+0006    |  Return
 ```
 
 So `count` lives in a **cell**: a box of its own, off the stack, that is
@@ -474,10 +473,10 @@ cannot:
    runs. In `expr`, when both sides of a `Binary` are number constants,
    work it out with `ops::binary` and emit one `Const`. What should
    happen for `1 // 0`?
-3. `x += 1` compiles to `Const, GetLocal, Swap, Binary, SetLocal`. When
-   the value is a constant like `1`, nothing can tell which side was
-   read first. Compile that case as `GetLocal, Const, Binary, SetLocal`
-   and drop the `Swap`. Why is it not safe for `x += f()`?
+3. `x += 1` compiles to `GetLocal, Const, Binary, SetLocal`, the same
+   four instructions as `x = x + 1`. Check it with `zeno bytecode`.
+   Then write `x += f()` where `f` changes `x`, and work out on paper
+   what `x` is afterwards. Decision 10.25 says why `x` is read first.
 4. Add an instruction `AddInt(n)` for "add the small number n to the
    top", and use it for `i + 1`. Time `fib(27)` before and after. Where
    must it give up and call `ops::binary`?

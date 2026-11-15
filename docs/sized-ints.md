@@ -240,15 +240,46 @@ overflow at 255. The one place a number may not fit is the place it is
 stored, and there the program says which it wants: a check, or the low
 bits.
 
-The cost is that `count += 1` does not compile for a `u8`:
+### `count += 1`
 
-```
-error: the new value should be u8, but this is int.
-       Convert it with `u8(...)`, which checks that it fits
+`count += 1` is `count = count + 1`, and the sum is an int, so for a
+long time this did not compile for a `u8`. It does now, and it means
+the checked one of the two (decision 10.27):
+
+```zeno
+var count: u8 = 250
+count += 5                    # count = u8(count + 5): 255
+count += 1                    # OverflowError: 256 does not fit in a u8 (0 to 255)
+count = u8.wrap(count + 1)    # a counter that is meant to go round still says so
 ```
 
-Write `count = u8(count + 1)`, or `u8.wrap(count + 1)` for a counter
-that is meant to go round.
+Rule 2 is untouched: the sum is done on ints. Rule 3 is what stores
+it. So the short line is the safe line, and cutting is still a word
+in the program. Every operator with an `=` form works this way
+(`-=`, `*=`, `//=`, `%=`, `|=`, `<<=` and the rest), on a variable,
+a field and an item of a `list[u8]`. `/=` stays refused, on a `u8` as
+on an `int`, because `/` gives a float.
+
+No engine was taught this. The checker knows that `count` is a `u8`,
+and the interpreter does not: at run time a sized number is an
+ordinary int. So the checker notes where each such statement is
+(`Types::fits`), and `checker::checked` hands the program to
+`Program::with_fits` in `src/ast.rs`, which turns each one into the
+long form, `count = u8(count + 1)`, as a tree: an assignment whose
+value is a call of `u8` on a `+`. Then the program is checked once
+more and run or compiled as if you had written it that way.
+
+```rust
+let sum = ExprKind::Binary { op: operator, left: Box::new(target.clone()), right: Box::new(value) };
+let convert = Expr { kind: ExprKind::Name(width.name.to_string()), span };
+*value = Expr { kind: ExprKind::Call { callee: Box::new(convert), args: vec![sum] }, span };
+*op = None;
+```
+
+(That is the heart of it, with the details taken out.) The place is
+written twice in the long form, so it is read twice. That is safe
+because the place of a `+=` can have no call in it (decision 10.26):
+reading `frame[i]` twice finds the same item both times.
 
 ## One file knows the sizes
 
@@ -560,6 +591,11 @@ the same thing. The new ones:
   small, and the casts are where this page says.
 - `bit_operators_match` and `a_shift_too_far_is_an_error`, from part
   one, checked against Python.
+- `checker::tests::a_sized_number_takes_an_operator_and_an_equals`,
+  `emit_c::tests::compound_assignment_on_sized_numbers_matches` and
+  `with_no_collector_a_sized_number_takes_an_operator_and_an_equals`:
+  `count += 1` in every engine and build, where it fits and where it
+  does not.
 
 ## Things to try
 
@@ -592,7 +628,13 @@ the same thing. The new ones:
    brings the bits that fall off back in at the bottom. You need `<<`,
    `>>`, `|` and one `wrap`. Check it against `0b1000_0001` rotated by
    one.
-10. A big one: make `list[u8]` take one byte an item. The list in
+10. Write `var count: u8 = 250` and `count += 10`, and run it. Then
+    run `zeno bytecode` on the file and find the call of `u8` that
+    you did not write. Which function put it there?
+11. `count += 1` checks. Suppose it cut instead, as in C. Find a
+    program in `examples/` that would change what it prints, and one
+    line in decision 10.27 that says why Zeno did not choose that.
+12. A big one: make `list[u8]` take one byte an item. The list in
     `runtime.c` holds `zeno_slot` items, each eight bytes. What would
     a second list type need from the runtime, and how many functions
     in `emit_c.rs` look inside a list? Count them before you start.

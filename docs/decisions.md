@@ -592,9 +592,11 @@ place it is stored, where the program has to say what it wants. This
 is C's integer promotion, kept, without the silent cut at the end.
 *(Principles 1 and 4.)*
 
-**Cost.** `count += 1` on a `u8` does not compile. The message gives
-the fix: `count = u8(count + 1)`, or `u8.wrap(count + 1)` for a counter
-that is meant to go round.
+**Cost, at first.** `count += 1` on a `u8` did not compile: the sum
+is an int, and an int does not go into a `u8` by itself. Programs ran
+into it at once, and 10.27 took the cost away without changing this
+rule: `count += 1` now means `count = u8(count + 1)`. The sum is still
+an int, and it is checked where it is stored.
 
 ### 2.8b `u8(n)` checks, `u8.wrap(n)` cuts
 
@@ -6112,6 +6114,14 @@ run` and a build go past them.
 program you could have typed. A name that will not do is refused with
 one that will, and is never changed quietly (10.23).
 
+`x += y` means `x = x + y`, for every operator and every type, and it
+means it in the same order in every build (10.25, 10.28). Where that
+reading would do something nobody meant, a call in the place that
+would run twice, the statement is refused and the message says what
+to write (10.26). On a sized number it is the checked conversion, the
+safe one of the two, and cutting stays a word in the program (10.27).
+A format on a quantity never loses the unit (10.29).
+
 A dict holds what a list holds (10.11), so there is one answer to
 "what can I keep in a collection" and not two. The one thing it does
 not hold is `none`, because `get` already means something by it. A
@@ -6957,3 +6967,193 @@ would have two readings, a program called `package` or a package
 with no name. `--lib`, Cargo's word: Zeno has no libraries, it has
 packages. Writing both a `main.zeno` and the named module into every
 new folder: a program would start with a file it does not use.
+
+### 10.25 `x += y` is `x = x + y`: what is there is read first
+
+```zeno
+var count = 1
+
+function bump() -> int {
+    count = 10
+    return 1
+}
+
+count += bump()     # 2
+```
+
+`count` is read, then `bump()` runs, then the two are added and the
+sum is stored. It is the order of `count = count + bump()`, which is
+left to right like every other expression.
+
+**What was wrong.** This program printed 2 when it was built through
+C, and 11 in the interpreter, in the VM and when it was built through
+LLVM: those three worked the value out first and read `count`
+afterwards. No test had a value that changes the place it is added
+to, so the four engines had never been asked. It was found while
+`+=` on a sized number was being made (10.27), and it was mended
+first.
+
+**Why this order.** `x += y` is explained everywhere in Zeno as "`x =
+x + y`" (5.8k), and now it is that, instruction for instruction: the
+VM's code for the two statements is the same four instructions. It
+is also the answer of Python, Java, JavaScript and C#. The other
+order has nothing to explain it by.
+
+**Turned down.** Leaving it to each engine, as C leaves it to each
+compiler: a program must do the same thing however it is run.
+
+### 10.26 The place of a `+=` has no call in it
+
+```zeno
+xs[next()] += 5
+```
+
+```
+error: `+=` reads this place and then writes it, so a call in the
+       place would run twice. Keep what the call gives in a `let`
+       first, and use that name here
+```
+
+```zeno
+let position = next()
+xs[position] += 5
+```
+
+**What was wrong.** `x += y` is `x = x + y`, so `xs[next()] += 5`
+was `xs[next()] = xs[next()] + 5`: two calls. With a `next` that
+counts, it read item 1 and wrote item 2. Every engine did this
+alike, so no test caught it, and nobody who writes that line means
+it.
+
+**Why refuse.** There are two things the line could mean, one call or
+two, and the one that follows from the rule (two) is the one nobody
+wants. A line with two readings is refused, and the message gives the
+line that has one. The `let` is what a compiler would have to add in
+secret to call once. Here it is in the program, where the reader can
+see which value was kept.
+
+**It can be lifted.** If working the place out once turns out to be
+wanted, allowing it later changes no program that is accepted today.
+Keeping the two calls would have been the choice that cannot be
+undone.
+
+**Cost.** `xs[len(xs) - 1] += 1` needs a `let` too, though `len`
+changes nothing. The rule is "no call", with no list of calls that
+are harmless to remember, and a function of the program could never
+be on such a list.
+
+**Turned down.**
+
+| Idea | Why not |
+|---|---|
+| Work the place out once, with a hidden variable (C, Python, Rust) | Right, and four engines each have to do it and be kept alike. The `let` costs one line and is visible |
+| Allow calls that change nothing, such as `len` | A list to learn, and the checker cannot know it of a function the program wrote |
+| Leave it: the rule says two calls | The rule is for reading programs, and this reading is a trap |
+
+### 10.27 `count += 1` on a sized number is `count = u8(count + 1)`
+
+```zeno
+var count: u8 = 250
+count += 5      # 255
+count += 1      # OverflowError: 256 does not fit in a u8 (0 to 255)
+```
+
+The sum is an int, as 2.8a says every sum is. Then it is stored
+through the checked conversion (2.8b): it goes in if it fits, and it
+is an `OverflowError` if it does not. This is so for every operator
+with an `=` form, and for every place a sized number is kept: a
+variable, a field, an item of a `list[u8]`.
+
+```zeno
+flags |= 0x80                       # always fits
+left -= 3                           # an error below 0, for a u8
+count = u8.wrap(count + 1)          # going round is still said in a word
+```
+
+**Why.** 2.8a made the place a number is stored the one place it may
+not fit, "where the program has to say what it wants". `count += 1`
+names the place and what goes into it. The only thing it leaves out
+is whether to check or to cut, and 2.8b already answers that: the
+short spelling is the safe one, and cutting is a word that a reviewer
+can search for. So the shortest spelling of all is the check. A
+counter that passes 255 without anybody deciding it should is a bug
+in most programs, and the ones that mean it say `wrap`.
+
+Before this, the most common thing done to a counter needed the
+longest line, `count = u8(count + 1)`, and the first programs with a
+`u8` in them ran into it.
+
+**`/=` is still refused** on a sized number, as on an `int`: `/`
+gives a float. `//=` is the one that divides whole numbers (10.28).
+
+**How it is built.** The checker is the only stage that knows `count`
+is a `u8`. It notes each such statement, and `checker::checked`
+rewrites it into the long form before anything runs or compiles it
+(`Program::with_fits`). The interpreter, the VM and both compilers
+only ever see `count = u8(count + 1)`, which they could all do
+already, so there is nothing new that four engines must do alike.
+`zeno parse` and `zeno format` show the program as it is written.
+
+**Turned down.**
+
+| Idea | Why not |
+|---|---|
+| `+=` cuts at the size, as in C | `250 + 10` is quietly `4`. That is the bug 2.2 and 2.8a exist to stop |
+| Keep refusing it | It refused the line everybody writes, to protect a choice that 2.8b had already made |
+| A second operator for cutting, such as Zig's `+%=` | New punctuation where a word, `wrap`, is there already |
+| Teach each engine the check | Four pieces of code to keep alike, for what one rewrite says once |
+
+### 10.28 Every operator on two numbers has an `=` form
+
+`+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`,
+`>>=`. Each is `x = x op y`.
+
+`//=`, `%=` and `**=` were missing. `count //= 2` was "expected an
+expression, found `=`", and `/=` on a whole number can never be
+right, because `/` gives a float. Halving an `int` in place had no
+short spelling at all.
+
+**Why.** The rule is now one sentence with no exceptions to remember.
+Whoever knows `//` and `+=` will write `//=` without looking it up,
+and it should work.
+
+**Left out.** `and=` and `or=`: they are words, they work on `bool`,
+and nobody expects them. `=` forms of the comparisons mean nothing.
+
+### 10.29 A format on a quantity is the number's, and the unit stays
+
+```zeno
+let angle = 30.456 deg
+let supply = 3.3 V
+print(f"{angle:.1f}")        # 30.5 deg
+print(f"[{supply:8.2f}]")    # [  3.30 V]
+```
+
+A quantity takes the formats a float takes. The decimals are the
+number's. The unit follows it after a space, as it does whenever a
+quantity is shown. The width counts both, and a quantity lines up on
+the right, as numbers do.
+
+Before, `f"{angle:.1f}"` was refused ("`.1f` needs a number"), and
+the way round it was `f"{angle / 1 deg:.1f} deg"`: the unit taken
+off by hand and written back as text, where nothing checks that the
+two agree.
+
+**Why the unit stays.** A quantity that prints as `30.5` has lost
+the one thing that made it a quantity, at the moment it reaches a
+person. Whoever wants the bare number divides by one of the unit
+(`angle / 1 deg`), which says which unit the number is in.
+
+**Why the width counts the unit.** "At least this many characters"
+should be true of what is printed. With it, a column of quantities
+ends at the same place whatever their units are, when the width is
+enough for the longest.
+
+**Changed with it.** `f"{wait:10}"`, a width and nothing else, was
+already allowed, and laid the quantity out as text, on the left. It
+is on the right now, like `f"{n:10}"` for a number. `x`, `b` and `d`
+are still refused: a quantity is not a whole number.
+
+**Turned down.** Dropping the unit when there is a format. A second
+format for the unit (`{angle:.1f:unit}`): there is nothing to choose
+about a unit except whether it is there, and it always is.

@@ -231,6 +231,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
   [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
+  [`docs/gaps.md`](docs/gaps.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -390,8 +391,15 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       new --package filters` makes a package. Nothing is written
       into a folder that is there.
       See [`docs/new.md`](docs/new.md))
-    - The gaps programs have run into: `+=` on a sized number, and a
-      number of decimals for a quantity (`f"{angle:.1f}"`)
+    - The gaps programs have run into (done: `count += 1` on a `u8`
+      is `count = u8(count + 1)`, the sum checked as it is stored.
+      `f"{angle:.1f}"` is `30.5 deg`: a quantity takes the formats
+      of a float and keeps its unit. `//=`, `%=` and `**=` are
+      there, so every operator has an `=` form. Two mistakes were
+      found and mended on the way: `x += f()` now reads `x` first
+      in every build, and a call in the place of a `+=`, which ran
+      twice, is refused.
+      See [`docs/gaps.md`](docs/gaps.md))
     - A last pass over every decision marked provisional: each one is
       either kept, with the reason, or changed
 

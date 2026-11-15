@@ -296,8 +296,10 @@ There are 377 tests in all.
 
 ## What it does not do
 
-- A quantity cannot take a format: `f"{heading:.1f}"` is refused. Write
-  `f"{heading / 1 deg:.1f} deg"`.
+- A quantity could not take a format when this page was written, and
+  `examples/instruments.zeno` wrote `f"{heading / 1 deg:6.1f} deg"`.
+  It can now: `f"{heading:10.1f}"` prints the same ten characters,
+  number and unit (decision 10.29).
 - `atan2` takes plain numbers, not two lengths or two voltages (6.24).
 - No `hypot`, hyperbolic functions, `gcd`, or random numbers yet (6.21).
 

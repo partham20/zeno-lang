@@ -365,10 +365,14 @@ function that adds up bytes:
 
 ```llvm
 do2:
-  %t3 = getelementptr i8, ptr %arg.bytes, i64 %t1
-  %t4 = load i8, ptr %t3
-  %t5 = zext i8 %t4 to i64
+  %t3 = load i64, ptr %var.total
+  %t4 = getelementptr i8, ptr %arg.bytes, i64 %t1
+  %t5 = load i8, ptr %t4
+  %t6 = zext i8 %t5 to i64
 ```
+
+(The first line is the `total` of `total += bytes[i]`, which is read
+before the byte is.)
 
 The block is a label going in and a label coming out (`unsafe1:` and
 `safe1:`), which changes nothing in the machine code and makes the
