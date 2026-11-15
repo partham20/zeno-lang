@@ -312,6 +312,8 @@ impl Loader<'_> {
         // What each module declares at its top: these are the names
         // another file can ask it for.
         let mut declared: HashMap<String, Vec<String>> = HashMap::new();
+        // And what each keeps to itself with `private`.
+        let mut hidden: HashMap<String, Vec<String>> = HashMap::new();
         let mut cases: HashSet<String> = HashSet::new();
         // The cases of every enum, by the enum's full name.
         let mut enums: HashMap<String, Vec<String>> = HashMap::new();
@@ -328,14 +330,19 @@ impl Loader<'_> {
             if unit.module.is_empty() {
                 continue;
             }
-            let mut names = Vec::new();
+            let private = private_names(&unit.program);
+            let (mut names, mut kept) = (Vec::new(), Vec::new());
             for (name, _, is_case) in declarations(&unit.program) {
                 if is_case {
                     cases.insert(full(&name));
                 }
-                names.push(name);
+                match private.contains(&name) {
+                    true => kept.push(name),
+                    false => names.push(name),
+                }
             }
             declared.insert(unit.module.clone(), names);
+            hidden.insert(unit.module.clone(), kept);
         }
 
         // What the first file declares, and whether each is an enum
@@ -343,12 +350,13 @@ impl Loader<'_> {
         // an accident of spelling: see `Renamer::plain`.
         let first = units[0].as_ref().expect("the first file was read");
         let strict = first.program.strict;
+        let private = first.program.private.clone();
         let first_file: HashMap<String, bool> =
             declarations(&first.program).into_iter().map(|(name, _, is_case)| (name, is_case)).collect();
 
         let mut errors = Vec::new();
         for unit in units.iter_mut().flatten() {
-            let mut renamer = Renamer::new(&unit.module, &declared, &cases, &enums, &first_file);
+            let mut renamer = Renamer::new(&unit.module, &declared, &hidden, &cases, &enums, &first_file);
             renamer.imports(&unit.imports);
             renamer.own(&declarations(&unit.program));
             for statement in &mut unit.program.statements {
@@ -378,7 +386,7 @@ impl Loader<'_> {
                 strict: unit.as_ref().is_some_and(|unit| unit.program.strict),
             })
             .collect();
-        Ok(Program { strict, statements, modules })
+        Ok(Program { strict, statements, private, modules })
     }
 }
 
@@ -624,6 +632,20 @@ fn declarations(program: &Program) -> Vec<(String, Span, bool)> {
     names
 }
 
+/// The names a file keeps to itself: what it declares with `private`,
+/// and the cases of an enum it declares so.
+fn private_names(program: &Program) -> HashSet<String> {
+    let mut names: HashSet<String> = program.private.iter().cloned().collect();
+    for statement in &program.statements {
+        if let StmtKind::Enum(decl) = &statement.kind {
+            if program.private.contains(&decl.name) {
+                names.extend(decl.variants.iter().map(|case| case.name.clone()));
+            }
+        }
+    }
+    names
+}
+
 /// "`area`, `Point` and `origin`".
 fn listed(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
@@ -634,8 +656,15 @@ fn listed(names: &[String]) -> String {
     }
 }
 
-/// The error for a name that a module does not declare.
-fn no_such_name(module: &str, name: &str, names: &[String]) -> String {
+/// The error for a name that a module does not declare, or declares
+/// and keeps to itself.
+fn no_such_name(module: &str, name: &str, names: &[String], hidden: &[String]) -> String {
+    if hidden.iter().any(|kept| kept == name) {
+        return format!(
+            "`{name}` is private in the module `{module}`: only its own file can use it. \
+             To use it from another file, take the word `private` off where it is declared"
+        );
+    }
     match names.is_empty() {
         true => format!("module `{module}` has no `{name}`. Its file declares nothing at the top"),
         false => format!("module `{module}` has no `{name}`. It has {}", listed(names)),
@@ -661,8 +690,10 @@ fn no_such_name(module: &str, name: &str, names: &[String]) -> String {
 struct Renamer<'a> {
     /// The module this file is. Empty for the program's first file.
     module: &'a str,
-    /// What every module declares at its top.
+    /// What every module declares at its top for other files to use.
     declared: &'a HashMap<String, Vec<String>>,
+    /// What every module declares at its top and keeps to itself.
+    hidden: &'a HashMap<String, Vec<String>>,
     /// The full names of the enum cases that modules declare.
     cases: &'a HashSet<String>,
     /// The cases of every enum of the program, by the enum's full name.
@@ -692,6 +723,7 @@ impl<'a> Renamer<'a> {
     fn new(
         module: &'a str,
         declared: &'a HashMap<String, Vec<String>>,
+        hidden: &'a HashMap<String, Vec<String>>,
         cases: &'a HashSet<String>,
         enums: &'a HashMap<String, Vec<String>>,
         first_file: &'a HashMap<String, bool>,
@@ -699,6 +731,7 @@ impl<'a> Renamer<'a> {
         Renamer {
             module,
             declared,
+            hidden,
             cases,
             enums,
             first_file,
@@ -758,7 +791,7 @@ impl<'a> Renamer<'a> {
             }
             for name in &import.names {
                 if !names.contains(name) {
-                    self.error(no_such_name(module, name, names), import.span);
+                    self.error(no_such_name(module, name, names, &self.hidden[global]), import.span);
                     continue;
                 }
                 match self.from.get(name) {
@@ -1125,7 +1158,7 @@ impl<'a> Renamer<'a> {
             Some((global, names)) if names.iter().any(|declared| declared == member) => {
                 *name = format!("{global}.{member}");
             }
-            Some((_, names)) => self.error(no_such_name(module, member, names), span),
+            Some((global, names)) => self.error(no_such_name(module, member, names, &self.hidden[global]), span),
             None => self.error(
                 format!(
                     "this file imports no module `{module}`, so `{name}` means nothing here. \
@@ -1168,7 +1201,7 @@ impl<'a> Renamer<'a> {
                     let names = &self.declared[global];
                     match names.contains(name) {
                         true => expr.kind = ExprKind::Name(format!("{global}.{name}")),
-                        false => self.error(no_such_name(&module, name, names), span),
+                        false => self.error(no_such_name(&module, name, names, &self.hidden[global]), span),
                     }
                     return;
                 } else {
@@ -1784,6 +1817,36 @@ mod tests {
         assert_eq!(tidy("a/../../b"), "../b");
         assert_eq!(tidy("."), "");
         assert_eq!(tidy("/srv/a/.."), "/srv");
+    }
+
+    #[test]
+    fn what_is_private_stays_in_its_file() {
+        let kept = "==> kept.zeno\n\
+            private let limit = 3\n\
+            private function inner() -> int {\n    return limit\n}\n\
+            function outer() -> int {\n    let helper = Helper(inner())\n    let mode = Fast\n    return helper.n\n}\n\
+            private enum Mode {\n    Fast\n    Slow\n}\n\
+            private class Helper {\n    n: int\n}\n";
+        // The file itself uses all of it, and another file uses what is
+        // not private.
+        super::testing::program(&format!("import kept\nprint(kept.outer())\n{kept}"));
+        let private = |name: &str| {
+            format!(
+                "`{name}` is private in the module `kept`: only its own file can use it. \
+                 To use it from another file, take the word `private` off where it is declared"
+            )
+        };
+        assert_eq!(error(&format!("import kept\nprint(kept.inner())\n{kept}")), private("inner"));
+        assert_eq!(error(&format!("import kept\nprint(kept.limit)\n{kept}")), private("limit"));
+        assert_eq!(error(&format!("from kept import outer, inner\n{kept}")), private("inner"));
+        assert_eq!(error(&format!("import kept\nlet h: kept.Helper or none = none\n{kept}")), private("Helper"));
+        // The cases of a private enum are private with it.
+        assert_eq!(error(&format!("import kept\nlet mode = kept.Fast\n{kept}")), private("Fast"));
+        assert_eq!(error(&format!("from kept import Slow\n{kept}")), private("Slow"));
+        // What a module is said to have is what another file can use.
+        assert_eq!(error(&format!("import kept\nprint(kept.other)\n{kept}")), "module `kept` has no `other`. It has `outer`");
+        // Two files can each keep a name to themselves: they never meet.
+        super::testing::program(&format!("import kept\nprivate let limit = 9\nprint(limit + kept.outer())\n{kept}"));
     }
 
     #[test]

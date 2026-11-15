@@ -20,7 +20,7 @@ use crate::token::{Span, Token, TokenKind};
 
 /// Turn the tokens of a whole file into a syntax tree.
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new() };
     let mut statements = Vec::new();
 
     parser.skip_newlines();
@@ -37,7 +37,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
         statements.push(parser.statement()?);
         parser.end_of_statement()?;
     }
-    Ok(Program { strict, statements, modules: Vec::new() })
+    Ok(Program { strict, statements, private: parser.private, modules: Vec::new() })
 }
 
 struct Parser {
@@ -45,6 +45,11 @@ struct Parser {
     tokens: Vec<Token>,
     /// Index of the next unread token.
     pos: usize,
+    /// How many `{ }` blocks of statements are open around here. At the
+    /// top of the file it is 0.
+    depth: usize,
+    /// The names declared with `private` at the top of the file.
+    private: Vec<String>,
 }
 
 impl Parser {
@@ -180,6 +185,38 @@ impl Parser {
             TokenKind::Function if *self.peek_at(1) != TokenKind::LParen => {
                 StmtKind::Function(Arc::new(self.function()?))
             }
+            // `private function helper()`: the declaration after the word
+            // is for this file only. The word is reserved, and stands in
+            // front of a declaration at the top of a file or of a field
+            // or a function in a class (decision 10.1).
+            TokenKind::Private => {
+                self.advance(); // private
+                let what = "`private` goes in front of a declaration: `private function`, `private class`, \
+                            `private enum`, `private let`, `private var` or `private const`";
+                if self.check(TokenKind::Private) {
+                    return self.error(what);
+                }
+                let declared = self.statement()?;
+                let name = match &declared.kind {
+                    StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => name.clone(),
+                    StmtKind::Function(function) => function.name.clone(),
+                    StmtKind::Class(class) => class.name.clone(),
+                    StmtKind::Enum(decl) => decl.name.clone(),
+                    _ => return Err(Error::new(what, span)),
+                };
+                if self.depth > 0 {
+                    return Err(Error::new(
+                        format!(
+                            "`private` is for a declaration at the top of a file, and for a field or a function \
+                             of a class. `{name}` is declared inside a block, and is seen only there as it is. \
+                             Take the word away"
+                        ),
+                        span,
+                    ));
+                }
+                self.private.push(name);
+                declared.kind
+            }
             TokenKind::Class => self.class(false)?,
             // `owned class`. The word is reserved (decision 5.19c): it
             // stands here and in front of a type, and nowhere else.
@@ -294,6 +331,7 @@ impl Parser {
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
+        self.depth += 1;
         let mut statements = Vec::new();
         while !self.check(TokenKind::RBrace) {
             if self.check(TokenKind::Eof) {
@@ -302,6 +340,7 @@ impl Parser {
             statements.push(self.statement()?);
             self.end_of_statement()?;
         }
+        self.depth -= 1;
         self.advance(); // the }
         Ok(statements)
     }
@@ -530,18 +569,27 @@ impl Parser {
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut private = Vec::new();
         while !self.check(TokenKind::RBrace) {
+            // `private items: list[int]`, `private function grow(self)`.
+            let hidden = self.eat(TokenKind::Private);
             if self.check(TokenKind::Function) {
                 methods.push(Arc::new(self.function()?));
+                if hidden {
+                    private.push(methods[methods.len() - 1].name.clone());
+                }
             } else if matches!(self.peek(), TokenKind::Ident(_)) {
                 fields.push(self.field()?);
+                if hidden {
+                    private.push(fields[fields.len() - 1].name.clone());
+                }
             } else {
                 return self.unexpected("a field or a function");
             }
             self.end_of_statement()?;
         }
         self.advance(); // the }
-        Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods }))
+        Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods, private }))
     }
 
     /// `name`, optionally with `: type` and `= default`
@@ -564,6 +612,12 @@ impl Parser {
 
         let mut variants = Vec::new();
         while !self.check(TokenKind::RBrace) {
+            if self.check(TokenKind::Private) {
+                return self.error(
+                    "a case of an enum cannot be private on its own: a `match` on the enum has to name every case. \
+                     Mark the whole enum instead: `private enum`",
+                );
+            }
             let name = self.name("a name for the case")?;
             let mut fields = Vec::new();
             if self.eat(TokenKind::LParen) {
@@ -1121,7 +1175,7 @@ fn embedded_expression(source: &str, span: Span) -> Result<Expr, Error> {
         token.span = span;
     }
 
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new() };
     let value = parser.expression().map_err(in_string)?;
     parser.skip_newlines();
     if !parser.check(TokenKind::Eof) {
@@ -1405,6 +1459,38 @@ mod tests {
             tree(source),
             "class Point\n    field x: float\n    field y: float = 0.0\n    function norm(self) -> float\n        return self.x\n"
         );
+    }
+
+    #[test]
+    fn private_declarations() {
+        // The word stands in front of a declaration at the top of a file.
+        assert_eq!(
+            tree("private let limit = 3\nprivate function helper() { }\nprivate enum Mode {\n    Fast\n}"),
+            "private let limit = 3\nprivate function helper()\nprivate enum Mode\n    Fast\n"
+        );
+        // And in front of a field or a function of a class.
+        assert_eq!(
+            tree("private owned class Box {\n    private value: int\n    size: int\n\n    private function grow(self) { }\n}"),
+            "private owned class Box\n    private field value: int\n    field size: int\n    private function grow(self)\n"
+        );
+        let goes = "`private` goes in front of a declaration: `private function`, `private class`, \
+                    `private enum`, `private let`, `private var` or `private const`";
+        assert_eq!(error("private print(1)"), goes);
+        assert_eq!(error("private import math"), goes);
+        assert_eq!(error("private private let x = 1"), goes);
+        // What a block declares is seen only in the block as it is.
+        assert_eq!(
+            error("function f() {\n    private let x = 1\n}"),
+            "`private` is for a declaration at the top of a file, and for a field or a function of a class. \
+             `x` is declared inside a block, and is seen only there as it is. Take the word away"
+        );
+        assert_eq!(
+            error("enum Mode {\n    private Fast\n}"),
+            "a case of an enum cannot be private on its own: a `match` on the enum has to name every case. \
+             Mark the whole enum instead: `private enum`"
+        );
+        // The word is reserved, so it is never a name.
+        assert_eq!(error("let private = 1"), "expected a name for the variable, found `private`");
     }
 
     #[test]

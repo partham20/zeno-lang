@@ -67,6 +67,8 @@ pub enum TokenKind {
     In,
     While,
     Unsafe,
+    /// `private function helper()`: only the file it is in can use it.
+    Private,
     /// `owned class`, `owned list[int]`: a value with one owner.
     Owned,
     /// `frame: take Frame`: a parameter that takes the value over.
@@ -158,6 +160,7 @@ pub fn keyword(word: &str) -> Option<TokenKind> {
         "in" => In,
         "while" => While,
         "unsafe" => Unsafe,
+        "private" => Private,
         "owned" => Owned,
         "take" => Take,
         "strict" => Strict,
@@ -207,6 +210,7 @@ impl TokenKind {
             In => "in",
             While => "while",
             Unsafe => "unsafe",
+            Private => "private",
             Owned => "owned",
             Take => "take",
             Strict => "strict",

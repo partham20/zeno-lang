@@ -20,6 +20,9 @@ pub struct Program {
     /// every type to be known before the program runs.
     pub strict: bool,
     pub statements: Vec<Stmt>,
+    /// The names the file declares with `private` in front: what it
+    /// declares at its top and keeps to itself.
+    pub private: Vec<String>,
     /// The other files of the program, when it has several: the files it
     /// imports, and the files those import. `modules.rs` fills this in,
     /// and puts their statements in front of this file's.
@@ -126,6 +129,9 @@ pub struct Class {
     pub owned: bool,
     pub fields: Vec<Field>,
     pub methods: Vec<Arc<Function>>,
+    /// The fields and methods with `private` in front: only the file
+    /// the class is written in can use them.
+    pub private: Vec<String>,
 }
 
 impl Function {

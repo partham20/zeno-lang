@@ -12,7 +12,19 @@ pub fn print(program: &Program) -> String {
     if program.strict {
         out.push_str("strict\n");
     }
-    block(&program.statements, 0, &mut out);
+    for statement in &program.statements {
+        let name = match &statement.kind {
+            StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => Some(name),
+            StmtKind::Function(function) => Some(&function.name),
+            StmtKind::Class(class) => Some(&class.name),
+            StmtKind::Enum(decl) => Some(&decl.name),
+            _ => None,
+        };
+        if name.is_some_and(|name| program.private.contains(name)) {
+            out.push_str("private ");
+        }
+        stmt(statement, 0, &mut out);
+    }
     out
 }
 
@@ -48,10 +60,16 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             let owned = if class.owned { "owned " } else { "" };
             line(&format!("{owned}class {}{}", class.name, type_params(&class.type_params)), depth, out);
             for f in &class.fields {
-                line(&format!("field {}", field(f)), depth + 1, out);
+                let private = if class.private.contains(&f.name) { "private " } else { "" };
+                line(&format!("{private}field {}", field(f)), depth + 1, out);
             }
             for method in &class.methods {
-                function(method, depth + 1, out);
+                let mut text = String::new();
+                function(method, depth + 1, &mut text);
+                if class.private.contains(&method.name) {
+                    text.insert_str((depth + 1) * 4, "private ");
+                }
+                out.push_str(&text);
             }
         }
         StmtKind::Enum(e) => {
