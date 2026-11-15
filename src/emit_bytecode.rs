@@ -215,6 +215,7 @@ impl Compiler {
             Op::Append(_) | Op::GetIndex | Op::JumpIfFalse(_) => -1,
             Op::Return | Op::Raise | Op::Reraise => -1,
             Op::List(n) | Op::Text(n) | Op::Object(n) => 1 - n as i64,
+            Op::Dict(n) => 1 - 2 * n as i64,
             Op::Call(n) | Op::CallNamed(n, _) => -(n as i64),
             Op::SetField(_) => -2,
             Op::SetIndex => -3,
@@ -1067,6 +1068,13 @@ impl Compiler {
                 }
                 self.emit(Op::List(items.len() as u32), span);
             }
+            ExprKind::Dict(entries) => {
+                for (key, value) in entries {
+                    self.expr(key);
+                    self.expr(value);
+                }
+                self.emit(Op::Dict(entries.len() as u32), span);
+            }
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 // A `for` loop that adds to a list the program cannot see
                 // until it is complete.
@@ -1322,6 +1330,12 @@ impl Names {
             ExprKind::List(items) => {
                 for item in items {
                     self.expr(item);
+                }
+            }
+            ExprKind::Dict(entries) => {
+                for (key, value) in entries {
+                    self.expr(key);
+                    self.expr(value);
                 }
             }
             ExprKind::ListComp { element, iterable, condition, .. } => {

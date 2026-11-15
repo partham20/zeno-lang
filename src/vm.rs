@@ -345,6 +345,15 @@ impl Vm {
                     let items = self.stack.split_off(first);
                     self.stack.push(Value::list(items));
                 }
+                Op::Dict(n) => {
+                    let first = self.stack.len() - 2 * n as usize;
+                    let mut dict = Dict::default();
+                    let mut pairs = self.stack.split_off(first).into_iter();
+                    while let (Some(key), Some(value)) = (pairs.next(), pairs.next()) {
+                        dict.set(ops::key(&key, span)?, value);
+                    }
+                    self.stack.push(Value::dict(dict));
+                }
                 Op::Append(slot) => {
                     let value = pop!();
                     match &self.stack[base + slot as usize] {

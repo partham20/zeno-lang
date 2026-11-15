@@ -350,6 +350,11 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         In | NotIn => {
             let found = match (&left, &right) {
                 (item, List(items)) => items.borrow().iter().any(|other| equal(item, other)),
+                // `"ann" in ages`: is it one of the keys?
+                (item, Value::Dict(dict)) => match Key::of(item) {
+                    Some(key) => dict.borrow().get(&key).is_some(),
+                    None => return mismatch(),
+                },
                 (Str(part), Str(text)) => text.contains(&**part),
                 _ => return mismatch(),
             };
@@ -363,11 +368,28 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
 
 // ----------------------------------------------------------- Fields and items
 
+/// A value as the key of a dict.
+pub fn key(value: &Value, span: Span) -> Result<Key> {
+    match Key::of(value) {
+        Some(key) => Ok(key),
+        None => fatal(format!("a key of a dict is a str or an int, but this is {}", value.type_name()), span),
+    }
+}
+
+/// The error for a key that is not in the dict.
+pub fn no_key<T>(key: &Value, span: Span) -> Result<T> {
+    raise("KeyError", format!("this dict has no key {}", key.repr()), span)
+}
+
 /// The things a `for` loop or comprehension steps through.
 pub fn items(value: &Value, span: Span) -> Result<Vec<Value>> {
     match value {
         // A copy, so changing the list inside the loop cannot upset the loop.
         Value::List(items) => Ok(items.borrow().clone()),
+        // A dict is gone through by its keys, in the order they were
+        // put in. A copy again: the loop goes through the keys that
+        // were there when it started.
+        Value::Dict(dict) => Ok(dict.borrow().entries().iter().map(|(key, _)| key.clone()).collect()),
         Value::Str(text) => Ok(text.chars().map(|c| Value::str(c.to_string())).collect()),
         other => fatal(format!("cannot loop over {}", other.type_name()), span),
     }
@@ -398,6 +420,10 @@ pub fn item(object: &Value, index: &Value, span: Span) -> Result {
             let i = position(index, chars.len(), "str", span)?;
             Ok(Value::str(chars[i].to_string()))
         }
+        Value::Dict(dict) => match dict.borrow().get(&key(index, span)?) {
+            Some(value) => Ok(value.clone()),
+            None => no_key(index, span),
+        },
         Value::Pointer(memory, at) => {
             let i = pointed_at(memory, *at, index, "reads", span)?;
             Ok(memory.items.borrow()[i].clone())
@@ -447,6 +473,12 @@ pub fn set_item(object: Value, index: &Value, value: Value, span: Span) -> Resul
             let len = items.borrow().len();
             let i = position(index, len, "list", span)?;
             items.borrow_mut()[i] = value;
+            Ok(())
+        }
+        // `ages["ann"] = 31` puts the key in, or gives it a new value.
+        Value::Dict(dict) => {
+            let key = key(index, span)?;
+            dict.borrow_mut().set(key, value);
             Ok(())
         }
         Value::Pointer(memory, at) => {

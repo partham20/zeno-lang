@@ -622,6 +622,17 @@ impl Interpreter {
                 }
                 Ok(Value::list(values))
             }
+            // A key written twice keeps its first place and its last value.
+            ExprKind::Dict(entries) => {
+                let mut dict = Dict::default();
+                for (key, value) in entries {
+                    let at = key.span;
+                    let key = self.eval(key, env)?;
+                    let value = self.eval(value, env)?;
+                    dict.set(ops::key(&key, at)?, value);
+                }
+                Ok(Value::dict(dict))
+            }
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let source = self.eval(iterable, env)?;
                 let mut values = Vec::new();
@@ -1019,6 +1030,49 @@ mod tests {
         // Nothing typed at all: the first `input` is `none` already.
         assert_eq!(output(source), "Name: nobody\ntrue\n");
         assert_eq!(error("input(5)"), "`input` needs a str, but this is an int");
+    }
+
+    #[test]
+    fn a_dict_keeps_one_value_under_each_key() {
+        // Written out, read, stored into. A key that is there keeps its
+        // place; a new one goes at the end.
+        assert_eq!(
+            output("let ages = [\"Ada\": 36, \"Alan\": 41]\nages[\"Grace\"] = 45\nages[\"Ada\"] = 37\nprint(ages, len(ages), ages[\"Alan\"])"),
+            "[\"Ada\": 37, \"Alan\": 41, \"Grace\": 45] 3 41\n"
+        );
+        assert_eq!(output("let empty: dict[int, str] = [:]\nprint(empty, len(empty))\nempty[2] = \"two\"\nprint(empty)"), "[:] 0\n[2: \"two\"]\n");
+        // `in` asks about keys, and a loop is given them in order.
+        assert_eq!(
+            output("let d = [\"b\": 1, \"a\": 2]\nprint(\"a\" in d, \"c\" in d, \"c\" not in d)\nfor k in d {\n print(k, d[k])\n}"),
+            "true false true\nb 1\na 2\n"
+        );
+        // The loop walks the keys as they were when it began.
+        assert_eq!(output("let d = [1: 1]\nfor k in d {\n d[k + 1] = 0\n d[k + 2] = 0\n}\nprint(d)"), "[1: 1, 2: 0, 3: 0]\n");
+        // `get`: `none`, or what the second argument says, for a key
+        // that is not there.
+        assert_eq!(
+            output("let d = [\"a\": 1.5]\nprint(d.get(\"a\"), d.get(\"z\"), d.get(\"z\", 0.0), d.get(\"a\", 0.0))"),
+            "1.5 none 0.0 1.5\n"
+        );
+        assert_eq!(
+            output("let d = [1: true, 2: false, 3: true]\nprint(d.pop(2), d, d.keys(), d.values())\nd.clear()\nprint(d, len(d))"),
+            "false [1: true, 3: true] [1, 3] [true, true]\n[:] 0\n"
+        );
+        // Equal when the same keys have the same values, in any order.
+        assert_eq!(
+            output("let a = [\"x\": 1, \"y\": 2]\nlet b = [\"y\": 2, \"x\": 1]\nprint(a == b, a != b, a == [\"x\": 1], a == [\"x\": 1, \"y\": 3])"),
+            "true false false false\n"
+        );
+        // A dict is shared, like a list: two names for one dict.
+        assert_eq!(output("let a = [\"x\": 1]\nlet b = a\nb[\"y\"] = 2\nprint(a)"), "[\"x\": 1, \"y\": 2]\n");
+        assert_eq!(output("print(str([\"k\": \"v\"]), f\"{[1: 2]}\")"), "[\"k\": \"v\"] [1: 2]\n");
+        // A key that is not there is a KeyError, which can be caught.
+        assert_eq!(error("let d = [\"a\": 1]\nprint(d[\"b\"])"), "uncaught KeyError: this dict has no key \"b\"");
+        assert_eq!(error("let d = [1: 2]\nd.pop(5)"), "uncaught KeyError: this dict has no key 5");
+        assert_eq!(
+            output("let d = [1: 2]\ntry {\n print(d[3])\n} except KeyError as e {\n print(e.kind, e.message)\n}"),
+            "KeyError this dict has no key 3\n"
+        );
     }
 
     #[test]

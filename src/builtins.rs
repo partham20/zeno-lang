@@ -21,8 +21,8 @@ use crate::value::*;
 
 type Result<T = Value> = std::result::Result<T, Control>;
 
-const ERROR_TYPES: &[&str] =
-    &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"];
+pub const ERROR_TYPES: &[&str] =
+    &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
 pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files` and `program`";
@@ -112,7 +112,8 @@ fn len(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     match &args[0] {
         Value::Str(text) => Ok(Value::Int(text.chars().count() as i64)),
         Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
-        other => wrong_type("len", "a str or a list", other, span),
+        Value::Dict(dict) => Ok(Value::Int(dict.borrow().len() as i64)),
+        other => wrong_type("len", "a str, a list or a dict", other, span),
     }
 }
 
@@ -396,6 +397,7 @@ const STR_METHODS: &[&str] =
 const LIST_METHODS: &[&str] = &[
     "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
 ];
+const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -403,6 +405,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
     match receiver {
         Value::Str(_) => STR_METHODS.contains(&name),
         Value::List(_) => LIST_METHODS.contains(&name),
+        Value::Dict(_) => DICT_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         _ => false,
@@ -572,6 +575,39 @@ pub fn call_method(
                 }
             }
             _ => fatal(format!("a str has no method `{name}`"), span),
+        },
+        Value::Dict(dict) => match name {
+            // `get(key)` is the value, or `none` for a key that is not
+            // there. `get(key, 0)` is the value, or the 0.
+            "get" => {
+                arity(name, &args, 1, 2, span)?;
+                let found = dict.borrow().get(&ops::key(&args[0], span)?).cloned();
+                Ok(found.or_else(|| args.get(1).cloned()).unwrap_or(Value::None))
+            }
+            // `pop(key)` takes the key out, and gives its value.
+            "pop" => {
+                arity(name, &args, 1, 1, span)?;
+                let key = ops::key(&args[0], span)?;
+                match dict.borrow_mut().remove(&key) {
+                    Some(value) => Ok(value),
+                    None => ops::no_key(&args[0], span),
+                }
+            }
+            // New lists, in the order the keys were put in.
+            "keys" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(Value::list(dict.borrow().entries().iter().map(|(key, _)| key.clone()).collect()))
+            }
+            "values" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(Value::list(dict.borrow().entries().iter().map(|(_, value)| value.clone()).collect()))
+            }
+            "clear" => {
+                arity(name, &args, 0, 0, span)?;
+                dict.borrow_mut().clear();
+                Ok(Value::None)
+            }
+            _ => fatal(format!("a dict has no method `{name}`"), span),
         },
         Value::List(items) => match name {
             "append" => {

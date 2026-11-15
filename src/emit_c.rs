@@ -539,7 +539,7 @@ impl Drops {
             Kind::Class(name) | Kind::Enum(name) => self.owned.contains(name),
             // An error is a block too, where there is no collector, and
             // so is a function written where a value goes.
-            Kind::List(_) | Kind::Error | Kind::Function(_) => self.nested,
+            Kind::List(_) | Kind::Dict(..) | Kind::Error | Kind::Function(_) => self.nested,
             // What may be `none` is a pointer that may be NULL, and
             // every function that frees does nothing with NULL.
             Kind::Optional(inner) => is_pointer(inner) && self.owns(inner),
@@ -560,6 +560,9 @@ impl Drops {
             // and is left alone.
             Kind::Function(_) => "zeno_closure_drop".to_string(),
             kind if is_text(kind) => "zeno_text_drop".to_string(),
+            // A dict frees its two lists, its index and, with no
+            // collector, its copies of any text.
+            Kind::Dict(..) => "zeno_dict_drop".to_string(),
             Kind::List(item) if self.texts && is_text(item) => "zeno_list_drop_text".to_string(),
             Kind::List(item) if self.owns(item) => {
                 // How many lists deep the items that are not lists lie,
@@ -897,6 +900,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         Kind::Bool => "bool ".to_string(),
         Kind::Str => "const char *".to_string(),
         Kind::List(_) => "zeno_list *".to_string(),
+        Kind::Dict(..) => "zeno_dict *".to_string(),
         Kind::Class(name) | Kind::Enum(name) => format!("z_{} *", ident(name)),
         Kind::Error => "zeno_error *".to_string(),
         Kind::Function(_) => "zeno_closure *".to_string(),
@@ -922,7 +926,14 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
 fn is_pointer(kind: &Kind) -> bool {
     matches!(
         kind,
-        Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_)
+        Kind::Str
+            | Kind::List(_)
+            | Kind::Dict(..)
+            | Kind::Class(_)
+            | Kind::Enum(_)
+            | Kind::Error
+            | Kind::Function(_)
+            | Kind::Pointer(_)
     )
 }
 
@@ -945,6 +956,9 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
         // `[[], [1]]`: the empty list goes along with the other one.
         (empty, Kind::List(_)) if is_empty_list(empty) => Some(b.clone()),
         (Kind::List(_), empty) if is_empty_list(empty) => Some(a.clone()),
+        // `[:]` beside a dict that says what it holds.
+        (empty, Kind::Dict(..)) if is_empty_dict(empty) => Some(b.clone()),
+        (Kind::Dict(..), empty) if is_empty_dict(empty) => Some(a.clone()),
         (Kind::None, Kind::Optional(_)) => Some(b.clone()),
         (Kind::Optional(_), Kind::None) => Some(a.clone()),
         (Kind::None, other) | (other, Kind::None) => Some(Kind::Optional(Box::new(other.clone()))),
@@ -976,6 +990,28 @@ fn holds_pointer(kind: &Kind) -> bool {
 /// The kind of `[]` before the place it arrives at has said what it holds.
 fn is_empty_list(kind: &Kind) -> bool {
     matches!(kind, Kind::List(item) if matches!(**item, Kind::Other(_)))
+}
+
+/// The kind of `[:]` before the place it arrives at has said what it holds.
+fn is_empty_dict(kind: &Kind) -> bool {
+    matches!(kind, Kind::Dict(key, _) if matches!(**key, Kind::Other(_)))
+}
+
+/// What a dict is told about its keys and its values when it is made, so
+/// that the runtime can compare and show them: 's' for text, 'i' for a
+/// whole number, 'f' for a float, 'b' for a bool.
+pub fn dict_kinds(key: &Kind, value: &Kind, span: Span) -> Result<(char, char), Error> {
+    let letter = |kind: &Kind| match kind {
+        Kind::Str => Some('s'),
+        Kind::Int => Some('i'),
+        Kind::Float => Some('f'),
+        Kind::Bool => Some('b'),
+        _ => None,
+    };
+    match (letter(key), letter(value)) {
+        (Some(key @ ('s' | 'i')), Some(value)) => Ok((key, value)),
+        _ => Err(cannot("a dict with these keys and values", span)),
+    }
 }
 
 /// The C return type of a function that gives back a value of this kind.
@@ -1018,6 +1054,7 @@ fn key(kind: &Kind) -> String {
         Kind::None => "none".to_string(),
         Kind::Quantity(unit) => format!("in_{unit}"),
         Kind::List(item) => format!("list_{}", key(item)),
+        Kind::Dict(keys, values) => format!("dict_{}_{}", key(keys), key(values)),
         Kind::Class(name) | Kind::Enum(name) => ident(name),
         Kind::Optional(inner) => format!("opt_{}", key(inner)),
         Kind::Error => "error".to_string(),
@@ -1034,7 +1071,13 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         Kind::Float | Kind::Quantity(_) => "f",
         Kind::Bool => "b",
         Kind::Str => "s",
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_) => "p",
+        Kind::List(_)
+        | Kind::Dict(..)
+        | Kind::Class(_)
+        | Kind::Enum(_)
+        | Kind::Error
+        | Kind::Function(_)
+        | Kind::Pointer(_) => "p",
         Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
         // A number and its flag do not fit in a slot; see `zeno_box_int`.
         Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
@@ -1050,7 +1093,13 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::Bool => format!("{slot}.b"),
         Kind::Str => format!("{slot}.s"),
-        Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_) => {
+        Kind::List(_)
+        | Kind::Dict(..)
+        | Kind::Class(_)
+        | Kind::Enum(_)
+        | Kind::Error
+        | Kind::Function(_)
+        | Kind::Pointer(_) => {
             format!("(({}){slot}.p)", c_type(kind, span)?.trim_end())
         }
         Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
@@ -1912,6 +1961,12 @@ impl Emitter<'_> {
                         value.span,
                     ));
                 }
+                if is_empty_dict(&val.kind) {
+                    return Err(cannot(
+                        "an empty dict with no type beside it. Write `let ages: dict[str, int] = [:]`",
+                        value.span,
+                    ));
+                }
                 let c_type = c_type(&val.kind, value.span)?;
                 if top_level {
                     // A top-level variable is one that functions can see: a
@@ -2422,7 +2477,7 @@ impl Emitter<'_> {
         // Only an error that travels as a value can reach an `except`. A
         // division by zero or a bad index stops a firmware build instead,
         // and an `except` waiting for one would wait for ever.
-        const WHY: &str = "In a firmware build, an error the program raises itself (and `int` or `float` of text) travels as a value and can be caught. A division by zero, a bad index or an overflow stops the program. Test for it before it happens";
+        const WHY: &str = "In a firmware build, an error the program raises itself (and `int` or `float` of text) travels as a value and can be caught. A division by zero, a bad index, a key that is not in a dict or an overflow stops the program. Test for it before it happens";
         if arrived.is_empty() {
             return Err(firmware_cannot(format!("nothing in this `try` can be caught. {WHY}"), span));
         }
@@ -2557,6 +2612,9 @@ impl Emitter<'_> {
             ("str", []) => Kind::Str,
             ("bool", []) => Kind::Bool,
             ("list", [item]) => Kind::List(Box::new(self.kind_of_type(item)?)),
+            ("dict", [key, value]) => {
+                Kind::Dict(Box::new(self.kind_of_type(key)?), Box::new(self.kind_of_type(value)?))
+            }
             (name, []) if self.classes.contains_key(name) => Kind::Class(name.to_string()),
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
@@ -2575,6 +2633,12 @@ impl Emitter<'_> {
         match (&expr.kind, expected) {
             (ExprKind::List(items), Some(kind @ Kind::List(_))) if items.is_empty() => {
                 let mut val = Val::plain("zeno_list_new(0)", kind.clone());
+                val.made = true;
+                self.belongs(val, expr)
+            }
+            (ExprKind::Dict(entries), Some(kind @ Kind::Dict(key, value))) if entries.is_empty() => {
+                let (key, value) = dict_kinds(key, value, expr.span)?;
+                let mut val = Val::plain(format!("zeno_dict_new('{key}', '{value}')"), kind.clone());
                 val.made = true;
                 self.belongs(val, expr)
             }
@@ -2672,6 +2736,15 @@ impl Emitter<'_> {
                 if let Kind::Pointer(pointee) = &object.kind {
                     let val = self.coerce(val, &pointee.kind(), span)?;
                     self.line(format!("{}[{}] = ({}){};", object.code, index.code, pointee.c_type(), val.code));
+                    return Ok(());
+                }
+                // `ages["Ada"] = 36`. With no collector the value is
+                // already a copy that the dict can call its own (`keep`,
+                // above), and the dict frees the one it had.
+                if let Kind::Dict(key, item) = &object.kind {
+                    let val = self.coerce(val, item, span)?;
+                    let (key, slot) = (to_slot(key, &index.code, span)?, to_slot(item, &val.code, span)?);
+                    self.line(format!("zeno_dict_set({}, {key}, {slot});", object.code));
                     return Ok(());
                 }
                 let Kind::List(item) = &object.kind else {
@@ -2947,6 +3020,31 @@ impl Emitter<'_> {
         let list = self.expr(iterable);
         self.walked = None;
         let list = list?;
+        // A loop over a dict walks a list of its keys, made for the loop:
+        //
+        //     zeno_list *t1 = zeno_dict_keys(z_ages);
+        //
+        // A dict that was made right here (`for key in ["a": 1]`) is
+        // nobody's, and has done its work once the keys are out of it.
+        let list = match &list.kind {
+            Kind::Dict(key, _) => {
+                let keys_kind = Kind::List(key.clone());
+                let mut keys = match list.made {
+                    true => {
+                        let dict = self.temp(list, span)?;
+                        let keys = Val::from(format!("zeno_dict_keys({})", dict.code), keys_kind, &[&dict]);
+                        let keys = self.temp(keys, span)?;
+                        self.line(format!("zeno_dict_drop({});", dict.code));
+                        keys
+                    }
+                    false => Val::from(format!("zeno_dict_keys({})", list.code), keys_kind, &[&list]),
+                };
+                keys.made = true;
+                keys.passing = false;
+                keys
+            }
+            _ => list,
+        };
         // A list made right here is nobody else's, so it needs no copy:
         // one written out, or what `split`, `map`, `filter` or `+` gave,
         // or an owned list that a function gave back.
@@ -3260,8 +3358,21 @@ impl Emitter<'_> {
                     val.reads = true;
                     return Ok(val);
                 }
+                // `ages["Ada"]`: the runtime finds the key, or fails
+                // with a KeyError.
+                if let Kind::Dict(key, value) = &list.kind {
+                    let slot = format!(
+                        "zeno_dict_at({}, {}, {})",
+                        list.code,
+                        to_slot(key, &index.code, span)?,
+                        at(span)
+                    );
+                    let mut val = Val::from(from_slot(value, &slot, span)?, (**value).clone(), &[&list, &index]).failing();
+                    val.reads = true;
+                    return Ok(self.lend(val));
+                }
                 let Kind::List(item) = &list.kind else {
-                    return Err(cannot("`[ ]` on anything but a list or a str", span));
+                    return Err(cannot("`[ ]` on anything but a list, a dict or a str", span));
                 };
                 let slot = format!("(*zeno_list_at({}, {}, {}))", list.code, index.code, at(span));
                 let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing();
@@ -3326,6 +3437,41 @@ impl Emitter<'_> {
                 }
                 let parts: Vec<&Val> = vals.iter().collect();
                 let mut val = Val::from(format!("zeno_list_of({})", slots.join(", ")), Kind::List(Box::new(item)), &parts);
+                val.made = true;
+                Ok(val)
+            }
+            // `["Ada": 36, "Alan": 41]`: one call that is handed each key
+            // and then its value, left to right.
+            ExprKind::Dict(entries) => {
+                let exprs: Vec<&Expr> = entries.iter().flat_map(|(key, value)| [key, value]).collect();
+                let mut vals = self.sequence(&exprs)?;
+                if vals.is_empty() {
+                    // `[:]` alone does not say what it will hold. The
+                    // place it arrives at does (`coerce`).
+                    let nothing_yet = || Box::new(Kind::Other("nothing yet".to_string()));
+                    let mut val = Val::plain("zeno_dict_new(0, 0)", Kind::Dict(nothing_yet(), nothing_yet()));
+                    val.made = true;
+                    return Ok(val);
+                }
+                let (key, value) = (vals[0].kind.clone(), vals[1].kind.clone());
+                let (key_letter, value_letter) = dict_kinds(&key, &value, span)?;
+                let mut slots = Vec::new();
+                for (pair, (_, written)) in vals.chunks_mut(2).zip(entries) {
+                    if pair[0].kind != key || pair[1].kind != value {
+                        return Err(cannot("a dict whose keys, or whose values, are not all one type", span));
+                    }
+                    if !self.collector && is_text(&value) && !is_written(written) {
+                        // The dict keeps a copy of its own of each value
+                        // that is text, as a list does of each item.
+                        let from = lent(&pair[1].code).unwrap_or(&pair[1].code).to_string();
+                        pair[1].code = format!("zeno_text_keep({from})");
+                    }
+                    slots.push(to_slot(&key, &pair[0].code, span)?);
+                    slots.push(to_slot(&value, &pair[1].code, span)?);
+                }
+                let parts: Vec<&Val> = vals.iter().collect();
+                let code = format!("zeno_dict_of('{key_letter}', '{value_letter}', {}, {})", entries.len(), slots.join(", "));
+                let mut val = Val::from(code, Kind::Dict(Box::new(key), Box::new(value)), &parts);
                 val.made = true;
                 Ok(val)
             }
@@ -3406,6 +3552,21 @@ impl Emitter<'_> {
                 Kind::List(_) => return Ok(Val { kind: to.clone(), ..val }),
                 Kind::Optional(inner) if matches!(**inner, Kind::List(_)) => val.kind = (**inner).clone(),
                 _ => {}
+            }
+        }
+        // `[:]` becomes a dict of whatever this place holds, and is told so.
+        if is_empty_dict(&val.kind) {
+            let wanted = match to {
+                Kind::Optional(inner) => &**inner,
+                to => to,
+            };
+            if let Kind::Dict(key, value) = wanted {
+                let (key, value) = dict_kinds(key, value, span)?;
+                val.code = format!("zeno_dict_kinds({}, '{key}', '{value}')", val.code);
+                val.kind = wanted.clone();
+                if val.kind == *to {
+                    return Ok(val);
+                }
             }
         }
         let code = match (&val.kind, to) {
@@ -4615,6 +4776,69 @@ impl Emitter<'_> {
                     _ => Err(cannot(format!("the list method `{name}`"), span)),
                 }
             }
+            Kind::Dict(key, value) => {
+                let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+                let vals = self.sequence_after(vec![receiver], &exprs)?;
+                let parts: Vec<&Val> = vals.iter().collect();
+                match (name, vals.as_slice()) {
+                    // `get(key)`: the value, or `none`. The runtime has
+                    // one of these for each kind of value, because a
+                    // number that may be `none` travels with a flag.
+                    ("get", [dict, wanted]) => {
+                        let which = match &*value {
+                            Kind::Int => "int",
+                            Kind::Float => "float",
+                            Kind::Bool => "bool",
+                            Kind::Str => "str",
+                            _ => return Err(cannot("`get` on a dict with these values", span)),
+                        };
+                        let code = format!("zeno_dict_get_{which}({}, {})", dict.code, to_slot(&key, &wanted.code, span)?);
+                        let mut val = Val::from(code, Kind::Optional(value.clone()), &parts);
+                        val.reads = true;
+                        Ok(self.lend(val))
+                    }
+                    // `get(key, instead)`.
+                    ("get", [dict, wanted, instead]) => {
+                        let slot = format!(
+                            "zeno_dict_get({}, {}, {})",
+                            dict.code,
+                            to_slot(&key, &wanted.code, span)?,
+                            to_slot(&value, &instead.code, span)?
+                        );
+                        let mut val = Val::from(from_slot(&value, &slot, span)?, (*value).clone(), &parts);
+                        val.reads = true;
+                        Ok(self.lend(val))
+                    }
+                    ("pop", [dict, wanted]) => {
+                        let slot =
+                            format!("zeno_dict_pop({}, {}, {})", dict.code, to_slot(&key, &wanted.code, span)?, at(span));
+                        let mut code = from_slot(&value, &slot, span)?;
+                        if !self.collector && is_text(&value) {
+                            // The dict is done with it: the statement gets
+                            // it, and the dict's copy is freed.
+                            code = format!("zeno_text_take({code})");
+                        }
+                        let mut val = Val::from(code, (*value).clone(), &parts);
+                        // It changes the dict, which is as visible as a call.
+                        val.fails = true;
+                        val.calls = true;
+                        Ok(val)
+                    }
+                    // A new list each time, which is nobody's yet.
+                    ("keys" | "values", [dict]) => {
+                        let item = if name == "keys" { key } else { value };
+                        let mut val = Val::from(format!("zeno_dict_{name}({})", dict.code), Kind::List(item), &parts);
+                        val.made = true;
+                        val.reads = true;
+                        Ok(val)
+                    }
+                    ("clear", [dict]) => {
+                        let call = format!("zeno_dict_clear({})", dict.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    _ => Err(cannot(format!("the dict method `{name}`"), span)),
+                }
+            }
             _ => Err(cannot(format!("the method `{name}`"), span)),
         }
     }
@@ -4659,7 +4883,7 @@ impl Emitter<'_> {
                     field.reads = true;
                     // A list or an object inside an object that the
                     // statement owns is gone when the statement is.
-                    field.passing = val.passing && matches!(kind, Kind::List(_) | Kind::Class(_));
+                    field.passing = val.passing && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
                     Ok(self.lend(field))
                 }
                 None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
@@ -4680,6 +4904,10 @@ impl Emitter<'_> {
             (item, Kind::List(items)) if item == &**items => {
                 let same = self.eq_adapter(item, span)?;
                 format!("zeno_list_contains({}, {}, {same})", right.code, to_slot(item, &left.code, span)?)
+            }
+            // `"Ada" in ages`: is there such a key?
+            (item, Kind::Dict(key, _)) if item == &**key => {
+                format!("(zeno_dict_find({}, {}) >= 0)", right.code, to_slot(item, &left.code, span)?)
             }
             (Kind::Str, Kind::Str) => format!("(strstr({}, {}) != NULL)", right.code, left.code),
             _ => return Err(cannot("`in` between these two types", span)),
@@ -4711,6 +4939,7 @@ impl Emitter<'_> {
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
+            Kind::Dict(..) => format!("zeno_dict_str({})", val.code),
             Kind::Error => format!("{}->message", val.code),
             Kind::Function(_) => format!("zeno_show_function({})", val.code),
             Kind::Optional(inner) => format!("{}({})", self.optional_text(inner, false, span)?, val.code),
@@ -4744,6 +4973,7 @@ impl Emitter<'_> {
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
+            Kind::Dict(..) => format!("zeno_dict_eq({a}, {b})"),
             Kind::Error => format!("zeno_error_same({a}, {b})"),
             Kind::Optional(inner) => format!("{}({a}, {b})", self.optional_same(inner, span)?),
             Kind::None => "true".to_string(),
@@ -4808,7 +5038,7 @@ impl Emitter<'_> {
                 // If one is a list or an object, and another calls
                 // something that could change it, finish the calls first.
                 let mut vals = vals;
-                if vals.iter().any(|val| matches!(val.kind, Kind::List(_) | Kind::Class(_))) {
+                if vals.iter().any(|val| matches!(val.kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_))) {
                     for val in &mut vals {
                         if val.calls {
                             let taken = std::mem::replace(val, Val::plain("", Kind::None));
@@ -4862,6 +5092,12 @@ impl Emitter<'_> {
                 val if val.kind == Kind::Str => Val::from(format!("zeno_len({})", val.code), Kind::Int, &parts),
                 val if matches!(val.kind, Kind::List(_)) => {
                     let mut len = Val::from(format!("{}->len", val.code), Kind::Int, &parts);
+                    len.reads = true;
+                    len
+                }
+                // A dict has as many entries as its list of keys has items.
+                val if matches!(val.kind, Kind::Dict(..)) => {
+                    let mut len = Val::from(format!("{}->keys->len", val.code), Kind::Int, &parts);
                     len.reads = true;
                     len
                 }
@@ -4975,7 +5211,7 @@ impl Emitter<'_> {
                     let mut piece = Val::from(code, Kind::Str, &[&val]);
                     // Showing a list or an object looks inside it, and a
                     // later call could change what is there.
-                    piece.reads |= matches!(val.kind, Kind::List(_) | Kind::Class(_));
+                    piece.reads |= matches!(val.kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
                     self.settle(&mut pieces, &piece, mark, span)?;
                     pieces.push(piece);
                 }
@@ -5037,6 +5273,7 @@ pub fn is_literal(expr: &Expr) -> bool {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => true,
         // A new empty list for each call, as `zeno run` makes one.
         ExprKind::List(items) => items.is_empty(),
+        ExprKind::Dict(entries) => entries.is_empty(),
         ExprKind::Unit { value, .. } | ExprKind::Unary { op: UnaryOp::Neg, operand: value } => {
             matches!(value.kind, ExprKind::Int(_) | ExprKind::Float(_))
         }
@@ -5057,7 +5294,7 @@ fn is_c_place(code: &str) -> bool {
 
 /// The built-in kinds of error. An object of any class can be raised too.
 pub const ERROR_KINDS: &[&str] =
-    &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"];
+    &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// Find the variables that are given a new value inside a `try` block.
 ///
@@ -5172,6 +5409,12 @@ fn names_in_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
             args.iter().for_each(|arg| each(&arg.value));
         }
         ExprKind::List(items) => items.iter().for_each(each),
+        ExprKind::Dict(entries) => {
+            for (key, value) in entries {
+                each(key);
+                each(value);
+            }
+        }
         ExprKind::ListComp { element, iterable, condition, .. } => {
             each(element);
             each(iterable);
@@ -9854,6 +10097,373 @@ for angle in angles {
         ] {
             same_as_interpreter(name, source);
         }
+    }
+
+    /// A dict: writing one, reading, storing, `in`, `len`, loops, `get`,
+    /// `pop`, `keys`, `values`, `clear`, `==`, and one big enough for its
+    /// index to grow several times.
+    const DICT: &str = r#"let ages = ["Ada": 36, "Alan": 41]
+print(ages)
+print(ages["Ada"], len(ages))
+ages["Grace"] = 45
+ages["Ada"] = 37
+print(ages)
+print("Alan" in ages, "Bob" in ages, "Bob" not in ages)
+for name in ages {
+    print(name, ages[name])
+}
+print(ages.get("Bob"), ages.get("Ada"), ages.get("Bob", 0), ages.get("Grace", 0))
+let gone = ages.pop("Alan")
+print(gone, ages, ages.keys(), ages.values())
+let empty: dict[str, int] = [:]
+print(empty, len(empty), empty == ages)
+let same = ["Grace": 45, "Ada": 37]
+print(same == ages, same != ages)
+ages.clear()
+print(ages, len(ages))
+
+let names: dict[int, str] = [:]
+names[3] = "three"
+names[1] = "one"
+names[3] = "THREE" + "!"
+print(names, names[1], names.get(2), names.get(2, "none there"))
+for n in names {
+    print(n, names[n])
+}
+let flags = ["a": true, "b": false]
+let sizes = ["x": 1.5, "y": 2.0]
+print(flags, sizes, flags["a"], sizes["y"], sizes.get("z"), flags.get("b"))
+
+function count(words: list[str]) -> dict[str, int] {
+    let seen: dict[str, int] = [:]
+    for word in words {
+        seen[word] = seen.get(word, 0) + 1
+    }
+    return seen
+}
+let counts = count("the cat and the hat and the bat".split())
+print(counts)
+var big: dict[int, int] = [:]
+for i in range(200) {
+    big[i * 7] = i
+}
+var total = 0
+for k in big {
+    total += big[k]
+}
+print(len(big), total, big[693], 694 in big)
+for i in range(0, 200, 2) {
+    big.pop(i * 7)
+}
+print(len(big), big.get(7), big.get(14))
+"#;
+
+    /// Dicts and their owners: in a field, given back by a function, lent
+    /// to one, made in the middle of a statement, and one that may be
+    /// `none`.
+    const DICT_OWNERS: &str = r#"class Shop {
+    name: str
+    stock: dict[str, int]
+
+    function add(self, item: str, count: int) {
+        self.stock[item] = self.stock.get(item, 0) + count
+    }
+
+    function total(self) -> int {
+        var sum = 0
+        for item in self.stock {
+            sum += self.stock[item]
+        }
+        return sum
+    }
+}
+
+function make() -> dict[str, str] {
+    let colours = ["sky": "blue", "grass": "green"]
+    return colours
+}
+
+function show(d: dict[str, str]) {
+    for key in d {
+        print(f"{key} is {d[key]}")
+    }
+    print(len(d), d)
+}
+
+function longest(d: dict[str, str]) -> str {
+    var best = ""
+    for key in d {
+        if len(d[key]) > len(best) {
+            best = d[key]
+        }
+    }
+    return best
+}
+
+let shop = Shop("corner", [:])
+shop.add("apple", 3)
+shop.add("pear", 2)
+shop.add("apple", 4)
+print(shop.stock, shop.total(), shop.name)
+
+var colours = make()
+show(colours)
+colours["sea"] = "dark " + colours["sky"]
+colours["sky"] = colours["sky"]
+print(longest(colours), str(colours), f"{colours}")
+let taken = colours.pop("grass")
+print(taken, colours)
+colours = ["one": "1"]
+print(colours)
+show(make())
+for key in make() {
+    print(key)
+}
+for key in ["z": 26, "y": 25] {
+    print(key)
+}
+print(len(["a": 1, "b": 2]), ["a": 1] == ["a": 1], ["a": 1] == ["a": 2], ["a": 1].get("a"))
+var maybe: dict[str, int] or none = none
+print(maybe)
+maybe = ["k": 1]
+if maybe is not none {
+    print(maybe["k"])
+}
+let words = colours.keys()
+let texts = colours.values()
+print(words, texts, words.join("+"))
+let codes = [404: "missing", 200: "fine"]
+colours.clear()
+print(colours)
+print(codes[200])
+print(codes.get(7), 7 in codes)
+"#;
+
+    /// Dicts in a list, a dict that a function takes over, int keys below
+    /// zero, keys with every kind of character in them, and comprehensions.
+    const DICT_SHAPES: &str = r#"let scores: dict[str, int] = [:]
+
+function record(name: str, points: int) {
+    scores[name] = scores.get(name, 0) + points
+}
+
+function first_over(d: dict[str, int], limit: int) -> str or none {
+    for key in d {
+        if d[key] > limit {
+            return key
+        }
+    }
+    return none
+}
+
+function drain(d: take dict[str, int]) -> int {
+    var sum = 0
+    for key in d.keys() {
+        sum += d.pop(key)
+    }
+    return sum
+}
+
+function build(n: int) -> dict[int, str] {
+    let made: dict[int, str] = [:]
+    for i in range(n) {
+        made[i - 2] = f"no. {i}"
+    }
+    return made
+}
+
+record("ann", 5)
+record("bob", 7)
+record("ann", 1)
+print(scores, first_over(scores, 6), first_over(scores, 60))
+
+let rows = [["a": 1], ["b": 2, "c": 3]]
+print(rows, len(rows[1]), rows[1]["c"])
+rows[0]["z"] = 26
+rows.append(["q": 9])
+for row in rows {
+    for key in row {
+        print(key, row[key])
+    }
+}
+let squares = build(5)
+print(squares, squares[-2], squares.get(2), -1 in squares, 5 in squares)
+let total = drain(["x": 1, "y": 2, "z": 3])
+print(total)
+let mine = ["p": 10, "q": 20]
+print(drain(mine))
+let odd = ["": 0, "héllo wörld": 1, "a b": 2, "tab\there": 3]
+print(odd, odd[""], odd["héllo wörld"])
+let a = [1: "x", 2: "y", 3: "z"]
+let b = [3: "z", 1: "x", 2: "y"]
+print(a == b, a != b, a.keys() == b.keys())
+let key = "k" + str(4)
+let dyn = [key: 4.5]
+print(dyn, f"k{2 + 2}" in dyn, dyn[f"k{4}"])
+let doubled = [n * 2 for n in a]
+let labels = [a[n].upper() for n in a if n != 2]
+print(doubled, labels)
+var count = 0
+for word in "to be or not to be".split() {
+    record(word, 1)
+    count += 1
+}
+print(scores, count)
+print(scores.get("zed"))
+"#;
+
+    /// Leaving early with a dict in hand: `return` and `break` inside a
+    /// loop over one, an error raised while one is being filled, a new
+    /// dict given to a variable on every trip, and a function written
+    /// inside the program that changes one.
+    const DICT_EXITS: &str = r#"function fill(d: dict[str, str], n: int) {
+    for i in range(n) {
+        d[f"key{i}"] = f"value {i * i}"
+    }
+}
+
+function find(d: dict[str, str], wanted: str) -> str or none {
+    for key in d {
+        if d[key] == wanted {
+            return key
+        }
+        if key == "key7" {
+            break
+        }
+    }
+    return none
+}
+
+function lookup(d: dict[str, str], key: str) -> str or none {
+    return d.get(key)
+}
+
+function maybe(n: int) -> dict[int, bool] or none {
+    if n < 0 {
+        return none
+    }
+    let made = [n: true]
+    made[n + 1] = false
+    return made
+}
+
+function parse(text: str) -> dict[str, int] raises ValueError {
+    let out: dict[str, int] = [:]
+    for part in text.split(",") {
+        let pair = part.split("=")
+        if len(pair) != 2 {
+            raise ValueError(f"bad part: {part}")
+        }
+        out[pair[0].strip()] = int(pair[1])
+    }
+    return out
+}
+
+let table: dict[str, str] = [:]
+fill(table, 10)
+print(len(table), find(table, "value 9"), find(table, "value 81"), find(table, "nothing"))
+let hit = lookup(table, "key4")
+if hit is not none {
+    print(hit, len(hit))
+}
+print(lookup(table, "key44"))
+let v = table.get("key2")
+if v is not none {
+    print(v.upper())
+}
+var current = ["a": "1"]
+for round in range(3) {
+    current = [f"r{round}": str(round), "same": "x"]
+    current["same"] = current["same"] + str(round)
+}
+print(current)
+let yes = maybe(4)
+let no = maybe(-1)
+print(yes, no, yes == no)
+if yes is not none {
+    print(yes[5], len(yes))
+}
+try {
+    print(parse("a=1, b=22 ,c = 3"))
+    print(parse("a=1,b"))
+} except ValueError as e {
+    print("caught", e.message)
+}
+let owned_one: owned dict[str, int] = ["o": 1]
+owned_one["p"] = 2
+print(owned_one, owned_one.values())
+let counter = ["n": 0]
+let bump = function() {
+    counter["n"] = counter["n"] + 1
+}
+bump()
+bump()
+print(counter)
+let lookups = [table.get(f"key{i}", "?") for i in range(8, 12)]
+print(lookups)
+print(table.get("key99"))
+"#;
+
+    #[test]
+    fn a_dict_is_the_same_in_every_build() {
+        // Each of these also checks that a build with no collector frees
+        // every dict, with its keys and its values: no block is left.
+        no_collector_as_interpreter("dict", DICT);
+        no_collector_as_interpreter("dict-owners", DICT_OWNERS);
+        no_collector_as_interpreter("dict-shapes", DICT_SHAPES);
+        no_collector_as_interpreter("dict-exits", DICT_EXITS);
+        no_collector_as_interpreter("faults", include_str!("../examples/faults.zeno"));
+        // A key that is not there can be caught where errors jump. A
+        // firmware build says that nothing in the `try` can be caught,
+        // and is skipped.
+        same_as_interpreter(
+            "dict-caught",
+            "let colours = [\"sky\": \"blue\"]\nlet codes = [404: \"missing\"]\n\
+             try {\n    print(colours[\"sea\"])\n} except KeyError as e {\n    print(e.kind, e.message)\n}\n\
+             try {\n    print(colours.pop(\"sea\"))\n} except KeyError as e {\n    print(e.message)\n}\n\
+             try {\n    print(codes[500])\n} except Error as e {\n    print(e.message)\n}\n\
+             print(colours, codes)\n",
+        );
+        // Left alone, it stops the program in every build, with the same
+        // words at the same place.
+        for (name, source) in [
+            ("dict-missing", "let ages = [\"Ada\": 36]\nprint(ages[\"Ada\"])\nprint(ages[\"Bob\"])\n"),
+            ("dict-missing-int", "let names = [1: \"one\"]\nlet key = -7\nprint(names[key])\n"),
+            ("dict-missing-pop", "let ages: dict[str, int] = [:]\nprint(len(ages))\nprint(ages.pop(\"\"))\n"),
+        ] {
+            same_as_interpreter(name, source);
+        }
+    }
+
+    #[test]
+    fn the_c_for_a_dict() {
+        let source = "let ages = [\"Ada\": 36, \"Alan\": 41]\nages[\"Grace\"] = 45\n\
+                      print(ages[\"Ada\"], \"Bob\" in ages, len(ages))\nfor name in ages {\n    print(name)\n}\n";
+        let c = compile(source).unwrap();
+        let program = &c[c.rfind("static void zeno_program(void)").expect("the program")..];
+        // The dict is told what its keys and values are: text and ints.
+        assert!(
+            program.contains(
+                "z_ages = zeno_dict_of('s', 'i', 2, (zeno_slot){.s = \"Ada\"}, (zeno_slot){.i = 36}, \
+                 (zeno_slot){.s = \"Alan\"}, (zeno_slot){.i = 41});"
+            ),
+            "{program}"
+        );
+        assert!(program.contains("zeno_dict_set(z_ages, (zeno_slot){.s = \"Grace\"}, (zeno_slot){.i = t1});"), "{program}");
+        // Reading says where in the program it is, for the KeyError.
+        assert!(program.contains("zeno_dict_at(z_ages, (zeno_slot){.s = \"Ada\"}, 3, 7).i"), "{program}");
+        assert!(program.contains("(zeno_dict_find(z_ages, (zeno_slot){.s = \"Bob\"}) >= 0)"), "{program}");
+        assert!(program.contains("z_ages->keys->len"), "{program}");
+        // The loop walks a list of the keys that is its own, and frees it.
+        assert!(program.contains("zeno_list *t2 = zeno_dict_keys(z_ages);"), "{program}");
+        assert!(program.contains("zeno_list_drop(t2);"), "{program}");
+        // With a collector nothing frees the dict. With none, its owner does.
+        assert!(!program.contains("zeno_dict_drop"), "{program}");
+        let c = compile_no_collector(source).unwrap();
+        let program = &c[c.rfind("static void zeno_program(void)").expect("the program")..];
+        // The keys are text, and the list the loop walks has copies of them.
+        assert!(program.contains("    zeno_list_drop_text(t"), "{program}");
+        assert!(program.contains("    zeno_dict_drop(z_ages);\n}"), "{program}");
     }
 
     /// A place for a test's file that no other test uses.

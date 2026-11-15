@@ -1,0 +1,65 @@
+# A dict keeps one value under each key. Here a device has been sending
+# fault codes, and the program counts how often each one came and looks
+# up what it means.
+#
+#     zeno run examples/faults.zeno
+
+# What each code means. The keys are ints and the values are text, so
+# this is a `dict[int, str]`.
+let meanings = [
+    17: "over voltage",
+    23: "over temperature",
+    40: "fan stalled",
+    51: "lost communication",
+]
+
+# The codes, in the order they arrived.
+let arrived = [23, 17, 23, 40, 23, 99, 17, 23]
+
+# How often each code came. It starts empty, and `[:]` alone does not
+# say what will be put in, so the type is written beside the name.
+let seen: dict[int, int] = [:]
+for code in arrived {
+    # `get` with a second argument gives that when the key is not there.
+    seen[code] = seen.get(code, 0) + 1
+}
+
+# A loop over a dict is given its keys, in the order they were put in.
+for code in seen {
+    let meaning = meanings.get(code, "a code nobody wrote down")
+    print(f"{code}: {meaning} (x{seen[code]})")
+}
+
+# Which one came most often?
+var worst = arrived[0]
+for code in seen {
+    if seen[code] > seen[worst] {
+        worst = code
+    }
+}
+print("most often:", meanings[worst])
+
+# `in` asks whether a key is there.
+print(40 in seen, 51 in seen)
+
+# `get` with one argument gives `none` when the key is not there, so the
+# answer is checked before it is used.
+let fan = seen.get(40)
+if fan is not none {
+    print("the fan stalled", fan, "time")
+}
+
+# `pop` takes a key out and gives its value.
+let unknown = seen.pop(99)
+print("left out", unknown, "reading with an unknown code")
+print(seen)
+
+# Text keys: the settings of the device, by name. Storing under a key
+# that is there replaces its value. Storing under a new key adds it.
+let settings = ["mode": "auto", "unit": "celsius"]
+settings["mode"] = "manual"
+settings["limit"] = "85"
+print(settings)
+print(settings.keys())
+print(settings.values())
+print(len(settings))

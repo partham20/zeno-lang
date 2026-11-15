@@ -187,6 +187,12 @@ fn fresh_expr(expr: &mut Expr) {
         }
         ExprKind::Unit { value, .. } => fresh_expr(value),
         ExprKind::List(items) => items.iter_mut().for_each(fresh_expr),
+        ExprKind::Dict(entries) => {
+            for (key, value) in entries {
+                fresh_expr(key);
+                fresh_expr(value);
+            }
+        }
         ExprKind::ListComp { element, iterable, condition, .. } => {
             fresh_expr(element);
             fresh_expr(iterable);
@@ -310,6 +316,8 @@ pub enum ExprKind {
     Unit { value: Box<Expr>, unit: String },
     /// `[1, 2, 3]`
     List(Vec<Expr>),
+    /// `["a": 1, "b": 2]`, and `[:]` for one with nothing in it.
+    Dict(Vec<(Expr, Expr)>),
     /// `[element for variable in iterable if condition]`
     ListComp {
         element: Box<Expr>,

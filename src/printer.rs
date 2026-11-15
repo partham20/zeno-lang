@@ -238,6 +238,11 @@ pub fn expr(e: &Expr) -> String {
         ExprKind::Name(name) => name.clone(),
         ExprKind::Unit { value, unit } => format!("{} {unit}", expr(value)),
         ExprKind::List(items) => format!("[{}]", join(items, expr)),
+        ExprKind::Dict(entries) if entries.is_empty() => "[:]".to_string(),
+        ExprKind::Dict(entries) => {
+            let entries: Vec<String> = entries.iter().map(|(key, value)| format!("{}: {}", expr(key), expr(value))).collect();
+            format!("[{}]", entries.join(", "))
+        }
         ExprKind::ListComp { element, variable, iterable, condition } => {
             let mut text = format!("[{} for {variable} in {}", expr(element), expr(iterable));
             if let Some(condition) = condition {

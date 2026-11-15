@@ -92,6 +92,8 @@ pub enum Op {
     // ------------------------------------------------------ Making values
     /// Pop n values and push a list of them.
     List(u32),
+    /// Pop n keys, each with its value on top of it, and push a dict.
+    Dict(u32),
     /// Pop the top and add it to the end of the list in slot n.
     Append(u32),
     /// Replace the top with its text, as `{value}` in an f-string does.

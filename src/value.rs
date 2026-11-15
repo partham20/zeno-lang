@@ -28,6 +28,8 @@ pub enum Value {
     /// A number with a unit: `500 ms`
     Quantity(f64, Rc<str>),
     List(Rc<RefCell<Vec<Value>>>),
+    /// `["a": 1]`: keys with their values.
+    Dict(Rc<RefCell<Dict>>),
     /// A pin of the board, by its number: `led`, `pin(7)`
     Pin(i64),
     /// A raw pointer: the block that `allocate` made, and how many items
@@ -60,6 +62,84 @@ pub enum Value {
     Error(Rc<ErrorValue>),
 
     Module(Rc<Module>),
+}
+
+/// What a dict holds: each key with its value, in the order the keys
+/// were first put in. That order is what a loop over the dict follows
+/// and what `print` shows, so it has to be the same in every engine,
+/// and "the order they were put in" is the one everybody can predict.
+#[derive(Default)]
+pub struct Dict {
+    entries: Vec<(Value, Value)>,
+    /// Where each key is in `entries`, so that finding one does not
+    /// mean looking at them all.
+    places: HashMap<Key, usize>,
+}
+
+/// What can be a key: text or a whole number.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Key {
+    Int(i64),
+    Str(Rc<str>),
+}
+
+impl Key {
+    /// The key a value is, or `None` for a value that cannot be one.
+    pub fn of(value: &Value) -> Option<Key> {
+        match value {
+            Value::Int(n) => Some(Key::Int(*n)),
+            Value::Str(text) => Some(Key::Str(text.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl Dict {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Every key with its value, in the order the keys were put in.
+    pub fn entries(&self) -> &[(Value, Value)] {
+        &self.entries
+    }
+
+    pub fn get(&self, key: &Key) -> Option<&Value> {
+        self.places.get(key).map(|place| &self.entries[*place].1)
+    }
+
+    /// Put `value` under `key`. A key that is there already keeps its
+    /// place and gets the new value.
+    pub fn set(&mut self, key: Key, value: Value) {
+        match self.places.get(&key) {
+            Some(place) => self.entries[*place].1 = value,
+            None => {
+                let shown = match &key {
+                    Key::Int(n) => Value::Int(*n),
+                    Key::Str(text) => Value::Str(text.clone()),
+                };
+                self.places.insert(key, self.entries.len());
+                self.entries.push((shown, value));
+            }
+        }
+    }
+
+    /// Take a key out, with its value. The ones after it move up.
+    pub fn remove(&mut self, key: &Key) -> Option<Value> {
+        let place = self.places.remove(key)?;
+        let (_, value) = self.entries.remove(place);
+        for other in self.places.values_mut() {
+            if *other > place {
+                *other -= 1;
+            }
+        }
+        Some(value)
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.places.clear();
+    }
 }
 
 /// A block of memory made by `allocate`.
@@ -344,6 +424,10 @@ impl Value {
         Value::List(Rc::new(RefCell::new(items)))
     }
 
+    pub fn dict(dict: Dict) -> Value {
+        Value::Dict(Rc::new(RefCell::new(dict)))
+    }
+
     /// The number inside an int or float, as a float.
     pub fn number(&self) -> Option<f64> {
         match self {
@@ -363,6 +447,7 @@ impl Value {
             Value::None => "none".to_string(),
             Value::Quantity(_, unit) => format!("a quantity in {unit}"),
             Value::List(_) => "a list".to_string(),
+            Value::Dict(_) => "a dict".to_string(),
             Value::Pin(_) => "a pin".to_string(),
             Value::Pointer(..) => "a pointer".to_string(),
             Value::Register(..) => "a register".to_string(),
@@ -412,6 +497,15 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             let (a, b) = (a.borrow(), b.borrow());
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| equal(a, b))
         }
+        // Two dicts are equal when they hold the same keys with the
+        // same values. The order they were put in is not part of it.
+        (Dict(a), Dict(b)) => {
+            let (a, b) = (a.borrow(), b.borrow());
+            a.len() == b.len()
+                && a.entries().iter().all(|(key, value)| {
+                    Key::of(key).and_then(|key| b.get(&key)).is_some_and(|other| equal(value, other))
+                })
+        }
         (Instance(a), Instance(b)) => {
             if !Rc::ptr_eq(&a.class, &b.class) {
                 return false;
@@ -449,6 +543,17 @@ impl fmt::Display for Value {
             Value::List(items) => {
                 let items: Vec<String> = items.borrow().iter().map(Value::repr).collect();
                 write!(f, "[{}]", items.join(", "))
+            }
+            // A dict is shown the way it is written.
+            Value::Dict(dict) if dict.borrow().len() == 0 => write!(f, "[:]"),
+            Value::Dict(dict) => {
+                let entries: Vec<String> = dict
+                    .borrow()
+                    .entries()
+                    .iter()
+                    .map(|(key, value)| format!("{}: {}", key.repr(), value.repr()))
+                    .collect();
+                write!(f, "[{}]", entries.join(", "))
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
             // Where a pointer points is different on every run, so it is

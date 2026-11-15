@@ -255,6 +255,22 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_sort", "declare void @zeno_list_sort(ptr, i32 signext)"),
     ("zeno_list_slice", "declare ptr @zeno_list_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
     ("zeno_list_join", "declare ptr @zeno_list_join(ptr, ptr)"),
+    // Dicts. A key or a value travels as a slot of 64 bits, as an item
+    // of a list does.
+    ("zeno_dict_new", "declare ptr @zeno_dict_new(i32 signext, i32 signext)"),
+    ("zeno_dict_kinds", "declare ptr @zeno_dict_kinds(ptr, i32 signext, i32 signext)"),
+    ("zeno_dict_set", "declare void @zeno_dict_set(ptr, i64, i64)"),
+    ("zeno_dict_at", "declare i64 @zeno_dict_at(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_dict_find", "declare i64 @zeno_dict_find(ptr, i64)"),
+    ("zeno_dict_value", "declare i64 @zeno_dict_value(ptr, i64)"),
+    ("zeno_dict_get", "declare i64 @zeno_dict_get(ptr, i64, i64)"),
+    ("zeno_dict_pop", "declare i64 @zeno_dict_pop(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_dict_keys", "declare ptr @zeno_dict_keys(ptr)"),
+    ("zeno_dict_values", "declare ptr @zeno_dict_values(ptr)"),
+    ("zeno_dict_clear", "declare void @zeno_dict_clear(ptr)"),
+    ("zeno_dict_drop", "declare void @zeno_dict_drop(ptr)"),
+    ("zeno_dict_str", "declare ptr @zeno_dict_str(ptr)"),
+    ("zeno_dict_eq", "declare zeroext i1 @zeno_dict_eq(ptr, ptr)"),
     ("zeno_find", "declare i64 @zeno_find(ptr, ptr)"),
     ("zeno_slice", "declare ptr @zeno_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
     // The `files` module. In a firmware build the four that can fail
@@ -893,6 +909,7 @@ fn described(kind: &Kind) -> String {
         Kind::None => "a value that is nothing".to_string(),
         Kind::Quantity(unit) => format!("a number with a unit ({unit})"),
         Kind::List(_) => "a list".to_string(),
+        Kind::Dict(..) => "a dict".to_string(),
         Kind::Class(name) => format!("an object of the class `{name}`"),
         Kind::Enum(name) => format!("a value of the enum `{name}`"),
         Kind::Optional(_) => "a value that may be `none`".to_string(),
@@ -907,7 +924,14 @@ fn described(kind: &Kind) -> String {
 fn is_pointer(kind: &Kind) -> bool {
     matches!(
         kind,
-        Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) | Kind::Pointer(_)
+        Kind::Str
+            | Kind::List(_)
+            | Kind::Dict(..)
+            | Kind::Class(_)
+            | Kind::Enum(_)
+            | Kind::Error
+            | Kind::Function(_)
+            | Kind::Pointer(_)
     )
 }
 
@@ -933,6 +957,19 @@ fn is_empty_list(kind: &Kind) -> bool {
     matches!(kind, Kind::List(item) if matches!(**item, Kind::Other(_)))
 }
 
+/// The kind of `[:]` before the place it arrives at has said what it holds.
+fn is_empty_dict(kind: &Kind) -> bool {
+    matches!(kind, Kind::Dict(key, _) if matches!(**key, Kind::Other(_)))
+}
+
+/// What a dict is told about its keys and its values when it is made, as
+/// the two numbers the runtime takes: the letters 's', 'i', 'f' and 'b'
+/// (see `emit_c::dict_kinds`).
+fn dict_kinds(key: &Kind, value: &Kind, span: Span) -> Result<String, Error> {
+    let (key, value) = emit_c::dict_kinds(key, value, span)?;
+    Ok(format!("i32 {}, i32 {}", key as u32, value as u32))
+}
+
 /// The one kind that values of kinds `a` and `b` can both be stored as, if
 /// there is one: `int` and `none` meet in `int or none`.
 fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
@@ -941,6 +978,9 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
         // `[[], [1]]`: the empty list goes along with the other one.
         (empty, Kind::List(_)) if is_empty_list(empty) => Some(b.clone()),
         (Kind::List(_), empty) if is_empty_list(empty) => Some(a.clone()),
+        // `[:]` beside a dict that says what it holds.
+        (empty, Kind::Dict(..)) if is_empty_dict(empty) => Some(b.clone()),
+        (Kind::Dict(..), empty) if is_empty_dict(empty) => Some(a.clone()),
         (Kind::None, Kind::Optional(_)) => Some(b.clone()),
         (Kind::Optional(_), Kind::None) => Some(a.clone()),
         (Kind::None, other) | (other, Kind::None) => Some(Kind::Optional(Box::new(other.clone()))),
@@ -966,6 +1006,7 @@ fn key(kind: &Kind) -> String {
         Kind::None => "none".to_string(),
         Kind::Quantity(unit) => format!("in_{unit}"),
         Kind::List(item) => format!("list_{}", key(item)),
+        Kind::Dict(keys, values) => format!("dict_{}_{}", key(keys), key(values)),
         Kind::Class(name) | Kind::Enum(name) => name.clone(),
         Kind::Optional(inner) => format!("opt_{}", key(inner)),
         Kind::Error => "error".to_string(),
@@ -992,7 +1033,9 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         // memory the collector looks after, and are held by address
         // too, because in Zeno they are shared: `let b = a` makes a
         // second name for the same object, not a copy.
-        Kind::Str | Kind::List(_) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => "ptr",
+        Kind::Str | Kind::List(_) | Kind::Dict(..) | Kind::Class(_) | Kind::Enum(_) | Kind::Error | Kind::Function(_) => {
+            "ptr"
+        }
         // An address can already say "nothing": it is null. A number or
         // a bool cannot, so it travels as a pair with a flag in front.
         Kind::Optional(inner) => match &**inner {
@@ -1748,6 +1791,9 @@ impl Emitter<'_> {
             ("str", []) => Kind::Str,
             ("bool", []) => Kind::Bool,
             ("list", [item]) => Kind::List(Box::new(self.kind_of_type(item)?)),
+            ("dict", [key, value]) => {
+                Kind::Dict(Box::new(self.kind_of_type(key)?), Box::new(self.kind_of_type(value)?))
+            }
             (name, []) if self.classes.contains_key(name) => Kind::Class(name.to_string()),
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
@@ -1822,6 +1868,12 @@ impl Emitter<'_> {
                 if is_empty_list(&val.kind) {
                     return Err(cannot(
                         "an empty list with no type beside it. Write `let items: list[int] = []`",
+                        value.span,
+                    ));
+                }
+                if is_empty_dict(&val.kind) {
+                    return Err(cannot(
+                        "an empty dict with no type beside it. Write `let ages: dict[str, int] = [:]`",
                         value.span,
                     ));
                 }
@@ -2146,6 +2198,16 @@ impl Emitter<'_> {
                     self.ins(format!("store {item} {value}, ptr {place}"));
                     return Ok(());
                 }
+                // `ages["Ada"] = 36`. With no collector the value is
+                // already a copy that the dict can call its own (`keep`,
+                // above), and the dict frees the one it had.
+                if let Kind::Dict(_, item) = &object.kind {
+                    let new = self.fit(new, item, span)?;
+                    let key = self.to_slot(&index, span)?;
+                    let slot = self.to_slot(&new, span)?;
+                    self.run("zeno_dict_set", format!("ptr {}, i64 {key}, i64 {slot}", object.code));
+                    return Ok(());
+                }
                 let Kind::List(item) = object.kind.clone() else {
                     return Err(cannot("an assignment to this", target.span));
                 };
@@ -2424,6 +2486,9 @@ impl Emitter<'_> {
             // Text that is kept by copy, and a list of such text, which
             // frees its items as well as itself.
             kind if is_text(kind) => self.run("zeno_text_drop", format!("ptr {value}")),
+            // A dict frees its two lists, its index and, with no
+            // collector, its copies of any text.
+            Kind::Dict(..) => self.run("zeno_dict_drop", format!("ptr {value}")),
             Kind::List(item) if !self.collector && is_text(item) => {
                 self.run("zeno_list_drop_text", format!("ptr {value}"))
             }
@@ -2775,6 +2840,20 @@ impl Emitter<'_> {
                 let list = self.expr(iterable);
                 self.walked = None;
                 let list = list?;
+                // A loop over a dict walks a list of its keys, made for
+                // the loop. A dict that was made right here (`for key in
+                // ["a": 1]`) is nobody's, and has done its work once the
+                // keys are out of it.
+                let list = match &list.kind {
+                    Kind::Dict(key, _) => {
+                        let keys = self.call("ptr", "zeno_dict_keys", format!("ptr {}", list.code));
+                        if list.made {
+                            self.run("zeno_dict_drop", format!("ptr {}", list.code));
+                        }
+                        Val::new(keys, Kind::List(key.clone())).made()
+                    }
+                    _ => list,
+                };
                 // A list made right here is nobody else's, so it needs no
                 // copy: one written out, or what `split`, `map`, `filter`
                 // or `+` gave, or an owned list that a function gave back.
@@ -3326,7 +3405,7 @@ impl Emitter<'_> {
         // Only an error that travels as a value can reach an `except`. A
         // division by zero or a bad index stops a firmware build instead,
         // and an `except` waiting for one would wait for ever.
-        const WHY: &str = "In a firmware build, an error the program raises itself (and `int` or `float` of text) travels as a value and can be caught. A division by zero, a bad index or an overflow stops the program. Test for it before it happens";
+        const WHY: &str = "In a firmware build, an error the program raises itself (and `int` or `float` of text) travels as a value and can be caught. A division by zero, a bad index, a key that is not in a dict or an overflow stops the program. Test for it before it happens";
         if arrived.is_empty() {
             return Err(firmware_cannot(format!("nothing in this `try` can be caught. {WHY}"), span));
         }
@@ -3463,6 +3542,11 @@ impl Emitter<'_> {
                 let val = Val::new(self.call("ptr", "zeno_list_new", "i64 0"), kind.clone()).made();
                 Ok(self.belongs(val, expr))
             }
+            (ExprKind::Dict(entries), Some(kind @ Kind::Dict(key, value))) if entries.is_empty() => {
+                let kinds = dict_kinds(key, value, expr.span)?;
+                let val = Val::new(self.call("ptr", "zeno_dict_new", kinds), kind.clone()).made();
+                Ok(self.belongs(val, expr))
+            }
             _ => self.expr(expr),
         }
     }
@@ -3583,6 +3667,14 @@ impl Emitter<'_> {
             ExprKind::Index { object, index } => {
                 let list = self.expr(object)?;
                 let position = self.expr(index)?;
+                // `ages["Ada"]`: the runtime finds the key and gives its
+                // value, or fails with a KeyError.
+                if let Kind::Dict(_, value) = &list.kind {
+                    let key = self.to_slot(&position, span)?;
+                    let found = self.call("i64", "zeno_dict_at", format!("ptr {}, i64 {key}, {}", list.code, at(span)));
+                    let val = self.from_slot(value, &found, span)?;
+                    return Ok(self.lend(val));
+                }
                 let args = format!("ptr {}, i64 {}, {}", list.code, position.code, at(span));
                 match &list.kind {
                     _ if position.kind != Kind::Int => return Err(cannot("`[ ]` with anything but an int inside", span)),
@@ -3615,6 +3707,7 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::List(items) => self.list(items, span)?.made(),
+            ExprKind::Dict(entries) => self.dict(entries, span)?.made(),
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 self.comprehension(element, variable, iterable, condition.as_deref(), span)?.made()
             }
@@ -3982,6 +4075,13 @@ impl Emitter<'_> {
                 let slot = self.to_slot(&left, span)?;
                 self.call("i1", "zeno_list_contains", format!("ptr {}, i64 {slot}, ptr {same}", right.code))
             }
+            // `"Ada" in ages`: is there such a key? The runtime gives
+            // where it is, or -1.
+            (item, Kind::Dict(key, _)) if item == &**key => {
+                let slot = self.to_slot(&left, span)?;
+                let at = self.call("i64", "zeno_dict_find", format!("ptr {}, i64 {slot}", right.code));
+                self.set(format!("icmp sge i64 {at}, 0"))
+            }
             // `strstr` gives the address where the piece was found, or
             // null.
             (Kind::Str, Kind::Str) => {
@@ -4030,7 +4130,7 @@ impl Emitter<'_> {
                 Some((_, index, kind)) => {
                     // A list or an object inside an object that the
                     // statement owns is gone when the statement is.
-                    let passing = val.passing && matches!(kind, Kind::List(_) | Kind::Class(_));
+                    let passing = val.passing && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
                     let val = Val::new(self.load_field(class, &val.code, index, span)?, kind);
                     Ok(Val { passing, ..self.lend(val) })
                 }
@@ -4151,6 +4251,48 @@ impl Emitter<'_> {
         Ok(Val::new(list, Kind::List(Box::new(item))))
     }
 
+    /// `["Ada": 36, "Alan": 41]`: a new dict, and then one call for each
+    /// entry, left to right.
+    ///
+    /// ```text
+    ///   %t1 = call ptr @zeno_dict_new(i32 115, i32 105)       ; 's' and 'i'
+    ///   %t2 = ptrtoint ptr @.str.1 to i64
+    ///   call void @zeno_dict_set(ptr %t1, i64 %t2, i64 36)
+    /// ```
+    fn dict(&mut self, entries: &[(Expr, Expr)], span: Span) -> Result<Val, Error> {
+        let mut vals = Vec::new();
+        for (key, value) in entries {
+            let key = self.expr(key)?;
+            let value = self.expr(value)?;
+            vals.push((key, value));
+        }
+        let Some((first_key, first_value)) = vals.first() else {
+            // `[:]` alone does not say what it will hold. The place it
+            // arrives at does (`coerce`).
+            let nothing_yet = || Box::new(Kind::Other("nothing yet".to_string()));
+            let dict = self.call("ptr", "zeno_dict_new", "i32 0, i32 0");
+            return Ok(Val::new(dict, Kind::Dict(nothing_yet(), nothing_yet())));
+        };
+        let (key, value) = (first_key.kind.clone(), first_value.kind.clone());
+        let kinds = dict_kinds(&key, &value, span)?;
+        if vals.iter().any(|(a_key, a_value)| a_key.kind != key || a_value.kind != value) {
+            return Err(cannot("a dict whose keys, or whose values, are not all one type", span));
+        }
+        let dict = self.call("ptr", "zeno_dict_new", kinds);
+        for ((a_key, mut a_value), (_, written)) in vals.into_iter().zip(entries) {
+            // The dict keeps a copy of its own of each value that is
+            // text, as a list does of each item. Every value has been
+            // worked out by now, so each is copied from what the
+            // statement holds.
+            a_value.lent = None;
+            let a_value = self.keep(a_value, is_written(written));
+            let key_slot = self.to_slot(&a_key, span)?;
+            let value_slot = self.to_slot(&a_value, span)?;
+            self.run("zeno_dict_set", format!("ptr {dict}, i64 {key_slot}, i64 {value_slot}"));
+        }
+        Ok(Val::new(dict, Kind::Dict(Box::new(key), Box::new(value))))
+    }
+
     /// `[n * n for n in items if n > 0]` is a loop that fills a list.
     fn comprehension(
         &mut self,
@@ -4230,6 +4372,21 @@ impl Emitter<'_> {
                 Kind::List(_) => return Ok(Val { kind: to.clone(), ..val }),
                 Kind::Optional(inner) if matches!(**inner, Kind::List(_)) => val.kind = (**inner).clone(),
                 _ => {}
+            }
+        }
+        // `[:]` becomes a dict of whatever this place holds, and is told so.
+        if is_empty_dict(&val.kind) {
+            let wanted = match to {
+                Kind::Optional(inner) => &**inner,
+                to => to,
+            };
+            if let Kind::Dict(key, value) = wanted {
+                let kinds = dict_kinds(key, value, span)?;
+                self.call("ptr", "zeno_dict_kinds", format!("ptr {}, {kinds}", val.code));
+                val.kind = wanted.clone();
+                if val.kind == *to {
+                    return Ok(val);
+                }
             }
         }
         let code = match (&val.kind, to) {
@@ -4712,6 +4869,12 @@ impl Emitter<'_> {
             ("len", [val]) if matches!(val.kind, Kind::List(_)) => {
                 Val::new(self.set(format!("load i64, ptr {}", val.code)), Kind::Int)
             }
+            // A dict starts with its list of keys, and has as many
+            // entries as that list has items.
+            ("len", [val]) if matches!(val.kind, Kind::Dict(..)) => {
+                let keys = self.set(format!("load ptr, ptr {}", val.code));
+                Val::new(self.set(format!("load i64, ptr {keys}")), Kind::Int)
+            }
             // `char(65)`: the runtime writes the bytes of that character.
             // `input()`, `input("Name: ")`: the runtime reads a line, and
             // gives null, which is `none`, when there are no more.
@@ -5030,6 +5193,73 @@ impl Emitter<'_> {
                     Ok(Val::new(self.call("ptr", "zeno_list_join", join), Kind::Str))
                 }
                 _ => Err(cannot(format!("the list method `{name}` called this way"), span)),
+            },
+            Kind::Dict(key, value) => match (name, args) {
+                // `get(key)`: the value, or `none`. The runtime says
+                // where the key is, or -1, and then gives the value
+                // there (zeros for -1). Text that is not there is null
+                // already. A number or a bool gets its flag here:
+                //
+                //   %t3 = call i64 @zeno_dict_find(ptr %t1, i64 %t2)
+                //   %t4 = call i64 @zeno_dict_value(ptr %t1, i64 %t3)
+                //   %t5 = icmp sge i64 %t3, 0                        ; found?
+                //   %t6 = insertvalue { i1, i64 } undef, i1 %t5, 0
+                //   %t7 = insertvalue { i1, i64 } %t6, i64 %t4, 1
+                ("get", [wanted]) if wanted.name.is_none() => {
+                    let wanted = self.expr(&wanted.value)?;
+                    let slot = self.to_slot(&wanted, span)?;
+                    let at = self.call("i64", "zeno_dict_find", format!("ptr {}, i64 {slot}", receiver.code));
+                    let found = self.call("i64", "zeno_dict_value", format!("ptr {}, i64 {at}", receiver.code));
+                    let inside = self.from_slot(&value, &found, span)?;
+                    let kind = Kind::Optional(value.clone());
+                    if is_pointer(&value) {
+                        return Ok(self.lend(Val::new(inside.code, kind)));
+                    }
+                    let present = self.set(format!("icmp sge i64 {at}, 0"));
+                    let (pair, ty) = (ir_type(&kind, span)?, ir_type(&value, span)?);
+                    let flagged = self.set(format!("insertvalue {pair} undef, i1 {present}, 0"));
+                    let whole = self.set(format!("insertvalue {pair} {flagged}, {ty} {}, 1", inside.code));
+                    Ok(Val::new(whole, kind))
+                }
+                // `get(key, instead)`.
+                ("get", [wanted, instead]) if wanted.name.is_none() && instead.name.is_none() => {
+                    let wanted = self.expr(&wanted.value)?;
+                    let instead = self.expr(&instead.value)?;
+                    let instead = self.fit(instead, &value, span)?;
+                    let slot = self.to_slot(&wanted, span)?;
+                    let other = self.to_slot(&instead, span)?;
+                    let get = format!("ptr {}, i64 {slot}, i64 {other}", receiver.code);
+                    let found = self.call("i64", "zeno_dict_get", get);
+                    let val = self.from_slot(&value, &found, span)?;
+                    Ok(self.lend(val))
+                }
+                ("pop", [wanted]) if wanted.name.is_none() => {
+                    let wanted = self.expr(&wanted.value)?;
+                    let slot = self.to_slot(&wanted, span)?;
+                    let pop = format!("ptr {}, i64 {slot}, {}", receiver.code, at(span));
+                    let found = self.call("i64", "zeno_dict_pop", pop);
+                    let val = self.from_slot(&value, &found, span)?;
+                    if self.collector || !is_text(&value) {
+                        return Ok(val);
+                    }
+                    // The dict is done with it: the statement gets it,
+                    // and the dict's copy is freed.
+                    Ok(Val::new(self.call("ptr", "zeno_text_take", format!("ptr {}", val.code)), val.kind))
+                }
+                // A new list each time, which is nobody's yet.
+                ("keys", []) => {
+                    let keys = self.call("ptr", "zeno_dict_keys", format!("ptr {}", receiver.code));
+                    Ok(Val::new(keys, Kind::List(key.clone())).made())
+                }
+                ("values", []) => {
+                    let values = self.call("ptr", "zeno_dict_values", format!("ptr {}", receiver.code));
+                    Ok(Val::new(values, Kind::List(value.clone())).made())
+                }
+                ("clear", []) => {
+                    self.run("zeno_dict_clear", format!("ptr {}", receiver.code));
+                    Ok(Val::nothing())
+                }
+                _ => Err(cannot(format!("the dict method `{name}` called this way"), span)),
             },
             kind => Err(cannot(format!("the method `{name}` of {}", described(&kind)), span)),
         }
@@ -5752,6 +5982,8 @@ impl Emitter<'_> {
                 let show = self.repr_adapter(item, span)?;
                 self.call("ptr", "zeno_list_str", format!("ptr {}, ptr {show}", val.code))
             }
+            // A dict knows what it holds, and shows itself.
+            Kind::Dict(..) => self.call("ptr", "zeno_dict_str", format!("ptr {}", val.code)),
             Kind::Error => {
                 let at = self.field_at(ERROR, &val.code, 1);
                 self.set(format!("load ptr, ptr {at}"))
@@ -5808,6 +6040,7 @@ impl Emitter<'_> {
                 let same = self.eq_adapter(item, span)?;
                 self.call("i1", "zeno_list_eq", format!("ptr {a}, ptr {b}, ptr {same}"))
             }
+            Kind::Dict(..) => self.call("i1", "zeno_dict_eq", format!("ptr {a}, ptr {b}")),
             Kind::Error => self.call("i1", "zeno_error_same", format!("ptr {a}, ptr {b}")),
             Kind::Optional(inner) => {
                 let same = self.optional_same(inner, span)?;

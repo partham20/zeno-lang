@@ -2396,6 +2396,317 @@ static zeno_opt_bool zeno_unbox_bool(const void *box) {
     return box == NULL ? (zeno_opt_bool){false, false} : (zeno_opt_bool){true, *(const bool *)box};
 }
 
+/* -------------------------------------------------------------------- Dicts
+ *
+ * A dict keeps its keys in one list and its values in another, side by
+ * side, in the order the keys were put in: values->items[i] belongs to
+ * keys->items[i]. That order is what a loop walks and what `print` shows.
+ *
+ * Finding a key by walking the list would take longer the bigger the dict
+ * got. So beside the two lists there is an index: a table of positions
+ * with at least twice as many places as there are keys. A key's hash (a
+ * number worked out from the key) says where in the table to start
+ * looking. From there the search steps forward until it meets the key or
+ * an empty place. With the table at most half full that is a step or two
+ * on average, whether the dict holds ten keys or ten thousand.
+ *
+ *     keys     "Ada"   "Alan"   "Grace"
+ *     values    36      41       45
+ *     index    [0, 3, 0, 0, 1, 0, 2, 0]     a place holds position + 1,
+ *                                           and 0 means "empty"
+ *
+ * The dict knows what its keys and its values are ('s' text, 'i' whole
+ * number, 'f' float, 'b' bool), so it can compare and show them itself.
+ *
+ * With no collector the dict has a copy of its own of every key and
+ * value that is text, like a list of text, and frees them when it ends
+ * (zeno_dict_drop). A value arrives already copied by whoever stores it,
+ * exactly as an item arrives at a list. A key is copied here, and only
+ * when it is new: storing under a key the dict already has needs no
+ * second copy. */
+
+typedef struct {
+    zeno_list *keys;
+    zeno_list *values;
+    int64_t *index; /* position + 1 of a key in `keys`, or 0 for an empty place */
+    int64_t room;   /* how many places `index` has: 0, or a power of two */
+    char key_kind;
+    char value_kind;
+} zeno_dict;
+
+static zeno_dict *zeno_dict_new(int key_kind, int value_kind) {
+    zeno_dict *dict = (zeno_dict *)zeno_alloc(sizeof(zeno_dict));
+    dict->keys = zeno_list_new(0);
+    dict->values = zeno_list_new(0);
+    dict->index = NULL;
+    dict->room = 0;
+    dict->key_kind = (char)key_kind;
+    dict->value_kind = (char)value_kind;
+    return dict;
+}
+
+/* `[:]` is made before the place it arrives at has said what it will
+ * hold. This is that place saying so. */
+static zeno_dict *zeno_dict_kinds(zeno_dict *dict, int key_kind, int value_kind) {
+    dict->key_kind = (char)key_kind;
+    dict->value_kind = (char)value_kind;
+    return dict;
+}
+
+static uint64_t zeno_dict_hash(const zeno_dict *dict, zeno_slot key) {
+    if (dict->key_kind == 's') {
+        /* FNV-1a: fold in one byte at a time, multiplying by a prime in
+         * between so that every byte ends up changing every bit. */
+        uint64_t hash = UINT64_C(14695981039346656037);
+        for (const unsigned char *p = (const unsigned char *)key.s; *p != '\0'; p++) {
+            hash = (hash ^ *p) * UINT64_C(1099511628211);
+        }
+        return hash;
+    }
+    /* Whole numbers are often 1, 2, 3 or multiples of something. One
+     * multiplication by a big odd number spreads them over the table. */
+    uint64_t hash = (uint64_t)key.i * UINT64_C(0x9E3779B97F4A7C15);
+    return hash ^ (hash >> 32);
+}
+
+static bool zeno_dict_same_key(const zeno_dict *dict, zeno_slot a, zeno_slot b) {
+    return dict->key_kind == 's' ? strcmp(a.s, b.s) == 0 : a.i == b.i;
+}
+
+/* The place in the index that holds `key`, or the empty place where it
+ * would go. The index must have room (it is never full, so this ends). */
+static int64_t zeno_dict_place(const zeno_dict *dict, zeno_slot key) {
+    uint64_t mask = (uint64_t)dict->room - 1;
+    uint64_t place = zeno_dict_hash(dict, key) & mask;
+    while (dict->index[place] != 0 &&
+           !zeno_dict_same_key(dict, dict->keys->items[dict->index[place] - 1], key)) {
+        place = (place + 1) & mask;
+    }
+    return (int64_t)place;
+}
+
+/* Where `key` is in the two lists, or -1 if the dict does not have it. */
+static int64_t zeno_dict_find(zeno_dict *dict, zeno_slot key) {
+    if (dict->room == 0) return -1;
+    return dict->index[zeno_dict_place(dict, key)] - 1;
+}
+
+/* Write the index again from the list of keys, with `room` places. */
+static void zeno_dict_index(zeno_dict *dict, int64_t room) {
+    if (room != dict->room) {
+        zeno_free(dict->index);
+        dict->index = (int64_t *)zeno_alloc((size_t)room * sizeof(int64_t));
+        dict->room = room;
+    }
+    if (room > 0) memset(dict->index, 0, (size_t)room * sizeof(int64_t));
+    for (int64_t i = 0; i < dict->keys->len; i++) {
+        dict->index[zeno_dict_place(dict, dict->keys->items[i])] = i + 1;
+    }
+}
+
+/* `dict[key] = value`. A key the dict has gets the new value and stays
+ * where it is in the order. A new key goes at the end. */
+static void zeno_dict_set(zeno_dict *dict, zeno_slot key, zeno_slot value) {
+    int64_t at = zeno_dict_find(dict, key);
+    if (at >= 0) {
+#ifdef ZENO_NO_COLLECTOR
+        if (dict->value_kind == 's') zeno_text_drop(dict->values->items[at].s);
+#endif /* ZENO_NO_COLLECTOR */
+        dict->values->items[at] = value;
+        return;
+    }
+#ifdef ZENO_NO_COLLECTOR
+    if (dict->key_kind == 's') key.s = zeno_text_keep(key.s);
+#endif /* ZENO_NO_COLLECTOR */
+    zeno_list_append(dict->keys, key);
+    zeno_list_append(dict->values, value);
+    if (dict->keys->len * 2 > dict->room) {
+        /* More than half full: twice the places, and every key finds
+         * its place again. */
+        zeno_dict_index(dict, dict->room == 0 ? 8 : dict->room * 2);
+    } else {
+        dict->index[zeno_dict_place(dict, key)] = dict->keys->len;
+    }
+}
+
+/* `["Ada": 36, "Alan": 41]`: `count` keys, each followed by its value. */
+static zeno_dict *zeno_dict_of(int key_kind, int value_kind, int count, ...) {
+    zeno_dict *dict = zeno_dict_new(key_kind, value_kind);
+    va_list entries;
+    va_start(entries, count);
+    for (int i = 0; i < count; i++) {
+        zeno_slot key = va_arg(entries, zeno_slot);
+        zeno_slot value = va_arg(entries, zeno_slot);
+        zeno_dict_set(dict, key, value);
+    }
+    va_end(entries);
+    return dict;
+}
+
+/* One key or value as `print` shows it inside a dict. */
+static const char *zeno_dict_show(char kind, zeno_slot item) {
+    switch (kind) {
+    case 's': return zeno_repr_str(item.s);
+    case 'f': return zeno_str_float(item.f);
+    case 'b': return zeno_str_bool(item.b);
+    default: return zeno_str_int(item.i);
+    }
+}
+
+__attribute__((noreturn)) static void zeno_dict_no_key(zeno_dict *dict, zeno_slot key, int line, int col) {
+    zeno_fail("KeyError", zeno_join(2, "this dict has no key ", zeno_dict_show(dict->key_kind, key)), line, col);
+}
+
+/* `dict[key]`. Asking for a key that is not there is a KeyError, as a
+ * position that is not in a list is an IndexError. */
+static zeno_slot zeno_dict_at(zeno_dict *dict, zeno_slot key, int line, int col) {
+    int64_t at = zeno_dict_find(dict, key);
+    if (at < 0) zeno_dict_no_key(dict, key, line, col);
+    return dict->values->items[at];
+}
+
+/* The value at a position that zeno_dict_find gave, and a slot of zeros
+ * where it gave -1. `dict.get(key)` is built from the two. */
+static zeno_slot zeno_dict_value(zeno_dict *dict, int64_t at) {
+    zeno_slot nothing;
+    memset(&nothing, 0, sizeof nothing);
+    return at < 0 ? nothing : dict->values->items[at];
+}
+
+/* `dict.get(key, instead)`. */
+static zeno_slot zeno_dict_get(zeno_dict *dict, zeno_slot key, zeno_slot instead) {
+    int64_t at = zeno_dict_find(dict, key);
+    return at < 0 ? instead : dict->values->items[at];
+}
+
+/* `dict.get(key)` where the values are numbers or bools: the value and a
+ * flag that says whether there was one. */
+static zeno_opt_int zeno_dict_get_int(zeno_dict *dict, zeno_slot key) {
+    int64_t at = zeno_dict_find(dict, key);
+    return at < 0 ? (zeno_opt_int){false, 0} : (zeno_opt_int){true, dict->values->items[at].i};
+}
+
+static zeno_opt_float zeno_dict_get_float(zeno_dict *dict, zeno_slot key) {
+    int64_t at = zeno_dict_find(dict, key);
+    return at < 0 ? (zeno_opt_float){false, 0.0} : (zeno_opt_float){true, dict->values->items[at].f};
+}
+
+static zeno_opt_bool zeno_dict_get_bool(zeno_dict *dict, zeno_slot key) {
+    int64_t at = zeno_dict_find(dict, key);
+    return at < 0 ? (zeno_opt_bool){false, false} : (zeno_opt_bool){true, dict->values->items[at].b};
+}
+
+/* The same where the values are text: NULL is `none`. */
+static const char *zeno_dict_get_str(zeno_dict *dict, zeno_slot key) {
+    int64_t at = zeno_dict_find(dict, key);
+    return at < 0 ? NULL : dict->values->items[at].s;
+}
+
+/* `dict.pop(key)`: the key and its value leave the dict, and the value is
+ * the answer. Everything after them moves down one place, so the index
+ * is written again. With no collector the value's text now belongs to
+ * whoever asked (the compiled program wraps this in zeno_text_take). */
+static zeno_slot zeno_dict_pop(zeno_dict *dict, zeno_slot key, int line, int col) {
+    int64_t at = zeno_dict_find(dict, key);
+    if (at < 0) zeno_dict_no_key(dict, key, line, col);
+    zeno_slot gone = zeno_list_pop_at(dict->keys, at, line, col);
+    zeno_slot value = zeno_list_pop_at(dict->values, at, line, col);
+#ifdef ZENO_NO_COLLECTOR
+    if (dict->key_kind == 's') zeno_text_drop(gone.s);
+#else /* ZENO_NO_COLLECTOR */
+    (void)gone;
+#endif /* ZENO_NO_COLLECTOR */
+    zeno_dict_index(dict, dict->room);
+    return value;
+}
+
+/* `dict.keys()` and `dict.values()`: a new list, which is the caller's.
+ * It is also what a `for` loop over a dict walks, so the body of the
+ * loop can add to the dict or take from it without confusing the loop. */
+static zeno_list *zeno_dict_keys(zeno_dict *dict) {
+    zeno_list *keys = zeno_list_copy(dict->keys);
+#ifdef ZENO_NO_COLLECTOR
+    if (dict->key_kind == 's') zeno_list_keep_text(keys);
+#endif /* ZENO_NO_COLLECTOR */
+    return keys;
+}
+
+static zeno_list *zeno_dict_values(zeno_dict *dict) {
+    zeno_list *values = zeno_list_copy(dict->values);
+#ifdef ZENO_NO_COLLECTOR
+    if (dict->value_kind == 's') zeno_list_keep_text(values);
+#endif /* ZENO_NO_COLLECTOR */
+    return values;
+}
+
+/* `dict.clear()`: the dict holds nothing, and keeps its room. */
+static void zeno_dict_clear(zeno_dict *dict) {
+#ifdef ZENO_NO_COLLECTOR
+    for (int64_t i = 0; i < dict->keys->len; i++) {
+        if (dict->key_kind == 's') zeno_text_drop(dict->keys->items[i].s);
+        if (dict->value_kind == 's') zeno_text_drop(dict->values->items[i].s);
+    }
+#endif /* ZENO_NO_COLLECTOR */
+    zeno_list_clear(dict->keys);
+    zeno_list_clear(dict->values);
+    if (dict->room > 0) memset(dict->index, 0, (size_t)dict->room * sizeof(int64_t));
+}
+
+/* The end of a dict that has one owner: its owner's block is over, or its
+ * owner was given another. NULL means the owner had already given the
+ * dict away, and there is nothing to do. */
+static void zeno_dict_drop(zeno_dict *dict) {
+    if (dict == NULL) return;
+    zeno_dict_clear(dict);
+    zeno_list_drop(dict->keys);
+    zeno_list_drop(dict->values);
+    zeno_free(dict->index);
+    zeno_free(dict);
+}
+
+/* A dict as `print` shows it, which is also how it is written:
+ * `["Ada": 36, "Alan": 41]`, and `[:]` when it holds nothing. */
+static const char *zeno_dict_str(zeno_dict *dict) {
+    if (dict->keys->len == 0) return "[:]";
+#ifdef ZENO_NO_COLLECTOR
+    size_t start = zeno_text_top;
+#endif /* ZENO_NO_COLLECTOR */
+    const char *text = "[";
+    for (int64_t i = 0; i < dict->keys->len; i++) {
+        text = zeno_join(3, text, i > 0 ? ", " : "", zeno_dict_show(dict->key_kind, dict->keys->items[i]));
+        text = zeno_join(3, text, ": ", zeno_dict_show(dict->value_kind, dict->values->items[i]));
+#ifdef ZENO_NO_COLLECTOR
+        text = zeno_text_settle(start, text);
+#endif /* ZENO_NO_COLLECTOR */
+    }
+    text = zeno_join(2, text, "]");
+#ifdef ZENO_NO_COLLECTOR
+    text = zeno_text_settle(start, text);
+#endif /* ZENO_NO_COLLECTOR */
+    return text;
+}
+
+/* Two dicts are equal when they have the same keys with the same values.
+ * The order the keys were put in does not count. */
+static bool zeno_dict_eq(zeno_dict *a, zeno_dict *b) {
+    if (a->keys->len != b->keys->len) return false;
+    for (int64_t i = 0; i < a->keys->len; i++) {
+        int64_t at = zeno_dict_find(b, a->keys->items[i]);
+        if (at < 0) return false;
+        zeno_slot x = a->values->items[i];
+        zeno_slot y = b->values->items[at];
+        bool same;
+        switch (a->value_kind) {
+        case 's': same = strcmp(x.s, y.s) == 0; break;
+        case 'f': same = x.f == y.f; break;
+        case 'b': same = x.b == y.b; break;
+        default: same = x.i == y.i; break;
+        }
+        if (!same) return false;
+    }
+    return true;
+}
+
 /* A variable that other code can change may have become `none` again since
  * it was checked. These look once more before the value is used. */
 __attribute__((noreturn)) static void zeno_gone(int line, int col) {

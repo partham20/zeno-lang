@@ -951,14 +951,39 @@ impl Parser {
         number
     }
 
-    /// After a `[`: either a list `[a, b, c]` or a comprehension
-    /// `[element for x in items if condition]`. They start the same way, so
-    /// parse the first element and then see whether `for` follows.
+    /// After a `[`: a list `[a, b, c]`, a dict `[key: value, ...]`, or a
+    /// comprehension `[element for x in items if condition]`. They start
+    /// the same way, so parse the first element and then see what
+    /// follows it: a `:` makes it a dict, and `for` a comprehension.
     fn list(&mut self) -> Result<ExprKind, Error> {
         if self.eat(TokenKind::RBracket) {
             return Ok(ExprKind::List(Vec::new()));
         }
+        // `[:]` is the dict with nothing in it. `[]` is the empty list,
+        // so each says which it is without a type beside it.
+        if self.eat(TokenKind::Colon) {
+            if self.eat(TokenKind::RBracket) {
+                return Ok(ExprKind::Dict(Vec::new()));
+            }
+            return self.error("an entry of a dict is written `key: value`, and a dict with nothing in it is `[:]`");
+        }
         let first = self.expression()?;
+
+        if self.eat(TokenKind::Colon) {
+            let mut entries = vec![(first, self.expression()?)];
+            while self.eat(TokenKind::Comma) {
+                if self.check(TokenKind::RBracket) {
+                    break; // a trailing comma
+                }
+                let key = self.expression()?;
+                if !self.eat(TokenKind::Colon) {
+                    return self.error("every entry of a dict is written `key: value`, and this one has no `:`");
+                }
+                entries.push((key, self.expression()?));
+            }
+            self.expect(TokenKind::RBracket)?;
+            return Ok(ExprKind::Dict(entries));
+        }
 
         if self.eat(TokenKind::For) {
             let variable = self.name("a name for the loop variable")?;
@@ -979,6 +1004,9 @@ impl Parser {
                 break; // a trailing comma
             }
             items.push(self.expression()?);
+            if self.check(TokenKind::Colon) {
+                return self.error("every entry of a dict is written `key: value`, and the ones before this are not");
+            }
         }
         self.expect(TokenKind::RBracket)?;
         Ok(ExprKind::List(items))
@@ -1491,6 +1519,28 @@ mod tests {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);
             }
         }
+    }
+
+    #[test]
+    fn a_dict_is_written_in_square_brackets() {
+        assert_eq!(tree("let ages = [\"ann\": 31, \"bo\": 27]"), "let ages = [\"ann\": 31, \"bo\": 27]\n");
+        assert_eq!(tree("let none_yet = [:]"), "let none_yet = [:]\n");
+        assert_eq!(tree("let squares = [1: 1, 2: 4,]"), "let squares = [1: 1, 2: 4]\n");
+        assert_eq!(tree("let n = [a + 1: b * 2][2]"), "let n = [(a + 1): (b * 2)][2]\n");
+        assert_eq!(tree("let both = [[1, 2], [\"a\": [3]]]"), "let both = [[1, 2], [\"a\": [3]]]\n");
+        // One kind of thing between a pair of brackets.
+        assert_eq!(
+            error("let d = [\"a\": 1, 2]"),
+            "every entry of a dict is written `key: value`, and this one has no `:`"
+        );
+        assert_eq!(
+            error("let d = [1, \"a\": 2]"),
+            "every entry of a dict is written `key: value`, and the ones before this are not"
+        );
+        assert_eq!(
+            error("let d = [: 1]"),
+            "an entry of a dict is written `key: value`, and a dict with nothing in it is `[:]`"
+        );
     }
 
     #[test]

@@ -72,6 +72,8 @@ pub enum Kind {
     /// A number with a unit; the string is the unit, such as "ms".
     Quantity(String),
     List(Box<Kind>),
+    /// `dict[str, int]`: the kind of its keys, and of its values.
+    Dict(Box<Kind>, Box<Kind>),
     /// An object of the class with this name.
     Class(String),
     /// A value of the enum with this name.
@@ -345,6 +347,7 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             inner => Kind::Optional(Box::new(inner)),
         },
         Ty::List(item) => Kind::List(Box::new(kind_within(item, depth))),
+        Ty::Dict(key, value) => Kind::Dict(Box::new(kind_within(key, depth)), Box::new(kind_within(value, depth))),
         Ty::Owned(inner) => Kind::Owned(Box::new(kind_within(inner, depth))),
         Ty::Instance(class) if class.owned => Kind::Owned(Box::new(Kind::Class(class.name.clone()))),
         Ty::EnumValue(info) if info.owned => Kind::Owned(Box::new(Kind::Enum(info.name.clone()))),
@@ -488,6 +491,8 @@ enum Ty {
     /// A register of the board at a fixed address: `Register[u32]`.
     Register(Width),
     List(Box<Ty>),
+    /// `dict[str, int]`: the type of its keys, and of its values.
+    Dict(Box<Ty>, Box<Ty>),
     /// `T or none`
     Optional(Box<Ty>),
     /// An object of a class.
@@ -514,7 +519,7 @@ enum Ty {
     /// A method read from an object: `self` is already supplied.
     BoundMethod(Rc<FunctionInfo>),
     Builtin(&'static str),
-    /// A method of a str or a list, with the type it was read from.
+    /// A method of a str, a list or a dict, with the type it was read from.
     BuiltinMethod(Box<Ty>, Rc<str>),
     Class(Rc<ClassInfo>),
     Enum(Rc<EnumInfo>),
@@ -665,6 +670,7 @@ enum Key {
     None,
     Quantity(String),
     List(Box<Key>),
+    Dict(Box<Key>, Box<Key>),
     Optional(Box<Key>),
     Class(DeclId),
     /// A copy of a generic class: the generic, and the types it was made for.
@@ -780,6 +786,16 @@ impl Ty {
         Ty::List(Box::new(item))
     }
 
+    fn dict(key: Ty, value: Ty) -> Ty {
+        Ty::Dict(Box::new(key), Box::new(value))
+    }
+
+    /// A list or a dict: the two types that hold other values. Where
+    /// everything has one owner, each of them has one.
+    fn is_collection(&self) -> bool {
+        matches!(self, Ty::List(_) | Ty::Dict(..))
+    }
+
     /// True for the two types that are accepted everywhere.
     fn is_loose(&self) -> bool {
         matches!(self, Ty::Dynamic | Ty::Invalid)
@@ -794,6 +810,7 @@ impl Ty {
         match self {
             Ty::Dynamic => true,
             Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => inner.has_dynamic(),
+            Ty::Dict(key, value) => key.has_dynamic() || value.has_dynamic(),
             _ => false,
         }
     }
@@ -883,6 +900,7 @@ impl fmt::Display for Ty {
             Ty::None => write!(f, "none"),
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
             Ty::List(item) => write!(f, "list[{item}]"),
+            Ty::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
             Ty::Owned(inner) => write!(f, "owned {inner}"),
             Ty::Borrowed(inner) => write!(f, "a {inner} that is only looked at"),
@@ -928,6 +946,7 @@ fn spelled(ty: &Ty) -> String {
     match ty {
         Ty::Quantity(unit) => unit.to_string(),
         Ty::List(item) => format!("list[{}]", spelled(item)),
+        Ty::Dict(key, value) => format!("dict[{}, {}]", spelled(key), spelled(value)),
         Ty::Optional(inner) => format!("{} or none", spelled(inner)),
         other => other.to_string(),
     }
@@ -980,6 +999,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Optional(a), Ty::Optional(b))
         | (Ty::Owned(a), Ty::Owned(b))
         | (Ty::Borrowed(a), Ty::Borrowed(b)) => same(a, b),
+        (Ty::Dict(a_key, a_value), Ty::Dict(b_key, b_value)) => same(a_key, b_key) && same(a_value, b_value),
         (Ty::Instance(a), Ty::Instance(b)) => Rc::ptr_eq(a, b),
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
@@ -1016,6 +1036,12 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         // ints could append 300, and the first holder would then find a
         // u8 that is not one.
         (Ty::List(from), Ty::List(to)) => !sized_into_int(from, to) && fits(from, to),
+        // A dict goes where a dict with the same keys and the same values
+        // is wanted. `[:]` holds nothing yet, and goes where any dict is.
+        (Ty::Dict(from_key, from_value), Ty::Dict(to_key, to_value)) => {
+            let agree = |from: &Ty, to: &Ty| from.is_loose() || to.is_loose() || same(from, to);
+            agree(from_key, to_key) && agree(from_value, to_value)
+        }
         // Every u8 is an int, so a sized number goes where an int is
         // wanted and nothing has to be written. The other way round needs
         // a conversion, because not every int is a u8.
@@ -1149,6 +1175,12 @@ fn names_in(expr: &Expr, names: &mut Vec<String>) {
         }
         ExprKind::Unit { value, .. } => names_in(value, names),
         ExprKind::List(items) => items.iter().for_each(|item| names_in(item, names)),
+        ExprKind::Dict(entries) => {
+            for (key, value) in entries {
+                names_in(key, names);
+                names_in(value, names);
+            }
+        }
         ExprKind::ListComp { element, iterable, condition, .. } => {
             names_in(element, names);
             names_in(iterable, names);
@@ -1326,8 +1358,8 @@ fn globals() -> Env {
     for width in ints::WIDTHS {
         env.declare(width.name, Ty::Builtin(width.name), false);
     }
-    for kind in ["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"] {
-        env.declare(kind, Ty::ErrorType(Rc::from(kind)), false);
+    for kind in crate::builtins::ERROR_TYPES {
+        env.declare(kind, Ty::ErrorType(Rc::from(*kind)), false);
     }
     env
 }
@@ -1632,9 +1664,20 @@ impl Checker {
                          then it only looks, and any list can be passed to it"
                     )
                 }
+                (Ty::Borrowed(inner) | Ty::Owned(inner), Ty::Dict(..)) if matches!(**inner, Ty::Dict(..)) => {
+                    message = format!(
+                        "{what} is written `{to}`, which is a shared dict that the function may keep, \
+                         and this dict has one owner. Write the parameter as `owned {to}`: \
+                         then it only looks, and any dict can be passed to it"
+                    )
+                }
                 (Ty::Borrowed(_), _) => {
                     message += ". Something else owns it, so it can go to a parameter that looks, \
                                 and not to one that says `take` or to anything else that keeps it"
+                }
+                (Ty::Dict(..), Ty::Owned(_)) => {
+                    message += ". Only a dict made right here can become an owned one: one written out, \
+                                as in `[\"a\": 1]` or `[:]`"
                 }
                 (Ty::List(_), Ty::Owned(_)) => {
                     message += ". Only a list made right here can become an owned one: one written out, \
@@ -1795,6 +1838,10 @@ impl Checker {
                 Ok(inner) => Key::List(Box::new(inner)),
                 Err(()) => return Some(Err(())),
             },
+            Ty::Dict(key, value) => match (self.key(key)?, self.key(value)?) {
+                (Ok(key), Ok(value)) => Key::Dict(Box::new(key), Box::new(value)),
+                _ => return Some(Err(())),
+            },
             Ty::Optional(inner) => match self.key(inner)? {
                 Ok(inner) => Key::Optional(Box::new(inner)),
                 Err(()) => return Some(Err(())),
@@ -1817,6 +1864,7 @@ impl Checker {
             Key::Quantity(unit) => Ty::Quantity(Rc::from(unit.as_str())),
             Key::Error(kind) => Ty::Error(Rc::from(kind.as_str())),
             Key::List(inner) => Ty::list(self.from_key(inner)),
+            Key::Dict(key, value) => Ty::dict(self.from_key(key), self.from_key(value)),
             Key::Optional(inner) => Ty::Optional(Box::new(self.from_key(inner))),
             Key::Class(id) => self.classes.get(id).map_or(Ty::Dynamic, |class| Ty::Instance(class.clone())),
             Key::Copy(id, keys) => {
@@ -1965,15 +2013,15 @@ impl Checker {
         }
         match ty {
             ast::Type::Owned(inner) => match self.resolve_inside(inner, env, span, Inside::Front) {
-                list @ Ty::List(_) => Ty::Owned(Box::new(list)),
+                list if list.is_collection() => Ty::Owned(Box::new(list)),
                 // `owned list[int] or none`: the list has an owner when
                 // there is one.
-                Ty::Optional(list) if matches!(*list, Ty::List(_)) => Ty::Optional(Box::new(Ty::Owned(list))),
+                Ty::Optional(list) if list.is_collection() => Ty::Optional(Box::new(Ty::Owned(list))),
                 // An object of an `owned class` is owned without saying so again.
                 ty if ty.is_owned() || ty.is_loose() => ty,
                 ty => self.error(
                     format!(
-                        "`owned` goes in front of a list type, as in `owned list[int]`, and this is {ty}. \
+                        "`owned` goes in front of a list or a dict type, as in `owned list[int]`, and this is {ty}. \
                          A class is made owned where it is declared: `owned class`"
                     ),
                     span,
@@ -1985,8 +2033,8 @@ impl Checker {
                 span,
             ),
             _ => match self.resolve_inside(ty, env, span, Inside::Front) {
-                // Where everything has one owner, a list does too.
-                list @ Ty::List(_) if self.one_owner => Ty::Owned(Box::new(list)),
+                // Where everything has one owner, a list does too, and a dict.
+                list if list.is_collection() && self.one_owner => Ty::Owned(Box::new(list)),
                 // A list is the owner of items that have one owner each,
                 // so somebody has to be the owner of the list.
                 Ty::Optional(list) if owns_items(&list) => self.error(
@@ -2078,6 +2126,47 @@ impl Checker {
                     }
                     ("list", _) => {
                         return self.error("`list` takes one type, as in `list[int]`", span)
+                    }
+                    // `dict[str, int]`: what the keys are, then what the
+                    // values are. Both are plain values for now: the dict
+                    // holds copies of them and nothing else has to be freed
+                    // or shared (decision 6.32).
+                    ("dict", [key, value]) => {
+                        let key = self.resolve_inside(key, env, span, Inside::Other);
+                        let value = self.resolve_inside(value, env, span, Inside::Other);
+                        if !matches!(key, Ty::Str | Ty::Int) && !key.is_loose() {
+                            return self.error(
+                                format!(
+                                    "a key of a dict is a str or an int, and this says {}. Write `dict[str, ...]` \
+                                     or `dict[int, ...]`",
+                                    key.clone().looked_at()
+                                ),
+                                span,
+                            );
+                        }
+                        if !matches!(value, Ty::Int | Ty::Float | Ty::Bool | Ty::Str) && !value.is_loose() {
+                            return self.error(
+                                format!(
+                                    "a value of a dict is an int, a float, a bool or a str for now, and this says {}. \
+                                     Keep those in a list, and the position of each in the dict",
+                                    value.clone().looked_at()
+                                ),
+                                span,
+                            );
+                        }
+                        let dict = Ty::dict(key, value);
+                        match inside {
+                            Inside::Front => dict,
+                            // Where everything has one owner, a dict has too.
+                            _ if self.one_owner => Ty::Owned(Box::new(dict)),
+                            _ => dict,
+                        }
+                    }
+                    ("dict", _) => {
+                        return self.error(
+                            "`dict` takes two types, the key's and then the value's, as in `dict[str, int]`",
+                            span,
+                        )
                     }
                     // `pointer[u8]`: a raw pointer to numbers of one size.
                     ("pointer", [ast::Type::Named { name: item, args }]) if args.is_empty() && Pointee::named(item).is_some() => {
@@ -2796,7 +2885,13 @@ impl Checker {
                 wanted
             }
             None if self.strict && given.has_dynamic() => self.error(
-                format!("strict mode: the type of `{name}` cannot be worked out. Give it one, as in `{name}: list[int]`"),
+                format!(
+                    "strict mode: the type of `{name}` cannot be worked out. Give it one, as in `{name}: {}`",
+                    match given.clone().looked_at() {
+                        Ty::Dict(..) => "dict[str, int]",
+                        _ => "list[int]",
+                    }
+                ),
                 span,
             ),
             None => given,
@@ -2872,7 +2967,16 @@ impl Checker {
             ExprKind::Index { object: list, index } => {
                 let object = self.look(list, env);
                 let index_type = self.look(index, env);
-                self.expect(&index_type, &Ty::Int, "an index", index.span);
+                if let Ty::Dict(key, value) = &object {
+                    // `ages["Ada"] = 36` puts the key in, or gives it a
+                    // new value if it is there already.
+                    self.expect(&index_type.widened(), key, "a key of this dict", index.span);
+                    return ((**value).clone(), (**value).clone(), None);
+                }
+                // What is not known may be a dict, whose keys can be text.
+                if !object.is_loose() {
+                    self.expect(&index_type, &Ty::Int, "an index", index.span);
+                }
                 match object {
                     // The item that was there is freed. As for a field.
                     Ty::List(item) if item.is_owned() => {
@@ -2909,6 +3013,9 @@ impl Checker {
             // lent it.
             Ty::List(item) if item.is_owned() => lent(item),
             Ty::List(item) => (**item).clone(),
+            // A loop over a dict is given its keys, in the order they
+            // were put in.
+            Ty::Dict(key, _) => (**key).clone(),
             Ty::Str => Ty::Str,
             ty if ty.is_loose() => ty.clone(),
             Ty::Pointer(_) => self.error(
@@ -3594,8 +3701,65 @@ impl Checker {
             list @ Ty::List(_) if self.one_owner || owns_items(&list) => {
                 self.fresh_list(expr, list.clone(), &Ty::Owned(Box::new(list)))
             }
+            dict @ Ty::Dict(..) if self.one_owner => self.fresh_list(expr, dict.clone(), &Ty::Owned(Box::new(dict))),
             ty => ty,
         }
+    }
+
+    /// The type of a dict that is written out: `["Ada": 36, "Alan": 41]`.
+    /// The keys are all of one type and so are the values, which is what
+    /// lets a line further down say what `ages["Ada"]` is.
+    fn dict_written(&mut self, entries: &[(Expr, Expr)], env: &Env) -> Ty {
+        let (mut keys, mut values): (Option<Ty>, Option<Ty>) = (None, None);
+        for (index, (key, value)) in entries.iter().enumerate() {
+            let key_type = self.look(key, env).looked_at().widened();
+            let value_type = self.look(value, env).looked_at().widened();
+            if !matches!(key_type, Ty::Str | Ty::Int) && !key_type.is_loose() {
+                return self.error(format!("a key of a dict is a str or an int, and this is {key_type}"), key.span);
+            }
+            if !matches!(value_type, Ty::Int | Ty::Float | Ty::Bool | Ty::Str) && !value_type.is_loose() {
+                return self.error(
+                    format!(
+                        "a value of a dict is an int, a float, a bool or a str for now, and this is {value_type}. \
+                         Keep those in a list, and the position of each in the dict"
+                    ),
+                    value.span,
+                );
+            }
+            // The same key written twice: the second would quietly
+            // replace the first.
+            let twice = entries[..index].iter().any(|(earlier, _)| match (&earlier.kind, &key.kind) {
+                (ExprKind::Str(a), ExprKind::Str(b)) => a == b,
+                (ExprKind::Int(a), ExprKind::Int(b)) => a == b,
+                _ => false,
+            });
+            if twice {
+                return self.error(
+                    "this key is written twice in the dict. A dict has each key once, so the second \
+                     would replace the first. Take one of them out",
+                    key.span,
+                );
+            }
+            for (known, found, what, at) in
+                [(&mut keys, key_type, "keys", key.span), (&mut values, value_type, "values", value.span)]
+            {
+                match known {
+                    Some(known) if known.is_loose() || found.is_loose() || same(known, &found) => {}
+                    Some(known) => {
+                        return self.error(
+                            format!(
+                                "the {what} of a dict are all of one type. This one is {found}, \
+                                 and the ones before it are {known}"
+                            ),
+                            at,
+                        )
+                    }
+                    None => *known = Some(found),
+                }
+            }
+        }
+        // `[:]` holds nothing yet, so what it will hold is open.
+        Ty::dict(keys.unwrap_or(Ty::Dynamic), values.unwrap_or(Ty::Dynamic))
     }
 
     /// The type of an error of one of the kinds Zeno knows, such as a
@@ -3621,7 +3785,7 @@ impl Checker {
     /// one is wanted. The compiler is told, because a build with no
     /// collector has to know who frees each list.
     fn fresh_list(&mut self, value: &Expr, given: Ty, wanted: &Ty) -> Ty {
-        let made = matches!(value.kind, ExprKind::List(_) | ExprKind::ListComp { .. })
+        let made = matches!(value.kind, ExprKind::List(_) | ExprKind::ListComp { .. } | ExprKind::Dict(_))
             || self.types.made.contains(&(value as *const Expr as usize));
         // An `owned list[int] or none` wants an owned list, when it
         // gets a list at all.
@@ -3630,7 +3794,7 @@ impl Checker {
             wanted => wanted,
         };
         match (wanted, given) {
-            (Ty::Owned(_), given @ Ty::List(_)) if made => {
+            (Ty::Owned(_), given) if made && given.is_collection() => {
                 self.types.fresh.insert(value as *const Expr as usize);
                 Ty::Owned(Box::new(given))
             }
@@ -3961,6 +4125,7 @@ impl Checker {
                 let fault = match declared.as_str() {
                     "ZeroDivisionError" => "a division by zero",
                     "IndexError" => "a bad index",
+                    "KeyError" => "a key that is not in the dict",
                     "OverflowError" => "a number that does not fit",
                     // `int("x")` travels as a value, and is in `raised`.
                     // What is left is a built-in that was handed a value
@@ -4100,6 +4265,7 @@ impl Checker {
                 // An empty list holds nothing yet, so its item type is open.
                 Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
             }
+            ExprKind::Dict(entries) => self.dict_written(entries, env),
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let iterable_type = self.look(iterable, env);
                 let item = self.item_type(&iterable_type, iterable.span);
@@ -4367,7 +4533,7 @@ impl Checker {
                     self.types.made.insert(expr as *const Expr as usize);
                 }
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
-                    if matches!(&**name, "split" | "lines" | "map" | "filter" | "slice") {
+                    if matches!(&**name, "split" | "lines" | "map" | "filter" | "slice" | "keys" | "values") {
                         // Each of these makes a new list.
                         self.types.made.insert(expr as *const Expr as usize);
                     }
@@ -4394,7 +4560,15 @@ impl Checker {
             ExprKind::Index { object, index } => {
                 let object = self.look(object, env);
                 let index_type = self.look(index, env);
-                self.expect(&index_type, &Ty::Int, "an index", index.span);
+                if let Ty::Dict(key, value) = &object {
+                    // `ages["Ada"]`: the value kept under that key.
+                    self.expect(&index_type.widened(), key, "a key of this dict", index.span);
+                    return (**value).clone();
+                }
+                // What is not known may be a dict, whose keys can be text.
+                if !object.is_loose() {
+                    self.expect(&index_type, &Ty::Int, "an index", index.span);
+                }
                 match object {
                     // An item that has one owner stays where it is. This
                     // is a look at it.
@@ -4466,6 +4640,9 @@ impl Checker {
             Ty::List(_) if LIST_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
             }
+            Ty::Dict(..) if DICT_METHODS.contains(&name) => {
+                Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
+            }
             Ty::Pin if PIN_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Pin), Rc::from(name)),
             Ty::Register(_) if REGISTER_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(object.clone()), Rc::from(name))
@@ -4478,6 +4655,14 @@ impl Checker {
                 span,
             ),
             ty if ty.is_loose() => ty.clone(),
+            // Somebody who knows lists reaches for `append`.
+            ty @ Ty::Dict(..) => self.error(
+                format!(
+                    "{ty} has no method `{name}`. A dict has `get`, `pop`, `keys`, `values` and `clear`, \
+                     and a value is put in with `d[key] = value`"
+                ),
+                span,
+            ),
             ty => self.error(format!("{ty} has no field or method `{name}`"), span),
         }
     }
@@ -4705,7 +4890,7 @@ impl Checker {
                 }
             }
             "len" => {
-                if self.arity(name, arguments, 1, 1, span) && !matches!(first, Ty::Str | Ty::List(_)) && !first.is_loose() {
+                if self.arity(name, arguments, 1, 1, span) && !matches!(first, Ty::Str | Ty::List(_) | Ty::Dict(..)) && !first.is_loose() {
                     if matches!(first, Ty::Pointer(_)) {
                         self.error(
                             "a pointer does not know how many items it points at, so `len` cannot tell. \
@@ -4713,7 +4898,7 @@ impl Checker {
                             span,
                         );
                     } else {
-                        wrong(self, "a str or a list");
+                        wrong(self, "a str, a list or a dict");
                     }
                 }
                 Ty::Int
@@ -4880,7 +5065,7 @@ impl Checker {
         }
     }
 
-    /// The result of calling a built-in method on a str or a list.
+    /// The result of calling a built-in method on a str, a list or a dict.
     fn method(&mut self, receiver: &Ty, name: &str, arguments: &[Argument], span: Span) -> Ty {
         let strs = |checker: &mut Checker| {
             for argument in arguments {
@@ -4963,6 +5148,46 @@ impl Checker {
                 self.arity(name, arguments, 1, 1, span);
                 strs(self);
                 Ty::Bool
+            }
+
+            // `get` is the way to ask for a key that may not be there.
+            // With one argument the answer may be `none`. With two, the
+            // second is what to give instead.
+            (Ty::Dict(key, value), "get") => {
+                if !self.arity(name, arguments, 1, 2, span) {
+                    return Ty::Invalid;
+                }
+                self.expect(&arguments[0].ty.widened(), key, "the key given to `get`", arguments[0].span);
+                match arguments.get(1) {
+                    Some(instead) => {
+                        self.expect(
+                            &instead.ty.widened(),
+                            value,
+                            "what `get` gives when the key is not there",
+                            instead.span,
+                        );
+                        (**value).clone()
+                    }
+                    None => Ty::Optional(value.clone()),
+                }
+            }
+            (Ty::Dict(key, value), "pop") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&arguments[0].ty.widened(), key, "the key given to `pop`", arguments[0].span);
+                }
+                (**value).clone()
+            }
+            (Ty::Dict(key, _), "keys") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::list((**key).clone())
+            }
+            (Ty::Dict(_, value), "values") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::list((**value).clone())
+            }
+            (Ty::Dict(..), "clear") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::None
             }
 
             (Ty::List(item), "append") => {
@@ -5324,10 +5549,10 @@ impl Checker {
             }
             // With one owner for everything, a list is an owned value
             // too, whatever it was called when the argument was read.
-            if self.one_owner && matches!(ty, Ty::List(_)) {
+            if self.one_owner && ty.is_collection() {
                 self.error(
                     format!(
-                        "`{name}` would be {ty} here. With no collector a list has one owner, \
+                        "`{name}` would be {ty} here. With no collector a list or a dict has one owner, \
                          and a value that has one owner cannot fill a type parameter yet"
                     ),
                     span,
@@ -5679,6 +5904,8 @@ impl Checker {
             }
             In | NotIn => match (left, &right.as_ints()) {
                 (item, Ty::List(items)) if fits(item, items) || fits(items, item) => Some(Ty::Bool),
+                // `"Ada" in ages`: is there such a key?
+                (item, Ty::Dict(key, _)) if fits(item, key) => Some(Ty::Bool),
                 (Ty::Str, Ty::Str) => Some(Ty::Bool),
                 _ => None,
             },
@@ -5715,6 +5942,7 @@ const STR_METHODS: &[&str] =
 const LIST_METHODS: &[&str] = &[
     "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
 ];
+const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -5773,7 +6001,7 @@ fn lent(ty: &Ty) -> Ty {
 /// those that may be `none`.
 fn borrowable(ty: &Ty) -> bool {
     match ty {
-        Ty::List(_) | Ty::Instance(_) | Ty::Applied(..) | Ty::Error(_) | Ty::Callable(_) => true,
+        Ty::List(_) | Ty::Dict(..) | Ty::Instance(_) | Ty::Applied(..) | Ty::Error(_) | Ty::Callable(_) => true,
         Ty::Owned(inner) | Ty::Optional(inner) => borrowable(inner),
         Ty::EnumValue(info) => info.carries,
         _ => false,
@@ -6081,7 +6309,7 @@ mod tests {
 
     #[test]
     fn built_ins_are_checked() {
-        assert_eq!(error("print(len(5))"), "`len` needs a str or a list, but this is int");
+        assert_eq!(error("print(len(5))"), "`len` needs a str, a list or a dict, but this is int");
         assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument, but 2 were given");
         assert_eq!(error("let s: str = len(\"abc\")"), "`s` should be str, but this is int");
         assert_eq!(error("range(\"3\")"), "an argument of `range` should be int, but this is str");
@@ -6582,7 +6810,7 @@ mod tests {
             error(&format!(
                 "{find}var who = find(2)\nfunction f() -> int {{\n match who {{\n  case none {{ return 0 }}\n  case _ {{ who = find(3) }}\n }}\n return len(who)\n}}"
             )),
-            "`len` needs a str or a list, but this is str or none"
+            "`len` needs a str, a list or a dict, but this is str or none"
         );
         // A second `case none` can never match.
         assert_eq!(
@@ -7429,7 +7657,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ok("function first[T](items: list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
         assert_eq!(
             error("function same[T](x: T) -> T { return x }\nlet xs = same([1, 2])"),
-            "`T` would be list[int] here. With no collector a list has one owner, \
+            "`T` would be list[int] here. With no collector a list or a dict has one owner, \
              and a value that has one owner cannot fill a type parameter yet"
         );
         assert_eq!(
@@ -7652,7 +7880,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(owned_error("owned class Box { inside: take Packet }"), only_parameters);
         assert_eq!(
             owned_error("let x: owned int = 1"),
-            "`owned` goes in front of a list type, as in `owned list[int]`, and this is int. A class is made owned where it is declared: `owned class`"
+            "`owned` goes in front of a list or a dict type, as in `owned list[int]`, and this is int. A class is made owned where it is declared: `owned class`"
         );
         // `take` is for what has, or could have, one owner. A number is
         // copied, and there is one way to write that.
@@ -7790,6 +8018,104 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             error("print([1, 2].join(\", \"))"),
             "`join` puts text together, and this is list[int]. Make each item text first, with `str( )`"
         );
+    }
+
+    #[test]
+    fn a_dict_is_checked() {
+        ok("let ages = [\"Ada\": 36]\nages[\"Bob\"] = 5\nlet n: int = ages[\"Ada\"]\nprint(len(ages), \"Ada\" in ages, ages == ages)");
+        strict_ok(
+            "let d: dict[str, int] = [:]\nd[\"a\"] = 1\nlet m: int or none = d.get(\"b\")\nlet n: int = d.get(\"b\", 0)\n\
+             let p: int = d.pop(\"a\")\nlet ks: list[str] = d.keys()\nlet vs: list[int] = d.values()\nd.clear()\n\
+             for k in d {\n print(k.upper())\n}\nfunction f(x: dict[int, bool]) -> dict[int, bool] {\n return x\n}",
+        );
+        // What it holds: keys that are text or ints, plain values, each
+        // all of one type.
+        assert_eq!(error("let d = [1.5: \"x\"]"), "a key of a dict is a str or an int, and this is float");
+        assert_eq!(
+            error("let d = [\"a\": [1, 2]]"),
+            "a value of a dict is an int, a float, a bool or a str for now, and this is list[int]. \
+             Keep those in a list, and the position of each in the dict"
+        );
+        assert_eq!(
+            error("let d = [\"a\": 1, 2: 3]"),
+            "the keys of a dict are all of one type. This one is int, and the ones before it are str"
+        );
+        assert_eq!(
+            error("let d = [\"a\": 1, \"b\": 2.5]"),
+            "the values of a dict are all of one type. This one is float, and the ones before it are int"
+        );
+        assert_eq!(
+            error("let d = [\"a\": 1, \"a\": 2]"),
+            "this key is written twice in the dict. A dict has each key once, so the second would replace the first. \
+             Take one of them out"
+        );
+        // The written type.
+        assert_eq!(
+            error("let d: dict[str] = [:]"),
+            "`dict` takes two types, the key's and then the value's, as in `dict[str, int]`"
+        );
+        assert_eq!(
+            error("let d: dict[float, int] = [:]"),
+            "a key of a dict is a str or an int, and this says float. Write `dict[str, ...]` or `dict[int, ...]`"
+        );
+        assert_eq!(
+            error("let d: dict[str, list[int]] = [:]"),
+            "a value of a dict is an int, a float, a bool or a str for now, and this says list[int]. \
+             Keep those in a list, and the position of each in the dict"
+        );
+        assert_eq!(error("let d: dict[str, float] = [\"a\": 1]"), "`d` should be dict[str, float], but this is dict[str, int]");
+        assert_eq!(
+            strict_error("let d = [:]"),
+            "strict mode: the type of `d` cannot be worked out. Give it one, as in `d: dict[str, int]`"
+        );
+        // Keys and values where they are used.
+        assert_eq!(error("let d = [\"a\": 1]\nprint(d[3])"), "a key of this dict should be str, but this is int");
+        assert_eq!(error("let d = [\"a\": 1]\nd[\"b\"] = \"two\""), "the new value should be int, but this is str");
+        assert_eq!(error("let d = [\"a\": 1]\nprint(1 in d)"), "`in` does not work between int and dict[str, int]");
+        assert_eq!(error("let d = [\"a\": 1]\nprint(d.get(1))"), "the key given to `get` should be str, but this is int");
+        assert_eq!(
+            error("let d = [\"a\": 1]\nprint(d.get(\"a\", \"none\"))"),
+            "what `get` gives when the key is not there should be int, but this is str"
+        );
+        assert_eq!(
+            error("let d = [\"a\": 1]\nlet x: int = d.get(\"a\")"),
+            "`x` should be int, but this is int or none. Check it with `is not none` first"
+        );
+        assert_eq!(error("let d = [\"a\": 1]\nd.pop()"), "`pop` takes 1 argument, but 0 were given");
+        assert_eq!(error("let d = [1: \"a\"]\nfor k in d {\n print(k + \"x\")\n}"), "`+` does not work between int and str");
+        assert_eq!(
+            error("let d = [\"a\": 1]\nd.append(3)"),
+            "dict[str, int] has no method `append`. A dict has `get`, `pop`, `keys`, `values` and `clear`, \
+             and a value is put in with `d[key] = value`"
+        );
+        assert_eq!(
+            error("print([\"a\": 1] == [\"a\": \"b\"])"),
+            "`==` between dict[str, int] and dict[str, str] is always false"
+        );
+    }
+
+    #[test]
+    fn with_one_owner_a_dict_has_one_too() {
+        // Made, lent to a parameter, changed through the look, given back.
+        one_owner_ok(
+            "function fill(d: dict[str, int]) {\n d[\"k\"] = 1\n}\n\
+             function make() -> dict[str, int] {\n let d: dict[str, int] = [:]\n fill(d)\n return d\n}\n\
+             function drain(d: take dict[str, int]) -> int {\n return len(d)\n}\n\
+             let d = make()\nprint(d)\nprint(drain(d))\nprint(len(make()), drain([\"a\": 1]))",
+        );
+        // A second name takes the dict over, as with a list.
+        assert_eq!(
+            one_owner_error("let a = [\"x\": 1]\nlet b = a\nprint(a)"),
+            format!("`a` was given away on line 2 and {GONE}")
+        );
+        // A parameter only looks, so what it looks at cannot be given back.
+        assert_eq!(
+            one_owner_error("function keep(d: dict[str, int]) -> dict[str, int] {\n return d\n}"),
+            "`d` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
+        );
+        // In an ordinary build `owned` in front makes it so by request.
+        ok("let d: owned dict[str, int] = [\"a\": 1]\nd[\"b\"] = 2\nprint(d)");
     }
 
     #[test]
