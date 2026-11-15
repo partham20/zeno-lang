@@ -37,8 +37,9 @@ jobs:
           # `tests` is `must` where the whole test suite has to pass
           # before anything is released, and `try` where it is run to
           # see what it says. `compiled` builds three examples with
-          # `zeno build` and runs them: `must` where they have to print
-          # what `zeno run` prints, `try` where that is only looked at.
+          # `zeno build` and with `zeno build --llvm` and runs them:
+          # `must` where they have to print what `zeno run` prints,
+          # `try` where that is only looked at.
           - { name: linux-x86_64,   target: x86_64-unknown-linux-musl,      os: ubuntu-latest,  tests: must, compiled: must }
           - { name: linux-arm64,    target: aarch64-unknown-linux-musl,     os: ubuntu-latest,  with: qemu-aarch64 }
           - { name: linux-x86,      target: i686-unknown-linux-musl,        os: ubuntu-latest }
@@ -83,20 +84,31 @@ jobs:
         if: matrix.with != 'none'
         run: tools/release-check.sh target/${{ matrix.target }}/release/zeno "${{ matrix.with }}"
 
-      - name: A compiled program prints what `zeno run` prints
+      - name: A program compiled through C prints what `zeno run` prints
         if: matrix.compiled
         continue-on-error: ${{ matrix.compiled == 'try' }}
         run: |
           zeno=$PWD/target/${{ matrix.target }}/release/zeno
           # Windows has no `cc`. Its C compiler here is gcc.
           if [ "$RUNNER_OS" = Windows ]; then export CC=gcc; fi
-          mkdir compiled
-          cd compiled
+          mkdir through-c
+          cd through-c
           for example in shapes sensor sentence; do
             "$zeno" run ../examples/$example.zeno > ran.txt
             "$zeno" build ../examples/$example.zeno
             ./$example > built.txt
             diff ran.txt built.txt
+          done
+
+      - name: A program compiled through LLVM prints what `zeno run` prints
+        if: matrix.compiled
+        continue-on-error: ${{ matrix.compiled == 'try' }}
+        run: |
+          zeno=$PWD/target/${{ matrix.target }}/release/zeno
+          mkdir through-llvm
+          cd through-llvm
+          for example in shapes sensor sentence; do
+            "$zeno" run ../examples/$example.zeno > ran.txt
             "$zeno" build --llvm ../examples/$example.zeno
             ./$example > built.txt
             diff ran.txt built.txt
