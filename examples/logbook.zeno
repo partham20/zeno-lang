@@ -51,9 +51,9 @@ function summary(path: str) raises FileError {
         }
     }
     if count == 0 {
-        print(f"no readings in {path}, {skipped} lines skipped")
+        print(f"no readings in {path}, lines skipped: {skipped}")
     } else {
-        print(f"{count} readings in {path}, mean {total / count:.2f}, {skipped} lines skipped")
+        print(f"{count} readings in {path}, mean {total / count:.2f}, lines skipped: {skipped}")
     }
 }
 

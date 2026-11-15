@@ -1308,9 +1308,7 @@ impl Emitter<'_> {
         // `main` takes the command line only in a program that reads it.
         let arguments = self.used.contains("zeno_program_start");
         out += if arguments { "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" } else { "define i32 @main() {\nentry:\n" };
-        if arguments {
-            out += "  call void @zeno_program_start(i32 signext %argc, ptr %argv)\n";
-        }
+
         if self.collector {
             out += "  %base = alloca ptr\n";
             out += "  store ptr %base, ptr @zeno_stack_base\n";
@@ -1319,6 +1317,9 @@ impl Emitter<'_> {
             out += "  %asked = call i32 @atexit(ptr @zeno_memory_report)\n";
         }
         out += &format!("  store ptr {name}, ptr @zeno_file\n");
+        if arguments {
+            out += "  call void @zeno_program_start(i32 signext %argc, ptr %argv)\n";
+        }
         out += "  call void @zeno_program()\n";
         out += "  ret i32 0\n}\n";
         out

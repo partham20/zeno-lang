@@ -4657,3 +4657,222 @@ only lent the list may not do when each item has one owner (5.15e).
 They have to be built in.
 
 Once modules exist, what can be written in Zeno will be.
+
+### 6.11 The world outside is files, the keyboard and the command line
+
+Part 2 of the library lets a program reach what is outside it. There
+are three such things on a computer, and each has one way in:
+
+| Outside | In Zeno |
+|---|---|
+| The screen | `print(...)`, as before |
+| The keyboard | `input()` |
+| Files | `import files`, then `files.read(path)` and four more |
+| The command line | `import program`, then `program.arguments()` |
+
+**Why `print` and `input` are plain words and the rest are modules.**
+Nearly every first program prints and asks. Files and arguments are
+for some programs, and on a board there may be neither, so they are
+asked for by name, as `board` and `time` are (3.15).
+
+**Unambiguous and intuitive.** Each function does one thing and its
+name is the plain word for it. There is no second way to do any of
+them.
+
+### 6.12 A file is read whole and written whole, with no handle
+
+```zeno
+let text = files.read("notes.txt")
+files.write("notes.txt", "a new start\n")
+files.append("notes.txt", "one more line\n")
+```
+
+There is no `open`, and so no `close`.
+
+**Why.** A file that is opened is a thing that has to be closed, on
+every way out of the block, by somebody. That is the question of who
+owns a list (5.8) asked again about something else, and the small
+files that Zeno programs read so far do not need it asked. A whole
+file as one `str` is also the form the text methods of part 1 already
+work on.
+
+**Turned down.** C's and Python's `open(path, "r")`: the second
+argument is text that picks what the function does, so a wrong letter
+is found when the program runs and not when it is checked. Python's
+`with open(...) as f`: a new kind of block for one use.
+
+*(provisional)* A file too large to hold at once needs reading in
+pieces. That will be added, with an owner for the open file, when a
+real program needs it.
+
+### 6.13 `write` replaces, `append` adds, and neither adds a line end
+
+`write` makes the file, or empties one that is there. `append` makes
+the file, or adds to the end of one that is there. What is written is
+the text and nothing more: a program that wants lines ends them with
+`"\n"` itself.
+
+**Why two functions and not a flag.** `files.write(path, text, true)`
+does not say what `true` means. Two names do.
+
+**Why no line end is added.** `print` adds one because it writes lines
+to a screen. A file is whatever the program says it is, and
+`files.write(path, files.read(other))` must make an exact copy.
+
+### 6.14 A file that cannot be used is a `FileError`, and it is a value in every build
+
+Reading a file that is not there, writing into a folder that is not
+there, removing a file twice: each raises `FileError`, with a message
+that names the file (``there is no file `notes.txt` ``, ``cannot read
+`notes.txt` ``, ``cannot write `notes.txt` ``, ``cannot remove
+`notes.txt` ``).
+
+**It can be caught in a firmware build too**, unlike a bad index
+(5.5l, 6.9). **Why.** A bad index is a mistake in the program: the
+program could have looked at the length first. A missing file is not:
+no test beforehand rules it out, because the file can go between the
+test and the read. It is an error in the sense of 4.1, something that
+goes wrong in a correct program, like `int(text)` on text from
+outside. So a function that reads a file says `raises FileError` or
+catches it, and the checker holds it to that in every build.
+
+**Turned down.** `files.read` answering `str or none`: `none` cannot
+say whether the file was missing or was not text. A number that says
+how it went, as C's `errno` does: nothing makes the caller look at it.
+
+**One kind of error, not several.** `FileNotFoundError`,
+`PermissionError` and the rest of Python's family are told apart by
+programs that go on to do something different for each. The message
+tells a person which it was. *(provisional)*
+
+### 6.15 `exists` asks whether there is a file that can be read
+
+`files.exists(path)` is `true` for a file that `files.read` could
+open. It is `false` for a folder, and for a path with nothing at it.
+It cannot fail, so it does not raise.
+
+**Why a folder is not there.** The module is about files. A program
+asks `exists` to decide whether to read, and a `true` that is followed
+by "cannot read" would be a wrong answer to that question.
+
+### 6.16 A file holds text, and what is not text is a `FileError`
+
+`files.read` gives a `str`, and a `str` is characters (6.4). So the
+bytes of the file must be UTF-8, and none of them may be zero, because
+text in a compiled program ends at a zero byte (6.8). A file that is
+something else, such as a picture, raises ``FileError: `logo.png` does
+not hold text``.
+
+**Why not read it anyway.** `zeno run` and a built program would
+disagree about its length, and the checks that make `slice` and `code`
+count characters would be working on bytes that are no characters.
+
+**Nothing is changed on the way in or out.** Files are opened as
+bytes, so `"\r\n"` in a file from Windows arrives as `"\r\n"`, and
+`write` puts down exactly what it was given. `lines()` is where line
+ends are dealt with (6.17).
+
+*(provisional)* Bytes that are not text belong in a `list[u8]`, and a
+`files.read_bytes` that gives one is for the stage that needs it.
+
+### 6.17 `lines()` is a method of text, and knows both line ends
+
+`text.lines()` gives a `list[str]`, one item to a line, without the
+line ends.
+
+- A line ends at `"\n"`. A `"\r"` just before that `"\n"` goes with it.
+- The last line need not end: `"a\nb"` and `"a\nb\n"` are both two lines.
+- Empty text has no lines. `"\n"` is one empty line.
+
+**Why not `split("\n")`.** It gives `"a\nb\n"` a third, empty, piece,
+and leaves a `"\r"` on the end of every line of a file from Windows.
+Both are the kind of surprise that is found late.
+
+**Why on text and not `files.lines(path)`.** Lines also come from the
+keyboard, from a serial port, from a string in a test. One method on
+`str` serves all of them, and `files.read(path).lines()` reads as what
+it does.
+
+### 6.18 `input()` gives a line, or `none` when there are no more
+
+```zeno
+while true {
+    let line = input()
+    if line is none {
+        break
+    }
+    print(line.upper())
+}
+```
+
+`input()` gives the next line without its line end. `input("Name: ")`
+prints the question first and stays on that line. At the end of what
+there is to read (Ctrl-D at a keyboard, the end of a file piped in) it
+gives `none`.
+
+**Why `str or none`.** The end comes to every program that reads until
+there is no more, and that is a correct program, so it is not an error
+to catch. And the type makes the checker ask for the test: `input()`
+used as text is refused with "Check it with `is not none`".
+
+**Turned down.** Python's `EOFError`: the ordinary end of the loop
+written as `try`/`except`. An empty `str` at the end, as in Lua and
+shell: an empty line in the middle looks the same.
+
+**Why the name.** `print` puts a line out and `input` takes one in. It
+is the word Python programmers already know. `read_line` was the other
+candidate, and `files.read` would then have had a namesake that reads
+something else.
+
+**It gives text and nothing else.** A number is `int(line)`, which can
+fail, and says so (2.3).
+
+### 6.19 `program.arguments()` gives the words after the program's name
+
+```
+zeno run copy.zeno a.txt b.txt        ["a.txt", "b.txt"]
+./copy a.txt b.txt                    ["a.txt", "b.txt"]
+```
+
+**The program's own name is not in the list.** In C `argv[0]` and in
+Python `sys.argv[0]` it is, and every program that uses them starts by
+stepping over it. `words[0]` in Zeno is the first thing the user
+wrote.
+
+**A function, giving a new list each time.** `board.led` is a value
+because there is one LED. A list is something a program appends to and
+gives away, so each call makes one that is the caller's own, which is
+also what one owner needs (5.15).
+
+**With `zeno run`, the words after the file are the program's**, even
+ones that look like Zeno's options, and Zeno's own options go before
+the file. `zeno run copy.zeno --strict` gives the program `--strict`.
+**Why.** Otherwise a program could never be given a word Zeno also
+knows, and which words those are would change with each version.
+
+**`main` takes the command line only in a program that asks for it**,
+so the C and the IR of every other program are what they were.
+
+**Left out** *(provisional)*: `program.exit(code)`. A program ends by
+reaching its end, or with an error nobody caught, which ends it with
+status 1. Environment variables: no program has needed one yet.
+
+### 6.20 With no collector and on a board
+
+**With no collector** the text of a file, and a line from `input()`,
+are built text like any other (5.9c): they are in the text room until
+the statement ends, and kept text is copied to the pool. So a file
+larger than `ZENO_TEXT_ROOM` (1024 bytes unless given) stops the
+program with the message that names the macro, and so does a typed
+line that is longer than the room. A line is read straight into the
+room, a byte at a time, so it takes its own length and no more.
+`--memory` prints how much of the room was used.
+
+*(provisional)* Reading a large file a line at a time, straight into
+the pool, belongs with the open file of 6.12.
+
+**On a board** these functions are the C library's: `fopen` for files,
+standard input for `input()`, which firmware C libraries usually tie
+to a serial line. A board with no file system gets a `FileError` from
+every call, which a program can catch. They are not behind
+`ZENO_BOARD` (5.12): a board that has a C library has them already.

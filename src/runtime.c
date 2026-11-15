@@ -2218,6 +2218,36 @@ static bool zeno_files_remove(const char *path, int line, int col) {
  * was started with. Both come from the C library, so a board gets them
  * from whatever its C library reads: a serial line, as a rule. */
 
+/* A line that is being read grows by a byte at a time, and nobody knows
+ * how long it will be. `line` is where it begins, `used` how many bytes
+ * it has, and `room` how many it has room for. */
+#ifdef ZENO_NO_COLLECTOR
+/* With no collector the line grows in the text room, which is a stack:
+ * each byte goes on top of the one before, so the line is in one piece
+ * and takes exactly its own length. */
+static void zeno_line_add(char **line, size_t *used, size_t *room, char c) {
+    char *top = zeno_alloc_text(1);
+    if (*line == NULL) *line = top;
+    *top = c;
+    (*used)++;
+    (void)room;
+}
+#else /* ZENO_NO_COLLECTOR */
+/* With a collector the line is a block. When it is full it moves to a
+ * block twice the size, and the collector takes the old one. Doubling
+ * keeps the copying small: all the moves of a line together copy fewer
+ * bytes than the line is long. */
+static void zeno_line_add(char **line, size_t *used, size_t *room, char c) {
+    if (*used == *room) {
+        *room = *room == 0 ? 64 : *room * 2;
+        char *more = zeno_alloc_text(*room);
+        if (*used > 0) memcpy(more, *line, *used);
+        *line = more;
+    }
+    (*line)[(*used)++] = c;
+}
+#endif /* ZENO_NO_COLLECTOR */
+
 /* `input()`, `input("Name: ")`: the next line, without its line end,
  * or NULL (which is `none`) when there are no more lines. A "\r" just
  * before the "\n" goes with it, as in `lines()`. A zero byte is left
@@ -2227,25 +2257,19 @@ static const char *zeno_input(const char *question) {
         fputs(question, stdout);
         fflush(stdout); /* on the screen before the program waits */
     }
-    char piece[128];
+    char *line = NULL;
     size_t used = 0;
-    const char *line = NULL;
+    size_t room = 0;
     bool carriage = false; /* a "\r" is held back until the next byte is seen */
     bool got = false;      /* was there anything at all, even an empty line? */
     for (;;) {
-        /* Room for two more bytes? If not, move the piece to the line. */
-        if (used + 2 >= sizeof piece) {
-            const char *more = zeno_copy(piece, used);
-            line = line == NULL ? more : zeno_join(2, line, more);
-            used = 0;
-        }
         int c = fgetc(stdin);
         if (c == '\n') {
             got = true;
             break;
         }
         if (carriage) {
-            piece[used++] = '\r'; /* it was not before a "\n": it stays */
+            zeno_line_add(&line, &used, &room, '\r'); /* it was not before a "\n": it stays */
             carriage = false;
         }
         if (c == EOF) break;
@@ -2253,12 +2277,12 @@ static const char *zeno_input(const char *question) {
         if (c == '\r') {
             carriage = true;
         } else if (c != '\0') {
-            piece[used++] = (char)c;
+            zeno_line_add(&line, &used, &room, (char)c);
         }
     }
     if (!got) return NULL;
-    const char *rest = zeno_copy(piece, used);
-    return line == NULL ? rest : zeno_join(2, line, rest);
+    zeno_line_add(&line, &used, &room, '\0');
+    return line;
 }
 
 /* What `main` was given, kept for `program.arguments()`. */

@@ -9954,7 +9954,7 @@ print(shout(input("more? ")))
             let printed = interpreted(source);
             let expected = format!(
                 "reading> reading> reading> reading> reading> \n4 lines typed\n\
-                 4 readings in {path}, mean 26.75, 2 lines skipped\nstill there: false\n\
+                 4 readings in {path}, mean 26.75, lines skipped: 2\nstill there: false\n\
                  FileError: there is no file `{path}`\n"
             );
             assert_eq!(printed, expected);
