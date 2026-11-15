@@ -1,3 +1,168 @@
-\chapter{Memory and the Collector}\label{ch-memory}
+\chapter{Memory}\label{ch-memory}
 
-To be written.
+Numbers and bools live in the variables that hold them, and need no
+memory of their own. Text that is built, lists, objects, enum values
+that carry something, and functions that keep variables all need
+memory while the program runs, and somebody must give it back when the
+program is done with it. This chapter is about how an ordinary
+compiled Zeno program does that, with a \emph{garbage collector}. The
+next three chapters are about the ways firmware can do without one.
+
+\verb|zeno run| needs none of this: the interpreter is a Rust program,
+and Rust frees its values for it. Everything here is about
+\verb|zeno build|.
+
+\section{What takes memory}
+
+\begin{itemize}
+\item text that is built: \verb|a + b|, an \verb|f| string, \verb|text.upper()|;
+\item every list, and every dict;
+\item every object, and every enum value that carries something;
+\item a function written inside another, with the variables it keeps.
+\end{itemize}
+
+Each of these is a \emph{block}: a piece of memory from the C
+library's \verb|malloc|. The question is when to give each block back
+with \verb|free|.
+
+\section{The question nobody can answer in advance}
+
+\begin{zenofrag}
+function label(reading: Reading) -> str {
+    let text = f"tick {reading.tick}"
+    return text
+}
+\end{zenofrag}
+
+Is \verb|text| finished with when \verb|label| returns? No: the caller
+has it now, and may put it in a list, which goes into an object, which
+a function remembers. In C the programmer keeps track of all that by
+hand, and the mistakes are famous: freeing too early, so that the
+program uses memory that is now something else; freeing twice; or
+never freeing at all.
+
+A collector answers a simpler question, while the program runs:
+\emph{can the program still reach this block?} If no variable leads to
+it, directly or through other blocks, nothing can ever use it again,
+and it is safe to free.
+
+\section{Mark and sweep}
+
+Zeno's collector is the oldest and simplest kind. It was invented for
+Lisp in 1960, and it is what MicroPython runs on microcontrollers.
+
+\begin{enumerate}
+\item Every block is written in a table as it is handed out.
+\item \textbf{Mark.} Start from the variables, the \emph{roots}.
+  Whatever a root points at is in use: mark it. Whatever a marked block
+  points at is in use too. Carry on until nothing new turns up.
+\item \textbf{Sweep.} Go through the table. A block with no mark cannot
+  be reached: free it. Take the marks off the rest.
+\end{enumerate}
+
+Two objects that point at each other, and at nothing in use, are freed
+like anything else: no root reaches them, so neither is marked. That
+is the case that defeats the other common method, counting references.
+
+The roots are the variables at the top of the file, which the compiler
+lists, and everything on the C stack: the collector reads the stack
+from the function running now back to \verb|main|, a word at a time,
+and asks of each word whether it is the address of one of its blocks.
+When unsure, it keeps, so it can never free a block in use.
+
+\section{Seeing it work}
+
+\verb|zeno build --memory| makes a program that reports, as it ends,
+what memory it used. This one, from the \verb|examples| folder, logs a
+reading every tick for 50\,000 ticks, and keeps only the last few and
+the hottest:
+
+\begin{zeno}[src=examples/memory.zeno, cmd=zeno build --memory memory.zeno > /dev/null ;; ./memory, file=memory.zeno]
+\end{zeno}
+
+The last line is the report. The program asked for thirteen megabytes, a
+few bytes at a time, and never held more than one megabyte or so at
+once, because the collector ran when it was needed and gave the rest
+back. The last number counts blocks freed at a line the compiler could
+point to, without waiting for the collector: the old storage of a list
+that has just grown, and the copy that a \verb|for| loop walks.
+
+\section{When it runs}
+
+Collecting takes time, in proportion to what is still in use, so it is
+not done on every allocation. The runtime counts the bytes in use and
+collects when they pass a limit; after each collection the limit
+becomes twice what survived. A program that keeps little is collected
+often and cheaply, and one that keeps a lot is left alone for longer.
+And if \verb|malloc| itself says there is no more memory, the collector
+runs and the request is tried again. On a board with 64\,KB of memory,
+that second trigger is the one that matters.
+
+\section{What it costs}
+
+\begin{itemize}
+\item \textbf{Pauses.} While the collector runs, the program does not,
+  and the pause grows with the memory in use. A control loop that must
+  answer within microseconds should not make blocks inside the loop.
+  Numbers, bools and fixed text never do.
+\item \textbf{A few words for each block}: a header and its line in the
+  table.
+\item \textbf{It leans on the C compiler.} Reading the stack word by
+  word is not something the C standard describes. Every mainstream
+  compiler and processor allows it, and the Boehm collector, Ruby and
+  MicroPython have relied on it for decades.
+\end{itemize}
+
+\begin{why}
+Sharing, with a collector to make it safe, is what Python, Java and
+JavaScript programmers expect, and it lets a program be written without
+thinking about memory at all. Counting references cannot free a cycle
+and costs on every assignment. Rust's ownership everywhere would make
+every Zeno program pay the hardest part of Rust. So the collector is
+the default, and the next chapters give firmware the other choices
+where it needs them. (Decision 5.7.)
+\end{why}
+
+\section{Three ways to manage memory}
+
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+Build & Memory \\
+\midrule
+\verb|zeno build| & shared values and a collector: this chapter \\
+\verb|owned| values & one owner, freed where its block ends, in any build:
+  \hyperref[ch-ownership]{Ownership} \\
+\verb|--no-collector| & every list and object has one owner, memory comes
+  from a fixed pool, and there is no collector:
+  \hyperref[ch-no-collector]{Building with No Collector} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Memory a program asks for itself with \verb|allocate| is apart from all
+three: the collector never looks at it, and the program gives it back
+with \verb|free| (\hyperref[ch-unsafe]{Unsafe Code}).
+
+\begin{summary}
+Built text, lists, dicts, objects, enum values that carry something
+and functions that keep variables take memory. A compiled program frees
+it with a mark-and-sweep collector, which frees whatever no variable
+can reach, cycles included. It runs when memory in use passes a limit,
+or when \verb|malloc| runs out. \verb|--memory| reports what a program
+used. The cost is pauses, a little memory per block, and a habit of C
+compilers that every one of them keeps.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Build \verb|memory.zeno| with \verb|--memory| and change the
+  number of ticks. Which numbers in the report grow, and which do not?
+\item Write a loop that builds a text with \verb|+| a thousand times,
+  and build it with \verb|--memory|. Then build the same text once with
+  \verb|join|. Compare the reports.
+\item Make two objects that point at each other through fields that may
+  be \verb|none|, drop every variable that leads to them in a loop, and
+  check that the memory in use stays low.
+\end{enumerate}
+\end{tryit}

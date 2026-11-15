@@ -1,3 +1,211 @@
-\chapter{Firmware Builds}\label{ch-firmware}
+\chapter{Firmware}\label{ch-firmware}
 
-To be written.
+Firmware is a program that runs on a board with no operating system
+under it: it starts when the power comes on and runs until it goes
+off. It is held to rules a desktop program is not, and often to a
+written coding standard such as MISRA C. \verb|zeno build --firmware|
+writes C for that world. This chapter is about what it changes, how to
+put a real board under the program, and what it does not yet claim.
+
+\section{Errors as values}
+
+An ordinary build compiles \verb|try| with C's \verb|setjmp| and
+\verb|longjmp|: a \verb|raise| jumps straight back to the \verb|try|,
+out of however many functions are in between. That is cheap, and it is
+exactly what standards for safety-critical firmware forbid. MISRA C
+bans \verb|<setjmp.h>| outright, because the jump skips what the
+functions in between still meant to do, can leave local variables with
+no defined value, and hides paths from the tools that measure stack
+depth and test coverage.
+
+A firmware build carries errors as ordinary return values instead. The
+Zeno does not change:
+
+\begin{zeno}[file=speed.zeno, cmd=zeno build --firmware {file} ;; ./speed ;; grep -c setjmp speed.c]
+function parse_speed(text: str) -> int raises ValueError {
+    let n = int(text)
+    if n < 0 or n > 100 {
+        raise ValueError(f"a speed is 0 to 100, and {n} is not")
+    }
+    return n
+}
+
+for text in ["40", "fast", "250"] {
+    try {
+        print("speed", parse_speed(text))
+    } except ValueError as e {
+        print("refused:", e.message)
+    }
+}
+\end{zeno}
+
+It prints what \verb|zeno run| prints, and there is no \verb|setjmp|
+in the C (\verb|grep| counted 0). Here is what \verb|parse_speed|
+became:
+
+\begin{zeno}[file=speed.zeno, show=no, cmd=zeno build --firmware {file} > /dev/null ;; grep -A11 "^static bool z_parse_speed.*{$" speed.c]
+function parse_speed(text: str) -> int raises ValueError {
+    let n = int(text)
+    if n < 0 or n > 100 {
+        raise ValueError(f"a speed is 0 to 100, and {n} is not")
+    }
+    return n
+}
+
+for text in ["40", "fast", "250"] {
+    try {
+        print("speed", parse_speed(text))
+    } except ValueError as e {
+        print("refused:", e.message)
+    }
+}
+\end{zeno}
+
+Three things changed. The function returns \verb|true| when it worked
+and \verb|false| when it raised, and its answer goes out through one
+more parameter. A \verb|raise| notes the error, with its line and
+column, and returns \verb|false|. And a call to something that can
+raise, \verb|int(text)| here, is followed at once by a test. Only the
+functions that say \verb|raises| are compiled this way; the rest are
+plain C, with no tests after calls to them. That is why \verb|raises|
+must be written in a build (\hyperref[ch-errors]{When Things Go Wrong}).
+
+\section{Faults}
+
+Zeno has two sorts of error that \verb|zeno run| can catch:
+
+\begin{itemize}
+\item errors \textbf{the program raises itself}: \verb|raise|, and
+  \verb|int| or \verb|float| of text;
+\item errors \textbf{the runtime finds}: a division by zero, a position
+  past the end, a key that is not there, an overflow, \verb|pop| on an
+  empty list.
+\end{itemize}
+
+A firmware build carries the first sort as values. The second sort is
+a \emph{fault}: the program stops there, with the message \verb|zeno run|
+gives for an uncaught error, and no \verb|except| sees it. To carry a
+division by zero as a value, every function would have to be one that
+can fail, and nearly every line would need a test after it. The
+firmware answer is to test first:
+
+\begin{zenofrag}
+if divisor != 0 {
+    rate = total // divisor
+}
+\end{zenofrag}
+
+The compiler does not leave this to be found when the board resets. A
+\verb|try| that hopes to catch a fault is refused before anything is
+built:
+
+\begin{zeno}[file=divide.zeno, cmd=zeno build --firmware {file}, fails=yes]
+let readings = [4, 0]
+for n in readings {
+    try {
+        print(100 // n)
+    } except ZeroDivisionError {
+        print("no reading")
+    }
+}
+\end{zeno}
+
+A \verb|FileError| is the exception to the exception: no check the
+program could make rules out a missing file, so it is always a value,
+and can always be caught.
+
+\begin{why}
+The line between the two sorts is the line between what the program
+can check beforehand and what it cannot. A bad index can be ruled out
+by testing the length; a missing file cannot. Firmware held to a
+standard is expected to test, and the build makes the cases it did not
+test visible. (Decisions 4.1 and 5.5l.)
+\end{why}
+
+\section{A real board underneath}
+
+The board module meets the hardware in four C functions
+(\hyperref[ch-board]{The Board}). For a real board, write them in a
+header over the vendor's library, and tell the C compiler where it is
+with \verb|-DZENO_BOARD|:
+
+\begin{zenofrag}[lang=shell]
+$ zeno build --firmware --no-collector blink.zeno
+$ cc -O2 -DZENO_BOARD='"my_board.h"' -o blink blink.c -lm
+\end{zenofrag}
+
+With ST's HAL for an STM32, where the LED of a Nucleo board is on port
+A pin 5, the header would look like this. It is a sketch, and has not
+been run on hardware:
+
+\begin{zenofrag}[lang=shell]
+#define ZENO_PINS 16
+
+static void zeno_board_write(int pin, bool level) {
+    if (pin == ZENO_LED) pin = 5;
+    HAL_GPIO_WritePin(GPIOA, (uint16_t)(1u << pin),
+                      level ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+static bool zeno_board_read(int pin) {
+    if (pin == ZENO_LED) pin = 5;
+    return HAL_GPIO_ReadPin(GPIOA, (uint16_t)(1u << pin)) == GPIO_PIN_SET;
+}
+static void zeno_board_sleep(double seconds) {
+    HAL_Delay((uint32_t)(seconds * 1000.0));
+}
+static double zeno_board_now(void) { return (double)HAL_GetTick(); }
+\end{zenofrag}
+
+To the Zeno program the LED is always pin 13, and the board is free to
+wire that number to wherever its LED really is. The same flag works for
+an LLVM build, on the \verb|clang| line.
+
+A board whose clock moves only when the program sleeps makes a program
+that waits run in no time. That is how firmware is tested on a desk,
+and Zeno's own tests do exactly that.
+
+\section{What the C of blink looks like}
+
+All of \verb|blink|'s program, in a firmware build with no collector,
+is three lines of C:
+
+\begin{zenofrag}[lang=shell]
+while (true) {
+    zeno_pin_toggle(ZENO_LED);
+    zeno_sleep((500.0 / 1000.0));
+}
+\end{zenofrag}
+
+A pin is a number, \verb|500 ms| has become seconds, and nothing in it
+takes memory or can raise.
+
+\section{What this does not claim}
+
+Removing \verb|setjmp| removes one obstacle to MISRA, not all of them.
+The C that a firmware build writes in version 0.1 still uses variable
+argument lists in the runtime, calls \verb|printf| and \verb|exit|, and
+uses GCC and Clang built-ins for checked arithmetic. Taking memory from
+the heap, which MISRA also bans, is answered by \verb|--no-collector|,
+in the next chapter. None of these is hidden, and each is a later piece
+of work. A function that can raise cannot yet be passed around as a
+value in a firmware build, because a function type does not say whether
+it raises.
+
+\begin{summary}
+\verb|zeno build --firmware| carries errors the program raises as
+return values, tested after each call, with no \verb|setjmp|. Errors
+the runtime finds are faults that stop the program, and a \verb|try|
+that hopes to catch one is refused. A real board goes under the program
+as a header of four functions, named with \verb|-DZENO_BOARD|.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Build \verb|speed.zeno| with and without \verb|--firmware|, and
+  compare the C of \verb|parse_speed| in the two.
+\item Rewrite the \verb|divide.zeno| example so that a firmware build
+  accepts it.
+\item Write a board header of your own for the simulated board that
+  prints \verb|HIGH| and \verb|LOW|, and build \verb|blink| with it.
+\end{enumerate}
+\end{tryit}

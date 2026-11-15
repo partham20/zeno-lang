@@ -1,3 +1,203 @@
-\chapter{Owned Values}\label{ch-ownership}
+\chapter{Ownership}\label{ch-ownership}
 
-To be written.
+A collector has two costs that firmware notices. It pauses the
+program when it runs, and memory comes back at no particular moment. A
+buffer filled a thousand times a second inside a control loop wants
+neither. So a value in Zeno can be marked \verb|owned|. An owned value
+has exactly one owner, and is freed the moment its owner's block ends,
+at a line you can point to.
+
+Shared values stay the default. Nothing changes for a program that
+does not say \verb|owned|.
+
+\section{Three words}
+
+\begin{zeno}
+owned class Packet {
+    id: int
+    data: owned list[int]
+}
+
+function make(id: int) -> Packet {
+    let data: owned list[int] = [id, id * 2, id * 3]
+    return Packet(id, data)       # `data` moves into the packet
+}
+
+function size(packet: Packet) -> int {      # looks
+    return len(packet.data)
+}
+
+function send(packet: take Packet) -> int {  # takes
+    return packet.id
+}
+
+let packet = make(7)
+print(size(packet), packet.data)
+print(send(packet))               # `packet` moves into `send`
+\end{zeno}
+
+\begin{itemize}
+\item \verb|owned class|: every object of the class has exactly one
+  owner. It is decided once, where the class is declared.
+\item \verb|owned list[T]|: a list with exactly one owner.
+\item \verb|take| on a parameter: the function takes the value over. A
+  parameter without it only \emph{looks}: the function may read the
+  value and change what is inside it, and may not keep it.
+\end{itemize}
+
+There are no lifetimes to write, and no \verb|&|.
+
+\section{The rules}
+
+\paragraph{1. One owner.} A variable, a parameter, or a field of an
+owned object holds the value. Nothing else does.
+
+\paragraph{2. Storing it gives it away.} Assigning it to another
+variable, passing it to a \verb|take| parameter, putting it in a field,
+or returning it moves it. The old name holds nothing afterwards, and
+using it is an error that says where it went:
+
+\begin{zeno}[fails=yes]
+owned class Packet {
+    id: int
+}
+function send(packet: take Packet) -> int {
+    return packet.id
+}
+let packet = Packet(1)
+print(send(packet))
+print(packet.id)
+\end{zeno}
+
+\paragraph{3. Looking is free.} Reading a field, calling a method,
+printing, indexing, comparing and looping over it move nothing.
+
+\paragraph{4. A parameter looks, unless it says take.} What is only
+looked at cannot be kept, returned or passed on to something that keeps
+it, so it can never outlive the call:
+
+\begin{zeno}[fails=yes]
+owned class Packet {
+    id: int
+}
+function keep(packet: Packet) -> Packet {
+    return packet
+}
+\end{zeno}
+
+\paragraph{5. It is freed where its owner's block ends:} at the
+closing \verb|}|, or at a \verb|return|, \verb|break| or
+\verb|continue| that leaves the block early. A \verb|var| given a new
+value frees the old one at that line.
+
+\paragraph{6. Owned may hold shared; shared may not hold owned.} A
+shared list can be reached from many places, and if it held an owned
+value, each of them would think the value was still there after its
+owner had freed it. So a list of owned objects must itself be owned:
+
+\begin{zeno}[fails=yes]
+owned class Packet {
+    id: int
+}
+let queue: list[Packet] = []
+\end{zeno}
+
+\begin{zeno}
+owned class Packet {
+    id: int
+}
+var queue: owned list[Packet] = []
+queue.append(Packet(1))
+queue.append(Packet(2))
+let first = queue.pop(0)          # taken out: `first` owns it now
+print(first, queue)
+\end{zeno}
+
+An owned list owns its items, and frees them with itself. A
+\verb|Packet or none| can own a packet or nothing.
+
+\section{Branches and loops}
+
+The checker follows each path. After an \verb|if|, a value is gone if
+any branch gave it away, unless that branch left with \verb|return|:
+
+\begin{zenofrag}
+if not ok {
+    discard(frame)
+    return
+}
+send(frame)          # fine: only reached with the frame still here
+\end{zenofrag}
+
+A value given away on one trip round a loop would not be there on the
+next, so an owner from outside a loop cannot be given away inside it,
+except just before a \verb|break|:
+
+\begin{zeno}[fails=yes]
+owned class Packet {
+    id: int
+}
+function send(packet: take Packet) {
+    print("sent", packet.id)
+}
+let packet = Packet(1)
+for turn in range(3) {
+    send(packet)
+}
+\end{zeno}
+
+In a \verb|try|, an error may leave the body after any line, so the
+\verb|except| starts with everything the body gives away already gone.
+
+\section{Seeing the frees}
+
+This program from the \verb|examples| folder makes 120 frames of 600
+samples each, sends some and skips others. Every list and object in it
+is owned:
+
+\begin{zeno}[src=examples/buffer.zeno, cmd=zeno build --memory buffer.zeno > /dev/null ;; ./buffer, file=buffer.zeno]
+\end{zeno}
+
+It made megabytes of buffers, never held more than a few kilobytes,
+and the collector never ran: every block was freed at a line, the
+moment its owner was done.
+
+\begin{why}
+Rust showed that one owner, checked by the compiler, gives memory back
+at exact moments with no collector and no mistakes. It also showed that
+borrowing everywhere, with lifetimes written in the program, is the
+hardest thing in Rust to learn. Zeno takes the first half. A parameter
+looks, which needs nothing written, and only keeping needs a word. No
+lifetimes are needed because a look can never outlive the call.
+Owned values are a choice made where it pays, and shared values stay
+the easy default. (Decisions 5.8 and 5.15, and the audit, which made
+looking the default.)
+\end{why}
+
+\section{What owned values cannot do}
+
+In version 0.1 an owned value cannot sit in a function type, be taken
+out of a field (that would leave a hole the type does not admit to),
+be replaced through a look, or be raised. Each is an error that says
+what to do instead, and allowing any of them later breaks no program.
+
+\begin{summary}
+\verb|owned class| and \verb|owned list[T]| have one owner, and are
+freed where the owner's block ends. Storing gives a value away; looking
+is free. A parameter looks unless it says \verb|take|. Owned may hold
+shared, never the other way. The checker follows branches, loops and
+\verb|try|, and says where a value went when it is used after.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Change \verb|size| above to return the packet's list. Read the
+  message, and say in your own words why it is right.
+\item Write a queue of owned packets with \verb|put| and \verb|get|
+  methods, where \verb|get| gives \verb|Packet or none|.
+\item In \verb|buffer.zeno|, remove \verb|take| from \verb|send|. What
+  changes in the report?
+\item Give an owned value away inside a loop and then \verb|break| on
+  the next line. Why does the checker accept that?
+\end{enumerate}
+\end{tryit}
