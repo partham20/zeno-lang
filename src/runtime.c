@@ -23,6 +23,42 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* `a * b + c` is two steps: multiply and round, then add and round. Some
+ * processors (ARM64, and x86 where the compiler is told it may) have one
+ * instruction that does both and rounds once, which is faster and now and
+ * then gives another last digit: 74.3 where two steps give
+ * 74.30000000000001. A C compiler is allowed to pick it without being
+ * asked. `zeno run` always takes two steps, so the compiled program must
+ * too, and these lines say so to the two families of C compiler. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#elif defined(__GNUC__)
+#pragma GCC optimize("fp-contract=off")
+#endif
+
+/* A 32-bit x86 processor has two sets of float instructions. The old set
+ * works to more digits than a float holds and rounds at the end, which
+ * gives another last digit in the same way. gcc picks the old set there
+ * unless it is told otherwise. The new set (SSE2, in every x86 processor
+ * since 2001) rounds after each step, as every other processor does. */
+#if defined(__i386__) && defined(__GNUC__) && !defined(__clang__)
+#pragma GCC target("sse2,fpmath=sse")
+#endif
+
+/* On Windows a C program that prints "\n" is given "\r\n" in its place,
+ * unless it says it wants its bytes left alone. `zeno run` prints "\n" on
+ * every machine, so a compiled program says so, before `main` starts. A
+ * Windows terminal shows either the same way. */
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+__attribute__((constructor)) static void zeno_plain_line_ends(void) {
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+}
+#endif
+
 /* The Zeno source file, for error messages. Set at the top of main. */
 static const char *zeno_file = "";
 

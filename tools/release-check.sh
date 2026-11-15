@@ -2,7 +2,7 @@
 # Checks a built `zeno` before it is released.
 #
 #     tools/release-check.sh target/release/zeno
-#     tools/release-check.sh path/to/zeno qemu-aarch64-static
+#     tools/release-check.sh path/to/zeno qemu-aarch64
 #
 # The first argument is the program to check. The second, if there is
 # one, is a program that runs it: an emulator, for a `zeno` built for a
