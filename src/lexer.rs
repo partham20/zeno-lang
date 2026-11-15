@@ -371,7 +371,7 @@ impl Lexer {
             ',' => Comma,
             '.' => Dot,
             ':' => Colon,
-            '%' => Percent,
+            '%' => if self.eat('=') { PercentAssign } else { Percent },
             '+' => if self.eat('=') { PlusAssign } else { Plus },
             '-' => {
                 if self.eat('>') {
@@ -384,7 +384,7 @@ impl Lexer {
             }
             '*' => {
                 if self.eat('*') {
-                    StarStar
+                    if self.eat('=') { StarStarAssign } else { StarStar }
                 } else if self.eat('=') {
                     StarAssign
                 } else {
@@ -393,7 +393,7 @@ impl Lexer {
             }
             '/' => {
                 if self.eat('/') {
-                    SlashSlash
+                    if self.eat('=') { SlashSlashAssign } else { SlashSlash }
                 } else if self.eat('=') {
                     SlashAssign
                 } else {
@@ -545,6 +545,14 @@ mod tests {
             vec![
                 Eq, NotEq, Lt, LtEq, Gt, GtEq, Assign, PlusAssign, MinusAssign,
                 StarAssign, SlashAssign, Arrow, ident("x"), Newline
+            ]
+        );
+        // Every operator on two numbers has an `=` form.
+        assert_eq!(
+            kinds("a //= b %= c **= d ** e // f % g"),
+            vec![
+                ident("a"), SlashSlashAssign, ident("b"), PercentAssign, ident("c"), StarStarAssign, ident("d"),
+                StarStar, ident("e"), SlashSlash, ident("f"), Percent, ident("g"), Newline
             ]
         );
     }

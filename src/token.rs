@@ -126,6 +126,9 @@ pub enum TokenKind {
     MinusAssign, // -=
     StarAssign,  // *=
     SlashAssign, // /=
+    SlashSlashAssign, // //=
+    PercentAssign,    // %=
+    StarStarAssign,   // **=
     Amp,         // &   the bits both have
     Pipe,        // |   the bits either has
     Caret,       // ^   the bits one has and the other has not
@@ -267,6 +270,9 @@ impl TokenKind {
             MinusAssign => "-=",
             StarAssign => "*=",
             SlashAssign => "/=",
+            SlashSlashAssign => "//=",
+            PercentAssign => "%=",
+            StarStarAssign => "**=",
             Amp => "&",
             Pipe => "|",
             Caret => "^",
@@ -302,6 +308,7 @@ impl TokenKind {
             Comma | Dot | Arrow
                 | Plus | Minus | Star | Slash | SlashSlash | Percent | StarStar
                 | Assign | PlusAssign | MinusAssign | StarAssign | SlashAssign
+                | SlashSlashAssign | PercentAssign | StarStarAssign
                 | Amp | Pipe | Caret | Tilde | Shl | Shr
                 | AmpAssign | PipeAssign | CaretAssign | ShlAssign | ShrAssign
                 | Eq | NotEq | Lt | LtEq | Gt | GtEq

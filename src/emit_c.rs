@@ -5895,8 +5895,14 @@ fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String,
     let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
     let Format { align, zero, width, precision, kind } = read_format(spec).ok_or_else(bad)?;
 
-    let is_number = val.is_number();
+    // A quantity is a number with its unit, and lines up as numbers do.
+    let is_number = val.is_number() || matches!(val.kind, Kind::Quantity(_));
     let body = match (kind, precision, &val.kind) {
+        // `{angle:.1f}` is `30.5 deg`: the decimals are the number's,
+        // and the unit follows it as it always does.
+        (Some('f'), _, Kind::Quantity(unit)) | (None, Some(_), Kind::Quantity(unit)) => {
+            format!("zeno_fixed_quantity({}, {}, {})", val.code, precision.unwrap_or(6), c_string(unit))
+        }
         (Some('f'), _, _) | (None, Some(_), Kind::Float) if is_number => {
             format!("zeno_fixed({}, {})", val.double(), precision.unwrap_or(6))
         }
@@ -12719,6 +12725,113 @@ match a {
     fn sized_ints_match() {
         same_as_interpreter("sized", SIZED);
         same_as_interpreter("packet", include_str!("../examples/packet.zeno"));
+    }
+
+    /// `count += 1` on a sized number is `count = u8(count + 1)`, with
+    /// every operator, in a variable, a field and an item of a list.
+    const SIZED_COMPOUND: &str = r#"
+class Counter {
+    count: u8
+    total: u16
+
+    function bump(self, by: u8) {
+        self.count += by
+        self.total += self.count
+    }
+}
+
+function drain(level: u8) -> u8 {
+    var left: u8 = level
+    while left > 3 {
+        left -= 3
+    }
+    return left
+}
+
+var count: u8 = 250
+count += 1
+count += 2
+print(count)
+count -= 3
+count *= 1
+count //= 2
+count %= 100
+count **= 1
+print(count)
+var flags: u8 = 0b0000_0001
+flags |= 0x80
+flags <<= 0
+flags >>= 0
+flags &= 0xF0
+flags ^= 0x0F
+print(flags)
+var wide: i16 = -5
+wide -= 10
+wide *= 2
+print(wide)
+
+let counter = Counter(0, 0)
+counter.bump(200)
+counter.bump(50)
+counter.count -= 1
+print(counter.count, counter.total, drain(20))
+
+let frame: list[u8] = [1, 2, 3]
+var i = 1
+frame[i] += 40
+frame[i + 1] *= 2
+print(frame)
+"#;
+
+    #[test]
+    fn compound_assignment_on_sized_numbers_matches() {
+        same_as_interpreter("sized-compound", SIZED_COMPOUND);
+        // A sum that does not fit is an error that can be caught, and
+        // the variable keeps what it had.
+        same_as_interpreter(
+            "sized-compound-caught",
+            "var count: u8 = 250\ntry {\n    count += 10\n    print(\"not reached\")\n} except OverflowError as error {\n    \
+             print(error.message, count)\n}\ntry {\n    count = 3\n    count -= 4\n} except OverflowError as error {\n    \
+             print(error.message, count)\n}",
+        );
+        // Not caught, it stops every build at the same statement.
+        same_as_interpreter("sized-compound-over", "var count: u8 = 250\ncount += 5\nprint(count)\ncount += 1\nprint(\"not reached\")");
+        // A variable that a function written inside another shares.
+        same_as_interpreter(
+            "sized-compound-shared",
+            "function step() -> function() -> u8 {\n    var seen: u8 = 0\n    return function() -> u8 {\n        seen += 1\n        return seen\n    }\n}\n\
+             let next = step()\nnext()\nprint(next())",
+        );
+    }
+
+    #[test]
+    fn with_no_collector_a_sized_number_takes_an_operator_and_an_equals() {
+        no_collector_as_interpreter("sized-compound", SIZED_COMPOUND);
+    }
+
+    #[test]
+    fn what_is_there_is_read_before_the_value_is_worked_out() {
+        // `count += bump()` is `count = count + bump()`, in every build.
+        same_as_interpreter(
+            "read-first",
+            "var count = 1\nfunction bump() -> int {\n    count = 10\n    return 1\n}\ncount += bump()\nprint(count)\n\
+             class Box {\n    n: int\n}\nlet box = Box(1)\nfunction swap() -> int {\n    box.n = 10\n    return 1\n}\nbox.n += swap()\nprint(box.n)\n\
+             let xs = [1, 2]\nfunction grow() -> int {\n    xs[0] = 10\n    return 1\n}\nxs[0] += grow()\nprint(xs)\n\
+             var n = 17\nn //= 2\nn %= 5\nn **= 4\nprint(n)",
+        );
+    }
+
+    #[test]
+    fn a_quantity_takes_the_formats_of_a_float() {
+        no_collector_as_interpreter(
+            "quantity-format",
+            "import math\n\nlet angle = 30.456 deg\nlet supply = 3.3 V\nlet wait = 500 ms\nprint(f\"{angle:.1f}\")\n\
+             print(f\"{supply:.2f} and {supply}\")\n\
+             print(f\"[{supply:10.2f}] [{supply:<10.2f}] [{supply:^10.2f}] [{supply:010.2f}]\")\n\
+             print(f\"[{wait:10}] [{wait:<10}] [{wait:.0f}] [{wait:f}] [{wait:.3}]\")\n\
+             print(f\"{math.atan(1):.4f} {(angle * 2).rad:.3f} {-supply:8.1f}|\")\n\
+             for reading in [3.3 V, 12.0 V, 0.75 V] {\n    print(f\"{reading:8.2f}\")\n}",
+        );
     }
 
     #[test]

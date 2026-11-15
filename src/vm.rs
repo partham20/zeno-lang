@@ -271,10 +271,6 @@ impl Vm {
                     self.stack.truncate(left);
                 }
                 Op::PopTo(n) => self.stack.truncate(base + n as usize),
-                Op::Swap => {
-                    let top = self.stack.len() - 1;
-                    self.stack.swap(top, top - 1);
-                }
 
                 // ------------------------------------------------- Variables
                 Op::GetLocal(n) => {

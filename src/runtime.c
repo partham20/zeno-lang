@@ -1035,6 +1035,12 @@ static const char *zeno_fixed(double x, int decimals) {
     return text;
 }
 
+/* `{angle:.1f}`: a quantity with a fixed number of decimals, and its
+ * unit after it as always: `30.5 deg`. */
+static const char *zeno_fixed_quantity(double x, int decimals, const char *unit) {
+    return zeno_join(3, zeno_fixed(x, decimals), " ", unit);
+}
+
 /* `{n:x}`, `{n:X}`, `{n:b}`: hexadecimal or binary. */
 static const char *zeno_radix(int64_t n, char kind) {
     char buffer[72];

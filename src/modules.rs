@@ -1332,11 +1332,15 @@ pub mod testing {
         })
     }
 
-    /// The program, joined. A mistake in a test program stops the test.
+    /// The program, joined, as `zeno run` and `zeno build` get it from
+    /// `checker::checked`: `count += 1` on a sized number has become
+    /// `count = u8(count + 1)`. A program the checker refuses comes
+    /// back as it was written. A mistake in a test program that keeps
+    /// it from being read stops the test.
     pub fn program(source: &str) -> Program {
         let loaded = load(source);
         match loaded.program {
-            Ok(program) => program,
+            Ok(program) => crate::checker::checked(program, crate::checker::Rules::default()).0,
             Err(errors) => panic!("the test program has mistakes: {:?}\n{source}", errors[0].message),
         }
     }

@@ -244,6 +244,10 @@ pub struct Types {
     /// `[Circle(1.0), Square(2.0)]` is a list of `Shape`, and `[1, 2]` a
     /// list of `int or none`, where the place wants one.
     items: HashMap<usize, Kind>,
+    /// Each `count += 1` whose place holds a sized number, by the line
+    /// and column it starts at, with the size. It means `count =
+    /// u8(count + 1)`, and `checked` makes it that.
+    fits: HashMap<(usize, usize), Width>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -435,6 +439,27 @@ fn plain_kind(ty: &Ty) -> Kind {
 #[cfg(test)]
 pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) {
     check_by(program, Rules { strict, one_owner: false, firmware: false })
+}
+
+/// Check a program, and give back the program to run or to build.
+///
+/// It is the program that was given, but for one thing: `count += 1`
+/// where `count` is a sized number has become what it means, `count =
+/// u8(count + 1)` (decision 10.27). The checker is the one stage that
+/// knows the type of `count`, so it says which statements those are,
+/// `Program::with_fits` rewrites them, and the program is checked once
+/// more, because the checker's notes are kept by where each node is in
+/// memory and the rewrite made new nodes. A program with no such
+/// statement is checked once.
+pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
+    let (errors, types) = check_by(&program, rules);
+    if !errors.is_empty() || types.fits.is_empty() {
+        return (program, errors, types);
+    }
+    let Types { fits, .. } = types;
+    let program = program.with_fits(&fits);
+    let (errors, types) = check_by(&program, rules);
+    (program, errors, types)
 }
 
 /// `check_with_types`, by the rules given.
@@ -1252,6 +1277,28 @@ fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
             Some(Ok(()))
         }
         _ => None,
+    }
+}
+
+/// The first call in the place an assignment names, if it has one:
+/// `next()` in `xs[next()]`, `pick()` in `pick().count`.
+fn call_in(place: &Expr) -> Option<&Expr> {
+    match &place.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Name(_) => None,
+        ExprKind::Field { object, .. } | ExprKind::Unit { value: object, .. } | ExprKind::Unary { operand: object, .. } => {
+            call_in(object)
+        }
+        ExprKind::Index { object: left, index: right } | ExprKind::Binary { left, right, .. } => {
+            call_in(left).or_else(|| call_in(right))
+        }
+        ExprKind::Compare { first, rest } => call_in(first).or_else(|| rest.iter().find_map(|(_, operand)| call_in(operand))),
+        ExprKind::List(items) => items.iter().find_map(call_in),
+        ExprKind::FormatStr(parts) => parts.iter().find_map(|part| match part {
+            FormatPart::Value { value, .. } => call_in(value),
+            FormatPart::Text(_) => None,
+        }),
+        // A call, and the few things nobody writes in a place.
+        ExprKind::Call { .. } | ExprKind::Dict(_) | ExprKind::ListComp { .. } | ExprKind::Function(_) => Some(place),
     }
 }
 
@@ -2779,10 +2826,30 @@ impl Checker {
                         self.adapted(written(value), given, &wanted, value.span)
                     }
                     Some(op) => {
+                        // `xs[next()] += 1` is `xs[next()] = xs[next()] + 1`,
+                        // which would call `next` twice and could read one
+                        // place and write another.
+                        if let Some(call) = call_in(target) {
+                            self.error(
+                                format!(
+                                    "`{0}=` reads this place and then writes it, so a call in the place would run twice. \
+                                     Keep what the call gives in a `let` first, and use that name here",
+                                    op.text()
+                                ),
+                                call.span,
+                            );
+                        }
                         let given = self.look(value, env);
                         // `xs += [4]` is `xs = xs + [4]`. On an owned list,
                         // the list that `+` makes takes the old one's place.
                         match (&wanted, self.binary(*op, &holds.looked_at(), &given, span)) {
+                            // `count += 1` on a `u8` is `count = u8(count + 1)`:
+                            // the sum is an int, and it is checked to fit as
+                            // it is stored. `checked` rewrites the statement.
+                            (Ty::Sized(width), Ty::Int) => {
+                                self.types.fits.insert((span.line, span.col), *width);
+                                wanted.clone()
+                            }
                             (Ty::Owned(_), made) if owns_items(&made) => self.error(
                                 "`+=` would put each item of the list on the right in a second list, and each has \
                                  one owner. Add the items one at a time with `append`",
@@ -6808,6 +6875,55 @@ mod tests {
         assert_eq!(errors(source), Vec::<String>::new(), "\n{source}");
     }
 
+    #[test]
+    fn a_sized_number_takes_an_operator_and_an_equals() {
+        // `count += 1` on a `u8` is `count = u8(count + 1)`, for every
+        // operator that gives a whole number, wherever the `u8` is kept.
+        strict_ok(
+            "class Reg {\n    value: u8\n}\n\
+             var a: u8 = 1\nvar b: i16 = -1\nlet r = Reg(1)\nlet xs: list[u8] = [1, 2]\nlet i = 0\n\
+             a += 1\na -= 1\na *= 2\na //= 2\na %= 7\na **= 2\na &= 0x0F\na |= 0x80\na ^= 1\na <<= 1\na >>= 1\n\
+             b -= a\nr.value += a\nxs[i] += 1\nxs[i + 1] |= r.value\n\
+             function bump(n: u8) -> u8 {\n    var m = n\n    m += 1\n    return m\n}\nprint(a, b, r, xs, bump(a))",
+        );
+        // `/` gives a float, on a sized number as on an int.
+        assert_eq!(error("var a: u8 = 1\na /= 2"), "the new value should be u8, but this is float");
+        assert_eq!(error("var a = 1\na /= 2"), "the new value should be int, but this is float");
+        assert_eq!(error("var a: u8 = 1\na += 1.5"), "the new value should be u8, but this is float");
+
+        // The program that is run has the long form in it, and the
+        // statements that store into an int are as they were written.
+        let source = "var count: u8 = 250\nvar total = 0\nfunction more() {\n    count += 5\n    total += 5\n}\nmore()\n";
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let (program, errors, _) = super::checked(program, super::Rules { strict: true, ..super::Rules::default() });
+        assert!(errors.is_empty(), "{:?}", errors[0].message);
+        let printed = crate::printer::print(&program);
+        assert!(printed.contains("count = u8((count + 5))") && printed.contains("total += 5"), "{printed}");
+        // A program the checker refuses comes back as it was.
+        let wrong = parser::parse(lexer::lex("var count: u8 = 250\ncount += 5\nprint(nothing)").unwrap()).unwrap();
+        let (back, errors, _) = super::checked(wrong.clone(), super::Rules::default());
+        assert_eq!((back, errors.len()), (wrong, 1));
+    }
+
+    #[test]
+    fn the_place_of_a_compound_assignment_has_no_call_in_it() {
+        let twice = |op: &str| {
+            format!(
+                "`{op}` reads this place and then writes it, so a call in the place would run twice. \
+                 Keep what the call gives in a `let` first, and use that name here"
+            )
+        };
+        let setup = "class Box {\n    n: int\n}\nfunction pick() -> Box {\n    return Box(1)\n}\nfunction next() -> int {\n    return 1\n}\n\
+                     let xs = [1, 2, 3]\nlet counts: dict[str, int] = [\"a\": 1]\n";
+        assert_eq!(error(&format!("{setup}xs[next()] += 5")), twice("+="));
+        assert_eq!(error(&format!("{setup}xs[len(xs) - 1] *= 2")), twice("*="));
+        assert_eq!(error(&format!("{setup}counts[\"A\".lower()] -= 1")), twice("-="));
+        assert_eq!(error(&format!("{setup}pick().n //= 2")), twice("//="));
+        // A call in the value is what a value is for, and so is a
+        // call in the place of a plain `=`, which reads nothing.
+        ok(&format!("{setup}let last = len(xs) - 1\nxs[last] += next()\nxs[next()] = 5\npick().n = 2\ncounts[\"a\"] += len(xs)"));
+    }
+
     fn strict_ok(source: &str) {
         assert_eq!(check(source, true), Vec::<String>::new(), "\n{source}");
     }
@@ -7258,7 +7374,6 @@ mod tests {
         let hint = "Convert it with `u8(...)`, which checks that it fits";
         assert_eq!(error("let n = 5\nlet a: u8 = n"), format!("`a` should be u8, but this is int. {hint}"));
         // The answer of an operator is an int, whatever went in.
-        assert_eq!(error("var a: u8 = 1\na += 1"), format!("the new value should be u8, but this is int. {hint}"));
         assert_eq!(error("var a: u8 = 1\na = a + 1"), format!("the new value should be u8, but this is int. {hint}"));
         assert_eq!(error("let a: u8 = 1\nlet b: u8 = ~a"), format!("`b` should be u8, but this is int. {hint}"));
         assert_eq!(

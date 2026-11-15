@@ -302,7 +302,7 @@ fn test(path: &str, strict: bool, asked: bool) -> Option<Tally> {
             return None;
         }
     };
-    let errors = checker::check_by(&program, checker::Rules { strict, one_owner: false, firmware: false }).0;
+    let (program, errors, _) = checker::checked(program, checker::Rules { strict, one_owner: false, firmware: false });
     if !errors.is_empty() {
         errors.iter().for_each(|error| report(&files, error));
         let s = if errors.len() == 1 { "" } else { "s" };
@@ -335,7 +335,7 @@ fn check(path: &str, rules: checker::Rules) -> Option<(Vec<modules::File>, ast::
     let (files, program) = load(path)?;
     // `check --no-collector` checks what that build would build.
     let program = if rules.one_owner { program.without_tests() } else { program };
-    let errors = checker::check_by(&program, rules).0;
+    let (program, errors, _) = checker::checked(program, rules);
     for error in &errors {
         report(&files, error);
     }
@@ -351,6 +351,9 @@ fn check(path: &str, rules: checker::Rules) -> Option<(Vec<modules::File>, ast::
 /// `zeno bytecode <file>`: print the bytecode the program compiles to.
 fn bytecode(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
+    // What `zeno run --vm` runs. By then `count += 1` on a sized number
+    // is `count = u8(count + 1)`, which only the checker can tell.
+    let program = checker::checked(program, checker::Rules::default()).0;
     bytecode::print(&emit_bytecode::compile(&program)).lines().for_each(value::print_line);
     Some(())
 }
@@ -387,8 +390,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.
     let (files, program) = load(path)?;
-    let program = program.without_tests();
-    let (errors, types) = checker::check_by(&program, kind.rules());
+    let (program, errors, types) = checker::checked(program.without_tests(), kind.rules());
     for error in &errors {
         report(&files, error);
     }
@@ -447,8 +449,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
 /// text, printing and memory, which a C build has pasted in front of it.
 fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     let (files, program) = load(path)?;
-    let program = program.without_tests();
-    let (errors, types) = checker::check_by(&program, kind.rules());
+    let (program, errors, types) = checker::checked(program.without_tests(), kind.rules());
     for error in &errors {
         report(&files, error);
     }

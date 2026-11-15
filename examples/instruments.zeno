@@ -52,7 +52,9 @@ print("compass")
 let fields = [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [-1.0, 1.0], [-1.0, 0.0], [0.0, -1.0], [3.0, -4.0]]
 for field in fields {
     let angle = heading(field[0], field[1])
-    print(f"  x {field[0]:5.1f}  y {field[1]:5.1f}  heading {angle / 1 deg:6.1f} deg")
+    # A format on a quantity is the number's, and the unit follows it.
+    # The width counts both: six for the number, four for ` deg`.
+    print(f"  x {field[0]:5.1f}  y {field[1]:5.1f}  heading {angle:10.1f}")
 }
 
 print("thermistor")

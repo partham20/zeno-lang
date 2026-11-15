@@ -539,13 +539,15 @@ impl Compiler {
                 self.declare(name, false, false, span);
             }
             StmtKind::Assign { target, op, value } => {
-                self.expr(value);
-                if let Some(op) = op {
-                    // `x += 1` is `x = x + 1`. The new value was worked out
-                    // first, so the two are the wrong way round for `+`.
-                    self.expr(target);
-                    self.emit(Op::Swap, span);
-                    self.emit(Op::Binary(*op), span);
+                match op {
+                    None => self.expr(value),
+                    // `x += 1` is `x = x + 1`: what is there is read,
+                    // and then the value is worked out.
+                    Some(op) => {
+                        self.expr(target);
+                        self.expr(value);
+                        self.emit(Op::Binary(*op), span);
+                    }
                 }
                 self.assign(target);
             }

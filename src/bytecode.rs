@@ -49,8 +49,6 @@ pub enum Op {
     /// Used where the code cannot know how many there are: leaving a loop
     /// from somewhere inside it, or a pattern that failed half way.
     PopTo(u32),
-    /// Exchange the top two values.
-    Swap,
 
     // ----------------------------------------------------------- Variables
     // A variable that only its own function uses lives in a slot of the
@@ -370,21 +368,20 @@ mod tests {
 0003    |  List         2
 0004    |  ForStart
 0005    |  Const        0          ; 0
-0006    |  ForNext      14
-0007    3  GetLocal     3          ; n
-0008    |  GetLocal     0          ; total
-0009    |  Swap
-0010    |  Binary       +
-0011    |  SetLocal     0          ; total
-0012    2  Pop          1
-0013    |  Jump         6
-0014    |  Pop          2
-0015    5  Const        3          ; <function print>
-0016    |  GetLocal     0          ; total
-0017    |  Call         1
-0018    |  Pop          1
-0019    |  Const        4          ; none
-0020    |  Return
+0006    |  ForNext      13
+0007    3  GetLocal     0          ; total
+0008    |  GetLocal     3          ; n
+0009    |  Binary       +
+0010    |  SetLocal     0          ; total
+0011    2  Pop          1
+0012    |  Jump         6
+0013    |  Pop          2
+0014    5  Const        3          ; <function print>
+0015    |  GetLocal     0          ; total
+0016    |  Call         1
+0017    |  Pop          1
+0018    |  Const        4          ; none
+0019    |  Return
 
 ";
         assert_eq!(printed, expected);

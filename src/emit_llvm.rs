@@ -205,6 +205,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_str_quantity", "declare ptr @zeno_str_quantity(double, ptr)"),
     ("zeno_repr_str", "declare ptr @zeno_repr_str(ptr)"),
     ("zeno_fixed", "declare ptr @zeno_fixed(double, i32 signext)"),
+    ("zeno_fixed_quantity", "declare ptr @zeno_fixed_quantity(double, i32 signext, ptr)"),
     ("zeno_radix", "declare ptr @zeno_radix(i64, i8 signext)"),
     ("zeno_pad", "declare ptr @zeno_pad(ptr, i32 signext, i8 signext, i1 zeroext)"),
     ("zeno_parse_int", "declare i64 @zeno_parse_int(ptr, i32 signext, i32 signext)"),
@@ -2288,13 +2289,17 @@ impl Emitter<'_> {
 
     /// `x = v`, `point.x = v`, `items[i] = v`, and the same with `+=`.
     fn assign(&mut self, target: &Expr, op: Option<BinaryOp>, value: &Expr, span: Span) -> Result<(), Error> {
-        // The new value first, then the old one, then the place it goes
-        // to, as `zeno run` does.
-        let mut new = self.expr(value)?;
-        if let Some(op) = op {
-            let old = self.expr(target)?;
-            new = self.arithmetic(op, old, new, span)?;
-        }
+        // The new value first, then the place it goes to, as `zeno run`
+        // does. `x += 1` is `x = x + 1`: what is there is read, and
+        // then the value is worked out.
+        let new = match op {
+            None => self.expr(value)?,
+            Some(op) => {
+                let old = self.expr(target)?;
+                let new = self.expr(value)?;
+                self.arithmetic(op, old, new, span)?
+            }
+        };
         self.stays(&new, value.span)?;
         let new = self.keep(new, op.is_none() && is_written(value));
         // With no collector, a list that was just made (`xs += [4]` makes
@@ -6544,8 +6549,16 @@ impl Emitter<'_> {
         let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
         let emit_c::Format { align, zero, width, precision, kind } = emit_c::read_format(spec).ok_or_else(bad)?;
 
-        let is_number = matches!(val.kind, Kind::Int | Kind::Float);
+        // A quantity is a number with its unit, and lines up as numbers do.
+        let is_number = matches!(val.kind, Kind::Int | Kind::Float | Kind::Quantity(_));
         let body = match (kind, precision, &val.kind) {
+            // `{angle:.1f}` is `30.5 deg`: the decimals are the number's,
+            // and the unit follows it as it always does.
+            (Some('f'), _, Kind::Quantity(unit)) | (None, Some(_), Kind::Quantity(unit)) => {
+                let unit = self.string(unit);
+                let args = format!("double {}, i32 {}, ptr {unit}", val.code, precision.unwrap_or(6));
+                self.call("ptr", "zeno_fixed_quantity", args)
+            }
             (Some('f'), _, _) | (None, Some(_), Kind::Float) if is_number => {
                 let x = self.double(val);
                 self.call("ptr", "zeno_fixed", format!("double {x}, i32 {}", precision.unwrap_or(6)))
@@ -8046,9 +8059,10 @@ for n in [1, 5] {
         assert!(
             sum.contains(
                 "do2:
-  %t3 = getelementptr i8, ptr %arg.bytes, i64 %t1
-  %t4 = load i8, ptr %t3
-  %t5 = zext i8 %t4 to i64
+  %t3 = load i64, ptr %var.total
+  %t4 = getelementptr i8, ptr %arg.bytes, i64 %t1
+  %t5 = load i8, ptr %t4
+  %t6 = zext i8 %t5 to i64
 "
             ),
             "{sum}"

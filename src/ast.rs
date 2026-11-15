@@ -9,8 +9,10 @@
 //! - a **statement** does something: declare a variable, loop, return.
 //! - an **expression** produces a value: `1 + 2`, `area(shape)`, `user.name`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::ints::Width;
 use crate::token::Span;
 
 /// A whole source file.
@@ -36,6 +38,37 @@ impl Program {
     /// collector (decision 10.20).
     pub fn without_tests(mut self) -> Program {
         self.statements.retain(|statement| !matches!(statement.kind, StmtKind::Test { .. }));
+        self
+    }
+
+    /// `count += 1` on a `u8` means `count = u8(count + 1)`: the sum is
+    /// an int, and it is checked to fit where it is stored (decision
+    /// 10.27). The checker finds each such statement and says where it
+    /// is, with the size of what it stores into, and here each one is
+    /// made the statement it means. Every engine then runs or compiles
+    /// the long form, which it could do already, so there is nothing
+    /// for the four of them to do alike.
+    pub fn with_fits(mut self, fits: &HashMap<(usize, usize), Width>) -> Program {
+        let mut visit = |statement: &mut Stmt| {
+            let span = statement.span;
+            let StmtKind::Assign { target, op, value } = &mut statement.kind else {
+                return;
+            };
+            let (Some(operator), Some(width)) = (*op, fits.get(&(span.line, span.col))) else {
+                return;
+            };
+            let nothing = Expr { kind: ExprKind::None, span };
+            let sum = ExprKind::Binary {
+                op: operator,
+                left: Box::new(target.clone()),
+                right: Box::new(std::mem::replace(value, nothing)),
+            };
+            let convert = Expr { kind: ExprKind::Name(width.name.to_string()), span };
+            let args = vec![Arg { name: None, value: Expr { kind: sum, span } }];
+            *value = Expr { kind: ExprKind::Call { callee: Box::new(convert), args }, span };
+            *op = None;
+        };
+        fresh_block(&mut self.statements, &mut visit);
         self
     }
 }
@@ -172,9 +205,15 @@ impl Function {
     /// not enough: a function written inside this one is behind an `Arc`,
     /// which `clone` shares instead of copying.
     pub fn fresh(&self) -> Function {
+        self.fresh_with(&mut |_| {})
+    }
+
+    /// `fresh`, with every statement of the copy shown to `visit` on the
+    /// way, which may change it.
+    fn fresh_with(&self, visit: &mut dyn FnMut(&mut Stmt)) -> Function {
         let mut copy = self.clone();
-        fresh_block(&mut copy.body);
-        copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(fresh_expr);
+        fresh_block(&mut copy.body, visit);
+        copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(|value| fresh_expr(value, visit));
         copy
     }
 }
@@ -182,101 +221,107 @@ impl Function {
 impl Class {
     /// A copy of this class that shares nothing with it. See `Function::fresh`.
     pub fn fresh(&self) -> Class {
+        self.fresh_with(&mut |_| {})
+    }
+
+    fn fresh_with(&self, visit: &mut dyn FnMut(&mut Stmt)) -> Class {
         let mut copy = self.clone();
-        copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(fresh_expr);
+        copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(value, visit));
         for method in &mut copy.methods {
-            *method = Arc::new(method.fresh());
+            *method = Arc::new(method.fresh_with(visit));
         }
         copy
     }
 }
 
-/// Give every function written inside these statements a copy of its own.
-fn fresh_block(block: &mut Block) {
+/// Give every function written inside these statements a copy of its own,
+/// and show `visit` each statement on the way.
+fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(&mut Stmt)) {
     for statement in block {
+        visit(statement);
         match &mut statement.kind {
-            StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => fresh_expr(value),
+            StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => fresh_expr(value, visit),
             StmtKind::Assign { target, value, .. } => {
-                fresh_expr(target);
-                fresh_expr(value);
+                fresh_expr(target, visit);
+                fresh_expr(value, visit);
             }
-            StmtKind::Expr(expr) | StmtKind::Raise(expr) => fresh_expr(expr),
-            StmtKind::Return(value) => value.iter_mut().for_each(fresh_expr),
-            StmtKind::Function(function) => *function = Arc::new(function.fresh()),
-            StmtKind::Class(class) => *class = class.fresh(),
+            StmtKind::Expr(expr) | StmtKind::Raise(expr) => fresh_expr(expr, visit),
+            StmtKind::Return(value) => value.iter_mut().for_each(|value| fresh_expr(value, visit)),
+            StmtKind::Function(function) => *function = Arc::new(function.fresh_with(visit)),
+            StmtKind::Class(class) => *class = class.fresh_with(visit),
             StmtKind::Enum(decl) => {
                 let fields = decl.variants.iter_mut().flat_map(|case| &mut case.fields);
-                fields.filter_map(|field| field.default.as_mut()).for_each(fresh_expr);
+                fields.filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(value, visit));
             }
             StmtKind::If { condition, then_block, else_block } => {
-                fresh_expr(condition);
-                fresh_block(then_block);
-                else_block.iter_mut().for_each(fresh_block);
+                fresh_expr(condition, visit);
+                fresh_block(then_block, visit);
+                else_block.iter_mut().for_each(|block| fresh_block(block, visit));
             }
             StmtKind::While { condition, body } => {
-                fresh_expr(condition);
-                fresh_block(body);
+                fresh_expr(condition, visit);
+                fresh_block(body, visit);
             }
             StmtKind::For { iterable, body, .. } => {
-                fresh_expr(iterable);
-                fresh_block(body);
+                fresh_expr(iterable, visit);
+                fresh_block(body, visit);
             }
             StmtKind::Match { subject, arms } => {
-                fresh_expr(subject);
-                arms.iter_mut().for_each(|arm| fresh_block(&mut arm.body));
+                fresh_expr(subject, visit);
+                arms.iter_mut().for_each(|arm| fresh_block(&mut arm.body, visit));
             }
             StmtKind::Try { body, handlers } => {
-                fresh_block(body);
-                handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body));
+                fresh_block(body, visit);
+                handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body, visit));
             }
-            StmtKind::Unsafe(body) => fresh_block(body),
-            StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => fresh_block(body),
-            StmtKind::Assert(condition) => fresh_expr(condition),
+            StmtKind::Unsafe(body) => fresh_block(body, visit),
+            StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => fresh_block(body, visit),
+            StmtKind::Assert(condition) => fresh_expr(condition, visit),
             StmtKind::Break | StmtKind::Continue | StmtKind::Import { .. } => {}
         }
     }
 }
 
-fn fresh_expr(expr: &mut Expr) {
+fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(&mut Stmt)) {
     match &mut expr.kind {
-        ExprKind::Function(function) => *function = Arc::new(function.fresh()),
+        ExprKind::Function(function) => *function = Arc::new(function.fresh_with(visit)),
         ExprKind::FormatStr(parts) => {
             for part in parts {
                 if let FormatPart::Value { value, .. } = part {
-                    fresh_expr(value);
+                    fresh_expr(value, visit);
                 }
             }
         }
-        ExprKind::Unit { value, .. } => fresh_expr(value),
-        ExprKind::List(items) => items.iter_mut().for_each(fresh_expr),
+        ExprKind::Unit { value, .. } => fresh_expr(value, visit),
+        ExprKind::List(items) => items.iter_mut().for_each(|value| fresh_expr(value, visit)),
         ExprKind::Dict(entries) => {
             for (key, value) in entries {
-                fresh_expr(key);
-                fresh_expr(value);
+                fresh_expr(key, visit);
+                fresh_expr(value, visit);
             }
         }
         ExprKind::ListComp { element, iterable, condition, .. } => {
-            fresh_expr(element);
-            fresh_expr(iterable);
-            condition.iter_mut().for_each(|condition| fresh_expr(condition));
+            fresh_expr(element, visit);
+            fresh_expr(iterable, visit);
+            condition.iter_mut().for_each(|condition| fresh_expr(condition, visit));
         }
-        ExprKind::Unary { operand, .. } => fresh_expr(operand),
+        ExprKind::Unary { operand, .. } => fresh_expr(operand, visit),
         ExprKind::Binary { left, right, .. } => {
-            fresh_expr(left);
-            fresh_expr(right);
+            fresh_expr(left, visit);
+            fresh_expr(right, visit);
         }
         ExprKind::Compare { first, rest } => {
-            fresh_expr(first);
-            rest.iter_mut().for_each(|(_, operand)| fresh_expr(operand));
+            fresh_expr(first, visit);
+            rest.iter_mut().for_each(|(_, operand)| fresh_expr(operand, visit));
         }
         ExprKind::Call { callee, args } => {
-            fresh_expr(callee);
-            args.iter_mut().for_each(|arg| fresh_expr(&mut arg.value));
+            fresh_expr(callee, visit);
+            args.iter_mut().for_each(|arg| fresh_expr(&mut arg.value, visit));
         }
-        ExprKind::Field { object, .. } => fresh_expr(object),
+        ExprKind::Field { object, .. } => fresh_expr(object, visit),
         ExprKind::Index { object, index } => {
-            fresh_expr(object);
-            fresh_expr(index);
+            fresh_expr(object, visit);
+            fresh_expr(index, visit);
         }
         ExprKind::Int(_)
         | ExprKind::Float(_)

@@ -447,12 +447,16 @@ impl Interpreter {
                 self.declare(env, name, value, false, span)
             }
             StmtKind::Assign { target, op, value } => {
-                let mut new = self.eval(value, env)?;
-                if let Some(op) = op {
-                    // `x += 1` is `x = x + 1`.
-                    let old = self.eval(target, env)?;
-                    new = ops::binary(*op, old, new, span)?;
-                }
+                let new = match op {
+                    None => self.eval(value, env)?,
+                    // `x += 1` is `x = x + 1`: what is there is read,
+                    // and then the value is worked out.
+                    Some(op) => {
+                        let old = self.eval(target, env)?;
+                        let new = self.eval(value, env)?;
+                        ops::binary(*op, old, new, span)?
+                    }
+                };
                 self.assign(target, new, env)
             }
             StmtKind::Expr(expr) => {
@@ -1665,6 +1669,38 @@ mod tests {
     }
 
     // ----- Sized whole numbers -----
+
+    #[test]
+    fn a_compound_assignment_is_the_long_form() {
+        // What is there is read first, and then the value is worked out,
+        // as in `count = count + bump()`.
+        let source = "var count = 1\nfunction bump() -> int {\n    count = 10\n    return 1\n}\n\
+                      count += bump()\nprint(count)\ncount = 1\ncount = count + bump()\nprint(count)\n\
+                      let xs = [1, 2]\nfunction grow() -> int {\n    xs[0] = 10\n    return 1\n}\nxs[0] += grow()\nprint(xs)";
+        assert_eq!(output(source), "2\n2\n[2, 2]\n");
+        // Every operator on two numbers has an `=` form.
+        let source = "var n = 17\nn //= 2\nprint(n)\nn %= 5\nprint(n)\nn **= 4\nprint(n)\nvar x = 7.5\nx //= 2\nx %= 2\nx **= 2\nprint(x)";
+        assert_eq!(output(source), "8\n3\n81\n1.0\n");
+    }
+
+    #[test]
+    fn a_quantity_takes_the_formats_of_a_float() {
+        // The decimals are the number's, the unit follows, and the
+        // width counts both.
+        let source = "let angle = 30.456 deg\nlet supply = 3.3 V\nlet wait = 500 ms\n\
+                      print(f\"{angle:.1f}|{supply:.2f}|{supply}|{wait:.0f}|{wait:f}|{wait:.3}\")\n\
+                      print(f\"[{supply:10.2f}] [{supply:<10.2f}] [{supply:^10.2f}] [{supply:010.2f}] [{-supply:8.1f}]\")\n\
+                      print(f\"[{wait:10}] [{wait:<10}] [{wait:2}]\")";
+        assert_eq!(
+            output(source),
+            "30.5 deg|3.30 V|3.3 V|500 ms|500.000000 ms|500.000 ms\n\
+             [    3.30 V] [3.30 V    ] [  3.30 V  ] [00003.30 V] [  -3.3 V]\n\
+             [    500 ms] [500 ms    ] [500 ms]\n"
+        );
+        // It is not a whole number.
+        let (_, result) = run("let supply = 3.3 V\nprint(f\"{supply:x}\")");
+        assert_eq!(result.unwrap_err(), "`x` needs an int, but this is a quantity in V");
+    }
 
     #[test]
     fn sized_ints() {

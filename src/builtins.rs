@@ -1184,6 +1184,11 @@ pub fn format(value: &Value, spec: Option<&str>, span: Span) -> Result<String> {
 
     // A float type or a precision asks for fixed decimals.
     let body = match (kind, precision, value) {
+        // `{angle:.1f}` is `30.5 deg`: the decimals are the number's,
+        // and the unit follows it as it always does.
+        (Some('f'), _, Value::Quantity(x, unit)) | (None, Some(_), Value::Quantity(x, unit)) => {
+            format!("{x:.*} {unit}", precision.unwrap_or(6))
+        }
         (Some('f'), _, _) | (None, Some(_), Value::Float(_)) => match value.number() {
             Some(x) => format!("{x:.*}", precision.unwrap_or(6)),
             None => return wrong_type(spec, "a number", value, span),
@@ -1205,7 +1210,8 @@ pub fn format(value: &Value, spec: Option<&str>, span: Span) -> Result<String> {
     };
 
     let padding = width.saturating_sub(body.chars().count());
-    let is_number = value.number().is_some();
+    // A quantity is a number with its unit, and lines up as numbers do.
+    let is_number = value.number().is_some() || matches!(value, Value::Quantity(..));
     Ok(if zero && is_number {
         // Zeros go between the sign and the digits: -0042.
         let (sign, digits) = match body.strip_prefix('-') {
