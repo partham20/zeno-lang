@@ -717,7 +717,7 @@ impl Compiler {
                 let path = module.join(".");
                 let Some(found) = builtins::module(&path) else {
                     return self.mistake(
-                        format!("there is no module `{path}`. So far Zeno has `math`, `time` and `board`"),
+                        format!("there is no module `{path}`. {}", builtins::MODULES),
                         span,
                     );
                 };

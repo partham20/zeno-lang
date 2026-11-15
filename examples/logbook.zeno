@@ -1,0 +1,89 @@
+# A logbook: readings are typed in, kept in a file, read back and summed up.
+# It uses the three ways a program reaches the world outside it:
+# the words it was started with, the keyboard, and files.
+#
+#     zeno run examples/logbook.zeno                # keeps them in logbook.txt
+#     zeno run examples/logbook.zeno bench.txt      # or in the file you name
+#
+# Type readings such as `temp 21.5`, one to a line. Close the keyboard
+# (Ctrl-D, or Ctrl-Z then Enter on Windows) to see the summary.
+
+import files
+import program
+
+# The file to keep the readings in: the first word after the program's name.
+function log_file() -> str {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return words[0]
+    }
+    return "logbook.txt"
+}
+
+# One line of the file is a name, a blank and a number: `temp 21.5`.
+# The number, or `none` for a line that is something else.
+function reading(line: str) -> float or none {
+    let parts = line.split()
+    if len(parts) != 2 {
+        return none
+    }
+    try {
+        return float(parts[1])
+    } except ValueError {
+        return none
+    }
+}
+
+# Read the file back and say what is in it. The file may be gone, or may
+# not be text, and this function does not know what to do then: it says
+# `raises FileError`, and leaves that to its caller.
+function summary(path: str) raises FileError {
+    var count = 0
+    var total = 0.0
+    var skipped = 0
+    for line in files.read(path).lines() {
+        let value = reading(line)
+        if value is none {
+            skipped += 1
+        } else {
+            count += 1
+            total += value
+        }
+    }
+    if count == 0 {
+        print(f"no readings in {path}, {skipped} lines skipped")
+    } else {
+        print(f"{count} readings in {path}, mean {total / count:.2f}, {skipped} lines skipped")
+    }
+}
+
+let path = log_file()
+
+# Start the file with two readings, so that there is something to see
+# even when nothing is typed. `write` makes the file, or empties it.
+files.write(path, "temp 21.5\ntemp 22.0\n")
+
+# Every line that is typed goes on the end of the file. `input` gives
+# `none` when there are no more lines, and that ends the loop.
+var typed = 0
+while true {
+    let line = input("reading> ")
+    if line is none {
+        break
+    }
+    files.append(path, line + "\n")
+    typed += 1
+}
+print()
+print(typed, "lines typed")
+
+summary(path)
+
+# Tidy up, and show what a file that is not there looks like.
+files.remove(path)
+print("still there:", files.exists(path))
+try {
+    summary(path)
+} except FileError as error {
+    print("FileError:", error.message)
+}

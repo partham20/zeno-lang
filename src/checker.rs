@@ -1319,14 +1319,14 @@ impl Scope {
 /// The outermost scope: the built-in functions and error types.
 fn globals() -> Env {
     let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0, top: false });
-    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum", "allocate", "free", "char"] {
+    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum", "allocate", "free", "char", "input"] {
         env.declare(name, Ty::Builtin(name), false);
     }
     // The sized whole numbers: `u8(n)` converts, and `u8` is also a type.
     for width in ints::WIDTHS {
         env.declare(width.name, Ty::Builtin(width.name), false);
     }
-    for kind in ["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"] {
+    for kind in ["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"] {
         env.declare(kind, Ty::ErrorType(Rc::from(kind)), false);
     }
     env
@@ -1343,6 +1343,12 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("math", "cos") => Ty::Builtin("cos"),
         ("time", "sleep") => Ty::Builtin("sleep"),
         ("time", "now") => Ty::Builtin("now"),
+        ("files", "read") => Ty::Builtin("files.read"),
+        ("files", "write") => Ty::Builtin("files.write"),
+        ("files", "append") => Ty::Builtin("files.append"),
+        ("files", "exists") => Ty::Builtin("files.exists"),
+        ("files", "remove") => Ty::Builtin("files.remove"),
+        ("program", "arguments") => Ty::Builtin("program.arguments"),
         ("board", "led") => Ty::Pin,
         ("board", "pin") => Ty::Builtin("pin"),
         ("board", "register") => Ty::Builtin("register"),
@@ -2671,9 +2677,11 @@ impl Checker {
                     "math" => "math",
                     "time" => "time",
                     "board" => "board",
+                    "files" => "files",
+                    "program" => "program",
                     _ => {
                         self.error(
-                            format!("there is no module `{path}`. So far Zeno has `math`, `time` and `board`"),
+                            format!("there is no module `{path}`. {}", crate::builtins::MODULES),
                             span,
                         );
                         // Declare the names anyway, so each use is not a second error.
@@ -4343,8 +4351,12 @@ impl Checker {
                     }
                 }
                 let ty = self.call(&callee, arguments, span);
+                if matches!(callee, Ty::Builtin("program.arguments")) {
+                    // The list of arguments is new at each call.
+                    self.types.made.insert(expr as *const Expr as usize);
+                }
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
-                    if matches!(&**name, "split" | "map" | "filter" | "slice") {
+                    if matches!(&**name, "split" | "lines" | "map" | "filter" | "slice") {
                         // Each of these makes a new list.
                         self.types.made.insert(expr as *const Expr as usize);
                     }
@@ -4716,6 +4728,42 @@ impl Checker {
                 }
                 if name == "int" { Ty::Int } else { Ty::Float }
             }
+            // The `files` module. Every argument is text, and all but
+            // `exists` can fail in a way no program can rule out: the
+            // file may be gone by the time it is opened. So they raise
+            // FileError as a value, in every kind of build.
+            "files.read" | "files.write" | "files.append" | "files.exists" | "files.remove" => {
+                let short = &name["files.".len()..];
+                let count = if matches!(short, "write" | "append") { 2 } else { 1 };
+                self.arity(short, arguments, count, count, span);
+                for argument in arguments {
+                    let what = format!("an argument of `files.{short}`");
+                    self.expect(&argument.ty, &Ty::Str, &what, argument.span);
+                }
+                if short != "exists" {
+                    self.can_raise("FileError", span);
+                }
+                match short {
+                    "read" => Ty::Str,
+                    "exists" => Ty::Bool,
+                    _ => Ty::None,
+                }
+            }
+            // `input()`, `input("Name: ")`: a line from the keyboard, or
+            // `none` when there are no more. The answer has to be tested
+            // before it is used as text.
+            "input" => {
+                if self.arity(name, arguments, 0, 1, span) && !arguments.is_empty() {
+                    self.expect(&first, &Ty::Str, "the question `input` asks", arguments[0].span);
+                }
+                Ty::Optional(Box::new(Ty::Str))
+            }
+            // `program.arguments()`: the words the program was started
+            // with, as a new list.
+            "program.arguments" => {
+                self.arity("arguments", arguments, 0, 0, span);
+                Ty::list(Ty::Str)
+            }
             // `char(65)`: the character with that code, as a str.
             "char" => {
                 if self.arity(name, arguments, 1, 1, span) {
@@ -4846,6 +4894,10 @@ impl Checker {
             (Ty::Str, "split") => {
                 self.arity(name, arguments, 0, 1, span);
                 strs(self);
+                Ty::list(Ty::Str)
+            }
+            (Ty::Str, "lines") => {
+                self.arity(name, arguments, 0, 0, span);
                 Ty::list(Ty::Str)
             }
             (Ty::Str, "replace") => {
@@ -5615,7 +5667,7 @@ impl Checker {
 }
 
 const STR_METHODS: &[&str] =
-    &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with", "find", "slice", "code"];
+    &["upper", "lower", "strip", "split", "lines", "replace", "starts_with", "ends_with", "find", "slice", "code"];
 const LIST_METHODS: &[&str] = &[
     "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
 ];
@@ -6002,7 +6054,10 @@ mod tests {
         // A list that may hold `none` joins one that does not, and a
         // list that is not known yet joins anything.
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
-        assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
+        assert_eq!(
+            error("import radio"),
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files` and `program`"
+        );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
     }
@@ -7690,6 +7745,59 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(
             error("print([1, 2].join(\", \"))"),
             "`join` puts text together, and this is list[int]. Make each item text first, with `str( )`"
+        );
+    }
+
+    #[test]
+    fn reading_and_writing_is_checked() {
+        strict_ok(
+            "import files\nimport program\n\
+             function first(path: str) -> str raises FileError {\n    return files.read(path).lines()[0]\n}\n\
+             function safe(path: str) -> int {\n\
+             \x20   try {\n        files.append(path, \"x\")\n        files.remove(path)\n        return 1\n\
+             \x20   } except FileError {\n        return 0\n    }\n}\n\
+             let there: bool = files.exists(\"a\")\n\
+             let words: list[str] = program.arguments()\n\
+             let line: str or none = input(\"? \")\n\
+             let lines: list[str] = \"a\\nb\".lines()\n\
+             if line is not none { print(line.upper()) }\n\
+             files.write(\"a\", \"b\")",
+        );
+        // A function that reads a file can fail, and has to say so.
+        assert_eq!(
+            strict_error("import files\nfunction first(path: str) -> str {\n    return files.read(path)\n}"),
+            "`first` can raise FileError here but does not say so. Add `raises FileError` to it, or catch the error"
+        );
+        assert_eq!(
+            strict_error("import files\nfunction clear(path: str) {\n    files.write(path, \"\")\n}"),
+            "`clear` can raise FileError here but does not say so. Add `raises FileError` to it, or catch the error"
+        );
+        // `exists` is a question, and cannot fail.
+        strict_ok("import files\nfunction there(path: str) -> bool {\n    return files.exists(path)\n}");
+        assert_eq!(error("import files\nfiles.read(5)"), "an argument of `files.read` should be str, but this is int");
+        assert_eq!(error("import files\nfiles.write(\"a\")"), "`write` takes 2 arguments, but 1 was given");
+        assert_eq!(error("import files\nlet n: int = files.read(\"a\")"), "`n` should be int, but this is str");
+        assert_eq!(error("import files\nfiles.open(\"a\")"), "module `files` has no `open`");
+        // A line may not be there, so it is tested before it is used.
+        assert_eq!(
+            error("print(input().upper())"),
+            "this is str or none. Check it with `is not none` before using `.upper`"
+        );
+        assert_eq!(
+            error("let name: str = input()"),
+            "`name` should be str, but this is str or none. Check it with `is not none` first"
+        );
+        assert_eq!(error("input(5)"), "the question `input` asks should be str, but this is int");
+        assert_eq!(error("input(\"a\", \"b\")"), "`input` takes 0 to 1 arguments, but 2 were given");
+        assert_eq!(error("import program\nprogram.arguments(1)"), "`arguments` takes 0 arguments, but 1 was given");
+        assert_eq!(error("import program\nprint(program.name)"), "module `program` has no `name`");
+        assert_eq!(error("print(\"a\".lines(1))"), "`lines` takes 0 arguments, but 1 was given");
+        // With one owner, each of these lists is new and can be owned.
+        one_owner_ok(
+            "import program\n\
+             let words: owned list[str] = program.arguments()\n\
+             let lines: owned list[str] = \"a\\nb\".lines()\n\
+             print(len(words), len(lines))",
         );
     }
 

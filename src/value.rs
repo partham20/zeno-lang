@@ -155,6 +155,12 @@ pub trait Machine {
     /// Print one line.
     fn write_line(&mut self, text: &str);
 
+    /// Print text with no line end after it: the question `input` asks.
+    fn write(&mut self, text: &str);
+
+    /// The keyboard, and the words the program was started with.
+    fn outside(&mut self) -> &mut Outside;
+
     /// The board the program runs on, for `led.on()` and the like.
     fn board(&mut self) -> &mut crate::board::Board;
 
@@ -166,6 +172,119 @@ pub trait Machine {
         named: Vec<(String, Value)>,
         span: Span,
     ) -> Result<Value, Control>;
+}
+
+/// What is outside a running program: the keyboard it reads from, and
+/// the words it was started with (`zeno run copy.zeno a.txt b.txt`).
+/// Both engines carry one, and the built-ins `input` and
+/// `program.arguments` ask for it.
+#[derive(Default, Clone)]
+pub struct Outside {
+    /// Text to read in place of the keyboard, which is how the tests
+    /// type. `None` reads the keyboard itself.
+    pub typed: Option<String>,
+    /// How many bytes of `typed` have been read so far.
+    read: usize,
+    /// The words after the file on the command line.
+    pub arguments: Vec<String>,
+}
+
+impl Outside {
+    /// A program at the real keyboard, started with these words.
+    pub fn started_with(arguments: Vec<String>) -> Outside {
+        Outside { typed: None, read: 0, arguments }
+    }
+
+    /// A program that is given `typed` in place of a keyboard.
+    #[cfg(test)]
+    pub fn typing(typed: &str, arguments: &[&str]) -> Outside {
+        Outside {
+            typed: Some(typed.to_string()),
+            read: 0,
+            arguments: arguments.iter().map(|word| word.to_string()).collect(),
+        }
+    }
+
+    /// The next line that was typed, without its line end. `None` when
+    /// there is no more: the keyboard was closed (Ctrl-D), or the file
+    /// that was piped in has been read to its end.
+    pub fn line(&mut self) -> Option<String> {
+        let mut line = match &self.typed {
+            Some(typed) => {
+                let rest = &typed[self.read..];
+                if rest.is_empty() {
+                    return None;
+                }
+                let end = rest.find('\n').map_or(rest.len(), |at| at + 1);
+                self.read += end;
+                rest[..end].to_string()
+            }
+            None => {
+                use std::io::BufRead;
+                let mut bytes = Vec::new();
+                match std::io::stdin().lock().read_until(b'\n', &mut bytes) {
+                    Ok(0) | Err(_) => return None,
+                    Ok(_) => String::from_utf8_lossy(&bytes).into_owned(),
+                }
+            }
+        };
+        // The line end is not part of the line: "\n", or the "\r\n" of
+        // a file from Windows. Neither is a zero byte, which text in a
+        // compiled program cannot hold.
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        line.retain(|c| c != '\0');
+        Some(line)
+    }
+}
+
+/// For the tests: what is typed at the programs a test runs, and the
+/// words they are started with. A test sets it once (`with_outside`),
+/// and every engine and every built program in that test is given the
+/// same, so that they can be held to the same output.
+#[cfg(test)]
+pub mod testing {
+    use super::Outside;
+    use std::cell::RefCell;
+    use std::io::Write;
+    use std::process::{Command, Output, Stdio};
+
+    thread_local! {
+        // Nothing typed and no arguments, unless a test says otherwise.
+        static OUTSIDE: RefCell<Outside> = RefCell::new(Outside::typing("", &[]));
+    }
+
+    /// Run `test` with `typed` at the keyboard of every program it runs,
+    /// each started with `arguments`.
+    pub fn with_outside(typed: &str, arguments: &[&str], test: impl FnOnce()) {
+        OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing(typed, arguments));
+        test();
+        OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing("", &[]));
+    }
+
+    /// What the interpreter and the VM are given in this test.
+    pub fn outside() -> Outside {
+        OUTSIDE.with(|outside| outside.borrow().clone())
+    }
+
+    /// Run a built program with the same: the arguments on its command
+    /// line, and the typed text on its standard input.
+    pub fn run(command: &mut Command) -> std::io::Result<Output> {
+        let outside = outside();
+        let mut child = command
+            .args(&outside.arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // A program that never reads may be gone before this is written.
+        let _ = child.stdin.take().expect("a pipe").write_all(outside.typed.unwrap_or_default().as_bytes());
+        child.wait_with_output()
+    }
 }
 
 /// Every way a statement or expression can finish other than normally.
@@ -190,6 +309,17 @@ pub enum Control {
 pub fn print_line(text: &str) {
     use std::io::Write;
     if writeln!(std::io::stdout(), "{text}").is_err() {
+        std::process::exit(0);
+    }
+}
+
+/// Print text and stay on the line, for the question `input` asks. The
+/// text is pushed out at once, so that it is on the screen before the
+/// program waits for the answer.
+pub fn print_text(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    if write!(out, "{text}").and_then(|_| out.flush()).is_err() {
         std::process::exit(0);
     }
 }

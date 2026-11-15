@@ -209,6 +209,10 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_ends_with", "declare zeroext i1 @zeno_ends_with(ptr, ptr)"),
     ("zeno_split_blanks", "declare ptr @zeno_split_blanks(ptr)"),
     ("zeno_split", "declare ptr @zeno_split(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_lines", "declare ptr @zeno_lines(ptr)"),
+    ("zeno_input", "declare ptr @zeno_input(ptr)"),
+    ("zeno_program_start", "declare void @zeno_program_start(i32 signext, ptr)"),
+    ("zeno_program_arguments", "declare ptr @zeno_program_arguments()"),
     ("zeno_chars", "declare ptr @zeno_chars(ptr)"),
     ("zeno_list_new", "declare ptr @zeno_list_new(i64)"),
     ("zeno_list_of", "declare ptr @zeno_list_of(i32 signext, ...)"),
@@ -245,6 +249,13 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_join", "declare ptr @zeno_list_join(ptr, ptr)"),
     ("zeno_find", "declare i64 @zeno_find(ptr, ptr)"),
     ("zeno_slice", "declare ptr @zeno_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
+    // The `files` module. In a firmware build the four that can fail
+    // are declared another way: see `DECLARED_FOR_FIRMWARE`.
+    ("zeno_files_exists", "declare zeroext i1 @zeno_files_exists(ptr)"),
+    ("zeno_files_read", "declare ptr @zeno_files_read(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_write", "declare void @zeno_files_write(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_append", "declare void @zeno_files_append(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_remove", "declare void @zeno_files_remove(ptr, i32 signext, i32 signext)"),
     ("zeno_char_code", "declare i64 @zeno_char_code(ptr, i32 signext, i32 signext)"),
     ("zeno_char", "declare ptr @zeno_char(i64, i32 signext, i32 signext)"),
     ("zeno_list_sum_int", "declare i64 @zeno_list_sum_int(ptr, i32 signext, i32 signext)"),
@@ -802,12 +813,16 @@ struct Emitter<'a> {
     used: BTreeSet<&'static str>,
 }
 
-/// The two runtime functions that are called differently in a firmware
+/// The runtime functions that are called differently in a firmware
 /// build (`zeno build --llvm --firmware`). There they say whether they
 /// worked, and give their answer through one more parameter.
 const DECLARED_FOR_FIRMWARE: &[(&str, &str)] = &[
     ("zeno_parse_int", "declare zeroext i1 @zeno_parse_int(ptr, i32 signext, i32 signext, ptr)"),
     ("zeno_parse_float", "declare zeroext i1 @zeno_parse_float(ptr, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_read", "declare zeroext i1 @zeno_files_read(ptr, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_write", "declare zeroext i1 @zeno_files_write(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_append", "declare zeroext i1 @zeno_files_append(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_remove", "declare zeroext i1 @zeno_files_remove(ptr, i32 signext, i32 signext)"),
 ];
 
 /// The error for a list that would outlive the statement that owns it:
@@ -1290,7 +1305,12 @@ impl Emitter<'_> {
 
         // Where the program starts. `%base` is a variable of `main`, so
         // its address marks where the stack begins, for the collector.
-        out += "define i32 @main() {\nentry:\n";
+        // `main` takes the command line only in a program that reads it.
+        let arguments = self.used.contains("zeno_program_start");
+        out += if arguments { "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n" } else { "define i32 @main() {\nentry:\n" };
+        if arguments {
+            out += "  call void @zeno_program_start(i32 signext %argc, ptr %argv)\n";
+        }
         if self.collector {
             out += "  %base = alloca ptr\n";
             out += "  store ptr %base, ptr @zeno_stack_base\n";
@@ -1985,7 +2005,7 @@ impl Emitter<'_> {
 
             StmtKind::Import { module, names } => {
                 let module = module.join(".");
-                if !matches!(module.as_str(), "math" | "time" | "board") {
+                if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }
                 for name in names {
@@ -4342,7 +4362,7 @@ impl Emitter<'_> {
                             return self.math(name, args, span);
                         }
                         // `time.sleep(1 s)`, `board.pin(7)`
-                        if owner == "time" || owner == "board" {
+                        if matches!(owner.as_str(), "time" | "board" | "files" | "program") {
                             return self.device(owner, name, args, span);
                         }
                         // `u8.wrap(n)`: cut `n` down to eight bits and
@@ -4461,8 +4481,9 @@ impl Emitter<'_> {
     }
 
     /// `sqrt`, `floor` and the rest of `import math`.
-    /// A function of the `time` or the `board` module. Each is one call
-    /// into the runtime, which passes it on to the board.
+    /// A function of the `time`, the `board` or the `files` module. Each
+    /// is one call into the runtime, which passes it on to the board, or
+    /// to the C library where the files are.
     fn device(&mut self, module: &str, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
         // `register(u32, 0x4002_0014)`: a register is its address.
         if (module, name) == ("board", "register") {
@@ -4497,6 +4518,52 @@ impl Emitter<'_> {
             ("time", "now", []) => Ok(Val::new(self.call("double", "zeno_now", ""), Kind::Quantity("ms".to_string()))),
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::new(self.call("i64", "zeno_pin", format!("i64 {}, {}", number.code, at(span))), Kind::Pin))
+            }
+            // `files.exists(path)` cannot fail: it is a question.
+            ("files", "exists", [path]) if path.kind == Kind::Str => {
+                Ok(Val::new(self.call("i1", "zeno_files_exists", format!("ptr {}", path.code)), Kind::Bool))
+            }
+            // The other four can: the file may not be there, or may not
+            // be text. Each is one call into the runtime, which raises a
+            // `FileError`. In a firmware build the call says whether it
+            // worked, as `int(text)` does.
+            ("files", "read" | "write" | "append" | "remove", texts)
+                if texts.iter().all(|text| text.kind == Kind::Str)
+                    && texts.len() == if matches!(name, "write" | "append") { 2 } else { 1 } =>
+            {
+                let runtime = match name {
+                    "read" => "zeno_files_read",
+                    "write" => "zeno_files_write",
+                    "append" => "zeno_files_append",
+                    _ => "zeno_files_remove",
+                };
+                let returns = if name == "read" { Kind::Str } else { Kind::None };
+                let mut list = String::new();
+                for text in texts {
+                    list += &format!("ptr {}, ", text.code);
+                }
+                list += &at(span);
+                // The runtime builds text on the way: the file's own, or
+                // the message of the error.
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses(runtime);
+                    let call = format!("call zeroext i1 @{runtime}({list}");
+                    return self.checked_call(call, &returns, &["FileError".to_string()], span);
+                }
+                if name == "read" {
+                    let text = Val::new(self.call("ptr", runtime, list), Kind::Str);
+                    return Ok(self.came_back(text));
+                }
+                self.run(runtime, list);
+                Ok(Val::nothing())
+            }
+            // `program.arguments()`: a new list, which is nobody's yet.
+            // `main` hands the runtime the command line: see `file`.
+            ("program", "arguments", []) => {
+                self.uses("zeno_program_start");
+                let words = self.call("ptr", "zeno_program_arguments", "");
+                Ok(Val::new(words, Kind::List(Box::new(Kind::Str))).made())
             }
             _ => Err(cannot(format!("`{module}.{name}` called this way"), span)),
         }
@@ -4594,6 +4661,14 @@ impl Emitter<'_> {
                 Val::new(self.set(format!("load i64, ptr {}", val.code)), Kind::Int)
             }
             // `char(65)`: the runtime writes the bytes of that character.
+            // `input()`, `input("Name: ")`: the runtime reads a line, and
+            // gives null, which is `none`, when there are no more.
+            ("input", []) | ("input", [Val { kind: Kind::Str, .. }]) => {
+                let question = vals.first().map_or("null", |val| val.code.as_str());
+                self.code.built = !self.collector;
+                let line = Val::new(self.call("ptr", "zeno_input", format!("ptr {question}")), Kind::Optional(Box::new(Kind::Str)));
+                self.came_back(line)
+            }
             ("char", [val]) if val.kind == Kind::Int => {
                 Val::new(self.call("ptr", "zeno_char", format!("i64 {}, {}", val.code, at(span))), Kind::Str)
             }
@@ -4785,6 +4860,7 @@ impl Emitter<'_> {
                         return Ok(self.found(&at));
                     }
                     ("split", 0) => ("zeno_split_blanks", "ptr", words),
+                    ("lines", 0) => ("zeno_lines", "ptr", words),
                     ("split", 1) => {
                         list += &format!(", {}", at(span));
                         ("zeno_split", "ptr", words)
@@ -4793,7 +4869,7 @@ impl Emitter<'_> {
                 };
                 // The list of pieces is new, and nobody's yet.
                 let val = Val::new(self.call(returns, function, list), kind);
-                Ok(if name == "split" { val.made() } else { val })
+                Ok(if name == "split" || name == "lines" { val.made() } else { val })
             }
             Kind::List(item) => match (name, args) {
                 ("map" | "filter" | "reduce", _) => self.over_list(name, &receiver, &item, args, span),
@@ -5929,8 +6005,10 @@ pub(crate) mod tests {
         // ends with one it never freed. (Not the other builds: a
         // collector reads the whole stack, which valgrind objects to.)
         let ran = match build == Build::NoCollector && std::env::var_os("ZENO_VALGRIND").is_some() {
-            true => Command::new("valgrind").args(["-q", "--error-exitcode=99", "--leak-check=full"]).arg(&binary).output(),
-            false => Command::new(&binary).output(),
+            true => crate::value::testing::run(
+                Command::new("valgrind").args(["-q", "--error-exitcode=99", "--leak-check=full"]).arg(&binary),
+            ),
+            false => crate::value::testing::run(&mut Command::new(&binary)),
         }
         .expect("the program runs");
         let _ = std::fs::remove_dir_all(&dir);

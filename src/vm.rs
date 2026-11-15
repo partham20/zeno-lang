@@ -47,7 +47,9 @@ const STACK_SIZE: usize = 256 * 1024 * 1024;
 /// Compile a program to bytecode and run it. With `capture` the printed
 /// text is returned instead of going to the screen, which is how the
 /// tests check output.
-pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
+/// `outside` is what is typed at the program, and the words after the
+/// file on the command line.
+pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, Result<(), Error>) {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
@@ -56,6 +58,7 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
                 let mut vm = Vm {
                     output: capture.then(String::new),
                     board: Board::new(),
+                    outside,
                     // Under every frame's stretch of the stack is the thing
                     // that was called. The program was called by nobody.
                     stack: vec![Value::None],
@@ -82,8 +85,11 @@ pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
 /// the project is also a test of the VM.
 #[cfg(test)]
 pub fn run_both(program: &Program, source: &str) -> (String, Result<(), Error>) {
-    let interpreted = crate::interpreter::run(program, true);
-    let on_vm = run(program, true);
+    // What is typed at the program, and the words it is started with,
+    // are the test's to say (`with_outside`). By default nothing is.
+    let outside = crate::value::testing::outside();
+    let interpreted = crate::interpreter::run_with(program, true, outside.clone());
+    let on_vm = run_with(program, true, outside);
     assert_eq!(
         interpreted, on_vm,
         "the interpreter (left) and the VM (right) disagree about this program:\n{source}"
@@ -96,6 +102,8 @@ struct Vm {
     output: Option<String>,
     /// The simulated board, for the `board` module.
     board: Board,
+    /// The keyboard and the command line, for `input` and `program`.
+    outside: Outside,
     stack: Vec<Value>,
     frames: Vec<Frame>,
     handlers: Vec<Handler>,
@@ -166,6 +174,17 @@ impl Machine for Vm {
             }
             None => print_line(text),
         }
+    }
+
+    fn write(&mut self, text: &str) {
+        match &mut self.output {
+            Some(buffer) => buffer.push_str(text),
+            None => print_text(text),
+        }
+    }
+
+    fn outside(&mut self) -> &mut Outside {
+        &mut self.outside
     }
 
     fn board(&mut self) -> &mut Board {
@@ -1125,7 +1144,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time` and `board`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files` and `program`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {

@@ -1,6 +1,7 @@
 //! Everything a Zeno program can use without defining it: functions like
 //! `print` and `len`, methods on strings and lists, the built-in error
-//! types, the `math`, `time` and `board` modules, and f-string formatting.
+//! types, the modules (`math`, `time`, `board`, `files`, `program`), and
+//! f-string formatting.
 //!
 //! These are written in Rust because they cannot be written in Zeno yet.
 
@@ -21,7 +22,10 @@ use crate::value::*;
 type Result<T = Value> = std::result::Result<T, Control>;
 
 const ERROR_TYPES: &[&str] =
-    &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
+    &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"];
+
+/// The end of the message for an `import` of a module there is not.
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files` and `program`";
 
 /// Every built-in name and what it stands for.
 pub fn all() -> Vec<(&'static str, Value)> {
@@ -39,6 +43,7 @@ pub fn all() -> Vec<(&'static str, Value)> {
         Builtin { name: "allocate", call: allocate },
         Builtin { name: "free", call: free },
         Builtin { name: "char", call: char_of },
+        Builtin { name: "input", call: input },
     ];
 
     let mut all: Vec<(&'static str, Value)> =
@@ -79,6 +84,27 @@ fn print(machine: &mut dyn Machine, args: Vec<Value>, _: Span) -> Result {
     let words: Vec<String> = args.iter().map(Value::to_string).collect();
     machine.write_line(&words.join(" "));
     Ok(Value::None)
+}
+
+/// `input()`, `input("Name: ")`: one line from the keyboard, without
+/// its line end. `none` when there are no more lines, which is how a
+/// program that reads to the end knows it is there.
+fn input(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("input", &args, 0, 1, span)?;
+    if let Some(question) = args.first() {
+        machine.write(text("input", question, span)?);
+    }
+    Ok(match machine.outside().line() {
+        Some(line) => Value::str(line),
+        None => Value::None,
+    })
+}
+
+/// `program.arguments()`: the words the program was started with, after
+/// its own name. A new list at each call.
+fn program_arguments(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("arguments", &args, 0, 0, span)?;
+    Ok(Value::list(machine.outside().arguments.iter().map(Value::str).collect()))
 }
 
 fn len(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
@@ -366,7 +392,7 @@ fn strip(text: &str) -> &str {
 }
 
 const STR_METHODS: &[&str] =
-    &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with", "find", "slice", "code"];
+    &["upper", "lower", "strip", "split", "lines", "replace", "starts_with", "ends_with", "find", "slice", "code"];
 const LIST_METHODS: &[&str] = &[
     "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
 ];
@@ -494,6 +520,13 @@ pub fn call_method(
                     },
                 };
                 Ok(Value::list(parts))
+            }
+            // The lines of a text: what a file holds, read one at a time.
+            // A line ends at "\n", and a "\r" just before it (a file
+            // from Windows) goes with it. The last line need not end.
+            "lines" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(Value::list(this.lines().map(Value::str).collect()))
             }
             "replace" => {
                 arity(name, &args, 2, 2, span)?;
@@ -738,6 +771,20 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("now", Value::Builtin(Builtin { name: "now", call: now })),
             ],
         ),
+        "files" => (
+            "files",
+            vec![
+                ("read", Value::Builtin(Builtin { name: "read", call: files_read })),
+                ("write", Value::Builtin(Builtin { name: "write", call: files_write })),
+                ("append", Value::Builtin(Builtin { name: "append", call: files_append })),
+                ("exists", Value::Builtin(Builtin { name: "exists", call: files_exists })),
+                ("remove", Value::Builtin(Builtin { name: "remove", call: files_remove })),
+            ],
+        ),
+        "program" => (
+            "program",
+            vec![("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments }))],
+        ),
         "board" => (
             "board",
             vec![
@@ -761,6 +808,106 @@ fn char_of(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     match u32::try_from(code).ok().filter(|code| *code != 0).and_then(char::from_u32) {
         Some(c) => Ok(Value::str(c.to_string())),
         None => raise("ValueError", format!("{code} is not the code of a character"), span),
+    }
+}
+
+// ---------------------------------------------------------------- Files
+//
+// The `files` module: a whole file read as text, text written to a file,
+// and two questions about a path. Each function here has a twin in
+// runtime.c (`zeno_files_read` and the rest), and the two are written
+// to give the same answer and the same message in every case, so that
+// a compiled program prints what `zeno run` prints.
+
+/// What is at a path.
+#[derive(PartialEq)]
+enum At {
+    /// Nothing.
+    Nothing,
+    /// A file that can be read.
+    File,
+    /// Something else: a folder, or a file this program may not read.
+    Other,
+}
+
+/// Open the path and try to read one byte. A folder can be opened on
+/// some systems, and only fails when it is read.
+fn at(path: &str) -> At {
+    use std::io::Read;
+    match std::fs::File::open(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => At::Nothing,
+        Err(_) => At::Other,
+        Ok(mut file) => match file.read(&mut [0u8; 1]) {
+            Ok(_) => At::File,
+            Err(_) => At::Other,
+        },
+    }
+}
+
+/// The text arguments of a `files` function.
+fn paths<'a>(name: &str, args: &'a [Value], count: usize, span: Span) -> Result<Vec<&'a str>> {
+    arity(name, args, count, count, span)?;
+    args.iter().map(|arg| text(name, arg, span)).collect()
+}
+
+fn file_error<T>(message: String, span: Span) -> Result<T> {
+    raise("FileError", message, span)
+}
+
+/// `files.read(path)`: everything in the file, as one str.
+fn files_read(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let path = paths("read", &args, 1, span)?[0];
+    match at(path) {
+        At::Nothing => return file_error(format!("there is no file `{path}`"), span),
+        At::Other => return file_error(format!("cannot read `{path}`"), span),
+        At::File => {}
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return file_error(format!("cannot read `{path}`"), span);
+    };
+    // Text is UTF-8 with no zero byte in it: a compiled program ends
+    // text at the first zero.
+    match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => Ok(Value::str(text)),
+        _ => file_error(format!("`{path}` does not hold text"), span),
+    }
+}
+
+/// `files.write(path, text)` makes the file, or replaces what was in
+/// it. `files.append(path, text)` adds to the end.
+fn put(name: &str, args: Vec<Value>, append: bool, span: Span) -> Result {
+    use std::io::Write;
+    let texts = paths(name, &args, 2, span)?;
+    let (path, text) = (texts[0], texts[1]);
+    let mut options = std::fs::OpenOptions::new();
+    if append { options.append(true) } else { options.write(true).truncate(true) };
+    match options.create(true).open(path).and_then(|mut file| file.write_all(text.as_bytes())) {
+        Ok(()) => Ok(Value::None),
+        Err(_) => file_error(format!("cannot write `{path}`"), span),
+    }
+}
+
+fn files_write(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    put("write", args, false, span)
+}
+
+fn files_append(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    put("append", args, true, span)
+}
+
+/// `files.exists(path)`: is there a file there that can be read?
+fn files_exists(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let path = paths("exists", &args, 1, span)?[0];
+    Ok(Value::Bool(at(path) == At::File))
+}
+
+/// `files.remove(path)`: the file is gone. A folder is left alone.
+fn files_remove(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let path = paths("remove", &args, 1, span)?[0];
+    match at(path) {
+        At::Nothing => file_error(format!("there is no file `{path}`"), span),
+        At::File if std::fs::remove_file(path).is_ok() => Ok(Value::None),
+        _ => file_error(format!("cannot remove `{path}`"), span),
     }
 }
 

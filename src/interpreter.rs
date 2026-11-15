@@ -32,13 +32,16 @@ const MAX_DEPTH: usize = 1000;
 const STACK_SIZE: usize = 256 * 1024 * 1024;
 
 /// Run a program. With `capture` the printed text is returned instead of
-/// going to the screen, which is how the tests check output.
-pub fn run(program: &Program, capture: bool) -> (String, Result<(), Error>) {
+/// going to the screen, which is how the tests check output. `outside`
+/// is what is typed at the program, and the words after the file on the
+/// command line.
+pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, Result<(), Error>) {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
-                let mut interpreter = Interpreter { output: capture.then(String::new), depth: 0, board: Board::new() };
+                let mut interpreter =
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), outside };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
@@ -193,6 +196,8 @@ pub struct Interpreter {
     output: Option<String>,
     /// The simulated board, for the `board` module.
     board: Board,
+    /// The keyboard and the command line, for `input` and `program`.
+    outside: Outside,
     /// How many function calls are currently in progress.
     depth: usize,
 }
@@ -207,6 +212,17 @@ impl Machine for Interpreter {
             }
             None => print_line(text),
         }
+    }
+
+    fn write(&mut self, text: &str) {
+        match &mut self.output {
+            Some(buffer) => buffer.push_str(text),
+            None => print_text(text),
+        }
+    }
+
+    fn outside(&mut self) -> &mut Outside {
+        &mut self.outside
     }
 
     fn board(&mut self) -> &mut Board {
@@ -452,7 +468,7 @@ impl Interpreter {
                 let path = module.join(".");
                 let Some(found) = builtins::module(&path) else {
                     return fatal(
-                        format!("there is no module `{path}`. So far Zeno has `math`, `time` and `board`"),
+                        format!("there is no module `{path}`. {}", builtins::MODULES),
                         span,
                     );
                 };
@@ -905,6 +921,117 @@ mod tests {
         assert_eq!(error("print(char(55296))"), "uncaught ValueError: 55296 is not the code of a character");
     }
 
+    // ----- Reading and writing -----
+
+    /// A place for a test's file that no other test uses.
+    fn scratch(name: &str) -> String {
+        std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())).display().to_string()
+    }
+
+    #[test]
+    fn files_are_written_read_and_removed() {
+        let path = scratch("files.txt");
+        let source = format!(
+            "import files\nlet path = \"{path}\"\n\
+             print(files.exists(path))\n\
+             files.write(path, \"one\\ntwo\\n\")\n\
+             print(files.exists(path), len(files.read(path)))\n\
+             files.append(path, \"three\")\n\
+             print(files.read(path).lines())\n\
+             files.write(path, \"again\")\n\
+             print(files.read(path))\n\
+             files.remove(path)\n\
+             print(files.exists(path))\n"
+        );
+        assert_eq!(output(&source), "false\ntrue 8\n[\"one\", \"two\", \"three\"]\nagain\nfalse\n");
+        // `from files import ...` gives the same functions.
+        let source = format!(
+            "from files import write, read, remove\nwrite(\"{path}\", \"x\")\nprint(read(\"{path}\"))\nremove(\"{path}\")"
+        );
+        assert_eq!(output(&source), "x\n");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_used_is_a_file_error() {
+        let path = scratch("missing.txt");
+        let folder = std::env::temp_dir().display().to_string();
+        assert_eq!(
+            error(&format!("import files\nprint(files.read(\"{path}\"))")),
+            format!("uncaught FileError: there is no file `{path}`")
+        );
+        assert_eq!(
+            error(&format!("import files\nfiles.remove(\"{path}\")")),
+            format!("uncaught FileError: there is no file `{path}`")
+        );
+        assert_eq!(
+            error(&format!("import files\nfiles.write(\"{path}/x/y.txt\", \"\")")),
+            format!("uncaught FileError: cannot write `{path}/x/y.txt`")
+        );
+        // A folder is not a file: it is there, and cannot be read.
+        assert_eq!(
+            output(&format!(
+                "import files\nprint(files.exists(\"{folder}\"))\n\
+                 try {{ print(files.read(\"{folder}\")) }} except FileError as error {{ print(error.message) }}"
+            )),
+            format!("false\ncannot read `{folder}`\n")
+        );
+        // A file that is not text: bytes that are not UTF-8, or a zero.
+        for (name, bytes) in [("not-utf8.bin", &[b'a', 0xFF][..]), ("zero.bin", &[b'a', 0, b'b'][..])] {
+            let path = scratch(name);
+            std::fs::write(&path, bytes).expect("the file is written");
+            let source = format!(
+                "import files\ntry {{ print(files.read(\"{path}\")) }} except FileError as error {{ print(error.message) }}"
+            );
+            assert_eq!(output(&source), format!("`{path}` does not hold text\n"));
+            std::fs::remove_file(&path).expect("the file is removed");
+        }
+        assert_eq!(error("import files\nfiles.read(5)"), "`read` needs a str, but this is an int");
+    }
+
+    #[test]
+    fn the_lines_of_a_text() {
+        assert_eq!(
+            output(
+                "print(\"\".lines(), \"one\".lines(), \"one\\n\".lines(), \"one\\ntwo\".lines())\n\
+                 print(\"one\\r\\ntwo\\r\\n\".lines(), \"\\n\".lines(), \"a\\n\\nb\".lines())\n\
+                 print(len(\"a\\r\".lines()[0]), len(\"a\\rb\\n\".lines()[0]))"
+            ),
+            "[] [\"one\"] [\"one\"] [\"one\", \"two\"]\n[\"one\", \"two\"] [\"\"] [\"a\", \"\", \"b\"]\n2 3\n"
+        );
+    }
+
+    #[test]
+    fn input_reads_a_line_or_none() {
+        use crate::value::testing::with_outside;
+        let source = "let name = input(\"Name: \")\n\
+                      if name is none { print(\"nobody\") } else { print(f\"Hello, {name}!\") }\n\
+                      var count = 0\n\
+                      while true {\n\
+                      \x20   let line = input()\n\
+                      \x20   if line is none { break }\n\
+                      \x20   count += 1\n\
+                      \x20   print(count, len(line), line)\n\
+                      }\n\
+                      print(input() is none)";
+        with_outside("Partha\none\r\n\nlast, with no end", &[], || {
+            assert_eq!(output(source), "Name: Hello, Partha!\n1 3 one\n2 0 \n3 17 last, with no end\ntrue\n");
+        });
+        // Nothing typed at all: the first `input` is `none` already.
+        assert_eq!(output(source), "Name: nobody\ntrue\n");
+        assert_eq!(error("input(5)"), "`input` needs a str, but this is an int");
+    }
+
+    #[test]
+    fn the_arguments_of_the_program() {
+        use crate::value::testing::with_outside;
+        let source = "import program\nlet words = program.arguments()\nprint(len(words), words)\n\
+                      words.append(\"mine\")\nprint(len(program.arguments()))";
+        with_outside("", &["a.txt", "two words", "--strict"], || {
+            assert_eq!(output(source), "3 [\"a.txt\", \"two words\", \"--strict\"]\n3\n");
+        });
+        assert_eq!(output(source), "0 []\n0\n");
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -939,7 +1066,10 @@ mod tests {
     #[test]
     fn modules() {
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
-        assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
+        assert_eq!(
+            error("import radio"),
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files` and `program`"
+        );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");
     }

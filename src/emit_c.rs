@@ -138,6 +138,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
         structs: Vec::new(),
         globals: Vec::new(),
         roots: Vec::new(),
+        arguments: false,
         prototypes: Vec::new(),
         definitions: Vec::new(),
         adapters: HashSet::new(),
@@ -270,7 +271,9 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
     c += &render(&main);
     c += "}\n";
 
-    c += "\nint main(void) {\n";
+    // `main` takes the command line only in a program that reads it.
+    let main_line = if emitter.arguments { "\nint main(int argc, char **argv) {\n" } else { "\nint main(void) {\n" };
+    c += main_line;
     if collector {
         // The collector starts from the variables. Those on the stack it
         // finds by itself; the top-level ones, and an error on its way to
@@ -281,12 +284,15 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
             roots += &format!("    zeno_mark_words(&{root}, sizeof {root});\n");
         }
         roots += "}\n";
-        c.insert_str(c.len() - "\nint main(void) {\n".len(), &roots);
+        c.insert_str(c.len() - main_line.len(), &roots);
         c += "    void *base = NULL;\n";
         c += "    zeno_stack_base = &base; /* the stack starts here */\n";
     }
     c += "#ifdef ZENO_MEMORY_REPORT\n    atexit(zeno_memory_report);\n#endif\n";
     c += &format!("    zeno_file = {};\n", c_string(file));
+    if emitter.arguments {
+        c += "    zeno_program_start(argc, argv);\n";
+    }
     c += "    zeno_program();\n";
     c += "    return 0;\n}\n";
     Ok(c)
@@ -726,6 +732,9 @@ struct Emitter<'a> {
     /// The C names of the top-level variables that can hold a pointer: the
     /// places, besides the stack, where the collector starts looking.
     roots: Vec<String>,
+    /// Does the program ask for `program.arguments()`? Then `main`
+    /// takes them from the system and hands them to the runtime.
+    arguments: bool,
     prototypes: Vec<String>,
     definitions: Vec<String>,
     /// The small show-one-item and compare-two-items functions written so
@@ -2095,7 +2104,7 @@ impl Emitter<'_> {
 
             StmtKind::Import { module, names } => {
                 let module = module.join(".");
-                if !matches!(module.as_str(), "math" | "time" | "board") {
+                if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }
                 for name in names {
@@ -4014,8 +4023,8 @@ impl Emitter<'_> {
                         if owner == "math" {
                             return self.math(name, args, span);
                         }
-                        // `time.sleep(1 s)`, `board.pin(7)`
-                        if owner == "time" || owner == "board" {
+                        // `time.sleep(1 s)`, `board.pin(7)`, `files.read(path)`
+                        if matches!(owner.as_str(), "time" | "board" | "files" | "program") {
                             return self.device(owner, name, args, span);
                         }
                         // `u8.wrap(n)`: the low bits of `n`, which cannot fail.
@@ -4109,6 +4118,40 @@ impl Emitter<'_> {
             ("time", "now", []) => Ok(self.called("zeno_now()".to_string(), &vals, Kind::Quantity("ms".to_string()))),
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::from(format!("zeno_pin({}, {})", number.code, at(span)), Kind::Pin, &[number]).failing())
+            }
+            // The `files` module. Each is one call into the runtime.
+            ("files", "exists", [path]) if path.kind == Kind::Str => {
+                Ok(self.called(format!("zeno_files_exists({})", path.code), &vals, Kind::Bool))
+            }
+            // The rest can fail, with a FileError. An ordinary build
+            // jumps to the `except`. A firmware build is told whether the
+            // call worked, and tests that, as for any function that
+            // `raises`:
+            //
+            //     const char *t1;
+            //     if (!zeno_files_read(z_path, 3, 12, &t1)) goto zeno_except_1;
+            ("files", "read" | "write" | "append" | "remove", _)
+                if vals.iter().all(|val| val.kind == Kind::Str)
+                    && vals.len() == if matches!(name, "write" | "append") { 2 } else { 1 } =>
+            {
+                let returns = if name == "read" { Kind::Str } else { Kind::None };
+                let texts: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
+                let call = format!("zeno_files_{name}({}, {})", texts.join(", "), at(span));
+                // The runtime builds the message of the error, and the
+                // text of the file, in the text room.
+                self.built = !self.collector;
+                if self.firmware {
+                    return self.checked_call(call, returns, &["FileError".to_string()], span);
+                }
+                Ok(self.called(call, &vals, returns))
+            }
+            // `program.arguments()`: a new list, which is nobody's yet.
+            ("program", "arguments", []) => {
+                self.arguments = true;
+                let mut words =
+                    self.called("zeno_program_arguments()".to_string(), &vals, Kind::List(Box::new(Kind::Str)));
+                words.made = true;
+                Ok(words)
             }
             _ => Err(cannot(format!("`{module}.{name}` called this way"), span)),
         }
@@ -4379,6 +4422,9 @@ impl Emitter<'_> {
                         &parts,
                     )
                     .failing(),
+                    ("lines", [text]) => {
+                        Val::from(format!("zeno_lines({text})"), Kind::List(Box::new(Kind::Str)), &parts)
+                    }
                     ("replace", [text, old, new]) if all_text => {
                         Val::from(format!("zeno_replace({text}, {old}, {new})"), Kind::Str, &parts)
                     }
@@ -4410,7 +4456,7 @@ impl Emitter<'_> {
                     _ => return Err(cannot(format!("the str method `{name}` called this way"), span)),
                 };
                 // The list of pieces is new, and nobody's yet.
-                val.made = name == "split";
+                val.made = name == "split" || name == "lines";
                 Ok(val)
             }
             Kind::List(item) => {
@@ -4750,6 +4796,14 @@ impl Emitter<'_> {
                 val
             }
             "str" => Val::from(self.text(one()?, span)?, Kind::Str, &parts),
+            // `input()`, `input("Name: ")`: the runtime reads a line, and
+            // gives NULL, which is `none`, when there are no more.
+            "input" if vals.len() <= 1 && vals.iter().all(|val| val.kind == Kind::Str) => {
+                let question = vals.first().map_or("NULL", |val| val.code.as_str());
+                let call = format!("zeno_input({question})");
+                self.built = !self.collector;
+                return Ok(self.called(call, &vals, Kind::Optional(Box::new(Kind::Str))));
+            }
             // `char(65)`: the runtime writes the bytes of that character.
             "char" if matches!(one(), Ok(val) if val.kind == Kind::Int) => {
                 Val::from(format!("zeno_char({}, {})", one()?.code, at(span)), Kind::Str, &parts).failing()
@@ -4971,7 +5025,8 @@ fn is_c_place(code: &str) -> bool {
 }
 
 /// The built-in kinds of error. An object of any class can be raised too.
-pub const ERROR_KINDS: &[&str] = &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError"];
+pub const ERROR_KINDS: &[&str] =
+    &["Error", "ValueError", "IndexError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// Find the variables that are given a new value inside a `try` block.
 ///
@@ -5251,7 +5306,7 @@ pub(crate) mod tests {
         let complaints = String::from_utf8_lossy(&built.stderr);
         let complaints: String = complaints.chars().take(1500).collect();
         assert!(built.status.success(), "the C does not compile:\n{complaints}");
-        let ran = Command::new(&binary).output().expect("the program runs");
+        let ran = crate::value::testing::run(&mut Command::new(&binary)).expect("the program runs");
         let _ = std::fs::remove_dir_all(&dir);
         Some((
             String::from_utf8_lossy(&ran.stdout).into_owned(),
@@ -9698,6 +9753,223 @@ print(readings.find(30))
         ] {
             same_as_interpreter(name, source);
         }
+    }
+
+    /// A place for a test's file that no other test uses.
+    fn scratch(name: &str) -> String {
+        std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id())).display().to_string()
+    }
+
+    /// The `files` module: every program here leaves no file behind, so
+    /// each engine and each build starts from the same.
+    const FILES: &str = r#"import files
+
+function size(path: str) -> int raises FileError {
+    return len(files.read(path))
+}
+
+function lines_in(path: str) -> int {
+    try {
+        return len(files.read(path).lines())
+    } except FileError as error {
+        print("lines_in:", error.message)
+        return -1
+    }
+}
+
+let path = "PATH"
+print(files.exists(path))
+files.write(path, "one\ntwo\n")
+print(files.exists(path))
+print(size(path))
+print(lines_in(path))
+files.append(path, "three")
+print(files.read(path))
+for line in files.read(path).lines() {
+    print(f"[{line}]")
+}
+files.write(path, "")
+print(size(path))
+files.write(path, "தமிழ்\r\nok")
+print(size(path))
+let kept = files.read(path).lines()
+print(len(kept))
+print(kept[0])
+print(kept[1] + "!")
+files.remove(path)
+print(lines_in(path))
+try {
+    files.remove(path)
+} except FileError as error {
+    print(error.message)
+}
+try {
+    files.append("PATH/no/such/folder.txt", "x")
+} except FileError as error {
+    print(error.message)
+}
+try {
+    print(files.read("FOLDER"))
+} except FileError as error {
+    print(error.message)
+}
+print(files.exists("FOLDER"))
+try {
+    print(size(path))
+} except FileError as error {
+    print("size:", error.message)
+}
+"#;
+
+    #[test]
+    fn files_are_the_same_in_every_build() {
+        let folder = std::env::temp_dir().display().to_string();
+        let source = FILES.replace("PATH", &scratch("every-build.txt")).replace("FOLDER", &folder);
+        no_collector_as_interpreter("files", &source);
+    }
+
+    #[test]
+    fn an_uncaught_file_error_is_the_same_in_every_build() {
+        let path = scratch("uncaught.txt");
+        same_as_interpreter("files-uncaught", &format!("import files\nprint(\"before\")\nprint(files.read(\"{path}\"))\n"));
+        same_as_interpreter(
+            "files-uncaught-in-function",
+            &format!(
+                "import files\nfunction first(path: str) -> str raises FileError {{\n    return files.read(path)\n}}\n\
+                 print(first(\"{path}\"))\n"
+            ),
+        );
+    }
+
+    #[test]
+    fn what_is_text_is_the_same_in_every_build() {
+        // The interpreter asks Rust whether the bytes are UTF-8, and the
+        // runtime has a test of its own. They must draw the same line.
+        let cases: [(&str, &[u8], bool); 9] = [
+            ("plain", b"plain", true),
+            ("last", &[0xF4, 0x8F, 0xBF, 0xBF], true),      // U+10FFFF, the last character
+            ("bom", &[0xEF, 0xBB, 0xBF, b'a'], true),        // a file that begins with a byte order mark
+            ("stray", &[b'a', 0xFF], false),                 // a byte that is in no character
+            ("zero", &[b'a', 0, b'b'], false),               // a zero byte
+            ("cut", &[0xE2, 0x82], false),                   // a character cut short
+            ("long", &[0xC0, 0x80], false),                  // a character written longer than it need be
+            ("half", &[0xED, 0xA0, 0x80], false),            // half of a pair, which is no character
+            ("beyond", &[0xF4, 0x90, 0x80, 0x80], false),    // past the last character
+        ];
+        let mut source = "import files\n".to_string();
+        let mut expected = String::new();
+        let mut paths = Vec::new();
+        for (name, bytes, text) in cases {
+            let path = scratch(&format!("text-{name}.bin"));
+            std::fs::write(&path, bytes).expect("the file is written");
+            source += &format!(
+                "try {{\n    print(len(files.read(\"{path}\")))\n}} except FileError as error {{\n    print(error.message)\n}}\n"
+            );
+            expected += &match text {
+                true => format!("{}\n", String::from_utf8_lossy(bytes).chars().count()),
+                false => format!("`{path}` does not hold text\n"),
+            };
+            paths.push(path);
+        }
+        assert_eq!(interpreted(&source), expected);
+        no_collector_as_interpreter("files-text", &source);
+        for path in paths {
+            std::fs::remove_file(path).expect("the file is removed");
+        }
+    }
+
+    /// The keyboard and the command line.
+    const OUTSIDE: &str = r#"import program
+
+function shout(line: str or none) -> str {
+    if line is none {
+        return "(nothing)"
+    }
+    return line.upper()
+}
+
+let words = program.arguments()
+print(len(words))
+for word in words {
+    print(f"<{word}>")
+}
+print(len(program.arguments()))
+
+let name = input("Name: ")
+if name is none {
+    print("nobody")
+} else {
+    print(f"Hello, {name}!")
+}
+input()
+print(shout(input()))
+var count = 0
+var longest = ""
+while true {
+    let line = input()
+    if line is none {
+        break
+    }
+    count += 1
+    if len(line) > len(longest) {
+        longest = line
+    }
+    for word in line.split() {
+        print(word)
+    }
+    print(len(line))
+}
+print(count)
+print(len(longest))
+print(shout(input("more? ")))
+"#;
+
+    #[test]
+    fn the_keyboard_and_the_arguments_are_the_same_in_every_build() {
+        use crate::value::testing::with_outside;
+        // A line longer than the runtime reads in one piece, a "\r" where
+        // two pieces meet, "\r" inside a line and at the very end, an
+        // empty line, and a zero byte.
+        let long = "w".repeat(300);
+        let edge = "x".repeat(125);
+        let typed = format!("Partha\nskipped\nloud\none two\r\n{long}\n{edge}\r\n\na\rb\r\r\nnul\0byte\nதமிழ்\nend\r");
+        with_outside(&typed, &["alpha", "two words", "--strict", "தமிழ்"], || {
+            let printed = interpreted(OUTSIDE);
+            assert!(printed.starts_with("4\n<alpha>\n<two words>\n<--strict>\n<தமிழ்>\n4\nName: Hello, Partha!\nLOUD\n"));
+            // The "\r" at the very end stays: `end` and it are 4 characters.
+            assert!(printed.ends_with("nulbyte\n7\nதமிழ்\n5\nend\n4\n8\n300\nmore? (nothing)\n"), "{printed}");
+            no_collector_as_interpreter("outside", OUTSIDE);
+        });
+        // Nothing typed, and no arguments.
+        assert_eq!(interpreted(OUTSIDE), "0\n0\nName: nobody\n(nothing)\n0\n0\nmore? (nothing)\n");
+        no_collector_as_interpreter("outside-nothing", OUTSIDE);
+    }
+
+    #[test]
+    fn the_logbook_example_is_the_same_in_every_build() {
+        use crate::value::testing::with_outside;
+        let source = include_str!("../examples/logbook.zeno");
+        let path = scratch("logbook.txt");
+        with_outside("temp 23.5\nhello\nhumidity 40\n\n", &[&path], || {
+            let printed = interpreted(source);
+            let expected = format!(
+                "reading> reading> reading> reading> reading> \n4 lines typed\n\
+                 4 readings in {path}, mean 26.75, 2 lines skipped\nstill there: false\n\
+                 FileError: there is no file `{path}`\n"
+            );
+            assert_eq!(printed, expected);
+            no_collector_as_interpreter("logbook", source);
+        });
+    }
+
+    #[test]
+    fn main_takes_the_command_line_only_when_the_program_reads_it() {
+        let with = compile("import program\nprint(len(program.arguments()))").unwrap();
+        assert!(with.contains("int main(int argc, char **argv) {"));
+        assert!(with.contains("    zeno_program_start(argc, argv);\n"));
+        let without = compile("print(1)").unwrap();
+        assert!(without.contains("int main(void) {"));
+        assert!(!without.contains("zeno_program_start(argc"));
     }
 
     /// A `var` that starts with a function of the program and is given

@@ -9,6 +9,7 @@
  * print the way `zeno run` prints them.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #ifndef ZENO_FIRMWARE
@@ -1916,6 +1917,24 @@ static zeno_list *zeno_split(const char *text, const char *separator, int line, 
     return parts;
 }
 
+/* `text.lines()`: the lines of `text`. A line ends at "\n", and a "\r"
+ * just before that "\n" (a file from Windows) goes with it. The last
+ * line need not end, and text that ends in "\n" has no empty line after
+ * it: "a\nb\n" and "a\nb" are both the two lines "a" and "b". */
+static zeno_list *zeno_lines(const char *text) {
+    zeno_list *lines = zeno_list_new(0);
+    const char *start = text;
+    while (*start != '\0') {
+        const char *end = strchr(start, '\n');
+        size_t length = end != NULL ? (size_t)(end - start) : strlen(start);
+        const char *next = start + length + (end != NULL ? 1 : 0);
+        if (end != NULL && length > 0 && start[length - 1] == '\r') length--;
+        zeno_list_append(lines, (zeno_slot){.s = zeno_piece(start, length)});
+        start = next;
+    }
+    return lines;
+}
+
 /* `text.replace(old, new)`: every `old` in `text` becomes `new`. */
 static const char *zeno_replace(const char *text, const char *old, const char *new_text) {
     size_t step = strlen(old);
@@ -2015,6 +2034,250 @@ static const char *zeno_char(int64_t code, int line, int col) {
         size = 4;
     }
     return zeno_copy(bytes, size);
+}
+
+/* -------------------------------------------------------------------- Files
+ *
+ * The `files` module: a whole file read as text, text written to a file,
+ * and two questions about a path. Each function has a twin in
+ * builtins.rs, for `zeno run`, and the two are written to give the same
+ * answer and the same message in every case.
+ *
+ * A file is opened in binary mode ("rb", "wb"), so that the bytes of the
+ * text are the bytes of the file on every system.
+ */
+
+/* What is at a path: 0 for nothing, 1 for a file that can be read, and 2
+ * for anything else (a folder, or a file this program may not read).
+ * A folder can be opened on some systems and only fails when it is read,
+ * so one byte is read to find out. */
+static int zeno_file_at(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) return errno == ENOENT ? 0 : 2;
+    int first = fgetc(file);
+    int at = (first == EOF && ferror(file) != 0) ? 2 : 1;
+    (void)fclose(file);
+    return at;
+}
+
+/* Is this text? Text is well-formed UTF-8 with no zero byte in it, since
+ * a zero is where a str ends.
+ *
+ * The first byte of a character says how many bytes follow, and each of
+ * those must look like 10xxxxxx. For four first bytes the second byte is
+ * held tighter still (`low` and `high`), which rules out a character
+ * written in more bytes than it needs, the numbers Unicode keeps free,
+ * and anything past its last character. */
+static bool zeno_is_text(const unsigned char *bytes, size_t size) {
+    size_t i = 0;
+    while (i < size) {
+        unsigned char first = bytes[i];
+        size_t more;
+        unsigned char low = 0x80;
+        unsigned char high = 0xBF;
+        if (first == 0) return false;
+        if (first < 0x80) {
+            i++;
+            continue;
+        }
+        if (first >= 0xC2 && first <= 0xDF) {
+            more = 1;
+        } else if (first == 0xE0) {
+            more = 2;
+            low = 0xA0;
+        } else if (first == 0xED) {
+            more = 2;
+            high = 0x9F;
+        } else if (first >= 0xE1 && first <= 0xEF) {
+            more = 2;
+        } else if (first == 0xF0) {
+            more = 3;
+            low = 0x90;
+        } else if (first >= 0xF1 && first <= 0xF3) {
+            more = 3;
+        } else if (first == 0xF4) {
+            more = 3;
+            high = 0x8F;
+        } else {
+            return false;
+        }
+        if (size - i <= more) return false;
+        if (bytes[i + 1] < low || bytes[i + 1] > high) return false;
+        for (size_t k = 2; k <= more; k++) {
+            if ((bytes[i + k] & 0xC0) != 0x80) return false;
+        }
+        i += more + 1;
+    }
+    return true;
+}
+
+/* The three below do the work. Each gives back NULL when all went well,
+ * or the message of the FileError. */
+
+static const char *zeno_file_read(const char *path, const char **result) {
+    int at = zeno_file_at(path);
+    if (at == 0) return zeno_join(3, "there is no file `", path, "`");
+    FILE *file = at == 1 ? fopen(path, "rb") : NULL;
+    /* How long it is: go to the end, and ask where that is. */
+    long size = -1;
+    if (file != NULL && fseek(file, 0, SEEK_END) == 0) size = ftell(file);
+    if (file == NULL || size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        if (file != NULL) (void)fclose(file);
+        return zeno_join(3, "cannot read `", path, "`");
+    }
+    char *text = zeno_alloc_text((size_t)size + 1);
+    size_t got = fread(text, 1, (size_t)size, file);
+    (void)fclose(file);
+    if (got != (size_t)size) return zeno_join(3, "cannot read `", path, "`");
+    text[size] = '\0';
+    if (!zeno_is_text((const unsigned char *)text, (size_t)size)) {
+        return zeno_join(3, "`", path, "` does not hold text");
+    }
+    *result = text;
+    return NULL;
+}
+
+/* `mode` is "wb" to replace what the file held, and "ab" to add to it. */
+static const char *zeno_file_put(const char *path, const char *text, const char *mode) {
+    FILE *file = fopen(path, mode);
+    size_t size = strlen(text);
+    bool good = file != NULL && fwrite(text, 1, size, file) == size;
+    if (file != NULL && fclose(file) != 0) good = false;
+    return good ? NULL : zeno_join(3, "cannot write `", path, "`");
+}
+
+static const char *zeno_file_remove(const char *path) {
+    int at = zeno_file_at(path);
+    if (at == 0) return zeno_join(3, "there is no file `", path, "`");
+    if (at == 2 || remove(path) != 0) return zeno_join(3, "cannot remove `", path, "`");
+    return NULL;
+}
+
+static bool zeno_files_exists(const char *path) {
+    return zeno_file_at(path) == 1;
+}
+
+/* What the compiled program calls. A file can be missing however careful
+ * the program is, so a FileError is raised as an error that can be
+ * caught in every kind of build: by a jump in an ordinary one, and as a
+ * value in a firmware one, like `int("x")`. */
+#ifndef ZENO_FIRMWARE
+
+static void zeno_file_done(const char *wrong, int line, int col) {
+    if (wrong != NULL) zeno_raise(zeno_error_new("FileError", wrong, NULL), line, col);
+}
+
+static const char *zeno_files_read(const char *path, int line, int col) {
+    const char *text = "";
+    zeno_file_done(zeno_file_read(path, &text), line, col);
+    return text;
+}
+
+static void zeno_files_write(const char *path, const char *text, int line, int col) {
+    zeno_file_done(zeno_file_put(path, text, "wb"), line, col);
+}
+
+static void zeno_files_append(const char *path, const char *text, int line, int col) {
+    zeno_file_done(zeno_file_put(path, text, "ab"), line, col);
+}
+
+static void zeno_files_remove(const char *path, int line, int col) {
+    zeno_file_done(zeno_file_remove(path), line, col);
+}
+
+#else /* ZENO_FIRMWARE */
+
+static bool zeno_file_done(const char *wrong, int line, int col) {
+    if (wrong == NULL) return true;
+    zeno_note(zeno_error_new("FileError", wrong, NULL), line, col);
+    return false;
+}
+
+static bool zeno_files_read(const char *path, int line, int col, const char **result) {
+    return zeno_file_done(zeno_file_read(path, result), line, col);
+}
+
+static bool zeno_files_write(const char *path, const char *text, int line, int col) {
+    return zeno_file_done(zeno_file_put(path, text, "wb"), line, col);
+}
+
+static bool zeno_files_append(const char *path, const char *text, int line, int col) {
+    return zeno_file_done(zeno_file_put(path, text, "ab"), line, col);
+}
+
+static bool zeno_files_remove(const char *path, int line, int col) {
+    return zeno_file_done(zeno_file_remove(path), line, col);
+}
+
+#endif /* ZENO_FIRMWARE */
+
+/* ------------------------------------- The keyboard and the command line
+ *
+ * `input()` reads one line of standard input: the keyboard, or a file
+ * that was piped in. `program.arguments()` gives the words the program
+ * was started with. Both come from the C library, so a board gets them
+ * from whatever its C library reads: a serial line, as a rule. */
+
+/* `input()`, `input("Name: ")`: the next line, without its line end,
+ * or NULL (which is `none`) when there are no more lines. A "\r" just
+ * before the "\n" goes with it, as in `lines()`. A zero byte is left
+ * out, because text ends at one. */
+static const char *zeno_input(const char *question) {
+    if (question != NULL) {
+        fputs(question, stdout);
+        fflush(stdout); /* on the screen before the program waits */
+    }
+    char piece[128];
+    size_t used = 0;
+    const char *line = NULL;
+    bool carriage = false; /* a "\r" is held back until the next byte is seen */
+    bool got = false;      /* was there anything at all, even an empty line? */
+    for (;;) {
+        /* Room for two more bytes? If not, move the piece to the line. */
+        if (used + 2 >= sizeof piece) {
+            const char *more = zeno_copy(piece, used);
+            line = line == NULL ? more : zeno_join(2, line, more);
+            used = 0;
+        }
+        int c = fgetc(stdin);
+        if (c == '\n') {
+            got = true;
+            break;
+        }
+        if (carriage) {
+            piece[used++] = '\r'; /* it was not before a "\n": it stays */
+            carriage = false;
+        }
+        if (c == EOF) break;
+        got = true;
+        if (c == '\r') {
+            carriage = true;
+        } else if (c != '\0') {
+            piece[used++] = (char)c;
+        }
+    }
+    if (!got) return NULL;
+    const char *rest = zeno_copy(piece, used);
+    return line == NULL ? rest : zeno_join(2, line, rest);
+}
+
+/* What `main` was given, kept for `program.arguments()`. */
+static int zeno_argc = 0;
+static char **zeno_argv = NULL;
+
+static void zeno_program_start(int argc, char **argv) {
+    zeno_argc = argc;
+    zeno_argv = argv;
+}
+
+/* `program.arguments()`: a new list of the words after the program's
+ * own name. */
+static zeno_list *zeno_program_arguments(void) {
+    zeno_list *words = zeno_list_new(0);
+    for (int i = 1; i < zeno_argc; i++) {
+        zeno_list_append(words, (zeno_slot){.s = zeno_piece(zeno_argv[i], strlen(zeno_argv[i]))});
+    }
+    return words;
 }
 
 /* --------------------------------------------------- Values that may be none

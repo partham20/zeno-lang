@@ -39,7 +39,8 @@ fn usage() {
     println!("Every journey is halfway done. Forever.");
     println!();
     println!("Usage:");
-    println!("  zeno run <file.zeno>      check a program, then run it");
+    println!("  zeno run <file.zeno>      check a program, then run it. Words after the");
+    println!("                            file are the program's own arguments");
     println!("  zeno check <file.zeno>    check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>   show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>    show the syntax tree the parser builds");
@@ -154,11 +155,14 @@ fn bytecode(path: &str) -> Option<()> {
 /// `zeno run <file>`: check the program, and if it is sound, run it.
 ///
 /// There are two engines to run it with. Both give the same result.
-fn run(path: &str, strict: bool, on_vm: bool) -> Option<()> {
+fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<()> {
     let (source, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
+    // The words after the file are the program's (`program.arguments()`),
+    // and what it reads with `input()` is the keyboard.
+    let outside = value::Outside::started_with(arguments);
     let (_, result) = match on_vm {
-        true => vm::run(&program, false),
-        false => interpreter::run(&program, false),
+        true => vm::run_with(&program, false, outside),
+        false => interpreter::run_with(&program, false, outside),
     };
     match result {
         Ok(()) => Some(()),
@@ -332,6 +336,15 @@ fn report(path: &str, source: &str, error: &error::Error) {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
+    // `zeno run copy.zeno a.txt --strict`: the words after the file of a
+    // `run` are the program's own, whatever they look like. Zeno's
+    // options go before the file.
+    let mut arguments = Vec::new();
+    if args.first().is_some_and(|command| command == "run") {
+        if let Some(file) = args.iter().skip(1).position(|arg| !arg.starts_with("--")) {
+            arguments = args.split_off(file + 2);
+        }
+    }
     // `--strict` may appear anywhere after the command.
     let strict = args.iter().any(|arg| arg == "--strict");
     args.retain(|arg| arg != "--strict");
@@ -381,7 +394,7 @@ fn main() -> ExitCode {
                 // every type known, and every list and object owned.
                 "check" => check(path, checker::Rules { strict: strict || no_collector, one_owner: no_collector, firmware: no_collector })
                     .map(|_| println!("No errors found.")),
-                _ => run(path, strict, on_vm),
+                _ => run(path, strict, on_vm, arguments),
             };
             match done {
                 Some(()) => ExitCode::SUCCESS,
