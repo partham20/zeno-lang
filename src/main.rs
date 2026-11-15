@@ -8,6 +8,10 @@
 //! VM. `zeno bytecode` shows that bytecode. `zeno build` compiles to C,
 //! or with `--llvm` to LLVM IR.
 
+// Built for a browser, the keyboard and a few more things that only
+// `main` reaches are still compiled, and nothing calls them.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+
 mod ast;
 mod board;
 mod builtins;
@@ -26,12 +30,15 @@ mod lsp;
 mod modules;
 mod ops;
 mod package;
+mod page;
 mod parser;
 mod printer;
 mod token;
 mod units;
 mod value;
 mod vm;
+#[cfg(target_arch = "wasm32")]
+mod web_host;
 
 use std::env;
 use std::fs;
@@ -99,6 +106,10 @@ fn usage() {
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");
+    println!("  --web                    with build: write one page, an `.html` file,");
+    println!("                           that runs the program in a browser. The");
+    println!("                           program reaches the page with `import web`");
+    println!("                           (docs/web.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -542,6 +553,156 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
     }
 }
 
+/// The page a program gets if nobody wrote one for it: a title, and a
+/// place for what the program prints, where a long line goes on to the
+/// next and not off the side.
+const DEFAULT_PAGE: &str = "<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<title>NAME</title>
+</head>
+<body>
+<pre id=\"zeno-output\" style=\"white-space: pre-wrap\"></pre>
+</body>
+</html>
+";
+
+/// Bytes as text, in base64: three bytes become four letters. It is how
+/// `zeno.wasm` is written into a page, which is text.
+fn base64(bytes: &[u8]) -> String {
+    const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for three in bytes.chunks(3) {
+        let bits = (three[0] as u32) << 16 | (*three.get(1).unwrap_or(&0) as u32) << 8 | *three.get(2).unwrap_or(&0) as u32;
+        for place in 0..4 {
+            // Three bytes fill four letters, two fill three, one fills two.
+            // The rest is written `=`.
+            match place <= three.len() {
+                true => out.push(LETTERS[(bits >> (18 - 6 * place) & 63) as usize] as char),
+                false => out.push('='),
+            }
+        }
+    }
+    out
+}
+
+/// `zeno.wasm`, which is Zeno itself built for a browser: where it is,
+/// and its bytes. It is looked for where `ZENO_WASM` says, then beside
+/// `zeno`, where a release has it, then where `cargo build --release
+/// --target wasm32-unknown-unknown` leaves it when `zeno` was built by
+/// cargo too.
+fn zeno_wasm() -> Option<Vec<u8>> {
+    let mut places = Vec::new();
+    if let Ok(named) = env::var("ZENO_WASM") {
+        places.push(PathBuf::from(named));
+    } else if let Some(folder) = env::current_exe().ok().as_deref().and_then(Path::parent) {
+        places.push(folder.join("zeno.wasm"));
+        places.push(folder.join("../wasm32-unknown-unknown/release/zeno.wasm"));
+    }
+    if let Some(bytes) = places.iter().find_map(|place| fs::read(place).ok()) {
+        return Some(bytes);
+    }
+    eprintln!("zeno: `build --web` puts `zeno.wasm` in the page, which is Zeno itself built for a browser,");
+    eprintln!("      and there is none at:");
+    for place in &places {
+        eprintln!("        {}", modules::shown(place));
+    }
+    eprintln!("      A release of Zeno has it beside `zeno`. From the source, build it with");
+    eprintln!("        cargo build --release --target wasm32-unknown-unknown");
+    eprintln!("      and set ZENO_WASM to `target/wasm32-unknown-unknown/release/zeno.wasm`.");
+    None
+}
+
+/// `zeno build --web <file>`: write one page that runs the program in a
+/// browser.
+///
+/// `counter.zeno` becomes `counter.web.html`, in the folder you are in.
+/// The page holds three things: the program, as the text you wrote;
+/// `zeno.wasm`, which is Zeno itself built for a browser; and
+/// `src/web.js`, which starts the one with the other. Nothing is
+/// compiled: the browser runs the program the way `zeno run` does.
+///
+/// If there is a `counter.html` beside `counter.zeno`, that is the page,
+/// and the three are put at its end. If there is none, the page is an
+/// empty one that shows what the program prints.
+fn build_web(path: &str) -> Option<()> {
+    // Checked as `zeno run` checks, since the page runs it as `zeno run`
+    // does.
+    let (files, program) = load(path)?;
+    let errors = checker::checked(program, checker::Rules::default()).1;
+    for error in &errors {
+        report(&files, error);
+    }
+    if !errors.is_empty() {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was built.", errors.len());
+        return None;
+    }
+    let wasm = zeno_wasm()?;
+
+    let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
+    let own_page = Path::new(path).with_extension("html");
+    let page = match fs::read_to_string(&own_page) {
+        Ok(page) => page,
+        Err(_) => DEFAULT_PAGE.replace("NAME", name),
+    };
+    let html_file = format!("{name}.web.html");
+    if let Err(err) = fs::write(&html_file, with_program(&page, &files_of(path)?, &wasm)) {
+        eprintln!("zeno: cannot write `{html_file}`: {err}");
+        return None;
+    }
+    match own_page.exists() {
+        true => println!("Built {html_file} from {} and {path}. Open it in a browser", modules::shown(&own_page)),
+        false => println!("Built {html_file}. Open it in a browser"),
+    }
+    Some(())
+}
+
+/// The files of a program as the page carries them, in JSON:
+///
+/// ```text
+/// {"main": "todo.zeno", "files": {"todo.zeno": "import web\n...", "words.zeno": "..."}}
+/// ```
+///
+/// The program is read once more for this, as if from inside its own
+/// folder. A file is then named from that folder (`todo.zeno`, and not
+/// `/home/partha/site/todo.zeno`), which is what the browser looks for,
+/// what an error in the page shows, and all that anyone who opens the
+/// page learns about the machine it was built on.
+fn files_of(path: &str) -> Option<String> {
+    let folder = Path::new(path).parent().unwrap_or(Path::new(""));
+    let main = Path::new(path).file_name().and_then(|name| name.to_str())?;
+    let found = std::cell::RefCell::new(vec![(main.to_string(), json::Json::Text(read(path)?))]);
+    modules::load(main, read(path)?, &|path| {
+        let text = fs::read_to_string(folder.join(path)).ok()?;
+        found.borrow_mut().push((path.to_string(), json::Json::Text(text.clone())));
+        Some(text)
+    });
+    let program =
+        json::Json::object([("main", json::Json::Text(main.to_string())), ("files", json::Json::Object(found.into_inner()))]);
+    Some(program.write())
+}
+
+/// The page, with the program, Zeno and what starts them written into it.
+fn with_program(page: &str, program: &str, wasm: &[u8]) -> String {
+    // A browser reads `</script>` as the end of the script, even inside
+    // a str of the program. `<` written as `<` is the same str to
+    // JSON, and nothing to the browser.
+    let program = program.replace('<', "\\u003c");
+    let scripts = format!(
+        "<script>\n{}</script>\n<script>Zeno.start(Zeno.bytes(\"{}\"), {program});</script>\n",
+        include_str!("web.js"),
+        base64(wasm),
+    );
+    // The scripts go last in the body, so that the page is all there
+    // when the program starts. A page with no `</body>` gets them at
+    // its end, which a browser reads the same way.
+    let at = page.to_ascii_lowercase().rfind("</body>").unwrap_or(page.len());
+    format!("{}{scripts}{}", &page[..at], &page[at..])
+}
+
 /// Print an error with the offending line and a caret under the exact spot:
 ///
 /// ```text
@@ -616,6 +777,9 @@ fn main() -> ExitCode {
     // `--llvm` builds through LLVM IR in place of C.
     let llvm = args.iter().any(|arg| arg == "--llvm");
     args.retain(|arg| arg != "--llvm");
+    // `--web` builds a page for a browser.
+    let web = args.iter().any(|arg| arg == "--web");
+    args.retain(|arg| arg != "--web");
     let kind = match (no_collector, firmware) {
         (true, _) => emit_c::Build::NoCollector,
         (false, true) => emit_c::Build::Firmware,
@@ -768,9 +932,17 @@ fn main() -> ExitCode {
                 eprintln!("zeno: `build` needs a file, e.g. `zeno build examples/hello.zeno`");
                 return ExitCode::FAILURE;
             };
-            let built = match llvm {
-                true => build_llvm(path, memory_report, kind),
-                false => build(path, memory_report, kind),
+            // A page is not compiled, so the options that say how to
+            // compile have nothing to say about it.
+            if web && (llvm || memory_report || firmware || no_collector) {
+                eprintln!("zeno: `build --web` writes a page, which the browser runs as `zeno run` would.");
+                eprintln!("      `--llvm`, `--firmware`, `--no-collector` and `--memory` are for a compiled program");
+                return ExitCode::FAILURE;
+            }
+            let built = match (web, llvm) {
+                (true, _) => build_web(path),
+                (false, true) => build_llvm(path, memory_report, kind),
+                (false, false) => build(path, memory_report, kind),
             };
             match built {
                 Some(()) => ExitCode::SUCCESS,
@@ -799,6 +971,70 @@ mod tests {
             fs::write(path, text).expect("the file can be written");
         }
         root
+    }
+
+    #[test]
+    fn base64_is_three_bytes_in_four_letters() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"Z"), "Wg==");
+        assert_eq!(base64(b"Ze"), "WmU=");
+        assert_eq!(base64(b"Zeno"), "WmVubw==");
+        assert_eq!(base64(&[0, 255, 254, 253]), "AP/+/Q==");
+    }
+
+    #[test]
+    fn a_page_carries_the_files_of_its_program_named_from_its_folder() {
+        let root = folder(
+            "web-files",
+            &[
+                ("site/main.zeno", "import words\nimport shout.loud\nprint(words.greeting, shout.loud.twice(\"</script>\"))\n"),
+                ("site/words.zeno", "let greeting = \"வணக்கம்\"\n"),
+                ("site/zeno.package", "package site\n\nneeds shout in \"../shout\"\n"),
+                ("shout/zeno.package", "package shout\n"),
+                ("shout/loud.zeno", "function twice(word: str) -> str { return word + word }\n"),
+                ("site/unused.zeno", "print(\"never read\")\n"),
+            ],
+        );
+        let files = files_of(&root.join("site/main.zeno").to_string_lossy()).expect("the files");
+        let json::Json::Object(members) = json::Json::parse(&files).expect("JSON") else { panic!("an object") };
+        assert_eq!(members[0], ("main".to_string(), json::Json::Text("main.zeno".to_string())));
+        let json::Json::Object(carried) = &members[1].1 else { panic!("the files") };
+        let mut names: Vec<&str> = carried.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["../shout/loud.zeno", "../shout/zeno.package", "main.zeno", "words.zeno", "zeno.package"]);
+        // Nothing in it says where on this machine the program is.
+        assert!(!files.contains(&modules::shown(&root)), "{files}");
+
+        // The browser is given the same files and joins them the same way.
+        let read = |path: &str| carried.iter().find(|(name, _)| name == path).and_then(|(_, text)| text.as_str().map(String::from));
+        let loaded = modules::load("main.zeno", read("main.zeno").expect("the first file"), &read);
+        let program = loaded.program.unwrap_or_else(|errors| panic!("{}", errors[0].message));
+        let (program, errors, _) = checker::checked(program, checker::Rules::default());
+        assert!(errors.is_empty(), "{}", errors[0].message);
+        let (output, result) = interpreter::run_with(&program, true, value::Outside::default());
+        assert!(result.is_ok(), "{:?}", result.err().map(|error| error.message));
+        assert_eq!(output, "வணக்கம் </script></script>\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_program_goes_last_in_the_body_of_its_page() {
+        let program = r#"{"main":"a.zeno","files":{"a.zeno":"print(\"</script><b>\")"}}"#;
+        let page = "<html><BODY>\n<h1 id=\"count\"></h1>\n</BODY></html>\n";
+        let built = with_program(page, program, b"Zeno");
+        let (before, after) = built.split_once("<script>").expect("a script");
+        assert_eq!(before, "<html><BODY>\n<h1 id=\"count\"></h1>\n");
+        assert!(after.ends_with("</script>\n</BODY></html>\n"), "{after}");
+        // The program cannot end the script it is written in.
+        let start = r#"<script>Zeno.start(Zeno.bytes("WmVubw=="), {"main":"a.zeno","files":{"a.zeno":"print(\"LESS/script>LESSb>\")"}});</script>"#
+            .replace("LESS", "\\u003c");
+        assert!(built.contains(&start), "{}", &built[built.len() - 300..]);
+        assert_eq!(built.matches("</script>").count(), 2);
+
+        // A page with no `</body>` gets it at its end.
+        let built = with_program("<p>Hello</p>\n", program, b"Zeno");
+        assert!(built.starts_with("<p>Hello</p>\n<script>"), "{built}");
+        assert!(DEFAULT_PAGE.contains("id=\"zeno-output\"") && DEFAULT_PAGE.contains("</body>"));
     }
 
     #[test]

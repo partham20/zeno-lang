@@ -13,8 +13,10 @@
 # example runs and prints the same through the interpreter and the
 # virtual machine, that the tests written in the examples pass, that
 # every example is laid out as `zeno format` lays it out, and that
-# `zeno new` makes a program that runs. It needs no C compiler, because
-# none of these do.
+# `zeno new` makes a program that runs. If Zeno has also been built for
+# a browser (`cargo build --release --target wasm32-unknown-unknown`),
+# it checks that `zeno build --web` writes a page with the program in
+# it. It needs no C compiler and no browser, because none of these do.
 
 set -eu
 
@@ -68,4 +70,18 @@ echo "every example is laid out as \`zeno format\` lays it out"
     run test >/dev/null
 )
 echo "\`zeno new\` makes a program that runs and whose tests pass"
+
+wasm=$PWD/target/wasm32-unknown-unknown/release/zeno.wasm
+if [ -f "$wasm" ]; then
+    examples=$PWD/examples
+    (
+        cd "$work"
+        ZENO_WASM=$wasm run build --web "$examples/todo.zeno" >/dev/null
+        # The page that was written by hand, the program, and Zeno itself.
+        grep -q '<form id="add">' todo.web.html
+        grep -q 'Zeno.start(Zeno.bytes("AGFzbQ' todo.web.html
+        grep -q '"main":"todo.zeno"' todo.web.html
+    ) || { echo "\`zeno build --web\` did not write the page of examples/todo.zeno"; exit 1; }
+    echo "\`zeno build --web\` writes a page with the program and Zeno in it"
+fi
 echo "ok"

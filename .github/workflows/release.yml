@@ -81,6 +81,14 @@ jobs:
           rustup target add ${{ matrix.target }}
           cargo build --release --target ${{ matrix.target }}
 
+      # `zeno.wasm` is Zeno built for a browser, which `zeno build --web`
+      # writes into a page (docs/web.md). It is the same file whichever
+      # machine builds it, and each archive carries it beside `zeno`.
+      - name: Build Zeno for a browser
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --release --target wasm32-unknown-unknown
+
       - name: An emulator, to run a build for another processor
         if: startsWith(matrix.with, 'qemu')
         run: |
@@ -143,6 +151,7 @@ jobs:
           folder=zeno-$version-${{ matrix.name }}
           mkdir "$folder"
           cp -r README.md docs examples editors "$folder"
+          cp target/wasm32-unknown-unknown/release/zeno.wasm "$folder"
           if [ "$RUNNER_OS" = Windows ]; then
             cp target/${{ matrix.target }}/release/zeno.exe "$folder"
             7z a "$folder.zip" "$folder"

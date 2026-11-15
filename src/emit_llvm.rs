@@ -2238,6 +2238,9 @@ impl Emitter<'_> {
 
             StmtKind::Import { module, names } => {
                 let module = module.join(".");
+                if module == "web" {
+                    return Err(crate::emit_c::for_a_page(span));
+                }
                 if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }

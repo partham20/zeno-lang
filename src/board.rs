@@ -75,7 +75,14 @@ pub fn name(pin: i64) -> String {
 
 /// A clock that only goes forward, in milliseconds. Only the difference
 /// between two readings means anything.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// In a browser the clock is the page's.
+#[cfg(target_arch = "wasm32")]
+pub fn now() -> f64 {
+    crate::web_host::now()
 }

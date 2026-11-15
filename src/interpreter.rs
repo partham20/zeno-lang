@@ -19,6 +19,7 @@ use std::rc::Rc;
 
 use crate::ast::*;
 use crate::board::Board;
+use crate::page::Page;
 use crate::builtins;
 use crate::error::{counted, Error};
 use crate::ops;
@@ -26,7 +27,17 @@ use crate::token::Span;
 use crate::value::*;
 
 /// How deep function calls may nest before we assume runaway recursion.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_DEPTH: usize = 1000;
+/// In a browser the stack is the browser's, and far smaller. A program
+/// that goes past the end of it is stopped by the browser, which cannot
+/// say which line of Zeno did it, so the limit is set where Zeno can
+/// still say so. Chromium was measured: a plain function that calls
+/// itself got past 700 calls and not to 1000, and one that calls itself
+/// from inside a loop, a `match` and a `map` got past 400 and not to
+/// 500. 200 leaves room for a browser with half that stack.
+#[cfg(target_arch = "wasm32")]
+const MAX_DEPTH: usize = 200;
 /// The interpreter calls itself for every nested node, so deep Zeno
 /// recursion needs a deep Rust stack. It runs on its own thread to get one.
 const STACK_SIZE: usize = 256 * 1024 * 1024;
@@ -41,7 +52,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(), outside };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
@@ -73,7 +84,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String,
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(), outside };
                 let env = Scope::child(&builtins::globals());
                 let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
                 let mut tested = Vec::new();
@@ -100,6 +111,61 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String,
             .join()
             .expect("the interpreter crashed")
     })
+}
+
+/// A program that stays: one in a page.
+///
+/// `zeno run` runs a program from its first line to its last, and that
+/// is the end of it. A page is not like that. The program runs to its
+/// last line, and then the page is still there, and somebody presses a
+/// button: the function the program gave to `on` has to be called, with
+/// every variable as the program left it. So the interpreter and the
+/// program's scope are kept, here, for as long as the page is open.
+///
+/// There is no thread with a deep stack here, as `run_with` has: a
+/// browser gives a program one thread and one stack.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub struct Session {
+    interpreter: Interpreter,
+    env: Env,
+    program: Program,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+impl Session {
+    /// Run the program from its first line to its last, on this page.
+    /// What it printed is given back if `capture` says to keep it.
+    pub fn start(program: Program, page: Page, capture: bool) -> (Session, Result<(), Error>) {
+        let interpreter = Interpreter {
+            output: capture.then(String::new),
+            depth: 0,
+            board: Board::new(),
+            page,
+            outside: Outside::default(),
+        };
+        let env = Scope::child(&builtins::globals());
+        let mut session = Session { interpreter, env, program };
+        let result = session.interpreter.run_statements(&session.program.statements, &session.env).map_err(ops::escaped);
+        (session, result)
+    }
+
+    /// The page calls one of the functions it was given: the one that
+    /// `on`, `after` or `on_key` kept under this number.
+    pub fn call(&mut self, handler: u32, arguments: Vec<Value>) -> Result<(), Error> {
+        let Some(function) = self.interpreter.page.handler(handler) else {
+            return Ok(());
+        };
+        // An error may have left calls open the last time.
+        self.interpreter.depth = 0;
+        let span = Span { line: 1, col: 1 };
+        self.interpreter.call(function, arguments, Vec::new(), span).map(|_| ()).map_err(ops::escaped)
+    }
+
+    /// What has been printed and kept since the last time this was asked.
+    #[cfg(test)]
+    pub fn printed(&mut self) -> String {
+        self.interpreter.output.as_mut().map(std::mem::take).unwrap_or_default()
+    }
 }
 
 // --------------------------------------------------------------------- Scopes
@@ -243,6 +309,9 @@ pub struct Interpreter {
     output: Option<String>,
     /// The simulated board, for the `board` module.
     board: Board,
+    /// The page, for the `web` module: simulated, unless the program is
+    /// in a browser.
+    page: Page,
     /// The keyboard and the command line, for `input` and `program`.
     outside: Outside,
     /// How many function calls are currently in progress.
@@ -274,6 +343,10 @@ impl Machine for Interpreter {
 
     fn board(&mut self) -> &mut Board {
         &mut self.board
+    }
+
+    fn page(&mut self) -> &mut Page {
+        &mut self.page
     }
 
     fn call(
@@ -627,7 +700,11 @@ impl Interpreter {
             },
             ExprKind::Field { object, name } => {
                 let object = self.eval(object, env)?;
-                ops::set_field(object, name, value, span)
+                // `title.text = "Hello"` is a change to the page.
+                match builtins::set_on_page(self, &object, name, &value, span) {
+                    Some(done) => done,
+                    None => ops::set_field(object, name, value, span),
+                }
             }
             ExprKind::Index { object, index } => {
                 let object = self.eval(object, env)?;
@@ -830,7 +907,11 @@ impl Interpreter {
 
             ExprKind::Field { object, name } => {
                 let object = self.eval(object, env)?;
-                ops::field(object, name, span)
+                // `title.text` is asked of the page.
+                match builtins::on_page(self, &object, name) {
+                    Some(value) => Ok(value),
+                    None => ops::field(object, name, span),
+                }
             }
             ExprKind::Index { object, index } => {
                 let object = self.eval(object, env)?;
@@ -1311,7 +1392,7 @@ mod tests {
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files` and `program`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");
@@ -1824,6 +1905,148 @@ mod tests {
     #[test]
     fn return_outside_a_function() {
         assert_eq!(error("return 1"), "`return` outside a function");
+    }
+
+    // ----- The page -----
+    //
+    // These run on the simulated page (`page.rs`). The real one needs a
+    // browser: docs/web.md says how it was tried in one.
+
+    #[test]
+    fn the_page_shows_a_line_for_each_change_that_could_be_seen() {
+        let source = "import web\nlet title = web.element(\"#title\")\n\
+                      title.text = \"Hello\"\ntitle.text = \"Hello\"\n\
+                      title.add_class(\"big\")\ntitle.add_class(\"big\")\ntitle.remove_class(\"big\")\ntitle.remove_class(\"big\")\n\
+                      title.set(\"lang\", \"ta\")\ntitle.set(\"lang\", \"ta\")\n\
+                      title.hide()\ntitle.hide()\ntitle.show()\n\
+                      print(title, title.text, title.get(\"lang\"), title.get(\"href\"), title.has_class(\"big\"))\n\
+                      print(title == web.element(\"#title\"), title == web.element(\"#other\"))";
+        assert_eq!(
+            output(source),
+            "#title text: Hello\n#title class +big\n#title class -big\n#title lang: ta\n#title hidden\n#title shown\n\
+             Element(#title) Hello ta none false\ntrue false\n"
+        );
+    }
+
+    #[test]
+    fn an_element_is_seen_once_it_is_on_the_page() {
+        let source = "import web\nlet list = web.element(\"#list\")\n\
+                      let item = web.create(\"li\", \"milk\")\nitem.add_class(\"new\")\nitem.text = \"Milk\"\n\
+                      print(item, item.text, len(web.elements(\"li\")))\n\
+                      list.append(item)\nitem.text = \"Oat milk\"\n\
+                      let more = web.create(\"li\")\nmore.append(web.create(\"b\", \"bread\"))\nlist.append(more)\n\
+                      print(len(web.elements(\"li\")), len(web.elements(\".new\")), len(web.elements(\"b\")), list.text)\n\
+                      item.remove()\nitem.text = \"gone\"\n\
+                      print(len(web.elements(\"li\")), len(web.elements(\".new\")))\n\
+                      list.clear()\nlist.clear()\nprint(len(web.elements(\"li\")), len(web.elements(\"b\")))";
+        assert_eq!(
+            output(source),
+            "Element(<li>) Milk 0\n#list + <li> Milk\n<li> text: Oat milk\n#list + <li> bread\n2 1 1 Oat milkbread\n\
+             <li> removed\n1 0\n#list cleared\n0 0\n"
+        );
+    }
+
+    #[test]
+    fn an_element_is_in_one_place() {
+        // Appended somewhere else, it leaves where it was.
+        let source = "import web\nlet a = web.element(\"#a\")\nlet b = web.element(\"#b\")\n\
+                      let p = web.create(\"p\", \"one\")\na.append(p)\nb.append(p)\nprint(a.text == \"\", b.text)\n\
+                      let box = web.create(\"div\")\nbox.append(p)\nprint(len(web.elements(\"p\")))\n\
+                      a.append(box)\nprint(len(web.elements(\"p\")))";
+        assert_eq!(output(source), "#a + <p> one\n#b + <p> one\ntrue one\n<p> removed\n0\n#a + <div> one\n1\n");
+        let inside_itself = "uncaught ValueError: an element cannot be put inside itself, or inside something it holds";
+        assert_eq!(error("import web\nlet a = web.element(\"#a\")\na.append(a)"), inside_itself);
+        assert_eq!(
+            error("import web\nlet a = web.element(\"#a\")\nlet p = web.create(\"p\")\na.append(p)\np.append(a)"),
+            inside_itself
+        );
+    }
+
+    #[test]
+    fn the_simulated_page_reads_plain_selectors() {
+        let source = "import web\nlet list = web.element(\"#list\")\nweb.element(\"#title\").add_class(\"big\")\n\
+                      for word in [\"milk\", \"bread\", \"tea\"] {\n let item = web.create(\"li\", word)\n\
+                      if word != \"bread\" { item.add_class(\"done\") }\n list.append(item)\n}\n\
+                      let other = web.create(\"li\", \"outside\")\nother.add_class(\"done\")\nother.set(\"id\", \"last\")\n\
+                      web.element(\"#other\").append(other)\n\
+                      function count(selector: str) -> int { return len(web.elements(selector)) }\n\
+                      print(count(\"li\"), count(\"li.done\"), count(\"#list li.done\"), count(\"#list .done\"))\n\
+                      print(count(\"#other li\"), count(\"#list #last\"), count(\"li#last.done\"), count(\".big\"), count(\"p.big\"))\n\
+                      print(count(\"#list\"), count(\"#nothing li\"), count(\"#list #list\"))";
+        let printed = output(source);
+        assert!(printed.ends_with("4 3 2 2\n1 0 1 1 0\n1 0 0\n"), "{printed}");
+        // What only a browser can read is not answered with a guess.
+        assert_eq!(
+            error("import web\nweb.elements(\"ul > li\")"),
+            "uncaught ValueError: the simulated page cannot read `ul > li`. It reads a tag, `.class` and `#id`, together \
+             (`li.done`) and one inside another (`#list li`). A browser reads the rest, so the page that is built can use it"
+        );
+    }
+
+    #[test]
+    fn what_is_typed_into_an_element_is_its_value() {
+        let source = "import web\nlet box = web.element(\"input\")\nbox.value = \"typed\"\nbox.value = \"typed\"\n\
+                      print(box.value, box.text == \"\")\nbox.value += \"!\"\nprint(box.value.upper())";
+        assert_eq!(output(source), "input value: typed\ntyped true\ninput value: typed!\nTYPED!\n");
+    }
+
+    #[test]
+    fn the_simulated_page_calls_nothing() {
+        // Nobody is there to press a button, and no time passes.
+        let source = "import web\nfunction tick() { print(\"tick\") }\n\
+                      web.after(500 ms, tick)\nweb.after(2 s, tick)\n\
+                      web.on_key(function(key: str) { print(key) })\n\
+                      web.element(\"#go\").on(\"click\", tick)\nprint(\"nothing was called\")";
+        assert_eq!(output(source), "nothing was called\n");
+    }
+
+    #[test]
+    fn the_page_says_what_it_cannot_do() {
+        assert_eq!(
+            error("import web\nweb.create(\"<li>\", \"x\")"),
+            "uncaught ValueError: `<li>` is not the name of a kind of element. Write one such as `li` or `button`"
+        );
+        assert_eq!(
+            error("import web\nweb.after(500, print)"),
+            "`after` needs a time with a unit, such as `500 ms`, but this is an int"
+        );
+        assert_eq!(error("import web\nweb.after(1 V, print)"), "`after` needs a time, such as `500 ms`, not a quantity in V");
+        assert_eq!(error("import web\nweb.on_key(5)"), "`on_key` needs a function to call, but this is an int");
+        assert_eq!(
+            error("import web\nweb.element(\"p\").shout()"),
+            "an element has no field or method `shout`"
+        );
+    }
+
+    #[test]
+    fn a_page_calls_a_function_of_the_program_later() {
+        // What a browser does when a button is pressed, done by hand:
+        // the program has run to its last line, and is then called.
+        let source = "import web\nlet count = web.element(\"#count\")\nvar presses = 0\n\
+                      function pressed() {\n presses += 1\n count.text = f\"{presses} presses\"\n}\n\
+                      web.element(\"#press\").on(\"click\", pressed)\n\
+                      web.on_key(function(key: str) {\n if key == \"Enter\" { pressed() }\n print(key)\n})\n\
+                      web.after(1 s, function() { print([1][presses]) })\n\
+                      print(\"ready\")";
+        let program = crate::modules::testing::program(source);
+        let (mut session, result) = super::Session::start(program, crate::page::Page::simulated(), true);
+        assert!(result.is_ok());
+        assert_eq!(session.printed(), "ready\n");
+        // The first function it gave to the page was `pressed`.
+        session.call(0, Vec::new()).expect("a press");
+        session.call(0, Vec::new()).expect("a press");
+        assert_eq!(session.printed(), "#count text: 1 presses\n#count text: 2 presses\n");
+        // The second takes the key.
+        session.call(1, vec![super::Value::str("a")]).expect("a key");
+        session.call(1, vec![super::Value::str("Enter")]).expect("a key");
+        assert_eq!(session.printed(), "a\n#count text: 3 presses\nEnter\n");
+        // An error in one is the program's error, with its line.
+        let error = session.call(2, Vec::new()).expect_err("out of range");
+        assert_eq!(error.message, "uncaught IndexError: index 3 is out of range for a list of length 1");
+        assert_eq!(error.span.line, 13);
+        // A number the page was never given calls nothing.
+        session.call(9, Vec::new()).expect("nothing to call");
+        assert_eq!(session.printed(), "");
     }
 
     // ----- The examples -----

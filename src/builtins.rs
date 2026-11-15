@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files` and `program`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "web")
 }
 
 /// Every built-in name and what it stands for.
@@ -97,13 +97,27 @@ fn print(machine: &mut dyn Machine, args: Vec<Value>, _: Span) -> Result {
 /// program that reads to the end knows it is there.
 fn input(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("input", &args, 0, 1, span)?;
-    if let Some(question) = args.first() {
-        machine.write(text("input", question, span)?);
+    // A page has no keyboard to read a line from. The browser asks the
+    // person in a small window of its own, with the question in it.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = machine;
+        let question = match args.first() {
+            Some(question) => text("input", question, span)?,
+            None => "",
+        };
+        Ok(crate::web_host::input(question).map_or(Value::None, Value::str))
     }
-    Ok(match machine.outside().line() {
-        Some(line) => Value::str(line),
-        None => Value::None,
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(question) = args.first() {
+            machine.write(text("input", question, span)?);
+        }
+        Ok(match machine.outside().line() {
+            Some(line) => Value::str(line),
+            None => Value::None,
+        })
+    }
 }
 
 /// `program.arguments()`: the words the program was started with, after
@@ -406,6 +420,11 @@ const LIST_METHODS: &[&str] = &[
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
+pub const ELEMENT_METHODS: &[&str] =
+    &["on", "append", "remove", "clear", "get", "set", "add_class", "remove_class", "has_class", "show", "hide"];
+/// What an element has that is read and given a new value like a field
+/// of an object: `title.text = "Hello"`.
+pub const ELEMENT_FIELDS: &[&str] = &["text", "value"];
 
 pub fn has_method(receiver: &Value, name: &str) -> bool {
     match receiver {
@@ -414,6 +433,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::Dict(_) => DICT_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
         Value::Register(..) => REGISTER_METHODS.contains(&name),
+        Value::Element(..) => ELEMENT_METHODS.contains(&name),
         _ => false,
     }
 }
@@ -766,6 +786,7 @@ pub fn call_method(
                 _ => fatal(format!("a pin has no method `{name}`"), span),
             }
         }
+        Value::Element(id, _) => element_method(machine, *id, name, args, span),
         // A register of the simulated board holds what was last written
         // to it, and the board prints a line when that changes.
         Value::Register(address, width) => match name {
@@ -837,6 +858,16 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
         "program" => (
             "program",
             vec![("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments }))],
+        ),
+        "web" => (
+            "web",
+            vec![
+                ("element", Value::Builtin(Builtin { name: "element", call: web_element })),
+                ("elements", Value::Builtin(Builtin { name: "elements", call: web_elements })),
+                ("create", Value::Builtin(Builtin { name: "create", call: web_create })),
+                ("after", Value::Builtin(Builtin { name: "after", call: web_after })),
+                ("on_key", Value::Builtin(Builtin { name: "on_key", call: web_on_key })),
+            ],
         ),
         "board" => (
             "board",
@@ -1103,8 +1134,20 @@ fn sleep(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     };
     // Zero, a negative time and "not a number" wait for nothing. A time
     // too long to count is cut to about thirty years.
+    #[cfg(not(target_arch = "wasm32"))]
     if seconds > 0.0 {
         std::thread::sleep(std::time::Duration::from_secs_f64(seconds.min(1e9)));
+    }
+    // A page cannot stop and wait. While a program is running nothing
+    // on the page moves and no button answers, so a program that slept
+    // would freeze the page for that long.
+    #[cfg(target_arch = "wasm32")]
+    if seconds > 0.0 {
+        return fatal(
+            "a program in a page cannot `sleep`: the page would stand still until it woke. \
+             Say what is to happen later with `web.after(500 ms, ...)`",
+            span,
+        );
     }
     Ok(Value::None)
 }
@@ -1136,6 +1179,192 @@ fn drive(machine: &mut dyn Machine, pin: i64, level: bool) -> Result {
         machine.write_line(&line);
     }
     Ok(Value::None)
+}
+
+// ------------------------------------------------------------------- The page
+//
+// The `web` module. Every function here asks the page, or changes it,
+// through `machine.page()`. Under `zeno run` that is a simulated page,
+// which answers with the line to print for a change that could be seen
+// (`page.rs`). In a browser it is the real page, and nothing is printed.
+
+/// Print what the simulated page shows for a change, if anything.
+fn shown(machine: &mut dyn Machine, line: Option<String>) -> Result {
+    if let Some(line) = line {
+        machine.write_line(&line);
+    }
+    Ok(Value::None)
+}
+
+/// Is this something the page can call: a function, with or without a
+/// name, or a method of an object?
+fn can_be_called(value: &Value) -> bool {
+    matches!(value, Value::Function(_) | Value::BoundMethod(..) | Value::Builtin(_) | Value::Method(..))
+}
+
+/// `web.element("#count")`: the first element of the page that answers
+/// to the selector. A page that has none is a mistake in the program or
+/// in the page, and the program stops there and says so.
+fn web_element(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("element", &args, 1, 1, span)?;
+    let selector = text("element", &args[0], span)?;
+    match machine.page().element(selector) {
+        Some(id) => Ok(Value::Element(id, Rc::from(selector))),
+        None => raise(
+            "ValueError",
+            format!("the page has no element that answers to `{selector}`. `web.elements` gives a list, which may be empty"),
+            span,
+        ),
+    }
+}
+
+/// `web.elements("li")`: every element that answers to the selector.
+fn web_elements(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("elements", &args, 1, 1, span)?;
+    let selector = text("elements", &args[0], span)?;
+    let name: Rc<str> = Rc::from(selector);
+    match machine.page().elements(selector) {
+        Ok(found) => Ok(Value::list(found.into_iter().map(|id| Value::Element(id, name.clone())).collect())),
+        Err(why) => raise("ValueError", why, span),
+    }
+}
+
+/// `web.create("li", "Buy milk")`: a new element with that text in it.
+/// It is not on the page until it is appended to one that is.
+fn web_create(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("create", &args, 1, 2, span)?;
+    let tag = text("create", &args[0], span)?;
+    let inside = match args.get(1) {
+        Some(inside) => text("create", inside, span)?,
+        None => "",
+    };
+    // A tag is a word: letters, then letters, digits and `-`.
+    let word = tag.starts_with(|c: char| c.is_ascii_alphabetic()) && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !word {
+        return raise("ValueError", format!("`{tag}` is not the name of a kind of element. Write one such as `li` or `button`"), span);
+    }
+    let id = machine.page().create(tag, inside);
+    Ok(Value::Element(id, Rc::from(format!("<{tag}>"))))
+}
+
+/// `web.after(500 ms, tick)`: call the function once, that much later.
+fn web_after(machine: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    arity("after", &args, 2, 2, span)?;
+    let milliseconds = match &args[0] {
+        Value::Quantity(x, unit) => match crate::units::convert(unit, "ms") {
+            Some(scale) => scale.apply(*x),
+            None => return fatal(format!("`after` needs a time, such as `500 ms`, not a quantity in {unit}"), span),
+        },
+        other => return wrong_type("after", "a time with a unit, such as `500 ms`", other, span),
+    };
+    let handler = args.remove(1);
+    if !can_be_called(&handler) {
+        return wrong_type("after", "a function to call", &handler, span);
+    }
+    machine.page().after(milliseconds, handler);
+    Ok(Value::None)
+}
+
+/// `web.on_key(pressed)`: call the function with the name of each key
+/// that is pressed, as a str: `"a"`, `"Enter"`, `"ArrowLeft"`.
+fn web_on_key(machine: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    arity("on_key", &args, 1, 1, span)?;
+    let handler = args.remove(0);
+    if !can_be_called(&handler) {
+        return wrong_type("on_key", "a function to call", &handler, span);
+    }
+    machine.page().on_key(handler);
+    Ok(Value::None)
+}
+
+/// `title.text`, `name.value`: what an element shows, and what has been
+/// typed into one. `None` for anything that is not asked of the page.
+pub fn on_page(machine: &mut dyn Machine, object: &Value, name: &str) -> Option<Value> {
+    match object {
+        Value::Element(id, _) if ELEMENT_FIELDS.contains(&name) => Some(Value::str(machine.page().read(*id, name))),
+        _ => None,
+    }
+}
+
+/// `title.text = "Hello"`, `name.value = ""`. `None` for anything that
+/// is not a change to the page.
+pub fn set_on_page(machine: &mut dyn Machine, object: &Value, name: &str, value: &Value, span: Span) -> Option<Result<()>> {
+    let Value::Element(id, _) = object else { return None };
+    if !ELEMENT_FIELDS.contains(&name) {
+        return Some(fatal(format!("an element has no `{name}` to give a new value. It has `text` and `value`"), span));
+    }
+    Some(match value {
+        Value::Str(to) => {
+            let line = machine.page().write(*id, name, to);
+            shown(machine, line).map(|_| ())
+        }
+        other => fatal(format!("the `{name}` of an element is a str, but this is {}", other.type_name()), span),
+    })
+}
+
+/// A method of an element: `button.on("click", pressed)`.
+fn element_method(machine: &mut dyn Machine, id: u32, name: &str, mut args: Vec<Value>, span: Span) -> Result {
+    match name {
+        "on" => {
+            arity(name, &args, 2, 2, span)?;
+            let handler = args.remove(1);
+            let event = text(name, &args[0], span)?;
+            if !can_be_called(&handler) {
+                return wrong_type(name, "a function to call", &handler, span);
+            }
+            machine.page().on(id, event, handler);
+            Ok(Value::None)
+        }
+        "append" => {
+            arity(name, &args, 1, 1, span)?;
+            let Value::Element(child, _) = &args[0] else {
+                return wrong_type(name, "an element", &args[0], span);
+            };
+            if machine.page().is_inside(id, *child) {
+                return raise("ValueError", "an element cannot be put inside itself, or inside something it holds", span);
+            }
+            let line = machine.page().append(id, *child);
+            shown(machine, line)
+        }
+        "remove" => {
+            arity(name, &args, 0, 0, span)?;
+            let line = machine.page().remove(id);
+            shown(machine, line)
+        }
+        "clear" => {
+            arity(name, &args, 0, 0, span)?;
+            let line = machine.page().clear(id);
+            shown(machine, line)
+        }
+        "get" => {
+            arity(name, &args, 1, 1, span)?;
+            let attribute = text(name, &args[0], span)?;
+            Ok(machine.page().attribute(id, attribute).map_or(Value::None, Value::str))
+        }
+        "set" => {
+            arity(name, &args, 2, 2, span)?;
+            let (attribute, value) = (text(name, &args[0], span)?, text(name, &args[1], span)?);
+            let line = machine.page().set_attribute(id, attribute, value);
+            shown(machine, line)
+        }
+        "add_class" | "remove_class" => {
+            arity(name, &args, 1, 1, span)?;
+            let class = text(name, &args[0], span)?;
+            let line = machine.page().class(id, class, name == "add_class");
+            shown(machine, line)
+        }
+        "has_class" => {
+            arity(name, &args, 1, 1, span)?;
+            let class = text(name, &args[0], span)?;
+            Ok(Value::Bool(machine.page().has_class(id, class)))
+        }
+        "show" | "hide" => {
+            arity(name, &args, 0, 0, span)?;
+            let line = machine.page().hide(id, name == "hide");
+            shown(machine, line)
+        }
+        _ => fatal(format!("an element has no method `{name}`"), span),
+    }
 }
 
 // ----------------------------------------------------------------- Formatting
