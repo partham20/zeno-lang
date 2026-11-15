@@ -99,6 +99,15 @@ moment while it runs: a size, a limit, an address, a name. By custom
 its name is written in capitals. Like a \verb|let|, it can never be
 given another value.
 
+Unlike a \verb|let|, its value must be known before the program runs:
+numbers, text, other constants, the operators between them, and lists
+and dicts of those. Something only the running program can work out
+belongs in a \verb|let|:
+
+\begin{zeno}[fails=yes]
+const NAME = input()
+\end{zeno}
+
 \section{Types are optional}
 
 You can write the type of a name after a \verb|:|, or leave it out:

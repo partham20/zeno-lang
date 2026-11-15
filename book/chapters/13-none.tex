@@ -70,6 +70,18 @@ for id in [1, 2] {
 }
 \end{zeno}
 
+The question is always asked with \verb|is|. \verb|== none| is
+refused, with the spelling to use, and so is asking about a value that
+can never be \verb|none|, because the answer would always be
+\verb|false|:
+
+\begin{zeno}[fails=yes]
+let count = 3
+if count is none {
+    print("no count")
+}
+\end{zeno}
+
 There is no new syntax to learn for this. The program writes the
 \verb|if| it would have written anyway, and the checker follows it.
 This is called \emph{narrowing}: inside the \verb|if|, the type of

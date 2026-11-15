@@ -319,13 +319,13 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">return</span> value * by</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>print(scale(<span class="dv">2</span>, <span class="dv">3</span>))</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>error: `value` of `scale` should be float, but this is int. Write the number with a decimal point, as in `1.0`
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `value` of `scale` should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`
  --&gt; main.zeno:4:13
   |
 4 | print(scale(2, 3))
   |             ^
 
-error: `by` of `scale` should be float, but this is int. Write the number with a decimal point, as in `1.0`
+error: `by` of `scale` should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`
  --&gt; main.zeno:4:16
   |
 4 | print(scale(2, 3))
@@ -506,7 +506,7 @@ and Operators</a>), and nothing becomes a <code>bool</code> or a
 <div class="sourceCode" id="cb21" data-language="Zeno"
 style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> whole = <span class="dv">3</span></span>
 <span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> real: <span class="dt">float</span> = whole</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>error: `real` should be float, but this is int. Write the number with a decimal point, as in `1.0`
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `real` should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`
  --&gt; main.zeno:2:19
   |
 2 | let real: float = whole

@@ -152,8 +152,9 @@ takes the width and leaves the height.
 \begin{why}
 A value read straight off the enum, such as \verb|shape.radius|,
 would be a mistake whenever the shape turned out to be a
-\verb|Rect|. Inside \verb|case Circle(r)|, \verb|r| is there for
-certain, because the case has already been found to fit.
+\verb|Rect|, so the checker refuses it and points to \verb|match|.
+Inside \verb|case Circle(r)|, \verb|r| is there for certain, because
+the case has already been found to fit.
 \end{why}
 
 \section{match on numbers and text}

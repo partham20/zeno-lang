@@ -346,22 +346,35 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 to a moment while it runs: a size, a limit, an address, a name. By
 custom its name is written in capitals. Like a <code>let</code>, it can
 never be given another value.</p>
+<p>Unlike a <code>let</code>, its value must be known before the program
+runs: numbers, text, other constants, the operators between them, and
+lists and dicts of those. Something only the running program can work
+out belongs in a <code>let</code>:</p>
+<div class="sourceCode" id="cb13" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> NAME = input()</span></code></pre></div>
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: this is only known when the program runs, and a `const` is fixed when the program is built. A `const` is written from numbers, text, other `const`s and operators. For a value that is worked out once while the program runs, use `let`
+ --&gt; main.zeno:1:14
+  |
+1 | const NAME = input()
+  |              ^
+
+1 error found. Nothing was run.</code></pre>
 <h3 class="unnumbered" id="types-are-optional"><span
 class="number">4.5</span> Types are optional</h3>
 <p>You can write the type of a name after a <code>:</code>, or leave it
 out:</p>
-<div class="sourceCode" id="cb13" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> port: <span class="dt">int</span> = <span class="dv">8080</span></span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> host = <span class="st">&quot;localhost&quot;</span>          <span class="co"># a str: Zeno sees that</span></span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> ratio: <span class="dt">float</span> = <span class="dv">0.5</span></span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>print(host, port, ratio)</span></code></pre></div>
+<div class="sourceCode" id="cb15" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> port: <span class="dt">int</span> = <span class="dv">8080</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> host = <span class="st">&quot;localhost&quot;</span>          <span class="co"># a str: Zeno sees that</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> ratio: <span class="dt">float</span> = <span class="dv">0.5</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>print(host, port, ratio)</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>localhost 8080 0.5</code></pre>
 <p>Where the type is left out, Zeno works it out from the value. Where
 it is written, the value must fit it, and from then on every value given
 to the name must fit it too:</p>
-<div class="sourceCode" id="cb15" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> level: <span class="dt">int</span> = <span class="dv">3</span></span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>level = <span class="st">&quot;high&quot;</span></span></code></pre></div>
+<div class="sourceCode" id="cb17" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> level: <span class="dt">int</span> = <span class="dv">3</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>level = <span class="st">&quot;high&quot;</span></span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: the new value should be int, but this is str
  --&gt; main.zeno:2:9
   |
@@ -371,9 +384,9 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 1 error found. Nothing was run.</code></pre>
 <p>A whole number is not quietly made a float, even where a float is
 wanted. Write the decimal point:</p>
-<div class="sourceCode" id="cb17" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> ratio: <span class="dt">float</span> = <span class="dv">1</span></span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>error: `ratio` should be float, but this is int. Write the number with a decimal point, as in `1.0`
+<div class="sourceCode" id="cb19" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> ratio: <span class="dt">float</span> = <span class="dv">1</span></span></code></pre></div>
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `ratio` should be float, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`
  --&gt; main.zeno:1:20
   |
 1 | let ratio: float = 1
@@ -389,8 +402,8 @@ disguised. (Decisions 2.3 and 2.3b.)</p>
 </div>
 <p>A name must have a value from the moment it is declared. There is no
 <code>var x</code> with nothing after it:</p>
-<div class="sourceCode" id="cb19" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> total: <span class="dt">int</span></span></code></pre></div>
+<div class="sourceCode" id="cb21" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> total: <span class="dt">int</span></span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: expected `=`, found the end of the line
  --&gt; main.zeno:1:15
   |
@@ -409,8 +422,8 @@ enums <code>LikeThis</code>, and constants <code>LIKE_THIS</code>.</p>
 <p>The words of the language, such as <code>let</code>, <code>if</code>
 and <code>take</code>, can never be names, and the message says where
 the word goes instead:</p>
-<div class="sourceCode" id="cb21" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> <span class="kw">take</span> = <span class="dv">3</span></span></code></pre></div>
+<div class="sourceCode" id="cb23" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> <span class="kw">take</span> = <span class="dv">3</span></span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: expected a name for the variable, found `take`. `take` is a word of the language, so it cannot be a name. It goes in front of the type of a parameter: `frame: take Frame`
  --&gt; main.zeno:1:5
   |
@@ -426,22 +439,22 @@ class="number">4.7</span> Blocks and scope</h3>
 <p>A pair of braces <code>{ }</code> makes a <em>block</em>, and a name
 declared in a block exists from its declaration to the end of that
 block. This stretch of the program is the name’s <em>scope</em>:</p>
-<div class="sourceCode" id="cb23" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> x = <span class="dv">1</span></span>
-<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> <span class="cn">true</span> {</span>
-<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x = <span class="dv">2</span>          <span class="co"># a new x, for this block only</span></span>
-<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y = <span class="dv">3</span></span>
-<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>    print(x, y)</span>
-<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>print(x)               <span class="co"># the first x again</span></span></code></pre></div>
+<div class="sourceCode" id="cb25" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> x = <span class="dv">1</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> <span class="cn">true</span> {</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x = <span class="dv">2</span>          <span class="co"># a new x, for this block only</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y = <span class="dv">3</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>    print(x, y)</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>print(x)               <span class="co"># the first x again</span></span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>2 3
 1</code></pre>
 <p>After the block, <code>y</code> is gone:</p>
-<div class="sourceCode" id="cb25" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> <span class="cn">true</span> {</span>
-<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y = <span class="dv">3</span></span>
-<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>print(y)</span></code></pre></div>
+<div class="sourceCode" id="cb27" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> <span class="cn">true</span> {</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y = <span class="dv">3</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>print(y)</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: `y` is not defined
  --&gt; main.zeno:4:7
   |
@@ -452,9 +465,9 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <p>An inner block may declare a name that an outer block already has,
 and inside the inner block the name means the inner one. Two
 declarations of one name in the same block are a mistake:</p>
-<div class="sourceCode" id="cb27" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> speed = <span class="dv">10</span></span>
-<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> speed = <span class="dv">20</span></span></code></pre></div>
+<div class="sourceCode" id="cb29" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> speed = <span class="dv">10</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> speed = <span class="dv">20</span></span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: `speed` is already declared in this block
  --&gt; main.zeno:2:1
   |
@@ -472,11 +485,11 @@ class="number">4.8</span> Two names for one list</h3>
 <p>A name gives a value a name; it does not make a copy. When the value
 is a list or an object, two names can stand for the same one, and a
 change made through either is seen through both:</p>
-<div class="sourceCode" id="cb29" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> a = [<span class="dv">1</span>, <span class="dv">2</span>]</span>
-<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> b = a</span>
-<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>b.append(<span class="dv">3</span>)</span>
-<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>print(a)</span></code></pre></div>
+<div class="sourceCode" id="cb31" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> a = [<span class="dv">1</span>, <span class="dv">2</span>]</span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> b = a</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>b.append(<span class="dv">3</span>)</span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>print(a)</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>[1, 2, 3]</code></pre>
 <p>This also means that <code>let</code> fixes the <em>name</em>, not
 what is inside the value. <code>a</code> above can never be given

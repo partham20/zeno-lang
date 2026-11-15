@@ -281,6 +281,22 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>ADA
 no user 2</code></pre>
+<p>The question is always asked with <code>is</code>.
+<code>== none</code> is refused, with the spelling to use, and so is
+asking about a value that can never be <code>none</code>, because the
+answer would always be <code>false</code>:</p>
+<div class="sourceCode" id="cb7" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> count = <span class="dv">3</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> count <span class="kw">is</span> <span class="cn">none</span> {</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    print(<span class="st">&quot;no count&quot;</span>)</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<pre class="Output" data-language="Output" style="outputstyle"><code>error: `is none` is always false: this is int, which is never `none`. Only a value whose type says `or none` can be
+ --&gt; main.zeno:2:4
+  |
+2 | if count is none {
+  |    ^
+
+1 error found. Nothing was run.</code></pre>
 <p>There is no new syntax to learn for this. The program writes the
 <code>if</code> it would have written anyway, and the checker follows
 it. This is called <em>narrowing</em>: inside the <code>if</code>, the
@@ -288,9 +304,9 @@ type of <code>user</code> is narrowed from <code>str or none</code> to
 <code>str</code>.</p>
 <p><code>is</code> is only for <code>none</code>. Values are compared
 with <code>==</code>:</p>
-<div class="sourceCode" id="cb7" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> x = <span class="dv">3</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>print(x <span class="kw">is</span> <span class="dv">3</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb9" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> x = <span class="dv">3</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>print(x <span class="kw">is</span> <span class="dv">3</span>)</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: `is` only tests for `none`. Use `==` to compare values
  --&gt; main.zeno:2:12
   |
@@ -309,58 +325,58 @@ class="number">13.3</span> What the checker follows</h3>
 <h4 class="unnumbered" id="leaving-early.">Leaving early.</h4>
 <p>After <code>if x is none { return ... }</code>, the rest of the block
 can only be reached when <code>x</code> is there:</p>
-<div class="sourceCode" id="cb9" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> shout(text: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">if</span> text <span class="kw">is</span> <span class="cn">none</span> {</span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">return</span> <span class="st">&quot;&quot;</span></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    }</span>
-<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">return</span> text.upper()</span>
-<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>print(shout(<span class="st">&quot;hi&quot;</span>), shout(<span class="cn">none</span>))</span></code></pre></div>
+<div class="sourceCode" id="cb11" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> shout(text: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">if</span> text <span class="kw">is</span> <span class="cn">none</span> {</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">return</span> <span class="st">&quot;&quot;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">return</span> text.upper()</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>print(shout(<span class="st">&quot;hi&quot;</span>), shout(<span class="cn">none</span>))</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>HI </code></pre>
 <p>The same goes for <code>raise</code>, <code>break</code> and
 <code>continue</code>.</p>
 <h4 class="unnumbered" id="and-or-and-not.">and, or and not.</h4>
 <p>A test joined with <code>and</code> knows the first half when it asks
 the second:</p>
-<div class="sourceCode" id="cb11" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> name: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="st">&quot;Ada&quot;</span></span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> name <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> <span class="kw">and</span> len(name) &gt; <span class="dv">2</span> {</span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    print(name, <span class="st">&quot;is long enough&quot;</span>)</span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb13" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> name: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="st">&quot;Ada&quot;</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> name <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> <span class="kw">and</span> len(name) &gt; <span class="dv">2</span> {</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    print(name, <span class="st">&quot;is long enough&quot;</span>)</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>Ada is long enough</code></pre>
 <h4 class="unnumbered" id="filling-in-a-default.">Filling in a
 default.</h4>
 <p>After an <code>if</code> that gives the variable a value when it had
 none, the variable has a value on both paths, and the checker knows
 it:</p>
-<div class="sourceCode" id="cb13" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> greeting(given: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">var</span> name = given</span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">if</span> name <span class="kw">is</span> <span class="cn">none</span> {</span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>        name = <span class="st">&quot;friend&quot;</span></span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    }</span>
-<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">return</span> <span class="st">f&quot;Hello, {name.upper()}&quot;</span></span>
-<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>print(greeting(<span class="st">&quot;Ada&quot;</span>), greeting(<span class="cn">none</span>))</span></code></pre></div>
+<div class="sourceCode" id="cb15" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> greeting(given: <span class="dt">str</span> <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">var</span> name = given</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">if</span> name <span class="kw">is</span> <span class="cn">none</span> {</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>        name = <span class="st">&quot;friend&quot;</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">return</span> <span class="st">f&quot;Hello, {name.upper()}&quot;</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>print(greeting(<span class="st">&quot;Ada&quot;</span>), greeting(<span class="cn">none</span>))</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>Hello, ADA Hello, FRIEND</code></pre>
 <h4 class="unnumbered" id="walking-a-chain.">Walking a chain.</h4>
 <p>A <code>while</code> that asks <code>is not none</code> knows it
 inside, and an assignment in the body makes the variable uncertain again
 until the next question:</p>
-<div class="sourceCode" id="cb15" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Node {</span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    value: <span class="dt">int</span></span>
-<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    next: Node <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
-<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> node: Node <span class="kw">or</span> <span class="cn">none</span> = Node(<span class="dv">1</span>, Node(<span class="dv">2</span>, Node(<span class="dv">3</span>)))</span>
-<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> total = <span class="dv">0</span></span>
-<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a><span class="kw">while</span> node <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
-<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>    total += node.value</span>
-<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>    node = node.next</span>
-<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>print(total)</span></code></pre></div>
+<div class="sourceCode" id="cb17" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Node {</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    value: <span class="dt">int</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    next: Node <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> node: Node <span class="kw">or</span> <span class="cn">none</span> = Node(<span class="dv">1</span>, Node(<span class="dv">2</span>, Node(<span class="dv">3</span>)))</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="kw">var</span> total = <span class="dv">0</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="kw">while</span> node <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    total += node.value</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>    node = node.next</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>print(total)</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>6</code></pre>
 <div class="why">
 <p>Without these, the two most ordinary uses of <code>none</code>,
@@ -374,15 +390,15 @@ field is asked about through a name</h4>
 <p>The checker narrows names, not fields. A field that may be
 <code>none</code> is first given a name of its own, and the name is
 asked about:</p>
-<div class="sourceCode" id="cb17" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Sensor {</span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    last: <span class="dt">float</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
-<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> s = Sensor()</span>
-<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>s.last = <span class="dv">21.5</span></span>
-<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> s.last <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
-<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>    print(s.last + <span class="dv">1.0</span>)</span>
-<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb19" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Sensor {</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    last: <span class="dt">float</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> s = Sensor()</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>s.last = <span class="dv">21.5</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> s.last <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>    print(s.last + <span class="dv">1.0</span>)</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: `+` does not work between float or none and float. Check for `none` first
  --&gt; main.zeno:7:11
   |
@@ -390,16 +406,16 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
   |           ^
 
 1 error found. Nothing was run.</code></pre>
-<div class="sourceCode" id="cb19" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Sensor {</span>
-<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    last: <span class="dt">float</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
-<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> s = Sensor()</span>
-<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>s.last = <span class="dv">21.5</span></span>
-<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> last = s.last</span>
-<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> last <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
-<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>    print(last + <span class="dv">1.0</span>)</span>
-<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb21" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Sensor {</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    last: <span class="dt">float</span> <span class="kw">or</span> <span class="cn">none</span> = <span class="cn">none</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> s = Sensor()</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>s.last = <span class="dv">21.5</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> last = s.last</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="kw">if</span> last <span class="kw">is</span> <span class="kw">not</span> <span class="cn">none</span> {</span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    print(last + <span class="dv">1.0</span>)</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>22.5</code></pre>
 <p>A field can be changed by any code that holds the object, including a
 method called between the question and the use, so an answer about a
@@ -418,15 +434,15 @@ Writing</a>). Your own functions do the same by saying
 <p>A function that says it may give <code>none</code> gives
 <code>none</code> when it reaches its end, since that is one of the
 answers it promised:</p>
-<div class="sourceCode" id="cb21" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> first_even(xs: <span class="dt">list</span>[<span class="dt">int</span>]) -&gt; <span class="dt">int</span> <span class="kw">or</span> <span class="cn">none</span> {</span>
-<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">for</span> x <span class="kw">in</span> xs {</span>
-<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">if</span> x % <span class="dv">2</span> == <span class="dv">0</span> {</span>
-<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>            <span class="kw">return</span> x</span>
-<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>        }</span>
-<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    }</span>
-<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>print(first_even([<span class="dv">1</span>, <span class="dv">3</span>, <span class="dv">4</span>, <span class="dv">5</span>]), first_even([<span class="dv">1</span>, <span class="dv">3</span>]))</span></code></pre></div>
+<div class="sourceCode" id="cb23" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> first_even(xs: <span class="dt">list</span>[<span class="dt">int</span>]) -&gt; <span class="dt">int</span> <span class="kw">or</span> <span class="cn">none</span> {</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">for</span> x <span class="kw">in</span> xs {</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">if</span> x % <span class="dv">2</span> == <span class="dv">0</span> {</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>            <span class="kw">return</span> x</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>        }</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>print(first_even([<span class="dv">1</span>, <span class="dv">3</span>, <span class="dv">4</span>, <span class="dv">5</span>]), first_even([<span class="dv">1</span>, <span class="dv">3</span>]))</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>4 none</code></pre>
 <h3 class="unnumbered" id="none-in-a-match"><span
 class="number">13.5</span> none in a match</h3>
@@ -434,23 +450,6 @@ class="number">13.5</span> none in a match</h3>
 have <code>case none</code>, and every case after it knows the value is
 there. For an enum, <code>case none</code> and a case for each of the
 enum’s own cases make the match complete:</p>
-<div class="sourceCode" id="cb23" data-language="Zeno"
-style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Reading {</span>
-<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    Value(volts: <span class="dt">float</span>)</span>
-<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>    Fault(code: <span class="dt">int</span>)</span>
-<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> describe(r: Reading <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
-<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">match</span> r {</span>
-<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> <span class="cn">none</span> { <span class="kw">return</span> <span class="st">&quot;no reading yet&quot;</span> }</span>
-<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Value(v) { <span class="kw">return</span> <span class="st">f&quot;{v:.1f} V&quot;</span> }</span>
-<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Fault(code) { <span class="kw">return</span> <span class="st">f&quot;fault 0x{code:02x}&quot;</span> }</span>
-<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>    }</span>
-<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>print(describe(<span class="cn">none</span>), describe(Value(<span class="dv">3.3</span>)), describe(Fault(<span class="dv">7</span>)))</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>no reading yet 3.3 V fault 0x07</code></pre>
-<p>Leave <code>case none</code> out, and the checker says so:</p>
 <div class="sourceCode" id="cb25" data-language="Zeno"
 style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Reading {</span>
 <span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>    Value(volts: <span class="dt">float</span>)</span>
@@ -459,10 +458,27 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> describe(r: Reading <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
 <span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">match</span> r {</span>
-<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Value(v) { <span class="kw">return</span> <span class="st">&quot;value&quot;</span> }</span>
-<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Fault(code) { <span class="kw">return</span> <span class="st">&quot;fault&quot;</span> }</span>
-<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>    }</span>
-<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> <span class="cn">none</span> { <span class="kw">return</span> <span class="st">&quot;no reading yet&quot;</span> }</span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Value(v) { <span class="kw">return</span> <span class="st">f&quot;{v:.1f} V&quot;</span> }</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Fault(code) { <span class="kw">return</span> <span class="st">f&quot;fault 0x{code:02x}&quot;</span> }</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>print(describe(<span class="cn">none</span>), describe(Value(<span class="dv">3.3</span>)), describe(Fault(<span class="dv">7</span>)))</span></code></pre></div>
+<pre class="Output" data-language="Output" style="outputstyle"><code>no reading yet 3.3 V fault 0x07</code></pre>
+<p>Leave <code>case none</code> out, and the checker says so:</p>
+<div class="sourceCode" id="cb27" data-language="Zeno"
+style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Reading {</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    Value(volts: <span class="dt">float</span>)</span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>    Fault(code: <span class="dt">int</span>)</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> describe(r: Reading <span class="kw">or</span> <span class="cn">none</span>) -&gt; <span class="dt">str</span> {</span>
+<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">match</span> r {</span>
+<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Value(v) { <span class="kw">return</span> <span class="st">&quot;value&quot;</span> }</span>
+<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">case</span> Fault(code) { <span class="kw">return</span> <span class="st">&quot;fault&quot;</span> }</span>
+<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <pre class="Output" data-language="Output" style="outputstyle"><code>error: this `match` does not handle `none`. Add a `case` for it, or a final `case _`
  --&gt; main.zeno:7:5
   |

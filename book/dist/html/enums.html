@@ -361,9 +361,10 @@ Dot 0.0</code></pre>
 <div class="why">
 <p>A value read straight off the enum, such as
 <code>shape.radius</code>, would be a mistake whenever the shape turned
-out to be a <code>Rect</code>. Inside <code>case Circle(r)</code>,
-<code>r</code> is there for certain, because the case has already been
-found to fit.</p>
+out to be a <code>Rect</code>, so the checker refuses it and points to
+<code>match</code>. Inside <code>case Circle(r)</code>, <code>r</code>
+is there for certain, because the case has already been found to
+fit.</p>
 </div>
 <h3 class="unnumbered" id="match-on-numbers-and-text"><span
 class="number">12.4</span> match on numbers and text</h3>
