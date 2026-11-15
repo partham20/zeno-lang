@@ -7311,3 +7311,189 @@ with type parameters and the bounds that come with them, a file read
 in pieces, and a library written in Zeno. Each can be added without
 changing what a program written today means, because each is refused
 today and not quietly given some other meaning.
+
+---
+
+## 12. Releases
+
+The walkthrough is [`release.md`](release.md).
+
+### 12.1 A release is a tag, and a machine builds it
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Pushing a tag starts `.github/workflows/release.yml`, which runs the
+tests, builds `zeno` for every kind of machine, checks each build,
+packs it and makes the release. Nobody builds a released `zeno` by
+hand.
+
+**Why.** A release built by hand depends on what was on that machine
+that day, and nobody can say afterwards what that was. Built from a
+tag, a release is exactly the source at that tag, built the same way
+each time, and the file that says how is in the repository beside the
+source.
+
+**The tag and `Cargo.toml` must agree.** The tag is `v` and the
+version in `Cargo.toml`, and the workflow stops if they differ.
+Otherwise a `zeno` that prints `0.1.0` could be on a page that says
+`0.2.0`, and the first question about any problem ("which version?")
+would have two answers.
+
+**All or nothing.** If the build for one kind of machine fails, no
+release is made. A table with a hole in it tells somebody with that
+machine that Zeno is not for them, when the truth is that a build
+broke.
+
+**Started by hand, it releases nothing.** The same workflow can be
+started from the Actions page. It then builds and checks everything
+and stops, which is how a change to the workflow is tried.
+
+**Turned down.** Building everything on one Linux machine: macOS
+programs cannot be linked there without Apple's files, and nothing
+would have been run on macOS or Windows. A `curl ... | sh` installer,
+and packages for apt, Homebrew and winget: each is a thing to keep
+working, and one file to unpack is enough for 0.1.
+
+### 12.2 Ten kinds of machine
+
+Linux on x86-64, ARM64, 32-bit x86, ARMv7 and ARMv6. macOS on Apple
+silicon and Intel. Windows on x86-64, 32-bit x86 and ARM64.
+
+**The rule.** A kind of machine is in the list if Rust builds for it
+with nothing more than Rust brings, and people have it on a desk. The
+two 32-bit ARM builds are there for the Raspberry Pi, which is where
+firmware people are most likely to meet Linux on ARM.
+
+**Left out.** Linux on RISC-V: Rust needs a separate C toolchain to
+link it, and no build would have been run. The BSDs, for the same
+reason. Both can build Zeno from source with `cargo build --release`,
+because Zeno depends on nothing but Rust.
+
+**The names say the system and the processor.** The file is
+`zeno-0.1.0-linux-arm64.tar.gz`, not
+`zeno-0.1.0-aarch64-unknown-linux-musl.tar.gz`. The second is Rust's
+name for the same thing, and only means something to a person who
+already knows Rust. *(Principle: unambiguous and intuitive.)*
+
+### 12.3 A released `zeno` is one file that needs nothing
+
+The Linux builds are linked against musl, a C library that is put
+into the program. The Windows builds carry Microsoft's C library the
+same way.
+
+**Why.** A Linux program normally borrows the C library of the system
+it runs on, and runs only where that library is at least as new as
+the one it was built against. A `zeno` built on this year's Ubuntu
+would not start on a Raspberry Pi with a system from three years ago.
+With the library inside it, one file runs on every Linux. On Windows
+the same choice means no "install the Visual C++ runtime" before the
+first run.
+
+**What it costs.** A few hundred kilobytes in each file.
+
+**The names for a debugger are taken out** (`strip = true` in
+`Cargo.toml`), which makes each file about a seventh smaller. A report
+of a crash in `zeno` itself then has no function names in it. Zeno's
+own mistakes are reported as messages, not crashes, so this costs
+little.
+
+### 12.4 A build is run before it is released
+
+`tools/release-check.sh` runs each build: the version it says, every
+example through both engines, the tests in the examples, the
+formatter, and `zeno new`. The ARM builds for Linux run under an
+emulator. The Intel build for macOS runs under Apple's translation.
+
+**Why.** "It compiled" says that the compiler was content. It does
+not say that the program starts. The check is small on purpose: it
+needs no C compiler and takes seconds, so it can run ten times.
+
+**The one build that is not run** is Windows on ARM64: there is no
+machine to run it on and no emulator there. It is released anyway,
+because the same source built by the same compiler for the other two
+Windows machines does run, and the release page says plainly that
+this one was not. Leaving it out would help nobody who has such a
+machine, and saying nothing would be claiming a check that was not
+made.
+
+**The whole test suite** must pass on Linux before anything is
+released. It is also run on macOS and on Windows, where a failure is
+shown and does not stop the release: those runs are there to find out
+what is different on those systems. For 0.1.0 all 454 tests pass on
+macOS, and what Windows says is in 12.7. On macOS three examples are
+also compiled through C and through LLVM and must print what `zeno
+run` prints.
+
+### 12.5 A compiled program rounds as `zeno run` does
+
+Making the first release found a program that printed
+`74.30000000000001` with `zeno run` and `74.3` when compiled on a
+Mac. The line was `c * 1.8 + 32`.
+
+Some processors have one instruction for "multiply, then add" that
+rounds once instead of twice. It is faster, and now and then the last
+digit is different. ARM64 has it, and a C compiler is allowed to use
+it without being asked. On 32-bit x86, gcc does a similar thing for
+another reason: it uses the old float instructions, which work to
+more digits than a float holds.
+
+**The decision.** The C that Zeno writes tells the C compiler not to
+do either. Every float operation is one operation, rounded once, on
+every machine, as it is in `zeno run`.
+
+**Why.** "A compiled program prints what `zeno run` prints" is the
+promise the tests are built on, and a program that gives one answer
+on the desk and another on the board is exactly what Zeno is for
+avoiding. The speed given up is small, and code that needs the fused
+instruction can ask for it by name when Zeno has a function for it.
+
+**Where it is said.** In the C itself (two `#pragma` lines at the top
+of the runtime), not in a flag that `zeno build` passes. A firmware
+build is usually compiled by the board's own toolchain from the C
+that Zeno wrote, with flags Zeno never sees. What is written in the
+file goes wherever the file goes.
+
+**A limit of 0.1.** clang on 32-bit x86 has no such line to be given,
+and on the systems where it is set up for processors older than 2001
+(Debian and Ubuntu) it needs `-msse2`. gcc on the same machine is
+told by the file.
+
+### 12.6 A compiled program on Windows prints `\n`
+
+On Windows a C program that prints `"\n"` writes `"\r\n"`, unless it
+asks for its bytes to be left alone. `zeno run` writes `"\n"` on
+every system. So a compiled program asks, before `main` starts.
+
+**Why.** The same promise as 12.5. A program whose output is
+compared, counted or sent down a wire should give the same bytes
+however it was run. A Windows terminal shows both the same way.
+
+**Reading is unchanged.** A program in a file with Windows line ends
+runs (the lexer skips `"\r"`), `lines()` and `input()` take a
+`"\r\n"` as one line end, and `zeno format` writes `"\n"`, so a file
+has one layout on every system.
+
+### 12.7 What Windows does not have yet
+
+`zeno.exe` is checked like every other build, and `zeno build` with
+MinGW's gcc makes programs that print what `zeno run` prints (three
+examples are compared in the release workflow). Four things are
+limits of 0.1:
+
+- `zeno build --llvm` does not work with the clang that comes with
+  Visual Studio. The runtime sleeps and reads the clock with
+  `nanosleep` and `clock_gettime`, which Linux, macOS and MinGW have
+  and Microsoft's C library does not. It was found by the first
+  release and left for the next one, because a mend that cannot be
+  tried before the release is not one to put in it.
+- `zeno build` needs a C compiler that takes gcc's options.
+  Microsoft's own compiler (`cl`) takes different ones and has not
+  been tried.
+- A path in a `zeno.package` is text, where `\` starts an escape, so
+  it is written with `/`, which Windows accepts.
+- Of the 454 tests of Zeno itself, 337 pass on Windows. Nearly all the
+  others fail in the LLVM build above. Ten compare paths written with
+  `/`: they test the tests' own folders, not what a program does.

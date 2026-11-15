@@ -99,6 +99,49 @@ piece of the compiler:
 | Data and numerics | Fast arrays and operator overloading |
 | Mobile apps, games | Native code plus platform bindings |
 
+## Install
+
+Each release has a `zeno` that is already built, for ten kinds of
+machine, on the
+[releases page](https://github.com/partham20/zeno-lang/releases):
+
+| Machine | File |
+|---|---|
+| Linux, x86-64: most PCs and servers | `zeno-0.1.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.1.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.1.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.1.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.1.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.1.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.1.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.1.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.1.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.1.0-windows-arm64.zip` |
+
+Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
+`PATH`. It is one file and needs nothing else installed.
+
+```sh
+tar -xzf zeno-0.1.0-linux-x86_64.tar.gz
+cd zeno-0.1.0-linux-x86_64
+./zeno --version                 # zeno 0.1.0
+./zeno run examples/hello.zeno   # Hello, Zeno!
+```
+
+On macOS, a program downloaded with a browser is held back because
+Apple has not signed it: `xattr -d com.apple.quarantine zeno` lets it
+run.
+
+`zeno build` hands the C it writes to a C compiler, so it needs one:
+`cc`, or the one `CC` names (on Windows, MinGW's gcc with `set
+CC=gcc`). `zeno build --llvm` needs clang, and does not work on
+Windows yet. `zeno fetch` needs git. Everything else needs nothing.
+
+Or build it from this source, which needs only
+[Rust](https://rustup.rs): `cargo build --release` puts `zeno` in
+`target/release/`. How a release is made, and what is checked before
+one goes out, is in [`docs/release.md`](docs/release.md).
+
 ## Status
 
 **Zeno is at version 0.1.** The language is complete as it was set out:
@@ -238,6 +281,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
   [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
   [`docs/gaps.md`](docs/gaps.md), [`docs/version-0.1.md`](docs/version-0.1.md),
+  [`docs/release.md`](docs/release.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -415,6 +459,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     by the real compiler as the book is built. A printable PDF in
     [`book/dist/zeno-book.pdf`](book/dist/zeno-book.pdf) and pages for
     the web in `book/dist/html/`. See [`book/README.md`](book/README.md))
+20. The first release (done: `zeno` 0.1.0, already built, for ten kinds
+    of machine: Linux on x86-64, ARM64, 32-bit x86, ARMv7 and ARMv6,
+    macOS on Apple silicon and Intel, Windows on x86-64, 32-bit x86
+    and ARM64. A tag starts the build, and each build is run before
+    it is released. Making it found that a compiled program rounded
+    `c * 1.8 + 32` differently from `zeno run` on ARM64 and on 32-bit
+    x86, which is mended.
+    See [`docs/release.md`](docs/release.md))
 
 ## Layout
 
@@ -448,4 +500,7 @@ src/runtime.c       the C library every compiled program carries
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs
+tools/release-check.sh        runs a built `zeno` before it is released
+.github/workflows/release.yml builds and releases `zeno` when a tag is pushed
+.cargo/config.toml  how `zeno` is linked for each kind of machine
 ```
