@@ -1,3 +1,315 @@
-\chapter{Errors}\label{ch-errors}
+\chapter{When Things Go Wrong}\label{ch-errors}
 
-To be written.
+A correct program can still meet things that go wrong: a line that
+should hold a number holds a word, a divisor turns out to be zero, a
+file is not there. Zeno calls these \emph{errors}, and gives a program
+three words to deal with them: \verb|raise| to say that something has
+gone wrong, \verb|try| and \verb|except| to deal with it, and
+\verb|raises| to say in a function's heading what it may raise.
+
+\section{Bugs and errors}
+
+Zeno draws a line between two kinds of thing that go wrong.
+
+A \emph{bug} is a mistake in the program itself: a misspelt name,
+\verb|"abc" - 1|, calling something that is not a function. The
+checker finds almost all of them before the program runs, and the
+program does not start until they are fixed.
+
+An \emph{error} is something that can go wrong in a correct program:
+bad input, a division by a value that turned out to be zero, a
+position that came from outside. These happen while the program runs,
+and the program can catch them and carry on.
+
+\begin{why}
+Catching a bug hides it. A program that catches "this name does not
+exist" and carries on has a mistake in it that nobody will ever see.
+Since the checker reports bugs before the program runs, there is
+nothing of that kind left to catch. (Decision 4.1.)
+\end{why}
+
+\section{An error that is not caught}
+
+An error that nothing catches stops the program, with its kind, its
+message and the line it came from:
+
+\begin{zeno}[fails=yes]
+let readings = [20.5, 21.0]
+print(readings[2])
+\end{zeno}
+
+Here \verb|IndexError| is the \emph{kind} of error, and the rest is
+its \emph{message}. Every error has both.
+
+\section{try and except}
+
+Code that may raise an error goes in a \verb|try| block. If an error
+is raised inside it, the rest of the block is skipped, and the
+\verb|except| that names its kind runs instead:
+
+\begin{zeno}
+for text in ["40", "fast", "7"] {
+    try {
+        let speed = int(text)
+        print("speed", speed)
+    } except ValueError {
+        print("not a number:", text)
+    }
+}
+\end{zeno}
+
+If nothing is raised, the \verb|except| block does not run at all.
+
+\verb|except Kind as e| gives the error a name. \verb|e.message| is
+its message and \verb|e.kind| the name of its kind:
+
+\begin{zeno}
+try {
+    print(int("fast"))
+} except ValueError as e {
+    print(e.kind, "says:", e.message)
+}
+\end{zeno}
+
+A \verb|try| can have several \verb|except|s. The first that fits is
+the one that runs:
+
+\begin{zeno}
+function show(xs: list[int], at: int, by: int) {
+    try {
+        print(xs[at] // by)
+    } except IndexError as e {
+        print("position:", e.message)
+    } except ZeroDivisionError {
+        print("cannot divide by zero")
+    }
+}
+
+show([10, 20], 1, 5)
+show([10, 20], 9, 5)
+show([10, 20], 0, 0)
+\end{zeno}
+
+An error that no \verb|except| names goes on as if the \verb|try| were
+not there, up to whoever called this code, and so on until something
+catches it or the program stops.
+
+\section{The kinds of error}
+
+The kinds that Zeno itself raises are these:
+
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+Kind & Raised when \\
+\midrule
+\verb|ValueError| & a value is the right type but cannot be used:
+  \verb|int("fast")|, \verb|2 ** -1| \\
+\verb|IndexError| & a position is outside a list or a text \\
+\verb|KeyError| & a dict has no such key \\
+\verb|ZeroDivisionError| & a number is divided by zero \\
+\verb|OverflowError| & a whole number is too big for its type \\
+\verb|FileError| & a file cannot be read or written \\
+\verb|Error| & anything else; and \verb|except Error| catches every kind \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\verb|except Error| catches any error at all, which is useful at the
+very top of a program, to report what went wrong and stop tidily:
+
+\begin{zeno}
+let big = 9223372036854775807
+try {
+    print(big + 1)
+} except Error as e {
+    print("stopped:", e.kind, e.message)
+}
+\end{zeno}
+
+\hyperref[app-errors]{Appendix F} lists every message that the
+library and the runtime give.
+
+\section{raise}
+
+A program raises an error of its own with \verb|raise| and the kind,
+with a message that says what went wrong:
+
+\begin{zeno}
+function check_speed(speed: int) -> int raises ValueError {
+    if speed < 0 or speed > 100 {
+        raise ValueError(f"a speed is 0 to 100, and {speed} is not")
+    }
+    return speed
+}
+
+for s in [40, 250] {
+    try {
+        print("set to", check_speed(s))
+    } except ValueError as e {
+        print(e.message)
+    }
+}
+\end{zeno}
+
+A message is for the person who reads it when something goes wrong.
+The best ones say what was expected and what was found, as Zeno's own
+messages do.
+
+Only an error can be raised, not a piece of text:
+
+\begin{zeno}[fails=yes]
+raise "something went wrong"
+\end{zeno}
+
+\subsection{Raising again}
+
+An \verb|except| block that cannot fully deal with an error can do
+what it can, then raise the same error again, so that the caller sees
+it:
+
+\begin{zeno}[fails=yes]
+try {
+    print(int("fast"))
+} except ValueError as e {
+    print("noted:", e.message)
+    raise e
+}
+\end{zeno}
+
+\section{raises: what a function may raise}
+
+\verb|raises| after a function's heading lists the errors it may
+raise, so that whoever calls it can see them without reading the body:
+
+\begin{zeno}
+function read_volts(text: str) -> float raises ValueError {
+    return float(text)
+}
+print(read_volts("3.3"))
+\end{zeno}
+
+It follows the rule of every type in Zeno: it can be left out, and
+then Zeno works it out from the body and passes it on to callers. When
+it is written, it must be complete. A function that says what it
+raises and then leaves something out is told so:
+
+\begin{zeno}[fails=yes]
+function read_volts(text: str) -> float raises KeyError {
+    return float(text)
+}
+\end{zeno}
+
+In strict mode (\verb|--strict|, \hyperref[ch-types]{Types, Written
+and Worked Out}), as in every compiled program, it must always be
+written, so that every heading is a complete promise:
+
+\begin{zeno}[fails=yes, cmd=zeno check --strict {file}]
+function read_volts(text: str) -> float {
+    return float(text)
+}
+print(read_volts("3.3"))
+\end{zeno}
+
+\subsection{What counts}
+
+Only errors raised \emph{on purpose} must be listed: a \verb|raise|, a
+call to a function that raises, and \verb|int()| or \verb|float()| on
+text, which fail on bad input. The errors that operators raise, such
+as dividing by zero, a position out of range or an overflow, can be
+caught, but need not be listed.
+
+\begin{why}
+A division or an index can fail on almost any line. If those had to be
+listed, nearly every function would say \verb|raises ZeroDivisionError,
+IndexError|, and a label that is on everything tells nobody anything.
+Java's checked exceptions are widely disliked for exactly that.
+(Decision 1.17.)
+\end{why}
+
+\section{An error that carries more}
+
+An error often needs to carry more than a message: how long was waited,
+which pin, what code a device sent back. An object of any class can be
+raised, with whatever fields it needs:
+
+\begin{zeno}
+class Timeout {
+    after_ms: int
+    device: str
+}
+
+function wait_for(device: str) raises Timeout {
+    raise Timeout(30, device)
+}
+
+try {
+    wait_for("sensor")
+} except Timeout as t {
+    print("gave up on", t.device, "after", t.after_ms, "ms")
+}
+\end{zeno}
+
+\verb|except Error as e| catches such an object too. Then
+\verb|e.kind| is the class's name, and \verb|e.message| is the object
+as text:
+
+\begin{zeno}
+class Timeout {
+    after_ms: int
+}
+
+try {
+    raise Timeout(30)
+} except Error as e {
+    print(e.kind, "/", e.message)
+}
+\end{zeno}
+
+\begin{why}
+A class already means "these named values, together", so there is no
+second way to declare an error. (Decision 1.17.)
+\end{why}
+
+\section{What is not here}
+
+Zeno has no \verb|finally|. Code that must run whether or not an error
+was raised is written after the \verb|try|, with an \verb|except| that
+catches what must be caught.
+
+On a microcontroller, a compiled program can carry its errors as plain
+values instead, with no jumps at all, as firmware coding standards
+require. Nothing in the program changes for that; it is a choice made
+when building, and \hyperref[ch-firmware]{Firmware} explains it.
+
+\begin{why}
+They are not C++ exceptions: there are no unwinding tables, and code
+that does not use \verb|try| pays nothing for it. (Decisions 1.17 and
+5.5i.)
+\end{why}
+
+\begin{summary}
+A bug is found before the program runs; an error happens while it
+runs. \verb|raise Kind("message")| raises an error, and
+\verb|try { } except Kind as e { }| catches it, with \verb|e.kind| and
+\verb|e.message|. \verb|except Error| catches every kind. An object of
+any class can be raised. \verb|raises| lists what a function raises on
+purpose: worked out when left out, complete when written, and always
+written in strict mode.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write a loop that asks for numbers with \verb|input()| until it
+  is given one that \verb|int| accepts.
+\item Write \verb|function percent(part: int, whole: int) -> float|
+  that raises a \verb|ValueError| with a clear message when
+  \verb|whole| is 0, and catch it.
+\item Make a class \verb|SensorFault| with a pin and a code, raise it
+  from a function, and catch it once by its own name and once as
+  \verb|Error|.
+\item Remove \verb|raises ValueError| from \verb|check_speed| and run
+  \verb|zeno check --strict|. Then write \verb|raises KeyError|
+  instead. What does each message ask for?
+\end{enumerate}
+\end{tryit}

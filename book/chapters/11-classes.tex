@@ -1,3 +1,362 @@
 \chapter{Classes}\label{ch-classes}
 
-To be written.
+A \emph{class} is a kind of value that you make up yourself: a reading
+from a sensor, a point on a screen, a motor with a speed. It puts
+several named values, its \emph{fields}, together, and gives them
+functions of their own, its \emph{methods}. Each value made from a
+class is an \emph{object}.
+
+\section{Fields}
+
+A class lists its fields with their types. Its name is the
+\emph{constructor}: calling it makes an object, with a value for each
+field in the order they are listed, or by name:
+
+\begin{zeno}
+class Point {
+    x: float
+    y: float
+}
+
+let p = Point(3.0, 4.0)
+let q = Point(y=1.0, x=2.0)
+print(p, q)
+print(p.x, q.y)
+\end{zeno}
+
+An object is printed with its class name and every field, in the way
+you would write it to make it again.
+
+A field can have a default, which the constructor uses when it is not
+given:
+
+\begin{zeno}
+class Counter {
+    name: str
+    count: int = 0
+    step: int = 1
+}
+
+let visits = Counter("visits")
+let pages = Counter("pages", step=5)
+print(visits, pages)
+\end{zeno}
+
+A field without a default must be given, and a field that is not in
+the class cannot be:
+
+\begin{zeno}[fails=yes]
+class Point {
+    x: float
+    y: float
+}
+let p = Point(1.0)
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+class Point {
+    x: float
+}
+let p = Point(1.0, 2.0)
+\end{zeno}
+
+\begin{why}
+The fields are the shape of the data, and the shape is written in one
+place, at the top of the class, not discovered by reading assignments
+scattered through an initialiser. A fixed list of fields is also what
+lets a class become a plain C struct in a compiled program.
+(Decision 3.7.)
+\end{why}
+
+\section{Changing a field}
+
+A field is changed with \verb|=|, like a variable. The object can be a
+\verb|let|: the name always means the same object, while what is
+inside it changes, exactly as with a list.
+
+\begin{zeno}
+class Motor {
+    speed: int = 0
+}
+let m = Motor()
+m.speed = 40
+m.speed += 10
+print(m.speed)
+\end{zeno}
+
+There is no way to add a field the class did not list. A misspelt name
+is a mistake found before the program runs, not a new field made in
+passing:
+
+\begin{zeno}[fails=yes]
+class Motor {
+    speed: int = 0
+}
+let m = Motor()
+m.sped = 40
+\end{zeno}
+
+\section{Methods}
+
+A method is a function written inside the class. Its first parameter
+is \verb|self|, the object it was called on:
+
+\begin{zeno}
+class Counter {
+    name: str
+    count: int = 0
+    step: int = 1
+
+    function bump(self) {
+        self.count += self.step
+    }
+
+    function report(self) -> str {
+        return f"{self.name}: {self.count}"
+    }
+}
+
+let visits = Counter("visits")
+visits.bump()
+visits.bump()
+print(visits.report())
+print(visits)
+\end{zeno}
+
+\verb|visits.bump()| is the call \verb|bump| with \verb|visits| as its
+\verb|self|. A method takes other parameters after \verb|self|, with
+types, defaults and names as any function does.
+
+A method must name \verb|self| even when it does not use it:
+
+\begin{zeno}[fails=yes]
+class Lamp {
+    on: bool = false
+    function flip() {
+        print("flip")
+    }
+}
+\end{zeno}
+
+\begin{why}
+Writing \verb|self| shows what a method is: an ordinary function that
+is given its object as the first argument. There is no hidden
+\verb|this| that appears from nowhere, and inside the method
+\verb|self.count| and a plain \verb|count| can never be confused.
+(Decision 3.8.)
+\end{why}
+
+\section{Making an object with a function}
+
+There is no constructor of your own to write. The fields in order are
+the constructor. When making an object needs work, such as checking
+the values or working one out from another, write a function that does
+the work and calls the constructor:
+
+\begin{zeno}
+class Range {
+    low: float
+    high: float
+}
+
+function range_around(middle: float, width: float) -> Range {
+    if width < 0.0 {
+        raise ValueError(f"a width cannot be negative, and {width} is")
+    }
+    return Range(middle - width / 2.0, middle + width / 2.0)
+}
+
+print(range_around(10.0, 4.0))
+\end{zeno}
+
+The function's name says what it does, which a second constructor
+could not. When a class must only ever be made through such a
+function, its fields are made \verb|private|, which
+\hyperref[ch-modules]{Programs in Several Files} explains: then only
+its own file can call the constructor.
+
+\begin{why}
+A constructor written by the programmer is a second place where the
+shape of the object is decided, and it can disagree with the first.
+Python's \verb|__init__| can set fields the class never mentions.
+A named function is plain code that anyone can read. (Decision 3.7, as
+settled in chapter 11 of the decisions.)
+\end{why}
+
+\section{Objects are shared}
+
+An object, like a list, is not copied when it is given another name,
+passed to a function or put in a list. Every name sees the one object:
+
+\begin{zeno}
+class Counter {
+    count: int = 0
+    function bump(self) {
+        self.count += 1
+    }
+}
+
+function bump_twice(c: Counter) {
+    c.bump()
+    c.bump()
+}
+
+let mine = Counter()
+let also_mine = mine
+bump_twice(also_mine)
+print(mine.count)
+\end{zeno}
+
+This is what lets a function change an object it is given, and it is
+the same rule as for lists (\hyperref[ch-lists]{Lists}).
+
+\section{Equal objects}
+
+Two objects are equal when they are of the same class and every field
+is equal. \verb|==| asks what they hold, not whether they are the same
+object:
+
+\begin{zeno}
+class Point {
+    x: int
+    y: int
+}
+print(Point(1, 2) == Point(1, 2), Point(1, 2) == Point(2, 1))
+\end{zeno}
+
+\begin{why}
+This is what \verb|==| means for numbers, text, lists and dicts, so it
+means the same for objects. Java's \verb|==| on objects asks whether
+two names point at one object, and a whole kind of mistake follows
+from comparing two equal strings and getting \verb|false|.
+(Decision 2.5.)
+\end{why}
+
+\section{Objects inside objects}
+
+A field can hold a list, a dict or another object. It can even hold an
+object of its own class, as long as it may also be \verb|none|, so that
+the chain can end:
+
+\begin{zeno}
+class Node {
+    value: int
+    next: Node or none = none
+}
+
+let third = Node(3)
+let second = Node(2, third)
+let first = Node(1, second)
+
+var at: Node or none = first
+var total = 0
+while at is not none {
+    total += at.value
+    at = at.next
+}
+print(total)
+\end{zeno}
+
+\verb|Node or none| says that the field holds a \verb|Node| or nothing.
+\hyperref[ch-none]{Values That May Be Missing} explains why Zeno lets
+\verb|at.value| be read inside the loop: the condition has already
+ruled \verb|none| out.
+
+\section{A class with a list}
+
+A class that keeps a list of readings is a common shape in firmware:
+
+\begin{zeno}[file=log.zeno]
+class Log {
+    limit: int
+    readings: list[float] = []
+
+    function add(self, r: float) {
+        self.readings.append(r)
+        if len(self.readings) > self.limit {
+            self.readings.pop(0)
+        }
+    }
+
+    function average(self) -> float {
+        return sum(self.readings) / float(len(self.readings))
+    }
+}
+
+let log = Log(3)
+for r in [20.0, 21.0, 22.0, 23.0, 24.0] {
+    log.add(r)
+}
+print(log.readings, log.average())
+\end{zeno}
+
+The default \verb|[]| is a new list for each object, made afresh every
+time the constructor runs, just as a default parameter is
+(\hyperref[ch-functions]{Functions}). Two logs never share one list by
+accident.
+
+\section{No parent classes}
+
+A class in Zeno does not inherit from another class. Writing one class
+as another is refused, with what to do instead:
+
+\begin{zeno}[fails=yes]
+class Animal {
+    name: str
+}
+class Dog is Animal {
+    breed: str
+}
+\end{zeno}
+
+What inheritance is mostly used for, one function that works with
+several classes, is done by an \emph{interface}: a list of methods
+that several classes promise to have. \hyperref[ch-interfaces]{Interfaces}
+is about them.
+
+\begin{why}
+With inheritance, the fields and methods of a class are spread over
+the class and all its parents, and a method can be replaced anywhere
+along the chain, so reading a class means reading a family. In Zeno a
+class is read in one place. (Decision 10.4, and the settled decision
+on 0.1 and 3.7.)
+\end{why}
+
+\section{Using a class above where it is written}
+
+Like a function, a class can be used anywhere in its file, above or
+below where it is declared:
+
+\begin{zeno}
+print(Pair(1, 2))
+
+class Pair {
+    left: int
+    right: int
+}
+\end{zeno}
+
+\begin{summary}
+A class lists its fields, with types and perhaps defaults, and its
+name is the constructor, which takes the fields in order or by name.
+Methods are functions inside the class whose first parameter is
+\verb|self|. Fields cannot be added after the fact. An object is
+shared, compared by its contents, and printed as it would be written.
+A function with a name builds an object that needs checking. There is
+no inheritance; interfaces do that work.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write a class \verb|Rect| with a width and a height, and methods
+  \verb|area| and \verb|is_square|.
+\item Give \verb|Counter| a method \verb|reset| and a field
+  \verb|limit|, so that \verb|bump| goes back to 0 after the limit.
+\item Write \verb|function square(side: float) -> Rect| that refuses a
+  negative side with a \verb|ValueError|.
+\item Build a chain of four \verb|Node| objects and write a function
+  that gives the largest value in it.
+\item Try to set a field that \verb|Rect| does not have, and read the
+  message.
+\end{enumerate}
+\end{tryit}

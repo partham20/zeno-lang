@@ -1,3 +1,246 @@
 \chapter{Functions as Values}\label{ch-function-values}
 
-To be written.
+A function in Zeno is a value, like a number or a list. It can be
+given a name, passed to another function, kept in a list or a dict,
+and given back by a function. This chapter is about what that makes
+possible.
+
+\section{Passing a function}
+
+A function's name, without brackets after it, is the function itself.
+Passing it hands the function over, to be called later:
+
+\begin{zeno}
+function twice(f: function(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+function add_one(n: int) -> int {
+    return n + 1
+}
+
+print(twice(add_one, 5))
+print(add_one)
+\end{zeno}
+
+\verb|twice| calls whatever function it was given, twice. You have
+already seen this with \verb|map|, \verb|filter| and \verb|reduce| in
+\hyperref[ch-lists]{Lists}.
+
+\section{The type of a function}
+
+The type of a function is written as its heading with the names and
+the body taken out:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Function & Its type \\
+\midrule
+\verb|function add_one(n: int) -> int| & \verb|function(int) -> int| \\
+\verb|function add(a: int, b: int) -> int| & \verb|function(int, int) -> int| \\
+\verb|function report(text: str)| & \verb|function(str)| \\
+\verb|function now() -> int| & \verb|function() -> int| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A function fits a type when it can be called with those arguments and
+gives back what the type says. One that does not fit is refused at the
+call, with the reason:
+
+\begin{zeno}[fails=yes]
+function twice(f: function(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+function shout(text: str) -> str {
+    return text.upper()
+}
+print(twice(shout, 1))
+\end{zeno}
+
+\begin{why}
+There is nothing new to learn: the same keyword, the same brackets,
+the same \verb|->| as a heading. A form such as \verb|(int) -> int|,
+as in TypeScript and Swift, would be shorter, but it gives brackets a
+second meaning in types. (Decision 1.11a.)
+\end{why}
+
+\section{A function with no name}
+
+A function that is used only once can be written where it is used,
+with the name left out:
+
+\begin{zeno}
+let double = function(n: int) -> int { return n * 2 }
+print(double(21))
+
+let readings = [15.0, 25.0, 30.0]
+print(readings.map(function(c) { return c * 1.8 + 32.0 }))
+print(readings.filter(function(c) { return c > 20.0 }))
+\end{zeno}
+
+When such a function is passed where a function type is expected, as
+with \verb|map| here, its types can be left out: Zeno works them out
+from the type it is given.
+
+\begin{why}
+It is exactly a function declaration with the name left out, so there
+is only one way to write a function. Python's \verb|lambda n: n * 2|
+is a second, smaller syntax that cannot hold statements, and
+JavaScript's \verb|n => n * 2| would need the arrow that Zeno left out
+of \verb|match|. (Decision 3.6a.)
+\end{why}
+
+For the commonest case, making a new list from an old one, a
+comprehension is shorter still: \verb|[c * 1.8 + 32.0 for c in readings]|.
+
+\section{Functions in lists and dicts}
+
+Because a function is a value, it can be kept anywhere a value can. A
+dict from names to functions is a simple way to run a command by name:
+
+\begin{zeno}
+function add(a: int, b: int) -> int {
+    return a + b
+}
+function multiply(a: int, b: int) -> int {
+    return a * b
+}
+
+let operations: dict[str, function(int, int) -> int] = [:]
+operations["add"] = add
+operations["times"] = multiply
+operations["minus"] = function(a: int, b: int) -> int { return a - b }
+
+for name in ["add", "times", "minus"] {
+    print(name, operations[name](6, 3))
+}
+\end{zeno}
+
+\section{Functions that make functions}
+
+A function can give back a function. The function it gives back can
+use the variables of the function that made it, even after that
+function has returned:
+
+\begin{zeno}
+function scaler(factor: float) -> function(float) -> float {
+    return function(x: float) -> float { return x * factor }
+}
+
+let to_millivolts = scaler(1000.0)
+let halve = scaler(0.5)
+print(to_millivolts(3.3), halve(10.0))
+\end{zeno}
+
+\verb|to_millivolts| and \verb|halve| are two functions made by one
+\verb|scaler|, each with its own \verb|factor|. A function together
+with the variables it keeps is called a \emph{closure}.
+
+\subsection{It keeps the variable, not a copy}
+
+A closure keeps the variable itself. If it changes the variable, the
+change lasts until it is called again:
+
+\begin{zeno}
+function counter() -> function() -> int {
+    var count = 0
+    return function() -> int {
+        count += 1
+        return count
+    }
+}
+
+let next_id = counter()
+print(next_id(), next_id(), next_id())
+
+let other = counter()
+print(other())
+\end{zeno}
+
+Each call of \verb|counter| makes a new \verb|count|, so \verb|other|
+starts again from 1.
+
+\begin{why}
+This is what the code says when it is read: there is one
+\verb|count|. If the inner function had a copy, \verb|next_id()|
+would give 1 every time, and nothing would say why. (Decision 3.6c.)
+\end{why}
+
+\subsection{Each turn of a loop has its own name}
+
+The name in a \verb|for| loop is new on each turn, so a function made
+inside a loop keeps the value of that turn:
+
+\begin{zeno}
+var handlers: list[function()] = []
+for at in range(3) {
+    handlers.append(function() { print("handler", at) })
+}
+for handle in handlers {
+    handle()
+}
+\end{zeno}
+
+In JavaScript with \verb|var|, and in Python, all three would print the
+last value, 2: a famous puzzle that Zeno does not have.
+
+\subsection{What it can see is fixed where it is written}
+
+A function can see the variables declared above it, in the blocks
+around it, and never one declared further down, even one with the
+same name:
+
+\begin{zeno}
+let level = 1
+function outer() -> int {
+    let read = function() -> int { return level }
+    let level = 2
+    return read()
+}
+print(outer())
+\end{zeno}
+
+\verb|read| was written where the only \verb|level| in sight was the
+one at the top, so that is the one it uses, and \verb|outer| gives 1.
+
+\begin{why}
+The meaning of a name should be settled by where it is written, not
+by what happens to be declared later. This rule, called
+\emph{lexical scope}, is the one nearly every modern language follows,
+and it lets the compiler decide once which variables a function must
+take with it. (Decisions 3.6c and 3.6d.)
+\end{why}
+
+\section{Calling something that is not a function}
+
+Only a function can be called, and the checker knows which names hold
+one:
+
+\begin{zeno}[fails=yes]
+let speed = 5
+speed()
+\end{zeno}
+
+\begin{summary}
+A function is a value: its name without brackets is the function. Its
+type is written \verb|function(int, str) -> bool|. A function with no
+name is written \verb|function(n) { return n * 2 }|. Functions can be
+passed, stored in lists and dicts, and given back by other functions.
+A function given back keeps the variables around it, the variables
+themselves and not copies, as they were in sight where it was written.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function apply_all(fs: list[function(int) -> int], x: int) -> list[int]|.
+\item Write \verb|function compose(f: function(int) -> int, g: function(int) -> int) -> function(int) -> int|
+  that gives a function doing \verb|g| and then \verb|f|.
+\item Make a counter that starts from a number and counts up by a step,
+  both given to the function that makes it.
+\item Build a small calculator: read lines such as \verb|add 2 3| with
+  \verb|input()|, split them, and look the word up in a dict of
+  functions. What should happen with a word that is not in the dict?
+\end{enumerate}
+\end{tryit}

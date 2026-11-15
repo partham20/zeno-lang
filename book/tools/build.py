@@ -251,12 +251,14 @@ def process_chapter(source, target):
     target.write_text(ENV_RE.sub(replace, text))
 
 
-def samples():
+def samples(only=None):
     GEN.mkdir(parents=True, exist_ok=True)
     shutil.copy(BOOK / "zeno-book.tex", GEN / "zeno-book.tex")
     for extra in ["zeno-book.sty"]:
         shutil.copy(BOOK / extra, GEN / extra)
     for source in sorted((BOOK / "chapters").glob("*.tex")):
+        if only and not source.stem.startswith(only):
+            continue
         process_chapter(source, GEN / "chapters" / source.name)
     print(
         f"samples: {counts['run']} programs run, {counts['commands']} commands, "
@@ -363,7 +365,11 @@ if __name__ == "__main__":
     BIN = Path(tempfile.mkdtemp(prefix="zeno-book-bin-"))
     os.symlink(zeno_binary(), BIN / "zeno")
     wanted = set(sys.argv[1:])
-    samples()
+    # --chapter=11 checks the samples of the chapters whose files start so.
+    only = next((w.split("=", 1)[1] for w in wanted if w.startswith("--chapter=")), None)
+    samples(only)
+    if only:
+        sys.exit(0)
     if "--samples" in wanted:
         sys.exit(0)
     if not wanted or "--pdf" in wanted:

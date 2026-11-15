@@ -1,3 +1,304 @@
 \chapter{Enums and match}\label{ch-enums}
 
-To be written.
+Some values are one of a short list of choices: a traffic light is red,
+amber or green; a motor is stopped, running or faulty. An \emph{enum}
+(short for \emph{enumeration}) is a type that lists the choices, and
+\verb|match| is how a program does something different for each.
+
+\section{An enum of plain choices}
+
+\begin{zeno}
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+let now = Red
+print(now, now == Red, Amber != Green)
+\end{zeno}
+
+Each choice is a \emph{case}. A case is written by its name, and a
+value of \verb|Light| can only ever be one of the three. Compare that
+with keeping the light in an \verb|int| where 0 is red, 1 amber and 2
+green: nothing would stop a 7, and nothing would tell a reader what 1
+means.
+
+\section{match}
+
+\verb|match| takes a value and runs the block of the first
+\verb|case| that fits it:
+
+\begin{zeno}
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+function next(light: Light) -> Light {
+    match light {
+        case Red { return Green }
+        case Green { return Amber }
+        case Amber { return Red }
+    }
+}
+
+var light = Red
+for turn in range(4) {
+    print(light)
+    light = next(light)
+}
+\end{zeno}
+
+\subsection{Every case must be handled}
+
+A \verb|match| on an enum must say what to do for every case. Leave one
+out and the program does not run, and the message names the case that
+is missing:
+
+\begin{zeno}[fails=yes]
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+function stop_here(light: Light) -> bool {
+    match light {
+        case Red { return true }
+        case Amber { return true }
+    }
+}
+\end{zeno}
+
+This is the main reason to use an enum. When a new case is added a
+year later, say \verb|Flashing|, every \verb|match| in the program that
+does not yet know about it becomes an error, and the compiler lists
+them. Nothing falls through in silence.
+
+A final \verb|case _| stands for every case not named above it, when
+they all mean the same:
+
+\begin{zeno}
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+function may_go(light: Light) -> bool {
+    match light {
+        case Green { return true }
+        case _ { return false }
+    }
+}
+print(may_go(Green), may_go(Amber))
+\end{zeno}
+
+\begin{why}
+"A reading is either a value or a fault code" is one of the most common
+shapes in real programs, and most languages make it awkward. An enum
+says it directly, and a \verb|match| that must name every case is the
+check that a C \verb|switch| never gave. (Decision 3.11.)
+\end{why}
+
+\section{Cases that carry values}
+
+A case can carry values of its own, named and typed like the
+parameters of a function. Then the case is written like a call:
+
+\begin{zeno}
+enum Shape {
+    Circle(radius: float)
+    Rect(width: float, height: float)
+    Dot
+}
+
+let shapes = [Circle(1.0), Rect(2.0, 3.0), Dot]
+print(shapes)
+\end{zeno}
+
+All three are \verb|Shape|s, so they can go in one list. Each carries
+what that case needs and nothing more: a circle has a radius, a
+rectangle two sides, and a dot nothing at all.
+
+\verb|match| takes the values out again. The names in brackets after a
+case are new names, given the values that case carries, in order:
+
+\begin{zeno}
+enum Shape {
+    Circle(radius: float)
+    Rect(width: float, height: float)
+    Dot
+}
+
+function area(shape: Shape) -> float {
+    match shape {
+        case Circle(r) { return 3.14159 * r * r }
+        case Rect(w, h) { return w * h }
+        case Dot { return 0.0 }
+    }
+}
+
+for shape in [Circle(1.0), Rect(2.0, 3.0), Dot] {
+    print(shape, area(shape))
+}
+\end{zeno}
+
+A value that is not needed is written \verb|_|: \verb|case Rect(w, _)|
+takes the width and leaves the height.
+
+\begin{why}
+A value read straight off the enum, such as \verb|shape.radius|,
+would be a mistake whenever the shape turned out to be a
+\verb|Rect|. Inside \verb|case Circle(r)|, \verb|r| is there for
+certain, because the case has already been found to fit.
+\end{why}
+
+\section{match on numbers and text}
+
+A \verb|match| can also take a number or a piece of text, and compare
+it with each case in turn:
+
+\begin{zeno}
+function describe(code: int) -> str {
+    match code {
+        case 200 { return "ok" }
+        case 404 { return "not found" }
+        case _ { return "something else" }
+    }
+}
+print(describe(200), describe(404), describe(500))
+\end{zeno}
+
+There is no way to list every \verb|int| or every \verb|str|, so such a
+\verb|match| needs a final \verb|case _|:
+
+\begin{zeno}[fails=yes]
+let answer = "yes"
+match answer {
+    case "yes" { print("agreed") }
+    case "no" { print("refused") }
+}
+\end{zeno}
+
+\subsection{Giving the value a name}
+
+A plain name as the last case fits anything, like \verb|_|, and gives
+the value that name inside the block:
+
+\begin{zeno}
+for word in ["start", "stop", "jump"] {
+    match word {
+        case "start" { print("starting") }
+        case "stop" { print("stopping") }
+        case other { print("no such command:", other) }
+    }
+}
+\end{zeno}
+
+\section{Blocks, not arrows}
+
+Each case is \verb|case| something, then a block in braces. A case
+whose block is short can sit on one line, as above; a longer one is
+laid out like any other block:
+
+\begin{zeno}
+let level = 3
+match level {
+    case 0 { print("off") }
+    case 3 {
+        print("high")
+        print("check the fan")
+    }
+    case _ { print("on") }
+}
+\end{zeno}
+
+\begin{why}
+Every other block in Zeno is a keyword, something, and braces:
+\verb|if ready { }|, \verb|while busy { }|. An arrow, as in
+\verb|3 => ...|, would be a second way to start a block. (Decision 1.9.)
+\end{why}
+
+\section{An enum in a state machine}
+
+Firmware is full of \emph{state machines}: a device is in one state,
+and each event moves it to another. An enum names the states and a
+\verb|match| says what each event does in each:
+
+\begin{zeno}[file=door.zeno]
+enum Door {
+    Closed
+    Opening(percent: int)
+    Open
+}
+
+function step(door: Door) -> Door {
+    match door {
+        case Closed { return Opening(0) }
+        case Opening(p) {
+            if p >= 75 {
+                return Open
+            }
+            return Opening(p + 25)
+        }
+        case Open { return Open }
+    }
+}
+
+var door = Closed
+for tick in range(7) {
+    print(tick, door)
+    door = step(door)
+}
+\end{zeno}
+
+The compiler checks that \verb|step| knows what to do in every state.
+Add a case \verb|Jammed| to \verb|Door| and the program will not run
+until \verb|step| has decided what a jammed door does.
+
+\section{Case names belong to the file}
+
+The cases of an enum are names in the file, like functions, which is
+why a case is written plain \verb|Red|. Two enums in one file
+therefore cannot both have a case called \verb|Red|:
+
+\begin{zeno}[fails=yes]
+enum Light {
+    Red
+    Green
+}
+enum Flag {
+    Red
+    White
+}
+\end{zeno}
+
+Give the cases names that say which enum they belong to, such as
+\verb|FlagRed|, or put the enums in different files
+(\hyperref[ch-modules]{Programs in Several Files}).
+
+\begin{summary}
+An enum lists the cases a value can be, and a case can carry values
+of its own. \verb|match| runs the block of the case that fits, takes
+out what a case carries, and must handle every case of an enum, either
+by name or with a final \verb|case _|. A \verb|match| on numbers or
+text always needs \verb|case _|, and a plain name as the last case
+gives the value a name.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write an enum \verb|Coin| with four coins and a function that
+  gives the value of each in cents.
+\item Add \verb|Triangle(base: float, height: float)| to \verb|Shape|
+  and run the program before changing \verb|area|. Read the message.
+\item Write \verb|enum Reading| with \verb|Value(volts: float)| and
+  \verb|Fault(code: int)|, and a function that prints a list of
+  readings, with the fault codes in hexadecimal.
+\item Add \verb|Jammed| to the door, and a \verb|Closing| state, so
+  that an open door closes again.
+\end{enumerate}
+\end{tryit}

@@ -1,3 +1,291 @@
 \chapter{Values That May Be Missing}\label{ch-none}
 
-To be written.
+Sometimes there is no answer. A search finds nothing, a sensor has not
+reported yet, a line that should hold a number holds a word. Zeno has
+one value for "nothing here": \verb|none|. This chapter is about where
+it may appear, and how Zeno makes sure a program never uses it by
+mistake.
+
+\section{none only where the type says so}
+
+A value can be \verb|none| only if its type says it may be. The type is
+written \verb|T or none|, and reads as it means:
+
+\begin{zeno}
+function find_user(id: int) -> str or none {
+    if id == 1 {
+        return "ada"
+    }
+    return none
+}
+
+print(find_user(1), find_user(2))
+\end{zeno}
+
+A plain \verb|str| is always a piece of text. A \verb|str or none| is a
+piece of text or nothing, and the program has to find out which before
+it treats it as text:
+
+\begin{zeno}[fails=yes]
+function find_user(id: int) -> str or none {
+    if id == 1 {
+        return "ada"
+    }
+    return none
+}
+
+print(find_user(1).upper())
+\end{zeno}
+
+\begin{why}
+Using a null value is the commonest crash in C, Java and JavaScript.
+Tony Hoare, who brought null into programming in 1965, called it his
+"billion-dollar mistake". In those languages any reference can be
+null, so every use is a risk. In Zeno only a value whose type says
+\verb|or none| can be, and the check cannot be forgotten.
+(Decisions 1.13 and 3.12.)
+\end{why}
+
+\section{Asking: is none, is not none}
+
+\verb|x is none| and \verb|x is not none| ask the question. Inside an
+\verb|if| that has found the value is there, Zeno knows it, and the
+value can be used as a plain value:
+
+\begin{zeno}
+function find_user(id: int) -> str or none {
+    if id == 1 {
+        return "ada"
+    }
+    return none
+}
+
+for id in [1, 2] {
+    let user = find_user(id)
+    if user is not none {
+        print(user.upper())
+    } else {
+        print("no user", id)
+    }
+}
+\end{zeno}
+
+There is no new syntax to learn for this. The program writes the
+\verb|if| it would have written anyway, and the checker follows it.
+This is called \emph{narrowing}: inside the \verb|if|, the type of
+\verb|user| is narrowed from \verb|str or none| to \verb|str|.
+
+\verb|is| is only for \verb|none|. Values are compared with
+\verb|==|:
+
+\begin{zeno}[fails=yes]
+let x = 3
+print(x is 3)
+\end{zeno}
+
+\begin{why}
+In Python, \verb|is| asks whether two names are one object, which gives
+surprising answers on numbers and text and is a well-known trap.
+Keeping \verb|is| for \verb|none| leaves one way to compare values and
+one way to ask whether something is there. (Decision 1.13.)
+\end{why}
+
+\section{What the checker follows}
+
+The checker follows the ordinary shapes a program takes.
+
+\paragraph{Leaving early.} After \verb|if x is none { return ... }|,
+the rest of the block can only be reached when \verb|x| is there:
+
+\begin{zeno}
+function shout(text: str or none) -> str {
+    if text is none {
+        return ""
+    }
+    return text.upper()
+}
+print(shout("hi"), shout(none))
+\end{zeno}
+
+The same goes for \verb|raise|, \verb|break| and \verb|continue|.
+
+\paragraph{and, or and not.} A test joined with \verb|and| knows the
+first half when it asks the second:
+
+\begin{zeno}
+let name: str or none = "Ada"
+if name is not none and len(name) > 2 {
+    print(name, "is long enough")
+}
+\end{zeno}
+
+\paragraph{Filling in a default.} After an \verb|if| that gives the
+variable a value when it had none, the variable has a value on both
+paths, and the checker knows it:
+
+\begin{zeno}
+function greeting(given: str or none) -> str {
+    var name = given
+    if name is none {
+        name = "friend"
+    }
+    return f"Hello, {name.upper()}"
+}
+print(greeting("Ada"), greeting(none))
+\end{zeno}
+
+\paragraph{Walking a chain.} A \verb|while| that asks
+\verb|is not none| knows it inside, and an assignment in the body
+makes the variable uncertain again until the next question:
+
+\begin{zeno}
+class Node {
+    value: int
+    next: Node or none = none
+}
+
+var node: Node or none = Node(1, Node(2, Node(3)))
+var total = 0
+while node is not none {
+    total += node.value
+    node = node.next
+}
+print(total)
+\end{zeno}
+
+\begin{why}
+Without these, the two most ordinary uses of \verb|none|, walking a
+linked list and filling in a default, would not pass the checker, and
+the program would have to copy the value into a second variable just
+to please it. TypeScript and Kotlin follow assignments the same way.
+(Decision 3.12.)
+\end{why}
+
+\subsection{A field is asked about through a name}
+
+The checker narrows names, not fields. A field that may be \verb|none|
+is first given a name of its own, and the name is asked about:
+
+\begin{zeno}[fails=yes]
+class Sensor {
+    last: float or none = none
+}
+let s = Sensor()
+s.last = 21.5
+if s.last is not none {
+    print(s.last + 1.0)
+}
+\end{zeno}
+
+\begin{zeno}
+class Sensor {
+    last: float or none = none
+}
+let s = Sensor()
+s.last = 21.5
+let last = s.last
+if last is not none {
+    print(last + 1.0)
+}
+\end{zeno}
+
+A field can be changed by any code that holds the object, including a
+method called between the question and the use, so an answer about a
+field could be out of date by the next line. A local name cannot be
+changed behind the program's back.
+
+\section{Functions that may give none}
+
+The library gives \verb|none| where there may be no answer:
+\verb|find| on text and lists (\hyperref[ch-text]{Text}),
+\verb|get| on a dict (\hyperref[ch-dicts]{Dicts}) and \verb|input()|
+when there are no more lines (\hyperref[ch-reading-writing]{Reading and
+Writing}). Your own functions do the same by saying
+\verb|-> T or none|.
+
+A function that says it may give \verb|none| gives \verb|none| when it
+reaches its end, since that is one of the answers it promised:
+
+\begin{zeno}
+function first_even(xs: list[int]) -> int or none {
+    for x in xs {
+        if x % 2 == 0 {
+            return x
+        }
+    }
+}
+print(first_even([1, 3, 4, 5]), first_even([1, 3]))
+\end{zeno}
+
+\section{none in a match}
+
+A \verb|match| on a value that may be \verb|none| can have
+\verb|case none|, and every case after it knows the value is there.
+For an enum, \verb|case none| and a case for each of the enum's own
+cases make the match complete:
+
+\begin{zeno}
+enum Reading {
+    Value(volts: float)
+    Fault(code: int)
+}
+
+function describe(r: Reading or none) -> str {
+    match r {
+        case none { return "no reading yet" }
+        case Value(v) { return f"{v:.1f} V" }
+        case Fault(code) { return f"fault 0x{code:02x}" }
+    }
+}
+
+print(describe(none), describe(Value(3.3)), describe(Fault(7)))
+\end{zeno}
+
+Leave \verb|case none| out, and the checker says so:
+
+\begin{zeno}[fails=yes]
+enum Reading {
+    Value(volts: float)
+    Fault(code: int)
+}
+
+function describe(r: Reading or none) -> str {
+    match r {
+        case Value(v) { return "value" }
+        case Fault(code) { return "fault" }
+    }
+}
+\end{zeno}
+
+\section{none is not zero}
+
+\verb|none| is not \verb|0|, not \verb|false| and not \verb|""|. It is
+its own value, and the only things that can be done with it are to
+print it, store it where the type allows, and ask whether a value is
+it. Conditions must be \verb|bool|, so \verb|if user| is refused, and
+the question is always written out: \verb|if user is not none|.
+
+\begin{summary}
+\verb|none| means "nothing here", and only a value whose type says
+\verb|or none| can hold it. Before such a value is used, the program
+asks \verb|is none| or \verb|is not none|, and the checker follows the
+answer through \verb|if|, early returns, \verb|and|, defaults and
+\verb|while|. Fields are asked about through a name of their own. A
+\verb|match| can have \verb|case none|. \verb|is| is for \verb|none|
+and nothing else.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function parse_volts(text: str) -> float or none|
+  that gives \verb|none| for an empty text, and use it on a list of
+  texts, printing a dash for each \verb|none|.
+\item Write a function that gives the last \verb|Node| of a chain, or
+  \verb|none| for an empty one.
+\item Take the \verb|greeting| function and remove the \verb|if|. Read
+  the message, and say in your own words what it protects against.
+\item Write \verb|function largest(xs: list[int]) -> int or none| with
+  no \verb|max|. What should it give for \verb|[]|, and why is that
+  better than 0?
+\end{enumerate}
+\end{tryit}
