@@ -1,3 +1,268 @@
 \chapter{Types, Written and Worked Out}\label{ch-types}
 
-To be written.
+Every value in Zeno has a \emph{type}: \verb|3| is an \verb|int|,
+\verb|"hi"| is a \verb|str|, \verb|[1, 2]| is a \verb|list[int]|.
+Types can be written in a program or left out. This chapter says what
+happens in each case, what Zeno works out by itself, what it does when
+it cannot, and the strict mode that a compiled program needs.
+
+\section{The types there are}
+
+\begin{center}
+\begin{tabular}{lp{8.5cm}}
+\toprule
+Type & Holds \\
+\midrule
+\verb|int| & a whole number (\hyperref[ch-numbers]{Numbers and Operators}) \\
+\verb|float| & a number with a point \\
+\verb|bool| & \verb|true| or \verb|false| \\
+\verb|str| & text (\hyperref[ch-text]{Text}) \\
+\verb|list[T]| & items of type \verb|T|, in order (\hyperref[ch-lists]{Lists}) \\
+\verb|dict[K, V]| & values of type \verb|V| under keys of type \verb|K| (\hyperref[ch-dicts]{Dicts}) \\
+\verb|function(A, B) -> R| & a function (\hyperref[ch-function-values]{Functions as Values}) \\
+\verb|T or none| & a \verb|T|, or nothing (\hyperref[ch-none]{Values That May Be Missing}) \\
+a class or enum name & an object or a case (\hyperref[ch-classes]{Classes}, \hyperref[ch-enums]{Enums}) \\
+an interface name & any class that is that interface (\hyperref[ch-interfaces]{Interfaces}) \\
+\verb|any| & a value of any type, checked as the program runs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Later chapters add numbers with units such as \verb|ms| and \verb|V|
+(\hyperref[ch-units]{Numbers with Units}), sized whole numbers such as
+\verb|u8| (\hyperref[ch-sized-numbers]{Sized Numbers and Bits}), and the pins and
+registers of a board (\hyperref[ch-board]{The Board}).
+
+\section{Writing a type}
+
+A type goes after a name, with a colon, on a variable, a parameter or
+a field, and after \verb|->| for what a function gives back:
+
+\begin{zeno}
+let limit: int = 100
+var names: list[str] = []
+function scale(value: float, by: float) -> float {
+    return value * by
+}
+class Reading {
+    pin: int
+    volts: float
+}
+print(limit, names, scale(2.0, 1.5), Reading(4, 3.3))
+\end{zeno}
+
+A written type is a promise. Zeno checks every use against it before
+the program runs, and never changes it to fit:
+
+\begin{zeno}[fails=yes]
+function scale(value: float, by: float) -> float {
+    return value * by
+}
+print(scale(2, 3))
+\end{zeno}
+
+\begin{why}
+The name is what a reader scans for, so it comes first, and since the
+type can usually be left out, the part that may be missing goes last.
+(Decision 1.11.)
+\end{why}
+
+\section{What Zeno works out}
+
+Where a type is left out, Zeno works it out from the program, wherever
+it can be known for certain.
+
+\paragraph{A variable} has the type of the value it starts with.
+\verb|let n = 3| is an \verb|int|, and stays one:
+
+\begin{zeno}[fails=yes]
+var count = 3
+count = "three"
+\end{zeno}
+
+\paragraph{What a function gives back} is worked out from its
+\verb|return|s, in recursive functions too.
+
+\paragraph{A parameter} is worked out from the calls. If every call
+passes ints, the parameter is an \verb|int|, and the body is checked
+with that knowledge:
+
+\begin{zeno}[fails=yes]
+function add(a, b) {
+    return a + b
+}
+let total: str = add(1, 2)
+\end{zeno}
+
+\paragraph{A field} is worked out from every value stored in it:
+
+\begin{zeno}[fails=yes]
+class Reading {
+    pin
+    volts
+}
+let r = Reading(3, 2.5)
+let label: str = r.volts
+\end{zeno}
+
+\begin{why}
+Types pay for themselves in large programs and in firmware, where a
+mistake found on the bench costs hours. They get in the way of a
+ten-line script. With types that can be left out, one language serves
+both, and a program can start loose and be tightened a line at a time
+as it grows, instead of being written again in another language.
+This is called \emph{gradual typing}; TypeScript and Python's type
+hints took the same road. (Decision 0.2.)
+\end{why}
+
+\subsection{Where the mistake is reported}
+
+When a parameter's type was worked out, a call that disagrees is
+reported inside the function, where the value is misused, with a note
+that names the call the type came from:
+
+\begin{zeno}[fails=yes]
+function shout(text) {
+    return text.upper()
+}
+print(shout(5))
+\end{zeno}
+
+Zeno cannot know which line is wrong, the function or the call, so it
+shows both. Writing the type settles it, and then the call is the
+mistake. That is the reason to write types on anything other people
+call.
+
+\section{When it cannot be worked out}
+
+Some things have no one type. A function called once with an int and
+once with text, or a list that holds a number and a word:
+
+\begin{zeno}
+function same(x) {
+    return x
+}
+let mixed = ["volts", 3.3, true]
+print(same(1), same("one"), mixed)
+\end{zeno}
+
+Such a value is \emph{dynamic}: it carries its type with it, and is
+checked while the program runs instead of before. Zeno never guesses a
+type; when two uses disagree, it leaves the value dynamic. The type
+\verb|any| says so on purpose:
+
+\begin{zeno}[fails=yes]
+let a: any = 3
+print(a + 1)
+let b: any = "three"
+print(b + 1)
+\end{zeno}
+
+Here the first \verb|print| runs, and the mistake in the second is
+found only when the program reaches it. That is the price of a dynamic
+value: a mistake that a type would have caught before the program
+started is caught later, or on a path that no test happened to take,
+never.
+
+\section{Strict mode}
+
+A dynamic value needs a tag that says what it is, and usually memory
+from the heap. A small microcontroller cannot afford either, so a
+compiled program must know every type before it runs. \emph{Strict
+mode} is that rule: a value that would be dynamic is an error.
+
+Strict mode is asked for with \verb|--strict| on the command line, or
+by the word \verb|strict| alone on the first line of the file.
+\verb|zeno build| always works in strict mode.
+
+\begin{zeno}[fails=yes, cmd=zeno check --strict {file}]
+function same(x) {
+    return x
+}
+print(same(1), same("one"))
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+strict
+let mixed: list[any] = ["volts", 3.3]
+\end{zeno}
+
+Most programs pass strict mode with few types written, because Zeno
+works out so much. A program written with no types at all, whose
+functions are each called with one kind of value, is strict already.
+
+\begin{why}
+Whether a file may hold dynamic values is a fact about that file:
+firmware must not, a script may. A flag on the command line lives in a
+build script, where it can be forgotten; a first line travels with the
+code and is seen by everyone who reads it. It is a bare word, with no
+\verb|#| or \verb|@|, because it is part of the language and not a
+comment. There is no way to turn strict mode off from inside a file:
+the stricter of the two always wins. (Decision 0.2.)
+\end{why}
+
+\section{No quiet conversions}
+
+Zeno does not change a value from one type to another behind the
+program's back. An \verb|int| is not a \verb|float|, though the two
+mix in arithmetic (\hyperref[ch-numbers]{Numbers and Operators}), and
+nothing becomes a \verb|bool| or a \verb|str| by itself:
+
+\begin{zeno}[fails=yes]
+let whole = 3
+let real: float = whole
+\end{zeno}
+
+\begin{zeno}
+let whole = 3
+let real: float = float(whole)
+print(real, str(whole) + " items", int("42") + 1)
+\end{zeno}
+
+The functions \verb|int|, \verb|float| and \verb|str| make the change,
+where it can be seen.
+
+\section{Only none can be added to a type}
+
+A type can be widened with \verb|or none|, and with nothing else. A
+value that is \emph{either an int or a str} is written as an enum
+whose cases carry each:
+
+\begin{zeno}[fails=yes]
+let v: int or str = 3
+\end{zeno}
+
+\begin{zeno}
+enum Setting {
+    Number(n: int)
+    Word(text: str)
+}
+let settings = [Number(3), Word("auto")]
+print(settings)
+\end{zeno}
+
+An enum names the choices, and a \verb|match| must then handle each
+one, which a bare \verb|int or str| would not ask for.
+
+\begin{summary}
+Types go after names, \verb|name: type|, and after \verb|->|. A written
+type is checked and never changed. Zeno works out the types of
+variables, returns, parameters and fields wherever they are certain,
+and leaves a value dynamic where they are not; \verb|any| asks for that
+on purpose. Strict mode, from \verb|--strict| or a first line
+\verb|strict|, refuses dynamic values, and every compiled program is
+strict. Nothing changes type by itself.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Take a program from an earlier chapter, delete every type in it,
+  and run \verb|zeno check --strict|. Which types does it ask for back?
+\item Write a function with no types and call it with an int. Then call
+  it with a float too. What does strict mode say, and why?
+\item Give a field a written type, store a value of another type in
+  it, and read the message.
+\item Rewrite a \verb|list[any]| of numbers and words as a list of an
+  enum, and print each item with a \verb|match|.
+\end{enumerate}
+\end{tryit}

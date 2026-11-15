@@ -1,3 +1,330 @@
 \chapter{Sized Numbers and Bits}\label{ch-sized-numbers}
 
-To be written.
+Firmware talks to hardware, and hardware works in bits: a status
+register where each bit is a flag, a byte in a frame from a sensor, a
+16-bit value split over two registers. This chapter is about the
+operators that work on bits, and the six whole-number types that say
+how many bits a number fits in.
+
+\section{Writing bits}
+
+A whole number can be written in hexadecimal after \verb|0x|, in
+binary after \verb|0b| and in octal after \verb|0o|, and \verb|_| can
+split the digits into groups. A format shows a number the same ways
+(\hyperref[ch-text]{Text}):
+
+\begin{zeno}
+let status = 0b1010_0101
+print(status, 0xA5, 0o245)
+print(f"{status:08b} {status:02X} {status:x}")
+\end{zeno}
+
+\section{The bit operators}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Operator & Means & Example \\
+\midrule
+\verb|&| & and: a bit set in both & \verb|0b1100 & 0b1010| is \verb|0b1000| \\
+\verb!|! & or: a bit set in either & \verb!0b1100 | 0b1010! is \verb|0b1110| \\
+\verb|^| & exclusive or: set in one, not both & \verb|0b1100 ^ 0b1010| is \verb|0b0110| \\
+\verb|~| & every bit turned over & \verb|~0| is \verb|-1| \\
+\verb|<<| & shift left: times two, \verb|n| times & \verb|1 << 4| is \verb|16| \\
+\verb|>>| & shift right: halve, rounding down & \verb|0xF0 >> 4| is \verb|15| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each has an \verb|=| form: \verb|&=|, \verb!|=!, \verb|^=|,
+\verb|<<=|, \verb|>>=|. They are the everyday tools of a register:
+
+\begin{zeno}
+let READY = 1 << 0
+let ERROR = 1 << 3
+
+var flags = 0
+flags |= READY                  # set a bit
+flags |= ERROR
+print(f"{flags:08b}")
+flags &= ~ERROR                 # clear a bit
+print(f"{flags:08b}", flags & READY != 0)
+flags ^= READY                  # turn a bit over
+print(f"{flags:08b}")
+
+let reading = 0x3A7
+print((reading >> 8) & 0xFF, reading & 0xFF)  # high byte, low byte
+\end{zeno}
+
+An \verb|int| is 64 bits in two's complement, so \verb|~x| is
+\verb|-x - 1| and \verb|-1 & 0xFF| is \verb|255|.
+
+\begin{why}
+Zeno spells \verb|and|, \verb|or| and \verb|not| as words, and still
+uses symbols for bits. \verb|status & MASK| is how every datasheet,
+every C header and every Python script writes it, and a firmware
+engineer reads it faster than any word. The words left \verb|&| and
+\verb!|! free for exactly this. (Decision 2.7.)
+\end{why}
+
+The C slip, \verb|&| on two \verb|bool|s, is caught, and so is
+\verb|&&|:
+
+\begin{zeno}[fails=yes]
+let ready = true
+let safe = false
+print(ready & safe)
+\end{zeno}
+
+\subsection{Bits come before comparisons}
+
+\verb|flags & MASK == 0| means \verb|(flags & MASK) == 0|, as it
+looks. The bit operators bind tighter than the comparisons, as in
+Python:
+
+\begin{zeno}
+let flags = 0x81
+print(flags & 0x80 == 0x80, flags & 0x02 == 0)
+\end{zeno}
+
+\begin{why}
+In C, \verb|flags & MASK == 0| means \verb|flags & (MASK == 0)|, which
+is almost never what was meant and compiles without a word. C's own
+authors called it a mistake that was too late to fix. (Decision 2.7a.)
+\end{why}
+
+\subsection{Shifts are checked}
+
+A shift left that would push set bits off the top is an
+\verb|OverflowError|, as \verb|*| would be, and a shift by a count
+outside 0 to 63 is a \verb|ValueError|:
+
+\begin{zeno}[fails=yes]
+print(1 << 64)
+\end{zeno}
+
+In C, a shift by 64 or by a negative count is undefined, and
+\verb|1 << 40| on a 32-bit int is a wrong number. Each is a quiet wrong
+answer. To throw away the top bits on purpose, say so with
+\verb|wrap|, below. (Decision 2.7b.)
+
+\section{Sized whole numbers}
+
+An \verb|int| is 64 bits. Six more types say that a whole number fits
+in fewer:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Type & Bits & Holds \\
+\midrule
+\verb|u8| & 8 & 0 to 255 \\
+\verb|u16| & 16 & 0 to 65\,535 \\
+\verb|u32| & 32 & 0 to 4\,294\,967\,295 \\
+\verb|i8| & 8 & $-128$ to 127 \\
+\verb|i16| & 16 & $-32\,768$ to 32\,767 \\
+\verb|i32| & 32 & $-2\,147\,483\,648$ to 2\,147\,483\,647 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+They are for where the size is real: a byte in a frame, a field of an
+object on a board with 2\,KB of memory, a register. With the size in
+the type, the checker knows that a \verb|u8| is never handed 300, and
+a compiled program stores it in one byte.
+
+\begin{zeno}
+let level: u8 = 200
+let offset: i16 = -300
+let frame: list[u8] = [0x02, 0x41, 0xFF]
+print(level, offset, frame)
+\end{zeno}
+
+A number written out takes the size of where it goes, and one that
+does not fit is refused before the program runs:
+
+\begin{zeno}[fails=yes]
+let level: u8 = 300
+\end{zeno}
+
+\begin{why}
+The names are Rust's, and close to C's \verb|uint8_t| with the noise
+taken off. \verb|byte| and \verb|short| say less: how long is a
+\verb|short|? (Decision 2.8.)
+\end{why}
+
+\subsection{Arithmetic gives an int}
+
+Sums, products, shifts and the rest on sized numbers give an
+\verb|int|, so the middle of a calculation never overflows at 255:
+
+\begin{zeno}
+let a: u8 = 200
+let b: u8 = 100
+print(a + b, (a + b) // 2)
+\end{zeno}
+
+The one place a number may not fit is where it is stored, and there
+the program says what it wants.
+
+\begin{why}
+Wrapping at the size, as C does, makes \verb|200 + 100| into
+\verb|44|, quietly. Checking at the size, as Rust does when debugging,
+makes \verb|(a + b) // 2| fail for two numbers whose average fits.
+Refusing to mix sizes needs a conversion on every line, and people
+stop reading them. Working in ints and checking where the answer is
+stored is C's integer promotion without the silent cut at the end.
+(Decision 2.8a.)
+\end{why}
+
+\section{Putting a number back: check or wrap}
+
+There are two ways to turn an \verb|int| into a sized number, and they
+must not look alike:
+
+\begin{itemize}
+\item \verb|u8(n)| is \verb|n| if it fits, and an
+  \verb|OverflowError| if it does not.
+\item \verb|u8.wrap(n)| keeps the low 8 bits and never fails:
+  \verb|u8.wrap(300)| is 44, and \verb|i8.wrap(200)| is $-56$.
+\end{itemize}
+
+\begin{zeno}
+let a: u8 = 200
+let b: u8 = 100
+print(u8.wrap(a + b), i8.wrap(200), u16(a + b))
+\end{zeno}
+
+A checksum is \emph{meant} to lose its top bits, so it wraps:
+
+\begin{zeno}
+function checksum(data: list[u8]) -> u8 {
+    var total = 0
+    for byte in data {
+        total += byte
+    }
+    return u8.wrap(total)
+}
+print(checksum([0xFF, 0x02, 0x10]))
+\end{zeno}
+
+A length that does not fit in its field is a bug, so it is checked:
+
+\begin{zeno}[fails=yes]
+let length = 300
+let field = u8(length)
+\end{zeno}
+
+\begin{why}
+In C both are written \verb|(uint8_t)x|, and the reader has to guess
+which was meant. Here the short spelling is the safe one, and wrapping
+is a word that a reviewer can search for. (Decision 2.8b.)
+\end{why}
+
+\subsection{count += 1}
+
+\verb|count += 1| on a sized number means \verb|count = u8(count + 1)|:
+the sum is an int, and it is checked where it is stored. A counter that
+passes 255 without anybody deciding it should is a bug:
+
+\begin{zeno}[fails=yes]
+var count: u8 = 254
+count += 1
+print(count)
+count += 1
+\end{zeno}
+
+A counter that is meant to go round says so:
+\verb|count = u8.wrap(count + 1)|. (Decision 10.27.)
+
+\section{What goes where by itself}
+
+\begin{itemize}
+\item A sized number goes wherever an \verb|int| is wanted, with
+  nothing written: every \verb|u8| is an \verb|int|.
+\item An \verb|int| does not go where a \verb|u8| is wanted, and a
+  \verb|u8| does not go where a \verb|u16| is wanted. Each needs
+  \verb|u8(...)| or \verb|u16(...)|.
+\end{itemize}
+
+\begin{zeno}[fails=yes]
+let reading = 5
+let level: u8 = reading
+\end{zeno}
+
+The first cannot lose anything, so asking for it would be noise. The
+second can, so it is written. A \verb|list[u8]| is not a
+\verb|list[int]|, because lists are shared: whoever held it as a
+\verb|list[int]| could append 300. Copy it,
+\verb|[int(b) for b in frame]|.
+
+There is no \verb|u64|. An \verb|int| is 64 bits with a sign, so half
+the values of a \verb|u64| would not fit in one, and "arithmetic gives
+an \verb|int|" would stop being true. (Decision 2.8d.)
+
+\section{A worked example: a frame from a sensor}
+
+A sensor sends a frame of four bytes: a start byte \verb|0x02|, a
+16-bit reading high byte first, and a checksum of the first three.
+This program builds one and reads it back:
+
+\begin{zeno}[file=frame.zeno]
+function checksum(data: list[u8]) -> u8 {
+    var total = 0
+    for byte in data {
+        total += byte
+    }
+    return u8.wrap(total)
+}
+
+function make_frame(reading: u16) -> list[u8] {
+    let frame: list[u8] = [0x02, u8(reading >> 8), u8(reading & 0xFF)]
+    frame.append(checksum(frame))
+    return frame
+}
+
+function read_frame(frame: list[u8]) -> u16 raises ValueError {
+    if frame[0] != 0x02 {
+        raise ValueError("a frame starts with 0x02")
+    }
+    if checksum(frame.slice(0, 3)) != frame[3] {
+        raise ValueError("the checksum does not match")
+    }
+    return u16(frame[1] << 8 | frame[2])
+}
+
+let frame = make_frame(931)
+print([f"{b:02X}" for b in frame])
+print(read_frame(frame))
+
+frame[2] = 0x00
+try {
+    read_frame(frame)
+} except ValueError as e {
+    print("refused:", e.message)
+}
+\end{zeno}
+
+\begin{summary}
+Whole numbers can be written in \verb|0x|, \verb|0b| and \verb|0o|.
+\verb|&|, \verb!|!, \verb|^|, \verb|~|, \verb|<<| and \verb|>>| work
+on bits, bind tighter than comparisons, and shifts are checked.
+\verb|u8|, \verb|u16|, \verb|u32|, \verb|i8|, \verb|i16| and
+\verb|i32| say how many bits a number fits in. Arithmetic on them gives
+an \verb|int|; \verb|u8(n)| puts it back with a check, and
+\verb|u8.wrap(n)| by cutting. A sized number is an \verb|int| for free;
+the other way is written.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function bit_is_set(value: int, bit: int) -> bool|
+  and \verb|function set_bit(value: int, bit: int) -> int|.
+\item Split a \verb|u32| into four \verb|u8|s, high byte first, and
+  join them again.
+\item Count the set bits of a number with a loop, \verb|&| and
+  \verb|>>|.
+\item Change the checksum in the frame example to an exclusive or of
+  the bytes. Does it still need \verb|wrap|? Why not?
+\end{enumerate}
+\end{tryit}

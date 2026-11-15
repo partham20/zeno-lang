@@ -1,3 +1,239 @@
-\chapter{Units}\label{ch-units}
+\chapter{Numbers with Units}\label{ch-units}
 
-To be written.
+A number in firmware is almost always a measurement of something: a
+delay in milliseconds, a supply in volts, a speed in revolutions per
+minute. In most languages the unit lives only in a comment or in the
+programmer's head, and mixing two of them up is a classic bug: a delay
+of 500 meant as milliseconds and read as microseconds, or millivolts
+added to volts. In Zeno a number can carry its unit, and the unit is
+checked.
+
+\section{Writing a quantity}
+
+A number followed by a unit is a \emph{quantity}:
+
+\begin{zeno}
+let wait = 500 ms
+let supply = 3.3 V
+let speed = 1200 rpm
+print(wait, supply, speed)
+\end{zeno}
+
+The units come from a fixed list:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Measures & Units \\
+\midrule
+time & \verb|ns us ms s min h| \\
+frequency & \verb|Hz kHz MHz| \\
+voltage & \verb|uV mV V kV| \\
+current & \verb|uA mA A| \\
+resistance & \verb|ohm kohm Mohm| \\
+power & \verb|mW W kW| \\
+energy & \verb|J Wh kWh| \\
+temperature & \verb|degC|, and \verb|K| apart from it \\
+length & \verb|mm cm m km| \\
+mass & \verb|mg g kg| \\
+angle & \verb|deg|, and \verb|rad| apart from it \\
+rotation & \verb|rpm| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A word that is not on the list is refused, with some that are:
+
+\begin{zeno}[fails=yes]
+let wait = 5 sec
+\end{zeno}
+
+\begin{why}
+If any word after a number were a unit, a typing slip would quietly
+make a new one, and the bug that units are there to stop would be
+back. (Decision 1.15.)
+\end{why}
+
+\section{What a quantity can do}
+
+Quantities of the same unit add, subtract and compare as numbers do.
+A quantity times or divided by a plain number keeps its unit, and one
+quantity divided by another of the same kind is a plain number, how
+many times the one goes into the other:
+
+\begin{zeno}
+let wait = 500 ms
+print(wait + 250 ms, wait * 2, wait / 4, wait > 100 ms)
+print(wait / 1 ms, 3.3 V / 1 mV)
+\end{zeno}
+
+Dividing by one of a unit, as in \verb|wait / 1 ms|, is how a program
+takes the unit off and keeps the bare number, saying which unit the
+number is in.
+
+Quantities of different kinds never meet. Volts do not add to seconds,
+and a bare number does not add to either:
+
+\begin{zeno}[fails=yes]
+let total = 1 s + 3 V
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let supply = 3.3 V
+print(supply + 2)
+\end{zeno}
+
+\section{Units of one kind work together}
+
+Units that measure the same thing combine, and the answer is in the
+finer of the two:
+
+\begin{zeno}
+print(1 s + 500 ms, 1 s == 1000 ms, 1 h / 1 min, 1 kWh == 3600000 J)
+\end{zeno}
+
+\begin{why}
+Going from seconds to milliseconds multiplies by a whole number, which
+loses nothing. Going the other way divides, and a millisecond is not
+exactly a number of seconds in binary. So the direction that is always
+exact is the one taken without being asked. (Decision 1.15.)
+\end{why}
+
+\subsection{Changing unit}
+
+A quantity is given in another unit of its kind with a dot and the
+unit's name. It reads as "delay, in seconds":
+
+\begin{zeno}
+let delay = 1500 ms
+print(delay.s, (3 s).ms, (3300 mV).V)
+\end{zeno}
+
+\section{A unit is a type}
+
+The name of a unit is also a type. A parameter of type \verb|ms|
+takes a quantity in milliseconds, and nothing else:
+
+\begin{zeno}
+function pause(length: ms) {
+    print("pausing for", length)
+}
+pause(250 ms)
+pause((2 s).ms)
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+function pause(length: ms) {
+    print("pausing for", length)
+}
+pause(2 s)
+pause(250)
+\end{zeno}
+
+Passing \verb|2 s| where \verb|ms| is wanted is refused, and the
+message says to write \verb|.ms|.
+
+\begin{why}
+Converting by itself at a call was tried on paper and turned down.
+\verb|zeno run| would show \verb|2 s| where a compiled program, which
+knows that the parameter is \verb|ms|, would show \verb|2000 ms|: one
+program, two outputs. Writing \verb|.ms| means the same in both.
+(Decision 1.15.)
+\end{why}
+
+\section{Time}
+
+The \verb|time| module works in quantities. \verb|sleep| takes a
+time with its unit, and \verb|now()| gives the time in \verb|ms|
+since a fixed moment:
+
+\begin{zeno}
+from time import sleep, now
+
+let start = now()
+sleep(20 ms)
+let took = now() - start
+print(took >= 20 ms)
+\end{zeno}
+
+\verb|sleep(500)| is refused. Whether a bare 500 is seconds or
+milliseconds is the question every delay function in every C library
+answers differently, and here the program text answers it.
+
+\verb|now()| counts from a moment the program cannot know, such as the
+moment a board was switched on, so only the difference of two readings
+means anything.
+
+\section{What does not convert}
+
+Degrees Celsius and kelvin differ by an offset, not by a scale, so
+adding one to the other means nothing, and Zeno refuses it:
+
+\begin{zeno}[fails=yes]
+print(20 degC + 1 K)
+\end{zeno}
+
+Degrees and radians of angle have no exact factor between them, so
+they too never meet by themselves. A program changes one to the other
+when it asks, with \verb|.rad| and \verb|.deg|:
+
+\begin{zeno}
+let half_turn = 180.0 deg
+print(half_turn.rad, (half_turn.rad).deg)
+\end{zeno}
+
+The angle functions of the \verb|math| module take and give angles
+with their units (\hyperref[ch-math]{Mathematics}).
+
+\section{Showing a quantity}
+
+A quantity is shown with its unit after a space. A format applies to
+the number, and the unit stays:
+
+\begin{zeno}
+let supply = 3.3 V
+let angle = 30.456 deg
+print(f"[{supply:8.2f}] [{angle:.1f}]")
+\end{zeno}
+
+The width counts the unit too, so a column of quantities lines up on
+the right, as numbers do.
+
+\section{What units leave out}
+
+In version 0.1 there are no derived units: \verb|V * A| is not
+\verb|W|, and quantities of two kinds cannot be multiplied. A program
+that needs power works it out from the bare numbers and puts the unit
+back:
+
+\begin{zeno}
+let volts = 12.0 V
+let amps = 2.0 A
+let power = (volts / 1 V) * (amps / 1 A) * 1 W
+print(power)
+\end{zeno}
+
+There are no units of a program's own either, and \verb|sum|,
+\verb|min| and \verb|max| take plain numbers. Both are on the list in
+\hyperref[app-limits]{Appendix G}.
+
+\begin{summary}
+A number followed by a unit from Zeno's list is a quantity. Quantities
+of one kind combine, in the finer unit, and never mix with another
+kind or with bare numbers. \verb|.ms| and its like change unit;
+dividing by \verb|1 ms| gives the bare number. A unit's name is a
+type. \verb|sleep| and \verb|now| work in quantities. A format applies
+to the number, and the unit is always shown.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function blink_period(rate: Hz) -> ms|. What is the
+  bare number you have to work with, and where does the unit go back?
+\item Add \verb|250 us| to \verb|1 ms| and print the answer. Then
+  print it in microseconds and in seconds.
+\item Try \verb|sleep(3 V)| and read the message.
+\item Write a voltage divider: given a supply and two resistances in
+  \verb|kohm|, give the output voltage as a quantity in \verb|V|.
+\end{enumerate}
+\end{tryit}
