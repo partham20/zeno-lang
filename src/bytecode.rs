@@ -280,7 +280,7 @@ fn print_function(proto: &Proto, out: &mut String) {
     let mut last_line = 0;
     for (at, op) in proto.code.iter().enumerate() {
         // The source line is shown where it changes.
-        let line = proto.spans[at].line;
+        let line = proto.spans[at].line_in_file();
         let shown = if line == last_line { "   |".to_string() } else { format!("{line:>4}") };
         last_line = line;
 

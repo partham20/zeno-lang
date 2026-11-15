@@ -1,0 +1,37 @@
+# A program in several files: a small weather station.
+#
+#     zeno run examples/station/main.zeno
+#
+# This is the file the program starts in. The other files are modules,
+# and an `import` brings one in. `import sensors` reads `sensors.zeno`
+# from the folder this file is in, and its names are then written with
+# `sensors.` in front. A dot in a module's name is a folder:
+# `drivers.uart` is the file `drivers/uart.zeno`.
+import sensors
+import report
+import drivers.uart
+
+# `from` brings in single names, to be written with nothing in front.
+from sensors import Reading, Good
+
+# The imported files have already run by the time this line does: each
+# file runs once, before the file that imports it.
+let readings = [
+    Reading("temperature", 21.5, "C"),
+    Reading("humidity", 104.0, "%"),
+    Reading("pressure", 1013.2, "hPa"),
+    Reading("wind", 12.0, "km/h"),
+]
+
+var good = 0
+for reading in readings {
+    let health = sensors.check(reading)
+    # `Good` is a case of the enum `Health` in sensors.zeno.
+    if health == Good {
+        good += 1
+    }
+    drivers.uart.send(report.line(reading, health))
+}
+
+drivers.uart.send(report.summary(good, len(readings)))
+print(f"{drivers.uart.sent_bytes()} bytes sent at {drivers.uart.speed} baud")

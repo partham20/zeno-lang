@@ -5,10 +5,37 @@
 //! can report errors at the right line and column.
 
 /// Where a token starts in the source file. Both numbers start at 1.
+///
+/// A program can be several files (see `modules.rs`), and `line` says
+/// which of them too. The lines of the program's first file are numbered
+/// from 1, as the editor shows them. The second file's lines are numbered
+/// from 1,000,001, the third file's from 2,000,001, and so on. One number
+/// then says both the file and the line, and every stage that only passes
+/// a position along needs to know nothing about files.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub line: usize,
     pub col: usize,
+}
+
+/// How far apart the line numbers of two files are. A file has fewer
+/// lines than this.
+pub const LINES_A_FILE: usize = 1_000_000;
+
+/// The most files a program can have. A compiled program keeps a line
+/// number in a C `int`, and this is how many files fit in one.
+pub const MOST_FILES: usize = 2_000;
+
+impl Span {
+    /// Which file of the program this is in: 0 for the first one.
+    pub fn file(self) -> usize {
+        self.line / LINES_A_FILE
+    }
+
+    /// The line as the editor numbers it, within its own file.
+    pub fn line_in_file(self) -> usize {
+        self.line % LINES_A_FILE
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -26,6 +26,28 @@
 /* The Zeno source file, for error messages. Set at the top of main. */
 static const char *zeno_file = "";
 
+/* The other files of a program that is written in several, set at the top
+ * of main as well. A line number says which file it is in: the lines of
+ * the first file count from 1, those of the second from 1,000,001, those
+ * of the third from 2,000,001, and so on (see `Span` in src/token.rs). */
+static const char *const *zeno_modules = NULL;
+
+/* The file a line is in, and the line as that file numbers it. */
+static const char *zeno_file_of(int line) {
+    return line < 1000000 ? zeno_file : zeno_modules[line / 1000000 - 1];
+}
+
+static int zeno_line_of(int line) {
+    return line % 1000000;
+}
+
+/* The name a kind of error is printed by. A class of an imported file is
+ * `shapes.BadShape` inside the program, and prints as `BadShape`. */
+static const char *zeno_kind_shown(const char *kind) {
+    const char *dot = strrchr(kind, '.');
+    return dot == NULL ? kind : dot + 1;
+}
+
 /* ------------------------------------------------------------------- Memory
  *
  * Text built while the program runs, lists, objects and function values
@@ -653,8 +675,8 @@ static int zeno_raised_col = 0;
 /* Nobody caught it: print what `zeno run` prints, and stop. */
 __attribute__((noreturn)) static void zeno_uncaught(void) {
     fflush(stdout);
-    fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_raised->kind, zeno_raised->message, zeno_file,
-            zeno_raised_line, zeno_raised_col);
+    fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message,
+            zeno_file_of(zeno_raised_line), zeno_line_of(zeno_raised_line), zeno_raised_col);
     exit(1);
 }
 
@@ -741,7 +763,7 @@ __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *me
  * program is built, so there is very little left to report here. */
 __attribute__((noreturn)) static void zeno_bug(const char *message, int line, int col) {
     fflush(stdout);
-    fprintf(stderr, "error: %s\n --> %s:%d:%d\n", message, zeno_file, line, col);
+    fprintf(stderr, "error: %s\n --> %s:%d:%d\n", message, zeno_file_of(line), zeno_line_of(line), col);
     exit(1);
 }
 

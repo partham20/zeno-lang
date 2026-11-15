@@ -575,14 +575,16 @@ impl fmt::Display for Value {
                     .iter()
                     .map(|field| format!("{}={}", field.name, fields[&field.name].repr()))
                     .collect();
-                write!(f, "{}({})", instance.class.name, shown.join(", "))
+                // A class of an imported file prints by the name its
+                // file gave it: `Point`, not `shapes.Point`.
+                write!(f, "{}({})", crate::ast::shown_name(&instance.class.name), shown.join(", "))
             }
             Value::Enum(def) => write!(f, "<enum {}>", def.name),
             Value::CaseConstructor(def, index) => write!(f, "<case {}>", def.cases[*index].name),
-            Value::Case(case) if case.fields.is_empty() => write!(f, "{}", case.name()),
+            Value::Case(case) if case.fields.is_empty() => write!(f, "{}", crate::ast::shown_name(case.name())),
             Value::Case(case) => {
                 let fields: Vec<String> = case.fields.iter().map(Value::repr).collect();
-                write!(f, "{}({})", case.name(), fields.join(", "))
+                write!(f, "{}({})", crate::ast::shown_name(case.name()), fields.join(", "))
             }
             Value::ErrorType(kind) => write!(f, "<error {kind}>"),
             Value::Error(error) => write!(f, "{}", error.message),

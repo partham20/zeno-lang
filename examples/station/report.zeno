@@ -1,0 +1,19 @@
+# The module `report`: readings turned into lines of text.
+#
+# A module can import other modules. This one needs the types that
+# `sensors` declares, and it imports them itself: a file sees what it
+# declares and what it imports, and nothing else.
+import sensors
+from sensors import Reading, Health
+
+function line(reading: Reading, health: Health) -> str {
+    let value = f"{reading.name:<12}{reading.value:>8.1f} {reading.unit}"
+    match health {
+        case sensors.Good { return value }
+        case sensors.Suspect(why) { return f"{value}   suspect: {why}" }
+    }
+}
+
+function summary(good: int, all: int) -> str {
+    return f"{good} of {all} readings are good"
+}

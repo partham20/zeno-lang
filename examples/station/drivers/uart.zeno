@@ -1,0 +1,18 @@
+# The module `drivers.uart`: the serial port the station reports over.
+# On a real board `send` would write to the port's registers
+# (examples/driver.zeno shows that). Here it prints the line.
+
+let speed = 9600
+
+# How many bytes went out. Only this file gives it a new value: another
+# file can read `drivers.uart.sent`, and asks `send` to do the changing.
+var sent = 0
+
+function send(text: str) {
+    print(f"uart> {text}")
+    sent += len(text) + 1
+}
+
+function sent_bytes() -> int {
+    return sent
+}

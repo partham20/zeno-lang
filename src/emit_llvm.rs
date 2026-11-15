@@ -1258,13 +1258,16 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: 
         emitter.function(waiting)?;
     }
 
-    Ok(emitter.file(file))
+    Ok(emitter.file(file, &program.modules))
 }
 
 impl Emitter<'_> {
     /// Put the finished parts together.
-    fn file(mut self, file: &str) -> String {
+    fn file(mut self, file: &str, modules: &[ModuleFile]) -> String {
         let name = self.string(file);
+        // The files the program imports, for an error that stops the
+        // program in one of them.
+        let modules: Vec<String> = modules.iter().map(|module| format!("ptr {}", self.string(&module.path))).collect();
         let mut out = format!("; {file}, compiled by `zeno build --llvm`.\n");
         out += "; The runtime it calls is in the C file written beside this one.\n\n";
 
@@ -1304,6 +1307,10 @@ impl Emitter<'_> {
 
         // What lives in the runtime.
         out += "@zeno_file = external global ptr\n";
+        if !modules.is_empty() {
+            out += "@zeno_modules = external global ptr\n";
+            out += &format!("@zeno.modules = private constant [{} x ptr] [{}]\n", modules.len(), modules.join(", "));
+        }
         out += "@zeno_raised = external global ptr\n";
         if self.collector {
             out += "@zeno_stack_base = external global ptr\n";
@@ -1368,6 +1375,9 @@ impl Emitter<'_> {
             out += "  %asked = call i32 @atexit(ptr @zeno_memory_report)\n";
         }
         out += &format!("  store ptr {name}, ptr @zeno_file\n");
+        if !modules.is_empty() {
+            out += "  store ptr @zeno.modules, ptr @zeno_modules\n";
+        }
         if arguments {
             out += "  call void @zeno_program_start(i32 signext %argc, ptr %argv)\n";
         }
@@ -5365,7 +5375,7 @@ impl Emitter<'_> {
         }
         let fields = self.classes[class].fields.clone();
         // A `Stack[int]` prints as `Stack(...)`, as `zeno run` prints it.
-        let shown_as = emit_c::shown_name(class);
+        let shown_as = crate::ast::shown_name(class);
         self.side(format!("define internal ptr {name}(ptr %self)"), |emitter| {
             let mut pieces = Vec::new();
             for (index, (field, kind, _)) in fields.iter().enumerate() {
@@ -5484,15 +5494,18 @@ impl Emitter<'_> {
             emitter.end(format!("switch i64 {tag}, label %other [ {} ]", ways.join(" ")));
             for (index, (case, fields)) in cases.iter().enumerate() {
                 emitter.place(&format!("case{index}"));
+                // A case of an imported file prints by the name its
+                // file gave it: `Dot`, not `shapes.Dot`.
+                let shown_as = shown_name(case);
                 if fields.is_empty() {
-                    let text = emitter.string(case);
+                    let text = emitter.string(shown_as);
                     emitter.end(format!("ret ptr {text}"));
                     continue;
                 }
                 let ty = case_type(owner, case);
                 let mut pieces = Vec::new();
                 for (position, (_, kind)) in fields.iter().enumerate() {
-                    pieces.push(emitter.string(&if position == 0 { format!("{case}(") } else { ", ".to_string() }));
+                    pieces.push(emitter.string(&if position == 0 { format!("{shown_as}(") } else { ", ".to_string() }));
                     let at = emitter.field_at(&ty, "%self", position + 1);
                     let value = emitter.set(format!("load {}, ptr {at}", ir_type(kind, span)?));
                     pieces.push(emitter.repr(&Val::new(value, kind.clone()), span)?);
@@ -6233,8 +6246,7 @@ pub(crate) mod tests {
     use std::process::Command;
 
     fn compile(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Ordinary, false).map_err(|error| error.message)
@@ -6242,8 +6254,7 @@ pub(crate) mod tests {
 
     /// The same, as `zeno build --llvm --firmware` compiles it.
     fn compile_firmware(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Firmware, false).map_err(|error| error.message)
@@ -6308,8 +6319,7 @@ pub(crate) mod tests {
     /// program must print exactly what the interpreter and the VM print,
     /// and stop with the same error at the same place.
     pub(crate) fn same_as_interpreter(name: &str, source: &str) {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (interpreted, result) = crate::vm::run_both(&program, source);
 
         // Both kinds of build must agree with the interpreter: the
@@ -6338,8 +6348,8 @@ pub(crate) mod tests {
                 Ok(()) => assert!(finished, "the compiled program failed (firmware: {firmware}): {errors}"),
                 Err(error) => {
                     assert!(!finished, "the compiled program should have failed");
-                    let expected =
-                        format!("error: {}\n --> test.zeno:{}:{}\n", error.message, error.span.line, error.span.col);
+                    let place = crate::modules::testing::place(&program, error.span);
+                    let expected = format!("error: {}\n --> {place}\n", error.message);
                     assert_eq!(errors, expected, "\nfirmware: {firmware}\n{source}");
                 }
             }
@@ -6959,8 +6969,7 @@ entry:
     /// What a program built with `--memory` says as it ends: the numbers
     /// of its report, in order.
     fn memory_of(name: &str, source: &str) -> Option<(String, Vec<usize>)> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         let ir = emit(&program, &types, "test.zeno", Build::Ordinary, true).expect("it compiles");
@@ -7012,8 +7021,7 @@ print(work(2000))
 
     /// The same, as `zeno build --llvm --no-collector --memory` compiles it.
     fn compile_no_collector(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
         if let Some(error) = errors.first() {
             return Err(error.message.clone());

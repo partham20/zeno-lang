@@ -27,6 +27,12 @@ pub const ERROR_TYPES: &[&str] =
 /// The end of the message for an `import` of a module there is not.
 pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files` and `program`";
 
+/// True for the name of a module that comes with Zeno. Any other module
+/// is a file of the program: see `modules.rs`.
+pub fn comes_with_zeno(name: &str) -> bool {
+    matches!(name, "math" | "time" | "board" | "files" | "program")
+}
+
 /// Every built-in name and what it stands for.
 pub fn all() -> Vec<(&'static str, Value)> {
     let functions: &[Builtin] = &[

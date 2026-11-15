@@ -20,6 +20,32 @@ pub struct Program {
     /// every type to be known before the program runs.
     pub strict: bool,
     pub statements: Vec<Stmt>,
+    /// The other files of the program, when it has several: the files it
+    /// imports, and the files those import. `modules.rs` fills this in,
+    /// and puts their statements in front of this file's.
+    pub modules: Vec<ModuleFile>,
+}
+
+/// A file that the program imports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleFile {
+    /// Where the file is, as an error message names it.
+    pub path: String,
+    /// True when this file begins with the line `strict`.
+    pub strict: bool,
+}
+
+/// The name a class, an enum or a case is printed by.
+///
+/// Inside the compiler a name from an imported file has the file's module
+/// name in front, so that two files can each have a `Point`: the one in
+/// `shapes.zeno` is `shapes.Point`. A copy of a generic class has its
+/// types behind it: `Stack[int]`. A running program prints neither. It
+/// prints `Point(x=1, y=2)` and `Stack(items=[1])`, the name as the
+/// file that declares it wrote it.
+pub fn shown_name(name: &str) -> &str {
+    let name = name.split('[').next().unwrap_or(name);
+    name.rsplit('.').next().unwrap_or(name)
 }
 
 /// The statements between `{` and `}`.

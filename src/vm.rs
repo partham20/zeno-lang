@@ -1169,14 +1169,22 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
     #[test]
     fn every_example_runs_the_same() {
         for example in std::fs::read_dir("examples").expect("the examples folder") {
-            let path = example.expect("an example").path();
+            let mut path = example.expect("an example").path();
+            // A program in several files has a folder to itself, and
+            // starts in the folder's `main.zeno`.
+            if path.is_dir() {
+                path.push("main.zeno");
+            }
             let source = std::fs::read_to_string(&path).expect("the example can be read");
             // blink.zeno blinks for ever, as firmware does.
             if path.ends_with("blink.zeno") {
                 continue;
             }
-            // `run` insists that the two engines agree, which is the test.
-            run(&source);
+            let read = |path: &str| std::fs::read_to_string(path).ok();
+            let loaded = crate::modules::load(&path.to_string_lossy(), source.clone(), &read);
+            let program = loaded.program.unwrap_or_else(|errors| panic!("{}: {}", path.display(), errors[0].message));
+            // `run_both` insists that the two engines agree, which is the test.
+            let _ = super::run_both(&program, &source);
         }
     }
 }

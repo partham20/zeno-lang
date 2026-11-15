@@ -2,7 +2,8 @@
 //!
 //! The compiler stages get added here one at a time. `zeno tokens`,
 //! `zeno parse` and `zeno check` show what the lexer, the parser and the
-//! type checker find. `zeno run` checks a program and then runs it, with
+//! type checker find. `zeno join` shows a program of several files as
+//! the one program the later stages get. `zeno run` checks a program and then runs it, with
 //! the interpreter or, given `--vm`, by compiling it to bytecode for the
 //! VM. `zeno bytecode` shows that bytecode. `zeno build` compiles to C,
 //! or with `--llvm` to LLVM IR.
@@ -19,6 +20,7 @@ mod error;
 mod interpreter;
 mod ints;
 mod lexer;
+mod modules;
 mod ops;
 mod parser;
 mod printer;
@@ -44,6 +46,8 @@ fn usage() {
     println!("  zeno check <file.zeno>    check a program for mistakes without running it");
     println!("  zeno tokens <file.zeno>   show the tokens the lexer finds");
     println!("  zeno parse <file.zeno>    show the syntax tree the parser builds");
+    println!("  zeno join <file.zeno>     show the one program that the file and the");
+    println!("                            files it imports are joined into");
     println!("  zeno bytecode <file.zeno> show the bytecode `zeno run --vm` runs");
     println!("  zeno build <file.zeno>    compile to C, then to a program you can run");
     println!("  zeno --version            print the version");
@@ -85,13 +89,19 @@ fn read(path: &str) -> Option<String> {
     }
 }
 
+/// The one file of a program that is written in one file, as `report`
+/// wants it.
+fn alone(path: &str, source: &str) -> [modules::File; 1] {
+    [modules::File { path: path.to_string(), source: source.to_string() }]
+}
+
 /// Run the lexer, printing any errors it finds.
 fn lex(path: &str, source: &str) -> Option<Vec<token::Token>> {
     match lexer::lex(source) {
         Ok(tokens) => Some(tokens),
         Err(errors) => {
             for error in &errors {
-                report(path, source, error);
+                report(&alone(path, source), error);
             }
             None
         }
@@ -109,35 +119,59 @@ fn tokens(path: &str) -> Option<()> {
     Some(())
 }
 
-/// Run the lexer and the parser, printing any errors they find.
-fn load(path: &str) -> Option<(String, ast::Program)> {
+/// Read a whole program: the file, the files it imports and the files
+/// those import, joined into one program. Any errors found on the way
+/// are printed. The files come back too, because an error found later
+/// is shown with the line of the file it is in.
+fn load(path: &str) -> Option<(Vec<modules::File>, ast::Program)> {
     let source = read(path)?;
-    let tokens = lex(path, &source)?;
-    match parser::parse(tokens) {
-        Ok(program) => Some((source, program)),
-        Err(error) => {
-            report(path, &source, &error);
+    let loaded = modules::load(path, source, &|path| fs::read_to_string(path).ok());
+    match loaded.program {
+        Ok(program) => Some((loaded.files, program)),
+        Err(errors) => {
+            for error in &errors {
+                report(&loaded.files, error);
+            }
             None
         }
     }
 }
 
-/// `zeno parse <file>`: print the syntax tree.
+/// `zeno parse <file>`: print the syntax tree of that one file. Its
+/// imports are shown as the lines they are, and not followed.
 fn parse(path: &str) -> Option<()> {
+    let source = read(path)?;
+    let tokens = lex(path, &source)?;
+    match parser::parse(tokens) {
+        Ok(program) => {
+            printer::print(&program).lines().for_each(value::print_line);
+            Some(())
+        }
+        Err(error) => {
+            report(&alone(path, &source), &error);
+            None
+        }
+    }
+}
+
+/// `zeno join <file>`: print the program as the stages after the parser
+/// get it, with the files it imports joined to it and their names made
+/// whole (`modules.rs`).
+fn join(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
     printer::print(&program).lines().for_each(value::print_line);
     Some(())
 }
 
 /// `zeno check <file>`: run the type checker, printing every error it finds.
-fn check(path: &str, rules: checker::Rules) -> Option<(String, ast::Program)> {
-    let (source, program) = load(path)?;
+fn check(path: &str, rules: checker::Rules) -> Option<(Vec<modules::File>, ast::Program)> {
+    let (files, program) = load(path)?;
     let errors = checker::check_by(&program, rules).0;
     for error in &errors {
-        report(path, &source, error);
+        report(&files, error);
     }
     if errors.is_empty() {
-        Some((source, program))
+        Some((files, program))
     } else {
         let s = if errors.len() == 1 { "" } else { "s" };
         eprintln!("{} error{s} found. Nothing was run.", errors.len());
@@ -156,7 +190,7 @@ fn bytecode(path: &str) -> Option<()> {
 ///
 /// There are two engines to run it with. Both give the same result.
 fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<()> {
-    let (source, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
+    let (files, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
     // The words after the file are the program's (`program.arguments()`),
     // and what it reads with `input()` is the keyboard.
     let outside = value::Outside::started_with(arguments);
@@ -167,7 +201,7 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<
     match result {
         Ok(()) => Some(()),
         Err(error) => {
-            report(path, &source, &error);
+            report(&files, &error);
             None
         }
     }
@@ -183,10 +217,10 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.
-    let (source, program) = load(path)?;
+    let (files, program) = load(path)?;
     let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
-        report(path, &source, error);
+        report(&files, error);
     }
     if !errors.is_empty() {
         let s = if errors.len() == 1 { "" } else { "s" };
@@ -197,7 +231,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     let c = match emit_c::emit(&program, &types, path, kind) {
         Ok(c) => c,
         Err(error) => {
-            report(path, &source, &error);
+            report(&files, &error);
             return None;
         }
     };
@@ -242,10 +276,10 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
 /// holds the program. The C file is the runtime the program calls for
 /// text, printing and memory, which a C build has pasted in front of it.
 fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
-    let (source, program) = load(path)?;
+    let (files, program) = load(path)?;
     let (errors, types) = checker::check_by(&program, kind.rules());
     for error in &errors {
-        report(path, &source, error);
+        report(&files, error);
     }
     if !errors.is_empty() {
         let s = if errors.len() == 1 { "" } else { "s" };
@@ -256,7 +290,7 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
     let ir = match emit_llvm::emit(&program, &types, path, kind, memory_report) {
         Ok(ir) => ir,
         Err(error) => {
-            report(path, &source, &error);
+            report(&files, &error);
             return None;
         }
     };
@@ -310,9 +344,13 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
 ///  3 | let x = 1;
 ///    |          ^
 /// ```
-fn report(path: &str, source: &str, error: &error::Error) {
-    let (line, col) = (error.span.line, error.span.col);
-    let text = source.lines().nth(line - 1).unwrap_or("");
+///
+/// The position says which file of the program it is in (`Span::file`),
+/// and the line shown is that file's.
+fn report(files: &[modules::File], error: &error::Error) {
+    let file = &files[error.span.file().min(files.len() - 1)];
+    let (path, line, col) = (&file.path, error.span.line_in_file(), error.span.col);
+    let text = file.source.lines().nth(line.saturating_sub(1)).unwrap_or("");
     let gutter = line.to_string().len();
 
     eprintln!("error: {}", error.message);
@@ -381,7 +419,7 @@ fn main() -> ExitCode {
             println!("zeno {VERSION}");
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("tokens" | "parse" | "bytecode" | "check" | "run")) => {
+        Some(cmd @ ("tokens" | "parse" | "join" | "bytecode" | "check" | "run")) => {
             let Some(path) = args.get(1) else {
                 eprintln!("zeno: `{cmd}` needs a file, e.g. `zeno {cmd} examples/hello.zeno`");
                 return ExitCode::FAILURE;
@@ -389,6 +427,7 @@ fn main() -> ExitCode {
             let done = match cmd {
                 "tokens" => tokens(path),
                 "parse" => parse(path),
+                "join" => join(path),
                 "bytecode" => bytecode(path),
                 // `check --no-collector` checks as that build would:
                 // every type known, and every list and object owned.

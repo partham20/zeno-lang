@@ -290,6 +290,13 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
     }
     c += "#ifdef ZENO_MEMORY_REPORT\n    atexit(zeno_memory_report);\n#endif\n";
     c += &format!("    zeno_file = {};\n", c_string(file));
+    if !program.modules.is_empty() {
+        // The files the program imports, for an error that stops the
+        // program in one of them.
+        let names: Vec<String> = program.modules.iter().map(|module| c_string(&module.path)).collect();
+        c += &format!("    static const char *const modules[] = {{{}}};\n", names.join(", "));
+        c += "    zeno_modules = modules;\n";
+    }
     if emitter.arguments {
         c += "    zeno_program_start(argc, argv);\n";
     }
@@ -849,11 +856,26 @@ pub fn none_in_a_slot(span: Span) -> Error {
     )
 }
 
+/// The error for two classes or enums that C would know by one name.
+fn same_in_c(zeno_name: &str, c_name: &str, span: Span) -> Error {
+    Error::new(
+        format!(
+            "`{zeno_name}` and another class or enum of this program would both be called `z_{c_name}` in C. \
+             A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. So does a class \
+             of an imported file: `Point` of the module `shapes` becomes `z_shapes_Point`. \
+             Rename one of them, or build with `--llvm`"
+        ),
+        span,
+    )
+}
+
 /// The error for a part of Zeno this stage does not handle yet.
-/// A Zeno name as it can be written inside a C name. Only the copy of a
-/// generic needs anything done: `Stack[int]` becomes `Stack_int`, and
-/// `Pair[int, list[str]]` becomes `Pair_int_list_str`. Each run of
-/// characters that C does not allow in a name turns into one `_`.
+/// A Zeno name as it can be written inside a C name. Two kinds of name
+/// need something done. The copy of a generic: `Stack[int]` becomes
+/// `Stack_int`, and `Pair[int, list[str]]` becomes `Pair_int_list_str`.
+/// And a name from an imported file: `shapes.area` becomes `shapes_area`.
+/// Each run of characters that C does not allow in a name turns into
+/// one `_`.
 pub fn ident(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
@@ -866,12 +888,6 @@ pub fn ident(name: &str) -> String {
     out.trim_end_matches('_').to_string()
 }
 
-/// The name a class is shown by. A copy of a generic class is shown as
-/// the class it is a copy of: a `Stack[int]` prints as `Stack(items=[1])`,
-/// which is what `zeno run` prints.
-pub fn shown_name(name: &str) -> &str {
-    name.split('[').next().unwrap_or(name)
-}
 
 fn cannot(what: impl AsRef<str>, span: Span) -> Error {
     Error::new(
@@ -1559,15 +1575,7 @@ impl Emitter<'_> {
         let (name, shown_as) = (&ident(&decl.name), shown_name(&decl.name));
         if self.used.contains_key(name) {
             // `Stack[int]` and a class called `Stack_int`, in one program.
-            return Err(Error::new(
-                format!(
-                    "`{}` and another class of this program would both be called `z_{name}` in C. \
-                     A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. \
-                     Rename one of them, or build with `--llvm`",
-                    decl.name
-                ),
-                span,
-            ));
+            return Err(same_in_c(&decl.name, name, span));
         }
         let c_name = self.c_name(name);
 
@@ -1677,6 +1685,12 @@ impl Emitter<'_> {
             return Err(cannot(format!("the enum `{}`", decl.name), span));
         };
         let name = &decl.name;
+        // The enum's name as part of a C name. An enum of an imported
+        // file is `shapes.Shape` to Zeno and `shapes_Shape` to C.
+        let id = &ident(name);
+        if self.used.contains_key(id) {
+            return Err(same_in_c(name, id, span));
+        }
         let c_name = self.c_name(name);
         self.typedefs.push(format!("typedef struct {c_name} {c_name};"));
 
@@ -1699,8 +1713,8 @@ impl Emitter<'_> {
             if fields.is_empty() {
                 // A case that carries nothing needs no memory of its own:
                 // one fixed value stands for every use of it.
-                bare_cases.push(format!("static {c_name} zeno_case_{name}_{} = {{.tag = {index}}};", case.name));
-                show += &format!("    case {index}: return {};\n", c_string(&case.name));
+                bare_cases.push(format!("static {c_name} zeno_case_{id}_{} = {{.tag = {index}}};", ident(&case.name)));
+                show += &format!("    case {index}: return {};\n", c_string(shown_name(&case.name)));
             } else {
                 let mut inside = String::new();
                 let mut params = Vec::new();
@@ -1721,13 +1735,13 @@ impl Emitter<'_> {
                     if owned[position] || (texts && is_text(kind)) {
                         frees += &format!(" {}", self.drops.code(kind, &format!("self->{place}")));
                     }
-                    shown.push(if position == 0 { c_string(&format!("{}(", case.name)) } else { c_string(", ") });
+                    shown.push(if position == 0 { c_string(&format!("{}(", shown_name(&case.name))) } else { c_string(", ") });
                     shown.push(self.repr(&Val::plain(format!("self->{place}"), kind.clone()), span)?);
                     tests.push(self.equal(kind, &format!("a->{place}"), &format!("b->{place}"), span)?);
                 }
                 members += &format!("        struct {{ {inside}}} c{index};\n");
                 self.helper(
-                    format!("static {c_name} *zeno_new_{name}_{}({})", case.name, params.join(", ")),
+                    format!("static {c_name} *zeno_new_{id}_{}({})", ident(&case.name), params.join(", ")),
                     format!(
                         // Only as much as this case carries: the
                         // union is as big as the biggest case, and most
@@ -1750,7 +1764,7 @@ impl Emitter<'_> {
         }
         if self.drops.owned.contains(name) {
             self.helper(
-                format!("static void zeno_drop_{name}({c_name} *self)"),
+                format!("static void zeno_drop_{id}({c_name} *self)"),
                 format!("{drop}    default: break;\n    }}\n"),
             );
         }
@@ -1763,11 +1777,11 @@ impl Emitter<'_> {
         self.structs.extend(bare_cases);
 
         self.helper(
-            format!("static const char *zeno_show_{name}({c_name} *self)"),
+            format!("static const char *zeno_show_{id}({c_name} *self)"),
             format!("{show}    }}\n    return \"\";\n"),
         );
         self.helper(
-            format!("static bool zeno_same_{name}({c_name} *a, {c_name} *b)"),
+            format!("static bool zeno_same_{id}({c_name} *a, {c_name} *b)"),
             format!("{same}    }}\n    return true;\n"),
         );
         self.enums.insert(name.clone(), EnumEntry { cases, takes });
@@ -2188,16 +2202,16 @@ impl Emitter<'_> {
                         _ => (val.code, "Error".to_string()),
                     },
                     Kind::Class(name) => {
-                        let name = name.clone();
+                        let (name, id) = (name.clone(), ident(name));
                         let object = self.temp(val, span)?.code;
                         // Showing the object builds text.
                         self.built = !self.collector;
                         let error = match self.collector {
-                            true => format!("zeno_error_new({}, zeno_show_{name}({object}), {object})", c_string(&name)),
+                            true => format!("zeno_error_new({}, zeno_show_{id}({object}), {object})", c_string(&name)),
                             // The `except` that catches it frees the
                             // object, and the text the object keeps.
                             false => format!(
-                                "zeno_error_of({}, zeno_show_{name}({object}), {object}, zeno_drop_any_{name})",
+                                "zeno_error_of({}, zeno_show_{id}({object}), {object}, zeno_drop_any_{id})",
                                 c_string(&name)
                             ),
                         };
@@ -2230,9 +2244,9 @@ impl Emitter<'_> {
                     // An object of a class can be raised too. It travels
                     // inside an error value whose kind is the class's name.
                     Kind::Class(name) => {
-                        let name = name.clone();
+                        let (name, id) = (name.clone(), ident(name));
                         let object = self.temp(val, span)?.code;
-                        format!("zeno_error_new({}, zeno_show_{name}({object}), {object})", c_string(&name))
+                        format!("zeno_error_new({}, zeno_show_{id}({object}), {object})", c_string(&name))
                     }
                     _ => return Err(cannot("`raise` with anything but an error or an object", span)),
                 };
@@ -3191,7 +3205,7 @@ impl Emitter<'_> {
                 if !self.enums[&owner].cases[index].1.is_empty() {
                     return Err(cannot("an enum case that carries values, used without them", span));
                 }
-                Ok(Val::plain(format!("(&zeno_case_{owner}_{name})"), Kind::Enum(owner)))
+                Ok(Val::plain(format!("(&zeno_case_{}_{})", ident(&owner), ident(name)), Kind::Enum(owner)))
             }
             ExprKind::Name(name)
                 if self.lookup(name).is_none()
@@ -4512,7 +4526,8 @@ impl Emitter<'_> {
         // takes those over.
         let takes = self.enums[owner].takes[index].clone();
         let slots: Vec<_> = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &takes, &[], None, args, span)?;
+        let c_function = format!("zeno_new_{}_{}", ident(owner), ident(&case));
+        let (call, vals) = self.call_c(&c_function, &slots, &takes, &[], None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Enum(owner.to_string()), &parts))
     }
@@ -4857,7 +4872,7 @@ impl Emitter<'_> {
                 if self.enums.contains_key(owner) && self.cases.get(name).is_some_and(|(of, _)| of == owner) {
                     let index = self.cases[name].1;
                     if self.enums[owner].cases[index].1.is_empty() {
-                        return Ok(Val::plain(format!("(&zeno_case_{owner}_{name})"), Kind::Enum(owner.clone())));
+                        return Ok(Val::plain(format!("(&zeno_case_{}_{})", ident(owner), ident(name)), Kind::Enum(owner.clone())));
                     }
                 }
             }
@@ -5556,11 +5571,10 @@ pub(crate) mod tests {
     use std::process::Command;
 
     fn compile(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         if let Some(error) = errors.first() {
-            let line = source.lines().nth(error.span.line - 1).unwrap_or_default();
+            let line = source.lines().nth(error.span.line.saturating_sub(1)).unwrap_or_default();
             panic!("the test program has mistakes: {:?}\nline {}: {line}", error.message, error.span.line);
         }
         emit(&program, &types, "test.zeno", Build::Ordinary).map_err(|error| error.message)
@@ -5568,8 +5582,7 @@ pub(crate) mod tests {
 
     /// The same, as `zeno build --firmware` compiles it.
     fn compile_firmware(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Firmware).map_err(|error| error.message)
@@ -5602,8 +5615,7 @@ pub(crate) mod tests {
     /// The heart of these tests: the compiled program must print exactly
     /// what the interpreter prints.
     fn same_as_interpreter(name: &str, source: &str) {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (interpreted, result) = crate::vm::run_both(&program, source);
 
         // Both kinds of build must agree with the interpreter: the
@@ -5635,8 +5647,8 @@ pub(crate) mod tests {
                 // Both must stop with the same error, at the same place.
                 Err(error) => {
                     assert!(!finished, "the compiled program should have failed");
-                    let expected =
-                        format!("error: {}\n --> test.zeno:{}:{}\n", error.message, error.span.line, error.span.col);
+                    let place = crate::modules::testing::place(&program, error.span);
+                    let expected = format!("error: {}\n --> {place}\n", error.message);
                     assert_eq!(errors, expected, "\nfirmware: {firmware}\n{source}");
                 }
             }
@@ -6765,8 +6777,7 @@ print("after")
     }
 
     fn interpreted(source: &str) -> String {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (printed, result) = crate::vm::run_both(&program, source);
         assert!(result.is_ok(), "the interpreter failed");
         printed
@@ -7360,8 +7371,7 @@ function main() -> int raises Refused {
 
     /// The same, as `zeno build --no-collector` compiles it.
     fn compile_no_collector(source: &str) -> Result<String, String> {
-        let tokens = crate::lexer::lex(source).expect("the test program lexes");
-        let program = crate::parser::parse(tokens).expect("the test program parses");
+        let program = crate::modules::testing::program(source);
         let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
         if let Some(error) = errors.first() {
             // Who owns what is the checker's to say in this build.
@@ -7380,11 +7390,10 @@ function main() -> int raises Refused {
             Ok(c) => c,
             Err(message) => {
                 // Say where, when it is the checker that refused.
-                let program = crate::parser::parse(crate::lexer::lex(source).unwrap()).unwrap();
+                let program = crate::modules::testing::program(source);
                 let (errors, _) = crate::checker::check_by(&program, Build::NoCollector.rules());
-                let line = errors.first().map_or(0, |error| error.span.line);
-                let text = source.lines().nth(line.saturating_sub(1)).unwrap_or_default();
-                panic!("the build with no collector refused this: {message}\nline {line}: {text}")
+                let place = errors.first().map(|error| crate::modules::testing::place(&program, error.span));
+                panic!("the build with no collector refused this: {message}\nat {}", place.unwrap_or_default())
             }
         };
         // The point of the build: none of this is in the C file.
@@ -10404,6 +10413,218 @@ print(lookups)
 print(table.get("key99"))
 "#;
 
+    /// A program in three files. `test.zeno` imports `shapes` and
+    /// `drivers.uart`, and `drivers/uart.zeno` imports `shapes` too.
+    const MODULES: &str = r#"import shapes
+import drivers.uart
+from shapes import Point, Circle, Shape
+
+function describe(shape: Shape) -> str {
+    match shape {
+        case shapes.Dot { return "a dot" }
+        case Circle(r) { return f"a circle of {r}" }
+        case Shape.Rect(w, h) { return f"a rect {w} by {h}" }
+    }
+}
+
+let p = Point(3.0, 4.0)
+let q: shapes.Point = shapes.Point(6.0, 8.0)
+print(p, p.far(), q.far(), shapes.origin, shapes.SIDES)
+let all: list[Shape] = [shapes.Shape.Dot, Circle(1.0), shapes.Rect(2.0, 3.0), shapes.square(2.0)]
+for shape in all {
+    print(describe(shape), shapes.area(shape), shape)
+}
+print(shapes.count(), drivers.uart.send("hello"), drivers.uart.speed, drivers.uart.centre())
+try {
+    print(shapes.check(2.5))
+    print(shapes.check(-1.0))
+} except shapes.BadShape as bad {
+    print("caught", bad.why)
+}
+let area = 5
+print(area, [shapes.area(s) for s in all if s != shapes.Dot], shapes.count())
+==> shapes.zeno
+import math
+
+const SIDES = 4
+let origin = Point(0.0, 0.0)
+var made = 0
+print("shapes is ready")
+
+class Point {
+    x: float
+    y: float
+
+    function far(self) -> float {
+        return math.sqrt(self.x * self.x + self.y * self.y)
+    }
+}
+
+enum Shape {
+    Dot
+    Circle(radius: float)
+    Rect(w: float, h: float)
+}
+
+class BadShape {
+    why: str
+}
+
+function area(shape: Shape) -> float {
+    made += 1
+    match shape {
+        case Dot { return 0.0 }
+        case Circle(r) { return math.pi * r * r }
+        case Rect(w, h) { return w * h }
+    }
+}
+
+function check(side: float) -> float raises BadShape {
+    if side < 0.0 {
+        raise BadShape("a side cannot be negative")
+    }
+    return side
+}
+
+function count() -> int {
+    return made
+}
+
+function square(side: float) -> Shape {
+    return Rect(side, side)
+}
+==> drivers/uart.zeno
+import shapes
+
+let speed = 9600
+print("uart is ready")
+
+function send(text: str) -> int {
+    print(f"uart at {speed}: {text}")
+    return len(text)
+}
+
+function centre() -> shapes.Point {
+    return shapes.Point(shapes.origin.x, shapes.origin.y)
+}
+"#;
+
+    /// Generic classes and functions that live in an imported file.
+    const MODULES_GENERIC: &str = r#"import stack
+from stack import Stack, first
+
+let s: Stack[int] = Stack([])
+s.push(4)
+s.push(9)
+print(s, s.top(), first(["a", "b"]), stack.first([1.5]), stack.over(2), stack.over(9))
+let names: stack.Stack[str] = Stack([])
+names.push("x")
+print(names, names.top())
+let empty: Stack[float] = Stack([])
+try {
+    print(empty.top())
+} except stack.Empty as e {
+    print("empty:", e.why)
+}
+print(stack.ratio(7, 2))
+==> stack.zeno
+class Stack[T] {
+    items: list[T]
+
+    function push(self, item: T) {
+        self.items.append(item)
+    }
+
+    function top(self) -> T raises Empty {
+        if len(self.items) == 0 {
+            raise Empty("nothing on the stack")
+        }
+        return self.items[len(self.items) - 1]
+    }
+}
+
+class Empty {
+    why: str
+}
+
+function first[T](items: list[T]) -> T {
+    return items[0]
+}
+
+let limit = 3
+
+function over(n: int) -> bool {
+    return n > limit
+}
+
+function ratio(a: int, b: int) -> int {
+    return a // b
+}
+"#;
+
+    #[test]
+    fn a_program_in_several_files_is_the_same_in_every_build() {
+        // The interpreter, the VM, and the C and LLVM builds of all three
+        // kinds. The builds with no collector free every block.
+        no_collector_as_interpreter("modules", MODULES);
+        no_collector_as_interpreter("modules-generic", MODULES_GENERIC);
+        // The example, which is four files in two folders.
+        let station = [
+            include_str!("../examples/station/main.zeno"),
+            "==> sensors.zeno\n",
+            include_str!("../examples/station/sensors.zeno"),
+            "==> report.zeno\n",
+            include_str!("../examples/station/report.zeno"),
+            "==> drivers/uart.zeno\n",
+            include_str!("../examples/station/drivers/uart.zeno"),
+        ];
+        no_collector_as_interpreter("station", &station.concat());
+        // A fault inside an imported file stops the program in every
+        // build with the same words, and names that file and its line.
+        same_as_interpreter("modules-fault", &format!("{MODULES_GENERIC}==> more.zeno\n").replace(
+            "print(stack.ratio(7, 2))\n",
+            "print(stack.ratio(7, 2))\nprint(stack.ratio(1, 0))\n",
+        ));
+        // So does an error that nothing catches. It is named as its own
+        // file names it: `Empty`, not `stack.Empty`.
+        same_as_interpreter(
+            "modules-uncaught",
+            "import stack\nlet none_yet: stack.Stack[int] = stack.Stack([])\nprint(none_yet.top())\n\
+             ==> stack.zeno\n\
+             class Stack[T] {\n    items: list[T]\n\n    function top(self) -> T raises Empty {\n        \
+             if len(self.items) == 0 {\n            raise Empty(\"nothing on the stack\")\n        }\n        \
+             return self.items[0]\n    }\n}\n\nclass Empty {\n    why: str\n}\n",
+        );
+    }
+
+    #[test]
+    fn the_c_for_an_imported_file() {
+        let c = compile(MODULES).expect("it compiles");
+        // A name of an imported file has the module's name in it.
+        assert!(c.contains("static double z_shapes_area(z_shapes_Shape *"), "{c}");
+        assert!(c.contains("static int64_t z_drivers_uart_send(const char *z_text)"), "{c}");
+        assert!(c.contains("static int64_t z_shapes_made;"), "{c}");
+        // What the program prints is the name the file gave it.
+        assert!(c.contains("case 0: return \"Dot\";"), "{c}");
+        assert!(c.contains("zeno_join(5, \"Point(x=\", "), "{c}");
+        // The files, for an error that stops the program in one of them.
+        assert!(c.contains("    zeno_file = \"test.zeno\";\n    static const char *const modules[] = {\"shapes.zeno\", \"drivers/uart.zeno\"};\n    zeno_modules = modules;\n"), "{c}");
+        // A position in the second file has its line counted on from
+        // 1,000,000: this is line 31 of `stack.zeno`.
+        let generic = compile(MODULES_GENERIC).expect("it compiles");
+        assert!(generic.contains("zeno_floordiv(z_a, z_b, 1000031, 12)"), "{generic}");
+        // A program in one file has none of this.
+        assert!(!compile("print(1)").expect("it compiles").contains("zeno_modules = modules;"));
+        // Two classes that C would know by one name are refused.
+        assert_eq!(
+            compile("import shapes\nclass shapes_Point {\n    y: int\n}\nprint(shapes.Point(1), shapes_Point(2))\n==> shapes.zeno\nclass Point {\n    x: int\n}\n").unwrap_err(),
+            "`shapes_Point` and another class or enum of this program would both be called `z_shapes_Point` in C. \
+             A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. So does a class \
+             of an imported file: `Point` of the module `shapes` becomes `z_shapes_Point`. \
+             Rename one of them, or build with `--llvm`"
+        );
+    }
+
     #[test]
     fn a_dict_is_the_same_in_every_build() {
         // Each of these also checks that a build with no collector frees
@@ -11917,8 +12138,9 @@ print(d.value)
         let refused = |source: &str| compile(source).err().unwrap_or_else(|| "it compiled".to_string());
         assert_eq!(
             refused("class Stack[T] {\n    items: list[T]\n}\nclass Stack_int {\n    n: int\n}\nprint(Stack([1]), Stack_int(2))\n"),
-            "`Stack_int` and another class of this program would both be called `z_Stack_int` in C. \
-             A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. \
+            "`Stack_int` and another class or enum of this program would both be called `z_Stack_int` in C. \
+             A copy of a generic class gets such a name: `Stack[int]` becomes `z_Stack_int`. So does a class \
+             of an imported file: `Point` of the module `shapes` becomes `z_shapes_Point`. \
              Rename one of them, or build with `--llvm`"
         );
         assert_eq!(

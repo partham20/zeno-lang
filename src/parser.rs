@@ -37,7 +37,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
         statements.push(parser.statement()?);
         parser.end_of_statement()?;
     }
-    Ok(Program { strict, statements })
+    Ok(Program { strict, statements, modules: Vec::new() })
 }
 
 struct Parser {
@@ -108,6 +108,19 @@ impl Parser {
             }
             _ => self.unexpected(what),
         }
+    }
+
+    /// A name that may say which module it is from: `Point`, or
+    /// `shapes.Point`. This is for the places where a type, an enum case
+    /// or an error is named. In an expression `shapes.Point` is read as
+    /// any other `a.b`.
+    fn name_in_module(&mut self, what: &str) -> Result<String, Error> {
+        let mut name = self.name(what)?;
+        while self.check(TokenKind::Dot) && matches!(self.peek_at(1), TokenKind::Ident(_)) {
+            self.advance();
+            name = format!("{name}.{}", self.name(what)?);
+        }
+        Ok(name)
     }
 
     fn skip_newlines(&mut self) {
@@ -363,7 +376,12 @@ impl Parser {
 
         match self.advance() {
             TokenKind::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
-            TokenKind::Ident(name) => {
+            TokenKind::Ident(mut name) => {
+                // `case shapes.Circle(r)`: a case of an imported file.
+                while self.check(TokenKind::Dot) && matches!(self.peek_at(1), TokenKind::Ident(_)) {
+                    self.advance();
+                    name = format!("{name}.{}", self.name("a name")?);
+                }
                 if !self.eat(TokenKind::LParen) {
                     return Ok(Pattern::Name(name));
                 }
@@ -404,7 +422,7 @@ impl Parser {
                 break;
             }
             let error = match self.peek() {
-                TokenKind::Ident(_) => Some(self.name("an error type")?),
+                TokenKind::Ident(_) => Some(self.name_in_module("an error type")?),
                 _ => None,
             };
             let binding = if self.eat(TokenKind::As) {
@@ -492,9 +510,9 @@ impl Parser {
 
         let mut raises = Vec::new();
         if self.eat(TokenKind::Raises) {
-            raises.push(self.name("an error type")?);
+            raises.push(self.name_in_module("an error type")?);
             while self.eat(TokenKind::Comma) {
-                raises.push(self.name("an error type")?);
+                raises.push(self.name_in_module("an error type")?);
             }
         }
 
@@ -591,7 +609,7 @@ impl Parser {
             let returns = if self.eat(TokenKind::Arrow) { Some(Box::new(self.type_()?)) } else { None };
             Type::Function { params, returns }
         } else {
-            let name = self.name("a type")?;
+            let name = self.name_in_module("a type")?;
             // `borrow` was the word for a parameter that only looks.
             // Every parameter only looks now, so the word is gone.
             if name == "borrow" && matches!(self.peek(), TokenKind::Ident(_) | TokenKind::Function) {
@@ -1519,6 +1537,26 @@ mod tests {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);
             }
         }
+    }
+
+    #[test]
+    fn a_name_can_say_which_module_it_is_from() {
+        // Where a type, an enum case or an error is named, `a.b` is one
+        // name. `modules.rs` checks that there is such a module.
+        assert_eq!(
+            tree(
+                "let p: shapes.Point or none = none\n\
+                 function load(at: drivers.spi.Port) -> list[shapes.Point] raises shapes.Bad, IoError { return [] }\n\
+                 match s {\n    case shapes.Dot { }\n    case shapes.Circle(r) { }\n}\n\
+                 try { } except shapes.Bad as bad { }"
+            ),
+            "let p: shapes.Point or none = none\n\
+             function load(at: drivers.spi.Port) -> list[shapes.Point] raises shapes.Bad, IoError\n    return []\n\
+             match s\n    case shapes.Dot\n    case shapes.Circle(r)\n\
+             try\nexcept shapes.Bad as bad\n"
+        );
+        // In an expression it stays what it always was: a field.
+        assert_eq!(expr("shapes.area(s)"), "shapes.area(s)");
     }
 
     #[test]

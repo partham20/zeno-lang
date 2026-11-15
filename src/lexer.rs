@@ -13,7 +13,15 @@ use crate::token::{keyword, Span, Token, TokenKind};
 /// On success the list always ends with `Eof`. On failure you get every error
 /// found, not just the first, so the programmer can fix them in one go.
 pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Error>> {
+    lex_in(source, 0)
+}
+
+/// The same for one file of a program that has several. `file` is the
+/// file's number, counted from 0, and it goes into every line number:
+/// see `Span`.
+pub fn lex_in(source: &str, file: usize) -> Result<Vec<Token>, Vec<Error>> {
     let mut lexer = Lexer::new(source);
+    lexer.line += file * crate::token::LINES_A_FILE;
     lexer.run();
     if lexer.errors.is_empty() {
         Ok(lexer.tokens)

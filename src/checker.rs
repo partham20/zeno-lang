@@ -401,7 +401,12 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
 
 /// `check_with_types`, by the rules given.
 pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
-    let strict = rules.strict || program.strict;
+    let strict = rules.strict;
+    // A file that begins with the line `strict` asks for every type in
+    // that file to be known. `--strict` and `zeno build` ask it of all
+    // the files of the program.
+    let strict_files: Vec<bool> =
+        std::iter::once(program.strict).chain(program.modules.iter().map(|module| module.strict)).collect();
     let one_owner = rules.one_owner;
 
     // Parameters and fields with no type written are worked out from how
@@ -416,6 +421,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     let mut settled = false;
     for _ in 0..MAX_ROUNDS {
         let mut checker = Checker::new(strict, false, known.clone(), open.clone());
+        checker.strict_files = strict_files.clone();
         checker.one_owner = one_owner;
         checker.firmware = rules.firmware;
         checker.run(program);
@@ -451,12 +457,15 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     }
 
     let mut checker = Checker::new(strict, true, known, open);
+    checker.strict_files = strict_files;
     checker.one_owner = one_owner;
     checker.firmware = rules.firmware;
     checker.types.one_owner = one_owner;
     checker.known_origins = origins;
     checker.run(program);
     let mut errors = checker.errors;
+    // Line numbers count on from one file to the next (see `Span`), so
+    // this puts the mistakes of each file together, the first file's first.
     errors.sort_by_key(|error| (error.span.line, error.span.col));
     // Two copies of a generic can find the same mistake. Once is enough.
     errors.dedup_by(|a, b| a.span == b.span && a.message == b.message);
@@ -1432,6 +1441,9 @@ struct Checker {
     /// outside itself. See `Capture`.
     captured: Vec<Capture>,
     strict: bool,
+    /// For each file of the program, whether it begins with the line
+    /// `strict`. See `strict_at`.
+    strict_files: Vec<bool>,
     /// Does every list and object have one owner, said or not? True for
     /// a build with no collector. See `Rules`.
     one_owner: bool,
@@ -1539,6 +1551,7 @@ impl Checker {
     fn new(strict: bool, last_round: bool, known: HashMap<SlotId, Key>, open: HashSet<SlotId>) -> Checker {
         Checker {
             strict,
+            strict_files: Vec::new(),
             one_owner: false,
             firmware: false,
             last_round,
@@ -1568,6 +1581,13 @@ impl Checker {
             copy_notes: Vec::new(),
             captured: Vec::new(),
         }
+    }
+
+    /// True if every type has to be known at this place before the
+    /// program runs: the whole program is checked that way, or the file
+    /// this place is in begins with the line `strict`.
+    fn strict_at(&self, span: Span) -> bool {
+        self.strict || self.strict_files.get(span.file()).copied().unwrap_or(false)
     }
 
     fn run(&mut self, program: &Program) {
@@ -1769,7 +1789,7 @@ impl Checker {
             // evidence about anything it is passed on to.
             return Ty::Invalid;
         }
-        if self.strict {
+        if self.strict_at(span) {
             return self.error(
                 format!("strict mode: {what} needs a type. It could not be worked out from how it is used"),
                 span,
@@ -1786,7 +1806,7 @@ impl Checker {
         // Remember the first place that says anything about this slot, so
         // that an error caused by what was worked out can point back to it.
         if !matches!(ty, Ty::Invalid) {
-            self.origins.entry(id.clone()).or_insert(span.line);
+            self.origins.entry(id.clone()).or_insert(span.line_in_file());
         }
         let seen = match (self.key(ty), self.seen.remove(id)) {
             (None, previous) => previous, // no evidence either way
@@ -2180,7 +2200,7 @@ impl Checker {
                         )
                     }
                     // `any` asks for a dynamic value on purpose.
-                    ("any", []) if self.strict => {
+                    ("any", []) if self.strict_at(span) => {
                         return self.error("`any` is not allowed in strict mode", span)
                     }
                     ("any", []) => Ty::Dynamic,
@@ -2884,7 +2904,7 @@ impl Checker {
                 }
                 wanted
             }
-            None if self.strict && given.has_dynamic() => self.error(
+            None if self.strict_at(span) && given.has_dynamic() => self.error(
                 format!(
                     "strict mode: the type of `{name}` cannot be worked out. Give it one, as in `{name}: {}`",
                     match given.clone().looked_at() {
@@ -3159,7 +3179,7 @@ impl Checker {
             // leave that value where it is.
             let walks = self.owned.walked.len();
             if let (true, Some(owner)) = (looks, owner) {
-                self.owned.walked.push((owner, subject.span.line, Looking::Case));
+                self.owned.walked.push((owner, subject.span.line_in_file(), Looking::Case));
             }
             let exits = self.statements(&arm.body, &scope);
             self.owned.walked.truncate(walks);
@@ -3446,7 +3466,7 @@ impl Checker {
                     span,
                 ),
                 None => {
-                    self.reached.entry(variable.id).or_insert(span.line);
+                    self.reached.entry(variable.id).or_insert(span.line_in_file());
                     lent(&variable.ty)
                 }
             };
@@ -3471,7 +3491,7 @@ impl Checker {
                 format!(
                     "`{name}` was given away on line {} and holds nothing now. \
                      Use it before it goes, or give it only to what looks: a parameter without `take`",
-                    at.line
+                    at.line_in_file()
                 ),
                 span,
             );
@@ -3644,7 +3664,7 @@ impl Checker {
                         expr.span,
                     );
                 }
-                self.given_top.insert(variable.id, expr.span.line);
+                self.given_top.insert(variable.id, expr.span.line_in_file());
             }
             let record = (name.clone(), expr.span);
             for body in &mut self.owned.tries {
@@ -3836,7 +3856,7 @@ impl Checker {
         if let (true, Some(name)) = (item.is_look(), root(iterable)) {
             let in_method = name == "self" && self.frame().takes_self.is_some();
             if let Some(variable) = env.get(name).filter(|variable| variable.ty.is_owned() || in_method) {
-                self.owned.walked.push((variable.id, iterable.span.line, Looking::Loop));
+                self.owned.walked.push((variable.id, iterable.span.line_in_file(), Looking::Loop));
             }
         }
         before
@@ -4088,7 +4108,7 @@ impl Checker {
                     }
                 }
                 let mut returns = self.join_all(&types).unwrap_or(Ty::None);
-                if self.strict && matches!(returns, Ty::Dynamic) && !types.iter().any(Ty::is_loose) {
+                if self.strict_at(span) && matches!(returns, Ty::Dynamic) && !types.iter().any(Ty::is_loose) {
                     // Each `return` is known, but they do not agree.
                     let mut kinds: Vec<String> = types.iter().map(Ty::to_string).collect();
                     kinds.dedup();
@@ -4145,7 +4165,7 @@ impl Checker {
                 }
             }
         }
-        let raises = if self.strict || !decl.raises.is_empty() {
+        let raises = if self.strict_at(span) || !decl.raises.is_empty() {
             for (kind, at) in &raised {
                 if !decl.raises.iter().any(|declared| declared == "Error" || declared == kind) {
                     self.error(
@@ -4189,7 +4209,7 @@ impl Checker {
                 expr.span,
             );
         }
-        if self.strict && matches!(ty, Ty::Dynamic) {
+        if self.strict_at(expr.span) && matches!(ty, Ty::Dynamic) {
             return self.error(
                 "strict mode: the type of this cannot be worked out before the program runs",
                 expr.span,
@@ -4242,8 +4262,9 @@ impl Checker {
                         // what is above it, in a function too.
                         Some(line) if *line > span.line => self.error(
                             format!(
-                                "`{name}` is declared on line {line}, which is further down. A line can use only \
-                                 what is declared above it, also inside a function. Move the declaration of `{name}` up"
+                                "`{name}` is declared on line {}, which is further down. A line can use only \
+                                 what is declared above it, also inside a function. Move the declaration of `{name}` up",
+                                *line % crate::token::LINES_A_FILE
                             ),
                             span,
                         ),
@@ -4382,7 +4403,8 @@ impl Checker {
                             format!(
                                 "`{}` was given away on line {} and holds nothing now, and this function uses it. \
                                  Use it before it goes, or give it only to what looks: a parameter without `take`",
-                                capture.name, at.line
+                                capture.name,
+                                at.line_in_file()
                             ),
                             span,
                         );
@@ -4442,7 +4464,7 @@ impl Checker {
                             }
                         }
                         match method {
-                            Ty::Dynamic if self.strict => self.error(
+                            Ty::Dynamic if self.strict_at(span) => self.error(
                                 "strict mode: the type of this cannot be worked out before the program runs",
                                 callee.span,
                             ),
@@ -4451,7 +4473,7 @@ impl Checker {
                     }
                     // A generic is only ever met here, by its own name.
                     ExprKind::Name(_) => match self.expr_inner(callee, env) {
-                        Ty::Dynamic if self.strict => self.expr(callee, env),
+                        Ty::Dynamic if self.strict_at(span) => self.expr(callee, env),
                         ty => ty,
                     },
                     _ => self.expr(callee, env),
@@ -5505,7 +5527,7 @@ impl Checker {
                 Some(ty) => ty.clone(),
                 // In a program with types left out, an argument whose type
                 // is only known at run time makes `T` the same.
-                None if loose && !self.strict => Ty::Dynamic,
+                None if loose && !self.strict_at(span) => Ty::Dynamic,
                 None if unsettled => return None,
                 None => {
                     // An argument that was meant to say, and is the wrong
@@ -5685,7 +5707,7 @@ impl Checker {
         }
         let mut note = format!("this is inside `{name}`: `{}` with {}", generic.name, means.join(", "));
         if let Some(asked) = asked {
-            note += &format!(", which line {} asks for", asked.line);
+            note += &format!(", which line {} asks for", asked.line_in_file());
         }
         Some((name, env, note))
     }

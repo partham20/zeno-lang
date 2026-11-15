@@ -37,7 +37,9 @@ pub fn escaped(control: Control) -> Error {
     match control {
         Control::Fatal(error) => error,
         Control::Raise(value, span) => {
-            Error::new(format!("uncaught {}: {value}", error_kind(&value)), span)
+            // An object of a class from an imported file is named as
+            // that file names it: `BadShape`, not `shapes.BadShape`.
+            Error::new(format!("uncaught {}: {value}", crate::ast::shown_name(&error_kind(&value))), span)
         }
         Control::Break(span) => Error::new("`break` outside a loop", span),
         Control::Continue(span) => Error::new("`continue` outside a loop", span),
