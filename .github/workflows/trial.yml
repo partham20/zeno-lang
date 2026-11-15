@@ -4,7 +4,7 @@
 #
 # It is for a mend that can only be seen to work on a machine that is
 # not at hand, which mostly means Windows. The release workflow would
-# show the same, on ten machines, at about ten times the cost.
+# show the same, on ten machines, at four times the cost or more.
 #
 # Started by hand from the Actions page ("Run workflow"), choosing the
 # machine. What it finds is written on the summary page of the run.

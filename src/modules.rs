@@ -1490,17 +1490,9 @@ mod tests {
         assert!(loaded.program.is_ok());
         // A module is looked for from the folder of the first file, and
         // a dot in its name is a folder. That folder's `zeno.package` is
-        // looked for first, and the program can do without one.
-        let sep = std::path::MAIN_SEPARATOR;
-        assert_eq!(
-            *read.borrow(),
-            [
-                format!("demo{sep}zeno.package"),
-                format!("demo{sep}a.zeno"),
-                format!("demo{sep}nested{sep}base.zeno"),
-                format!("demo{sep}b.zeno")
-            ]
-        );
+        // looked for first, and the program can do without one. The
+        // paths are written with `/` on every system (see `shown`).
+        assert_eq!(*read.borrow(), ["demo/zeno.package", "demo/a.zeno", "demo/nested/base.zeno", "demo/b.zeno"]);
         let paths: Vec<&str> = loaded.files.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths.len(), 4);
         assert_eq!(paths[0], "demo/main.zeno");

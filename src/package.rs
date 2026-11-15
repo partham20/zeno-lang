@@ -448,6 +448,10 @@ fn git(folder: Option<&Path>, args: &[&str]) -> Result<String, String> {
     if let Some(folder) = folder {
         command.arg("-C").arg(folder);
     }
+    // A package is the same bytes on every machine that fetches it. Git
+    // on Windows is usually set to give each line the Windows line end
+    // as it writes a file out, and here it is told not to.
+    command.args(["-c", "core.autocrlf=false"]);
     // Never stop to ask for a password: say what went wrong instead.
     let ran = command.args(args).env("GIT_TERMINAL_PROMPT", "0").output();
     match ran {

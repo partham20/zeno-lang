@@ -2427,10 +2427,58 @@ static const char *zeno_input(const char *question) {
 static int zeno_argc = 0;
 static char **zeno_argv = NULL;
 
+#ifdef _WIN32
+
+/* On Windows the words that `main` is given have been through the
+ * machine's "code page", an older way of writing text that holds a few
+ * hundred characters: which ones depends on the country the machine was
+ * set up for. A word in Tamil on a machine set up for English arrives as
+ * question marks. Windows itself keeps the command line whole, two bytes
+ * or four to a character (UTF-16), and will hand it over and cut it into
+ * words. Those are turned into UTF-8 here, which is what Zeno text is.
+ * `main`'s own words stay if Windows cannot give better.
+ *
+ * The three functions are declared by hand for the reason `Sleep` is,
+ * above. 65001 is Windows' number for UTF-8. The one that cuts the line
+ * into words lives in a library that Visual Studio's linker has to be
+ * told of, which the `#pragma` does. gcc on Windows links it unasked. */
+#ifdef _MSC_VER
+#pragma comment(lib, "shell32")
+#endif
+__declspec(dllimport) wchar_t *__stdcall GetCommandLineW(void);
+__declspec(dllimport) wchar_t **__stdcall CommandLineToArgvW(const wchar_t *line, int *count);
+__declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int page, unsigned long flags, const wchar_t *wide,
+                                                        int wide_length, char *bytes, int room, const char *instead,
+                                                        int *used_instead);
+
+static void zeno_program_start(int argc, char **argv) {
+    zeno_argc = argc;
+    zeno_argv = argv;
+    int count = 0;
+    wchar_t **wide = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (wide == NULL || count < 1) return;
+    /* These live as long as the program does, as `main`'s own do. */
+    char **words = malloc(sizeof(char *) * (size_t)count);
+    if (words == NULL) return;
+    for (int i = 0; i < count; i++) {
+        /* Asked with no room, it says how much room the word needs. */
+        int room = WideCharToMultiByte(65001, 0, wide[i], -1, NULL, 0, NULL, NULL);
+        words[i] = room > 0 ? malloc((size_t)room) : NULL;
+        if (words[i] == NULL) return;
+        WideCharToMultiByte(65001, 0, wide[i], -1, words[i], room, NULL, NULL);
+    }
+    zeno_argc = count;
+    zeno_argv = words;
+}
+
+#else
+
 static void zeno_program_start(int argc, char **argv) {
     zeno_argc = argc;
     zeno_argv = argv;
 }
+
+#endif /* _WIN32 */
 
 /* `program.arguments()`: a new list of the words after the program's
  * own name. */
