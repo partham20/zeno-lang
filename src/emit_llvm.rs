@@ -589,6 +589,9 @@ struct ClassEntry {
 /// An enum: each case with the names and kinds of the values it carries.
 struct EnumEntry {
     cases: Vec<(String, Vec<(String, Kind)>)>,
+    /// For each case, which of the values it carries have one owner,
+    /// which is the enum value from then on.
+    takes: Vec<Vec<bool>>,
 }
 
 /// A function that has been reached but not yet written out. `sees` is
@@ -1561,7 +1564,9 @@ impl Emitter<'_> {
             return Err(cannot(format!("the enum `{}`", decl.name), span));
         };
         let mut cases = Vec::new();
+        let mut takes = Vec::new();
         for (index, (case, case_kinds)) in decl.variants.iter().zip(&kinds).enumerate() {
+            takes.push(case_kinds.iter().map(|kind| matches!(kind, Kind::Owned(_))).collect());
             self.cases.insert(case.name.clone(), (decl.name.clone(), index));
             let fields: Vec<(String, Kind)> =
                 case.fields.iter().map(|field| field.name.clone()).zip(case_kinds.iter().map(shared)).collect();
@@ -1579,7 +1584,7 @@ impl Emitter<'_> {
             }
             cases.push((case.name.clone(), fields));
         }
-        self.enums.insert(decl.name.clone(), EnumEntry { cases });
+        self.enums.insert(decl.name.clone(), EnumEntry { cases, takes });
         Ok(())
     }
 
@@ -2295,10 +2300,7 @@ impl Emitter<'_> {
     /// nothing would free.
     fn fits_a_slot(&self, item: &Kind, span: Span) -> Result<(), Error> {
         match item {
-            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => Err(emit_c::without_collector(
-                "a list of numbers that may be `none` keeps each item in a small block of its own",
-                span,
-            )),
+            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => Err(emit_c::none_in_a_slot(span)),
             _ => Ok(()),
         }
     }
@@ -2327,6 +2329,13 @@ impl Emitter<'_> {
                 let drop = self.drop_class(class, span)?;
                 self.ins(format!("call void {drop}(ptr {value})"));
             }
+            Kind::Enum(owner) => {
+                let drop = self.drop_enum(owner, span)?;
+                self.ins(format!("call void {drop}(ptr {value})"));
+            }
+            // What may be `none` is a pointer that may be null, and every
+            // function that frees does nothing with null.
+            Kind::Optional(inner) if is_pointer(inner) => return self.free(inner, value, span),
             // An error that an `except` caught, in a build with no collector.
             Kind::Error => self.run("zeno_error_drop", format!("ptr {value}")),
             // Text that is kept by copy, and a list of such text, which
@@ -2495,6 +2504,60 @@ impl Emitter<'_> {
                 emitter.free(kind, &held, span)?;
             }
             emitter.run("zeno_free", "ptr %self");
+            emitter.end("ret void");
+            Ok(())
+        })?;
+        Ok(name)
+    }
+
+    /// The function that ends a value of an enum whose values have one
+    /// owner each. A case that carries nothing is one fixed value and is
+    /// never freed. A case that carries something is a block: free what
+    /// it carries that has an owner, and the text it keeps, then the
+    /// block.
+    fn drop_enum(&mut self, owner: &str, span: Span) -> Result<String, Error> {
+        let name = named('@', "zeno.drop.", owner);
+        // Noted as written before it is: a value may carry another of
+        // its own enum.
+        if !self.written.insert(name.clone()) {
+            return Ok(name);
+        }
+        let texts = !self.collector;
+        let cases = self.enums[owner].cases.clone();
+        let takes = self.enums[owner].takes.clone();
+        self.side(format!("define internal void {name}(ptr %self)"), |emitter| {
+            let gone = emitter.set("icmp eq ptr %self, null");
+            let n = emitter.number();
+            let (nothing, there) = (format!("gone{n}"), format!("there{n}"));
+            emitter.jump_if(&gone, &nothing, &there);
+            emitter.place(&nothing);
+            emitter.end("ret void");
+            emitter.place(&there);
+            let tag = emitter.set("load i64, ptr %self");
+            let ways: Vec<String> = cases
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, fields))| !fields.is_empty())
+                .map(|(index, _)| format!("i64 {index}, label %case{index}"))
+                .collect();
+            emitter.end(format!("switch i64 {tag}, label %bare [ {} ]", ways.join(" ")));
+            for (index, (case, fields)) in cases.iter().enumerate() {
+                if fields.is_empty() {
+                    continue;
+                }
+                emitter.place(&format!("case{index}"));
+                let ty = case_type(owner, case);
+                for (position, (_, kind)) in fields.iter().enumerate() {
+                    if takes[index][position] || (texts && is_text(kind)) {
+                        let at = emitter.field_at(&ty, "%self", position + 1);
+                        let held = emitter.set(format!("load {}, ptr {at}", ir_type(kind, span)?));
+                        emitter.free(kind, &held, span)?;
+                    }
+                }
+                emitter.run("zeno_free", "ptr %self");
+                emitter.end("ret void");
+            }
+            emitter.place("bare");
             emitter.end("ret void");
             Ok(())
         })?;
@@ -2781,12 +2844,22 @@ impl Emitter<'_> {
     /// `fail` if it does not hold, and declare the names the pattern
     /// gives. Returns whether there was anything to test.
     fn pattern(&mut self, pattern: &Pattern, val: &Val, fail: &str, span: Span) -> Result<bool, Error> {
+        // A value that may be `none` is a pointer that may be null, and a
+        // case of an enum matches only a value that is there.
+        let there = match &val.kind {
+            Kind::Optional(inner) => (**inner).clone(),
+            kind => kind.clone(),
+        };
+        let may_be_none = there != val.kind;
         match pattern {
             Pattern::Wildcard => Ok(false),
-            Pattern::Name(name) => match (self.cases.get(name), &val.kind) {
+            Pattern::Name(name) => match (self.cases.get(name), &there) {
                 // A bare enum case, such as `Idle`, is compared.
                 (Some((owner, index)), Kind::Enum(subject)) if owner == subject && self.lookup(name).is_none() => {
                     let index = *index;
+                    if may_be_none {
+                        self.must_be_there(&val.code, fail);
+                    }
                     self.tag_is(&val.code, index, fail);
                     Ok(true)
                 }
@@ -2809,13 +2882,16 @@ impl Emitter<'_> {
                 Ok(true)
             }
             Pattern::Variant { name, fields } => {
-                let (owner, index) = match (self.cases.get(name), &val.kind) {
+                let (owner, index) = match (self.cases.get(name), &there) {
                     (Some((owner, index)), Kind::Enum(subject)) if owner == subject => (owner.clone(), *index),
                     _ => return Err(cannot(format!("the pattern `{name}(...)` here"), span)),
                 };
                 let carried = self.enums[&owner].cases[index].1.clone();
                 if carried.len() != fields.len() {
                     return Err(cannot(format!("the pattern `{name}(...)` with this many parts"), span));
+                }
+                if may_be_none {
+                    self.must_be_there(&val.code, fail);
                 }
                 self.tag_is(&val.code, index, fail);
                 // Now it is known which case this is, and so which struct
@@ -2840,6 +2916,12 @@ impl Emitter<'_> {
         let held = format!("is{}", self.number());
         self.jump_if(test, &held, fail);
         self.place(&held);
+    }
+
+    /// Go on only if `value`, which may be `none`, is not.
+    fn must_be_there(&mut self, value: &str, fail: &str) {
+        let there = self.set(format!("icmp ne ptr {value}, null"));
+        self.must(&there, fail);
     }
 
     /// Go on only if the enum value at `value` is case number `index`.
@@ -4741,14 +4823,13 @@ impl Emitter<'_> {
         if fields.is_empty() {
             return Err(cannot(format!("`{case}` called like a function: it carries no values"), span));
         }
-        if !self.collector {
-            return Err(emit_c::without_collector(
-                format!("`{case}` carries values, so it is kept in a block of its own, and an enum value has no owner"),
-                span,
-            ));
-        }
+        // Which of the values it carries have one owner: the new value
+        // takes those over.
+        let takes = self.enums[owner].takes[index].clone();
         let slots: Slots = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
-        let list = self.bind(&slots, &[], &[], args, span)?;
+        let list = self.bind(&slots, &takes, &[], args, span)?;
+        // With no collector the value has its own copy of each text.
+        let texts = !self.collector;
 
         let make = named('@', "zeno.new.", &format!("{owner}.{case}"));
         if self.written.insert(make.clone()) {
@@ -4763,7 +4844,11 @@ impl Emitter<'_> {
                 emitter.ins(format!("store i64 {index}, ptr {value}"));
                 for (position, (_, kind)) in fields.iter().enumerate() {
                     let at = emitter.field_at(&ty, &value, position + 1);
-                    emitter.ins(format!("store {} %f{position}, ptr {at}", ir_type(kind, span)?));
+                    let carried = match texts && is_text(kind) {
+                        true => emitter.call("ptr", "zeno_text_keep", format!("ptr %f{position}")),
+                        false => format!("%f{position}"),
+                    };
+                    emitter.ins(format!("store {} {carried}, ptr {at}", ir_type(kind, span)?));
                 }
                 emitter.end(format!("ret ptr {value}"));
                 Ok(())
@@ -5843,6 +5928,7 @@ pub(crate) mod tests {
         same_as_interpreter("labels", include_str!("../examples/labels.zeno"));
         same_as_interpreter("words", include_str!("../examples/words.zeno"));
         same_as_interpreter("scheduler", include_str!("../examples/scheduler.zeno"));
+        same_as_interpreter("commands", include_str!("../examples/commands.zeno"));
     }
 
     #[test]
@@ -6433,6 +6519,71 @@ end1:
   call void @zeno_list_drop_2_Point(ptr %t33)
   %t34 = load ptr, ptr @z_points
   call void @zeno_list_drop_1_Point(ptr %t34)
+  ret void"
+            ),
+            "{program}"
+        );
+    }
+
+    #[test]
+    fn the_ir_for_an_enum_value_that_has_one_owner() {
+        // docs/enums-and-none.md, in IR.
+        let ir = compile_no_collector(crate::emit_c::tests::ENUM_C).unwrap();
+        // The function that makes a case keeps a copy of its text.
+        let make = ir.split("define internal ptr @zeno.new.Shape.Named(ptr %f0, ptr %f1) {\n").nth(1).expect("the function");
+        assert!(make.split("\n}\n").next().unwrap().contains("  %t3 = call ptr @zeno_text_keep(ptr %f0)\n  store ptr %t3, ptr %t2\n"), "{ir}");
+        // Freeing a value goes by its case. One that carries nothing is
+        // a fixed value and is left alone.
+        let drop = ir.split("define internal void @zeno.drop.Shape(ptr %self) {\n").nth(1).expect("the function");
+        let drop = drop.split("\n}\n").next().unwrap();
+        assert_eq!(
+            drop,
+            "entry:
+  %t1 = icmp eq ptr %self, null
+  br i1 %t1, label %gone1, label %there1
+
+gone1:
+  ret void
+
+there1:
+  %t2 = load i64, ptr %self
+  switch i64 %t2, label %bare [ i64 1, label %case1 i64 2, label %case2 ]
+
+case1:
+  call void @zeno_free(ptr %self)
+  ret void
+
+case2:
+  %t3 = getelementptr %z_Shape.Named, ptr %self, i32 0, i32 1
+  %t4 = load ptr, ptr %t3
+  call void @zeno_text_drop(ptr %t4)
+  %t5 = getelementptr %z_Shape.Named, ptr %self, i32 0, i32 2
+  %t6 = load ptr, ptr %t5
+  call void @zeno_list_drop(ptr %t6)
+  call void @zeno_free(ptr %self)
+  ret void
+
+bare:
+  ret void"
+        );
+        let program = ir.split("define internal void @zeno_program() noinline {\n").nth(1).expect("the program");
+        let program = program.split("\n}\n").next().unwrap();
+        // A new value frees the old one, and `none` is null.
+        assert!(
+            program.ends_with(
+                "end1:
+  %t13 = load ptr, ptr @z_shape
+  call void @zeno.drop.Shape(ptr %t13)
+  store ptr @zeno.case.Shape.Dot, ptr @z_shape
+  store ptr null, ptr @z_last
+  %t14 = call ptr @zeno.new.Shape.Circle(double 1.0)
+  %t15 = load ptr, ptr @z_last
+  call void @zeno.drop.Shape(ptr %t15)
+  store ptr %t14, ptr @z_last
+  %t16 = load ptr, ptr @z_last
+  call void @zeno.drop.Shape(ptr %t16)
+  %t17 = load ptr, ptr @z_shape
+  call void @zeno.drop.Shape(ptr %t17)
   ret void"
             ),
             "{program}"

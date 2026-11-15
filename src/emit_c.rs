@@ -476,6 +476,14 @@ fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
     (FunctionKind { params, returns: disown(kind.returns).0 }, owned)
 }
 
+/// The kind that is there when a value that may be `none` is not.
+fn some(kind: &Kind) -> &Kind {
+    match kind {
+        Kind::Optional(inner) => inner,
+        kind => kind,
+    }
+}
+
 /// What it takes to write the C that frees a value.
 pub struct Drops {
     /// Is text kept by copy (a build with no collector, docs/text.md)?
@@ -485,7 +493,8 @@ pub struct Drops {
     /// Does a list inside a list have one owner, the list it is in? It
     /// does where every list has one: a build with no collector.
     pub nested: bool,
-    /// The classes whose objects have one owner each.
+    /// The classes whose objects have one owner each, and the enums
+    /// whose values have.
     pub owned: HashSet<String>,
     /// The functions that free a list together with its items, which
     /// some line has called and nobody has written yet: the name of
@@ -507,6 +516,13 @@ impl Drops {
                     }
                 }
             }
+            // An enum and a class cannot have the same name, so one set
+            // holds both.
+            if let StmtKind::Enum(decl) = &statement.kind {
+                if types.owned_enum(decl) {
+                    owned.insert(decl.name.clone());
+                }
+            }
         }
         Drops { texts: !collector, nested: !collector, owned, wanted: RefCell::new(Vec::new()) }
     }
@@ -515,8 +531,11 @@ impl Drops {
     /// the end of the list is the end of the item.
     pub fn owns(&self, item: &Kind) -> bool {
         match item {
-            Kind::Class(name) => self.owned.contains(name),
+            Kind::Class(name) | Kind::Enum(name) => self.owned.contains(name),
             Kind::List(_) => self.nested,
+            // What may be `none` is a pointer that may be NULL, and
+            // every function that frees does nothing with NULL.
+            Kind::Optional(inner) => is_pointer(inner) && self.owns(inner),
             _ => false,
         }
     }
@@ -525,7 +544,8 @@ impl Drops {
     /// does nothing when handed NULL.
     pub fn name(&self, kind: &Kind) -> String {
         match kind {
-            Kind::Class(name) => format!("zeno_drop_{}", ident(name)),
+            Kind::Class(name) | Kind::Enum(name) => format!("zeno_drop_{}", ident(name)),
+            Kind::Optional(inner) if is_pointer(inner) => self.name(inner),
             // An error that an `except` caught, in a build with no collector.
             Kind::Error => "zeno_error_drop".to_string(),
             kind if is_text(kind) => "zeno_text_drop".to_string(),
@@ -533,18 +553,18 @@ impl Drops {
             Kind::List(item) if self.owns(item) => {
                 // How many lists deep the items that are not lists lie,
                 // and what frees one of those.
-                let (mut depth, mut inner) = (1, &**item);
+                let (mut depth, mut inner) = (1, some(item));
                 while let Kind::List(next) = inner {
                     if !self.owns(next) {
                         break;
                     }
-                    (depth, inner) = (depth + 1, &**next);
+                    (depth, inner) = (depth + 1, some(next));
                 }
                 // `zeno_list_drop_2_Point` frees a list of lists of
                 // Points. No class can be given a name that makes one
                 // of the other two.
                 let name = match inner {
-                    Kind::Class(name) => format!("zeno_list_drop_{depth}_{}", ident(name)),
+                    Kind::Class(name) | Kind::Enum(name) => format!("zeno_list_drop_{depth}_{}", ident(name)),
                     Kind::List(text) if self.texts && is_text(text) => format!("zeno_list_drop_texts{depth}"),
                     _ => format!("zeno_list_drop_lists{depth}"),
                 };
@@ -651,6 +671,9 @@ struct ClassEntry {
 /// An enum: each case with the names and types of the values it carries.
 struct EnumEntry {
     cases: Vec<(String, Vec<(String, Kind)>)>,
+    /// For each case, which of the values it carries have one owner,
+    /// which is the enum value from then on.
+    takes: Vec<Vec<bool>>,
 }
 
 struct Emitter<'a> {
@@ -781,6 +804,20 @@ pub fn without_collector(why: impl AsRef<str>, span: Span) -> Error {
              docs/no-collector.md lists what such a build accepts",
             why.as_ref()
         ),
+        span,
+    )
+}
+
+/// The error for a list of numbers that may be `none` in a build with no
+/// collector. It says what to write instead: an enum value fits a slot,
+/// and the list owns it.
+pub fn none_in_a_slot(span: Span) -> Error {
+    Error::new(
+        "a list of numbers that may be `none` keeps each item in a small block of its own, and \
+         `zeno build --no-collector` leaves the collector out, so nothing would free them. \
+         Make it a list of an enum that has one case for a missing value and one case that \
+         carries the number, say `Missing` and `Value(n: int)`. docs/no-collector.md lists what \
+         such a build accepts",
         span,
     )
 }
@@ -1345,10 +1382,7 @@ impl Emitter<'_> {
     /// nothing would free.
     fn fits_a_slot(&self, item: &Kind, span: Span) -> Result<(), Error> {
         match item {
-            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => Err(without_collector(
-                "a list of numbers that may be `none` keeps each item in a small block of its own",
-                span,
-            )),
+            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => Err(none_in_a_slot(span)),
             _ => Ok(()),
         }
     }
@@ -1582,10 +1616,16 @@ impl Emitter<'_> {
         let mut show = String::from("    switch (self->tag) {\n");
         let mut same = String::from("    if (a->tag != b->tag) return false;\n    switch (a->tag) {\n");
         let mut cases = Vec::new();
+        // With no collector a value that carries something is freed by
+        // its owner, and has its own copies of the text it carries.
+        let texts = !self.collector;
+        let mut drop = String::from("    if (self == NULL) return;\n    switch (self->tag) {\n");
+        let mut takes = Vec::new();
         for (index, (case, case_kinds)) in decl.variants.iter().zip(&kinds).enumerate() {
             self.cases.insert(case.name.clone(), (name.clone(), index));
+            let (case_kinds, owned): (Vec<Kind>, Vec<bool>) = case_kinds.iter().cloned().map(disown).unzip();
             let fields: Vec<(String, Kind)> =
-                case.fields.iter().map(|field| field.name.clone()).zip(case_kinds.iter().cloned()).collect();
+                case.fields.iter().map(|field| field.name.clone()).zip(case_kinds).collect();
 
             if fields.is_empty() {
                 // A case that carries nothing needs no memory of its own:
@@ -1598,12 +1638,20 @@ impl Emitter<'_> {
                 let mut fill = String::new();
                 let mut shown = Vec::new();
                 let mut tests = Vec::new();
+                let mut frees = String::new();
                 for (position, (field, kind)) in fields.iter().enumerate() {
                     let field_type = c_type(kind, span)?;
                     let place = format!("as.c{index}.z_{field}");
                     inside += &format!("{field_type}z_{field}; ");
                     params.push(format!("{field_type}z_{field}"));
-                    fill += &format!("    self->{place} = z_{field};\n");
+                    if texts && is_text(kind) {
+                        fill += &format!("    self->{place} = zeno_text_keep(z_{field});\n");
+                    } else {
+                        fill += &format!("    self->{place} = z_{field};\n");
+                    }
+                    if owned[position] || (texts && is_text(kind)) {
+                        frees += &format!(" {}", self.drops.code(kind, &format!("self->{place}")));
+                    }
                     shown.push(if position == 0 { c_string(&format!("{}(", case.name)) } else { c_string(", ") });
                     shown.push(self.repr(&Val::plain(format!("self->{place}"), kind.clone()), span)?);
                     tests.push(self.equal(kind, &format!("a->{place}"), &format!("b->{place}"), span)?);
@@ -1612,7 +1660,10 @@ impl Emitter<'_> {
                 self.helper(
                     format!("static {c_name} *zeno_new_{name}_{}({})", case.name, params.join(", ")),
                     format!(
-                        "    {c_name} *self = ({c_name} *)zeno_alloc(sizeof({c_name}));\n    self->tag = {index};\n{fill}    return self;\n"
+                        // Only as much as this case carries: the
+                        // union is as big as the biggest case, and most
+                        // values are not that one.
+                        "    {c_name} *self = ({c_name} *)zeno_alloc(offsetof({c_name}, as) + sizeof((({c_name} *)0)->as.c{index}));\n    self->tag = {index};\n{fill}    return self;\n"
                     ),
                 );
                 show += &format!(
@@ -1621,8 +1672,18 @@ impl Emitter<'_> {
                     shown.join(", ")
                 );
                 same += &format!("    case {index}: return {};\n", tests.join(" && "));
+                // A bare case is one fixed value, which is never freed.
+                // Only a case that carries something has a block.
+                drop += &format!("    case {index}:{frees} zeno_free(self); break;\n");
             }
             cases.push((case.name.clone(), fields));
+            takes.push(owned);
+        }
+        if self.drops.owned.contains(name) {
+            self.helper(
+                format!("static void zeno_drop_{name}({c_name} *self)"),
+                format!("{drop}    default: break;\n    }}\n"),
+            );
         }
         let mut body = format!("struct {c_name} {{\n    int tag;\n");
         if !members.is_empty() {
@@ -1640,7 +1701,7 @@ impl Emitter<'_> {
             format!("static bool zeno_same_{name}({c_name} *a, {c_name} *b)"),
             format!("{same}    }}\n    return true;\n"),
         );
-        self.enums.insert(name.clone(), EnumEntry { cases });
+        self.enums.insert(name.clone(), EnumEntry { cases, takes });
         Ok(())
     }
 
@@ -2705,11 +2766,17 @@ impl Emitter<'_> {
         names: &mut Vec<(String, String, Kind)>,
         span: Span,
     ) -> Result<(), Error> {
+        // A value that may be `none` is a pointer that may be NULL, and a
+        // case of an enum matches only a value that is there.
+        let there = some(kind);
         match pattern {
             Pattern::Wildcard => {}
-            Pattern::Name(name) => match (self.cases.get(name), kind) {
+            Pattern::Name(name) => match (self.cases.get(name), there) {
                 // A bare enum case, such as `Idle`, is compared.
                 (Some((owner, index)), Kind::Enum(subject)) if owner == subject && self.lookup(name).is_none() => {
+                    if there != kind {
+                        tests.push(format!("{code} != NULL"));
+                    }
                     tests.push(format!("{code}->tag == {index}"));
                 }
                 // Any other name is a new variable holding the value.
@@ -2725,13 +2792,16 @@ impl Emitter<'_> {
                 tests.push(self.equal(&common, &subject.code, &literal.code, span)?);
             }
             Pattern::Variant { name, fields } => {
-                let (owner, index) = match (self.cases.get(name), kind) {
+                let (owner, index) = match (self.cases.get(name), there) {
                     (Some((owner, index)), Kind::Enum(subject)) if owner == subject => (owner.clone(), *index),
                     _ => return Err(cannot(format!("the pattern `{name}(...)` here"), span)),
                 };
                 let carried = self.enums[&owner].cases[index].1.clone();
                 if carried.len() != fields.len() {
                     return Err(cannot(format!("the pattern `{name}(...)` with this many parts"), span));
+                }
+                if there != kind {
+                    tests.push(format!("{code} != NULL"));
                 }
                 tests.push(format!("{code}->tag == {index}"));
                 for (field, (field_name, field_kind)) in fields.iter().zip(&carried) {
@@ -4120,14 +4190,11 @@ impl Emitter<'_> {
         if fields.is_empty() {
             return Err(cannot(format!("`{case}` called like a function: it carries no values"), span));
         }
-        if !self.collector {
-            return Err(without_collector(
-                format!("`{case}` carries values, so it is kept in a block of its own, and an enum value has no owner"),
-                span,
-            ));
-        }
+        // Which of the values it carries have one owner: the new value
+        // takes those over.
+        let takes = self.enums[owner].takes[index].clone();
         let slots: Vec<_> = fields.iter().map(|(name, kind)| (name.clone(), kind.clone(), None)).collect();
-        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &[], &[], None, args, span)?;
+        let (call, vals) = self.call_c(&format!("zeno_new_{owner}_{case}"), &slots, &takes, &[], None, args, span)?;
         let parts: Vec<&Val> = vals.iter().collect();
         Ok(Val::from(call, Kind::Enum(owner.to_string()), &parts))
     }
@@ -4911,7 +4978,7 @@ fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Command;
 
@@ -5728,6 +5795,7 @@ print(word[5])
             ("labels", include_str!("../examples/labels.zeno")),
             ("words", include_str!("../examples/words.zeno")),
             ("scheduler", include_str!("../examples/scheduler.zeno")),
+            ("commands", include_str!("../examples/commands.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -8141,12 +8209,12 @@ let x = 7
         one_owner("let b = Bad(1, \"x\")\nlet c = b\nprint(b.id)", "was given away on line");
         one_owner("let grid = [[1], [2]]\nlet row = grid[0]\nprint(row)", "`[ ]` only looks at it");
 
-        // What has one owner cannot sit inside an `or none` yet.
-        one_owner("var last: Bad or none = none\nprint(last is none)", "cannot be kept inside an `or none`");
-        one_owner("var xs: list[int] or none = none\nprint(xs is none)", "cannot be kept inside an `or none`");
+        // So is an enum value that carries something, and what may be
+        // `none`. (Both were refused outright before.)
+        one_owner("let s = Circle(1.0)\nlet t = s\nprint(s)", "was given away on line");
+        one_owner("var last: Bad or none = Bad(1, \"x\")\nlet other = last\nprint(last is none)", "was given away on line");
 
         // Whatever else makes a block that nothing owns.
-        refused("let s = Circle(1.0)", "`Circle` carries values");
         refused("let f = function(n: int) { return n + x }\nprint(f(1))", "a function written where a value goes");
         refused("let m: owned list[int or none] = [1, none]", "numbers that may be `none`");
 
@@ -8184,6 +8252,11 @@ best = 4
 if best is not none {
     print(best + 1)
 }
+let round = Circle(1.5)                # an enum value that carries something
+print(round, round == Dot)
+var last: Bad or none = none           # and what may be `none`
+last = Bad(3, "z")
+print(last is none)
 try {
     print(int("12"), float("1.5"))
     print(int("zz"))
@@ -8496,6 +8569,607 @@ print(kept.map(describe))
         same_as_interpreter("owns-items", OWNS_ITEMS);
         no_collector_as_interpreter("owns-items", OWNS_ITEMS);
     }
+
+    // ------------------------- What may be `none`, and enums that carry values
+
+    /// A list or an object that may be `none`, with no collector.
+    const MAY_BE_NONE: &str = r##"# What may be `none` can have one owner.
+class Task {
+    name: str
+    runs: list[int]
+}
+
+class Device {
+    name: str
+    current: Task or none
+    history: list[int] or none
+}
+
+function parse(line: str) -> Task or none {
+    let words = line.split()
+    if len(words) < 2 {
+        return none
+    }
+    return Task(words[1], [len(words)])
+}
+
+function describe(task: borrow Task or none) -> str {
+    if task is none {
+        return "nothing"
+    }
+    return f"{task.name} {task.runs}"
+}
+
+function run(task: Task) -> int {
+    print("running", task.name)
+    return len(task.runs)
+}
+
+function count(xs: borrow list[int] or none) -> int {
+    if xs is none { return -1 }
+    return len(xs)
+}
+
+var current: Task or none = none
+print(current is none, describe(current))
+current = parse("run blink now")
+print(current is none, describe(current))
+if current is not none {
+    current.runs.append(7)
+    print(current.name, current.runs)
+}
+current = parse("stop")
+print(describe(current))
+current = parse("run sample")
+current = none
+print(describe(current))
+
+let made = parse("go fast")
+if made is not none {
+    print(run(made))
+}
+print(describe(parse("a b c")), describe(parse("a")))
+if parse("x y") is not none {
+    print("parsed")
+}
+
+let device = Device("pump", parse("run prime"), none)
+print(device.name, describe(device.current), count(device.history))
+device.current = none
+device.history = [1, 2, 3]
+print(describe(device.current), count(device.history))
+device.current = parse("run again please")
+match device.current {
+    case none { print("idle") }
+    case task {
+        if task is not none {
+            print("busy with", task.name)
+        }
+    }
+}
+print(device)
+
+var maybe: list[int] or none = none
+print(count(maybe))
+maybe = [4, 5]
+if maybe is not none {
+    maybe.append(6)
+    print(maybe, len(maybe))
+}
+print(count(maybe))
+
+let slots: list[Task or none] = [parse("run a"), none, parse("run b")]
+for slot in slots {
+    print(describe(slot))
+}
+slots[1] = parse("run c")
+slots[0] = none
+print(describe(slots[0]), describe(slots[1]))
+let last = slots.pop()
+print(describe(last), len(slots))
+"##;
+
+    /// An enum whose cases carry values, with no collector.
+    const ENUM_VALUES: &str = r##"# An enum whose cases carry values has one owner, like an object.
+enum Command {
+    Stop
+    Wait(ms: int)
+    Set(pin: int, on: bool)
+    Say(text: str)
+    Batch(pins: list[int])
+}
+
+enum Color {
+    Red
+    Green
+}
+
+class Step {
+    command: Command
+    color: Color
+}
+
+function parse(line: str) -> Command or none {
+    let words = line.split()
+    if len(words) == 0 { return none }
+    match words[0] {
+        case "stop" { return Stop }
+        case "wait" { return Wait(len(line)) }
+        case "set" { return Set(len(words), len(words) > 2) }
+        case "say" { return Say(line) }
+        case "batch" { return Batch([len(w) for w in words]) }
+        case _ { return none }
+    }
+}
+
+function cost(command: borrow Command) -> int {
+    match command {
+        case Stop { return 0 }
+        case Wait(ms) { return ms }
+        case Set(pin, on) {
+            if on { return pin }
+            return -pin
+        }
+        case Say(text) { return len(text) }
+        case Batch(pins) {
+            var sum = 0
+            for pin in pins { sum += pin }
+            return sum
+        }
+    }
+}
+
+function run(command: Command) -> str {
+    match command {
+        case Stop { return "stopped" }
+        case Say(text) { return text.upper() }
+        case other { return f"ran {other}" }
+    }
+}
+
+let first = Wait(250)
+print(first, cost(first), first == Wait(250), first == Stop)
+let second = first
+print(run(second))
+print(run(Stop), run(Say("hi there")), run(Batch([1, 2])))
+
+var state = Stop
+var trips = 0
+while trips < 4 {
+    match state {
+        case Stop { state = Wait(1) }
+        case Wait(ms) { state = Set(ms + 1, true) }
+        case Set(pin, on) { state = Say(f"pin {pin} is {on}") }
+        case Say(text) { state = Batch([len(text), trips]) }
+        case Batch(_) { state = Stop }
+    }
+    trips += 1
+    print(trips, state)
+}
+
+let commands = [Wait(5), Stop, Set(3, false), Say("abc"), Batch([4, 5, 6])]
+var total = 0
+for command in commands {
+    total += cost(command)
+}
+print("total", total, len(commands))
+commands.append(Wait(9))
+commands[1] = Say("replaced")
+print(commands)
+let taken = commands.pop()
+print(taken)
+print(run(taken))
+
+for line in ["wait a bit", "set 4 on", "say hello", "batch aa b cccc", "", "jump", "stop"] {
+    let command = parse(line)
+    if command is none {
+        print("?", line)
+    } else {
+        print(command, cost(command))
+    }
+}
+
+let step = Step(Say("in a step"), Green)
+print(step, cost(step.command), step.color == Green)
+step.command = Batch([7])
+match step.command {
+    case Batch(pins) { print("batch of", len(pins), pins) }
+    case _ { print("other") }
+}
+var color = Red
+let copy = color
+color = Green
+print(color, copy, color == copy)
+"##;
+
+    /// The same where things go wrong and blocks are left early.
+    const ENUM_EXITS: &str = r##"# Enums and `or none` where things go wrong, and where blocks are left early.
+class Bad {
+    why: str
+}
+
+class Reading {
+    channel: int
+    label: str
+}
+
+enum Tree {
+    Leaf(value: int)
+    Node(left: Tree, right: Tree)
+}
+
+enum Event {
+    Quiet
+    Sample(reading: Reading)
+    Burst(readings: list[Reading])
+    Note(text: str, extra: Reading or none)
+}
+
+function risky(n: int) -> int raises Bad {
+    if n > 3 { raise Bad(f"{n} is too big") }
+    return n
+}
+
+function build(depth: int) -> Tree raises Bad {
+    if depth == 0 {
+        return Leaf(risky(depth))
+    }
+    return Node(build(depth - 1), Leaf(risky(depth)))
+}
+
+function sum(tree: borrow Tree) -> int {
+    match tree {
+        case Leaf(value) { return value }
+        case Node(left, right) { return sum(left) + sum(right) }
+    }
+}
+
+function depth(tree: borrow Tree) -> int {
+    match tree {
+        case Leaf(_) { return 0 }
+        case Node(Leaf(_), Leaf(_)) { return 1 }
+        case Node(left, _) { return depth(left) + 1 }
+    }
+}
+
+function event(n: int) -> Event raises Bad {
+    if n == 0 { return Quiet }
+    if n == 1 { return Sample(Reading(risky(n), "one")) }
+    if n == 2 { return Burst([Reading(1, "a"), Reading(risky(n), "b")]) }
+    if n == 3 { return Note(f"note {n}", Reading(n, "extra")) }
+    if n == 4 { return Note("plain", none) }
+    return Burst([Reading(1, "kept"), Reading(risky(n), "never")])
+}
+
+function describe(e: borrow Event) -> str {
+    match e {
+        case Quiet { return "quiet" }
+        case Sample(reading) { return f"sample {reading.channel} {reading.label}" }
+        case Burst(readings) {
+            var labels = ""
+            for reading in readings {
+                if reading.channel > 1 { continue }
+                labels = labels + reading.label
+            }
+            return f"burst of {len(readings)}: {labels}"
+        }
+        case Note(text, extra) {
+            if extra is none {
+                return text
+            }
+            return f"{text} with {extra.label}"
+        }
+    }
+}
+
+let small = build(2)
+print(small, sum(small), depth(small))
+try {
+    let big = build(5)
+    print(sum(big))
+} except Bad as bad {
+    print("refused:", bad.why)
+}
+print(Leaf(1) == Leaf(1), Node(Leaf(1), Leaf(2)) == Node(Leaf(1), Leaf(3)), depth(Leaf(9)))
+
+var seen = 0
+for n in range(7) {
+    try {
+        let e = event(n)
+        seen += 1
+        print(n, describe(e), e)
+    } except Bad as bad {
+        print(n, "failed:", bad.why)
+    }
+}
+print("seen", seen)
+
+var kept: Event or none = none
+var n = 0
+while true {
+    n += 1
+    try {
+        kept = event(n)
+    } except Bad as bad {
+        print("stopped at", n)
+        break
+    }
+    match kept {
+        case none { print("nothing") }
+        case Quiet { continue }
+        case found {
+            if found is not none {
+                print(n, describe(found))
+            }
+        }
+    }
+}
+print(kept is none)
+match event(3) {
+    case Note(text, _) { print("made and matched:", text) }
+    case _ { print("other") }
+}
+match event(2) {
+    case Burst(readings) { print(len(readings), readings[1].label) }
+    case _ { print("other") }
+}
+Leaf(4)
+event(1)
+let trees = [Leaf(1), build(1), build(3)]
+var total = 0
+for tree in trees {
+    match tree {
+        case Leaf(value) {
+            if value == 1 { continue }
+            total += value
+        }
+        case Node(left, right) { total += sum(left) * 10 + sum(right) }
+    }
+}
+print(total, Leaf(1) in trees, len(trees))
+"##;
+
+    /// What may be `none`, with the words written and a collector beside.
+    const OWNED_OR_NONE: &str = r##"# What may be `none` can have one owner in every build: here the words
+# are written, and a collector runs beside them.
+owned class Packet {
+    id: int
+    name: str
+    data: owned list[int]
+}
+
+owned class Slot {
+    held: Packet or none
+    spare: owned list[int] or none
+}
+
+function find(n: int) -> Packet or none {
+    if n % 2 == 0 {
+        return none
+    }
+    return Packet(n, f"packet {n}", [n, n * 2])
+}
+
+function describe(p: borrow Packet or none) -> str {
+    if p is none { return "nothing" }
+    return f"{p.name} {p.data}"
+}
+
+function size(xs: borrow list[int] or none) -> int {
+    if xs is none { return 0 }
+    return len(xs)
+}
+
+function send(p: Packet) -> int {
+    return p.id + len(p.data)
+}
+
+var last: Packet or none = none
+var sent = 0
+for n in range(8) {
+    last = find(n)
+    print(n, describe(last))
+    let found = find(n + 1)
+    if found is not none {
+        sent += send(found)
+    }
+}
+print("sent", sent, describe(last))
+let slot = Slot(find(3), none)
+print(describe(slot.held), size(slot.spare), slot)
+slot.held = find(4)
+slot.spare = [7, 8, 9]
+print(describe(slot.held), size(slot.spare))
+slot.held = find(5)
+match slot.held {
+    case none { print("empty") }
+    case packet {
+        if packet is not none { print("holds", packet.id) }
+    }
+}
+let queue: owned list[Packet or none] = [find(1), find(2), find(3)]
+for p in queue {
+    print(describe(p))
+}
+queue[1] = find(7)
+queue[0] = none
+let taken = queue.pop()
+print(describe(taken), describe(queue[0]), describe(queue[1]), len(queue))
+let maybe: owned list[int] or none = [1, 2, 3]
+print(size(maybe), size(none), describe(find(9)), describe(find(10)))
+"##;
+
+    #[test]
+    fn with_no_collector_what_may_be_none_has_one_owner() {
+        no_collector_as_interpreter("may-be-none", MAY_BE_NONE);
+    }
+
+    #[test]
+    fn with_no_collector_an_enum_value_that_carries_values_has_one_owner() {
+        no_collector_as_interpreter("enum-values", ENUM_VALUES);
+        no_collector_as_interpreter("enum-exits", ENUM_EXITS);
+        no_collector_as_interpreter("commands", include_str!("../examples/commands.zeno"));
+    }
+
+    #[test]
+    fn what_may_be_none_can_have_one_owner_in_every_build() {
+        // With a collector, run before every allocation: the owner frees
+        // the value itself, and the collector must not free it first.
+        same_as_interpreter("owned-or-none", OWNED_OR_NONE);
+        no_collector_as_interpreter("owned-or-none", OWNED_OR_NONE);
+    }
+
+    #[test]
+    fn a_case_of_an_enum_matches_a_value_that_may_be_none() {
+        // `case Stop` on a `Command or none` was taken for a new name
+        // that matches anything, in the compiled program only.
+        same_as_interpreter("case-or-none", r##"enum Command {
+    Stop
+    Wait(ms: int)
+}
+
+function pick(n: int) -> Command or none {
+    if n == 0 { return none }
+    if n == 1 { return Stop }
+    return Wait(n)
+}
+
+for n in range(4) {
+    match pick(n) {
+        case none { print(n, "nothing") }
+        case Stop { print(n, "stop") }
+        case Wait(2) { print(n, "wait two") }
+        case Wait(ms) { print(n, "wait", ms) }
+        case _ { print(n, "something else") }
+    }
+    match pick(n) {
+        case Wait(ms) { print("waits", ms) }
+        case _ { print("does not wait") }
+    }
+}
+"##);
+    }
+
+    #[test]
+    fn with_no_collector_enum_values_do_not_fill_the_pool_over_time() {
+        // A state that changes on every trip, and a value that may be
+        // `none`. A hundred times the trips needs no more of the pool.
+        let program = |trips: usize| r#"enum State {
+    Idle
+    Counting(n: int)
+    Named(name: str, history: list[int])
+}
+function next(state: borrow State, trip: int) -> State or none {
+    match state {
+        case Idle { return Counting(trip) }
+        case Counting(n) {
+            if n % 3 == 0 { return none }
+            return Named(f"n{n}", [n, trip])
+        }
+        case Named(_, history) {
+            if len(history) > 1 { return Idle }
+            return none
+        }
+    }
+}
+var state = Idle
+var kept = 0
+for trip in range({trips}) {
+    let found = next(state, trip)
+    if found is not none {
+        state = found
+        kept += 1
+    }
+}
+print(kept, state)
+"#.replace("{trips}", &trips.to_string());
+        let mut needed = Vec::new();
+        for trips in [50, 5000] {
+            let source = program(trips);
+            let c = compile_no_collector(&source).unwrap();
+            let name = format!("states-{trips}-trips");
+            let Some((printed, report, finished)) = build_and_run(&name, &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert!(finished, "{report}");
+            assert_eq!(printed, interpreted(&source));
+            assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+            crate::emit_llvm::tests::no_collector_as_c(&name, &source, &printed, &report);
+            needed.push(pool_needed(&report));
+        }
+        assert_eq!(needed[0], needed[1], "a hundred times the trips needed a bigger pool");
+        assert!(needed[0] < 1024, "{needed:?}");
+    }
+
+    #[test]
+    fn the_c_for_an_enum_value_that_has_one_owner() {
+        // docs/enums-and-none.md.
+        let c = compile_no_collector(ENUM_C).unwrap();
+        // A case that carries something is a block: only as big as that
+        // case, with its own copy of the text it carries.
+        assert!(
+            c.contains(
+                "static z_Shape *zeno_new_Shape_Named(const char *z_name, zeno_list *z_points) {
+    z_Shape *self = (z_Shape *)zeno_alloc(offsetof(z_Shape, as) + sizeof(((z_Shape *)0)->as.c2));
+    self->tag = 2;
+    self->as.c2.z_name = zeno_text_keep(z_name);
+    self->as.c2.z_points = z_points;
+    return self;
+}
+"
+            ),
+            "{c}"
+        );
+        // Freeing one frees what it carries. A bare case is one fixed
+        // value, which is never freed.
+        assert!(
+            c.contains(
+                "static void zeno_drop_Shape(z_Shape *self) {
+    if (self == NULL) return;
+    switch (self->tag) {
+    case 1: zeno_free(self); break;
+    case 2: zeno_text_drop(self->as.c2.z_name); zeno_list_drop(self->as.c2.z_points); zeno_free(self); break;
+    default: break;
+    }
+}
+"
+            ),
+            "{c}"
+        );
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        let program = program.split("\n}\n").next().unwrap();
+        // `match` looks: the text is copied out and freed when the case
+        // is over, and the list stays in the value. A new value frees
+        // the old one, and `none` is NULL, which frees as nothing.
+        assert_eq!(
+            program,
+            "    z_shape = zeno_new_Shape_Named(\"a\", zeno_list_of(2, (zeno_slot){.i = 1}, (zeno_slot){.i = 2}));
+    z_Shape *t1 = z_shape;
+    if (t1->tag == 2) {
+        const char *z_name = zeno_text_keep(t1->as.c2.z_name);
+        zeno_list *z_points = t1->as.c2.z_points;
+        size_t m1 = zeno_text_top;
+        zeno_print(2, z_name, zeno_str_int(z_points->len));
+        zeno_text_top = m1;
+        zeno_text_drop(z_name);
+    } else {
+    }
+    z_Shape *t2 = (&zeno_case_Shape_Dot);
+    zeno_drop_Shape(z_shape);
+    z_shape = t2;
+    z_last = NULL;
+    z_Shape *t3 = zeno_new_Shape_Circle(1.0);
+    zeno_drop_Shape(z_last);
+    z_last = t3;
+    zeno_drop_Shape(z_last);
+    zeno_drop_Shape(z_shape);"
+        );
+    }
+
+    pub(crate) const ENUM_C: &str = "enum Shape {\n    Dot\n    Circle(r: float)\n    Named(name: str, points: list[int])\n}\n\
+        var shape = Named(\"a\", [1, 2])\n\
+        match shape {\n    case Named(name, points) { print(name, len(points)) }\n    case _ { }\n}\n\
+        shape = Dot\n\
+        var last: Shape or none = none\n\
+        last = Circle(1.0)\n";
 
     #[test]
     fn with_no_collector_lists_of_objects_do_not_fill_the_pool_over_time() {

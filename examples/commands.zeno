@@ -1,0 +1,126 @@
+# Commands from a serial console, and a small machine that runs them.
+#
+# An enum whose cases carry values, and values that may be `none`, in a
+# build with no garbage collector:
+#
+#     zeno run examples/commands.zeno
+#     zeno build --no-collector --memory examples/commands.zeno && ./commands
+#
+# A `Command` that carries something is kept in a block of its own, like
+# an object, and has one owner, which frees it. docs/enums-and-none.md is
+# the walkthrough.
+
+enum Command {
+    Stop                          # carries nothing: one fixed value
+    Wait(ms: int)
+    Set(pin: int, on: bool)
+    Say(text: str)                # the command has its own copy of the text
+    Blink(pins: list[int])        # and owns this list
+}
+
+# What the machine is doing. No case carries anything, so each `Mode` is
+# one fixed value, and is copied like a number.
+enum Mode {
+    Idle
+    Busy
+    Halted
+}
+
+# One line of text is a command, or is not: `none` says so, and the
+# caller cannot forget to ask.
+function parse(line: str) -> Command or none {
+    let words = line.split()
+    if len(words) == 0 {
+        return none
+    }
+    try {
+        match words[0] {
+            case "stop" { return Stop }
+            case "wait" {
+                if len(words) == 2 { return Wait(int(words[1])) }
+            }
+            case "set" {
+                if len(words) == 3 { return Set(int(words[1]), words[2] == "on") }
+            }
+            case "say" { return Say(line) }
+            case "blink" { return Blink([int(word) for word in words if word != "blink"]) }
+            case _ { }
+        }
+    } except ValueError as mistake {
+        print("  (", mistake.message, ")")
+    }
+    return none
+}
+
+# `borrow`: this only looks at the command. `match` looks too: a number
+# or a text that a case carries is copied out, and `pins` is a look at
+# the list, which stays in the command.
+function cost(command: borrow Command) -> int {
+    match command {
+        case Stop { return 0 }
+        case Wait(ms) { return ms }
+        case Set(_, _) { return 1 }
+        case Say(text) { return len(text) }
+        case Blink(pins) { return 100 * len(pins) }
+    }
+}
+
+class Machine {
+    mode: Mode
+    clock: int
+    waiting: list[Command]        # the list owns each command in it
+    last: Command or none         # what ran last, when something has
+
+    # No `borrow`: the machine takes the command, and its list keeps it.
+    function queue(self, command: Command) {
+        self.waiting.append(command)
+    }
+
+    function busy_for(self) -> int {
+        var total = 0
+        for command in self.waiting {
+            total += cost(command)
+        }
+        return total
+    }
+}
+
+# Run one command. It is the caller's to give: `command` is freed when
+# this returns, unless it is given on.
+function run(machine: borrow Machine, command: Command) -> Mode {
+    machine.clock += cost(command)
+    match command {
+        case Stop { return Halted }
+        case Say(text) { print(f"[{machine.clock}] says: {text}") }
+        case other { print(f"[{machine.clock}] {other}") }
+    }
+    return Busy
+}
+
+let machine = Machine(Idle, 0, [], none)
+for line in ["wait 9", "stop", "wait 250", "set 13 on", "jump 3", "say hello there", "blink 2 3 5", "wait soon"] {
+    let command = parse(line)
+    if command is none {
+        print("not a command:", line)
+    } else {
+        machine.queue(command)    # `command` holds nothing after this line
+    }
+}
+print(len(machine.waiting), "commands, busy for", machine.busy_for())
+
+# Take the commands out last first, and run each until one halts.
+while machine.mode != Halted and len(machine.waiting) > 0 {
+    let next = machine.waiting.pop()
+    machine.mode = run(machine, next)
+}
+print(machine.mode, "with", len(machine.waiting), "left")
+
+# A new value takes the place of the old one, which is freed on the spot.
+machine.last = parse("say goodbye")
+machine.last = parse("set 4 off")
+match machine.last {
+    case none { print("nothing ran last") }
+    case Set(pin, on) { print("last: pin", pin, "on:", on) }
+    case _ { print("last: something else") }
+}
+print(machine)
