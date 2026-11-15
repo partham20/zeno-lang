@@ -178,6 +178,8 @@ cargo run -- run examples/ports.zeno            # an interface: `class Uart is P
 cargo run -- run examples/channels.zeno         # a dict of lists and of objects, and `for key, value in ...`
 cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
 cargo run -- test examples/ring                 # run the tests written in the files of a folder: `test "name" { assert ... }`
+cargo run -- new /tmp/blinker                   # make a new program: a `main.zeno`, a module with a test and a `zeno.package`
+cargo run -- new --package /tmp/filters         # make a new package: a folder of modules for other programs to need
 cargo run -- format --check examples            # is every example laid out the way `zeno format` lays programs out?
 python3 editors/talk.py target/debug/zeno examples/shapes.zeno  # play the editor's part to `zeno lsp`, and print both sides
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
@@ -228,7 +230,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
-  [`docs/testing.md`](docs/testing.md),
+  [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -381,7 +383,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       test` runs the tests of a file or of every file in a folder,
       `zeno run` goes past them, and a build leaves them out.
       See [`docs/testing.md`](docs/testing.md))
-    - `zeno new`: a new program or package in one command
+    - `zeno new`: a new program or package in one command (done:
+      `zeno new blinker` makes a folder with a `main.zeno`, a module
+      with a test and a `zeno.package`. It runs, its test passes,
+      and it is laid out as `zeno format` lays programs out. `zeno
+      new --package filters` makes a package. Nothing is written
+      into a folder that is there.
+      See [`docs/new.md`](docs/new.md))
     - The gaps programs have run into: `+=` on a sized number, and a
       number of decimals for a quantity (`f"{angle:.1f}"`)
     - A last pass over every decision marked provisional: each one is
@@ -397,7 +405,7 @@ src/ast.rs          the shapes of the syntax tree
 src/parser.rs       tokens -> syntax tree
 src/printer.rs      syntax tree -> text, for `zeno parse`
 src/modules.rs      the files of a program -> one syntax tree
-src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch`
+src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch` and `zeno new`
 src/format.rs       `zeno format`: one layout for every file
 src/json.rs         reads and writes JSON, for the language server
 src/lsp.rs          `zeno lsp`: the language server an editor starts

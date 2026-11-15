@@ -317,8 +317,9 @@ them by `file://` address, so it needs no network.
 - **No version ranges.** `at` names one tag, branch or commit, and two
   packages that need the same package must name the same one (8.4,
   8.7).
-- **No `zeno new` or `zeno add`.** The project file is two kinds of
-  line, written by hand (8.9).
+- **No `zeno add`.** The project file is two kinds of line, written
+  by hand (8.9). `zeno new` writes the first one, and shows the
+  others in a comment ([`new.md`](new.md)).
 - **A package is a whole repository.** One that sits in a subfolder
   of a repository cannot be fetched yet.
 - **`packages/` is not tidied.** A package that is no longer needed

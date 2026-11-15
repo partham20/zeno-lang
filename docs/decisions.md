@@ -5735,8 +5735,9 @@ that downloads has to be a step somebody chose.
 **Turned down.** Fetching on the first `zeno run` (Cargo, Go).
 `zeno add units ...` that edits the project file: the file is two
 kinds of line, and writing one is the simplest way to say it.
-*(Provisional: `zeno new` and `zeno add` can come if typing the lines
-turns out to be a chore.)*
+`zeno new` has come since (10.22), and the file it writes shows both
+kinds of `needs` line in a comment, so the line to write is in front
+of whoever needs it.
 
 ### 8.10 `zeno.lock` pins what was fetched
 
@@ -6105,6 +6106,11 @@ A test is a block with a name, and `assert` says what must be so
 (10.16, 10.17). There is one way to write each, a failure shows the
 two values that were compared, and no test runs by surprise: `zeno
 run` and a build go past them.
+
+`zeno new` does one thing, and it is the same thing every time
+(10.22): it asks nothing, it has one option, and what it writes is a
+program you could have typed. A name that will not do is refused with
+one that will, and is never changed quietly (10.23).
 
 A dict holds what a list holds (10.11), so there is one answer to
 "what can I keep in a collection" and not two. The one thing it does
@@ -6849,3 +6855,105 @@ write than the code they test, and fewer would be written.
 - Choosing tests by name on the command line, and running them side
   by side.
 - Running the tests of a compiled program, on a board or in the VM.
+
+### 10.22 `zeno new blinker` makes a program that runs and has a test
+
+```
+zeno new blinker
+```
+
+makes the folder `blinker`, and three files in it:
+
+| File | What it is |
+|---|---|
+| `zeno.package` | `package blinker`, under a comment that shows the two kinds of `needs` line |
+| `main.zeno` | imports `greeting` and prints what `greeting.hello("world")` gives |
+| `greeting.zeno` | the function `hello`, and one test of it |
+
+Then it says what it made, and the two commands to try: `zeno run
+blinker/main.zeno` and `zeno test blinker`.
+
+**Why these three.** Whoever runs `zeno new` wants to see something
+run, and then wants to know where things go. A lone `main.zeno` with
+a `print` in it answers the first and not the second, and nobody
+needs a command to write one line. The three files are the three
+things a program of more than one file is made of: the file it starts
+in (7.2), a module that is imported (7.1), and the project file
+(8.1). The test is there so that `zeno test` works in the first
+minute, and so that the first test a person writes has one to copy
+that stands where tests stand (10.16).
+
+**Why it is so small.** What is written is read once and then
+changed. Every line more is a line to delete. Each file starts with a
+comment that says what the file is, and that is all the teaching
+there is room for.
+
+**It is checked.** The compiler's own tests make a program and a
+package with `zeno new`, check them, run them, run their tests and
+compare each file with what `zeno format` would write. What `zeno
+new` writes cannot fall behind the language without a test failing.
+
+**Turned down.**
+
+| Idea | Why not |
+|---|---|
+| Templates: `zeno new --template firmware` | Several starting points means choosing one before knowing the language, and each one is a program that has to be kept right. A program for a board differs in what `main.zeno` says, and [`board.md`](board.md) says it |
+| Questions at the prompt (name? licence? author?), as `npm init` asks | The command would have two ways to be run, and a script could not run it. The name is the one thing needed, and it is on the command line |
+| `git init` and a `.gitignore`, as Cargo does | Whether a program is in git, and in which repository, is not the compiler's to decide. A folder made inside a repository would get a second one |
+| A `README.md`, a licence, a `src/` folder | Not Zeno's files. The folder of a program is the folder its `main.zeno` is in (7.2), so a `src/` would be a second answer to "where does the program start" |
+| `zeno init`, into the folder you are in | See 10.23 |
+| `zeno add units ...` | 8.9: a `needs` line is one line, and the new `zeno.package` shows it |
+
+### 10.23 The name is a Zeno name, and a folder that is there is left alone
+
+The last part of the path is the name: of the folder, of the program
+on the `package` line, and, for a package, of the module `import`
+reads. So it has to be a name of the language. These are refused:
+
+| `zeno new ...` | Why |
+|---|---|
+| `my-app`, `2fast` | not a name: "A name is letters, digits and `_`, and does not start with a digit ... Try `my_app`" |
+| `while` | a word of the language |
+| `math` | a module that comes with Zeno, which an `import math` already means |
+| a path where something already is | "`zeno new` makes a new folder, and writes nothing into one that is there" |
+
+**Why refuse and not repair.** Cargo takes `my-app`, keeps it as the
+package's name and calls the crate `my_app`, so one thing has two
+names from its first day. Here the folder, the `package` line and the
+`import` say the same word. The message gives the word to use, so the
+repair is one more try.
+
+**Why nothing is written into a folder that is there.** A command
+that makes files must never be able to replace one. If the folder is
+there, either it has work in it or the name was a slip, and in
+neither case is writing into it what was wanted. Checking each file
+instead ("write `main.zeno` unless there is one") leaves a folder
+that is half what was there and half new, which nobody asked for.
+
+**Turned down.** `--force`. `zeno init` for a folder that is there:
+the files are three, and in a folder with work in it the right ones
+to add depend on the work.
+
+### 10.24 `zeno new --package filters` makes a package
+
+```
+zeno new --package filters
+```
+
+makes `filters/zeno.package` and `filters/filters.zeno`: the module
+with the package's own name, which is the file `import filters` reads
+(8.5), with the same `hello` and the same test. There is no
+`main.zeno`, because a package is not run. The comment in its
+`zeno.package` shows the line a program writes to need it.
+
+**Why an option, and why this word.** A package and a program differ
+in which files they start with, and in nothing else, so one command
+with one option says it. The option is the word the language already
+uses for the thing: `package` is the first line of the file that
+makes a folder one.
+
+**Turned down.** `zeno new package filters`: then `zeno new package`
+would have two readings, a program called `package` or a package
+with no name. `--lib`, Cargo's word: Zeno has no libraries, it has
+packages. Writing both a `main.zeno` and the named module into every
+new folder: a program would start with a file it does not use.
