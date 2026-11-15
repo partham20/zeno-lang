@@ -7347,9 +7347,14 @@ release is made. A table with a hole in it tells somebody with that
 machine that Zeno is not for them, when the truth is that a build
 broke.
 
-**Started by hand, it releases nothing.** The same workflow can be
-started from the Actions page. It then builds and checks everything
-and stops, which is how a change to the workflow is tried.
+**Started by hand, it releases nothing, unless asked.** The same
+workflow can be started from the Actions page. It then builds and
+checks everything and stops, which is how a change to the workflow is
+tried. With the "publish" box ticked it goes on to make the release,
+and the tag with it, from the version in `Cargo.toml`. The box is
+there because a tag cannot be pushed from everywhere the source can
+be, and a release should not wait for one machine. It is off unless
+ticked, so a trial can never turn into a release by accident.
 
 **Turned down.** Building everything on one Linux machine: macOS
 programs cannot be linked there without Apple's files, and nothing

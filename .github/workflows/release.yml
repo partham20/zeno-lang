@@ -6,9 +6,11 @@
 #     git tag v0.1.0
 #     git push origin v0.1.0
 #
-# It can also be started by hand from the Actions page. Then it builds
-# and checks everything and releases nothing, which is the way to try a
-# change to this file.
+# It can also be started by hand from the Actions page ("Run workflow").
+# Then it builds and checks everything and releases nothing, which is the
+# way to try a change to this file. With "publish" ticked it makes the
+# release as well, and the tag with it, named after the version in
+# Cargo.toml. That is a release without a `git push`.
 
 name: release
 
@@ -16,6 +18,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Make the release too, and its tag, from the version in Cargo.toml
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -173,7 +180,7 @@ jobs:
   release:
     name: release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -187,10 +194,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag=v$version
           cd packed
           # One line for each file, to check a download against with
           # `sha256sum --check`.
           sha256sum zeno-* > SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Zeno $version" \
-            --notes-file "../docs/releases/$version.md" zeno-* SHA256SUMS.txt
+          notes=../docs/releases/$version.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # The release was drafted on the website, which made the tag.
+            gh release upload "$tag" --clobber zeno-* SHA256SUMS.txt
+            gh release edit "$tag" --title "Zeno $version" --notes-file "$notes"
+          else
+            # `--target` makes the tag here when no tag was pushed.
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Zeno $version" \
+              --notes-file "$notes" zeno-* SHA256SUMS.txt
+          fi

@@ -70,8 +70,14 @@ If any of the ten fails, there is no release: a release with a hole in
 the table is worse than one a day later.
 
 The same workflow can be started by hand, from the Actions page of the
-repository. Then it does steps 2 to 5 and releases nothing. That is the
-way to find out whether `main` could be released, without releasing it.
+repository ("Run workflow"). Then it does steps 2 to 5 and releases
+nothing. That is the way to find out whether `main` could be released,
+without releasing it.
+
+There is a box to tick there, "publish". With it the workflow does
+step 6 as well, and makes the tag itself, named after the version in
+`Cargo.toml`. That is a release from a web page, with no `git` at
+hand: tick the box, press the button, and wait about six minutes.
 
 ## Where each one is built
 
