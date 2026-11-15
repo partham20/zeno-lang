@@ -1,3 +1,349 @@
 \chapter{Numbers and Operators}\label{ch-numbers}
 
-To be written.
+Zeno has two kinds of plain number. An \verb|int| is a whole number, of
+64 bits, from $-9223372036854775808$ to $9223372036854775807$. A
+\verb|float| is a number with a fraction, the 64-bit floating point
+number that every processor with a floating point unit has. Chapters
+later in the book add numbers with a unit and whole numbers with a
+smaller size. This chapter is the plain two, and the operators that
+work on them.
+
+\section{Writing numbers}
+
+\begin{zeno}
+print(42, -7, 1_000_000)          # _ can split the digits, anywhere
+print(0xFF, 0b1010_0101)          # hexadecimal and binary
+print(3.14, -0.5, 2.5e-7, 1e10)   # floats
+\end{zeno}
+
+A float always prints with a decimal point or an exponent, so that it
+can never be taken for an int: \verb|3.0| prints as \verb|3.0|, not
+\verb|3|.
+
+\section{Arithmetic}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Operator & Means & Example \\
+\midrule
+\verb|+| & add & \verb|7 + 2| is \verb|9| \\
+\verb|-| & subtract, or negate & \verb|7 - 2| is \verb|5| \\
+\verb|*| & multiply & \verb|7 * 2| is \verb|14| \\
+\verb|/| & divide, always giving a float & \verb|7 / 2| is \verb|3.5| \\
+\verb|//| & divide and round down & \verb|7 // 2| is \verb|3| \\
+\verb|%| & the remainder of \verb|//| & \verb|7 % 2| is \verb|1| \\
+\verb|**| & power & \verb|7 ** 2| is \verb|49| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print(7 + 2, 7 - 2, 7 * 2, 7 / 2, 7 // 2, 7 % 2, 7 ** 2)
+print(10 / 5, 2 ** 0.5)
+\end{zeno}
+
+\subsection{Division}
+
+\verb|/| always gives a float, even when the numbers divide exactly.
+To divide whole numbers and keep a whole number, say so with
+\verb|//|.
+
+\begin{why}
+In C, \verb|7 / 2| is \verb|3| and \verb|7.0 / 2| is \verb|3.5|: one
+operator does two different things depending on what it is given, and
+the remainder vanishes without a word. In Zeno the operator decides
+what happens, not the values. (Decision 2.1.)
+\end{why}
+
+\verb|//| rounds \emph{down}, toward minus infinity, and \verb|%| takes
+the sign of the number on its right. Together they always satisfy
+\verb|(a // b) * b + a % b == a|:
+
+\begin{zeno}
+print(-7 // 2, -7 % 2, 7 % -2)
+print(5.5 // 2, 5.5 % 2)
+\end{zeno}
+
+That is what makes \verb|i % n| a safe position in a list of length
+\verb|n| for any \verb|i|, negative or not.
+
+Dividing by zero is an error, with every division operator and with
+both kinds of number:
+
+\begin{zeno}[fails=yes]
+print(1 / 0)
+\end{zeno}
+
+\subsection{Powers}
+
+\verb|2 ** 10| is an int. A whole number to a negative power would be
+a fraction, so it is refused, and the message says what to write:
+
+\begin{zeno}[fails=yes]
+print(2 ** -1)
+\end{zeno}
+
+\begin{why}
+If \verb|2 ** -1| were \verb|0.5|, the type of \verb|a ** b| would
+depend on the \emph{value} of \verb|b|, which nothing can know before
+the program runs. The operator decides the type, not the values.
+(Decision 2.3a.)
+\end{why}
+
+\subsection{Overflow}
+
+An \verb|int| that would go past its largest or smallest value is an
+\verb|OverflowError|, never a wrong number:
+
+\begin{zeno}[fails=yes]
+let big = 9223372036854775807
+print(big + 1)
+\end{zeno}
+
+\begin{why}
+In C, an overflow either wraps round without a word or is undefined.
+A wrong number that looks plausible is the worst kind of mistake.
+When a program really does want a number to wrap round, as a checksum
+does, it says so with \verb|wrap|, which
+\hyperref[ch-sized-numbers]{Sized Numbers and Bits} explains.
+(Decision 2.2.)
+\end{why}
+
+A float that grows too large becomes \verb|inf|, as floats do
+everywhere:
+
+\begin{zeno}
+print(1e308 * 10, -1e308 * 10)
+\end{zeno}
+
+\section{Mixing ints and floats}
+
+An int and a float can meet in arithmetic, and the answer is a float:
+
+\begin{zeno}
+print(1 + 0.5, 3 * 1.5, 1 == 1.0)
+\end{zeno}
+
+Nothing else changes kind by itself. Text is never turned into a
+number, or a number into text, without being asked:
+
+\begin{zeno}[fails=yes]
+print("3" + 4)
+\end{zeno}
+
+\begin{why}
+Making an int a float in arithmetic is what people expect from
+arithmetic. Every other automatic change is a guess at what the
+programmer meant, and JavaScript shows where those guesses lead:
+\verb|"3" + 4| is \verb|"34"| there. (Decision 2.3.)
+\end{why}
+
+\section{Changing kind on purpose}
+
+\begin{center}
+\begin{tabular}{lp{8cm}}
+\toprule
+Written & Gives \\
+\midrule
+\verb|int(x)| & a whole number: from text, or from a float by dropping the fraction \\
+\verb|float(x)| & a float: from text or from an int \\
+\verb|str(x)| & the value as text, as \verb|print| shows it \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print(int("42"), int(" 7 "), int(9.99), int(-9.99))
+print(float("1e3"), float(3), str(2.50) + "!")
+\end{zeno}
+
+Text that is not a number is a \verb|ValueError|, which a program can
+catch (\hyperref[ch-errors]{Errors}):
+
+\begin{zeno}[fails=yes]
+print(int("forty"))
+\end{zeno}
+
+\section{Comparing}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Operator & Means \\
+\midrule
+\verb|==|, \verb|!=| & equal, not equal \\
+\verb|<|, \verb|<=| & less than, less than or equal \\
+\verb|>|, \verb|>=| & greater than, greater than or equal \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A comparison gives a \verb|bool|. Comparisons \emph{chain}, as they do
+in mathematics: \verb|0 <= i < n| means \verb|0 <= i and i < n|, with
+\verb|i| worked out once.
+
+\begin{zeno}
+let i = 3
+print(0 <= i < 10, 1 < 2 < 3, 3 > 2 > 2)
+\end{zeno}
+
+\begin{why}
+In C, \verb|0 <= i < n| means \verb|(0 <= i) < n|, which compares true
+or false with a number, compiles without a word, and is a classic
+mistake. Refusing chains altogether, as Rust does, is safe but loses
+the readable form. Zeno gives the line the meaning it looks like it
+has. (Decision 1.16.)
+\end{why}
+
+Comparing two things that can never be equal is a mistake, and Zeno
+says so instead of quietly answering \verb|false|. It is nearly always
+a number that was read as text and never turned into one:
+
+\begin{zeno}[fails=yes]
+let typed = "1"
+print(typed == 1)
+\end{zeno}
+
+Floats are kept in binary, so most decimal fractions are close to
+what you wrote but not exactly it. That is true in every language, and
+it is why floats are compared with care:
+
+\begin{zeno}
+print(0.1 + 0.2, 0.1 + 0.2 == 0.3)
+print(abs((0.1 + 0.2) - 0.3) < 1e-9)
+\end{zeno}
+
+\section{True and false}
+
+A \verb|bool| is \verb|true| or \verb|false|, and three words work on
+them: \verb|and|, \verb|or| and \verb|not|.
+
+\begin{zeno}
+let warm = true
+let raining = false
+print(warm and not raining, warm or raining, not warm)
+\end{zeno}
+
+\verb|and| and \verb|or| stop as soon as the answer is known: in
+\verb|a and b|, \verb|b| is not worked out at all when \verb|a| is
+false. That makes \verb|len(xs) > 0 and xs[0] == 1| safe for an empty
+list.
+
+A condition must be a real \verb|bool|. A number, a list or a piece of
+text is not true or false by itself:
+
+\begin{zeno}[fails=yes]
+let items = [1, 2]
+if items {
+    print("not empty")
+}
+\end{zeno}
+
+\begin{why}
+"Truthiness" means remembering which values count as false: is it
+\verb|0|, \verb|""|, \verb|[]|, \verb|none|, \verb|0.0|? The answer
+differs between languages and causes mistakes such as treating a real
+reading of \verb|0| as no reading at all. Saying what you test,
+\verb|len(items) > 0|, is clearer. (Decision 2.4.)
+\end{why}
+
+\section{Changing a variable: the = forms}
+
+Every operator that takes two numbers has a form that changes a
+variable, \verb|x op= y|, which means exactly \verb|x = x op y|:
+
+\begin{center}
+\verb|+=  -=  *=  /=  //=  %=  **=  &=  |\verb!|=!\verb|  ^=  <<=  >>=|
+\end{center}
+
+\begin{zeno}
+var n = 10
+n -= 3        # 7
+n *= 2        # 14
+n //= 3       # 4
+n **= 2       # 16
+print(n)
+var f = 1.0
+f /= 4
+print(f)
+\end{zeno}
+
+The variable is read first and the right-hand side worked out second,
+as in \verb|x = x + y|. \verb|/=| on an int is refused, because
+\verb|/| gives a float and an int variable cannot hold one: use
+\verb|//=|.
+
+\begin{zeno}[fails=yes]
+var half = 9
+half /= 2
+\end{zeno}
+
+\section{Which operator goes first}
+
+When operators are mixed, some bind tighter than others, as in school
+arithmetic: \verb|2 + 3 * 4| is \verb|14|. From the loosest to the
+tightest:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Operators & \\
+\midrule
+\verb|or| & loosest \\
+\verb|and| & \\
+\verb|not| & \\
+\verb|==  !=  <  <=  >  >=  in  is| & comparisons, which chain \\
+\verb!|! & bit or \\
+\verb|^| & bit exclusive or \\
+\verb|&| & bit and \\
+\verb|<<  >>| & shifts \\
+\verb|+  -| & \\
+\verb|*  /  //  %| & \\
+\verb|-x  ~x| & negation, bit not \\
+\verb|**| & tightest \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print(2 + 3 * 4 ** 2, (2 + 3) * 4, -2 ** 2)
+\end{zeno}
+
+Brackets always win, and they are the best way to make a long
+expression plain to the reader. The bit operators are in
+\hyperref[ch-sized-numbers]{Sized Numbers and Bits}, and the whole
+table again, with every operator, is \hyperref[app-operators]{Operators}.
+
+\section{Built-in functions for numbers}
+
+\begin{zeno}
+print(abs(-4.5), min(3, 1, 2), max(2, 8.5), sum([1, 2, 3]))
+print(min([5, 3, 9]), max([5, 3, 9]))
+\end{zeno}
+
+\verb|min| and \verb|max| take either several numbers or one list.
+Square roots, rounding, logarithms and the trigonometric functions are
+in the \verb|math| module (\hyperref[ch-math]{The math Module}).
+
+\begin{summary}
+\verb|int| is a 64-bit whole number, \verb|float| a 64-bit floating
+point number. \verb|/| always gives a float and \verb|//| rounds down.
+An int that overflows is an error, never a wrong number. Ints and
+floats mix in arithmetic and nowhere else. Comparisons chain,
+conditions must be real \verb|bool|s, and every operator on two
+numbers has an \verb|=| form.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Work out \verb|-17 // 5| and \verb|-17 % 5| on paper, then check
+  with Zeno. Check that \verb|(a // b) * b + a % b == a| holds.
+\item What is the largest power of two that fits in an \verb|int|?
+  Find it by trying \verb|2 ** n| for larger and larger \verb|n|.
+\item Write \verb|if 1 <= x <= 10 and x % 2 == 0| for a few values of
+  \verb|x|. Put brackets where Zeno would put them.
+\item Print \verb|1 / 3 * 3|. Is it exactly 1? Now try
+  \verb|0.1 * 3|.
+\end{enumerate}
+\end{tryit}

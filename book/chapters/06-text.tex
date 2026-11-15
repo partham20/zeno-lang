@@ -1,3 +1,324 @@
 \chapter{Text}\label{ch-text}
 
-To be written.
+Text in Zeno is a \verb|str|: a row of characters. It is written
+between double quotes, or between single quotes when it holds double
+ones:
+
+\begin{zeno}
+let name = "Ada"
+let quote = 'She said "hello"'
+print(name, quote, "it's fine")
+\end{zeno}
+
+A string must close on the line it opens on.
+
+\section{Characters that cannot be typed}
+
+A backslash starts an \emph{escape}: two characters that stand for one.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Escape & Means \\
+\midrule
+\verb|\n| & a line end \\
+\verb|\t| & a tab \\
+\verb|\r| & a carriage return \\
+\verb|\"|, \verb|\'| & a quote \\
+\verb|\\| & a backslash \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print("first line\nsecond line")
+print("a backslash: \\, and a quote: \"")
+\end{zeno}
+
+Any other letter after a backslash is a mistake, so a slip such as
+\verb|"C:\temp\new"| is caught rather than quietly turned into a tab
+and a line end.
+
+\section{Characters, not bytes}
+
+Zeno text is Unicode, kept in UTF-8. Its length, its positions and a
+loop over it all count \emph{characters}, whatever alphabet they are
+from and however many bytes each one takes:
+
+\begin{zeno}
+let word = "naïve"
+print(len(word), word[2], word.find("v"))
+\end{zeno}
+
+A position counts from 0, so \verb|word[0]| is the first character. A
+position past the end, or below 0, is an \verb|IndexError|:
+
+\begin{zeno}[fails=yes]
+print("abc"[3])
+\end{zeno}
+
+\begin{why}
+In Python, \verb|text[-1]| is the last character. That is handy, but
+it means a position that goes below zero \emph{by mistake} quietly
+reads from the other end instead of failing. A clear error is the
+safer thing, above all in code that runs on hardware. (Decision 2.6.)
+\end{why}
+
+Text cannot be changed inside. Every method that seems to change it
+gives back new text and leaves the old as it was:
+
+\begin{zeno}[fails=yes]
+let word = "cat"
+word[0] = "b"
+\end{zeno}
+
+\section{Joining and comparing}
+
+\verb|+| joins two pieces of text. Both sides must be text; a number is
+made into text with \verb|str|, or put into a formatted string:
+
+\begin{zeno}
+let count = 3
+print("count: " + str(count))
+print("ab" == "ab", "ab" < "b", "B" < "a")
+print("ell" in "hello", "x" not in "hello")
+\end{zeno}
+
+Text is ordered character by character, by the number Unicode gives
+each character, so every capital comes before every small letter.
+\verb|in| asks whether one piece of text is found in another.
+
+\section{Formatted strings}
+
+An \verb|f| in front of a string lets it hold expressions in braces.
+Each one is worked out and its value put into the text, as
+\verb|print| would show it:
+
+\begin{zeno}
+let name = "Ada"
+let items = 3
+print(f"{name} has {items} items, {items * 2} halves")
+print(f"Shout it: {name.upper()}")
+print(f"Braces themselves: {{ and }}")
+\end{zeno}
+
+Inside the braces, a string must use the other kind of quote from the
+one around it.
+
+\begin{why}
+Without the \verb|f|, any string with a \verb|{| in it would change
+meaning, and such strings are common: JSON, templates, messages for a
+device. The one letter marks the strings that hold code.
+(Decision 1.14.)
+\end{why}
+
+\subsection{Formats}
+
+After the expression, a \verb|:| and a \emph{format} say how to lay the
+value out:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Format & Means & \verb|f"[{v:...}]"| \\
+\midrule
+\verb|.2f| & two digits after the point & \verb|[3.14]| for \verb|3.14159| \\
+\verb|8.3f| & at least 8 wide, 3 digits after the point & \verb|[   3.142]| \\
+\verb|6| & at least 6 wide; numbers on the right, text on the left & \verb|[    42]| \\
+\verb|<6|, \verb|>6|, \verb|^6| & at least 6 wide: left, right, centred & \verb|[42    ]| \\
+\verb|03| & at least 3 wide, with zeros in front & \verb|[042]| \\
+\verb|x|, \verb|X| & a whole number in hexadecimal & \verb|[ff]|, \verb|[FF]| \\
+\verb|b| & a whole number in binary & \verb|[101]| \\
+\verb|d| & a whole number & \verb|[42]| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+let pi = 3.14159
+let n = 42
+print(f"[{pi:.2f}] [{pi:8.3f}] [{n:6}] [{n:<6}] [{n:^6}] [{n:04}]")
+print(f"[{255:x}] [{255:X}] [{5:b}] [{0xA5:08b}]")
+print(f"[{'ab':>5}] [{'ab':<5}]")
+\end{zeno}
+
+A format that makes no sense for the value is refused before the
+program runs:
+
+\begin{zeno}[fails=yes]
+let pi = 3.14159
+print(f"{pi:x}")
+\end{zeno}
+
+\section{The methods of text}
+
+A \emph{method} is a function that belongs to a value, and is called
+with a dot after it: \verb|name.upper()|. Text has these:
+
+\begin{center}
+\begin{tabular}{lp{8.5cm}}
+\toprule
+Method & Gives \\
+\midrule
+\verb|upper()|, \verb|lower()| & the text in capitals, or in small letters \\
+\verb|strip()| & the text without blanks at either end \\
+\verb|split()| & a list of the words, split at blanks \\
+\verb|split(sep)| & a list of the pieces between each \verb|sep| \\
+\verb|lines()| & a list of the lines, without their line ends \\
+\verb|replace(old, new)| & the text with every \verb|old| made \verb|new| \\
+\verb|starts_with(part)|, \verb|ends_with(part)| & whether it starts or ends with \verb|part| \\
+\verb|find(part)| & the position where \verb|part| starts, or \verb|none| \\
+\verb|slice(from, to)| & the characters from \verb|from| up to, not including, \verb|to| \\
+\verb|slice(from)| & the characters from \verb|from| to the end \\
+\verb|code()| & the Unicode number of a text of one character \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+let line = "  Set Speed 40  "
+let words = line.strip().lower().split()
+print(words)
+print("a,b,,c".split(","), "x=1".replace("=", " is "))
+print("hello".starts_with("he"), "hello".ends_with("x"))
+print("hello".slice(1, 4), "hello".slice(2))
+print("A".code(), char(66), char(8364))
+\end{zeno}
+
+\verb|char(n)| is the other way round from \verb|code()|: the
+character with that number. It is a function and not a method because
+there is no text yet to ask: it \emph{makes} text from a number, as
+\verb|str(n)| does.
+
+\subsection{split and lines}
+
+\verb|split()| with nothing in the brackets splits at any run of blanks
+and never gives an empty piece. \verb|split(sep)| splits at each
+\verb|sep| exactly, so two in a row give an empty piece between them:
+
+\begin{zeno}
+print("one  two   three".split())
+print("  a b ".split(" "))
+print("".split(","), "a,".split(","))
+\end{zeno}
+
+\verb|lines()| is the way to cut text into lines. It knows both kinds
+of line end, \verb|"\n"| and \verb|"\r\n"|, and a last line with no end:
+
+\begin{zeno}
+print("a\nb\n".split("\n"))
+print("a\nb\n".lines())
+print("one\r\ntwo".lines())
+\end{zeno}
+
+\subsection{find gives a position or none}
+
+\verb|find| gives the position of a piece of text, or \verb|none| when
+it is not there. Because the answer may be \verb|none|, Zeno will not
+let it be used as a number until the program has asked:
+
+\begin{zeno}
+function first_word(line: str) -> str {
+    let space = line.find(" ")
+    if space is none {
+        return line
+    }
+    return line.slice(0, space)
+}
+
+print(first_word("set speed 40"), first_word("stop"))
+\end{zeno}
+
+\begin{why}
+Python's \verb|find| gives \verb|-1| when the text is not there, and
+\verb|-1| is a number, so nothing stops it from being used as a
+position. \verb|none| cannot be used as a position at all, so the
+mistake is caught before the program runs. (Decision 6.3.)
+\end{why}
+
+\hyperref[ch-none]{Values That May Be Missing} is about \verb|none| and
+how Zeno knows when it has been ruled out.
+
+\subsection{slice takes a part}
+
+\verb|slice(from, to)| counts as \verb|range| does: from \verb|from| up
+to but not including \verb|to|. A position outside the text is an
+error, not a shorter slice:
+
+\begin{zeno}[fails=yes]
+print("abc".slice(1, 9))
+\end{zeno}
+
+If you write Python's \verb|text[1:3]|, Zeno says what its own way is:
+
+\begin{zeno}[fails=yes]
+let text = "hello"
+print(text[1:3])
+\end{zeno}
+
+\subsection{Plain letters only}
+
+\verb|upper| and \verb|lower| change the letters \verb|a| to \verb|z|
+and \verb|A| to \verb|Z| and nothing else, and \verb|strip| and
+\verb|split()| know the space, the tab, the line ends and the form
+feed as blanks. Letters of other alphabets pass through untouched:
+
+\begin{zeno}
+print("Straße".upper(), "ÉCOLE".lower())
+\end{zeno}
+
+\begin{why}
+The full rules for every alphabet need tables of tens of kilobytes,
+and a compiled Zeno program has to fit on a microcontroller. A method
+must also give the same answer under \verb|zeno run| as in a compiled
+program, so the rule is the same everywhere. (Decision 3.14.)
+\end{why}
+
+\section{A loop over text}
+
+A \verb|for| loop over text is given each character in turn. With two
+names it is given each position and the character there:
+
+\begin{zeno}
+for ch in "abc" {
+    print(ch)
+}
+for at, ch in "hé" {
+    print(at, ch)
+}
+\end{zeno}
+
+\hyperref[ch-control-flow]{Deciding and Repeating} has loops in full.
+
+\section{Text from other values}
+
+\verb|str(x)| gives any value as text, exactly as \verb|print| shows
+it. Inside a list, text is shown in quotes, so that \verb|["1"]| and
+\verb|[1]| look different:
+
+\begin{zeno}
+print(str(42) + "!", str([1, "a"]), str(none), str(true))
+\end{zeno}
+
+\begin{summary}
+A \verb|str| is text, counted in characters. It is written in quotes,
+with escapes after a backslash, and never changes inside. \verb|+|
+joins text, \verb|in| finds it, and an \verb|f| string puts values into
+it, laid out by a format. Its methods give new text, a list of pieces,
+a position or \verb|none|.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function last_word(line: str) -> str|. There is no
+  method that searches from the end. What is the shortest way with what
+  there is?
+\item Print a table of the numbers 1 to 5 with their squares and cubes,
+  each column 6 wide, using formats.
+\item Print \verb|"€".code()| and work out by hand, from the number,
+  how many bytes the character takes in UTF-8.
+\item What does \verb|"a,b,c".split(",")| give? And
+  \verb|",".split(",")|? Say why each piece is there.
+\item Write \verb|"C:\temp"| in a program and read the message.
+\end{enumerate}
+\end{tryit}

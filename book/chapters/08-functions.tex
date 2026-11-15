@@ -1,3 +1,299 @@
 \chapter{Functions}\label{ch-functions}
 
-To be written.
+A \emph{function} is a block of code with a name, which the rest of
+the program can run by calling it. Functions are how a program is cut
+into pieces small enough to understand one at a time.
+
+\section{Declaring and calling}
+
+\begin{zeno}
+function area(width: float, height: float) -> float {
+    return width * height
+}
+
+print(area(2.0, 3.0))
+print(area(1.5, 4.0))
+\end{zeno}
+
+The first line is the function's \emph{heading}: the word
+\verb|function|, a name, the \emph{parameters} in brackets with their
+types, and after \verb|->| the type of what it gives back. Calling it
+gives each parameter a value, the \emph{arguments}, and
+\verb|return| hands a value back to the caller and ends the call.
+
+\begin{why}
+\verb|function| is a whole word that someone who has never seen the
+language can read aloud. \verb|fn| and \verb|def| have to be learnt,
+and editor completion makes the extra letters free. (Decision 1.4.)
+\end{why}
+
+A function that gives nothing back leaves out the \verb|->| part. Its
+call is then worth \verb|none|:
+
+\begin{zeno}
+function announce(what: str) {
+    print("now:", what)
+}
+
+let result = announce("lunch")
+print(result)
+\end{zeno}
+
+\section{Types are optional here too}
+
+The types in a heading can be left out:
+
+\begin{zeno}
+function add(a, b) {
+    return a + b
+}
+print(add(1, 2))
+\end{zeno}
+
+Zeno works out what it can. Here every call passes two ints, so
+\verb|a| and \verb|b| are ints, and the function gives an int. If a
+call disagrees with how the function uses its parameters, the mistake
+is reported inside the function, with a note that names the line the
+type was worked out from:
+
+\begin{zeno}[fails=yes]
+function shout(text) {
+    return text.upper()
+}
+print(shout(5))
+\end{zeno}
+
+When the types are written, every call is checked against them, and a
+wrong call is reported at the call:
+
+\begin{zeno}[fails=yes]
+function shout(text: str) -> str {
+    return text.upper()
+}
+print(shout(5))
+\end{zeno}
+
+That is the reason to write types on anything that other people call.
+\hyperref[ch-types]{Types, Written and Worked Out} says exactly what
+Zeno works out, and when it cannot.
+
+\section{Returning on every path}
+
+A function that promises to return a value must return one on every
+way through it. Zeno finds the way that falls off the end:
+
+\begin{zeno}[fails=yes]
+function sign(n: int) -> int {
+    if n > 0 {
+        return 1
+    } else if n < 0 {
+        return -1
+    }
+}
+\end{zeno}
+
+\begin{why}
+In C, falling off the end of a function that promised a value returns
+whatever was lying in a register. In Python it returns \verb|None|,
+which then fails somewhere else. Here it is an error at the function.
+(Decision 3.13.)
+\end{why}
+
+\section{Default values}
+
+A parameter can have a default, used when the call leaves it out:
+
+\begin{zeno}
+function greet(who: str, excited: bool = false) -> str {
+    if excited {
+        return f"Hello, {who}!"
+    }
+    return f"Hello, {who}."
+}
+
+print(greet("Ada"))
+print(greet("Ada", true))
+\end{zeno}
+
+A default is worked out afresh on every call, so a default list is a
+new empty list each time:
+
+\begin{zeno}
+function with_one(items: list[int] = []) -> list[int] {
+    items.append(1)
+    return items
+}
+print(with_one(), with_one())
+\end{zeno}
+
+\begin{why}
+In Python, \verb|def add(item, to=[])| makes the list once, and every
+call shares it, so the second call finds the first call's item. It is
+one of the most reported surprises in that language. (Decision 3.5.)
+\end{why}
+
+\section{Named arguments}
+
+Any argument can be given by the name of its parameter, which makes a
+call readable without looking the function up:
+
+\begin{zeno}
+function set_timer(millis: int, repeat: bool, start_now: bool) {
+    print(millis, repeat, start_now)
+}
+
+set_timer(500, true, false)
+set_timer(millis=500, repeat=true, start_now=false)
+set_timer(500, repeat=true, start_now=false)
+\end{zeno}
+
+Plain arguments come first and named ones after them. A name that is
+not a parameter, or a parameter given twice, is a mistake:
+
+\begin{zeno}[fails=yes]
+function move(x: int, y: int) {
+    print(x, y)
+}
+move(1, z=2)
+\end{zeno}
+
+\section{Parameters do not change}
+
+A parameter holds what the caller passed, all the way through the
+function. It cannot be given another value; if the function needs a
+changing value, it makes a \verb|var| of its own:
+
+\begin{zeno}[fails=yes]
+function count_down(start: int) {
+    while start > 0 {
+        start -= 1
+    }
+}
+\end{zeno}
+
+\begin{zeno}
+function count_down(start: int) {
+    var n = start
+    while n > 0 {
+        print(n)
+        n -= 1
+    }
+}
+count_down(3)
+\end{zeno}
+
+A list or an object passed as an argument is the caller's own, not a
+copy, so a function \emph{can} change what is inside it, and the
+caller sees the change. \hyperref[ch-lists]{Lists} returns to this.
+
+\section{Calling a function above where it is written}
+
+A function can be used anywhere in its file, above or below the place
+it is declared. That lets a file read from the top, with the main
+logic first and the helpers below:
+
+\begin{zeno}
+print(fahrenheit(100.0))
+
+function fahrenheit(celsius: float) -> float {
+    return celsius * 1.8 + 32.0
+}
+\end{zeno}
+
+The same goes for classes and enums. Variables are different: a
+\verb|let| or \verb|var| exists only from its line on.
+
+\section{Functions that call themselves}
+
+A function may call itself. This is called \emph{recursion}, and it
+suits problems that contain smaller copies of themselves:
+
+\begin{zeno}
+function factorial(n: int) -> int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+function fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+print(factorial(20), fib(20))
+\end{zeno}
+
+\section{Functions inside functions}
+
+A function can be declared inside another. It is then a name of that
+block, like a variable, and can use the variables that were declared
+above it in the blocks around it:
+
+\begin{zeno}
+function report(readings: list[float]) {
+    let limit = 25.0
+
+    function flag(r: float) -> str {
+        if r > limit {
+            return "high"
+        }
+        return "ok"
+    }
+
+    for r in readings {
+        print(r, flag(r))
+    }
+}
+
+report([21.0, 27.5])
+\end{zeno}
+
+What such a function can see is fixed by where it is written: the
+variables above it, never one declared further down. A function used
+before a variable it needs has been declared is refused, with the
+reason:
+
+\begin{zeno}[fails=yes]
+function outer() -> int {
+    let result = inner()
+    let base = 5
+    function inner() -> int {
+        return base * 2
+    }
+    return result
+}
+print(outer())
+\end{zeno}
+
+Functions are also values, which can be stored, passed and returned,
+and a function written inside another can go on using its variables
+after the outer one has returned. That is the subject of
+\hyperref[ch-function-values]{Functions as Values}.
+
+\begin{summary}
+A function has a heading, \verb|function name(parameters) -> type|,
+and a body. Types can be written or left out. A function that
+promises a value must return one on every path, and one that promises
+nothing returns \verb|none|. Defaults are worked out on every call,
+arguments can be named, parameters never change, and functions can be
+called from above where they are written, call themselves, and live
+inside other functions.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write \verb|function clamp(x: float, low: float, high: float) -> float|
+  and call it with named arguments in a different order from the
+  heading.
+\item Remove the types from \verb|clamp| and call it with ints. Then
+  add a call with a str. Where is the mistake reported?
+\item Write \verb|power(base: int, exponent: int) -> int| that calls
+  itself, using \verb|base ** exponent == base * base ** (exponent - 1)|.
+\item Write a function with a \verb|while true| loop and a
+  \verb|return| inside it. Does Zeno ask for a \verb|return| after the
+  loop?
+\end{enumerate}
+\end{tryit}

@@ -1,3 +1,259 @@
 \chapter{Deciding and Repeating}\label{ch-control-flow}
 
-To be written.
+A program that only goes from the top to the bottom can only do one
+thing. This chapter is about the two things that change that: doing a
+block only when something is true, and doing a block again and again.
+
+\section{if}
+
+\begin{zeno}
+let temperature = 31
+if temperature > 30 {
+    print("hot")
+}
+\end{zeno}
+
+The block runs only when the condition is \verb|true|. There is no
+\verb|:| after the condition and no need for brackets around it: the
+\verb|{| already says where the condition ends.
+
+\verb|else| gives a block for when it is false, and \verb|else if|
+asks again:
+
+\begin{zeno}
+function describe(t: int) -> str {
+    if t < 0 {
+        return "freezing"
+    } else if t < 18 {
+        return "cold"
+    } else if t < 25 {
+        return "comfortable"
+    } else {
+        return "hot"
+    }
+}
+
+for t in [-5, 10, 21, 31] {
+    print(t, describe(t))
+}
+\end{zeno}
+
+There is one way to write it, so \verb|elif| gets a message:
+
+\begin{zeno}[fails=yes]
+let x = 2
+if x == 1 {
+    print("one")
+} elif x == 2 {
+    print("two")
+}
+\end{zeno}
+
+\begin{why}
+With braces, \verb|} else if x {| reads as plain words and needs no
+keyword of its own. (Decision 1.8.) The braces themselves are there
+because where a block ends should be written down, not implied by
+spaces that can be lost when code is pasted into an e-mail.
+(Decision 1.1.)
+\end{why}
+
+The condition must be a \verb|bool|. \verb|if count| for a number, or
+\verb|if items| for a list, is refused; write what you mean,
+\verb|count != 0| or \verb|len(items) > 0|
+(\hyperref[ch-numbers]{Numbers and Operators}).
+
+\section{while}
+
+\verb|while| runs its block again and again for as long as its
+condition is true. The condition is asked before each turn:
+
+\begin{zeno}
+var n = 1
+while n < 100 {
+    n *= 3
+}
+print(n)
+\end{zeno}
+
+A loop that should run until something inside it says stop is written
+\verb|while true|, with a \verb|break|:
+
+\begin{zeno}
+var tries = 0
+while true {
+    tries += 1
+    if tries * tries > 50 {
+        break
+    }
+}
+print(tries)
+\end{zeno}
+
+\section{for}
+
+\verb|for| goes through the items of something, one at a time:
+
+\begin{zeno}
+for name in ["Ada", "Grace", "Alan"] {
+    print("hello,", name)
+}
+\end{zeno}
+
+The name after \verb|for| is new for each turn, belongs to the loop,
+and is gone after it. It cannot be given another value inside the
+loop.
+
+A \verb|for| loop can go through a list, the characters of a text,
+the keys of a dict, or a range of numbers.
+
+\subsection{range}
+
+\verb|range| gives a list of whole numbers. With one number it counts
+from 0 up to, not including, that number. With two it counts from the
+first up to the second. A third number is the step, which may be
+negative:
+
+\begin{zeno}
+print(range(5), range(2, 5), range(10, 0, -3), range(0))
+for i in range(3) {
+    print("turn", i)
+}
+\end{zeno}
+
+\subsection{The position and the item}
+
+With two names, a \verb|for| loop is given the position of each item
+and the item itself. The rule is the same for everything a loop can go
+through: \emph{the second name is what is at the first}.
+
+\begin{zeno}
+for at, word in ["zero", "one", "two"] {
+    print(at, word)
+}
+for trip, n in range(10, 0, -4) {
+    print(trip, n)
+}
+\end{zeno}
+
+Over a dict, the first name is the key and the second the value under
+it (\hyperref[ch-dicts]{Dicts}).
+
+\begin{why}
+Without this, the position is a \verb|var| counted by hand beside the
+loop, or \verb|for i in range(len(words))| and \verb|words[i]| on the
+next line: two ways, both longer than what they mean. Python's
+\verb|enumerate| and \verb|items| are two more names to learn, and
+each builds pairs that Zeno has no type for. (Decision 10.12.)
+\end{why}
+
+\subsection{The loop sees the list as it was}
+
+A \verb|for| loop goes through the list as it was when the loop began.
+Adding to the list, or taking from it, inside the loop does not change
+which items the loop visits:
+
+\begin{zeno}
+var xs = [1, 2, 3]
+for x in xs {
+    xs.append(x * 10)
+}
+print(xs)
+\end{zeno}
+
+\begin{why}
+The other choice, looping over the list as it changes, is the source
+of two classic mistakes: a loop that never ends because its body keeps
+appending, and a loop that skips an item because its body removed one.
+(Decision 3.10a.)
+\end{why}
+
+\section{break and continue}
+
+\verb|break| leaves the loop at once. \verb|continue| skips the rest of
+this turn and goes on with the next. Both work in \verb|while| and
+\verb|for|, and both act on the innermost loop they are in:
+
+\begin{zeno}
+for n in range(1, 20) {
+    if n % 2 == 0 {
+        continue        # skip the even ones
+    }
+    if n > 9 {
+        break           # and stop after 9
+    }
+    print(n)
+}
+\end{zeno}
+
+A \verb|break| outside a loop is a mistake:
+
+\begin{zeno}[fails=yes]
+break
+\end{zeno}
+
+\section{Loops inside loops}
+
+\begin{zeno}
+for row in range(1, 4) {
+    var line = ""
+    for column in range(1, 4) {
+        line = line + f"{row * column:4}"
+    }
+    print(line)
+}
+\end{zeno}
+
+\section{A worked example: primes}
+
+Putting the pieces together, this program finds the prime numbers
+below 50. A number is prime when nothing from 2 up to its square root
+divides it:
+
+\begin{zeno}[file=primes.zeno]
+function is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+var found: list[int] = []
+for n in range(50) {
+    if is_prime(n) {
+        found.append(n)
+    }
+}
+print(found)
+print(len(found), "primes below 50")
+\end{zeno}
+
+\begin{summary}
+\verb|if|, \verb|else if| and \verb|else| choose a block. \verb|while|
+repeats a block while a condition holds, and \verb|for| goes through
+the items of a list, a text, a dict or a \verb|range|, with an
+optional second name for the position or the key. A \verb|for| loop
+sees its list as it was when it began. \verb|break| leaves a loop and
+\verb|continue| starts its next turn.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Print the numbers from 1 to 30, with \verb|fizz| for those that 3
+  divides, \verb|buzz| for those that 5 divides, and \verb|fizzbuzz| for
+  those both divide.
+\item Change the primes program to stop as soon as it has found ten
+  primes, using \verb|break|.
+\item Write a loop that appends to the list it walks through, and check
+  that it ends. Then write the same with \verb|while| and an index,
+  and see that it does not.
+\item Print a triangle of \verb|*| five lines high, with a loop inside
+  a loop.
+\end{enumerate}
+\end{tryit}

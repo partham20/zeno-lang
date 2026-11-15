@@ -1,3 +1,250 @@
 \chapter{Values and Variables}\label{ch-values}
 
-To be written.
+A program works on \emph{values}: numbers, pieces of text, true and
+false, lists of things. This chapter is about the values Zeno has, and
+about the names you give them.
+
+\section{The kinds of value}
+
+Every value has a \emph{type}, which says what kind of value it is and
+what can be done with it. These are the types every program meets
+first:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Type & What it holds & Written like \\
+\midrule
+\verb|int| & a whole number & \verb|42|, \verb|-7|, \verb|0xFF|, \verb|1_000_000| \\
+\verb|float| & a number with a fraction & \verb|3.14|, \verb|-0.5|, \verb|2.5e-7| \\
+\verb|bool| & true or false & \verb|true|, \verb|false| \\
+\verb|str| & text & \verb|"Ada"| \\
+\verb|list[int]| & several values, in order & \verb|[1, 2, 3]| \\
+\verb|dict[str, int]| & values filed under keys & \verb|["Ada": 36]| \\
+\verb|none| & no value & \verb|none| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+print(42, 3.14, true, "Ada", [1, 2, 3], ["Ada": 36], none)
+\end{zeno}
+
+Later chapters add more: numbers with a unit (\verb|500 ms|), numbers
+with a size (\verb|u8|), objects of your own classes, enum values, and
+functions.
+
+\section{let: a name for a value}
+
+\verb|let| gives a value a name:
+
+\begin{zeno}
+let name = "Ada"
+let born = 1815
+print(name, "was born in", born)
+\end{zeno}
+
+A name given with \verb|let| keeps its value for as long as it exists.
+Trying to give it another is a mistake, and the message names the word
+that would allow it:
+
+\begin{zeno}[fails=yes]
+let count = 0
+count = 1
+\end{zeno}
+
+\section{var: a name whose value changes}
+
+When the value is meant to change, declare the name with \verb|var|.
+After that, plain \verb|=| gives it a new value:
+
+\begin{zeno}
+var count = 0
+count = count + 1
+count = count + 1
+print(count)
+\end{zeno}
+
+There is a shorter way to write \verb|count = count + 1|:
+\verb|count += 1|. Every operator has a form like it, and
+\hyperref[ch-numbers]{Numbers and Operators} lists them.
+
+A name is declared once, and only declared names can be given a value.
+So a misspelt name is a mistake, and never a new variable by accident:
+
+\begin{zeno}[fails=yes]
+var count = 0
+cuont = 1
+\end{zeno}
+
+\begin{why}
+In Python, \verb|x = 1| both makes a new variable and changes an old
+one, so a typing slip quietly makes a second variable and the first
+one never changes. Separating the two turns the slip into an error.
+\verb|let| is the short, ordinary word because most values never
+change once they are made, and a program whose values do not change
+is easier to follow. (Decision 1.6.)
+\end{why}
+
+\section{const: a value fixed for the whole program}
+
+\begin{zeno}
+const LIMIT = 100
+const GREETING = "hello"
+print(LIMIT, GREETING)
+\end{zeno}
+
+A \verb|const| says that the value belongs to the program, not to a
+moment while it runs: a size, a limit, an address, a name. By custom
+its name is written in capitals. Like a \verb|let|, it can never be
+given another value.
+
+\section{Types are optional}
+
+You can write the type of a name after a \verb|:|, or leave it out:
+
+\begin{zeno}
+let port: int = 8080
+let host = "localhost"          # a str: Zeno sees that
+var ratio: float = 0.5
+print(host, port, ratio)
+\end{zeno}
+
+Where the type is left out, Zeno works it out from the value. Where it
+is written, the value must fit it, and from then on every value given
+to the name must fit it too:
+
+\begin{zeno}[fails=yes]
+var level: int = 3
+level = "high"
+\end{zeno}
+
+A whole number is not quietly made a float, even where a float is
+wanted. Write the decimal point:
+
+\begin{zeno}[fails=yes]
+let ratio: float = 1
+\end{zeno}
+
+\begin{why}
+Turning an \verb|int| into a \verb|float| where one is stored would
+leave a value whose written type and real type disagree, and in a
+compiled program it hides an instruction. Arithmetic is different:
+\verb|1 + 0.5| makes a new value, and nothing is disguised.
+(Decisions 2.3 and 2.3b.)
+\end{why}
+
+A name must have a value from the moment it is declared. There is no
+\verb|var x| with nothing after it:
+
+\begin{zeno}[fails=yes]
+var total: int
+\end{zeno}
+
+\hyperref[ch-types]{Types, Written and Worked Out} goes into all of
+this in depth: what Zeno works out, what it cannot, and the strict
+mode in which every type must be known.
+
+\section{Names}
+
+A name is made of letters, digits and \verb|_|, and does not start
+with a digit. Letters of any alphabet are allowed. Case counts:
+\verb|total| and \verb|Total| are two names. By custom, variables and
+functions are written \verb|like_this|, classes and enums
+\verb|LikeThis|, and constants \verb|LIKE_THIS|.
+
+The words of the language, such as \verb|let|, \verb|if| and
+\verb|take|, can never be names, and the message says where the word
+goes instead:
+
+\begin{zeno}[fails=yes]
+let take = 3
+\end{zeno}
+
+The names of types (\verb|int|, \verb|str|, \verb|list|) and of the
+built-in functions (\verb|print|, \verb|len|) are not reserved. They
+are names like any other, and a program may declare its own. That is
+rarely a good idea, since the built-in one is then out of reach in
+that block.
+
+\section{Blocks and scope}
+
+A pair of braces \verb|{ }| makes a \emph{block}, and a name declared
+in a block exists from its declaration to the end of that block. This
+stretch of the program is the name's \emph{scope}:
+
+\begin{zeno}
+let x = 1
+if true {
+    let x = 2          # a new x, for this block only
+    let y = 3
+    print(x, y)
+}
+print(x)               # the first x again
+\end{zeno}
+
+After the block, \verb|y| is gone:
+
+\begin{zeno}[fails=yes]
+if true {
+    let y = 3
+}
+print(y)
+\end{zeno}
+
+An inner block may declare a name that an outer block already has,
+and inside the inner block the name means the inner one. Two
+declarations of one name in the same block are a mistake:
+
+\begin{zeno}[fails=yes]
+let speed = 10
+let speed = 20
+\end{zeno}
+
+\begin{why}
+A variable that lives exactly as long as its block has a lifetime you
+can see in the layout of the code. In Python a variable made inside an
+\verb|if| goes on existing after it. (Decisions 3.1 and 3.2.)
+\end{why}
+
+\section{Two names for one list}
+
+A name gives a value a name; it does not make a copy. When the value
+is a list or an object, two names can stand for the same one, and a
+change made through either is seen through both:
+
+\begin{zeno}
+let a = [1, 2]
+let b = a
+b.append(3)
+print(a)
+\end{zeno}
+
+This also means that \verb|let| fixes the \emph{name}, not what is
+inside the value. \verb|a| above can never be given another list, but
+the list it names can still grow. Numbers, text and true or false
+cannot be changed inside, so for them the difference never shows.
+\hyperref[ch-lists]{Lists} has more on this.
+
+\begin{summary}
+Every value has a type. \verb|let| names a value that stays,
+\verb|var| one that changes, and \verb|const| one fixed for the whole
+program. Plain \verb|=| only changes a name that already exists. Types
+can be written after \verb|:| or left for Zeno to work out. A name
+lives until the end of the block it was declared in.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Declare \verb|var price = 10| and then give it \verb|10.5|. What
+  does Zeno say, and how would you declare it so that both are
+  allowed?
+\item Write \verb|let x: str = 5| and \verb|let y: int = "5"|. Read
+  both messages.
+\item Use \verb|print| as a variable name with \verb|let print = 3|,
+  and then try to print something below it. What happened?
+\item Make two names for one list, change it through one, and print
+  it through the other. Then do the same with two numbers and
+  \verb|var|. Why is the result different?
+\end{enumerate}
+\end{tryit}

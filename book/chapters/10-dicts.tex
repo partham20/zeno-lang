@@ -1,3 +1,236 @@
 \chapter{Dicts}\label{ch-dicts}
 
-To be written.
+A \emph{dict}, short for dictionary, files values under \emph{keys}.
+Where a list answers "what is at position 3?", a dict answers "what is
+filed under \verb|"Ada"|?".
+
+\section{Writing a dict}
+
+A dict is written like a list, in square brackets, with
+\verb|key: value| where a list has an item. An empty dict is
+\verb|[:]|:
+
+\begin{zeno}
+let ages = ["Ada": 36, "Alan": 41]
+let seen: dict[str, int] = [:]
+print(ages, seen, len(ages))
+\end{zeno}
+
+Its type is written \verb|dict[str, int]|: the type of the keys, then
+the type of the values. As with a list, Zeno works it out from what is
+written, and an empty dict needs it written.
+
+\begin{why}
+In Zeno a pair of braces is always a block of code, and a pair of
+square brackets always holds values, so nobody reading a line has to
+work out which a bracket is. \verb|{}| after \verb|if ready| could be
+read either way in a language that used braces for both. \verb|[:]| is
+the empty dict because the colon is what makes a dict a dict.
+(Decision 6.29.)
+\end{why}
+
+\section{Keys and values}
+
+A key is a \verb|str| or an \verb|int|. All the keys of one dict are
+of one type, and so are all its values:
+
+\begin{zeno}
+let meanings = [404: "not found", 200: "ok"]
+print(meanings[200])
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let mixed = ["a": 1, 2: 3]
+\end{zeno}
+
+\begin{why}
+A key has to compare exactly. \verb|0.1 + 0.2| is not \verb|0.3|, so a
+value filed under one float could never be found under the other: a
+float key is a mistake the language can simply not offer. A list or an
+object can change while it is a key, and would then be filed in the
+wrong place. (Decision 6.31.)
+\end{why}
+
+A value can be anything a list can hold: numbers, text, lists,
+objects, other dicts. What is under a key is the thing itself, not a
+copy, so changing it changes what is in the dict:
+
+\begin{zeno}
+let readings: dict[str, list[float]] = [:]
+readings["volt"] = [12.0]
+readings["volt"].append(12.5)
+print(readings)
+\end{zeno}
+
+The one thing a value cannot be is \verb|none|, for a reason that comes
+up below with \verb|get|.
+
+\section{Reading}
+
+There are three ways to ask a dict about a key, and each says what the
+program knows:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Written & Means & If the key is not there \\
+\midrule
+\verb|d[key]| & it is there & a \verb|KeyError| \\
+\verb|d.get(key)| & it may not be & \verb|none| \\
+\verb|d.get(key, instead)| & it may not be & \verb|instead| \\
+\verb|key in d| & is it there? & \verb|false| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}
+let ages = ["Ada": 36, "Alan": 41]
+print(ages["Ada"], "Bob" in ages, ages.get("Bob"), ages.get("Bob", 0))
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+let ages = ["Ada": 36]
+print(ages["Bob"])
+\end{zeno}
+
+\verb|get| with one argument may give \verb|none|, so its answer must be
+tested before it is used as a number, exactly as with \verb|find|. That
+is why a value cannot itself be \verb|none|: in a dict of
+\verb|int or none|, a \verb|none| from \verb|get| could mean either
+"no such key" or "the key is there and holds none", and no program
+could tell which.
+
+\begin{zeno}[fails=yes]
+let scores: dict[str, int or none] = [:]
+\end{zeno}
+
+Leaving the key out says the same thing with what is already there.
+
+\begin{why}
+\verb|d[key]| does not give \verb|none| for a missing key, because then
+every read would be an \verb|int or none| to test first, even when the
+key was stored on the line above. Nor does it give 0, which would
+invent a value nobody stored and turn a misspelt key into a wrong
+total. (Decision 6.34.)
+\end{why}
+
+\section{Storing and taking out}
+
+\verb|d[key] = value| stores a value: a new key is added, and a key
+that is there gets the new value. \verb|pop(key)| takes a key out and
+gives back its value. \verb|clear()| empties the dict.
+
+\begin{zeno}
+let ages = ["Ada": 36, "Alan": 41]
+ages["Grace"] = 85
+ages["Ada"] = 37
+print(ages)
+print(ages.pop("Alan"), ages)
+ages.clear()
+print(ages)
+\end{zeno}
+
+The commonest use of a dict is counting, and it is one line:
+
+\begin{zeno}
+let words = "the cat and the hat and the bat".split()
+let counts: dict[str, int] = [:]
+for word in words {
+    counts[word] = counts.get(word, 0) + 1
+}
+print(counts)
+\end{zeno}
+
+The same key written twice in one dict is surely a slip, so it is
+refused:
+
+\begin{zeno}[fails=yes]
+let limits = ["low": 1, "low": 2]
+\end{zeno}
+
+\section{Order}
+
+A dict remembers the order its keys were first stored in. Printing it,
+looping over it, \verb|keys()| and \verb|values()| all follow that
+order, and storing under a key that is there does not move it.
+
+\begin{why}
+It is the one order a reader can predict from the program, and it is
+the same on every run, in every engine and in every build. The order a
+hash table happens to have would differ between them. (Decision 6.33.)
+\end{why}
+
+\section{Looping over a dict}
+
+A loop with one name is given the keys. A loop with two names is given
+each key and the value under it, following the rule for every loop:
+the second name is what is at the first.
+
+\begin{zeno}
+let stock = ["apples": 4, "pears": 0, "figs": 12]
+for fruit in stock {
+    print(fruit)
+}
+for fruit, count in stock {
+    if count == 0 {
+        print("out of", fruit)
+    }
+}
+print(stock.keys(), stock.values())
+\end{zeno}
+
+As with a list, the loop goes through the keys as they were when it
+began, so the body may store into the dict and take keys out.
+\verb|keys()| and \verb|values()| give new lists that are the caller's
+own.
+
+\section{Equal dicts}
+
+Two dicts are equal when they have the same keys with the same values.
+The order does not matter here: it says how a dict was built, and
+\verb|==| asks what it holds.
+
+\begin{zeno}
+print(["x": 1, "y": 2] == ["y": 2, "x": 1])
+\end{zeno}
+
+\section{Every method of a dict}
+
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+Written & Does \\
+\midrule
+\verb|d[key]| & the value under \verb|key|; a \verb|KeyError| if it is not there \\
+\verb|d[key] = value| & stores \verb|value| under \verb|key| \\
+\verb|key in d| & whether \verb|key| is there \\
+\verb|len(d)| & how many keys there are \\
+\verb|d.get(key)| & the value, or \verb|none| \\
+\verb|d.get(key, instead)| & the value, or \verb|instead| \\
+\verb|d.pop(key)| & takes the key out and gives its value \\
+\verb|d.keys()|, \verb|d.values()| & new lists of the keys and of the values, in order \\
+\verb|d.clear()| & takes every key out \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{summary}
+A dict files values of one type under keys of one type, a \verb|str|
+or an \verb|int|. It is written \verb|["key": value]|, empty
+\verb|[:]|, with the type \verb|dict[str, int]|. \verb|d[key]| expects
+the key to be there, \verb|get| does not, and \verb|in| asks. A dict
+keeps the order its keys arrived in, and a loop with two names is
+given each key and its value.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Count the letters in a sentence, then print them in the order
+  they first appeared.
+\item Build a dict from a name to a list of marks, add three marks for
+  each of two names, and print each name with the average of its marks.
+\item Turn a \verb|dict[str, int]| round, so that the values become
+  keys. What should happen when two keys have the same value?
+\item Write a dict with a key that is a float, and read the message.
+\end{enumerate}
+\end{tryit}
