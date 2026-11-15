@@ -72,6 +72,7 @@ Samples, none of them final:
 - [`examples/logbook.zeno`](examples/logbook.zeno): readings typed at the keyboard, kept in a file named on the command line, and read back: `input`, `files` and `program.arguments`.
 - [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/faults.zeno`](examples/faults.zeno): fault codes counted and looked up in a dict: `["mode": "auto"]`, `get`, `in`, `pop` and a loop over the keys.
+- [`examples/channels.zeno`](examples/channels.zeno): a dict that holds lists and objects. The readings of each channel are a list under its name, and `for channel, values in readings` is given each key and what is under it.
 - [`examples/station`](examples/station/main.zeno): one program in four files. A weather station whose sensors, report and serial port are each a module that `main.zeno` imports.
 - [`examples/thermostat`](examples/thermostat/main.zeno): a program that needs a package. Its `zeno.package` says `needs filters in "../filters"`, and [`examples/filters`](examples/filters/main.zeno) is that package: a folder of modules with a `zeno.package` of its own.
 - [`examples/ring`](examples/ring/main.zeno): a module that keeps its insides to itself. A queue of a fixed size whose slots and count are `private`, so that only `ring.zeno` can change them.
@@ -174,6 +175,7 @@ cargo run -- join examples/station/main.zeno    # the same four files as the one
 cargo run -- run examples/thermostat/main.zeno  # a program that needs a package: `import filters.lowpass`
 cargo run -- run examples/ring/main.zeno        # a module with `private` fields and functions
 cargo run -- run examples/ports.zeno            # an interface: `class Uart is Port`, and a list of ports
+cargo run -- run examples/channels.zeno         # a dict of lists and of objects, and `for key, value in ...`
 cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
 cargo run -- format --check examples            # is every example laid out the way `zeno format` lays programs out?
 python3 editors/talk.py target/debug/zeno examples/shapes.zeno  # play the editor's part to `zeno lsp`, and print both sides
@@ -363,6 +365,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       `switch`, with no pointer to a function.
       See [`docs/interfaces.md`](docs/interfaces.md))
     - A dict that holds any type of value, and a loop over its pairs
+      (done: a value is anything a list can hold, such as a list, an
+      object, a value of an interface or another dict, and never
+      `none`, which is what `get` says for a key that is not there.
+      `for key, value in ages` is given each key and what is under
+      it, and over a list the first name is the position. With no
+      collector a dict still holds plain values only.
+      See [`docs/dict.md`](docs/dict.md))
     - `zeno test`: the tests of a Zeno program, written in Zeno
     - `zeno new`: a new program or package in one command
     - The gaps programs have run into: `+=` on a sized number, and a

@@ -5104,25 +5104,12 @@ one.
 **All the keys of one dict are the same type**, and the checker refuses
 `["a": 1, 2: 3]`. That is what lets it say what a loop variable is.
 
-### 6.32 A value is an `int`, a `float`, a `bool` or a `str` *(provisional)*
+### 6.32 A value is anything a list can hold, and never `none`
 
-```
-error: a value of a dict is an int, a float, a bool or a str for now, and
-this says list[int]. Keep those in a list, and the position of each in the
-dict
-```
-
-**Why only these.** They are the values that are copied when they are
-stored. So a dict holds nothing that anything else can reach, and a
-build with no collector frees a dict in one step with no new rule. A
-list or an object as a value raises a question each: who owns it, the
-dict or the variable it came from? Is `d[key]` a look at it, and is
-`pop` the way to take it back? Those have answers, modelled on a list
-of owned items, and they will be given when a real program needs them
-(keep what works, and add when a real program asks).
-
-**Meanwhile.** Objects go in a list, and the dict holds the position of
-each: `people[index["Ada"]]`.
+This section used to say "an `int`, a `float`, a `bool` or a `str`",
+and was marked provisional until a real program asked for more. One
+did, and 10.11 has the rule as it is now and the reasons. With no
+collector the first rule still holds (10.14).
 
 **All the values of one dict are the same type**, like the items of a
 list that says what it holds.
@@ -5221,9 +5208,9 @@ for code in seen {
 only the value the key is lost. `in` asks about keys for the same
 reason.
 
-**Why not pairs.** `for code, count in seen` needs a value that is two
-values, and Zeno has no such thing yet. When it does, that loop can be
-added without changing what this one means.
+**Pairs.** `for code, count in seen` is given each key and what is
+under it (10.12). It was added without changing what the loop with
+one name means, as this section said it could be.
 
 **The loop walks the keys as they were when it began**, like a loop
 over a list. The body may add keys and take them out. `keys()` and
@@ -6114,6 +6101,12 @@ way to write it and nothing to work out. A list of circles is not
 quietly a list of shapes (10.7), and nothing is cast: a list that is
 written out is told by the place it goes what it is a list of.
 
+A dict holds what a list holds (10.11), so there is one answer to
+"what can I keep in a collection" and not two. The one thing it does
+not hold is `none`, because `get` already means something by it. A
+loop with two names reads the same over everything that can be
+looped over: the second name is what is at the first (10.12).
+
 ### 10.1 `private`: for the file it is written in
 
 ```zeno
@@ -6496,5 +6489,184 @@ Each is refused with a message that says so.
   (`interface Stack[T]`). Bounds on a generic (`T is Ordered`, 3.16d)
   wait for the same thing.
 - **An interface that is another interface.** A class names both.
-- **A dict whose values are of an interface.** That comes with dicts
-  of any value type, which is next.
+
+A dict whose values are of an interface was on this list, and is in
+the language since 10.11.
+
+### 10.11 A value of a dict is anything a list can hold, except `none`
+
+```zeno
+let readings: dict[str, list[float]] = [:]
+let limits = ["voltage": Limit(11.5, 12.5)]
+let shapes: dict[str, Shape] = ["round": Circle(1.0), "square": Square(2.0)]
+let ranges: dict[str, dict[str, float]] = [:]
+```
+
+A list, an object, a value of an interface, an enum, another dict, a
+quantity, a function, a sized number. Keys are as they were: a `str`
+or an `int` (6.31).
+
+**Why.** The first real programs with a dict wanted the readings of
+each channel under its name, and an object for each name. The way
+round it (the objects in a list, and the dict holding positions) is
+two collections kept in step by hand, which is where mistakes come
+from. And "a list holds anything, a dict holds four types" was a
+rule to remember with no reason a reader could see.
+
+**What is under a key is the thing itself**, as it is in a list.
+`readings["voltage"].append(12.0)` adds to the list in the dict, and
+`limits["voltage"].high = 13.5` changes the object in the dict. There
+is no copy that the change could be lost in.
+
+**Why not `none`.** `get(key)` gives `none` for a key that is not
+there (6.35). In a `dict[str, int or none]` a `none` from `get` would
+mean two things, "no such key" and "the key is there and holds
+`none`", and no program could tell which.
+
+```
+error: a value of a dict cannot be `int or none`: `get` gives `none` for a
+key that is not there, and that could not be told from a value that is
+`none`. Make it a `dict[..., int]`, and leave the key out where there is
+no value
+```
+
+Leaving the key out says the same thing with what is already there.
+Inside a value `none` is as anywhere: `dict[str, list[int or none]]`
+is fine.
+
+**Turned down.** Allowing it and saying "use `in` to tell them apart":
+that is the surprise this language is meant not to have. A third
+answer from `get` for a missing key: one more thing to check on every
+call, for a dict nobody has asked for.
+
+**In a generic** the key and the value can be type parameters:
+`function flip[K, V](d: dict[K, V]) -> dict[V, K]`. What `K` and `V`
+are is checked for each copy, with the same rules and the same
+messages, and the message says which copy it is in.
+
+**In a compiled program** a value that is not a plain one is a
+pointer in the dict's list of values. How such a value is shown and
+compared depends on its type, so the compiler writes a function for
+each, as it does for a list of them, and hands it to the runtime
+(`zeno_dict_str_with`, `zeno_dict_eq_with`).
+
+### 10.12 `for key, value in ages`: a loop with two names
+
+```zeno
+for name, age in ages {
+    print(name, age)
+}
+for at, word in words {
+    print(at, word)
+}
+```
+
+Over a dict the loop is given each key and what is under it. Over a
+list, text or a range it is given the position, counted from 0, and
+what is there.
+
+**One rule for all of them: the second name is what is at the
+first.** In a dict `age` is `ages[name]`, and in a list `word` is
+`words[at]`. Nothing else has to be remembered, and it is why the
+position comes first: it is the key of a list.
+
+**Why.** `for name in ages` and then `ages[name]` on the next line is
+what every loop over a dict did, and it is a lookup the loop has
+already done. For a list the position was a `var` counted by hand
+beside the loop, or `for i in range(len(words))` and `words[i]`: two
+ways, both longer than what they mean.
+
+**Over a range** the first name counts the trips: `for trip, n in
+range(10, 0, -4)` gives `0 10`, `1 6`, `2 2`. That is the position of
+the number in the list the range would be.
+
+**The pairs are as they were when the loop began**, like the keys of
+the loop with one name (6.38). The body may store into the dict and
+take keys out.
+
+**Each name is the loop's own**, cannot be changed, and is gone after
+the loop, as the one name is. With no collector the value is looked
+at, and the dict is whole again after the loop.
+
+**Turned down.**
+- `for (name, age) in ages`, or a pair as a value of its own: Zeno has
+  no tuple, and a new kind of value for one loop is more than the
+  loop needs.
+- `for name, age in ages.items()` and `for at, word in
+  enumerate(words)`, as in Python: two more names to learn, and each
+  builds a list of pairs that the language has no type for.
+- The item first and the position second over a list: then the two
+  names mean one thing over a dict and the other way round over a
+  list.
+- Three names, or two that are the same, are refused with a message
+  that says what two names are for.
+
+### 10.13 A dict that is written out is a dict of what the place wants
+
+```zeno
+let shapes: dict[str, Shape] = ["round": Circle(1.0), "square": Square(2.0)]
+let bytes: dict[str, u8] = ["start": 200, "stop": 7]
+```
+
+The same rule as for a list (10.7): the place says what the values
+are, and each written value is checked against that. A dict that is
+made already stays what it is, so a `dict[str, Circle]` is not a
+`dict[str, Shape]`, for the reason a list of circles is not a list
+of shapes: a `Square` could be stored into it through the other name.
+
+With no type to go by, all the values are one type, and a mix says
+so. A message for a number names the fix:
+
+```
+error: the values of this dict are float here, but this one is int.
+Write the number with a decimal point, as in `1.0`
+```
+
+### 10.14 With no collector a dict holds plain values *(provisional)*
+
+```
+error: with no collector a value of a dict is an int, a float, a bool or
+a str for now, and this is list[int]. Keep those in a list, and the
+position of each in the dict
+```
+
+In a build with no collector a value of a dict is an `int`, a
+`float`, a `bool`, a `str`, a sized number or a quantity: the values
+that are copied when they are stored. Lists, objects and the rest
+need the collector.
+
+**Why.** With no collector everything has one owner (5.15). A dict of
+lists would own its lists, and each way into the dict needs a rule:
+`d[key]` would lend, `d[key] = value` would free the old value,
+`pop` would hand its value over, `clear` and the end of the dict
+would free every one, `values()` could not give a second list of
+them, and `get(key, instead)` would have to say who owns `instead`.
+Those are the rules of a list of owned items (5.15e) written out again
+for a second collection, and so far no program for a board has needed
+them: such programs keep a few objects in a list or in fields, and a
+dict for looking a number or a name up.
+
+**Meanwhile.** The objects go in a list, and the dict holds the
+position of each: `channels[index["voltage"]]`.
+
+**When this changes.** When a program that has to run with no
+collector needs it. The rules above are the plan.
+
+### 10.15 `print` makes its texts in the order they are written
+
+Not a rule of the language, but a repair that this stage found. The C
+for `print(table, x)` made the text of each value inside the call of
+`zeno_print`, and C does not say in which order the arguments of a
+call are worked out. Making the text of a list, a dict or an object
+takes room for its pieces while it is made. So how much of the text
+room was in use at most depended on the C compiler, and the report of
+a build with no collector differed by a few bytes between the C and
+the LLVM backend, which 5.11t says must not happen.
+
+Where a `print` has two or more values with work to do, and one of
+them is a list, a dict, an object, a call or text that is made there,
+the work is now done on lines of its own, in the order the LLVM
+backend does it: every value first, and then the text of each, as
+written. Numbers alone stay inside the call, since their text takes
+no room while it is made. What is printed never differed, and does
+not change.
