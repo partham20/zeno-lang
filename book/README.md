@@ -1,7 +1,7 @@
 # The Zeno Book
 
-The whole of Zeno 0.1, from a first line to the inside of the compiler:
-35 chapters in six parts, and seven appendices.
+The whole of Zeno 0.2, from a first line to the inside of the compiler:
+36 chapters in five parts, and seven appendices.
 
 - `chapters/` holds the source, one LaTeX file for each chapter or
   appendix. `zeno-book.tex` puts them together, and `zeno-book.sty`
@@ -24,8 +24,9 @@ the book says, the build stops and names it.
 You need:
 
 - `zeno` on the path (`cargo build --release` in the repository, then
-  `target/release/zeno`), and a C compiler and `clang` for the
-  chapters that compile
+  `target/release/zeno`), a C compiler and `clang` for the chapters
+  that compile, and `zeno.wasm` for the web chapter
+  (`cargo build --release --target wasm32-unknown-unknown`)
 - Python 3
 - XeLaTeX and `latexmk` (TeX Live: `texlive-xetex`,
   `texlive-latex-extra`, `latexmk`)
@@ -44,6 +45,10 @@ python3 book/tools/build.py --chapter=12 # only the samples of chapter 12
 ```
 
 Work files go in `book/build/`, which git does not keep.
+
+`images/` holds pictures of pages that `zeno build --web` made, as a
+browser shows them. `node book/tools/pictures.js` makes them again,
+with Playwright, when a page changes.
 
 ## Writing in it
 

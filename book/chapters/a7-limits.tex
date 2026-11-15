@@ -1,8 +1,9 @@
-\chapter{What Version 0.1 Leaves Out}\label{app-limits}
+\chapter{What Zeno Does Not Have Yet}\label{app-limits}
 
 Before version 0.1, every decision in \verb|docs/decisions.md| was read
 again, and thirty were answered "a limit of 0.1": the thing is left out
-of this version, and a program that asks for it is told so. Each can
+of this version, and a program that asks for it is told so. Version
+0.2 added the web page and left every one of these as it was. Each can
 be added later without changing what any program written now means.
 The numbers are the decisions, for anyone who wants the argument.
 
@@ -102,6 +103,19 @@ The numbers are the decisions, for anyone who wants the argument.
   type parameters, and cannot be private (10.5).
 \item[An owned class as an interface,] and an interface with type
   parameters of its own (10.10).
+\end{description}
+
+\section{The web}
+
+\begin{description}
+\item[Only what the module has.] No style of one element (use a
+  class), no place of the mouse, no drawing, no network, and nothing
+  kept between visits (14.14).
+\item[An interpreter in a page.] Every page carries \verb|zeno.wasm|
+  and runs at the speed of \verb|zeno run|. A page compiled through C
+  or LLVM, small and fast, is left for later (14.1).
+\item[A simulated page reads plain selectors only,] and has every
+  element it is asked for (14.6).
 \end{description}
 
 \section{Tools}

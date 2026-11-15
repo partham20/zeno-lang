@@ -114,6 +114,11 @@ Both engines share one file, \verb|ops.rs|, for what every operator
 does, so what \verb|*| means is written once. The VM is about twice as
 fast, and every test program runs on both and must print the same.
 
+A web page (\hyperref[ch-web]{A Program in a Web Page}) is not a fifth
+engine. \verb|zeno.wasm| is the lexer, parser, checker and
+interpreter, built by Rust for a browser, and runs the program as
+\verb|zeno run| does.
+
 \section{Two engines that compile}
 
 \textbf{The C backend} writes C, as \hyperref[ch-compiling]{Compiling}
@@ -172,6 +177,7 @@ File & What it is \\
 \verb|emit_llvm.rs| & the LLVM backend \\
 \verb|format.rs|, \verb|lsp.rs|, \verb|json.rs| & the formatter and the language server \\
 \verb|board.rs|, \verb|units.rs|, \verb|ints.rs| & the simulated board, units, sized numbers \\
+\verb|page.rs|, \verb|web_host.rs|, \verb|web.js| & the web module, the simulated page, and the line between Zeno and a browser \\
 \bottomrule
 \end{tabular}
 \end{center}

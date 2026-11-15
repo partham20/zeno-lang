@@ -4,33 +4,150 @@ Zeno is one program, called \verb|zeno|. It checks your programs, runs
 them, compiles them, tests them, lays them out, and talks to your
 editor. This chapter puts it on your machine.
 
-\section{What you need}
+There are two ways to get it: download a \verb|zeno| that is already
+built, or build it yourself from its source. The first takes a minute
+and needs nothing installed. The second needs Rust, and gives you the
+compiler's source to read beside \hyperref[ch-inside]{Inside Zeno}.
 
-Zeno is written in Rust, and you build it from its source. You need:
+\section{Downloading it}
+
+Every release of Zeno is built for ten kinds of machine, and put on
+the releases page of the repository:
+
+\begin{center}
+\url{https://github.com/partham20/zeno-lang/releases}
+\end{center}
+
+Pick the file for your machine. The number after \verb|zeno-| is the
+version; here it is written \verb|V|.
+
+\begin{center}
+\begin{tabular}{P{6.6cm}l}
+\toprule
+Machine & File \\
+\midrule
+Linux on most PCs and servers (x86-64) & \verb|zeno-V-linux-x86_64.tar.gz| \\
+Linux on 32-bit x86 & \verb|zeno-V-linux-x86.tar.gz| \\
+Raspberry Pi 3, 4 or 5 with a 64-bit system, and ARM servers & \verb|zeno-V-linux-arm64.tar.gz| \\
+Raspberry Pi 2 or later with a 32-bit system (ARMv7) & \verb|zeno-V-linux-armv7.tar.gz| \\
+Raspberry Pi 1 or Zero (ARMv6) & \verb|zeno-V-linux-armv6.tar.gz| \\
+Mac with Apple silicon (M1 and later) & \verb|zeno-V-macos-arm64.tar.gz| \\
+Mac with an Intel processor & \verb|zeno-V-macos-x86_64.tar.gz| \\
+Windows on most PCs (x86-64) & \verb|zeno-V-windows-x86_64.zip| \\
+Windows on 32-bit x86 & \verb|zeno-V-windows-x86.zip| \\
+Windows on ARM & \verb|zeno-V-windows-arm64.zip| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Inside is one folder with \verb|zeno| in it (\verb|zeno.exe| on
+Windows), and, from version 0.2, \verb|zeno.wasm| beside it, which
+\hyperref[ch-web]{A Program in a Web Page} needs. \verb|zeno| is one
+file that needs nothing else installed: no Rust, no libraries.
+
+\subsection{On Linux and the Raspberry Pi}
+
+Unpack the file, and copy \verb|zeno| into a folder that is on your
+\verb|PATH|. \verb|~/.local/bin| is one on most systems, and needs no
+\verb|sudo|:
+
+\begin{zenofrag}[lang=shell]
+$ tar -xzf zeno-0.1.0-linux-x86_64.tar.gz
+$ mkdir -p ~/.local/bin
+$ cp zeno-0.1.0-linux-x86_64/zeno* ~/.local/bin/
+$ zeno --version
+zeno 0.1.0
+\end{zenofrag}
+
+If the shell says \verb|zeno: command not found|, that folder is not on
+your \verb|PATH| yet. Add the line \verb|export PATH="$HOME/.local/bin:$PATH"|
+to \verb|~/.bashrc|, and open a new terminal.
+
+The Linux builds are linked with everything they need inside them, so
+the same file runs on Debian, Ubuntu, Fedora, Alpine or Raspberry Pi
+OS, old or new.
+
+\subsection{On macOS}
+
+The same steps work in the Terminal, with \verb|/usr/local/bin| as the
+folder:
+
+\begin{zenofrag}[lang=shell]
+$ tar -xzf zeno-0.1.0-macos-arm64.tar.gz
+$ sudo cp zeno-0.1.0-macos-arm64/zeno* /usr/local/bin/
+$ xattr -d com.apple.quarantine /usr/local/bin/zeno
+$ zeno --version
+\end{zenofrag}
+
+The \verb|xattr| line is needed once. A program downloaded with a
+browser is held back by macOS until Apple has signed it, and Zeno is
+not signed; the line tells macOS that you trust this one.
+
+\subsection{On Windows}
+
+Unzip the file: right-click it in Explorer and choose
+\emph{Extract All}. Make a folder for programs of your own, such as
+\verb|C:\Tools|, and move \verb|zeno.exe| (and \verb|zeno.wasm|) into
+it. Then put that folder on the \verb|PATH|: open the Start menu, type
+\emph{environment variables}, choose \emph{Edit environment variables
+for your account}, select \verb|Path|, press \emph{Edit} and
+\emph{New}, and type the folder. A new Command Prompt or PowerShell
+window then finds it:
+
+\begin{zenofrag}[lang=shell]
+> zeno --version
+zeno 0.1.0
+\end{zenofrag}
+
+Windows may warn that the program is from an unknown publisher, for
+the same reason as on macOS. \emph{More info}, then \emph{Run anyway},
+lets it start.
+
+\subsection{Checking the download}
+
+Beside the files on the releases page is \verb|SHA256SUMS.txt|, with
+the fingerprint of each one. To be sure that the file you have is the
+one that was built:
+
+\begin{zenofrag}[lang=shell]
+$ sha256sum --check --ignore-missing SHA256SUMS.txt
+zeno-0.1.0-linux-x86_64.tar.gz: OK
+\end{zenofrag}
+
+On macOS the command is \verb|shasum -a 256 -c|, and in PowerShell
+\verb|Get-FileHash| prints a file's fingerprint to compare by eye.
+
+\section{What else you may need}
+
+\verb|zeno run|, \verb|check|, \verb|test|, \verb|format| and the
+language server need nothing more. Three commands hand work to
+programs of other people:
+
+\begin{itemize}
+\item \verb|zeno build| writes C and gives it to a C compiler: \verb|cc|,
+  or the one the variable \verb|CC| names. On Linux, install
+  \verb|gcc| or \verb|clang| from the system's packages; on macOS,
+  \verb|xcode-select --install|; on Windows, MinGW's \verb|gcc|, with
+  \verb|set CC=gcc| (\hyperref[ch-compiling]{Compiling}).
+\item \verb|zeno build --llvm| needs \verb|clang|.
+\item \verb|zeno fetch| needs \verb|git|, to get packages that live in
+  other people's repositories (\hyperref[ch-packages]{Packages}).
+\end{itemize}
+
+\section{Building it from source}
+
+To build Zeno yourself you need:
 
 \begin{itemize}
 \item \textbf{Rust}, with its build tool \verb|cargo|. The usual way
   to get both is \verb|rustup|, from \url{https://rustup.rs}. Zeno
   uses no libraries beyond Rust itself, so nothing else is
   downloaded when it is built.
-\item \textbf{git}, to get the source, and later to fetch packages
-  that live in other people's repositories.
-\item \textbf{A C compiler}, \verb|cc|, \verb|gcc| or \verb|clang|, if
-  you want to compile Zeno programs into programs that run on their
-  own (\hyperref[ch-compiling]{Compiling}). \verb|zeno run| needs
-  none.
-\item \textbf{clang}, only if you want the second compiler, which goes
-  through LLVM.
+\item \textbf{git}, to get the source.
 \end{itemize}
 
 Zeno is built and tested on Linux, macOS and Windows, with the same
-steps on each. On Windows, every path Zeno writes uses \verb|/|, as it
-does elsewhere, so a package or a message reads the same on every
-machine.
-
-\section{Building it}
-
-Get the source and build it:
+steps on each. Get the source and build it:
 
 \begin{zenofrag}[lang=shell]
 git clone https://github.com/partham20/zeno-lang
@@ -45,6 +162,14 @@ has already put on your \verb|PATH|:
 
 \begin{zenofrag}[lang=shell]
 cargo install --path .
+\end{zenofrag}
+
+For web pages, build \verb|zeno.wasm| as well. It is the same
+compiler, built for a browser:
+
+\begin{zenofrag}[lang=shell]
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
 \end{zenofrag}
 
 Check that it works:

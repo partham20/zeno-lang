@@ -262,6 +262,10 @@ def samples(only=None):
     shutil.copy(BOOK / "zeno-book.tex", GEN / "zeno-book.tex")
     for extra in ["zeno-book.sty"]:
         shutil.copy(BOOK / extra, GEN / extra)
+    # Pictures, such as a page that `zeno build --web` made, as a browser
+    # shows it. They are made by tools/pictures.js.
+    if (BOOK / "images").exists():
+        shutil.copytree(BOOK / "images", GEN / "images", dirs_exist_ok=True)
     for source in sorted((BOOK / "chapters").glob("*.tex")):
         if only and not source.stem.startswith(only):
             continue
@@ -310,6 +314,10 @@ def html():
         text = chapter.read_text()
         plain = re.sub(r"^(\\begin\{(?:longtable|tabular)\}.*)$",
                        lambda m: m.group(1).replace("P{", "p{"), text, flags=re.M)
+        # A picture is framed with \fbox in print. pandoc drops what is
+        # inside an \fbox, and book.css frames a picture itself.
+        plain = re.sub(r"\{\\setlength\{\\fboxsep\}\{0pt\}\\fbox\{(\\includegraphics.*?\})\}\}",
+                       r"\1", plain)
         if plain != text:
             chapter.write_text(plain)
     (GEN / "zeno-book-html.tex").write_text(main)
@@ -337,6 +345,8 @@ def html():
         check=True,
     )
     shutil.copy(tools / "book.css", out / "book.css")
+    if (BOOK / "images").exists():
+        shutil.copytree(BOOK / "images", out / "images", dirs_exist_ok=True)
     tidy_names(out)
     sidebar(out)
     if (DIST / "zeno-book.pdf").exists():

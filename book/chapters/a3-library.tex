@@ -122,6 +122,21 @@ Name & Is \\
 \midrule
 \multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{23})} \\
 \verb|arguments()| & the words after the file \\
+\midrule
+\multicolumn{2}{l}{\texttt{import web} (\hyperref[ch-web]{34})} \\
+\verb|element(selector)| & the first element that answers to it \\
+\verb|elements(selector)| & every one, as a list \\
+\verb|create(tag, text)| & a new element, not yet on the page \\
+\verb|after(t, f)| & call \verb|f| once, \verb|t| later \\
+\verb|on_key(f)| & call \verb|f| with the name of each key pressed \\
+\verb|e.text|, \verb|e.value| & what it shows; what was typed into it \\
+\verb|e.on(event, f)| & call \verb|f| when that happens to it \\
+\verb|e.append(c)| & put \verb|c| inside it, last \\
+\verb|e.remove()|, \verb|clear()| & take it, or what is in it, off the page \\
+\verb|e.add_class(c)|, \verb|remove_class(c)| & give it a class, or take one away \\
+\verb|e.has_class(c)| & whether it has that class \\
+\verb|e.show()|, \verb|hide()| & whether it is shown \\
+\verb|e.get(name)|, \verb|set(name, v)| & an attribute \\
 \bottomrule
 \end{longtable}
 \end{center}
