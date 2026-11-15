@@ -652,12 +652,23 @@ pub fn has_try(statements: &[Stmt]) -> bool {
     })
 }
 
+/// Does this statement always end the function it is in?
+fn ends(statement: Option<&Stmt>) -> bool {
+    match statement.map(|statement| &statement.kind) {
+        Some(StmtKind::Return(_) | StmtKind::Raise(_)) => true,
+        Some(StmtKind::Unsafe(body)) => ends(body.last()),
+        _ => false,
+    }
+}
+
 /// Does this statement always leave the block it is in?
 fn leaves(statement: Option<&Stmt>) -> bool {
-    matches!(
-        statement.map(|statement| &statement.kind),
-        Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
-    )
+    match statement.map(|statement| &statement.kind) {
+        Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_)) => true,
+        // `unsafe { return p[0] }` leaves as surely as the `return` does.
+        Some(StmtKind::Unsafe(body)) => leaves(body.last()),
+        _ => false,
+    }
 }
 
 /// A class: its fields in order, each with its type and default value, and
@@ -1796,7 +1807,7 @@ impl Emitter<'_> {
         let fallible = std::mem::replace(&mut self.fallible, fallible);
 
         let mut result = decl.body.iter().try_for_each(|statement| self.stmt(statement));
-        let ends = matches!(decl.body.last().map(|last| &last.kind), Some(StmtKind::Return(_) | StmtKind::Raise(_)));
+        let ends = ends(decl.body.last());
         // Reaching the end of the body: free what its owners still hold.
         if result.is_ok() && !ends {
             self.free_owned(self.base);
@@ -2228,10 +2239,7 @@ impl Emitter<'_> {
         result?;
         // Reaching the end of the body means nothing was raised. (If the
         // body always leaves by its last line, that end is never reached.)
-        let leaves = matches!(
-            body.last().map(|last| &last.kind),
-            Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
-        );
+        let leaves = leaves(body.last());
         if !leaves {
             self.indent += 1;
             self.line(format!("zeno_trying = {place}.outer;"));
@@ -2417,10 +2425,7 @@ impl Emitter<'_> {
         }
         // If the body always leaves by its last line, the only way to get
         // here is the `goto`, and there is nothing to ask.
-        let leaves = matches!(
-            body.last().map(|last| &last.kind),
-            Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Raise(_))
-        );
+        let leaves = leaves(body.last());
         self.line(if leaves { "{" } else { "if (zeno_raised != NULL) {" });
         self.indent += 1;
         self.line(format!("zeno_error *{caught} = zeno_raised;"));
@@ -10535,6 +10540,56 @@ static void z_set_bit(int64_t z_port, int64_t z_bit) {
         assert!(runtime.contains("    default: return *(volatile uint32_t *)(uintptr_t)address;\n"));
         assert!(runtime.contains("#ifndef ZENO_BOARD_REGISTERS\n"));
     }
+
+    #[test]
+    fn leaving_from_inside_an_unsafe_block_frees_what_has_an_owner() {
+        // `return`, `break` and `continue` inside the block leave it as
+        // they leave any block: the lists and the object are freed, and
+        // the C has no second `return` after the block.
+        no_collector_as_interpreter("unsafe-exits", UNSAFE_EXITS);
+        let c = compile_no_collector(UNSAFE_EXITS).unwrap();
+        let first = c.split("static int64_t z_first(int64_t z_n) {\n").nth(1).expect("the function");
+        let first = first.split("\n}\n").next().unwrap();
+        assert!(
+            first.ends_with(
+                "    {
+        zeno_release(z_box->z_bytes);
+        int64_t t6 = -1;
+        zeno_drop_Box(z_box);
+        zeno_list_drop_text(z_names);
+        return t6;
+    }"
+            ),
+            "{first}"
+        );
+    }
+
+    const UNSAFE_EXITS: &str = r##"class Box {
+    items: list[int]
+    bytes: pointer[u8]
+}
+function first(n: int) -> int {
+    let box = Box([1, 2, 3], allocate(u8, 4))
+    let names = ["a", "b"]
+    for i in range(n) {
+        let more = [i, i]
+        unsafe {
+            if i == 2 {
+                free(box.bytes)
+                return more[0] + len(names)
+            }
+            box.bytes[i] = u8(i)
+            if i == 1 { continue }
+        }
+        unsafe { if i == 3 { break } }
+    }
+    unsafe {
+        free(box.bytes)
+        return -1
+    }
+}
+print(first(5), first(0))
+"##;
 
     pub(crate) const BY_HAND_C: &str = r##"from board import register
 
