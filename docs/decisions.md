@@ -1607,6 +1607,9 @@ What was settled when it was built, each with its reason:
 type. They are whole words *(principle 3)*, and they are not reserved: they
 mean something only in those positions, so no existing program breaks.
 
+*Superseded by 5.19a to 5.19c:* the word on a parameter is now `take`,
+it marks the parameter that takes, and both words are reserved.
+
 *Turned down:* `&x` and `&mut x` at each use, as in Rust. Punctuation, and
 it puts a mark at every call where one in the signature says the same.
 *Turned down:* a mark at the call (`send(move p)`). It would make each
@@ -1637,6 +1640,9 @@ variable holds a Packet", and a variable that holds an owned value owns it.
 The parameter means the same. The exception is the one that gets a word.
 A method's `self` is always a borrow, since calling a method on an object
 that then vanished would surprise everyone.
+
+*Superseded by 5.19a:* a parameter looks unless it says `take`. `self`
+still always looks.
 
 *Turned down:* borrow by default, with a word for taking (Mojo, Swift). It
 makes the common case shorter. But then `p: Packet` would mean two
@@ -3293,6 +3299,8 @@ parameters only look and each now needs the word. It stays as it is:
 the fix in its first line. *(Provisional, and a question for the
 audit: count how often each is written in real programs.)*
 
+*Superseded by 5.19a.* The count was made: see there.
+
 ### 5.15c A list owns its items, in every build
 
 An owned list may hold values that have one owner: objects of an owned
@@ -3866,7 +3874,7 @@ refused, and the message says to put the whole line inside.
 **Why it opens a scope.** Every `{ }` in Zeno does. One that did not
 would be a surprise of its own. The cost is real: a value read inside
 the block and used after it needs a `var` declared before the block, or
-the `return` goes inside, as `Queue.take` does.
+the `return` goes inside, as `Queue.get` does in `driver.zeno`.
 
 **Turned down: `unsafe function`, as Rust has.** It would be a second
 way to mark the same thing. A function that takes a pointer is safe to
@@ -4037,3 +4045,175 @@ equal bytes followed each other.
 names except in one place (5.18a); a `--firmware` build cannot catch an
 `OverflowError` that `u8(...)` raises, which `zeno run` can; and
 messages that say "1 blocks" or "1 item(s)".
+
+### 5.19 The audit: every part of the language is held against "unambiguous and intuitive"
+
+The owner of the language asked for it in one sentence: the entire
+language must be unambiguous and intuitive. Each feature was read again
+with five questions, and what failed one was changed or written down
+with its reason (docs/audit.md).
+
+1. Is there one obvious way to write it?
+2. Can any line be read two ways, by the parser or by a person?
+3. Does anything happen that the line does not say?
+4. Is every word a plain word, with one meaning?
+5. When it is refused, does the message say what to write instead?
+
+**Why these five.** They are principles 1, 2 and 4 turned into
+questions that have a yes or a no. "Intuitive" on its own cannot be
+tested. "Does the line say what happens" can.
+
+**What an audit may change.** Anything, including what earlier
+decisions settled, as long as the earlier entry stays in this file with
+a line that says what replaced it. The reasons of the time are part of
+the record.
+
+### 5.19a A parameter looks, unless it says `take`
+
+```zeno
+function report(task: Task) -> str { ... }            # looks
+function retire(task: take Task) -> int { ... }       # takes, and frees
+```
+
+A parameter written with its type alone looks at the list, object,
+function or error it is given. The caller still has it afterwards. A
+parameter that takes the value over says `take` in front of its type,
+and then the caller's variable holds nothing. This carries out 5.17h,
+and replaces 5.8c and 5.15b, where plain took and `borrow` looked.
+
+**Why.** Question 3. `retire(task)` emptied the caller's variable, and
+nothing on either line said so: the reader had to know that a parameter
+with no word takes. Now the line that empties a variable is the one
+that carries a word.
+
+**The count that 5.15b asked for.** In the example programs 10
+parameters only looked and 7 took. In the programs the C backend is
+tested with, which are longer, 57 looked and 12 took. Under the old
+rule the larger group carried a word. Under this one the smaller does.
+The count alone would not have settled it for the examples. The reason
+above does.
+
+**Why it is safe to make looking the default.** A look cannot be kept,
+returned or given away, and the checker already enforced that for
+`borrow`. So a forgotten `take` is always an error at the line that
+tries to keep the value, and the message names the word. A forgotten
+`borrow` used to be silent until the caller used its variable again.
+
+**`self` always looks**, as before. A method that made its own object
+vanish would surprise everyone.
+
+**Turned down: a mark at the call as well** (`retire(take task)`). It
+would show the move where it happens. But the checker reports any use
+after a move with the line of the move, and one way to write a call is
+worth more than a second reminder. *(Provisional, as in 5.8a.)*
+
+### 5.19b The word is `take`, and it stands in front of the type
+
+`frame: take Frame`, and in a function type `function(take Frame) -> int`.
+
+**Why `take`.** It is what the function does, said from the function's
+side, in the word the messages already used ("takes the value over").
+It reads as a sentence: "send takes a frame".
+
+**Turned down: `owned`.** It already says what a value *is* ("this list
+has one owner"). On a parameter it would also have to say what the
+function *does*, and in an ordinary build `xs: owned list[int]` is
+needed for the first meaning. One word, two meanings: question 4.
+**Turned down: `move`.** It describes the call from the caller's side,
+and it is a term from C++ and Rust more than a plain word.
+**Turned down: `keep`.** A function that takes a frame and sends it
+does not keep it. **Turned down: `own`.** One letter from `owned`.
+
+**Why in front of the type and not the name.** `owned` goes there, and
+a function type has no parameter names to put it in front of.
+
+**`take` on a number is refused.** A number, a `bool` and a text are
+copied, so there is nothing to take, and a word that did nothing would
+be noise. The message says to write the type alone.
+
+### 5.19c `owned`, `take` and `strict` are reserved words, and `borrow` is gone
+
+A word of the language is never also a name. `let take = 3`,
+`let owned = 1` and `queue.take()` are refused, and the message says
+where the word goes. This replaces the part of 5.8a that left the
+words unreserved, and finishes what 5.18a began with `unsafe`.
+
+**Why.** Question 2. `strict` on the first line set a mode and on the
+second line was a variable. `owned` in front of `class` was a word and
+in front of `=` was a name. The parser could always tell, so nothing
+was ambiguous to the machine. A person had to stop and work it out.
+One rule with no exceptions is easier to hold than "reserved, except
+these three".
+
+**What it costs.** `take` is a good name for a method of a queue.
+`driver.zeno` had one and now calls it `get`. That is the whole cost
+found so far.
+
+**Type names stay unreserved** (`int`, `list`, `pointer`). They are
+names, of types, and a type and a variable never stand in the same
+place.
+
+**`borrow` is no longer a word.** Writing it in front of a type gives
+"`borrow` is no longer a word. A parameter looks at what it is given
+without one: write the type alone. A parameter that takes the value
+over says `take`". Everywhere else it is an ordinary name again.
+
+**Why not keep `borrow` as an optional word.** Then there would be two
+ways to write a parameter that looks: question 1.
+
+### 5.19d Where values are shared, `owned list[T]` on a parameter looks at any list
+
+In a build with a collector there are two kinds of list, and a
+parameter can ask for either:
+
+| Written | Means | Accepts |
+|---|---|---|
+| `xs: list[int]` | a shared list, which the function may keep | shared lists |
+| `xs: owned list[int]` | a look at a list | any list, owned or shared |
+| `xs: take owned list[int]` | the function takes an owned list over | owned lists |
+
+An owned list passed to a plain `list[int]` is refused, and the message
+says to write `owned list[int]`. An `owned class` needs no word: its
+type already says that it has one owner, so `frame: Frame` looks and
+`frame: take Frame` takes.
+
+**Why the middle row accepts a shared list.** Anyone may look at a
+shared value. A function that only reads a list should be usable with
+every list, and this is how to write that function once.
+
+**`take` on a shared value changes nothing.** `take Point`, where
+`Point` is a plain class in a build with a collector, is allowed and
+does what `Point` does. So a program written for a build with no
+collector, where the word matters, is the same program in every build.
+
+### 5.19e One program that a build with no collector accepts and an ordinary build refuses
+
+5.15a promised that the rules for one owner only ever refuse. There is
+now one case the other way round:
+
+```zeno
+function total(xs: list[int]) -> int { return len(xs) }
+let window: owned list[int] = [0, 0]
+print(total(window))
+```
+
+With no collector every list has one owner and `xs` looks, so this is
+fine. With a collector `xs: list[int]` is a shared list that `total`
+may keep, and `window` cannot go there.
+
+**Why it is left.** Accepting it with a collector would let a shared
+place hold an owned list (rule 6 of 5.8). Refusing it with no collector
+would mean that the word `owned` changes something in that build,
+which 5.15 says it does not. The message names the fix, and the fixed
+program (`xs: owned list[int]`) builds both ways. A program that never
+writes `owned`, or writes it on every list it means, never meets this.
+
+### 5.19f What `take` cannot do yet
+
+- A type parameter cannot be taken: `function keep[T](x: take T)` is
+  refused, because `T` may be a number. A value with one owner cannot
+  fill a type parameter at all yet (noted in docs/generics.md).
+- A parameter with no type is only allowed where values are shared
+  (`--no-collector` needs every type written), so the question of what
+  it does with an owner does not come up.
+

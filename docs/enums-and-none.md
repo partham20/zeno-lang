@@ -70,13 +70,14 @@ print(a)
 ```
 
 ```
-error: `a` was given away on line 2 and holds nothing now. Lend it
-instead (a `borrow` parameter), or use it before it goes
+error: `a` was given away on line 2 and holds nothing now. Use it
+before it goes, or give it only to what looks: a parameter without
+`take`
 ```
 
 Everything on the earlier page holds for a `Command` as it does for an
 object: a list of commands owns each one, `pop()` takes one out, a
-plain parameter takes and a `borrow` parameter looks.
+plain parameter looks and a `take` parameter takes.
 
 Two details make it cheaper than an object.
 
@@ -150,7 +151,7 @@ inside may be a list, an object or an enum value in this build:
 | `let found = find(2)` | `found`, until it gives it away |
 | `last: Command or none` in a class | the object |
 | `machine.last = parse("set 4 off")` | the object. The old value is freed on the spot |
-| `function describe(p: borrow Packet or none)` | the caller: `p` is a look, at a packet or at nothing |
+| `function describe(p: Packet or none)` | the caller: `p` is a look, at a packet or at nothing |
 | `list[Command or none]` | the list |
 
 A value that sits in a field stays there. Taking it out would leave a
@@ -162,7 +163,8 @@ let last = machine.last
 
 ```
 error: `last` holds an owned value, which cannot be taken out of the
-object it is in. Use it where it is, or lend it to a `borrow` parameter
+object it is in. Use it where it is, or pass it to a parameter that
+looks
 ```
 
 ## `match` looks
@@ -172,7 +174,7 @@ anything out. The value stays with its owner, and each name in a
 pattern is either a copy or a look:
 
 ```zeno
-function cost(command: borrow Command) -> int {
+function cost(command: Command) -> int {
     match command {
         case Stop { return 0 }
         case Wait(ms) { return ms }                    # a number: copied
@@ -199,7 +201,8 @@ match command {
 ```
 error: `pins` is a look at the value that the `match` is looking at,
 or at a part of it. Its owner still has it, so it cannot be kept,
-returned or given away. Use it here, or lend it to a `borrow` parameter
+returned or given away. Use it here, or pass it to a parameter that
+looks
 ```
 
 ### While a `case` is looking, the owner stays as it is
@@ -390,10 +393,10 @@ owned class Slot {
     spare: owned list[int] or none
 }
 
-function describe(p: borrow Packet or none) -> str { ... }
+function describe(p: Packet or none) -> str { ... }
 ```
 
-And `borrow` can be written on any enum that carries values, in any
+And `take` can be written on any enum that carries values, in any
 build. Where a collector runs it changes nothing about memory, but the
 same file then builds both ways.
 
@@ -443,7 +446,7 @@ own size: the LLVM build always did, and the two reports must agree.
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | A value with one owner as what a type parameter stands for | the copy for `T` would have to know it moves | noted |
 | A function that uses a list or object declared at the top of the file | the top of the file owns it, and could give it away first | for the audit |
-| A method that pops an item or replaces a field that has one owner | `self` is a borrow | for the audit |
+| A method that pops an item or replaces a field that has one owner | `self` only looks | for the audit |
 
 The first row has an answer today, and the compiler's message gives
 it:
@@ -491,8 +494,8 @@ could know. That is on the audit's list.
 
 ## Things to try
 
-1. In `commands.zeno`, take the word `borrow` off `cost` and run
-   `zeno check --no-collector`. Two places complain. Why is the loop's
+1. In `commands.zeno`, write `take` in front of the type of `cost`'s
+   parameter and run `zeno check --no-collector`. Two places complain. Why is the loop's
    `command` in `busy_for` not the loop's to give?
 2. Add a case `Repeat(times: int, what: Command)` to `Command`: a
    command that holds a command. Build it, open `commands.c`, and read

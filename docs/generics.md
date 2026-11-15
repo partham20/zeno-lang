@@ -314,7 +314,7 @@ define internal double @"z_Cell[float].get"(ptr %arg.self) {
 - **The types cannot be written at the call.** There is no
   `first[int](xs)`. If nothing says what `T` is, put the result where
   its type is written.
-- **An owned or borrowed value cannot fill a type parameter.**
+- **A value that has one owner cannot fill a type parameter.**
   `Stack[owned list[int]]` would need the stack to free what it holds.
 - **An object of a generic class cannot be raised**, because `raises`
   and `except` take a plain name.

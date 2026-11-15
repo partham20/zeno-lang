@@ -110,9 +110,10 @@ Mostly the next token decides everything. A few spots need a little more:
 - **Declaration or value?** `function name(...)` declares a function;
   `function(...)` with no name is an expression. One token of lookahead after
   `function` tells them apart.
-- **`strict`** is not a keyword. It is the word `strict` alone on the first
-  line of the file, which sets `Program.strict`; anywhere else it is an
-  ordinary name.
+- **`strict`** alone on the first line of the file sets
+  `Program.strict`. It is a reserved word, like `owned` and `take`, so
+  anywhere else it is an error that says where the word goes
+  (decision 5.19c).
 - **Function types.** Where a type is expected, `function(int) -> int` is
   parsed by `type_`: types in the `( )`, and an optional `->` and return type.
 

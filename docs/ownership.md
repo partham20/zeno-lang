@@ -55,19 +55,22 @@ owned class Frame {                 # every Frame has one owner
 
 let window: owned list[int] = [0, 0, 0, 0]
 
-function average(samples: borrow list[int]) -> int { ... }
+function average(samples: owned list[int]) -> int { ... }    # looks
+function send(frame: take Frame) -> int { ... }              # takes
 ```
 
 - **`owned class`**: every object of the class has exactly one owner. That
   is decided once, where the class is declared, and not at each use.
 - **`owned list[T]`**: a list with exactly one owner. Its items are
   ordinary values (numbers, text, shared objects).
-- **`borrow`**, on a parameter: the function may look at the value and
-  change what is inside it, and may not keep it.
+- **`take`**, on a parameter: the function takes the value over. A
+  parameter without the word only looks: the function may read the value
+  and change what is inside it, and may not keep it.
 
-`owned` and `borrow` are not reserved words. They only mean something in
-those three positions, so a program with a variable called `owned` still
-works.
+`owned` and `take` are reserved words, like every word of the language.
+A word is never also a name, so nobody has to work out which one a line
+means. (The word for looking used to be `borrow`, and a plain parameter
+took. The audit turned that round: [`audit.md`](audit.md).)
 
 ## The rules
 
@@ -75,7 +78,7 @@ works.
 holds the value. Nothing else does.
 
 **2. Storing it somewhere gives it away.** Assigning it to another variable,
-passing it to a parameter that takes it, putting it in a field, or returning
+passing it to a parameter that says `take`, putting it in a field, or returning
 it, moves it. The old name holds nothing afterwards, and using it is an
 error:
 
@@ -86,27 +89,39 @@ print(frame.channel)
 ```
 
 ```
-error: `frame` was given away on line 2 and holds nothing now. Lend it
-instead (a `borrow` parameter), or use it before it goes
+error: `frame` was given away on line 2 and holds nothing now. Use it
+before it goes, or give it only to what looks: a parameter without
+`take`
 ```
 
 **3. Looking is free.** Reading a field, calling a method, printing,
 indexing, comparing, looping over it: none of these moves anything.
 
-**4. A function that only looks says `borrow`.** The caller keeps the value.
-A borrowed value cannot be stored, returned or passed on to something that
-keeps it, so it can never outlive the call:
+**4. A parameter looks, unless it says `take`.** The caller keeps the
+value. What is only looked at cannot be stored, returned or passed on to
+something that keeps it, so it can never outlive the call:
 
 ```
-function keep(p: borrow Packet) -> Packet { return p }
+function keep(p: Packet) -> Packet { return p }
 ```
 
 ```
-error: `p` is only borrowed here, so it cannot be kept, returned or given
-away. To keep it, take it as an owned parameter instead
+error: `p` is only looked at here: its owner still has it. So it cannot
+be kept, returned or given away. If it is a parameter, write `take` in
+front of its type to take the value over
 ```
 
-A `borrow` parameter also accepts a shared value. Anyone may look at those.
+A parameter written `owned list[int]` looks at any list, owned or
+shared. Anyone may look at a shared one. A parameter written plain
+`list[int]` is the shared list of every earlier page, which the function
+may keep, so an owned list cannot go there:
+
+```
+error: `xs` of `total` is written `list[int]`, which is a shared list
+that the function may keep, and this list has one owner. Write the
+parameter as `owned list[int]`: then it only looks, and any list can be
+passed to it
+```
 
 **5. It is freed where its owner's block ends.** That is the closing `}`,
 or a `return`, `break` or `continue` that leaves the block early. A `var`
@@ -185,7 +200,7 @@ is in keeping the set right as the code branches:
 - **An owned value stays in the function whose block holds it.** A function
   cannot reach an owned variable declared somewhere else, including at the
   top of the file, and a function written inside another cannot carry one
-  away. Pass it in as a `borrow` parameter. This is what makes it safe to
+  away. Pass it in as a parameter. This is what makes it safe to
   free the value when the block ends: nothing outside the block ever knew
   where it was.
 - **An owned value made in the middle of a statement, and only looked
@@ -232,7 +247,8 @@ block, which owners still hold something. It asks each one, and the pointer
 itself is the answer. (Here the C compiler can see that `z_data` is NULL
 and removes the call.)
 
-A function that takes a value over is an owner like any other:
+A function that takes a value over (`p: take Packet`) is an owner like
+any other:
 
 ```c
 static int64_t z_send(z_Packet *z_p) {
@@ -384,10 +400,10 @@ breaking any program that works now.
   [`enums-and-none.md`](enums-and-none.md). With no collector an enum
   case can hold them as well, because there the enum value itself has
   one owner. A function type can mention one, and says what each
-  parameter does with it, as in `function(borrow Packet) -> int`:
+  parameter does with it, as in `function(take Packet) -> int`:
   [`functions-and-errors.md`](functions-and-errors.md).)
 - **Moving a field out of an object** (`let d = packet.data`). Same reason.
-- **Replacing an owned field through a borrow**, which includes `self` in a
+- **Replacing an owned field through a look**, which includes `self` in a
   method. Somebody else may have been lent the old value at that moment.
   Only the owner of the object may write `packet.data = [...]`. A method
   can still change what is *in* the list (`self.data.append(x)`).
@@ -407,7 +423,7 @@ breaking any program that works now.
   no collector at all, for a program where everything is owned, is
   `zeno build --no-collector`: see [`no-collector.md`](no-collector.md).
   That build takes its blocks from a fixed pool ([`pool.md`](pool.md)).
-- The borrow checker is small on purpose. It refuses some programs that
+- The checker for owners is small on purpose. It refuses some programs that
   would be safe, such as the one-line rule above. Rust accepts more, with
   far more machinery.
 
@@ -439,7 +455,7 @@ breaking any program that works now.
    two lines in `read` (`checker.rs`) that produce the message.
 3. Open `buffer.c` and find where `frame` is freed when the loop does
    `continue`, and where it is freed when it does not. Why are both needed?
-4. Write a function `longest(a: borrow list[int], b: borrow list[int])` that
+4. Write a function `longest(a: owned list[int], b: owned list[int])` that
    returns the longer of the two. What does the checker say? Why must it?
    What could the function return instead?
 5. In `leave_loop`, a value given away just before a `break` is allowed.

@@ -277,7 +277,7 @@ makes it right: `at` is always less than `size`. This is how to use
 the block. Keep it small, and keep the reason next to it. A caller of
 `put` cannot get it wrong, because the caller never sees the pointer.
 
-`take` gives `u8 or none`, so an empty queue is an answer and not an
+`get` gives `u8 or none`, so an empty queue is an answer and not an
 accident. `close` frees the memory:
 
 ```zeno
@@ -474,6 +474,6 @@ was asked for by hand, so it is given back by hand: `queue.close()`.
    `volatile` stops the compiler from doing to two writes of the same
    value in a row.
 9. A bigger one: write a `class Arena` that asks for 256 bytes once and
-   hands out pieces of it with `take(count) -> pointer[u8] or none`,
+   hands out pieces of it with `claim(count) -> pointer[u8] or none`,
    keeping a `used` count. Nothing is freed until `close()`. This is
    how much firmware gets by with no `free` at all.

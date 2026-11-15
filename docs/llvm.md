@@ -1143,7 +1143,7 @@ function make(id: int) -> Frame {
     return Frame(id, bytes)
 }
 
-function size(frame: Frame) -> int {
+function size(frame: take Frame) -> int {
     return len(frame.bytes)
 }
 
@@ -1194,7 +1194,7 @@ away, though. `zeno_list_drop` is in the other file, so LLVM does not
 know that it does nothing for null. The C build can, because there the
 runtime is in the same file. Exercise 14 closes the gap.
 
-A parameter that takes a value over is an owner too, so it is moved
+A parameter that takes a value over (it says `take`) is an owner too, so it is moved
 into a slot at the top of the function and dropped at the end:
 
 ```llvm

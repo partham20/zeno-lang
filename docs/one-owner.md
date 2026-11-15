@@ -67,8 +67,8 @@ program until you had. That is a rule a compiler can follow by itself:
 | a variable | `let tasks = [1, 2, 3]` | the variable's block, at its `}` |
 | a field | `Task("blink", 2, [])` | the object, when it is freed |
 | a list | `tasks.append(Task(...))` | the list, when it is freed |
-| a parameter | `retire(last)` | the function, when it returns |
-| a `borrow` parameter | `report(task)` | not the function: the caller still owns it |
+| a parameter that says `take` | `retire(last)` | the function, when it returns |
+| a parameter | `report(task)` | not the function: it only looks, and the caller still owns it |
 | nobody | `print(len(line.split()))` | the statement ([`temporaries.md`](temporaries.md)) |
 
 So in this build `list[int]` *means* `owned list[int]` and `class Task`
@@ -82,15 +82,16 @@ print(a)
 ```
 
 ```
-error: `a` was given away on line 2 and holds nothing now. Lend it
-instead (a `borrow` parameter), or use it before it goes
+error: `a` was given away on line 2 and holds nothing now. Use it
+before it goes, or give it only to what looks: a parameter without
+`take`
 ```
 
-and a function that only looks says so:
+and a function that takes a value over says so:
 
 ```zeno
-function report(task: borrow Task) -> str { ... }    # looks
-function retire(task: Task) -> int { ... }           # takes, and frees
+function report(task: Task) -> str { ... }           # looks
+function retire(task: take Task) -> int { ... }      # takes, and frees
 ```
 
 The word `owned` still works in this build and changes nothing there.
@@ -126,8 +127,8 @@ Four things can be done with an item, and each has one meaning:
 | `tasks[1] = Task(...)` | a new item takes the place of an old one | the list. The old one is freed on the spot |
 
 A look can do everything except keep the item. It can read it, change
-it (`tasks[0].every = 4`), call its methods and lend it to a `borrow`
-parameter. Keeping it is the one thing refused:
+it (`tasks[0].every = 4`), call its methods and pass it to a parameter that
+looks. Keeping it is the one thing refused:
 
 ```zeno
 let first = tasks[0]
@@ -135,7 +136,7 @@ let first = tasks[0]
 
 ```
 error: this item is an owned Task, which has one owner: the list. `[ ]`
-only looks at it. Use it where it is, lend it to a `borrow` parameter,
+only looks at it. Use it where it is, pass it to a parameter that looks,
 or take it out with `pop()`
 ```
 
@@ -151,16 +152,16 @@ anyone were still looking at that item, they would be looking at freed
 memory. Three small rules make sure nobody is. Each can be checked by
 reading one function, with no lifetimes to write.
 
-**1. Only the owner.** A `borrow` parameter cannot pop, and nor can
-`self` in a method, which is a borrow too.
+**1. Only the owner.** A parameter that looks cannot pop, and nor can
+`self` in a method, which always looks.
 
 ```zeno
-function last(tasks: borrow list[Task]) -> Task { return tasks.pop() }
+function last(tasks: list[Task]) -> Task { return tasks.pop() }
 ```
 
 ```
 error: only the owner can take an item out of this list: somebody else
-may have been lent it. Here `tasks` is only borrowed
+may have been lent it. Here `tasks` only looks at it
 ```
 
 **2. Not while a loop is walking the list.** The loop is looking at an
@@ -193,7 +194,7 @@ list, items and all, under the loop's feet.
 
 Appending is not on this list. A `for` loop walks a copy of the list
 (decision 3.10a), so `tasks.append(...)` inside the loop, or through a
-borrow, moves nothing the loop can see.
+look, moves nothing the loop can see.
 
 These rules refuse some programs that would be safe.
 `tasks.append(tasks.pop())` is one: write it on two lines. Rust accepts
@@ -288,8 +289,8 @@ the order `zeno run` uses. `an_assignment_can_reach_through_a_list` in
 
 The `except` block that catches an error owns it
 ([`no-collector.md`](no-collector.md), "Errors"). At this step `e` was
-only a look, like a loop's item: it could be read and lent to a
-`borrow` parameter, and `let again = e` was refused. Step 5 made `e` an
+only a look, like a loop's item: it could be read and passed to a
+parameter that looks, and `let again = e` was refused. Step 5 made `e` an
 owner, so the error can be kept, given away and raised again
 ([`functions-and-errors.md`](functions-and-errors.md)).
 
@@ -324,12 +325,12 @@ report, line for line.
 | A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | A function that uses a list or object declared at the top of the file | the owner is the top of the file, which could give it away first | noted, see below |
-| A method that pops an item or replaces a field that has one owner | `self` is a borrow (rule 1) | noted |
+| A method that pops an item or replaces a field that has one owner | `self` only looks (rule 1) | noted |
 | A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |
 
 The row about the top of the file is the one a firmware program will meet first: a table of
 numbers at the top of the file that several functions read. For now,
-lend it through a `borrow` parameter. A top-level `let` that is never
+pass it as a parameter. A top-level `let` that is never
 given away could be lent to every function without being asked, and
 that is on the list for the audit that follows these five steps.
 
@@ -358,8 +359,8 @@ that is on the list for the audit that follows these five steps.
 
 ## Things to try
 
-1. In `scheduler.zeno`, take the word `borrow` off `report` and run
-   `zeno check --no-collector`. Read the error. Why is the loop's `task`
+1. In `scheduler.zeno`, write `take` in front of the type of `report`'s
+   parameter and run `zeno check --no-collector`. Read the error. Why is the loop's `task`
    not the loop's to give?
 2. Add `let first = scheduler.tasks[0]` and read the error. Fix it two
    ways: once so that the task stays in the list, once so that it

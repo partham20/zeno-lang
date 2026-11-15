@@ -53,7 +53,7 @@ to learn:
 
 > **Whatever keeps text has its own copy, and frees it when it is done.**
 
-No moves, no borrows, no new errors. `let a = b` leaves both usable. A
+No moves, no looks, no new errors. `let a = b` leaves both usable. A
 program means exactly what it means under `zeno run`, and the checker
 is not changed by one line. The price is the copying, and "What it
 costs" below counts it.

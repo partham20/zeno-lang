@@ -213,8 +213,9 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
 7. Memory management (done: a mark-and-sweep garbage collector in the compiled program)
 8. Errors as values, for firmware and MISRA builds (done: `zeno build --firmware`
    compiles `try` / `raise` to status returns and `if`, with no `setjmp`)
-9. Owned values and borrows, beside the collector (done: `owned` values have
-   one owner and are freed where its block ends, `borrow` lends one for a call)
+9. Owned values and looks, beside the collector (done: `owned` values have
+   one owner and are freed where its block ends, and a parameter only
+   looks at one unless it says `take`)
 10. A firmware build with no collector (done: `zeno build --no-collector`
     gives every list and object one owner, and leaves the collector out
     of the C)

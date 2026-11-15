@@ -236,17 +236,16 @@ error: this list has no owner. Give it one, as in `let items: owned list[int] = 
 ```
 
 Looking is: a built-in (`len`, `print`, `in`, `sum`), an index, a loop,
-a method of the list (`map`, `filter`, `reduce`), and a parameter that
-says `borrow`. A `borrow` parameter is a promise the checker already
-enforces: the function cannot keep, return or give away what it was
-lent ([`ownership.md`](ownership.md)). So `count(line.split())` is safe
-by a rule that was there before this stage.
+a method of the list (`map`, `filter`, `reduce`), and a parameter.
+Every parameter looks unless it says `take`, and looking is a promise
+the checker already enforces: the function cannot keep, return or give
+away what it was lent ([`ownership.md`](ownership.md)). So
+`count(line.split())` is safe by a rule that was there before this
+stage.
 
-A parameter that is a plain `list[str]` makes no such promise. When
-this page was written `total(line.split())` was refused where `total`
-takes a `list[str]`. The next step ([`one-owner.md`](one-owner.md))
-made a plain list in this build an owned one, so `total` now takes the
-list and frees it.
+A parameter that says `take` is handed the list instead
+(`total(words: take list[str])`). Then nothing is left for the
+statement to free: `total` owns the list and frees it when it returns.
 
 A field of an object the statement owns is marked the same way:
 `make().data` may be walked and counted and not kept.
@@ -478,8 +477,10 @@ Three costs that are worth knowing:
    the first list a name (`let parts: owned list[str] = line.split()`
    and `print(count(parts))`). The report says the same number of
    blocks. Which two numbers change, and why?
-2. In `words.zeno`, change `count` to take a plain `list[str]` and build
-   with `--no-collector`. Read the error. Then build without the flag.
+2. In `words.zeno`, write `take` in front of the type of `count`'s
+   parameter and build with `--no-collector --memory`. The report is
+   the same. Open `words.c`: which line frees the list now, and which
+   line no longer does?
 3. Write `let both = line.split() + line.split()` and read the error.
    Fix it two ways: with a type on the `let`, and by not naming it.
 4. Open `words.c` and find `z_words`. Two lists are made there. Follow

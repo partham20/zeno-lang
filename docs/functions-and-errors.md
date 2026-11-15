@@ -58,7 +58,7 @@ Until now an error lived by a rule of its own: the `except` that caught
 it freed it, so it could be read there and nothing else. The rule now
 is the one every other value follows.
 
-- `raise fault` **takes** `fault`, as a plain parameter would.
+- `raise fault` **takes** `fault`, as a parameter that says `take` would.
 - The `except` that catches it receives it. The name after `as`
   **owns** it.
 - When the block ends, the name frees the error, unless the error went
@@ -78,7 +78,7 @@ for raw in [35, 60, 120, 70, 130] {
 ```
 
 ```zeno
-function checked(channel: borrow Channel, raw: int) -> int raises OutOfRange {
+function checked(channel: Channel, raw: int) -> int raises OutOfRange {
     try {
         return channel.process(raw)
     } except OutOfRange as fault {
@@ -89,10 +89,10 @@ function checked(channel: borrow Channel, raw: int) -> int raises OutOfRange {
 ```
 
 An error can be returned (`-> OutOfRange or none`), stored in a field,
-lent (`fault: borrow OutOfRange`), and made before it is needed:
+lent (`fault: OutOfRange`), and made before it is needed:
 
 ```zeno
-function open(door: int, problem: ValueError) -> int raises ValueError {
+function open(door: int, problem: take ValueError) -> int raises ValueError {
     if door > 3 {
         raise problem
     }
@@ -101,7 +101,8 @@ function open(door: int, problem: ValueError) -> int raises ValueError {
 ```
 
 `ValueError("not raised")` is made, handed to `open`, never raised, and
-freed when `open` returns, because `problem` owned it.
+freed when `open` returns, because `problem` owned it: the parameter
+says `take`, and `raise` needs an owner.
 
 The rules that go with owning are the ones you know from lists:
 
@@ -113,13 +114,13 @@ The rules that go with owning are the ones you know from lists:
 ```
 
 ```
-error: `fault` was given away on line 2 and holds nothing now. Lend it instead (a `borrow` parameter), or use it before it goes
+error: `fault` was given away on line 2 and holds nothing now. Use it before it goes, or give it only to what looks: a parameter without `take`
 ```
 
 and a look cannot be raised, because `raise` takes:
 
 ```
-error: `e` is only borrowed here, so it cannot be kept, returned or given away. To keep it, take it as an owned parameter instead
+error: `e` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. If it is a parameter, write `take` in front of its type to take the value over
 ```
 
 ### In C
@@ -212,10 +213,13 @@ print(add(1))
 ```
 
 ```
-error: `add` was given away on line 2 and holds nothing now. Lend it instead (a `borrow` parameter), or use it before it goes
+error: `add` was given away on line 2 and holds nothing now. Use it before it goes, or give it only to what looks: a parameter without `take`
 ```
 
-Lending is written as for a list: `f: borrow function(int) -> int`.
+Lending is written as for a list, with the type alone:
+`f: function(int) -> int`. A parameter that keeps the function says
+`take`, as `add(self, step: take function(int) -> int)` does in
+`handlers.zeno`.
 
 ## What a function may use from outside it
 
@@ -268,8 +272,8 @@ owner is. The simplest way to be sure of that is this rule:
 > statement that writes it.
 
 It is made, used and freed on that one line. It can go straight into
-`map`, `filter` and `reduce`, or into a `borrow` parameter. It cannot be
-kept:
+`map`, `filter` and `reduce`, or into a parameter that looks. It cannot
+be kept:
 
 ```zeno
 let xs = [1, 2]
@@ -277,11 +281,11 @@ let f = function(n: int) -> int { return n + len(xs) }
 ```
 
 ```
-error: this function uses a value from outside it that has one owner, so it must be gone before that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, `reduce` or a `borrow` parameter, or give the function what it needs as a parameter of its own
+error: this function uses a value from outside it that has one owner, so it must be gone before that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, `reduce` or a parameter that looks, or give the function what it needs as a parameter of its own
 ```
 
-It can change what it looks at (`counter.count += 1`), as a `borrow`
-parameter can. It cannot take an item out of it or give it away, and
+It can change what it looks at (`counter.count += 1`), as any parameter
+that looks can. It cannot take an item out of it or give it away, and
 the line that writes the function cannot give the value away either.
 
 ## A function type says what each parameter does
@@ -290,15 +294,15 @@ Before this step a function type could not mention a list or an object
 at all. Now each parameter of a function type is read as a parameter:
 
 ```zeno
-function measure(with: borrow function(borrow list[int]) -> int, data: borrow list[int]) -> int {
+function measure(with: function(list[int]) -> int, data: list[int]) -> int {
     return with(data)                 # lends `data` to whatever `with` is
 }
 
-function consume(with: borrow function(list[int]) -> int, n: int) -> int {
+function consume(with: function(take list[int]) -> int, n: int) -> int {
     return with([n, n + 1])           # gives the list away
 }
 
-function build(with: borrow function(int) -> list[int], n: int) -> int {
+function build(with: function(int) -> list[int], n: int) -> int {
     let made = with(n)                # `made` owns what comes back
     return len(made)
 }
@@ -307,7 +311,7 @@ function build(with: borrow function(int) -> list[int], n: int) -> int {
 A function fits a type only if it does the same with each parameter:
 
 ```
-error: `g` of `f` should be function(owned list[int]) -> int, but the parameter `xs` of this function is a borrowed list[int]
+error: `g` of `f` should be function(take list[int]) -> int, but the parameter `xs` of this function only looks at what it is given (`list[int]`)
 ```
 
 Fields and variables can have such types too. `handlers.zeno` has
@@ -406,16 +410,16 @@ block of its own, so that there is one rule for every literal.
 
 ## In every build
 
-Function types that say `borrow` or take a value work with a collector
-too, for an `owned class` and an `owned list`:
+Function types whose parameters look at a value or `take` it work with
+a collector too, for an `owned class` and an `owned list`:
 
 ```zeno
 owned class Packet {
     id: int
     data: owned list[int]
 }
-function twice(with: function(borrow Packet) -> int, p: borrow Packet) -> int { return with(p) + with(p) }
-function feed(with: function(Packet) -> int, n: int) -> int { return with(make(n)) }
+function twice(with: function(Packet) -> int, p: Packet) -> int { return with(p) + with(p) }
+function feed(with: function(take Packet) -> int, n: int) -> int { return with(make(n)) }
 ```
 
 There the function values themselves are shared and the collector's,
@@ -463,10 +467,11 @@ With a collector the value is `{ ptr, ptr }`, as it was.
 | A function that can raise, used as a value | errors travel as values in this build, and a function value does not say whether it raises | noted |
 | A method used as a value: `let m = counter.bump` | it would be a look at `counter` that is kept | call it there |
 
-Decided while this step was being built: a plain parameter will
-**look**, and a word will mark the parameter that takes. Today it is
-the other way round. That change comes in the audit stage, and is
-written down in [`decisions.md`](decisions.md), 5.17h.
+When this step was built a plain parameter took and the word `borrow`
+marked one that looked. The audit turned that round: a plain parameter
+**looks**, and `take` marks the one that takes
+([`audit.md`](audit.md), and 5.19 in [`decisions.md`](decisions.md)).
+This page shows the language as it is now.
 
 ## How it is tested
 

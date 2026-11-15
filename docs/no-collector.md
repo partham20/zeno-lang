@@ -194,8 +194,8 @@ if (zeno_is(zeno_caught_1, "Overload")) {
 }
 ```
 
-Inside the block the error can be read, printed and lent to a `borrow`
-parameter. It can also be kept (`last = overload`), put in a list,
+Inside the block the error can be read, printed and passed to a
+parameter that looks. It can also be kept (`last = overload`), put in a list,
 returned, and raised again (`raise overload`). Then the name gave it
 away and holds nothing, and the line that frees it frees nothing. An
 error can be made anywhere, not only by `raise`:
@@ -375,8 +375,8 @@ tests of the pool itself.
 6. `print(42)` builds the text `"42"` and then prints it. Give the runtime
    a `zeno_put_int` that prints a number with no text room, and make the
    compiler use it when `print` has one argument.
-7. `look([1, 2, 3])` used to be refused, where `look` takes a
-   `borrow list[int]`. It builds now: find the line in the C that frees
+7. `look([1, 2, 3])` used to be refused, where `look` has a parameter
+   `xs: list[int]` that only looks. It builds now: find the line in the C that frees
    the list, then make `look` fail (give it a `raises`) and find the
    second line that does. [`temporaries.md`](temporaries.md) says how
    both got there.
