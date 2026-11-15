@@ -1859,6 +1859,9 @@ helps `print`, and `if name.upper() == "ON"` still needs somewhere to put
 
 ### 5.9d The `except` that catches an error frees it
 
+*(Changed by 5.17: the `except` name owns the error now, and frees it
+only if it still has it when the block ends.)*
+
 An error is made only by `raise`. The `except` block that catches it
 frees it when the block ends, however the block is left. Inside the
 block the error can be read. It cannot be kept, passed to a function or
@@ -3605,7 +3608,8 @@ is for later. *(Keep whatever works.)*
 
 ### 5.16i What a no-collector build still refuses *(provisional)*
 
-This replaces the list in 5.15j.
+This replaces the list in 5.15j. *(Replaced in turn by 5.17g: the
+step 5 items below build now.)*
 
 - A function written where a value goes, a function type that mentions
   a list or an object, an error that is kept or raised again.
@@ -3628,5 +3632,191 @@ intuitive rather than what is safe:
   and `examples/shapes.zeno` do not build with no collector for want
   of it. Whether looking should be the plain form is a question about
   the direction of the language, and is the owner's to answer.
+  *(Answered: 5.17h.)*
 - After `case none`, a later `case name` still has the type
   `T or none`. The checker could narrow it.
+
+### 5.17 With no collector, an error has one owner: `raise` takes it and `except` owns it
+
+An error used to be the one value that lived by a special rule: its
+`except` freed it, so it could not be kept, handed on or raised again,
+and it could only be made by `raise`. Now it is a value like any other.
+`raise x` takes `x`. The `except` that catches it receives it, and the
+name after `as` owns it. At the end of the block the name frees it,
+unless it was kept, returned, given away or raised again.
+
+**Why.** Every other rule in this build is "whoever receives a value
+owns it". One exception to that is one more thing to remember, and the
+programs it refused are ordinary firmware: log the last fault, keep a
+list of them, pass a fault up after noting it. With lists and objects
+owned (5.15) nothing stood in the way any more.
+
+**Turned down: keep the old rule and add `e.copy()`.** A copy of an
+object that holds a list is a deep copy, which costs pool and time the
+reader cannot see from the word.
+
+**Unambiguous and intuitive.** There is one rule for every value now.
+Nothing new is written: `raise fault`, `faults.append(fault)` and
+`last = fault` mean what they mean for any owner, and the messages for
+"given away" and "only borrowed" are the ones already known.
+
+### 5.17a An error of a kind Zeno knows has one owner too, and can be made anywhere
+
+`ValueError("x")` makes an error whether or not `raise` stands in front
+of it. `let ready = ValueError("made early")` is allowed, and so is a
+parameter of type `ValueError`, a `list[ValueError]`, and
+`borrow ValueError`.
+
+**Why.** "Only `raise` can make one" existed because nothing else could
+free it. With an owner, that reason is gone, and an error made ahead of
+time is useful (one error for every caller of a table of checks).
+
+**In the checker** such an error is an owned `Error(kind)`. An error
+that is an object of a class needed nothing: with no collector an
+object already has one owner.
+
+### 5.17b With no collector, a function value has one owner, and a function of the program is a fixed value
+
+A function written where a value goes (`function(n: int) -> int { ... }`)
+is kept in a small block with what it uses. That block has one owner,
+like a list. A function of the program, used by name (`double`), is not
+in a block: it is one fixed value that is never freed, like an enum case
+that carries nothing (5.16a). The **type** says which rules apply:
+
+- `var f: function(int) -> int` can hold either kind. It is an owner:
+  giving it away empties it, and a new value frees the old one. Freeing
+  a function of the program does nothing.
+- `let f = double`, with no type written, holds that one function. It is
+  not an owner, and can be used any number of times.
+
+**Why the type decides and not the value.** The checker must know at
+every line whether a name still holds something, without running the
+program. A variable that can hold either kind has to follow the stricter
+rule.
+
+**Turned down: counting who holds each function.** That is a small
+collector, and this build promises none. **Turned down: copying the
+block when it is kept twice.** A copy is easy for numbers, but a function
+that keeps text would copy the text too, and a hidden copy is exactly
+what this build is for avoiding.
+
+**For the audit.** `var f = double` followed by `f = other` is refused,
+because without a written type the variable holds that one function. The
+message says to write the type. Inferring `function(int) -> int` for a
+`var` would be less surprising.
+
+### 5.17c What a function written where a value goes may use from outside it
+
+| It uses | What happens | Why |
+|---|---|---|
+| a `let` number, bool or plain enum | the value is copied into the block | it never changes, so a copy is the same thing |
+| a `let` text | a copy of the text is kept in the block and freed with it | text is kept by copy everywhere in this build (5.9l) |
+| a `var` of the function around it | **refused** | the two would share one variable, and with no collector nothing is shared |
+| a `var` or `let` at the top of the file | used where it is | it is the program's, and lives as long as the program |
+| a list, an object, or anything else with one owner | it is **looked at** (5.17d) | taking it would silently empty the variable |
+
+**Why refuse the `var`.** In `zeno run` the inner function and the outer
+one see the same variable, so a change by one is seen by the other. To
+do that, the variable has to live in a block that both hold, which is
+two owners. Copying it instead would compile, and print something else
+than `zeno run` prints. A refusal is the only honest answer. The message
+says what to write: `let` if it does not change, an object if it does.
+
+**Turned down: a word such as `move` on the function, as Rust has.**
+It would be a second way to write a function, for a case that has an
+answer already: give the function a parameter.
+
+### 5.17d A function that looks at a value belongs to the line that writes it
+
+A function that uses a list or an object from outside looks at it, and
+a look must be gone before the owner is. So the function is itself a
+look: the statement that writes it owns it and frees it. It can be
+passed to `map`, `filter`, `reduce` or a `borrow` parameter. It cannot
+be put in a variable, returned or given away, and it cannot take an item
+out of what it looks at. While that statement runs, the value it uses
+counts as being looked at, so it cannot be given away on the same line.
+
+**Why.** This is the common case: `readings.map(function(r) { ... })`
+with something from the surroundings in the body. It is safe with no
+new rule, because a borrow that lasts one statement is what a `borrow`
+parameter already is.
+
+**Turned down: let it be kept, and stop the owner from changing until
+the function is gone.** That is a borrow with a lifetime, which Rust
+needs names and annotations for. One statement is a lifetime nobody has
+to write.
+
+**Provisional.** A function that uses another function value which has
+an owner (`function(n) { return f(f(n)) }` where `f` is a parameter)
+looks at it, so it cannot be returned. Writing "compose" needs a way to
+take a value into a function. To be looked at with real programs.
+
+### 5.17e A function type says what each parameter does, in every build
+
+`function(borrow list[int]) -> int` is a function that looks at a list.
+`function(Packet) -> int` takes the packet. A function can return a list
+or an object, and the caller owns it. Each parameter inside a function
+type is read by the same rule as a parameter of a function, so a call
+through a function value lends or gives exactly as a call by name does.
+A function fits such a type only if its parameters do the same thing.
+
+This holds with a collector as well, for `owned class` and
+`owned list`. It replaces the refusal of a value with one owner inside a
+function type (5.16i).
+
+**Why.** Before, a function type could not say `borrow`, so no function
+value could be handed a list, and `map` over a list of objects was the
+only way in. **Still refused:** a value with one owner as what a type
+parameter stands for (`same[T](x: T)` with a list), because the copy for
+`T` would have to know that it moves.
+
+### 5.17f In C and IR: a `drop` entry in the block, only with no collector
+
+A function value is `{ code, name }` followed by what it uses. With no
+collector there is a third entry, `drop`: the function that frees this
+block. It is `zeno_closure_release` when the block keeps no text, a
+function written for that one literal when it does (it frees the text
+first), and NULL for a function of the program. The owner calls
+`zeno_closure_drop`, which does nothing for NULL.
+
+Every literal gets a block of its own, even one that uses nothing.
+**Why.** Two values made by the same literal are different functions in
+`zeno run` (`==` says so), and one rule for every literal is simpler
+than two. It costs one small block of three words.
+
+A build with a collector has no `drop` entry and is unchanged.
+
+### 5.17g What a no-collector build still refuses *(provisional)*
+
+This replaces the list in 5.16i.
+
+- A function that uses a `var` of the function around it (5.17c), and
+  keeping a function that looks (5.17d). Both by design.
+- A value that has one owner as what a type parameter stands for.
+- `list[int or none]` (5.16h).
+- A function that can raise, used as a value (the `--firmware` rule,
+  since errors travel as values in this build).
+- A method used as a value (`let m = counter.bump`).
+
+### 5.17h Decided: a plain parameter will look, and a word will take
+
+Asked of the owner of the language on 2026-11-15, and answered: a plain
+parameter should look at a list or an object, and a word should mark
+the parameter that takes it. Today it is the other way round (5.15b):
+plain takes and `borrow` looks.
+
+**Why.** Most functions only look, so today most parameters carry a
+word and the rare one that takes carries none. The common thing should
+be the plain thing, and the thing that empties the caller's variable
+should be the one that is visible.
+
+**When.** In the audit stage, after manual memory. It touches the
+checker, both backends' tests, every example and every page that shows
+`borrow`, so it is done in one piece and not mixed into another stage.
+The word is to be chosen then, with the reasons written here.
+
+**The audit's list**, carried on from 5.16i: functions reaching
+top-level lists and objects, methods taking out what the object owns,
+narrowing after `case none`, the order C evaluates arguments in (5.9q),
+`list[int] + list[str]` under `--strict`, `list[int or none]`, and
+`var f = double` (5.17b).
