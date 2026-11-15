@@ -7789,3 +7789,265 @@ enums in one file cannot both have a `Dot`".
 with every other mistake in a method's first line. A function in the
 syntax tree now knows where it is written (`ast::Function::span`),
 and the mistake is shown on the method's own line.
+
+---
+
+## 14. A program in a web page
+
+Zeno was made for firmware, and is not a language for the web. But a
+language somebody is learning to build should be able to show
+something, and the thing everybody can open is a page. The question
+of this chapter is what the least is that makes a page written in
+Zeno, without a second Zeno to keep in step with the first.
+[`web.md`](web.md) is the walkthrough.
+
+### 14.1 The interpreter runs in the page, as WebAssembly
+
+`zeno build --web` compiles nothing. The page it writes carries
+`zeno.wasm`, which is Zeno itself (lexer, parser, checker,
+interpreter) compiled by Rust for a browser, and the program as the
+text that was written. The browser runs the program as `zeno run`
+does.
+
+**Why.** Every other way is a new engine. Zeno already has five that
+must agree (the interpreter, the VM, C, LLVM, and each of the last
+two in its firmware forms), and most of the work of every stage
+since the first has been holding them to one answer. This way adds
+no engine. A program in a page means what it means on a desk because
+the same code decides it, and the whole language is there on the
+first day: classes, generics, quantities, modules, packages.
+
+**What it costs.** `zeno.wasm` is 1.1 MB and every page carries it.
+A program runs at the speed of `zeno run`. Both are fine for a page
+that waits for a click.
+
+**Turned down.**
+- *Compile Zeno to JavaScript.* A sixth engine, and JavaScript's
+  numbers are not Zeno's: no 64-bit whole number without `BigInt`, so
+  `int` would be slow or wrong.
+- *Compile through C, and C to WebAssembly.* It reuses `emit_c`, and
+  it needs clang with a WebAssembly target or Emscripten on the
+  machine of everybody who builds a page. Compiled Zeno is also
+  strict Zeno (the builds refuse some of what `zeno run` runs), so a
+  page would have been a smaller language than a desk.
+- *Emit WebAssembly from `emit_llvm`.* The same, with LLVM in place
+  of C.
+
+One of the last two is the way to a page that is small and fast, if
+that is ever wanted. Nothing here is in its way: the `web` module
+would be the same.
+
+### 14.2 The page is a module, and an element is a value
+
+`import web`, then `web.element("#count")` gives an `Element`, which
+has fields and methods. It is the shape of `board` and `Pin`
+(3.15): the outside world is a module, and a thing in it is a value
+of a type the checker knows.
+
+**Why.** It was already decided once, and a second answer to the
+same question would be the ambiguity the language is trying not to
+have. It also means the checker checks a page: `count.text = 3` is
+refused before anything runs.
+
+**Turned down.**
+- *The browser's own names* (`document.querySelector`,
+  `addEventListener`, `classList.add`). Familiar to those who know
+  them, and three ways of spelling for those who do not.
+- *A way to call any JavaScript* (`js.call("alert", ...)`). It makes
+  everything possible and nothing checked, and under `zeno run`
+  there is no JavaScript to call.
+- *Describing the page in Zeno* and letting a library work out what
+  to change, as the big front-end libraries do. That is a library to
+  write in Zeno one day, on top of this.
+
+### 14.3 An element that is not there is an error
+
+`web.element("#count")` raises a `ValueError` if the page has no
+such element. `web.elements("li")` gives a list, which may be empty.
+
+**Why.** The usual cause is a misspelt id, and the first run finds
+it. Giving `Element or none` would make every program test for
+`none` around every element it uses, for the sake of a mistake that
+shows itself. `pin(64)` on a board with 64 pins is an error for the
+same reason.
+
+**Turned down.** `Element or none` (above). A silent element that
+swallows what is done to it, which hides the misspelling.
+
+### 14.4 `text` and `value` are fields. The rest are methods
+
+`count.text = "3"` and `box.value` are read and written as fields.
+Everything else (`add_class`, `hide`, `append`, `on`) is a method.
+
+**Why.** A field is something an object has, and a method is
+something it does. The text of an element and what has been typed
+into it are had: a program reads them and writes them, and
+`count.text += "!"` works with no new rule. A class is added and
+taken away, which is doing.
+
+**Turned down.** `set_text("3")` and `get_text()`: two names for
+what `=` says. Fields for everything (`item.hidden = true`,
+`item.classes.append("done")`): a list of classes that the program
+changes would have to be watched for changes.
+
+### 14.5 A function the page calls takes nothing
+
+`button.on("click", pressed)` calls `pressed()`. `web.after(500 ms,
+tick)` calls `tick()`. Only `web.on_key(pressed)` hands something
+over: the key, as a str. The checker says so, in its own words, if
+the function takes anything else.
+
+**Why.** An event object is mostly a way to find out which element
+it happened to, and a Zeno function knows that already: it is
+written where the element is in reach, and keeps it (5.5k is how a
+function does). What is left is what cannot be known any other way,
+and of that only the key was needed to write a page. So that is all
+there is, until a program needs more.
+
+**Turned down.** An event object with fields (`event.key`,
+`event.x`, `event.target`): a new type, most of whose fields mean
+nothing for most events.
+
+### 14.6 On a desk the page is simulated, and calls nothing
+
+Under `zeno run` and `zeno test` there is a simulated page
+(`src/page.rs`). It has whatever element is asked for, keeps what is
+done to it, and prints a line for each change that could be seen,
+as the simulated board prints a line when a pin changes (3.15b). It
+never calls a function it was given.
+
+**Why.** A program for a page should be testable where every other
+program is, in the same `zeno test`, with no browser installed. And
+the two engines are held to one output for a page as for everything
+else. Calling nothing is the honest version of "nobody is here": a
+test calls the function it wants to test, by its name.
+
+A selector the simulated page cannot read (`a[href]`, `ul > li`) is
+an error in `web.elements`, and not an empty list. An empty list
+would say the page has none, and the simulated page does not know.
+
+**Turned down.**
+- *Refuse to run a program that imports `web`.* Then nothing of it
+  could be tested without a browser.
+- *Read the HTML file,* to know which elements there are. It would
+  find the misspelt id, which is worth having. It needs an HTML
+  parser, which is larger than everything else in this stage. Left
+  for later (14.13).
+- *Call each function once,* to see that it runs. A click that
+  nobody made is not something the program can explain.
+
+### 14.7 A built page is one file
+
+`todo.web.html` holds the page, the program, `web.js`, and
+`zeno.wasm` written as base64.
+
+**Why.** A page opened from the disk may not load another file: the
+browser refuses, to keep a page from reading the disk. With three
+files, the first thing a learner would see is a blank page, and the
+fix is to run a web server. One file opens with a double click, and
+is hosted by copying it.
+
+**What it costs.** Base64 makes `zeno.wasm` a third larger (1.5 MB),
+and two pages on one site each carry their own.
+
+**Turned down.** Three files and a small web server in `zeno`
+(`zeno serve`): a server is a lot to add to make a file open.
+
+### 14.8 `todo.html` is written, and `todo.web.html` is built
+
+The page for `todo.zeno` is `todo.html`, beside it. If there is
+none, the page is an empty one with a place for what the program
+prints. The built page is `todo.web.html`, in the folder the command
+is run in, where every build puts what it makes.
+
+**Why.** The file somebody writes has the plain name, as
+`hello.zeno` does, and what is built is named after it. They cannot
+be the same name: built in the program's own folder, the page would
+be written over its own source.
+
+The scripts go at the end of the body, so that every element is
+there when the program's first line runs.
+
+**Turned down.** A name for the page given on the command line, and
+an `-o` for where the result goes: two more things to type, for a
+choice with one sensible answer. A line in the HTML that names the
+program (`<script src="todo.zeno">`): then the page would say which
+program it has, the command would say which program to build, and
+they could disagree.
+
+### 14.9 The program travels as its text, named from its own folder
+
+The page carries every file of the program as it was written, under
+the name it has from the program's folder: `todo.zeno`,
+`drivers/uart.zeno`, `../filters/zeno.package`. The browser reads,
+joins and checks them as a desk does.
+
+**Why the text.** It is what `zeno.wasm` already knows how to read,
+and an error in the page can show the line it is on. A syntax tree
+written out and read back would be a new format to keep right.
+
+**Why from its folder.** `zeno build --web /home/partha/site/todo.zeno`
+would otherwise write `/home/partha/site/` into a page that is then
+put on the web. The names are also the ones the browser's reading of
+the program asks for, so nothing has to translate them.
+
+`<` in the program is written `<` in the page. A browser ends
+a script at `</script>` wherever it finds one, even in a str.
+
+### 14.10 An error that nothing catches stops the page's program
+
+It is shown in a box at the foot of the page, with its line, and in
+the console. After it, the page calls no more of the program's
+functions.
+
+**Why.** It is what `zeno run` does, and for the reason it does it:
+the function that failed left its work half done, and whatever runs
+next runs on that. A page that goes on after an error is a page
+that is wrong in a way nobody is shown.
+
+**Turned down.** Only the console: a learner does not have it open.
+Going on with the next click: above.
+
+### 14.11 No `sleep` in a page, and `input` is the browser's question
+
+`time.sleep` in a page stops the program with a message that says
+to use `web.after`. `input("Name: ")` asks with the browser's own
+question box.
+
+**Why.** A page has one thread. A program that waits on it stops
+the page from drawing, and a `sleep` in a loop, which is what
+`blink.zeno` is, would hang the tab. `input` can work, because the
+browser has a question box that waits; it is ugly, and it lets every
+program that asks for a name run in a page.
+
+### 14.12 200 nested calls in a page
+
+On a desk a program may nest 1000 calls. In a page, 200.
+
+**Why.** The interpreter calls itself for each nested call, on the
+browser's stack. Chromium gave out between 700 and 1000 calls of a
+plain function, and between 400 and 500 of one that calls itself
+from inside a loop, a `match` and a `map`. When the browser stops a
+program, Zeno cannot say which line it was. 200 is where it always
+still can, with room for a browser whose stack is half the size.
+
+### 14.13 `--web` is a build of its own
+
+`zeno build --web` goes with none of `--llvm`, `--firmware`,
+`--no-collector` and `--memory`, and says so. `zeno build` without
+it refuses `import web`, and says to use `--web`.
+
+**Why.** Those options say how to compile, and a page is not
+compiled. A page built with `--firmware` would be a page that is no
+different, from a command that suggested it was.
+
+### 14.14 Left for later
+
+- The simulated page does not read the HTML, so it does not find a
+  misspelt id (14.6).
+- Events carry nothing but the key (14.5): no place of the mouse.
+- No style of one element, no drawing, no network, nothing kept
+  between visits. Each is a name in `web.js` and a few lines in
+  `page.rs`.
+- Only Chromium has run it.
+- A compiled page, small and fast (14.1).

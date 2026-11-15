@@ -28,3 +28,9 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Zeno for a browser (docs/web.md). The stack is where the interpreter
+# keeps its place in a program, one step for every nested call, and the
+# usual megabyte is not enough for 200 of them.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=8388608"]

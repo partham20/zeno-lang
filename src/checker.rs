@@ -555,6 +555,8 @@ enum Ty {
     Quantity(Rc<str>),
     /// A pin of the board, from the `board` module.
     Pin,
+    /// An element of the page, from the `web` module.
+    Element,
     /// A whole number with a size: `u8`, `i32`. See src/ints.rs.
     Sized(Width),
     /// A raw pointer to numbers of one size: `pointer[u8]`. Reading
@@ -742,6 +744,7 @@ enum Key {
     Str,
     Bool,
     Pin,
+    Element,
     /// A sized whole number, by its name: `u8`.
     Sized(&'static str),
     /// A pointer, by the name of what it points at.
@@ -975,6 +978,7 @@ impl fmt::Display for Ty {
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
+            Ty::Element => write!(f, "Element"),
             Ty::Pointer(pointee) => write!(f, "pointer[{}]", pointee.name()),
             Ty::Register(width) => write!(f, "Register[{}]", width.name),
             Ty::Sized(width) => write!(f, "{}", width.name),
@@ -1082,6 +1086,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Str, Ty::Str)
         | (Ty::Bool, Ty::Bool)
         | (Ty::Pin, Ty::Pin)
+        | (Ty::Element, Ty::Element)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
@@ -1576,6 +1581,11 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "exists") => Ty::Builtin("files.exists"),
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
+        ("web", "element") => Ty::Builtin("web.element"),
+        ("web", "elements") => Ty::Builtin("web.elements"),
+        ("web", "create") => Ty::Builtin("web.create"),
+        ("web", "after") => Ty::Builtin("web.after"),
+        ("web", "on_key") => Ty::Builtin("web.on_key"),
         ("board", "led") => Ty::Pin,
         ("board", "pin") => Ty::Builtin("pin"),
         ("board", "register") => Ty::Builtin("register"),
@@ -2089,6 +2099,7 @@ impl Checker {
             Ty::Str => Key::Str,
             Ty::Bool => Key::Bool,
             Ty::Pin => Key::Pin,
+            Ty::Element => Key::Element,
             Ty::Sized(width) => Key::Sized(width.name),
             Ty::Pointer(pointee) => Key::Pointer(pointee.name()),
             Ty::Register(width) => Key::Register(width.name),
@@ -2135,6 +2146,7 @@ impl Checker {
             Key::Str => Ty::Str,
             Key::Bool => Ty::Bool,
             Key::Pin => Ty::Pin,
+            Key::Element => Ty::Element,
             Key::Sized(name) => ints::width(name).map_or(Ty::Int, Ty::Sized),
             Key::Pointer(name) => Pointee::named(name).map_or(Ty::Invalid, Ty::Pointer),
             Key::Register(name) => ints::width(name).map_or(Ty::Invalid, Ty::Register),
@@ -2506,6 +2518,8 @@ impl Checker {
                         // A pin of the board. A class of the program's own
                         // called `Pin` was found above, and comes first.
                         _ if name == "Pin" => Ty::Pin,
+                        // An element of the page, by the same rule.
+                        _ if name == "Element" => Ty::Element,
                         _ if name == "Register" => {
                             return self.error("`Register` needs the size of the register, as in `Register[u32]`", span)
                         }
@@ -3229,6 +3243,7 @@ impl Checker {
                     "board" => "board",
                     "files" => "files",
                     "program" => "program",
+                    "web" => "web",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -3422,6 +3437,12 @@ impl Checker {
                         None => self.error(format!("`{}` has no field `{name}`", class.name), span),
                     }
                 }
+                // `title.text = "Hello"`: a change to the page.
+                Ty::Element if crate::builtins::ELEMENT_FIELDS.contains(&name.as_str()) => return (Ty::Str, Ty::Str, None),
+                Ty::Element => self.error(
+                    format!("an Element has no `{name}` to give a new value. It has `text` and `value`"),
+                    span,
+                ),
                 ty if ty.is_loose() => ty,
                 ty => self.error(format!("a field cannot be set on {ty}"), span),
             },
@@ -5413,6 +5434,19 @@ impl Checker {
             Ty::Register(_) if name == "address" => Ty::Int,
             // `led.number`: which pin this is.
             Ty::Pin if name == "number" => Ty::Int,
+            Ty::Element if crate::builtins::ELEMENT_METHODS.contains(&name) => {
+                Ty::BuiltinMethod(Box::new(Ty::Element), Rc::from(name))
+            }
+            // `title.text`, `name.value`: what an element shows, and
+            // what has been typed into it.
+            Ty::Element if crate::builtins::ELEMENT_FIELDS.contains(&name) => Ty::Str,
+            Ty::Element => self.error(
+                format!(
+                    "an Element has no field or method `{name}`. It has `text` and `value`, and the methods `{}`",
+                    crate::builtins::ELEMENT_METHODS.join("`, `")
+                ),
+                span,
+            ),
             Ty::Optional(_) => self.error(
                 format!(
                     "this is {object}. {}",
@@ -5434,6 +5468,32 @@ impl Checker {
     }
 
     // ----------------------------------------------------------------- Calls
+
+    /// `function` was given to something that will call it later with
+    /// values of these types, as the page calls what `on` was given.
+    /// Check that it can be called so.
+    ///
+    /// The check is the one a call written in the program gets. What it
+    /// would say is about a call nobody wrote ("`pressed` takes 1
+    /// argument, but 0 were given"), so one message takes its place, and
+    /// says what `by` will call the function with.
+    fn calls_back(&mut self, by: &str, function: &Argument, types: Vec<Ty>) {
+        let with = match types.as_slice() {
+            [] => "with nothing, so it takes no parameters: `function() { ... }`",
+            _ => "with the key that was pressed, so it takes one str: `function(key: str) { ... }`",
+        };
+        let found = self.errors.len();
+        let arguments = types.into_iter().map(|ty| Argument { name: None, ty, span: function.span, written: None }).collect();
+        self.call(&function.ty.clone().looked_at(), arguments, function.span);
+        if self.errors.len() > found {
+            self.errors.truncate(found);
+            let message = match function.ty.clone().looked_at() {
+                Ty::Function(_) | Ty::BoundMethod(_) => format!("`{by}` will call this function {with}"),
+                other => format!("`{by}` needs a function to call, but this is {other}"),
+            };
+            self.error(message, function.span);
+        }
+    }
 
     fn call(&mut self, callee: &Ty, arguments: Vec<Argument>, span: Span) -> Ty {
         match callee {
@@ -5856,6 +5916,39 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            "web.element" | "web.elements" => {
+                let short = &name["web.".len()..];
+                if self.arity(short, arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, &format!("the selector given to `web.{short}`"), arguments[0].span);
+                }
+                if short == "element" { Ty::Element } else { Ty::list(Ty::Element) }
+            }
+            "web.create" => {
+                self.arity("create", arguments, 1, 2, span);
+                for argument in arguments {
+                    self.expect(&argument.ty, &Ty::Str, "an argument of `web.create`", argument.span);
+                }
+                Ty::Element
+            }
+            "web.after" => {
+                let time = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "ms").is_some());
+                if self.arity("after", arguments, 2, 2, span) {
+                    if !time && !first.is_loose() {
+                        self.error(
+                            format!("`after` needs a time with a unit, such as `500 ms`, but this is {first}"),
+                            arguments[0].span,
+                        );
+                    }
+                    self.calls_back("after", &arguments[1], Vec::new());
+                }
+                Ty::None
+            }
+            "web.on_key" => {
+                if self.arity("on_key", arguments, 1, 1, span) {
+                    self.calls_back("on_key", &arguments[0], vec![Ty::Str]);
+                }
+                Ty::None
+            }
             _ => Ty::Dynamic,
         }
     }
@@ -5889,6 +5982,41 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            // `button.on("click", pressed)`: the page calls `pressed`
+            // with nothing.
+            (Ty::Element, "on") => {
+                if self.arity(name, arguments, 2, 2, span) {
+                    self.expect(&arguments[0].ty, &Ty::Str, "the name of the event", arguments[0].span);
+                    self.calls_back("on", &arguments[1], Vec::new());
+                }
+                Ty::None
+            }
+            (Ty::Element, "append") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&arguments[0].ty, &Ty::Element, "what is appended to an element", arguments[0].span);
+                }
+                Ty::None
+            }
+            (Ty::Element, "remove" | "clear" | "show" | "hide") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::None
+            }
+            // An attribute the element does not have is `none`.
+            (Ty::Element, "get") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                Ty::Optional(Box::new(Ty::Str))
+            }
+            (Ty::Element, "set") => {
+                self.arity(name, arguments, 2, 2, span);
+                strs(self);
+                Ty::None
+            }
+            (Ty::Element, "add_class" | "remove_class" | "has_class") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                if name == "has_class" { Ty::Bool } else { Ty::None }
             }
             (Ty::Register(width), "read") => {
                 self.arity(name, arguments, 0, 0, span);
@@ -7601,7 +7729,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files` and `program`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
@@ -9795,6 +9923,51 @@ function total(xs: owned list[int]) -> int { return len(xs) }
                 "`b` cannot be changed. Declare it with `var` to allow that",
             ]
         );
+    }
+
+    #[test]
+    fn the_page_is_checked_before_the_program_runs() {
+        let page = "import web\nlet count = web.element(\"#count\")\n";
+        let with = |line: &str| format!("{page}{line}");
+        ok(&with(
+            "function mark(item: Element) { item.add_class(\"done\") }\nmark(count)\n\
+             let all: list[Element] = web.elements(\"li\")\nfor item in all { mark(item) }\n\
+             let lang: str or none = count.get(\"lang\")\ncount.text += \"!\"\ncount.value = count.text.upper()\n\
+             var other = count\nother = web.create(\"p\")\nprint(count == other, count.has_class(\"a\") and true)",
+        ));
+        ok("from web import element, after\nlet e = element(\"p\")\nafter(1 s, function() { e.hide() })");
+        check(&with("print(count.text)"), true).iter().for_each(|error| panic!("{error}"));
+
+        assert_eq!(error(&with("count.text = 3")), "the new value should be str, but this is int");
+        assert_eq!(error(&with("let n: int = count.get(\"href\")")), "`n` should be int, but this is str or none. Check it with `is not none` first");
+        assert_eq!(error(&with("count.append(\"text\")")), "what is appended to an element should be Element, but this is str");
+        assert_eq!(error(&with("count.set(\"href\")")), "`set` takes 2 arguments, but 1 was given");
+        assert_eq!(error(&with("web.element(5)")), "the selector given to `web.element` should be str, but this is int");
+        assert_eq!(error(&with("web.shout()")), "module `web` has no `shout`");
+        assert_eq!(
+            error(&with("count.shout()")),
+            "an Element has no field or method `shout`. It has `text` and `value`, and the methods `on`, `append`, \
+             `remove`, `clear`, `get`, `set`, `add_class`, `remove_class`, `has_class`, `show`, `hide`"
+        );
+        assert_eq!(error(&with("count.html = \"x\"")), "an Element has no `html` to give a new value. It has `text` and `value`");
+        assert_eq!(
+            error(&with("web.after(500, function() { print(1) })")),
+            "`after` needs a time with a unit, such as `500 ms`, but this is int"
+        );
+    }
+
+    #[test]
+    fn a_function_the_page_will_call_takes_what_the_page_gives() {
+        let page = "import web\nlet count = web.element(\"#count\")\nfunction key(name: str, twice: bool = false) { print(name) }\n";
+        let with = |line: &str| format!("{page}{line}");
+        ok(&with("web.on_key(key)\nweb.on_key(print)\ncount.on(\"click\", function() { count.hide() })"));
+        let nothing = "will call this function with nothing, so it takes no parameters: `function() { ... }`";
+        assert_eq!(error(&with("count.on(\"click\", function(x: int) { print(x) })")), format!("`on` {nothing}"));
+        assert_eq!(error(&with("web.after(1 s, key)")), format!("`after` {nothing}"));
+        let a_key = "`on_key` will call this function with the key that was pressed, so it takes one str: `function(key: str) { ... }`";
+        assert_eq!(error(&with("web.on_key(function() { print(1) })")), a_key);
+        assert_eq!(error(&with("web.on_key(function(code: int) { print(code) })")), a_key);
+        assert_eq!(error(&with("count.on(\"click\", 5)")), "`on` needs a function to call, but this is int");
     }
 
     #[test]

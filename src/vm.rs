@@ -58,6 +58,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 let mut vm = Vm {
                     output: capture.then(String::new),
                     board: Board::new(),
+                    page: crate::page::Page::simulated(),
                     outside,
                     // Under every frame's stretch of the stack is the thing
                     // that was called. The program was called by nobody.
@@ -102,6 +103,8 @@ struct Vm {
     output: Option<String>,
     /// The simulated board, for the `board` module.
     board: Board,
+    /// The simulated page, for the `web` module.
+    page: crate::page::Page,
     /// The keyboard and the command line, for `input` and `program`.
     outside: Outside,
     stack: Vec<Value>,
@@ -189,6 +192,10 @@ impl Machine for Vm {
 
     fn board(&mut self) -> &mut Board {
         &mut self.board
+    }
+
+    fn page(&mut self) -> &mut crate::page::Page {
+        &mut self.page
     }
 
     /// A built-in such as `map` calls a Zeno function. The instruction
@@ -384,12 +391,35 @@ impl Vm {
                 // ------------------------------------------ Fields and items
                 Op::GetField(n) => {
                     let object = pop!();
-                    self.stack.push(ops::field(object, text(&frame.proto, n), span)?);
+                    let value = match object {
+                        // `title.text` is asked of the page, which is
+                        // the machine's to give, so the name is copied
+                        // out of the function that is running first.
+                        Value::Element(..) => {
+                            let name: Rc<str> = Rc::from(text(&frame.proto, n));
+                            match builtins::on_page(self, &object, &name) {
+                                Some(value) => value,
+                                None => ops::field(object, &name, span)?,
+                            }
+                        }
+                        _ => ops::field(object, text(&frame.proto, n), span)?,
+                    };
+                    self.stack.push(value);
                 }
                 Op::SetField(n) => {
                     let object = pop!();
                     let value = pop!();
-                    ops::set_field(object, text(&frame.proto, n), value, span)?;
+                    match object {
+                        // `title.text = "Hello"` is a change to the page.
+                        Value::Element(..) => {
+                            let name: Rc<str> = Rc::from(text(&frame.proto, n));
+                            match builtins::set_on_page(self, &object, &name, &value, span) {
+                                Some(done) => done?,
+                                None => ops::set_field(object, &name, value, span)?,
+                            }
+                        }
+                        _ => ops::set_field(object, text(&frame.proto, n), value, span)?,
+                    }
                 }
                 Op::GetIndex => {
                     let index = pop!();
@@ -1184,7 +1214,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files` and `program`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {
@@ -1205,6 +1235,10 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             // starts in the folder's `main.zeno`.
             if path.is_dir() {
                 path.push("main.zeno");
+            }
+            // todo.html is the page of todo.zeno, and not a program.
+            if path.extension().is_none_or(|kind| kind != "zeno") {
+                continue;
             }
             let source = std::fs::read_to_string(&path).expect("the example can be read");
             // blink.zeno blinks for ever, as firmware does.

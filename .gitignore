@@ -16,3 +16,6 @@
 
 # The Zeno Book: what the build makes on the way
 /book/build/
+
+# Pages that `zeno build --web` writes
+*.web.html

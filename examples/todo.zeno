@@ -1,0 +1,80 @@
+# A list of things to do, in a page.
+#
+# The page is `todo.html`, beside this file: a form with a box to type
+# in, an empty list, and a line that says how much is left. This program
+# is what the page does.
+#
+#     zeno build --web examples/todo.zeno    writes todo.web.html: open it
+#     zeno run examples/todo.zeno            runs it here, on a simulated page
+#     zeno test examples/todo.zeno           runs its tests
+import web
+
+let form = web.element("#add")
+let box = web.element("#what")
+let list = web.element("#list")
+let left = web.element("#left")
+
+# How many things are not done yet.
+var remaining = 0
+
+function show_remaining() {
+    if remaining == 1 {
+        left.text = "1 thing left"
+    } else {
+        left.text = f"{remaining} things left"
+    }
+}
+
+# Put one thing on the list. A click on it marks it done, and another
+# click takes that back.
+function add(what: str) {
+    let item = web.create("li", what)
+    item.on("click", function() {
+        if item.has_class("done") {
+            item.remove_class("done")
+            remaining += 1
+        } else {
+            item.add_class("done")
+            remaining -= 1
+        }
+        show_remaining()
+    })
+    list.append(item)
+    remaining += 1
+    show_remaining()
+}
+
+# The form was sent: Enter in the box, or the Add button.
+function sent() {
+    let what = box.value.strip()
+    if what != "" {
+        add(what)
+        box.value = ""
+    }
+}
+
+form.on("submit", sent)
+
+# Escape empties the box.
+web.on_key(function(key: str) {
+    if key == "Escape" {
+        box.value = ""
+    }
+})
+
+add("Read docs/web.md")
+add("Build this page")
+
+test "a thing that is added is left to do" {
+    let before = remaining
+    add("Water the plants")
+    assert remaining == before + 1
+    assert left.text == f"{remaining} things left"
+}
+
+test "an empty box adds nothing" {
+    let before = remaining
+    box.value = "   "
+    sent()
+    assert remaining == before
+}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Things to do</title>
+<style>
+  body { font: 18px/1.5 system-ui, sans-serif; max-width: 28em; margin: 3em auto; padding: 0 1em; }
+  form { display: flex; gap: 0.5em; }
+  input { flex: 1; font: inherit; padding: 0.3em 0.5em; }
+  button { font: inherit; padding: 0.3em 1em; }
+  ul { padding: 0; list-style: none; }
+  li { padding: 0.4em 0.2em; border-bottom: 1px solid #ddd; cursor: pointer; }
+  li.done { color: #999; text-decoration: line-through; }
+  #left { color: #666; }
+</style>
+</head>
+<body>
+<h1>Things to do</h1>
+<form id="add">
+  <input id="what" placeholder="What is to be done?" autofocus>
+  <button>Add</button>
+</form>
+<ul id="list"></ul>
+<p id="left"></p>
+</body>
+</html>

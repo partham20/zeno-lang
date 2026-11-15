@@ -925,6 +925,16 @@ fn cannot(what: impl AsRef<str>, span: Span) -> Error {
     )
 }
 
+/// A program that imports `web` is for a browser, and a browser does not
+/// run what a C compiler makes. There is another build for it.
+pub fn for_a_page(span: Span) -> Error {
+    Error::new(
+        "the module `web` is for a program in a page, and this build makes a program for a desktop or a board. \
+         `zeno build --web` builds the page",
+        span,
+    )
+}
+
 /// The C type that holds a Zeno value of this kind.
 ///
 /// Objects, enum values and lists live on the heap and are handled through
@@ -2371,6 +2381,9 @@ impl Emitter<'_> {
 
             StmtKind::Import { module, names } => {
                 let module = module.join(".");
+                if module == "web" {
+                    return Err(for_a_page(span));
+                }
                 if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }
@@ -6659,6 +6672,16 @@ print(push(1), push(2), push(3, [0]))
 "##);
         let message = compile("print([])").err().unwrap_or_else(|| "it compiled".to_string());
         assert!(message.contains("cannot compile a list of these yet"), "{message}");
+    }
+
+    #[test]
+    fn a_program_for_a_page_is_sent_to_the_build_for_pages() {
+        let message = compile("import web\nweb.element(\"#count\").text = \"3\"").err().unwrap_or_else(|| "it compiled".to_string());
+        assert_eq!(
+            message,
+            "the module `web` is for a program in a page, and this build makes a program for a desktop or a board. \
+             `zeno build --web` builds the page"
+        );
     }
 
     #[test]

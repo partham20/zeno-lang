@@ -34,6 +34,12 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # Zeno for a browser, which `zeno build --web` writes into a page.
+      - name: Build Zeno for a browser
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --release --target wasm32-unknown-unknown
+
       - name: Check the build
         run: tools/release-check.sh target/release/zeno
 

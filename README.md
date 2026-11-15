@@ -77,6 +77,7 @@ Samples, none of them final:
 - [`examples/thermostat`](examples/thermostat/main.zeno): a program that needs a package. Its `zeno.package` says `needs filters in "../filters"`, and [`examples/filters`](examples/filters/main.zeno) is that package: a folder of modules with a `zeno.package` of its own.
 - [`examples/ring`](examples/ring/main.zeno): a module that keeps its insides to itself. A queue of a fixed size whose slots and count are `private`, so that only `ring.zeno` can change them. The module has its tests at the end of its file: `zeno test examples/ring` runs them.
 - [`examples/ports.zeno`](examples/ports.zeno): an `interface`. A UART and a log in memory are both a `Port`, and the code that sends a report takes either.
+- [`examples/todo.zeno`](examples/todo.zeno): a page in a browser. A list of things to do, with [`todo.html`](examples/todo.html) as the page and `import web` to reach it. `zeno build --web` makes the two into one file that a browser opens.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -238,6 +239,9 @@ cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll)
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
 cargo run -- run examples/blink.zeno            # blink the LED of the simulated board (Ctrl-C stops it)
+cargo run -- run examples/todo.zeno             # a program for a web page, on a simulated page
+cargo build --release --target wasm32-unknown-unknown   # Zeno itself, built for a browser (once)
+cargo run -- build --web examples/todo.zeno     # todo.web.html: the page and the program in one file. Open it in a browser
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
@@ -250,6 +254,11 @@ cargo test
 clock. On a computer the board is simulated and prints each pin as it changes.
 A compiled program meets the board through four C functions, so a real one
 can be put underneath ([`docs/board.md`](docs/board.md)).
+
+`import web` gives a program a web page: `web.element("#count").text = "3"`,
+`button.on("click", pressed)`. `zeno build --web` writes one file that a
+browser opens, and `zeno run` runs the same program on a simulated page that
+prints each change ([`docs/web.md`](docs/web.md)).
 
 `u8`, `u16`, `u32`, `i8`, `i16` and `i32` are whole numbers with a size, and
 `&`, `|`, `^`, `~`, `<<` and `>>` work on their bits. Arithmetic always gives
@@ -284,6 +293,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
+  [`docs/web.md`](docs/web.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
 ## Roadmap
@@ -481,6 +491,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     Zeno makes is written with `/`. Every test of Zeno passes on
     Windows, tried there by a small workflow for one machine.
     See [`docs/release.md`](docs/release.md))
+23. A program in a web page (done, for the release after 0.1.0:
+    `import web` gives a program the elements of a page, their text
+    and classes, clicks, keys and timers. `zeno build --web` writes
+    one `.html` file that a browser opens, with the program and Zeno
+    itself in it, built for WebAssembly. Under `zeno run` and `zeno
+    test` the page is a simulated one, so what a page does is tested
+    on a desk.
+    See [`docs/web.md`](docs/web.md))
 
 ## Layout
 
@@ -506,6 +524,9 @@ src/emit_bytecode.rs  syntax tree -> bytecode
 src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
 src/board.rs        the simulated board that `zeno run` uses
+src/page.rs         the page of the `web` module: the browser's, or a simulated one
+src/web_host.rs     where `main` would be, when Zeno is built for a browser
+src/web.js          starts a program in a page, and does what it asks of the page
 src/ints.rs         the sized whole numbers: what a `u8` holds
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`

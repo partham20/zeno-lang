@@ -37,6 +37,10 @@ pub enum Value {
     Pointer(Rc<Memory>, i64),
     /// A register of the board: its address and its size.
     Register(i64, Width),
+    /// An element of the page, for the `web` module: the number the page
+    /// knows it by, and how the program got it (`#count`, or `<li>` for
+    /// one it made), which is how `print` shows it.
+    Element(u32, Rc<str>),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -244,6 +248,9 @@ pub trait Machine {
     /// The board the program runs on, for `led.on()` and the like.
     fn board(&mut self) -> &mut crate::board::Board;
 
+    /// The page the program is in, for the `web` module.
+    fn page(&mut self) -> &mut crate::page::Page;
+
     /// Call a Zeno value, as `map` calls the function it was given.
     fn call(
         &mut self,
@@ -387,9 +394,15 @@ pub enum Control {
 /// as in `zeno run program.zeno | head -3`, stop quietly, the way other
 /// command-line tools do. (`println!` would crash with a long report.)
 pub fn print_line(text: &str) {
-    use std::io::Write;
-    if writeln!(std::io::stdout(), "{text}").is_err() {
-        std::process::exit(0);
+    // In a browser there is no screen of this kind. The page is told.
+    #[cfg(target_arch = "wasm32")]
+    crate::web_host::print(&format!("{text}\n"));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        if writeln!(std::io::stdout(), "{text}").is_err() {
+            std::process::exit(0);
+        }
     }
 }
 
@@ -397,10 +410,15 @@ pub fn print_line(text: &str) {
 /// text is pushed out at once, so that it is on the screen before the
 /// program waits for the answer.
 pub fn print_text(text: &str) {
-    use std::io::Write;
-    let mut out = std::io::stdout();
-    if write!(out, "{text}").and_then(|_| out.flush()).is_err() {
-        std::process::exit(0);
+    #[cfg(target_arch = "wasm32")]
+    crate::web_host::print(text);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        if write!(out, "{text}").and_then(|_| out.flush()).is_err() {
+            std::process::exit(0);
+        }
     }
 }
 
@@ -449,6 +467,7 @@ impl Value {
             Value::List(_) => "a list".to_string(),
             Value::Dict(_) => "a dict".to_string(),
             Value::Pin(_) => "a pin".to_string(),
+            Value::Element(..) => "an element".to_string(),
             Value::Pointer(..) => "a pointer".to_string(),
             Value::Register(..) => "a register".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
@@ -485,6 +504,8 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
         (Pin(a), Pin(b)) => a == b,
+        // Two elements are equal when they are one element of the page.
+        (Element(a, _), Element(b, _)) => a == b,
         // Two pointers are equal when they point at the same item.
         (Pointer(a, at_a), Pointer(b, at_b)) => Rc::ptr_eq(a, b) && at_a == at_b,
         (Register(a, size_a), Register(b, size_b)) => a == b && size_a == size_b,
@@ -556,6 +577,7 @@ impl fmt::Display for Value {
                 write!(f, "[{}]", entries.join(", "))
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
+            Value::Element(_, name) => write!(f, "Element({name})"),
             // Where a pointer points is different on every run, so it is
             // not shown.
             Value::Pointer(memory, _) => write!(f, "<pointer[{}]>", memory.pointee.name()),
