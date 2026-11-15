@@ -1,3 +1,214 @@
 \chapter{Testing}\label{ch-testing}
 
-To be written.
+A test is a small program that checks a part of a bigger one, and
+says clearly when the part is wrong. Firmware that has been tested on
+a computer before it reaches a board is firmware that wastes fewer
+afternoons at the bench. Zeno has tests in the language: a
+\verb|test| block, an \verb|assert| statement, and the command
+\verb|zeno test|.
+
+\section{A first test}
+
+\begin{zeno}[file=temperature.zeno, dir=first, cmd=zeno test {file}]
+function to_fahrenheit(celsius: float) -> float {
+    return celsius * 1.8 + 32.0
+}
+
+test "water freezes at 32" {
+    assert to_fahrenheit(0.0) == 32.0
+}
+
+test "water boils at 212" {
+    assert to_fahrenheit(100.0) == 212.0
+}
+\end{zeno}
+
+A test is the word \verb|test|, a name in quotes that says in ordinary
+words what it checks, and a block. It stands at the top of a file,
+beside what it tests. \verb|zeno test| runs the file as
+\verb|zeno run| would, and then each test, in the order written.
+
+\verb|zeno run| goes past the tests, and \verb|zeno build| leaves them
+out altogether, so a board pays nothing for them. But they are checked
+with the program by \verb|zeno check| and \verb|zeno run|, so a test
+cannot go stale without anybody noticing.
+
+\section{assert}
+
+\verb|assert| and a condition say what must be so. When the condition
+is a comparison, a failure shows what was on each side:
+
+\begin{zeno}[file=average.zeno, dir=fail, cmd=zeno test {file}, fails=yes]
+function average(values: list[float]) -> float {
+    return sum(values) / float(len(values) + 1)
+}
+
+test "the average of one number is that number" {
+    assert average([4.0]) == 4.0
+}
+
+test "an average lies between the smallest and the largest" {
+    let values = [1.0, 2.0, 6.0]
+    assert min(values) <= average(values)
+}
+\end{zeno}
+
+The first test failed, and the message shows that the left side was
+2.0 where 4.0 was wanted: the \verb|+ 1| is the bug. The second test
+passed, because a wrong average can still lie in the right range. A
+failed \verb|assert| ends its test; the next test runs anyway. The
+command fails when any test fails, so a script or a build server can
+tell.
+
+\begin{why}
+Other languages grow a family of asserts, \verb|assert_eq|,
+\verb|assert_ne|, \verb|assertIn|, each so that a failure can show the
+values. Zeno has the comparison in front of it, so the one
+\verb|assert| can show them, and there is one thing to learn.
+(Decision 10.17.)
+\end{why}
+
+\verb|assert| is only for tests. In a program, \verb|if| and
+\verb|raise| say what is wrong and to whom, and can be caught. A failed
+\verb|assert| is not an error of the program, so \verb|except Error|
+does not catch it.
+
+\section{Testing that something fails}
+
+Fault paths are half of what firmware has to get right. \verb|assert
+raises| checks that a block raises an error of a kind:
+
+\begin{zeno}[file=speed.zeno, dir=raises, cmd=zeno test {file}]
+function check_speed(speed: int) -> int raises ValueError {
+    if speed < 0 or speed > 100 {
+        raise ValueError(f"a speed is 0 to 100, and {speed} is not")
+    }
+    return speed
+}
+
+test "speeds in range are kept" {
+    assert check_speed(0) == 0
+    assert check_speed(100) == 100
+}
+
+test "speeds out of range are refused" {
+    assert raises ValueError {
+        check_speed(101)
+    }
+    assert raises ValueError {
+        check_speed(-1)
+    }
+}
+\end{zeno}
+
+The test fails if the block raises nothing, or raises another kind,
+and says which. \verb|assert raises Error| takes any kind.
+
+\section{Where tests go}
+
+A test can stand in the file it tests, and then it sees what is
+private to that file, which is usually where the things worth testing
+are. A file of tests alone, such as \verb|ring_test.zeno| importing
+\verb|ring|, is the same thing with nothing else in it.
+
+\verb|zeno test| with a folder tests every file in it, and below it,
+that has a test. With no folder it means the folder it is run in:
+
+\begin{session}[at=examples]
+$ zeno test ring
+\end{session}
+
+Each file is tested as a program of its own: its tests start from the
+state the file leaves, and the tests of two files cannot disturb each
+other. A file with no test in it is not run at all, so testing a
+folder does not run \verb|main.zeno| and blink its LED. The tests of
+an imported file run when that file is tested, not each time another
+file imports it.
+
+Tests of one file share what the file declares, so a test that changes
+a \verb|var| at the top of the file leaves it changed for the next. A
+test that needs a fresh value makes it inside itself; what a test
+declares is gone when it ends.
+
+\begin{why}
+A test with a name in plain words says what is checked, and is what a
+failure is reported under. Functions whose names begin with
+\verb|test_|, as in Python and Go, are a rule nobody can see in the
+program. Marks such as \verb|@test| are a new piece of syntax for one
+use. Tests only in files of their own could not test anything
+private. \verb|test| is not even a reserved word: \verb|test "| at the
+start of a statement can mean nothing else, so programs keep the name
+for their own use. (Decision 10.16.)
+\end{why}
+
+\section{Testing code that uses the board}
+
+Code that drives hardware can be tested on a computer too, because
+\verb|zeno run| simulates the board: a pin remembers whether it is on,
+and a register remembers what was written to it
+(\hyperref[ch-board]{The Board}). A test can drive a pin and then ask
+it:
+
+\begin{zeno}[file=heater.zeno, dir=board, cmd=zeno test {file}]
+from board import pin
+
+let heater = pin(5)
+
+function control(temperature: float) {
+    if temperature < 19.0 {
+        heater.on()
+    } else if temperature > 21.0 {
+        heater.off()
+    }
+}
+
+test "the heater comes on when it is cold" {
+    control(15.0)
+    assert heater.is_on()
+}
+
+test "it stays on until it is warm" {
+    control(15.0)
+    control(20.0)
+    assert heater.is_on()
+    control(22.0)
+    assert not heater.is_on()
+}
+\end{zeno}
+
+The simulated board says each change of a pin as it happens, which is
+why \verb|pin 5 on| appears among the results.
+
+\section{What tests leave out}
+
+In version 0.1 there is no message after an \verb|assert| (the test's
+name and the values shown already say most of it), no \verb|assert|
+outside a test, no code run before and after each test (a function
+that builds what the tests need does that), no choosing tests by name
+on the command line, and no running of tests in a compiled program.
+(Decision 10.21.)
+
+\begin{summary}
+\verb|test "what it checks" { ... }| stands at the top of a file.
+\verb|assert condition| fails the test when the condition is false,
+and shows both sides of a comparison. \verb|assert raises Kind { ... }|
+checks that a block raises. \verb|zeno test| runs a file, a folder or
+the folder it is in, and fails if any test fails. Builds leave tests
+out.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write three tests for \verb|checksum| from
+  \hyperref[ch-sized-numbers]{Sized Numbers and Bits}, including one
+  where the total passes 255.
+\item Fix the \verb|average| function above and run its tests again.
+  Then add a test for an empty list. What should \verb|average| do
+  there, and what does the test say?
+\item Write a test that checks \verb|int("fast")| raises a
+  \verb|ValueError|. Then change the kind to \verb|KeyError| and read
+  the failure.
+\item Make a test in one file change a \verb|var| at the top of the
+  file, and see the next test find it changed.
+\end{enumerate}
+\end{tryit}

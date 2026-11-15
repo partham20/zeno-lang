@@ -37,11 +37,12 @@ Keys a sample can have:
     fails=yes     the sample must fail (exit with a status other than 0)
     output=no     run it, but do not show what it printed
     lines=A-B     show only these lines of the code (all are run)
+    show=no       run the code, and show only what it printed
 
 `zenofrag` is a piece of a program: it is not run, but it must parse,
 unless it says parse=no. `session` holds commands, one per line after
 `$ ` (or `$! ` for one that must fail), and shows each with what it
-printed.
+printed. With at=PATH they run in that folder of the repository.
 """
 
 import os
@@ -162,7 +163,9 @@ def do_zeno(chapter, opts, body, folder):
     caption = file if ("file" in opts or "src" in opts) else None
     if "src" in opts and "file" not in opts:
         caption = opts["src"]
-    parts = [listing(shown, language, caption)]
+    # show=no runs the code without printing it, for a sample that only
+    # wants to show what a command did to the file before it.
+    parts = [] if opts.get("show") == "no" else [listing(shown, language, caption)]
     if opts.get("run") == "no":
         return "\n".join(parts)
 
@@ -207,6 +210,9 @@ def do_frag(chapter, opts, body, folder):
 
 
 def do_session(chapter, opts, body, folder):
+    # at=examples runs the commands in that folder of the repository.
+    if "at" in opts:
+        folder = REPO / opts["at"]
     lines = []
     for raw in body.strip("\n").splitlines():
         if raw.startswith("$! ") or raw.startswith("$ "):

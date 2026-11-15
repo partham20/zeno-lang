@@ -1,3 +1,217 @@
 \chapter{The Tools}\label{ch-tools}
 
-To be written.
+Everything Zeno does is done by one program, \verb|zeno|, with a word
+after it that says what to do. This chapter goes through the words a
+program's author uses every day, then the ones that show what the
+compiler sees, and then setting up an editor.
+
+\section{The commands}
+
+\begin{center}
+\begin{tabular}{lp{8.6cm}}
+\toprule
+Command & Does \\
+\midrule
+\verb|zeno run file| & check a program, then run it \\
+\verb|zeno check file| & check it for mistakes, without running it \\
+\verb|zeno test [file or folder]| & run its tests (\hyperref[ch-testing]{Testing}) \\
+\verb|zeno build file| & compile it to a program of its own (\hyperref[ch-compiling]{Compiling}) \\
+\verb|zeno format file| & lay it out the way Zeno lays programs out \\
+\verb|zeno new name| & make a folder with a new program (\hyperref[ch-packages]{Packages}) \\
+\verb|zeno fetch| & get the packages a program needs \\
+\verb|zeno lsp| & the language server, which an editor starts \\
+\verb|zeno tokens|, \verb|parse|, \verb|join|, \verb|bytecode| & show what the compiler sees \\
+\verb|zeno --version|, \verb|zeno --help| & the version, and a list of all this \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\hyperref[app-commands]{Appendix E} lists every command
+and option.
+
+\section{run and check}
+
+\verb|zeno run| reads the whole program, checks it, and runs it only if
+the check found nothing. \verb|zeno check| does the first half and
+stops, which is quick and is what an editor or a build script wants.
+Both report every mistake they can be sure of, not only the first, and
+end with how many there were:
+
+\begin{zeno}[file=two.zeno, cmd=zeno check {file}, fails=yes]
+let speed = "fast" * 2
+print(sped)
+\end{zeno}
+
+\begin{why}
+A mistake found before the program starts costs seconds. The same
+mistake found halfway through a run, with a motor already turning,
+costs more. The checker reports only what it is sure of, so untyped
+code is not held back. (Decision 4.4.)
+\end{why}
+
+Options that change how a program is checked or run go before the
+file. Words after the file are the program's own
+(\hyperref[ch-reading-writing]{Reading and Writing}):
+
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+Option & Means \\
+\midrule
+\verb|--strict| & every type must be known (\hyperref[ch-types]{Types}) \\
+\verb|--vm| & with \verb|run|: compile to bytecode and run that, faster \\
+\verb|--no-collector| & with \verb|check|: check as a build with no
+  collector would (\hyperref[ch-no-collector]{Building with No Collector}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{format}
+
+\verb|zeno format| lays a file out the one way Zeno lays programs out.
+There is nothing to configure. Here is a file before:
+
+\begin{zeno}[file=queue.zeno, dir=fmt, run=no]
+class  Queue{
+
+  size:int      # how many fit
+
+
+  function put(self,byte:u8)->bool{
+    if self.size==0{return false}
+  return true
+ }
+}
+\end{zeno}
+
+and after:
+
+\begin{zeno}[file=queue.zeno, dir=fmt, show=no, cmd=zeno format {file} ;; cat {file}]
+class  Queue{
+
+  size:int      # how many fit
+
+
+  function put(self,byte:u8)->bool{
+    if self.size==0{return false}
+  return true
+ }
+}
+\end{zeno}
+
+The rules are few. Four spaces for each open bracket. One space
+around operators, \verb|=| and \verb|->|, and after \verb|,| and
+\verb|:|. None inside brackets, nor before the bracket of a call or a
+type. Never two blank lines in a row, and none at the top or bottom of
+a block. A comment after code keeps the distance its author gave it.
+
+And three things it never does. It never changes a token:
+\verb|0x4000_4400| stays spelled so. It never moves a line break: a
+short \verb|case| on one line stays on one line, and a call broken over
+three lines stays on three. And it never formats a file with a mistake
+in it; it shows the mistake instead.
+
+\verb|zeno format folder| lays out every \verb|.zeno| file in the
+folder, and \verb|zeno format --check folder| changes nothing and says
+which files are not laid out, for a build server.
+
+\begin{why}
+When a language has one layout, nobody argues about layout, and every
+program in it looks familiar to every reader. Go's \verb|gofmt| showed
+that this is worth more than any one person's taste. Because the
+formatter only decides spaces and indents between tokens it leaves
+alone, it cannot change what a program means. (Decisions 9.1 to 9.9.)
+\end{why}
+
+\section{Seeing what the compiler sees}
+
+Four commands show a program at each stage of the compiler. They are
+for curiosity and for learning how a compiler works, which
+\hyperref[ch-inside]{Inside Zeno} is about.
+
+\verb|zeno tokens| shows the words the lexer cut the file into:
+
+\begin{zeno}[file=tiny.zeno, dir=see, cmd=zeno tokens {file}]
+let total = 2 + 3 * 4
+print(total)
+\end{zeno}
+
+\verb|zeno parse| shows the tree the parser built from them, where
+\verb|3 * 4| already sits below the \verb|+|:
+
+\begin{zeno}[file=tiny.zeno, dir=see, cmd=zeno parse {file}]
+let total = 2 + 3 * 4
+print(total)
+\end{zeno}
+
+\verb|zeno join| shows the one program that a file and the files it
+imports are joined into (\hyperref[ch-modules]{Programs in Several
+Files}), and \verb|zeno bytecode| the instructions that
+\verb|zeno run --vm| runs:
+
+\begin{zeno}[file=tiny.zeno, dir=see, cmd=zeno bytecode {file}]
+let total = 2 + 3 * 4
+print(total)
+\end{zeno}
+
+\section{Your editor}
+
+\verb|zeno lsp| is a \emph{language server}: a program that an editor
+starts and talks to in a fixed way, the Language Server Protocol. With
+it, the editor underlines mistakes as you type, lays the file out when
+you save, jumps to where a name was declared, and shows a name's type
+when you rest on it. What it underlines is exactly what
+\verb|zeno check| would print, because it runs the same checker. VS
+Code, Neovim, Helix, Zed and Emacs all speak the protocol.
+
+The \verb|editors| folder of the Zeno repository has what each editor
+needs: an extension for VS Code with colours and the few lines that
+start \verb|zeno lsp|, and a syntax file for Vim and Neovim.
+\verb|editors/README.md| has the steps for each. For Neovim, the
+heart of it is:
+
+\begin{zenofrag}[lang=shell]
+vim.lsp.start({
+  name = "zeno",
+  cmd = { "zeno", "lsp" },
+  root_dir = vim.fn.getcwd(),
+})
+\end{zenofrag}
+
+and for Helix, in \verb|~/.config/helix/languages.toml|:
+
+\begin{zenofrag}[lang=shell]
+[language-server.zeno]
+command = "zeno"
+args = ["lsp"]
+
+[[language]]
+name = "zeno"
+scope = "source.zeno"
+file-types = ["zeno"]
+language-servers = ["zeno"]
+\end{zenofrag}
+
+For every editor, \verb|zeno| must be somewhere the editor finds it,
+on the \verb|PATH| (\hyperref[ch-getting-zeno]{Getting Zeno}).
+
+\begin{summary}
+\verb|zeno run| checks and runs, \verb|zeno check| only checks, and
+both report every mistake they are sure of. \verb|zeno format| lays a
+file out the one way, changing only spaces. \verb|tokens|,
+\verb|parse|, \verb|join| and \verb|bytecode| show the compiler's view.
+\verb|zeno lsp| brings the checker and the formatter into any editor
+that speaks the Language Server Protocol.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Write a file as badly laid out as you can, keeping it correct,
+  and run \verb|zeno format| on it.
+\item Run \verb|zeno tokens| on a line with a string, a number with a
+  unit and a comment. Which of them are tokens?
+\item Run \verb|zeno parse| on \verb|a or b and c|, and on
+  \verb|not a == b|. What does each tree say about which goes first?
+\item Set up your editor, make a mistake, and watch it underlined.
+\end{enumerate}
+\end{tryit}
