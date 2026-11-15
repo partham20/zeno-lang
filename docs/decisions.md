@@ -4,8 +4,10 @@ Every choice in Zeno, and the reason for it. If a choice has no good reason,
 it should not be here; and if a better reason turns up for the opposite
 choice, the choice should change.
 
-Each entry says what was decided, why, and what was turned down. Entries
-marked *(provisional)* are expected to be revisited at the stage named.
+Each entry says what was decided, why, and what was turned down. An
+entry marked *was provisional* was decided on less than it deserved
+at the time. Each of those was read again before version 0.1, and
+chapter 11 says what became of it.
 
 ## The principles
 
@@ -62,7 +64,7 @@ each way.
 - Zeno is not a *pure* functional language like Haskell, where functions are
   forbidden from having effects. Writing to a hardware register is an effect,
   and firmware is made of them.
-- Classes have no inheritance yet *(provisional, see 3.7)*.
+- Classes have no inheritance yet *(was provisional (11.1), see 3.7)*.
 
 ### 0.2 Types are optional
 
@@ -296,7 +298,7 @@ identity, which gives surprising answers on numbers and strings and is a
 well-known trap. Restricting it leaves one way to compare values (`==`) and
 one way to test for absence. *(Principle 4.)*
 
-**Provisional.** General unions (`int or str`) are not accepted. They overlap
+**Was provisional (11.1).** General unions (`int or str`) are not accepted. They overlap
 with enums, and they need a tag stored beside the value in the compiled
 code. To be decided at the type checker.
 
@@ -351,7 +353,7 @@ them. Both pairs are kept apart on purpose. *(Changed in 6.22: `.rad` and
 `.deg` now change an angle when the program asks. The two still never
 meet by themselves.)*
 
-**Provisional.** No derived units yet (`V * A` is not `W`), and no
+**Was provisional (11.1).** No derived units yet (`V * A` is not `W`), and no
 user-defined units.
 
 ### 1.16 Comparisons chain: `0 <= i < len`
@@ -638,14 +640,14 @@ line 2.3 draws between an int and a float, drawn for the same reason.
 
 **A `u8` to a `u16` could be allowed**, since it always fits. It is
 not, yet: the rule "sized to `int` is free, everything else is
-written" has no table to remember. *(Provisional.)*
+written" has no table to remember. *(Was provisional: 11.1.)*
 
 **A `list[u8]` is not a `list[int]`.** Lists are shared (3.10), so
 whoever held it as a `list[int]` could append 300, and the first
 holder would find a `u8` that is not one. Copy it: `[int(n) for n in
 bytes]`.
 
-### 2.8d No `u64` *(provisional)*
+### 2.8d No `u64` *(was provisional: 11.1)*
 
 **Why.** An `int` is 64 bits with a sign, so half of a `u64`'s values
 do not fit in one, and 2.8a ("the sum is an `int`") would stop being
@@ -705,7 +707,7 @@ there is nothing new to learn and only one way to write a function.
 for the same thing (it cannot hold statements). JavaScript's `n => n * 2`
 needs the `=>` that 1.9 removed.
 
-**Provisional.** This is wordy for one-line functions. A shorter form may be
+**Was provisional (11.1).** This is wordy for one-line functions. A shorter form may be
 added once there is enough real Zeno code to see how often it is needed;
 comprehensions already cover the most common cases.
 
@@ -823,7 +825,7 @@ initialiser. A fixed list of fields is also what lets a class compile to a
 plain C struct. *(Principle 5.)* Setting a field that was not declared is an
 error.
 
-**Provisional.** There is no inheritance and no custom constructor yet. Both
+**Was provisional (11.1).** There is no inheritance and no custom constructor yet. Both
 are to be decided when classes are type checked.
 
 ### 3.8 Methods name `self` explicitly
@@ -831,7 +833,7 @@ are to be decided when classes are type checked.
 **Why.** It shows that a method is an ordinary function that receives its
 object as the first argument, with no hidden variable. *(Principle 4.)*
 
-### 3.9 `let` fixes the name, not the contents *(provisional)*
+### 3.9 `let` fixes the name, not the contents *(was provisional: 11.1)*
 
 `let xs = [1]` followed by `xs.append(2)` is allowed; `xs = [3]` is not.
 
@@ -859,7 +861,7 @@ not change what the loop visits.
 source of two classic bugs: a loop that never ends because its body keeps
 appending, and a loop that skips an item because its body removed one.
 *(Principle 1.)* **The cost:** the loop takes a copy of the list first.
-*(Provisional: the copy can be skipped when the compiler can see that the
+*(Was provisional (11.1): the copy can be skipped when the compiler can see that the
 body does not touch the list.)* Since 5.8 the copy is given back the moment
 the loop ends, because only the loop ever pointed at it (5.8j).
 
@@ -923,7 +925,7 @@ that is called between the check and the use could set it back to `none`.
 The checker does not follow that, so the running program looks at such a
 variable once more where it is used, and stops with an error if the value
 has gone. Variables that nothing else can reach, which is most of them, are
-not looked at twice. *(Provisional: Kotlin refuses to narrow such variables
+not looked at twice. *(Was provisional (11.1): Kotlin refuses to narrow such variables
 at all, which is stricter and needs no check at run time. That may turn out
 to be the better rule.)*
 
@@ -937,7 +939,7 @@ A function whose type says it may return `none` (`-> int or none`) is the
 exception: reaching its end returns `none`, since that is one of the
 answers it promised.
 
-### 3.14 `upper`, `lower`, `strip` and `split` know plain letters and blanks only *(provisional)*
+### 3.14 `upper`, `lower`, `strip` and `split` know plain letters and blanks only *(was provisional: 11.1)*
 
 `"straße".upper()` gives `"STRAßE"`: the letters a to z change, and nothing
 else does. `strip`, `split()` with no separator, `int()` and `float()` skip
@@ -953,7 +955,7 @@ same rule even though a PC has room for the tables. *(Principle 5.)*
 Text in any language still passes through untouched: `len`, indexing and
 loops count whole characters, not bytes.
 
-**Provisional.** A separate module can offer the full rules to programs
+**Was provisional (11.1).** A separate module can offer the full rules to programs
 that have the room. Rust makes the same split, with `to_ascii_uppercase`
 beside `to_uppercase`.
 
@@ -1011,7 +1013,7 @@ That is the point for a test, and a real board prints nothing.
 The LED is pin 13 on every board, as far as a Zeno program can tell. A
 real board wires that number to wherever its LED is. **Why 13:** it is
 the Arduino Uno's, the number most people have already met.
-*(Provisional: one LED and numbered pins is the least a board can be.
+*(Was provisional (11.1): one LED and numbered pins is the least a board can be.
 Named pins, inputs and the rest wait for a real board to ask.)*
 
 ### 3.16 Generics: `function first[T](...)`, `class Stack[T]`
@@ -1104,7 +1106,7 @@ the thing that decides. Without this rule every generic used for bytes
 would need `u8(0)` where `0` is meant, and sized numbers would be the
 one corner of the language where generics are awkward.
 
-### 3.16d No bounds: the body is checked for each type it is used with *(provisional)*
+### 3.16d No bounds: the body is checked for each type it is used with *(was provisional: 11.1)*
 
 `largest[T]` uses `>`. Nothing in its header says `T` must have a `>`.
 The checker checks the body once for each type the program uses it
@@ -1123,7 +1125,7 @@ and a generic that nothing uses is only checked loosely (5.14d). C++
 error messages show how badly this can go. The note under the error
 is the guard against that, and bounds are the real fix.
 
-### 3.16e What generics leave out *(provisional)*
+### 3.16e What generics leave out *(was provisional: 11.1)*
 
 Generic enums, methods with type parameters of their own, a generic
 kept as a value (`let f = first`), an owned or borrowed value as a
@@ -1246,7 +1248,7 @@ project or IDE with nothing else to carry along.
 **Why.** A C variable must have one type. A value whose type is only known
 when the program runs would need a tag and usually heap memory (0.2), which
 the compiler does not have yet. Because parameters and fields are now worked
-out, most programs with no types written still pass. *(Provisional: a
+out, most programs with no types written still pass. *(Was provisional (11.2): a
 dynamic value type can be added to the runtime later for PC targets.)*
 
 ### 5.5d Compiled code must behave exactly like interpreted code
@@ -1274,7 +1276,7 @@ the interpreter that was corrected. 3.6c and 3.14 came about that way.
 **Why.** `__builtin_add_overflow` compiles to the processor's own overflow
 flag: one instruction. Checking by hand in plain C is longer, slower and
 easy to get wrong. GCC and Clang cover nearly every microcontroller
-toolchain in use (ARM, RISC-V, AVR, ESP). *(Provisional: a plain-C fallback
+toolchain in use (ARM, RISC-V, AVR, ESP). *(Was provisional (11.2): a plain-C fallback
 can be added for other compilers.)*
 
 ### 5.5f Compiled strings were not freed at first
@@ -1288,7 +1290,7 @@ taken and never returned. **Replaced by 5.7.**
 `let b = a`, changing `b` changes `a`. A C struct is copied on assignment; a
 pointer to one is not. So the pointer is the faithful translation. The cost
 is that each one needs memory from the heap, which the collector (5.7)
-gives back. *(Provisional in one respect: an object that never leaves the
+gives back. *(Was provisional (11.2) in one respect: an object that never leaves the
 function that made it could live on the stack and cost the collector
 nothing. Finding those is an optimisation for later.)*
 
@@ -1387,7 +1389,7 @@ variables are unaffected. (3.6c is the rule this implements.)
 outside variables and could have been a single fixed value. Two function
 values are equal only when they are the very same one, and with fixed
 values a function written in a loop would be equal to itself from the last
-trip round, which is not what `zeno run` says. *(5.5d. Provisional: once
+trip round, which is not what `zeno run` says. *(5.5d. Was provisional (11.2): once
 memory is managed, the fixed value can come back for functions that are
 never compared.)*
 
@@ -1471,7 +1473,7 @@ build catches both, a firmware build catches the first and stops at the
 second. Refusing every `except` with no kind would be too strict, so this
 is documented and pinned by a test instead.
 
-**Provisional: a function that can raise cannot be used as a value** in a
+**Was provisional (11.2): a function that can raise cannot be used as a value** in a
 firmware build. The two sorts of function are called differently, and the
 type `function(str) -> int` does not say which sort it is. The fix is to
 let function types say `raises`, which the checker needs anyway: today it
@@ -1560,7 +1562,7 @@ MicroPython does on the same class of microcontroller.
 - *MISRA* bans `malloc` and `free` as well (Rule 21.3), collector or not.
   See the first point below.
 
-**Provisional, in three respects.**
+**Was provisional (11.2), in three respects.**
 
 1. Certified firmware usually allows no heap at all. The answer for it is
    not a different collector but a build that proves a program makes no
@@ -1619,7 +1621,7 @@ it puts a mark at every call where one in the signature says the same.
 *Turned down:* a mark at the call (`send(move p)`). It would make each
 move visible where it happens, which is worth something, but the checker
 already reports any use after a move by line, and the calls stay plain.
-Provisional: if moves prove easy to miss when reading, this is the first
+Was provisional (11.2): if moves prove easy to miss when reading, this is the first
 thing to revisit.
 
 #### 5.8b A class is owned as a whole, where it is declared
@@ -1650,7 +1652,7 @@ still always looks.
 
 *Turned down:* borrow by default, with a word for taking (Mojo, Swift). It
 makes the common case shorter. But then `p: Packet` would mean two
-different things on a `let` and on a parameter. Provisional.
+different things on a `let` and on a parameter. Was provisional (11.2).
 
 #### 5.8d The borrow checker is four rules, and stops there
 
@@ -1740,7 +1742,7 @@ call frees the block's owners before it passes the failure on.
 turned down for counting references: every `try` keeping a list of what to
 release. The collector is already there for it.
 
-#### 5.8i What is refused for now *(provisional)*
+#### 5.8i What is refused for now *(was provisional: 11.2)*
 
 - An owned value inside ~~a list,~~ an `or none`, an enum case or a function
   type, and moving a field out of an object. Each needs a rule for what is
@@ -1889,7 +1891,7 @@ text, which lasts one statement (5.9c). The error keeps its own copy, in
 the same block, so one `free` gives back both.
 
 **The cost.** `raise e` to pass a caught error on is refused. Raise a new
-one. *(Provisional: passing it on could be a move.)*
+one. *(Was provisional (11.2): passing it on could be a move.)*
 
 Since 5.15h the checker says this, and the error may be lent to a
 `borrow` parameter.
@@ -1922,7 +1924,7 @@ each needed a line. One mechanism covers all three: the compiler lists
 the value among the block's owners until it arrives. The first and third
 apply to every build, so every build is a little tidier for it.
 
-### 5.9g What a build with no collector refuses *(provisional)*
+### 5.9g What a build with no collector refuses *(was provisional: 11.2)*
 
 *(The first two entries are gone since 5.15: a plain list and a plain
 class have an owner now. The list as it stands is in 5.15j.)*
@@ -1987,7 +1989,7 @@ and joins them again when both are spare. It keeps the doubling sizes
 and gets back the memory a growing list leaves behind. It is about
 three times the code, and giving back is then a loop of joins. Worth
 another look if a real program is short of RAM because of growing
-lists. *(provisional)*
+lists. *(was provisional: 11.2)*
 
 **Turned down: TLSF,** the usual answer when a real-time system must
 have a general allocator. It is constant-time and wastes little, and
@@ -2056,7 +2058,7 @@ text room is chosen the same way (5.9c), and one build of the C can be
 compiled for boards of different sizes. **Why 32768.** It is the
 smallest round number in which every example runs. On a board it is
 meant to be changed, and `--memory` prints the number to change it to.
-*(provisional: `zeno build --pool N` is an exercise in `docs/pool.md`.)*
+*(was provisional (11.2): `zeno build --pool N` is an exercise in `docs/pool.md`.)*
 
 **The report says `pool: N bytes taken`,** which is how much of the
 array was ever cut into blocks. **Why that number,** and not the most
@@ -2088,7 +2090,7 @@ is no longer reported. What stands in for them: the compilers null an
 owner when it gives its value away, the report must end with 0 blocks
 left, the two backends must agree on every number, and a block given
 back twice is caught by the pool itself. Poisoning spare blocks in a
-checking build is an exercise in `docs/pool.md`. *(provisional)*
+checking build is an exercise in `docs/pool.md`. *(was provisional: 11.2)*
 
 **What this does not make true.** MISRA Directive 4.12 is against
 dynamic memory of any kind, and a pool is still that. The pool removes
@@ -2125,7 +2127,7 @@ there is nothing a second holder could do to the first. **Turned down:
 a count of holders in front of each text** (reference counting). It
 saves the copies and it is the natural next step if copying proves too
 dear, but it adds a count to every keep and drop and a way for text
-to stay alive that no line of the program shows. *(provisional)*
+to stay alive that no line of the program shows. *(was provisional: 11.2)*
 **Turned down: `borrow str`**, which 5.9c used to suggest. It would
 bring the borrow rules to the most common value in the language to
 save a copy.
@@ -2193,7 +2195,7 @@ last line, and is taken out again.
 **Cost, and what is turned down for now.** `print(channel.label)`
 copies the label though nothing is called after the read. The compiler
 knows which statements call functions and could skip the copy.
-*(provisional: an exercise in `docs/text.md`.)* **Turned down: copy
+*(was provisional (11.2): an exercise in `docs/text.md`.)* **Turned down: copy
 only if a later part of the statement calls something.** It is right,
 and it makes whether a copy is made depend on what else is on the
 line. The simple rule came first.
@@ -2209,7 +2211,7 @@ that object (`zeno_error_of`).
 **Why the copy for `for` is deep.** The body may give the list a new
 item, which frees the old one, while the loop is still holding it. A
 shallow copy would be a list of pointers to freed text. **Cost:** a
-block for each item before the first trip. *(provisional: the checker
+block for each item before the first trip. *(was provisional (11.2): the checker
 could say when the body cannot change the list.)*
 
 **Why the error needs a function.** To the runtime an object is a
@@ -2305,7 +2307,7 @@ The alternative is to work out from how a name is used whether it
 needs to own, which is 5.8j's escape analysis, turned down there.
 
 **A plain `list[T]` parameter may not be given a made list**
-*(provisional)*. A `borrow` parameter may: the checker already makes
+*(was provisional: 11.2)*. A `borrow` parameter may: the checker already makes
 sure such a function cannot keep what it was lent. A plain parameter
 makes no such promise, so the list could be kept past the statement.
 The next step makes a plain list in this build an owned one, and then
@@ -2384,12 +2386,12 @@ list of text is a block for the list, a block for its items and a
 block for every text. `for word in line.split()` would have made all
 of them twice.
 
-### 5.9w `for ch in text` makes a list of the characters, which the loop owns *(provisional)*
+### 5.9w `for ch in text` makes a list of the characters, which the loop owns *(was provisional: 11.2)*
 
 It was refused, with advice to count with `range(len(text))` instead.
 It is accepted: the list is a made list like any other.
 
-**Why provisional.** It costs a block of the pool for every character
+**Why it was provisional (11.2).** It costs a block of the pool for every character
 while the loop runs. Walking the text itself, one character at a time,
 would cost none, and is an exercise in `docs/temporaries.md`. It was
 not done here because the text may be in the text room, which a `for`
@@ -2467,7 +2469,7 @@ numbers and pointers packed into one word, as fast VMs do). It is where
 most of the missing speed is. It would also mean two of everything, and
 two places for each to go wrong.
 
-### 5.10c An instruction is a Rust enum, not bytes *(provisional)*
+### 5.10c An instruction is a Rust enum, not bytes *(was provisional: 11.2)*
 
 `Op::GetLocal(3)` is a value of an enum, 12 bytes wide, in a `Vec<Op>`.
 
@@ -2533,7 +2535,7 @@ programs that were already written, each now checking the VM with no
 expected output to write. And it works in both directions, as 3.6d
 showed.
 
-### 5.10g The interpreter stays the default *(provisional)*
+### 5.10g The interpreter stays the default *(was provisional: 11.2)*
 
 `zeno run` uses the interpreter unless given `--vm`.
 
@@ -2626,7 +2628,7 @@ C line for line, and the tests compare both with the interpreter.
 got the loop to 0.45 s, not 0.29, and needs the LLVM linker installed.
 **Cost:** two copies of three small functions to keep in step.
 
-### 5.11d The runtime is the C backend's, with `static` taken off *(provisional)*
+### 5.11d The runtime is the C backend's, with `static` taken off *(was provisional: 11.2)*
 
 An LLVM build links to the same `runtime.c`. `emit_llvm::runtime()`
 removes `static` from the start of each line, so that the functions can
@@ -2719,7 +2721,7 @@ does not need one: after the tag has been read, the block is simply
 looked at through the struct type of that case. A block is as big as
 its own case, not as big as the biggest.
 
-### 5.11i A list item crosses into the runtime as an `i64` *(provisional)*
+### 5.11i A list item crosses into the runtime as an `i64` *(was provisional: 11.2)*
 
 Lists are the runtime's (5.5h): one list type, each item in a
 `zeno_slot`, a C union one register wide. The IR calls
@@ -2797,7 +2799,7 @@ are what `--llvm --firmware` does (5.11o).
    word out of the IR by hand: the `except` block then sees the wrong
    numbers.
 
-*(provisional)* `_setjmp` is the name on Linux and macOS. It is the one
+*(was provisional: 11.2)* `_setjmp` is the name on Linux and macOS. It is the one
 that does not save the signal mask, which is what C's `setjmp` means
 there.
 
@@ -2876,7 +2878,7 @@ runtime's own functions that can fail (`zeno_parse_int`) use the
 pointer form, so a build would have both forms in it. A pair type is
 needed for every return type. And how a pair is returned depends on the
 processor, where a pointer is the same everywhere. After inlining, LLVM
-removes the pointer for small functions anyway. *(provisional: worth
+removes the pointer for small functions anyway. *(was provisional (11.2): worth
 measuring when there is a real board to measure on.)*
 
 **Turned down: `invoke` and `landingpad`,** as in 5.11l. They need the
@@ -2910,7 +2912,7 @@ needs memory. `mem2reg` turns the slot back into values, and the null
 is then a constant the optimiser can see. It removes the drop of an
 object that is certainly null. The drop of a list stays as a call that
 does nothing, because `zeno_list_drop` is in the runtime file
-*(provisional: a null test written in IR would let it go, and is an
+*(was provisional (11.2): a null test written in IR would let it go, and is an
 exercise in `docs/llvm.md`)*.
 
 **Why null, and not working out which owners are full.** The emitter
@@ -3133,7 +3135,7 @@ known until run time can be put in a `u8` variable unchecked, as it
 can be put in an `int` variable today (0.2). A compiled program is
 always strict (5.5c), so this is the interpreter only.
 
-### 5.13a Only a field of an object is stored small *(provisional)*
+### 5.13a Only a field of an object is stored small *(was provisional: 11.2)*
 
 A class with the fields `kind: u8` and `length: u16` is a struct of a
 `uint8_t` and a `uint16_t` in C, and `{ i8, i16 }` in LLVM. A value is made
@@ -3228,7 +3230,7 @@ messages use.
 `Stack_int` would get the same name. The build refuses the program
 and says why. A scheme that could never clash (C++ mangles `Stack<int>`
 to `5StackIiE`) would make the C unreadable, and reading the C is half
-the point of the C backend (5.5). *(Provisional.)*
+the point of the C backend (5.5). *(Was provisional: 11.2.)*
 
 ### 5.14d A generic that nothing uses is checked with `T` as "anything"
 
@@ -3300,7 +3302,7 @@ provisional). It was weighed again, since in this build most
 parameters only look and each now needs the word. It stays as it is:
 `task: Task` then means the same on a `let`, a field and a parameter
 ("this holds the task"), and the error for a forgotten `borrow` names
-the fix in its first line. *(Provisional, and a question for the
+the fix in its first line. *(Was provisional (11.2), and a question for the
 audit: count how often each is written in real programs.)*
 
 *Superseded by 5.19a.* The count was made: see there.
@@ -3376,7 +3378,7 @@ second is the one that will be felt.
 `&mut`, with the rule that only one exists at a time). It is the
 complete answer and the largest single piece of Rust's checker: every
 borrow then has a region and two may not overlap. 5.8d chose four
-rules a reader can hold in their head. *(Provisional. If methods that
+rules a reader can hold in their head. *(Was provisional (11.2). If methods that
 remove turn out to matter, the smallest growth is "a method may take
 out when the object was not lent to anything else on that line", which
 needs no new word.)*
@@ -3440,7 +3442,7 @@ order.** It is the interpreter's, and four engines must agree. The
 test uses functions that print when they are called, so a change of
 order fails it.
 
-### 5.15j What a no-collector build still refuses *(provisional)*
+### 5.15j What a no-collector build still refuses *(was provisional: 11.2)*
 
 This replaces the list in 5.9g. *(Step 4 took the first row off it. The
 list as it stands is in 5.16i.)*
@@ -3605,7 +3607,7 @@ slipped through because no test matched an enum case against an
 optional subject. `a_case_of_an_enum_matches_a_value_that_may_be_none`
 does now.
 
-### 5.16h `list[int or none]` stays refused with no collector *(provisional)*
+### 5.16h `list[int or none]` stays refused with no collector *(was provisional: 11.2)*
 
 A number that may be `none` is kept in a small block of its own when
 it sits in a list (5.11i). Giving those blocks an owner would mean a
@@ -3618,7 +3620,7 @@ says more: an enum `Reading` with a `Missing` case and a
 pair in the slot without a block, which touches the slot's size, and
 is for later. *(Keep whatever works.)*
 
-### 5.16i What a no-collector build still refuses *(provisional)*
+### 5.16i What a no-collector build still refuses *(was provisional: 11.2)*
 
 This replaces the list in 5.15j. *(Replaced in turn by 5.17g: the
 step 5 items below build now.)*
@@ -3758,7 +3760,7 @@ the function is gone.** That is a borrow with a lifetime, which Rust
 needs names and annotations for. One statement is a lifetime nobody has
 to write.
 
-**Provisional.** A function that uses another function value which has
+**Was provisional (11.2).** A function that uses another function value which has
 an owner (`function(n) { return f(f(n)) }` where `f` is a parameter)
 looks at it, so it cannot be returned. Writing "compose" needs a way to
 take a value into a function. To be looked at with real programs.
@@ -3798,7 +3800,7 @@ than two. It costs one small block of three words.
 
 A build with a collector has no `drop` entry and is unchanged.
 
-### 5.17g What a no-collector build still refuses *(provisional)*
+### 5.17g What a no-collector build still refuses *(was provisional: 11.2)*
 
 This replaces the list in 5.16i.
 
@@ -3957,7 +3959,7 @@ compiled. Zeroing costs one `calloc`.
 
 **Why running out stops the program.** Giving back `none` would put a
 check on every `allocate`, for a case most programs cannot recover
-from. *Provisional*: firmware that must survive it will want
+from. *Was provisional (11.2)*: firmware that must survive it will want
 `pointer[u8] or none`.
 
 There is no null pointer. A pointer that may be missing is
@@ -4111,7 +4113,7 @@ vanish would surprise everyone.
 **Turned down: a mark at the call as well** (`retire(take task)`). It
 would show the move where it happens. But the checker reports any use
 after a move with the line of the move, and one way to write a call is
-worth more than a second reminder. *(Provisional, as in 5.8a.)*
+worth more than a second reminder. *(Was provisional (11.2), as in 5.8a.)*
 
 ### 5.19b The word is `take`, and it stands in front of the type
 
@@ -4586,7 +4588,7 @@ those items, so write the loop that puts them in yours".
 that nobody has to be told. Tasks could be ordered by name or by
 priority, and a `sort()` that picked one would be a guess. Sorting by
 a function that the program gives is left for when a real program
-needs it *(provisional)*.
+needs it *(was provisional: 11.3)*.
 
 **Why heapsort.** It sorts inside the list, so it asks for no memory.
 It is a loop and not a function that calls itself, so it needs no
@@ -4629,7 +4631,7 @@ mistake.
 `char(n)` is a `ValueError` for a number that is no character: below
 1, above 1114111, or in the range Unicode keeps free (55296 to 57343).
 
-**Why not `char(0)`** *(provisional)*. In a compiled program text ends
+**Why not `char(0)`** *(was provisional: 11.3)*. In a compiled program text ends
 at the first zero byte, as in C, so text with a zero in it would be
 cut short there and not in `zeno run`. Bytes that may be zero belong
 in a `list[u8]`.
@@ -4646,7 +4648,7 @@ says `raises ValueError` with nothing in it that raises one as a value
 is refused in a firmware build. `int(text)` does raise one as a value
 there, so `raises ValueError` beside `int(text)` is still right.
 
-### 6.10 These methods are written in Rust and C, not in Zeno *(provisional)*
+### 6.10 These methods are written in Rust and C, not in Zeno *(was provisional: 11.3)*
 
 Each method is written once for `zeno run` and the VM (`builtins.rs`),
 described to the checker (`checker.rs`), and compiled by both backends
@@ -4705,7 +4707,7 @@ argument is text that picks what the function does, so a wrong letter
 is found when the program runs and not when it is checked. Python's
 `with open(...) as f`: a new kind of block for one use.
 
-*(provisional)* A file too large to hold at once needs reading in
+*(was provisional: 11.3)* A file too large to hold at once needs reading in
 pieces. That will be added, with an owner for the open file, when a
 real program needs it.
 
@@ -4747,7 +4749,7 @@ how it went, as C's `errno` does: nothing makes the caller look at it.
 **One kind of error, not several.** `FileNotFoundError`,
 `PermissionError` and the rest of Python's family are told apart by
 programs that go on to do something different for each. The message
-tells a person which it was. *(provisional)*
+tells a person which it was. *(was provisional: 11.3)*
 
 ### 6.15 `exists` asks whether there is a file that can be read
 
@@ -4776,7 +4778,7 @@ bytes, so `"\r\n"` in a file from Windows arrives as `"\r\n"`, and
 `write` puts down exactly what it was given. `lines()` is where line
 ends are dealt with (6.17).
 
-*(provisional)* Bytes that are not text belong in a `list[u8]`, and a
+*(was provisional: 11.3)* Bytes that are not text belong in a `list[u8]`, and a
 `files.read_bytes` that gives one is for the stage that needs it.
 
 ### 6.17 `lines()` is a method of text, and knows both line ends
@@ -4857,7 +4859,7 @@ knows, and which words those are would change with each version.
 **`main` takes the command line only in a program that asks for it**,
 so the C and the IR of every other program are what they were.
 
-**Left out** *(provisional)*: `program.exit(code)`. A program ends by
+**Left out** *(was provisional: 11.3)*: `program.exit(code)`. A program ends by
 reaching its end, or with an error nobody caught, which ends it with
 status 1. Environment variables: no program has needed one yet.
 
@@ -4872,7 +4874,7 @@ line that is longer than the room. A line is read straight into the
 room, a byte at a time, so it takes its own length and no more.
 `--memory` prints how much of the room was used.
 
-*(provisional)* Reading a large file a line at a time, straight into
+*(was provisional: 11.3)* Reading a large file a line at a time, straight into
 the pool, belongs with the open file of 6.12.
 
 **On a board** these functions are the C library's: `fopen` for files,
@@ -4911,7 +4913,7 @@ charge of a capacitor, a sine table (`examples/instruments.zeno`).
 | `round(x, 2)` | `f"{x:.2f}"`: digits after the point are a matter of showing |
 | `log(x, base)` | `log2`, `log10`, or `log(x) / log(base)` |
 
-**Left out until something needs it** *(provisional)*: `hypot`, the
+**Left out until something needs it** *(was provisional: 11.3)*: `hypot`, the
 hyperbolic functions, `gcd`, `factorial`, `clamp`, `inf` and `nan` as
 names, and random numbers, which are not arithmetic and want a module
 of their own.
@@ -4974,7 +4976,7 @@ A quantity that is not an angle is refused by the checker:
 `sin` needs a number or an angle, such as `30 deg`, but this is a quantity in s
 ```
 
-### 6.24 `asin`, `acos`, `atan` and `atan2` give an angle in radians *(provisional)*
+### 6.24 `asin`, `acos`, `atan` and `atan2` give an angle in radians *(was provisional: 11.3)*
 
 Their answer is a quantity in `rad`, not a float.
 
@@ -4987,13 +4989,13 @@ refused, and `math.atan2(y, x).deg > 45 deg` says what is meant.
 on or taken off, as with any quantity: `angle + 2 * math.pi * 1 rad`,
 `angle / 1 rad`. Passing it on to `sin` needs nothing.
 
-**Provisional** because it is the first time a library function gives
+**It was provisional (11.3)** because it was the first time a library function gives
 a quantity back that is not a time. If it gets in the way of real
 signal code, a plain float is the other choice.
 
 **`atan2(y, x)` takes y first**, as in C, Python, JavaScript and Rust.
 It is the angle of the point (x, y), and the order is the one in
-`atan(y / x)`. It takes plain numbers only *(provisional)*: two
+`atan(y / x)`. It takes plain numbers only *(was provisional: 11.3)*: two
 lengths would be reasonable, and can come later.
 
 ### 6.25 `round` sends a half away from zero, and gives an int
@@ -5310,7 +5312,7 @@ machine. Where other people's files are is said in the program's
 
 **The five modules that come with Zeno keep their names**: `math`,
 `time`, `board`, `files`, `program`. A file called `math.zeno` is
-never looked for by `import math`. *(Provisional: once library
+never looked for by `import math`. *(Was provisional (11.4): once library
 modules are themselves Zeno files, they will be found by one rule.)*
 
 ### 7.3 `import a.b` is used as `a.b.name`
@@ -5329,7 +5331,7 @@ modules called `uart` in two folders then collide, and the fix is a
 second name for one of them. A second name by request,
 `import drivers.uart as uart`: two spellings for one module, and
 `from drivers.uart import send` already gives the short form.
-*(Provisional: if long names turn out to hurt in real programs, `as`
+*(Was provisional (11.4): if long names turn out to hurt in real programs, `as`
 is the way to add.)*
 
 ### 7.4 Everything declared at the top of a file can be imported, unless it says `private`
@@ -5475,7 +5477,7 @@ still drops what nothing calls.
 the results. That needs a written-down description of what every
 module offers, and generics and worked-out types make that
 description large. It is what makes a big program quick to rebuild,
-and it will be wanted then. *(Provisional.)*
+and it will be wanted then. *(Was provisional: 11.4.)*
 
 **In C a module's name is part of the C name**: `shapes.area` is
 `z_shapes_area`. Two classes or enums that would get the same C name
@@ -5609,7 +5611,7 @@ So `zeno fetch` runs `git`, and Zeno still links nothing.
 
 **Turned down.** Downloading an archive over HTTPS: Zeno would need a
 TLS library, its first dependency. A central registry with short
-names (`needs units "1.2"`): see above. *(Provisional: a registry
+names (`needs units "1.2"`): see above. *(Was provisional (11.4): a registry
 could be added later as a third kind of line. The two here would stay
 as they are.)*
 
@@ -5851,7 +5853,7 @@ Indentation is counted from brackets that match, and the parser is
 what knows that they do. The mistakes are shown as `zeno check` shows
 them.
 
-### 9.3 Line breaks are the author's *(provisional)*
+### 9.3 Line breaks are the author's *(was provisional: 11.4)*
 
 The formatter never joins two lines and never splits one. There is no
 line width.
@@ -5954,7 +5956,7 @@ bytes: pointer[u8]    # `size` bytes, asked for with `allocate`
 size: int             # how many fit
 ```
 
-*(Provisional.)* The formatter does not line comments up by itself.
+*(Was provisional: 11.4.)* The formatter does not line comments up by itself.
 gofmt does, and needs rules for when a long line should break the
 column. Keeping the author's distance is simple and never fights a
 layout somebody made on purpose.
@@ -6026,7 +6028,7 @@ For a function the type is shown the way its first line is written,
 `twice: function(count: int) -> int`, with the names of the
 parameters, because Zeno lets a call name them (`twice(count=3)`).
 
-**Why a field gets no answer yet.** *(Provisional.)* The record holds
+**Why a field gets no answer yet.** *(Was provisional: 11.4.)* The record holds
 names: variables, parameters, functions, classes, enums, and the
 names of a module (`shapes.area` is one name). A field or a method
 (`p.x`, `queue.put`) is found from the type of what stands before the
@@ -6080,7 +6082,7 @@ and Neovim, in `editors/`. Both know Zeno's words from a list.
 **Why not from the server.** The protocol can carry colours
 ("semantic tokens"), but an editor asks for them after the file is
 checked, so the text would flash from plain to coloured. A grammar in
-the editor colours at once and needs no server at all. *(Provisional:
+the editor colours at once and needs no server at all. *(Was provisional (11.4):
 semantic tokens can be added on top for what a grammar cannot know,
 such as whether a name is a variable or a function.)*
 
@@ -6341,7 +6343,7 @@ function is in exactly one place: the class.
 worked out from the body. Here there is no body. The interface
 is all a caller has, so all of it is written.
 
-Also refused, each with a message that says so *(provisional)*: a
+Also refused, each with a message that says so *(was provisional: 11.5)*: a
 default for a parameter, type parameters on an interface or on one of
 its functions, an interface that is another interface, and a private
 function (an interface lists what other code may ask).
@@ -6414,7 +6416,7 @@ later. This holds when each argument goes straight into a `T`. A
 `list[Circle]` given for a `list[T]` stays a list of circles, for the
 reason above.
 
-### 10.8 There is no way back from an interface to a class *(provisional)*
+### 10.8 There is no way back from an interface to a class *(was provisional: 11.5)*
 
 A `Shape` cannot be asked which class it is, and it cannot go where a
 `Circle` is wanted. Through an interface only the interface's
@@ -6496,7 +6498,7 @@ small: the checker fills in what the functions are from their first
 lines, and the two compilers write the `switch` where they would
 have compiled a body.
 
-### 10.10 What interfaces leave out *(provisional)*
+### 10.10 What interfaces leave out *(was provisional: 11.5)*
 
 Each is refused with a message that says so.
 
@@ -6646,7 +6648,7 @@ error: the values of this dict are float here, but this one is int.
 Write the number with a decimal point, as in `1.0`
 ```
 
-### 10.14 With no collector a dict holds plain values *(provisional)*
+### 10.14 With no collector a dict holds plain values *(was provisional: 11.5)*
 
 ```
 error: with no collector a value of a dict is an int, a float, a bool or
@@ -6855,7 +6857,7 @@ them out too. `zeno run` and plain `zeno check` check them.
 Asking it to follow the rules of a board would make tests harder to
 write than the code they test, and fewer would be written.
 
-### 10.21 What tests leave out *(provisional)*
+### 10.21 What tests leave out *(was provisional: 11.5)*
 
 - A message on `assert` (10.17).
 - `assert` in a function outside a test. A helper gives back a
@@ -7157,3 +7159,155 @@ are still refused: a quantity is not a whole number.
 **Turned down.** Dropping the unit when there is a format. A second
 format for the unit (`{angle:.1f:unit}`): there is nothing to choose
 about a unit except whether it is there, and it always is.
+
+## 11. Version 0.1: every provisional decision, read again
+
+A decision was marked provisional when it was made on less than it
+deserved: before a later stage existed, before a real program had
+tried it, or to keep a stage small. The last thing on the list for
+version 0.1 was to read each one again and say what it is now. There
+were about eighty. This chapter has every one of them.
+
+Each has one of three answers.
+
+- **Settled.** It is the rule, and it is no longer waiting for
+  anything. The reason says what was learned since.
+- **A limit of 0.1.** The thing that was left out stays out of this
+  version. It is a known edge of the language and not an open
+  question about it: the program is refused with a message that says
+  so, or the page that describes the feature says what to write
+  instead. The reason names what would bring it in.
+- **Changed.** It is not as it was. The row says which decision
+  changed it.
+
+A mark in the chapters above now reads "was provisional", and points
+here. The text around it is left as it was written, because the
+reasons a thing was once uncertain are worth keeping.
+
+**How each was judged.** By the two tests every decision has had
+since 2026-11-14. Is the rule one sentence that a reader can hold,
+with no second reading? And where something is left out, does Zeno
+say so in plain words, with what to write instead? A provisional
+decision that passes both is settled. A thing left out that would
+need a new rule is a limit, and adding it later must not change what
+any program that is accepted today means. Nothing on the lists below
+fails that last test, which is why none of them had to be decided in
+a hurry.
+
+**One limit is silent**, and it is stated here because the rest are
+not. In a program that is not strict, a value whose type is not
+known until the program runs can be put where a `u8` is wanted, and
+nothing checks it, just as it can be put where an `int` is wanted.
+`--strict`, a file that begins with `strict`, and every build check
+it. (5.13, [`sized-ints.md`](sized-ints.md).)
+
+### 11.1 The language: chapters 0 to 3
+
+| Decision | What was left open | Now | The reason |
+|---|---|---|---|
+| 0.1, 3.7 | Classes have no inheritance | Settled: there is none | Interfaces (10.4) give what inheritance is mostly used for, one function that serves many classes. What they leave out is a class whose fields and behaviour are written in another class, and that is the part that makes a class hard to read. A class in Zeno is read in one place |
+| 1.13 | General unions, `int or str` | A limit of 0.1 | `T or none` and an enum whose cases carry values cover the uses, and each has one way to be taken apart (`is none`, `match`). A union would be a second way to write an enum |
+| 1.15 | Derived units (`V * A` is `W`), and units a program declares | A limit of 0.1 | Two quantities cannot be multiplied, and the message says so. Doing it right is an algebra of dimensions, which is a feature of its own size |
+| 2.8c | A `u8` could go where a `u16` is wanted without `u16( )` | Settled: it is written | "A sized number is an `int` for free, and everything else is written" is one rule. The loosened rule is a table of thirty pairs (does a `u8` fit an `i8`? an `i8` a `u16`?) that every reader would have to know |
+| 2.8d | No `u64` | A limit of 0.1 | Half its values do not fit in an `int`, so "the answer of an operator is an `int`" (2.8a) would stop being true. It needs its own answer to what `u64 + u64` is |
+| 3.6a | A shorter way to write a one-line function | Settled: there is one way to write a function | Comprehensions and a named function handed to `map` cover the short cases in every example. A second syntax for the same thing is what principle 4 is against |
+| 3.7 | No constructor written by the program | Settled: a function builds one | The fields, in order, are the constructor. A class that must check what it is given keeps a field `private` and offers a function with a name (`ring.ring(4)`, 10.3), which says what it does better than a constructor could |
+| 3.9 | `let` fixes the name, not what it names | Settled | It is one sentence: the name always means the same thing. It is what `final` means in Java and `const` in JavaScript, so it is what most readers expect. A list that nobody may change would be a second kind of list, and no program has asked for one |
+| 3.10 | Lists and objects are shared | Changed, long ago: kept, with a collector to make it safe (5.7), and with one owner where there is none (5.15) | |
+| 3.10a | The copy a `for` loop takes could be skipped | Settled as it is | The loop sees the list as it was when it began, always. The copy is given back when the loop ends (5.8j). Skipping it where the body cannot touch the list would change no program, so it is not a question about the language |
+| 3.12 | A shared variable that was narrowed is looked at again as it is used | Settled | The other rule, Kotlin's, refuses to narrow such a variable at all, which makes `if port is not none` useless for every `var` at the top of a file. The second look is one comparison, made only for variables that something else can reach |
+| 3.14 | `upper`, `lower`, `strip` and `split` know plain letters and blanks | Settled for the language | The full rules need tables of tens of kilobytes, and a method must do the same on a board as on a computer. They belong in a module for programs with the room |
+| 3.15b | One LED and numbered pins, and no inputs | A limit of 0.1, and the one item taken off the list for it | Reading a pin, an ADC or a UART is designed against a real board. A design made without one would be a guess, and the simulated board would agree with whatever was guessed |
+| 3.16d | A generic has no bounds: its body is checked for each type it is used with | A limit of 0.1 | The error is in the generic, with a note that names the copy and the call. Bounds (`T is Ordered`) wait for interfaces that have type parameters (10.10), since a bound is an interface |
+| 3.16e | Generic enums, a method with type parameters of its own, a generic kept as a value, an owned value as a type argument | A limit of 0.1 | Each is refused with a message that says so |
+
+### 11.2 How it is built: chapter 5
+
+| Decision | What was left open | Now | The reason |
+|---|---|---|---|
+| 5.5c | A value of unknown type in a compiled program | Settled: a build is strict | Types that are not written are worked out, so most programs with none written build as they are. One that truly needs a value of any type runs with `zeno run` |
+| 5.5e | Checked arithmetic uses built-ins of GCC and Clang | A limit of 0.1 | They cover the toolchains for ARM, RISC-V, AVR and ESP. Another C compiler needs the checks written out, in one place in `runtime.c` |
+| 5.5g | An object that never leaves its function could live on the stack | Settled as it is | It would be an optimisation that changes no program. With no collector the object is freed where its owner ends in any case |
+| 5.5k | A function value is always a block, even one that keeps no variables | Settled | Two function values are equal only when they are the same one, in every engine. The fixed value would save a block and break that for a function written in a loop |
+| 5.5l | A function that can raise cannot be used as a value in a firmware build | A limit of 0.1 | The type `function(str) -> int` does not say whether it raises, and the two sorts are called differently there. The way in is `raises` in a function type |
+| 5.7 | Three things about the collector | Changed, twice, and settled once | A build with no heap at all exists: `--no-collector` (5.9). It takes its memory from one fixed pool (5.9h). Counting references was not needed: a program that cannot pause is built with no collector, and one that can keeps the collector as it is |
+| 5.8a, 5.19a | No mark at the call for a value that is taken (`send(take p)`) | Settled | The function's own header says `take` (5.19b), and a use after it is an error that names the line of the call. One way to write a call was worth more than a second reminder |
+| 5.8c, 5.15b | Whether a plain parameter takes or looks | Changed in 5.19a: a plain parameter looks, and `take` takes | The count asked for in 5.15b was made in the audit: most parameters only look |
+| 5.8i | What an owned value cannot do: sit in an `or none`, an enum case or a function type, be moved out of a field, be replaced through a borrow, be matched, be raised | A limit of 0.1 | Each is an error that says what to do instead, and allowing any of them later breaks no program |
+| 5.9d | `raise e`, to pass a caught error on, is refused with no collector | A limit of 0.1 | The `except` that caught it frees it. Raise a new error, or lend the caught one to a function |
+| 5.9g, 5.15j, 5.16i, 5.17g | What a build with no collector refuses | A limit of 0.1. The list is the one in 5.17g, with 5.16h and 10.14 | Two of them are the design and not a gap: a function that shares a `var` with the function around it, and keeping a function that only looks. The rest each need a rule for one more kind of owner |
+| 5.9h | The pool does not join spare blocks back together | Settled | Sizes double, so a spare block is used again by the next thing of its size. Joining is three times the code, and no example is short of memory for the lack of it |
+| 5.9j | The pool's size is one number in the C, and not an option of `zeno build` | A limit of 0.1 | `--memory` prints the number to change it to. `--pool N` is an exercise in [`pool.md`](pool.md) |
+| 5.9k | Spare blocks are not poisoned in a checking build | A limit of 0.1 | A block given back twice is caught already. The rest is an exercise in the same page |
+| 5.9l | With no collector text is kept by copying it, not by counting who holds it | Settled | A count would keep text alive by a route no line of the program shows, which is what this build exists to rule out |
+| 5.9o | Text read from a place a function can change is copied even when nothing is called | Settled | "Read from a place, it is copied" is one rule. Whether a copy is made should not depend on what else is on the line |
+| 5.9p | The copy a `for` loop takes of a list of text is deep | Settled | The body may replace an item while the loop still holds it |
+| 5.9s | A plain list parameter could not be given a list that was just made | Changed in 5.15: a list has an owner in this build, and since 5.19a the parameter looks at it for the length of the call | |
+| 5.9w | `for ch in text` makes a list of the characters | Settled | It is a made list like any other, and it is freed when the loop ends. Counting with `range(len(text))` is there for the program that cannot spare the blocks |
+| 5.10c | A bytecode instruction is a Rust enum, not bytes | Settled | The VM is there to be read and to check the interpreter against. Speed is what the two compilers are for |
+| 5.10g | `zeno run` uses the interpreter unless told `--vm` | Settled | It is the plainest statement of what a program means, it is the engine `zeno test` uses, and every other engine is tested against it |
+| 5.11d | The LLVM build's runtime is the C build's, with `static` taken off | Settled | One runtime means one place for a mistake to be, and the test that the two builds use memory alike depends on it |
+| 5.11i | A list item crosses into the runtime as an `i64` | Settled | One list type in the runtime (5.5h) is what both builds share |
+| 5.11l | `_setjmp` is the name on Linux and macOS | A limit of 0.1 | Those are the systems Zeno is built and tested on. A firmware build has no `setjmp` at all |
+| 5.11o | In `--llvm --firmware` an error comes back through a pointer and not as a pair | Settled until a board says otherwise | A pointer is the same on every processor, and LLVM removes it for small functions |
+| 5.11p | The drop of a list that is certainly empty stays a call | Settled as it is | It is a call that does nothing, and removing it changes no program. It is an exercise in [`llvm.md`](llvm.md) |
+| 5.13a | Only a field of an object is stored small. A `list[u8]` takes eight bytes an item | A limit of 0.1 | The runtime has one list type. A packed list of bytes is the first thing a real driver will ask for, and is a stage of its own |
+| 5.14c | Two copies of a generic that would get the same C name are refused | Settled | Names that could never clash would be unreadable, and reading the C is half the point of that build |
+| 5.15e | A method cannot take out what its object owns while the object is lent | A limit of 0.1 | The four rules of 5.8d stay four. The smallest growth is written in that section |
+| 5.16h | `list[int or none]` with no collector | A limit of 0.1 | A number that may be `none` sits in a block of its own inside a list, and those blocks have no owner yet |
+| 5.17d | A function that uses another function value which has an owner cannot be returned | A limit of 0.1 | "compose" needs a way to take a value into a function |
+| 5.18d | `allocate` that finds no memory stops the program | Settled for 0.1 | Giving back `none` would put a check on every `allocate` for a case most programs cannot recover from. Firmware that must survive it will want `pointer[u8] or none` |
+
+### 11.3 The standard library: chapter 6
+
+| Decision | What was left open | Now | The reason |
+|---|---|---|---|
+| 6.6 | `sort()` by a function the program gives | A limit of 0.1 | Numbers and text have one order that nobody has to be told. Tasks could be ordered by name or by priority, and a `sort()` that picked one would be a guess |
+| 6.8 | `char(0)` is refused | Settled | In a compiled program text ends at the first zero byte. A byte that may be zero belongs in a `list[u8]` |
+| 6.10 | The methods of text and lists are written in Rust and C, not in Zeno | Settled for 0.1 | Each is written once for the interpreter and once for the runtime, and the tests hold the two together. A library in Zeno is the natural next thing after 0.1, and 7.2 waits for it |
+| 6.12, 6.20 | A file is read whole. One too large to hold cannot be read in pieces | A limit of 0.1 | Reading in pieces needs an open file, which is a value with an owner and a moment at which it closes |
+| 6.14 | One kind of error for a file, `FileError` | Settled | The message says which it was, for a person. A program that must tell them apart asks first, with `files.exists` |
+| 6.16 | A file holds text. There is no `files.read_bytes` | A limit of 0.1 | It gives a `list[u8]`, and is worth having when that list is packed (5.13a) |
+| 6.19 | No `program.exit(code)`, and no environment variables | A limit of 0.1 | A program ends by reaching its end, or with an error nobody caught, which ends it with status 1 |
+| 6.21 | `hypot`, the hyperbolic functions, `gcd`, `clamp`, and random numbers | A limit of 0.1 | Each is a few lines of Zeno today. Random numbers want a module of their own, and on a board a source of them |
+| 6.24 | `asin`, `acos`, `atan` and `atan2` give a quantity in `rad` | Settled | A float that is secretly an angle is what units are there to stop. Since 10.29 it prints with any number of decimals, which was the one thing that made it awkward |
+| 6.24 | `atan2` takes plain numbers, not two lengths | A limit of 0.1 | Divide each by one of its unit first |
+| 6.32 | A dict held only ints, floats, bools and text | Changed in 10.11: it holds what a list holds | |
+
+### 11.4 Files, packages and editors: chapters 7 to 9
+
+| Decision | What was left open | Now | The reason |
+|---|---|---|---|
+| 7.2 | The five modules that come with Zeno keep their names | Settled | `zeno new` refuses those names for a program (10.23), so the rule is met on the first day and not by an import that finds the wrong thing |
+| 7.3 | No `import drivers.uart as uart` | Settled | One module has one name. `from drivers.uart import send` gives the short form of what is used, and since this pass an `as` after an `import` gets a message that says so |
+| 7.4 | Everything at the top of a file could be imported | Changed in 10.1: `private` | |
+| 7.11 | The files of a program are joined and compiled together | A limit of 0.1 | Compiling each file by itself needs a written description of what every module offers. It is what a large program will want, and no program is that large yet |
+| 8.3 | No registry of packages with short names | Settled for 0.1 | A package is a folder or a git address. A registry could be added as a third kind of `needs` line, and the two that exist would stay as they are |
+| 8.9 | No `zeno new`, no `zeno add` | Changed in 10.22: `zeno new`. `zeno add` is settled: there is none | A `needs` line is one line, and a new `zeno.package` shows both kinds |
+| 9.3 | The formatter never joins or splits a line | Settled | Where a line breaks is the one thing about layout that carries the author's meaning. Everything else has one answer |
+| 9.8 | The formatter does not line comments up | Settled | It keeps the distance the author chose, and never fights a column somebody made on purpose |
+| 9.11 | Hover on a field or a method (`p.x`, `queue.put`) gives no answer | A limit of 0.1 | The checker notes names, and does not yet note what a dot found. An empty answer is better than a guess |
+| 9.13 | Colours come from a grammar in the editor, not from the server | Settled | The text is coloured at once and needs no server. Colours from the server could be added on top without changing either |
+
+### 11.5 What real programs needed: chapter 10
+
+| Decision | What was left open | Now | The reason |
+|---|---|---|---|
+| 10.5 | A function of an interface has no default for a parameter, no type parameters, and cannot be private | A limit of 0.1 | Each is refused with a message. The last is settled: an interface lists what other code may ask |
+| 10.8 | No way back from an interface to a class | Settled | A function that needs to know the class is a function the interface should have. Asking "which class are you?" is how code that was written against an interface comes to depend on every class behind it |
+| 10.10 | An owned class as an interface, a function that takes out of its object as one of an interface, type parameters on an interface, an interface that is another interface | A limit of 0.1 | Each is refused with a message. The first two are the same question about who frees what, and need the same answer |
+| 10.14 | With no collector a dict holds ints, floats, bools, text, sized numbers and quantities | A limit of 0.1 | A list or an object under a key needs the dict to be its owner, as a list is of its items (5.15c). That is one more owner, built the same way |
+| 10.21 | No message on `assert`, no `assert` outside a test, nothing run before each test, no choosing tests by name, no tests in a compiled program | A limit of 0.1 | The failure already shows both sides of the comparison (10.17), which is what a message is usually written to say |
+
+### 11.6 What 0.1 is, then
+
+The language is what chapters 0 to 10 decide, with the limits in the
+tables above, and nothing in it is waiting to be decided.
+
+Everything marked "a limit of 0.1" is one list, and it is the list
+for whatever comes after: inputs on a board, a packed `list[u8]`,
+the last few things a build with no collector refuses, interfaces
+with type parameters and the bounds that come with them, a file read
+in pieces, and a library written in Zeno. Each can be added without
+changing what a program written today means, because each is refused
+today and not quietly given some other meaning.

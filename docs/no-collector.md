@@ -281,7 +281,7 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 [`temporaries.md`](temporaries.md).
 
 The first two rows are by design: with no collector nothing is shared.
-The other two are provisional.
+The other two are limits of version 0.1 (decisions, 11.2).
 
 ## What this does not claim
 

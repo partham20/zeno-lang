@@ -653,7 +653,7 @@ over. `done1` begins with `call void @zeno_list_drop(ptr %t1)`, and a
 `ret`. The C backend does the same ([`ownership.md`](ownership.md),
 "Two frees that every program gets").
 
-The `i64` slot is provisional (decision 5.11i). It holds on a 64-bit
+The `i64` slot is decision 5.11i. It holds on a 64-bit
 processor that hands a union to a function the way it hands an `i64`,
 which is true of x86-64 and ARM64.
 

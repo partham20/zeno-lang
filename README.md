@@ -101,6 +101,12 @@ piece of the compiler:
 
 ## Status
 
+**Zeno is at version 0.1.** The language is complete as it was set out:
+everything on the roadmap below is done, and every decision that was
+once marked provisional has been read again and settled
+([`docs/version-0.1.md`](docs/version-0.1.md), which also lists what
+0.1 leaves out).
+
 Zeno checks and runs programs, and compiles nearly all of the language to C:
 numbers, strings, functions, control flow, classes, lists, enums and `match`,
 values that may be `none`, errors (`try` / `except` / `raise`), and functions
@@ -231,7 +237,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
   [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
-  [`docs/gaps.md`](docs/gaps.md),
+  [`docs/gaps.md`](docs/gaps.md), [`docs/version-0.1.md`](docs/version-0.1.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -355,9 +361,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       `zeno check` runs. Colours and setup for each editor
       are in [`editors/`](editors/README.md).
       See [`docs/lsp.md`](docs/lsp.md))
-18. What real programs turn out to need (next). This is the finish
-    line for the language. When this list is done Zeno is version
-    0.1, and the book about it is written.
+18. What real programs turn out to need (done). This was the finish
+    line for the language: with this list done, Zeno is version 0.1.
     - `private` (done: `private` in front of a declaration at the top
       of a file, or of a field or a function of a class, keeps it to
       the file it is written in.
@@ -400,8 +405,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       in every build, and a call in the place of a `+=`, which ran
       twice, is refused.
       See [`docs/gaps.md`](docs/gaps.md))
-    - A last pass over every decision marked provisional: each one is
-      either kept, with the reason, or changed
+    - A last pass over every decision marked provisional (done: each
+      of them, about eighty, is now settled, a stated limit of 0.1,
+      or changed, with the reason. They are all in chapter 11 of
+      [`docs/decisions.md`](docs/decisions.md).
+      See [`docs/version-0.1.md`](docs/version-0.1.md))
+19. The Zeno Book (next): the whole language from the first program to
+    the last corner, written once the language stopped moving.
 
 ## Layout
 

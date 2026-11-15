@@ -49,7 +49,7 @@ python3 editors/talk.py target/debug/zeno examples/thermostat/main.zeno
 --> {"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"rootUri": "file:///.../examples/thermostat", ...}}
 <-- {"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {"textDocumentSync": {"openClose": true, "change": 1},
      "documentFormattingProvider": true, "definitionProvider": true, "hoverProvider": true},
-     "serverInfo": {"name": "zeno", "version": "0.0.1"}}}
+     "serverInfo": {"name": "zeno", "version": "0.1.0"}}}
 --> {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": "file:///.../main.zeno", "text": "# A program..."}}}
 <-- {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": "file:///.../main.zeno", "diagnostics": []}}
 --> {"jsonrpc": "2.0", "method": "textDocument/didChange", ...}

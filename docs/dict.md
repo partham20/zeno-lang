@@ -524,7 +524,7 @@ The loop with two names works there: the value is looked at, and the
 two lists the loop made are freed when it ends, also when a `break`
 or a `return` leaves it early.
 
-Values that are lists or objects do not (10.14, provisional):
+Values that are lists or objects do not (10.14, a limit of version 0.1):
 
 ```
 error: with no collector a value of a dict is an int, a float, a bool or

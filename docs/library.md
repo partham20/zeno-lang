@@ -389,7 +389,7 @@ every build and compares.
 ## What it does not do
 
 - `sort` takes no function, so a list of objects cannot be sorted by a
-  field yet (decision 6.6, provisional).
+  field yet (decision 6.6, a limit of version 0.1).
 - `slice` of a list of objects is refused where each has one owner.
 - Text methods still know only plain letters for `upper` and `lower`
   (decision 3.14).
