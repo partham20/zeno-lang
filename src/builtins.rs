@@ -8,11 +8,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::ast::BinaryOp;
 use crate::board;
 use crate::checker::Pointee;
 use crate::error::{counted, were};
 use crate::interpreter::{Env, Scope};
 use crate::ints::{self, Width};
+use crate::ops;
 use crate::token::Span;
 use crate::value::*;
 
@@ -36,6 +38,7 @@ pub fn all() -> Vec<(&'static str, Value)> {
         Builtin { name: "sum", call: sum },
         Builtin { name: "allocate", call: allocate },
         Builtin { name: "free", call: free },
+        Builtin { name: "char", call: char_of },
     ];
 
     let mut all: Vec<(&'static str, Value)> =
@@ -363,8 +366,10 @@ fn strip(text: &str) -> &str {
 }
 
 const STR_METHODS: &[&str] =
-    &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
-const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
+    &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with", "find", "slice", "code"];
+const LIST_METHODS: &[&str] = &[
+    "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
+];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -384,6 +389,77 @@ fn text<'a>(method: &str, arg: &'a Value, span: Span) -> Result<&'a str> {
         Value::Str(text) => Ok(text),
         other => wrong_type(method, "a str", other, span),
     }
+}
+
+/// A whole number given to a method.
+fn whole(method: &str, arg: &Value, span: Span) -> Result<i64> {
+    match arg {
+        Value::Int(n) => Ok(*n),
+        other => wrong_type(method, "a whole number", other, span),
+    }
+}
+
+/// Where `slice(from)` or `slice(from, to)` begins and ends, in something
+/// `length` long. The end is not part of the slice, as in `range`.
+fn ends(args: &[Value], length: usize, what: &str, span: Span) -> Result<(usize, usize)> {
+    let from = whole("slice", &args[0], span)?;
+    let to = match args.get(1) {
+        Some(to) => whole("slice", to, span)?,
+        None => length as i64,
+    };
+    if from < 0 || to < from || to > length as i64 {
+        return raise(
+            "IndexError",
+            format!("slice {from} to {to} is out of range for a {what} of length {length}"),
+            span,
+        );
+    }
+    Ok((from as usize, to as usize))
+}
+
+/// Put `items` in order, smallest first, with `<`.
+///
+/// This is heapsort, and it is the same heapsort as `zeno_list_sort` in
+/// runtime.c, step for step. Any way of sorting gives the same answer
+/// for numbers that can all be told apart. Writing the same steps twice
+/// means the two also agree on the ones that cannot (`0.0` and `-0.0`),
+/// so a compiled program prints what `zeno run` prints.
+///
+/// Heapsort needs no second list and never calls itself, which is what
+/// a firmware build wants (see docs/library.md).
+fn sort(items: &mut [Value], span: Span) -> Result<()> {
+    let before = |a: &Value, b: &Value| -> Result<bool> {
+        match ops::binary(BinaryOp::Lt, a.clone(), b.clone(), span)? {
+            Value::Bool(before) => Ok(before),
+            _ => Ok(false),
+        }
+    };
+    // Move the item at `root` down until both items below it are smaller.
+    let sift = |items: &mut [Value], mut root: usize, end: usize| -> Result<()> {
+        loop {
+            let mut child = 2 * root + 1;
+            if child >= end {
+                return Ok(());
+            }
+            if child + 1 < end && before(&items[child], &items[child + 1])? {
+                child += 1;
+            }
+            if !before(&items[root], &items[child])? {
+                return Ok(());
+            }
+            items.swap(root, child);
+            root = child;
+        }
+    };
+    let len = items.len();
+    for root in (0..len / 2).rev() {
+        sift(items, root, len)?;
+    }
+    for end in (1..len).rev() {
+        items.swap(0, end);
+        sift(items, 0, end)?;
+    }
+    Ok(())
 }
 
 pub fn call_method(
@@ -432,6 +508,36 @@ pub fn call_method(
                 arity(name, &args, 1, 1, span)?;
                 Ok(Value::Bool(this.ends_with(text(name, &args[0], span)?)))
             }
+            // Where `part` first begins, counted in characters, or
+            // `none` if it is not there.
+            "find" => {
+                arity(name, &args, 1, 1, span)?;
+                Ok(match this.find(text(name, &args[0], span)?) {
+                    Some(byte) => Value::Int(this[..byte].chars().count() as i64),
+                    None => Value::None,
+                })
+            }
+            "slice" => {
+                arity(name, &args, 1, 2, span)?;
+                let (from, to) = ends(&args, this.chars().count(), "str", span)?;
+                Ok(Value::str(this.chars().skip(from).take(to - from).collect::<String>()))
+            }
+            // The number Unicode gives to a character: 65 for "A".
+            "code" => {
+                arity(name, &args, 0, 0, span)?;
+                let mut chars = this.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Ok(Value::Int(c as i64)),
+                    _ => raise(
+                        "ValueError",
+                        format!(
+                            "`code` needs a str of exactly one character, and this one has {}",
+                            this.chars().count()
+                        ),
+                        span,
+                    ),
+                }
+            }
             _ => fatal(format!("a str has no method `{name}`"), span),
         },
         Value::List(items) => match name {
@@ -441,11 +547,87 @@ pub fn call_method(
                 Ok(Value::None)
             }
             "pop" => {
-                arity(name, &args, 0, 0, span)?;
+                arity(name, &args, 0, 1, span)?;
+                // `pop(2)` takes out the item at position 2.
+                if let Some(at) = args.first() {
+                    let len = items.borrow().len();
+                    let at = ops::position(at, len, "list", span)?;
+                    return Ok(items.borrow_mut().remove(at));
+                }
                 match items.borrow_mut().pop() {
                     Some(item) => Ok(item),
                     None => raise("IndexError", "cannot pop from an empty list", span),
                 }
+            }
+            // `insert(0, x)` puts `x` in front. The position may be one
+            // past the last item, which is what `append` does.
+            "insert" => {
+                arity(name, &args, 2, 2, span)?;
+                let (at, len) = (whole(name, &args[0], span)?, items.borrow().len());
+                if at < 0 || at > len as i64 {
+                    return raise(
+                        "IndexError",
+                        format!("cannot insert at {at} in a list of length {len}"),
+                        span,
+                    );
+                }
+                items.borrow_mut().insert(at as usize, args.remove(1));
+                Ok(Value::None)
+            }
+            "reverse" => {
+                arity(name, &args, 0, 0, span)?;
+                items.borrow_mut().reverse();
+                Ok(Value::None)
+            }
+            "clear" => {
+                arity(name, &args, 0, 0, span)?;
+                items.borrow_mut().clear();
+                Ok(Value::None)
+            }
+            "sort" => {
+                arity(name, &args, 0, 0, span)?;
+                // Sorted on the side, so that a `<` which fails leaves
+                // the list as it was.
+                let mut sorted = items.borrow().clone();
+                sort(&mut sorted, span)?;
+                *items.borrow_mut() = sorted;
+                Ok(Value::None)
+            }
+            // The position of the first item equal to the one given, or
+            // `none`.
+            "find" => {
+                arity(name, &args, 1, 1, span)?;
+                Ok(match items.borrow().iter().position(|item| equal(item, &args[0])) {
+                    Some(at) => Value::Int(at as i64),
+                    None => Value::None,
+                })
+            }
+            "slice" => {
+                arity(name, &args, 1, 2, span)?;
+                let (from, to) = ends(&args, items.borrow().len(), "list", span)?;
+                Ok(Value::list(items.borrow()[from..to].to_vec()))
+            }
+            // `words.join(", ")`: the items, with the separator between.
+            "join" => {
+                arity(name, &args, 1, 1, span)?;
+                let separator = text(name, &args[0], span)?;
+                let mut pieces = Vec::new();
+                for item in items.borrow().iter() {
+                    match item {
+                        Value::Str(piece) => pieces.push(piece.to_string()),
+                        other => {
+                            return fatal(
+                                format!(
+                                    "`join` puts text together, and this list holds {}. \
+                                     Make each item text first, with `str( )`",
+                                    other.type_name()
+                                ),
+                                span,
+                            )
+                        }
+                    }
+                }
+                Ok(Value::str(pieces.join(separator)))
             }
 
             // The three below take a function and call it on the items.
@@ -567,6 +749,19 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
         _ => return None,
     };
     Some(Rc::new(Module { name, members: HashMap::from_iter(members) }))
+}
+
+/// `char(65)`: the character Unicode gives that number to, as a str.
+/// The opposite of `"A".code()`.
+fn char_of(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("char", &args, 1, 1, span)?;
+    let code = whole("char", &args[0], span)?;
+    // 0 is left out: it could not be told from the end of the text in
+    // a compiled program, where text ends at the first zero byte.
+    match u32::try_from(code).ok().filter(|code| *code != 0).and_then(char::from_u32) {
+        Some(c) => Ok(Value::str(c.to_string())),
+        None => raise("ValueError", format!("{code} is not the code of a character"), span),
+    }
 }
 
 /// The one number a math function takes.

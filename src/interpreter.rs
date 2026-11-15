@@ -881,6 +881,31 @@ mod tests {
     }
 
     #[test]
+    fn text_and_list_methods_of_the_library() {
+        // Positions count characters, not bytes.
+        assert_eq!(
+            output("let t = \"héllo wörld\"\nprint(t.find(\"w\"), t.find(\"z\"), t.slice(6), t.slice(1, 3), t.slice(11) == \"\")"),
+            "6 none wörld él true\n"
+        );
+        assert_eq!(output("print(\"A\".code(), \"é\".code(), char(97), char(233), char(128512))"), "65 233 a é 😀\n");
+        assert_eq!(
+            output("let xs = [3, 1, 2]\nxs.insert(1, 9)\nprint(xs)\nprint(xs.pop(0), xs)\nxs.sort()\nprint(xs)\nxs.reverse()\nprint(xs, xs.find(2), xs.find(7), xs.slice(1), xs.slice(0, 1))\nxs.clear()\nprint(xs)"),
+            "[3, 9, 1, 2]\n3 [9, 1, 2]\n[1, 2, 9]\n[9, 2, 1] 1 none [2, 1] [9]\n[]\n"
+        );
+        assert_eq!(output("print([\"b\", \"a\"].join(\", \"), [].join(\"-\") == \"\", [\"x\"].join(\"-\"))"), "b, a true x\n");
+        // Ints and floats sort together, as `<` compares them.
+        assert_eq!(output("function order(xs) {\n xs.sort()\n return xs\n}\nprint(order([2, 1.5, -3]), order([\"b\", \"B\", \"a\"]))"), "[-3, 1.5, 2] [\"B\", \"a\", \"b\"]\n");
+        assert_eq!(error("print(\"abc\".slice(2, 9))"), "uncaught IndexError: slice 2 to 9 is out of range for a str of length 3");
+        assert_eq!(error("print(\"abc\".slice(2, 1))"), "uncaught IndexError: slice 2 to 1 is out of range for a str of length 3");
+        assert_eq!(error("print([1].slice(-1))"), "uncaught IndexError: slice -1 to 1 is out of range for a list of length 1");
+        assert_eq!(error("let xs = [1]\nxs.insert(2, 0)"), "uncaught IndexError: cannot insert at 2 in a list of length 1");
+        assert_eq!(error("print([1].pop(1))"), "uncaught IndexError: index 1 is out of range for a list of length 1");
+        assert_eq!(error("print(\"ab\".code())"), "uncaught ValueError: `code` needs a str of exactly one character, and this one has 2");
+        assert_eq!(error("print(char(0))"), "uncaught ValueError: 0 is not the code of a character");
+        assert_eq!(error("print(char(55296))"), "uncaught ValueError: 55296 is not the code of a character");
+    }
+
+    #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
         assert_eq!(output("print(f\"{3.14159:.2f}|{42:5}|{'ab':5}|{'ab':>5}|{'a:}':^6}|\")"), "3.14|   42|ab   |   ab| a:}  |\n");

@@ -1551,6 +1551,155 @@ static bool zeno_list_contains(zeno_list *list, zeno_slot item, bool (*same)(zen
     return false;
 }
 
+/* `list.find(item)`: the position of the first item equal to `item`, or
+ * -1 when there is none. The compiled program turns the answer into an
+ * `int or none` (zeno_found, further down). */
+static int64_t zeno_list_find(zeno_list *list, zeno_slot item, bool (*same)(zeno_slot, zeno_slot)) {
+    for (int64_t i = 0; i < list->len; i++) {
+        if (same(list->items[i], item)) return i;
+    }
+    return -1;
+}
+
+/* `list.insert(at, item)`: `item` goes to position `at`, and everything
+ * from there on moves up one place. `at` may be the length of the list,
+ * which puts the item at the end. */
+static void zeno_list_insert(zeno_list *list, int64_t at, zeno_slot item, int line, int col) {
+    if (at < 0 || at > list->len) {
+        zeno_fail("IndexError",
+                  zeno_join(4, "cannot insert at ", zeno_str_int(at), " in a list of length ",
+                            zeno_str_int(list->len)),
+                  line, col);
+    }
+    /* Putting it at the end first makes the room, if room is needed. */
+    zeno_list_append(list, item);
+    for (int64_t i = list->len - 1; i > at; i--) list->items[i] = list->items[i - 1];
+    list->items[at] = item;
+}
+
+/* `list.pop(at)`: the item at position `at` leaves the list, and
+ * everything after it moves down one place. */
+static zeno_slot zeno_list_pop_at(zeno_list *list, int64_t at, int line, int col) {
+    zeno_slot item = *zeno_list_at(list, at, line, col);
+    for (int64_t i = at; i < list->len - 1; i++) list->items[i] = list->items[i + 1];
+    list->len--;
+    memset(&list->items[list->len], 0, sizeof(zeno_slot));
+    return item;
+}
+
+static void zeno_list_reverse(zeno_list *list) {
+    for (int64_t i = 0, j = list->len - 1; i < j; i++, j--) {
+        zeno_slot item = list->items[i];
+        list->items[i] = list->items[j];
+        list->items[j] = item;
+    }
+}
+
+/* `list.clear()`: the list holds nothing, and keeps its room for what
+ * comes next. Where the items have one owner, the compiled program has
+ * freed each of them before it calls this. */
+static void zeno_list_clear(zeno_list *list) {
+    if (list->len > 0) memset(list->items, 0, (size_t)list->len * sizeof(zeno_slot));
+    list->len = 0;
+}
+
+/* `list.sort()`: smallest first.
+ *
+ * `kind` says what the items are, so that two of them can be compared:
+ * 0 for whole numbers, 1 for floats, 2 for text.
+ *
+ * The way of sorting is heapsort. It moves the items about inside the
+ * list, so it needs no second list, and it is a loop and never a
+ * function that calls itself, so it needs no deep stack. Both matter on
+ * a small board. It takes about n log n steps whatever the order was to
+ * begin with.
+ *
+ * A heap is the list seen as a tree: the items at 2i + 1 and 2i + 2 are
+ * the two "below" the item at i, and in a heap no item is smaller than
+ * one below it. So the biggest is at the front. Sorting is: make the
+ * list a heap, then again and again swap the front (the biggest left)
+ * with the last item of the heap, and make what is left a heap again. */
+static bool zeno_before(zeno_slot a, zeno_slot b, int kind) {
+    switch (kind) {
+        case 0: return a.i < b.i;
+        case 1: return a.f < b.f;
+        default: return strcmp(a.s, b.s) < 0;
+    }
+}
+
+/* Move the item at `root` down until neither item below it is bigger.
+ * `end` is where the heap ends. */
+static void zeno_sift(zeno_slot *items, int64_t root, int64_t end, int kind) {
+    for (;;) {
+        int64_t child = 2 * root + 1;
+        if (child >= end) return;
+        if (child + 1 < end && zeno_before(items[child], items[child + 1], kind)) child++;
+        if (!zeno_before(items[root], items[child], kind)) return;
+        zeno_slot item = items[root];
+        items[root] = items[child];
+        items[child] = item;
+        root = child;
+    }
+}
+
+static void zeno_list_sort(zeno_list *list, int kind) {
+    for (int64_t root = list->len / 2 - 1; root >= 0; root--) zeno_sift(list->items, root, list->len, kind);
+    for (int64_t end = list->len - 1; end > 0; end--) {
+        zeno_slot item = list->items[0];
+        list->items[0] = list->items[end];
+        list->items[end] = item;
+        zeno_sift(list->items, 0, end, kind);
+    }
+}
+
+/* `slice(from)` and `slice(from, to)` take the items (or characters)
+ * from position `from` up to `to`, which is not taken itself, as in
+ * `range`. With `to_end` there was no `to`, and the slice goes on to the
+ * end. Anything that is not inside what is being sliced is an
+ * IndexError. */
+static void zeno_slice_ends(int64_t from, int64_t *to, bool to_end, int64_t length, const char *what, int line,
+                            int col) {
+    if (to_end) *to = length;
+    if (from < 0 || *to < from || *to > length) {
+        zeno_fail("IndexError",
+                  zeno_join(8, "slice ", zeno_str_int(from), " to ", zeno_str_int(*to), " is out of range for a ",
+                            what, " of length ", zeno_str_int(length)),
+                  line, col);
+    }
+}
+
+/* A new list with a copy of each slot. The items themselves are shared
+ * with the first list, as they are after `+`. */
+static zeno_list *zeno_list_slice(zeno_list *list, int64_t from, int64_t to, bool to_end, int line, int col) {
+    zeno_slice_ends(from, &to, to_end, list->len, "list", line, col);
+    zeno_list *slice = zeno_list_new(to - from);
+    if (to > from) memcpy(slice->items, list->items + from, (size_t)(to - from) * sizeof(zeno_slot));
+    slice->len = to - from;
+    return slice;
+}
+
+/* `words.join(", ")`: the items of a list of text, with `separator`
+ * between each two. The length is added up first, so the text is made
+ * in one piece. */
+static const char *zeno_list_join(zeno_list *list, const char *separator) {
+    size_t gap = strlen(separator);
+    size_t length = 0;
+    for (int64_t i = 0; i < list->len; i++) length += strlen(list->items[i].s) + (i > 0 ? gap : 0);
+    char *joined = zeno_alloc_text(length + 1);
+    char *end = joined;
+    for (int64_t i = 0; i < list->len; i++) {
+        if (i > 0) {
+            memcpy(end, separator, gap);
+            end += gap;
+        }
+        size_t size = strlen(list->items[i].s);
+        memcpy(end, list->items[i].s, size);
+        end += size;
+    }
+    *end = '\0';
+    return joined;
+}
+
 /* A str is a row of characters, and in UTF-8 a character can take from one
  * to four bytes. Every byte after the first looks like 10xxxxxx. */
 static size_t zeno_char_size(const char *p) {
@@ -1788,6 +1937,86 @@ static const char *zeno_replace(const char *text, const char *old, const char *n
     }
 }
 
+/* `text.find(part)`: where `part` first begins in `text`, counted in
+ * characters, or -1 when it is not there. */
+static int64_t zeno_find(const char *text, const char *part) {
+    const char *found = strstr(text, part);
+    if (found == NULL) return -1;
+    int64_t position = 0;
+    for (const char *p = text; p < found; p++) {
+        if (((unsigned char)*p & 0xC0) != 0x80) position++;
+    }
+    return position;
+}
+
+/* `text.slice(from, to)`: the characters from position `from` up to
+ * `to`. Positions count characters, so each end is found by walking. */
+static const char *zeno_slice(const char *text, int64_t from, int64_t to, bool to_end, int line, int col) {
+    zeno_slice_ends(from, &to, to_end, zeno_len(text), "str", line, col);
+    const char *start = text;
+    for (int64_t i = 0; i < from; i++) start += zeno_char_size(start);
+    const char *end = start;
+    for (int64_t i = from; i < to; i++) end += zeno_char_size(end);
+    return zeno_copy(start, (size_t)(end - start));
+}
+
+/* `"A".code()`: the number Unicode gives to the one character in `text`.
+ *
+ * UTF-8 spreads the bits of that number over one to four bytes. The
+ * first byte says how many there are by how many 1s it begins with, and
+ * each byte after it begins with 10 and carries six bits:
+ *
+ *     0xxxxxxx                              up to 127
+ *     110xxxxx 10xxxxxx                     up to 2047
+ *     1110xxxx 10xxxxxx 10xxxxxx            up to 65535
+ *     11110xxx 10xxxxxx 10xxxxxx 10xxxxxx   the rest
+ */
+static int64_t zeno_char_code(const char *text, int line, int col) {
+    if (zeno_len(text) != 1) {
+        zeno_fail("ValueError",
+                  zeno_join(2, "`code` needs a str of exactly one character, and this one has ",
+                            zeno_str_int(zeno_len(text))),
+                  line, col);
+    }
+    const unsigned char *p = (const unsigned char *)text;
+    if (p[0] < 0x80) return p[0];
+    if (p[0] < 0xE0) return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+    if (p[0] < 0xF0) return ((int64_t)(p[0] & 0x0F) << 12) | ((int64_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    return ((int64_t)(p[0] & 0x07) << 18) | ((int64_t)(p[1] & 0x3F) << 12) | ((int64_t)(p[2] & 0x3F) << 6)
+           | (p[3] & 0x3F);
+}
+
+/* `char(65)`: the other way round. 0 is refused, because a zero byte is
+ * where text ends. So are the numbers from 0xD800 to 0xDFFF, which
+ * Unicode keeps free, and anything above its last character. */
+static const char *zeno_char(int64_t code, int line, int col) {
+    if (code < 1 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+        zeno_fail("ValueError", zeno_join(2, zeno_str_int(code), " is not the code of a character"), line, col);
+    }
+    char bytes[4];
+    size_t size;
+    if (code < 0x80) {
+        bytes[0] = (char)code;
+        size = 1;
+    } else if (code < 0x800) {
+        bytes[0] = (char)(0xC0 | (code >> 6));
+        bytes[1] = (char)(0x80 | (code & 0x3F));
+        size = 2;
+    } else if (code < 0x10000) {
+        bytes[0] = (char)(0xE0 | (code >> 12));
+        bytes[1] = (char)(0x80 | ((code >> 6) & 0x3F));
+        bytes[2] = (char)(0x80 | (code & 0x3F));
+        size = 3;
+    } else {
+        bytes[0] = (char)(0xF0 | (code >> 18));
+        bytes[1] = (char)(0x80 | ((code >> 12) & 0x3F));
+        bytes[2] = (char)(0x80 | ((code >> 6) & 0x3F));
+        bytes[3] = (char)(0x80 | (code & 0x3F));
+        size = 4;
+    }
+    return zeno_copy(bytes, size);
+}
+
 /* --------------------------------------------------- Values that may be none
  *
  * `str or none` and the other kinds that are already pointers need no extra
@@ -1809,6 +2038,11 @@ typedef struct {
     bool present;
     bool value;
 } zeno_opt_bool;
+
+/* What `find` found: a position, or `none` where the runtime answered -1. */
+static zeno_opt_int zeno_found(int64_t at) {
+    return (zeno_opt_int){at >= 0, at >= 0 ? at : 0};
+}
 
 /* A list gives every item one slot, which is too small for a number and its
  * flag together. So in a list, a number that may be `none` is kept as a

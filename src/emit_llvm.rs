@@ -235,6 +235,18 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_str", "declare ptr @zeno_list_str(ptr, ptr)"),
     ("zeno_list_eq", "declare zeroext i1 @zeno_list_eq(ptr, ptr, ptr)"),
     ("zeno_list_contains", "declare zeroext i1 @zeno_list_contains(ptr, i64, ptr)"),
+    ("zeno_list_find", "declare i64 @zeno_list_find(ptr, i64, ptr)"),
+    ("zeno_list_insert", "declare void @zeno_list_insert(ptr, i64, i64, i32 signext, i32 signext)"),
+    ("zeno_list_pop_at", "declare i64 @zeno_list_pop_at(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_list_reverse", "declare void @zeno_list_reverse(ptr)"),
+    ("zeno_list_clear", "declare void @zeno_list_clear(ptr)"),
+    ("zeno_list_sort", "declare void @zeno_list_sort(ptr, i32 signext)"),
+    ("zeno_list_slice", "declare ptr @zeno_list_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
+    ("zeno_list_join", "declare ptr @zeno_list_join(ptr, ptr)"),
+    ("zeno_find", "declare i64 @zeno_find(ptr, ptr)"),
+    ("zeno_slice", "declare ptr @zeno_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
+    ("zeno_char_code", "declare i64 @zeno_char_code(ptr, i32 signext, i32 signext)"),
+    ("zeno_char", "declare ptr @zeno_char(i64, i32 signext, i32 signext)"),
     ("zeno_list_sum_int", "declare i64 @zeno_list_sum_int(ptr, i32 signext, i32 signext)"),
     ("zeno_list_sum_float", "declare double @zeno_list_sum_float(ptr)"),
     ("zeno_list_best_int", "declare i64 @zeno_list_best_int(ptr, i1 zeroext, ptr, i32 signext, i32 signext)"),
@@ -4581,6 +4593,10 @@ impl Emitter<'_> {
             ("len", [val]) if matches!(val.kind, Kind::List(_)) => {
                 Val::new(self.set(format!("load i64, ptr {}", val.code)), Kind::Int)
             }
+            // `char(65)`: the runtime writes the bytes of that character.
+            ("char", [val]) if val.kind == Kind::Int => {
+                Val::new(self.call("ptr", "zeno_char", format!("i64 {}, {}", val.code, at(span))), Kind::Str)
+            }
             ("abs", [val]) => match val.kind {
                 Kind::Int => Val::new(self.call("i64", "zeno_abs", format!("i64 {}, {}", val.code, at(span))), Kind::Int),
                 Kind::Float | Kind::Quantity(_) => {
@@ -4733,6 +4749,20 @@ impl Emitter<'_> {
             }
             Kind::Str => {
                 let wrong = || cannot(format!("the str method `{name}` called this way"), span);
+                // Two that do not take text: `slice` takes positions,
+                // and `code` takes nothing.
+                match (name, args) {
+                    ("slice", [_]) | ("slice", [_, _]) => {
+                        let ends = self.slice_ends(args, span)?;
+                        let slice = format!("ptr {}, {ends}, {}", receiver.code, at(span));
+                        return Ok(Val::new(self.call("ptr", "zeno_slice", slice), Kind::Str));
+                    }
+                    ("code", []) => {
+                        let text = format!("ptr {}, {}", receiver.code, at(span));
+                        return Ok(Val::new(self.call("i64", "zeno_char_code", text), Kind::Int));
+                    }
+                    _ => {}
+                }
                 let mut list = format!("ptr {}", receiver.code);
                 for arg in args {
                     let val = self.expr(&arg.value)?;
@@ -4749,6 +4779,11 @@ impl Emitter<'_> {
                     ("replace", 2) => ("zeno_replace", "ptr", Kind::Str),
                     ("starts_with", 1) => ("zeno_starts_with", "i1", Kind::Bool),
                     ("ends_with", 1) => ("zeno_ends_with", "i1", Kind::Bool),
+                    // The runtime answers -1 for "not there".
+                    ("find", 1) => {
+                        let at = self.call("i64", "zeno_find", list);
+                        return Ok(self.found(&at));
+                    }
                     ("split", 0) => ("zeno_split_blanks", "ptr", words),
                     ("split", 1) => {
                         list += &format!(", {}", at(span));
@@ -4772,8 +4807,19 @@ impl Emitter<'_> {
                     self.run("zeno_list_append", format!("ptr {}, i64 {slot}", receiver.code));
                     Ok(Val::nothing())
                 }
-                ("pop", []) => {
-                    let slot = self.call("i64", "zeno_list_pop", format!("ptr {}, {}", receiver.code, at(span)));
+                ("pop", []) | ("pop", [Arg { name: None, .. }]) => {
+                    let slot = match args.first() {
+                        // `pop(2)`: the item at that position.
+                        Some(position) => {
+                            let position = self.expr(&position.value)?;
+                            if position.kind != Kind::Int {
+                                return Err(cannot("`pop` with a position that is not an int", span));
+                            }
+                            let pop = format!("ptr {}, i64 {}, {}", receiver.code, position.code, at(span));
+                            self.call("i64", "zeno_list_pop_at", pop)
+                        }
+                        None => self.call("i64", "zeno_list_pop", format!("ptr {}, {}", receiver.code, at(span))),
+                    };
                     let val = self.from_slot(&item, &slot, span)?;
                     if self.collector || !is_text(&item) {
                         return Ok(val);
@@ -4782,10 +4828,119 @@ impl Emitter<'_> {
                     // and the list's copy is freed.
                     Ok(Val::new(self.call("ptr", "zeno_text_take", format!("ptr {}", val.code)), val.kind))
                 }
+                // The list keeps what it is given, as `append` does.
+                ("insert", [Arg { name: None, value: position }, arg]) if arg.name.is_none() => {
+                    let position = self.expr(position)?;
+                    if position.kind != Kind::Int {
+                        return Err(cannot("`insert` with a position that is not an int", span));
+                    }
+                    let value = self.expr(&arg.value)?;
+                    self.stays(&value, span)?;
+                    self.fits_a_slot(&item, span)?;
+                    let value = self.keep(value, is_written(&arg.value));
+                    let value = self.fit(value, &item, span)?;
+                    let slot = self.to_slot(&value, span)?;
+                    let insert = format!("ptr {}, i64 {}, i64 {slot}, {}", receiver.code, position.code, at(span));
+                    self.run("zeno_list_insert", insert);
+                    Ok(Val::nothing())
+                }
+                ("reverse", []) => {
+                    self.run("zeno_list_reverse", format!("ptr {}", receiver.code));
+                    Ok(Val::nothing())
+                }
+                // The runtime compares two slots, and has to be told how
+                // to read one: 0 a whole number, 1 a float, 2 text.
+                ("sort", []) => {
+                    let kind = match &*item {
+                        Kind::Int => 0,
+                        Kind::Float => 1,
+                        Kind::Str => 2,
+                        _ => return Err(cannot("`sort` on a list of anything but numbers or text", span)),
+                    };
+                    self.run("zeno_list_sort", format!("ptr {}, i32 {kind}", receiver.code));
+                    Ok(Val::nothing())
+                }
+                // Items that have one owner (and, with no collector, text,
+                // which the list keeps copies of) end with the list.
+                // `clear` is the end of each of them: a loop over the
+                // items that frees each, and then the call.
+                ("clear", []) => {
+                    if self.drops.owns(&item) || (!self.collector && is_text(&item)) {
+                        let (count, slot) = self.walk_open("item", &receiver.code);
+                        let each = self.from_slot(&item, &slot, span)?;
+                        self.free(&item, &each.code, span)?;
+                        self.count_close(&count);
+                    }
+                    self.run("zeno_list_clear", format!("ptr {}", receiver.code));
+                    Ok(Val::nothing())
+                }
+                ("find", [arg]) if arg.name.is_none() => {
+                    let same = self.eq_adapter(&item, span)?;
+                    let value = self.expr(&arg.value)?;
+                    let value = self.coerce(value, &item, span)?;
+                    let slot = self.to_slot(&value, span)?;
+                    let at = self.call("i64", "zeno_list_find", format!("ptr {}, i64 {slot}, ptr {same}", receiver.code));
+                    Ok(self.found(&at))
+                }
+                ("slice", [_]) | ("slice", [_, _]) => {
+                    let ends = self.slice_ends(args, span)?;
+                    let mut slice = self.call("ptr", "zeno_list_slice", format!("ptr {}, {ends}, {}", receiver.code, at(span)));
+                    if !self.collector && is_text(&item) {
+                        // With no collector a list of text has its own
+                        // copy of each item, and so has the slice.
+                        slice = self.call("ptr", "zeno_list_keep_text", format!("ptr {slice}"));
+                    }
+                    // The new list is nobody's yet.
+                    Ok(Val::new(slice, Kind::List(item.clone())).made())
+                }
+                ("join", [arg]) if arg.name.is_none() && *item == Kind::Str => {
+                    let separator = self.expr(&arg.value)?;
+                    if separator.kind != Kind::Str {
+                        return Err(cannot("`join` with a separator that is not a str", span));
+                    }
+                    let join = format!("ptr {}, ptr {}", receiver.code, separator.code);
+                    Ok(Val::new(self.call("ptr", "zeno_list_join", join), Kind::Str))
+                }
                 _ => Err(cannot(format!("the list method `{name}` called this way"), span)),
             },
             kind => Err(cannot(format!("the method `{name}` of {}", described(&kind)), span)),
         }
+    }
+
+    /// The arguments of `slice(from)` or `slice(from, to)`, as the runtime
+    /// takes them: where it begins, where it ends, and whether no end
+    /// was written (and it goes on to the last item).
+    fn slice_ends(&mut self, args: &[Arg], span: Span) -> Result<String, Error> {
+        let mut positions = Vec::new();
+        for arg in args {
+            let position = self.expr(&arg.value)?;
+            if position.kind != Kind::Int || arg.name.is_some() {
+                return Err(cannot("`slice` with a position that is not an int", span));
+            }
+            positions.push(position.code);
+        }
+        Ok(match positions.as_slice() {
+            [from] => format!("i64 {from}, i64 0, i1 true"),
+            [from, to] => format!("i64 {from}, i64 {to}, i1 false"),
+            _ => return Err(cannot("`slice` called this way", span)),
+        })
+    }
+
+    /// What `find` found, as an `int or none`. The runtime answers with
+    /// a position, or -1 when the thing is not there:
+    ///
+    /// ```text
+    ///   %t2 = icmp sge i64 %t1, 0                           ; found?
+    ///   %t3 = select i1 %t2, i64 %t1, i64 0
+    ///   %t4 = insertvalue { i1, i64 } undef, i1 %t2, 0      ; the flag
+    ///   %t5 = insertvalue { i1, i64 } %t4, i64 %t3, 1       ; the position
+    /// ```
+    fn found(&mut self, at: &str) -> Val {
+        let present = self.set(format!("icmp sge i64 {at}, 0"));
+        let position = self.set(format!("select i1 {present}, i64 {at}, i64 0"));
+        let flagged = self.set(format!("insertvalue {{ i1, i64 }} undef, i1 {present}, 0"));
+        let pair = self.set(format!("insertvalue {{ i1, i64 }} {flagged}, i64 {position}, 1"));
+        Val::new(pair, Kind::Optional(Box::new(Kind::Int)))
     }
 
     // ---------------------------------------------------- Objects and enums

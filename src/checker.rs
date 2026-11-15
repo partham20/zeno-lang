@@ -1319,7 +1319,7 @@ impl Scope {
 /// The outermost scope: the built-in functions and error types.
 fn globals() -> Env {
     let env = Rc::new(Scope { variables: RefCell::new(HashMap::new()), parent: None, function: 0, top: false });
-    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum", "allocate", "free"] {
+    for name in ["print", "len", "range", "int", "float", "str", "abs", "min", "max", "sum", "allocate", "free", "char"] {
         env.declare(name, Ty::Builtin(name), false);
     }
     // The sized whole numbers: `u8(n)` converts, and `u8` is also a type.
@@ -3703,6 +3703,22 @@ impl Checker {
                 }
                 _ => None,
             },
+            // `find` only looks at what it is given. An item made in the
+            // argument itself belongs to the statement, which frees it.
+            Ty::BuiltinMethod(receiver, name) if &**name == "find" => match &**receiver {
+                Ty::List(item) if item.is_owned() => {
+                    Some(vec![Slot { name: "item".to_string(), ty: lent(item), has_default: false, id: None }])
+                }
+                _ => None,
+            },
+            // So does `insert`, after the position.
+            Ty::BuiltinMethod(receiver, name) if &**name == "insert" => match &**receiver {
+                Ty::List(item) if item.is_owned() => Some(vec![
+                    Slot { name: "position".to_string(), ty: Ty::Int, has_default: false, id: None },
+                    Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None },
+                ]),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -3848,7 +3864,12 @@ impl Checker {
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
         self.copy_notes.push(function.copy_note.clone());
+        // How many mistakes there were before the body was read.
+        let mistakes = self.errors.len();
         let exits = self.statements(&decl.body, &scope);
+        // A body with a mistake in it may have a `raise` that was not
+        // understood. It gets no second complaint about what it raises.
+        let sound = self.errors.len() == mistakes;
         self.copy_notes.pop();
         self.captured = self.early.pop().map(|early| early.captures).unwrap_or_default();
         self.worked_out.pop();
@@ -3916,12 +3937,16 @@ impl Checker {
         // spot. A function that says it raises one, and has nothing in it
         // that can, would have an `except` waiting for ever in its caller
         // while `zeno run` catches the same fault (decision 5.19m).
-        if self.firmware {
+        if self.firmware && sound {
             for declared in &decl.raises {
                 let fault = match declared.as_str() {
                     "ZeroDivisionError" => "a division by zero",
                     "IndexError" => "a bad index",
                     "OverflowError" => "a number that does not fit",
+                    // `int("x")` travels as a value, and is in `raised`.
+                    // What is left is a built-in that was handed a value
+                    // it has no answer for.
+                    "ValueError" => "a value that a built-in function has no answer for, such as `char(0)`,",
                     _ => continue,
                 };
                 if !raised.iter().any(|(kind, _)| kind == declared || kind == "Error") {
@@ -4214,9 +4239,10 @@ impl Checker {
                     ExprKind::Field { object: receiver, name } => {
                         let looked = self.owned.looking.len();
                         let object = self.look(receiver, env);
-                        if name == "pop" && owns_items(&object) {
+                        if matches!(name.as_str(), "pop" | "clear") && owns_items(&object) {
                             // The item leaves the list, and whoever
-                            // receives it is its owner from here.
+                            // receives it is its owner from here. `clear`
+                            // takes every item out, and frees it.
                             if let Some(owner) = self.takes_out(receiver, looked, "take an item out of this list", env, span) {
                                 self.owned.emptied.push(owner);
                             }
@@ -4318,7 +4344,7 @@ impl Checker {
                 }
                 let ty = self.call(&callee, arguments, span);
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
-                    if matches!(&**name, "split" | "map" | "filter") {
+                    if matches!(&**name, "split" | "map" | "filter" | "slice") {
                         // Each of these makes a new list.
                         self.types.made.insert(expr as *const Expr as usize);
                     }
@@ -4690,6 +4716,13 @@ impl Checker {
                 }
                 if name == "int" { Ty::Int } else { Ty::Float }
             }
+            // `char(65)`: the character with that code, as a str.
+            "char" => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Int, "the code of a character", arguments[0].span);
+                }
+                Ty::Str
+            }
             "abs" => {
                 if !self.arity(name, arguments, 1, 1, span) {
                     return Ty::Invalid;
@@ -4768,6 +4801,12 @@ impl Checker {
                 checker.expect(&argument.ty, &Ty::Str, &format!("an argument of `{name}`"), argument.span);
             }
         };
+        // `slice(from, to)` and `pop(at)` take positions.
+        let positions = |checker: &mut Checker| {
+            for argument in arguments {
+                checker.expect(&argument.ty, &Ty::Int, &format!("a position given to `{name}`"), argument.span);
+            }
+        };
         // Call a function argument with the given argument types.
         let apply = |checker: &mut Checker, function: &Argument, types: Vec<Ty>| {
             let arguments = types
@@ -4814,6 +4853,22 @@ impl Checker {
                 strs(self);
                 Ty::Str
             }
+            // Where the piece begins, or `none` when it is not there:
+            // the answer has to be tested before it is used as a number.
+            (Ty::Str, "find") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                Ty::Optional(Box::new(Ty::Int))
+            }
+            (Ty::Str, "slice") => {
+                self.arity(name, arguments, 1, 2, span);
+                positions(self);
+                Ty::Str
+            }
+            (Ty::Str, "code") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Int
+            }
             (Ty::Str, _) => {
                 self.arity(name, arguments, 1, 1, span);
                 strs(self);
@@ -4829,8 +4884,72 @@ impl Checker {
                 Ty::None
             }
             (Ty::List(item), "pop") => {
-                self.arity(name, arguments, 0, 0, span);
+                self.arity(name, arguments, 0, 1, span);
+                positions(self);
                 (**item).clone()
+            }
+            (Ty::List(item), "insert") => {
+                if self.arity(name, arguments, 2, 2, span) {
+                    let at = &arguments[0];
+                    self.expect(&at.ty, &Ty::Int, "the position given to `insert`", at.span);
+                    let added = &arguments[1];
+                    let given = self.adapted(added.written.clone(), added.ty.clone(), item, added.span);
+                    self.expect(&given, item, "an item put in this list", added.span);
+                }
+                Ty::None
+            }
+            (Ty::List(_), "reverse" | "clear") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::None
+            }
+            // `sort` puts the smallest first, with `<`. So the items must
+            // be something `<` has an answer for.
+            (Ty::List(item), "sort") => {
+                self.arity(name, arguments, 0, 0, span);
+                if !matches!(**item, Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
+                    return self.error(
+                        format!(
+                            "`sort` puts numbers or text in order, smallest first, and this is {receiver}. \
+                             There is no one order for those items, so write the loop that puts them in yours"
+                        ),
+                        span,
+                    );
+                }
+                Ty::None
+            }
+            (Ty::List(item), "find") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    let wanted = &arguments[0];
+                    let given = self.adapted(wanted.written.clone(), wanted.ty.clone(), item, wanted.span);
+                    // It is compared and not kept, so a look will do.
+                    let (given, item) = (given.looked_at(), (**item).clone().looked_at());
+                    self.expect(&given, &item, "the item `find` looks for", wanted.span);
+                }
+                Ty::Optional(Box::new(Ty::Int))
+            }
+            (Ty::List(item), "slice") if item.is_owned() => self.error(
+                "`slice` would put the items it takes in a second list, and each has one owner. \
+                 Use a `for` loop that makes what the new list needs",
+                span,
+            ),
+            (Ty::List(_), "slice") => {
+                self.arity(name, arguments, 1, 2, span);
+                positions(self);
+                receiver.clone()
+            }
+            (Ty::List(item), "join") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                if !matches!(**item, Ty::Str) && !item.is_loose() {
+                    return self.error(
+                        format!(
+                            "`join` puts text together, and this is {receiver}. \
+                             Make each item text first, with `str( )`"
+                        ),
+                        span,
+                    );
+                }
+                Ty::Str
             }
             (Ty::List(item), "map") => {
                 if !self.arity(name, arguments, 1, 1, span) {
@@ -5495,8 +5614,11 @@ impl Checker {
     }
 }
 
-const STR_METHODS: &[&str] = &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with"];
-const LIST_METHODS: &[&str] = &["append", "pop", "map", "filter", "reduce"];
+const STR_METHODS: &[&str] =
+    &["upper", "lower", "strip", "split", "replace", "starts_with", "ends_with", "find", "slice", "code"];
+const LIST_METHODS: &[&str] = &[
+    "append", "pop", "map", "filter", "reduce", "insert", "reverse", "sort", "clear", "find", "slice", "join",
+];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -7534,6 +7656,78 @@ function total(xs: owned list[int]) -> int { return len(xs) }
     }
 
     #[test]
+    fn text_and_list_methods_are_checked() {
+        strict_ok(
+            "let text = \"a b\"\nlet at = text.find(\" \")\nif at is not none {\n print(text.slice(0, at), text.slice(at))\n}\n\
+             let n: int = text.slice(0, 1).code()\nlet c: str = char(n)\n\
+             var xs = [3, 1, 2]\nxs.insert(0, 4)\nxs.sort()\nxs.reverse()\nlet x: int = xs.pop(1)\n\
+             let part: list[int] = xs.slice(1)\nlet where_: int or none = xs.find(2)\nxs.clear()\n\
+             let joined: str = [\"a\", \"b\"].join(\", \")\nlet bytes: list[u8] = [u8(3), u8(1)]\nbytes.sort()",
+        );
+        // `find` may find nothing, so its answer is not a number yet.
+        assert_eq!(
+            error("let n: int = \"abc\".find(\"b\")"),
+            "`n` should be int, but this is int or none. Check it with `is not none` first"
+        );
+        assert_eq!(error("let n: int = [1, 2].find(2)").len(), error("let n: int = \"abc\".find(\"b\")").len());
+        assert_eq!(error("print(\"abc\".find(1))"), "an argument of `find` should be str, but this is int");
+        assert_eq!(error("print(\"abc\".slice(\"a\"))"), "a position given to `slice` should be int, but this is str");
+        assert_eq!(error("print([1].pop(\"a\"))"), "a position given to `pop` should be int, but this is str");
+        assert_eq!(error("print([1, 2].find(\"a\"))"), "the item `find` looks for should be int, but this is str");
+        assert_eq!(
+            error("let xs = [1]\nxs.insert(\"a\", 1)"),
+            "the position given to `insert` should be int, but this is str"
+        );
+        assert_eq!(error("let xs = [1]\nxs.insert(0, \"a\")"), "an item put in this list should be int, but this is str");
+        assert_eq!(error("print(char(\"a\"))"), "the code of a character should be int, but this is str");
+        assert_eq!(error("print(\"a\".code(1))"), "`code` takes 0 arguments, but 1 was given");
+        // Only numbers and text have an order of their own.
+        assert_eq!(
+            error("let flags = [true, false]\nflags.sort()"),
+            "`sort` puts numbers or text in order, smallest first, and this is list[bool]. There is no one order \
+             for those items, so write the loop that puts them in yours"
+        );
+        assert_eq!(
+            error("print([1, 2].join(\", \"))"),
+            "`join` puts text together, and this is list[int]. Make each item text first, with `str( )`"
+        );
+    }
+
+    #[test]
+    fn with_one_owner_a_list_method_that_takes_out_is_for_the_owner() {
+        let task = "class Task {\n name: str\n}\n";
+        one_owner_ok(&format!(
+            "{task}let tasks = [Task(\"a\"), Task(\"b\")]\ntasks.insert(0, Task(\"c\"))\nlet first = tasks.pop(0)\n\
+             print(first.name)\nprint(tasks.find(Task(\"b\")))\ntasks.reverse()\ntasks.clear()"
+        ));
+        // `clear` frees every item, and `pop(0)` takes one out: neither
+        // is for a parameter that looks, or for a loop that is walking.
+        assert_eq!(
+            one_owner_error(&format!("{task}function empty(tasks: list[Task]) {{\n tasks.clear()\n}}")),
+            "only the owner can take an item out of this list: somebody else may have been lent it. \
+             Here `tasks` only looks at it"
+        );
+        assert_eq!(
+            one_owner_error(&format!("{task}function first(tasks: list[Task]) -> Task {{\n return tasks.pop(0)\n}}")),
+            "only the owner can take an item out of this list: somebody else may have been lent it. \
+             Here `tasks` only looks at it"
+        );
+        assert_eq!(
+            one_owner_error(&format!("{task}let tasks = [Task(\"a\")]\nfor task in tasks {{\n tasks.clear()\n}}")),
+            "the `for` on line 5 is walking a list that `tasks` owns, and is still looking at its items. \
+             Nothing can take an item out of this list until the loop is over"
+        );
+        // A slice would hold the same items as the list it came from.
+        assert_eq!(
+            one_owner_error(&format!("{task}let tasks = [Task(\"a\")]\nlet some = tasks.slice(0, 1)\nprint(len(some))")),
+            "`slice` would put the items it takes in a second list, and each has one owner. \
+             Use a `for` loop that makes what the new list needs"
+        );
+        // Numbers and text are copied, so any list of them can be sliced.
+        one_owner_ok("function tail(xs: list[int]) -> list[int] {\n return xs.slice(1)\n}\nprint(tail([1, 2, 3]))");
+    }
+
+    #[test]
     fn a_firmware_build_cannot_raise_a_fault_to_a_caller() {
         let firmware = |source: &str| -> Vec<String> {
             let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
@@ -7564,6 +7758,13 @@ function total(xs: owned list[int]) -> int { return len(xs) }
                       if b == 0 { raise ZeroDivisionError(\"nothing to halve\") }\n return a // b\n}\n\
                       function twice(a: int, b: int) -> int raises ZeroDivisionError { return half(a, b) * 2 }";
         assert_eq!(firmware(raised), Vec::<String>::new());
+        // The same for a built-in that is handed a value it has no
+        // answer for. `int` of text is not one of those: it travels.
+        assert_eq!(firmware("function letter(n: int) -> str raises ValueError { return char(n) }").len(), 1);
+        assert_eq!(
+            firmware("function number(text: str) -> int raises ValueError { return int(text) }"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

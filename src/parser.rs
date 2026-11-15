@@ -835,7 +835,16 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     self.advance();
+                    // `xs[:3]` and `xs[1:3]` are how Python takes a part.
+                    // Zeno has one way, and says what it is.
+                    let part = "a part of a list or a str is taken with `.slice(from, to)`, as in `xs.slice(1, 3)`";
+                    if self.check(TokenKind::Colon) {
+                        return Err(Error::new(part, self.span()));
+                    }
                     let index = Box::new(self.expression()?);
+                    if self.check(TokenKind::Colon) {
+                        return Err(Error::new(part, self.span()));
+                    }
                     self.expect(TokenKind::RBracket)?;
                     ExprKind::Index { object: Box::new(expr), index }
                 }
@@ -1482,6 +1491,16 @@ mod tests {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);
             }
         }
+    }
+
+    #[test]
+    fn a_part_is_taken_with_slice() {
+        // Python's `xs[1:3]` is not Zeno. The message says what is.
+        let part = "a part of a list or a str is taken with `.slice(from, to)`, as in `xs.slice(1, 3)`";
+        assert_eq!(error("let ys = xs[1:3]"), part);
+        assert_eq!(error("let ys = xs[:3]"), part);
+        assert_eq!(error("let ys = xs[1:]"), part);
+        assert_eq!(tree("let ys = xs.slice(1, 3)"), "let ys = xs.slice(1, 3)\n");
     }
 
     #[test]

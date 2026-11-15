@@ -4363,6 +4363,8 @@ impl Emitter<'_> {
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 let parts: Vec<&Val> = vals.iter().collect();
                 let all_text = vals.iter().all(|val| val.kind == Kind::Str);
+                // `slice(from, to)`: everything after the text is a position.
+                let positions = vals[1..].iter().all(|val| val.kind == Kind::Int);
                 let codes: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
                 let mut val = match (name, codes.as_slice()) {
                     ("upper", [text]) => Val::from(format!("zeno_upper({text})"), Kind::Str, &parts),
@@ -4385,6 +4387,25 @@ impl Emitter<'_> {
                     }
                     ("ends_with", [text, end]) if all_text => {
                         Val::from(format!("zeno_ends_with({text}, {end})"), Kind::Bool, &parts)
+                    }
+                    // The runtime answers -1 for "not there", and
+                    // `zeno_found` makes that the `none` of an
+                    // `int or none`.
+                    ("find", [text, part]) if all_text => Val::from(
+                        format!("zeno_found(zeno_find({text}, {part}))"),
+                        Kind::Optional(Box::new(Kind::Int)),
+                        &parts,
+                    ),
+                    ("slice", [text, from]) if positions => {
+                        Val::from(format!("zeno_slice({text}, {from}, 0, true, {})", at(span)), Kind::Str, &parts)
+                            .failing()
+                    }
+                    ("slice", [text, from, to]) if positions => {
+                        Val::from(format!("zeno_slice({text}, {from}, {to}, false, {})", at(span)), Kind::Str, &parts)
+                            .failing()
+                    }
+                    ("code", [text]) => {
+                        Val::from(format!("zeno_char_code({text}, {})", at(span)), Kind::Int, &parts).failing()
                     }
                     _ => return Err(cannot(format!("the str method `{name}` called this way"), span)),
                 };
@@ -4409,8 +4430,15 @@ impl Emitter<'_> {
                         val.pre_calls = true;
                         Ok(val)
                     }
-                    ("pop", [list]) => {
-                        let slot = format!("zeno_list_pop({}, {})", list.code, at(span));
+                    ("pop", [list]) | ("pop", [list, _]) => {
+                        let slot = match vals.get(1) {
+                            // `pop(2)`: the item at that position.
+                            Some(position) if position.kind == Kind::Int => {
+                                format!("zeno_list_pop_at({}, {}, {})", list.code, position.code, at(span))
+                            }
+                            Some(_) => return Err(cannot("`pop` with a position that is not an int", span)),
+                            None => format!("zeno_list_pop({}, {})", list.code, at(span)),
+                        };
                         let mut code = from_slot(&item, &slot, span)?;
                         if !self.collector && is_text(&item) {
                             // The list is done with it: the statement gets
@@ -4421,6 +4449,90 @@ impl Emitter<'_> {
                         // It changes the list, which is as visible as a call.
                         val.fails = true;
                         val.calls = true;
+                        Ok(val)
+                    }
+                    // The list keeps what it is given, as `append` does.
+                    ("insert", [list, position, value]) if position.kind == Kind::Int => {
+                        self.stays(value, span)?;
+                        self.fits_a_slot(&item, span)?;
+                        let value = self.keep(value.clone(), is_written(&args[1].value));
+                        let value = self.coerce(value, &item, span)?;
+                        let slot = to_slot(&value.kind, &value.code, span)?;
+                        let call = format!("zeno_list_insert({}, {}, {slot}, {})", list.code, position.code, at(span));
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    ("reverse", [list]) => {
+                        let call = format!("zeno_list_reverse({})", list.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    // The runtime compares two slots, and has to be told
+                    // which member of the slot to read.
+                    ("sort", [list]) => {
+                        let kind = match &*item {
+                            Kind::Int => 0,
+                            Kind::Float => 1,
+                            Kind::Str => 2,
+                            _ => return Err(cannot("`sort` on a list of anything but numbers or text", span)),
+                        };
+                        let call = format!("zeno_list_sort({}, {kind})", list.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    // Items that have one owner (and, with no collector,
+                    // text, which the list keeps copies of) end with the
+                    // list. `clear` is the end of each of them:
+                    //
+                    //     zeno_list *t1 = z_tasks;
+                    //     for (int64_t i = 0; i < t1->len; i++) zeno_drop_Task(((z_Task *)t1->items[i].p));
+                    //     zeno_list_clear(t1);
+                    ("clear", [list]) => {
+                        let list = self.temp(list.clone(), span)?;
+                        if self.drops.owns(&item) || (!self.collector && is_text(&item)) {
+                            let place = from_slot(&item, &format!("{}->items[i]", list.code), span)?;
+                            let each = self.drops.code(&item, &place);
+                            self.line(format!("for (int64_t i = 0; i < {}->len; i++) {each}", list.code));
+                        }
+                        let call = format!("zeno_list_clear({})", list.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    ("find", [list, value]) => {
+                        let same = self.eq_adapter(&item, span)?;
+                        let value = self.coerce(value.clone(), &item, span)?;
+                        let slot = to_slot(&item, &value.code, span)?;
+                        let mut val = Val::from(
+                            format!("zeno_found(zeno_list_find({}, {slot}, {same}))", list.code),
+                            Kind::Optional(Box::new(Kind::Int)),
+                            &parts,
+                        );
+                        // What it finds depends on what is in the list now.
+                        val.reads = true;
+                        Ok(val)
+                    }
+                    ("slice", [list, from]) | ("slice", [list, from, _]) if from.kind == Kind::Int => {
+                        let ends = match vals.get(2) {
+                            Some(to) if to.kind == Kind::Int => format!("{}, false", to.code),
+                            Some(_) => return Err(cannot("`slice` with a position that is not an int", span)),
+                            None => "0, true".to_string(),
+                        };
+                        let slice = format!("zeno_list_slice({}, {}, {ends}, {})", list.code, from.code, at(span));
+                        // With no collector a list of text has its own
+                        // copy of each item, and so has the slice.
+                        let code = match !self.collector && is_text(&item) {
+                            true => format!("zeno_list_keep_text({slice})"),
+                            false => slice,
+                        };
+                        let mut val = Val::from(code, Kind::List(item.clone()), &parts).failing();
+                        // The new list is nobody's yet.
+                        val.made = true;
+                        val.reads = true;
+                        Ok(val)
+                    }
+                    ("join", [list, separator]) if *item == Kind::Str && separator.kind == Kind::Str => {
+                        let mut val = Val::from(
+                            format!("zeno_list_join({}, {})", list.code, separator.code),
+                            Kind::Str,
+                            &parts,
+                        );
+                        val.reads = true;
                         Ok(val)
                     }
                     _ => Err(cannot(format!("the list method `{name}`"), span)),
@@ -4638,6 +4750,10 @@ impl Emitter<'_> {
                 val
             }
             "str" => Val::from(self.text(one()?, span)?, Kind::Str, &parts),
+            // `char(65)`: the runtime writes the bytes of that character.
+            "char" if matches!(one(), Ok(val) if val.kind == Kind::Int) => {
+                Val::from(format!("zeno_char({}, {})", one()?.code, at(span)), Kind::Str, &parts).failing()
+            }
             // `free(p)`: back to the heap, or to the pool.
             "free" if matches!(one(), Ok(val) if matches!(val.kind, Kind::Pointer(_))) => {
                 let call = format!("zeno_release({})", one()?.code);
@@ -9410,6 +9526,176 @@ print(drain(queue))
         // Each item that leaves has one new owner, and each value that
         // is replaced is freed on the spot: 0 blocks left.
         no_collector_as_interpreter("methods-take-out", METHODS_TAKE_OUT);
+    }
+
+    /// The methods of text and lists that the standard library adds
+    /// (docs/library.md): on text, on a list of objects that the list
+    /// owns, on a list of text and on lists of numbers.
+    pub(crate) const LIBRARY: &str = r##"# The methods of text and lists, in a program that owns what it holds.
+class Task {
+    name: str
+    priority: int
+}
+
+class Queue {
+    tasks: list[Task]
+
+    function add_first(self, task: take Task) { self.tasks.insert(0, task) }
+    function drop_all(self) { self.tasks.clear() }
+    function take_at(self, at: int) -> Task { return self.tasks.pop(at) }
+    function names(self) -> str {
+        var names: list[str] = []
+        for task in self.tasks { names.append(task.name) }
+        return names.join(" ")
+    }
+}
+
+# `find` answers with a position or `none`, and `slice` takes a part.
+function first_word(line: str) -> str {
+    let space = line.find(" ")
+    if space is none { return line }
+    return line.slice(0, space)
+}
+
+function rest(line: str) -> str {
+    match line.find(" ") {
+        case none { return "" }
+        case at { return line.slice(at + 1) }
+    }
+}
+
+let text = "hello, wörld"
+print(text.find("l"))
+print(text.find("xyz"))
+print(text.find("rld"))
+print(text.find(""))
+print(text.slice(7))
+print(text.slice(0, 5))
+print(text.slice(12) == "")
+print("A".code())
+print("ö".code())
+print("€".code())
+print(char(66))
+print(char(246))
+print(char(8364) + char(128512))
+print(first_word("set speed 30"))
+print(first_word("stop"))
+print(rest("set speed 30"))
+print(rest("stop") == "")
+let letters = "zeno".slice(1, 3) + char("a".code() + 1)
+print(letters)
+var total = 0
+for ch in "abc" {
+    total += ch.code()
+}
+print(total)
+
+# A list of objects: each has one owner, the list.
+let queue = Queue([Task("b", 2), Task("c", 3)])
+queue.add_first(Task("a", 1))
+queue.tasks.insert(3, Task("d", 4))
+print(queue.names())
+let second = queue.take_at(1)
+print(second.name, second.priority)
+queue.tasks.reverse()
+print(queue.names())
+print(queue.tasks.find(Task("d", 4)))
+print(queue.tasks.find(Task("zz", 0)))
+let gone = queue.tasks.pop(0)
+print(gone.name)
+print(len(queue.tasks))
+queue.drop_all()
+print(len(queue.tasks))
+queue.add_first(Task("again", 9))
+print(queue.names())
+
+# A list of text keeps a copy of each item.
+var lines = ["delta", "alpha"]
+let word = "char" + "lie"
+lines.insert(1, word)
+lines.insert(0, first_word("bravo two"))
+print(lines)
+let taken = lines.pop(2)
+print(taken)
+let part = lines.slice(1)
+print(part)
+print(len(part))
+print(lines.slice(0, 0))
+lines.sort()
+print(lines)
+print(lines.join("+"))
+print(lines.find("bravo"))
+print(lines.find("zulu"))
+lines.clear()
+print(lines)
+lines.append(taken + "!")
+print(lines)
+let empty: list[str] = []
+print(empty.join(", ") == "")
+
+# Numbers.
+let numbers = [5, 3, 9, 1, 4, 1, 8, 2, 7, 6, 0]
+numbers.sort()
+print(numbers)
+numbers.reverse()
+print(numbers)
+print(numbers.slice(2, 5))
+print(numbers.pop(0))
+numbers.insert(len(numbers), 42)
+print(numbers)
+let halves = [2.5, -1.0, 0.5, 0.0, -0.0]
+halves.sort()
+print(halves)
+let one = [7]
+one.sort()
+one.reverse()
+print(one)
+print([1, 2, 3].map(function(n: int) -> str { return str(n) }).join("-"))
+
+# A loop walks the list as it was when the loop began.
+let readings = [40, 10, 30, 20]
+for reading in readings {
+    readings.sort()
+    print(reading)
+}
+print(readings)
+print(readings.find(30))
+"##;
+
+    #[test]
+    fn text_and_list_methods_are_the_same_in_every_build() {
+        // Through C and through LLVM, ordinary, `--firmware` and with no
+        // collector, where `clear`, `pop(at)` and `insert` must leave 0
+        // blocks behind.
+        no_collector_as_interpreter("library", LIBRARY);
+    }
+
+    #[test]
+    fn a_position_outside_the_text_or_the_list_is_an_error_in_every_build() {
+        // An ordinary build catches these, as `zeno run` does.
+        same_as_interpreter(
+            "library-caught",
+            "let xs = [1, 2, 3]\n\
+             try { xs.insert(9, 1) } except IndexError as e { print(e.message) }\n\
+             try { print(xs.pop(3)) } except IndexError as e { print(e.message) }\n\
+             try { print(xs.slice(2, 1)) } except IndexError as e { print(e.message) }\n\
+             try { print(xs.slice(4)) } except IndexError as e { print(e.message) }\n\
+             try { print(\"hello\".slice(0, 9)) } except IndexError as e { print(e.message) }\n\
+             try { print(char(0)) } except ValueError as e { print(e.message) }\n\
+             try { print(\"\".code()) } except ValueError as e { print(e.message) }\n\
+             print(xs)\n",
+        );
+        // Not caught, each stops the program with the same words at the
+        // same place, in a firmware build too.
+        for (name, source) in [
+            ("library-slice", "let text = \"hello\"\nprint(text.slice(2, 9))\n"),
+            ("library-insert", "let xs = [1, 2]\nxs.insert(-1, 5)\n"),
+            ("library-pop", "let xs = [\"a\"]\nprint(xs.pop(1))\n"),
+            ("library-code", "let text = \"ab\"\nprint(text.code())\n"),
+            ("library-char", "let n = 1114112\nprint(char(n))\n"),
+        ] {
+            same_as_interpreter(name, source);
+        }
     }
 
     /// A `var` that starts with a function of the program and is given
