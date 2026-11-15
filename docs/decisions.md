@@ -5343,7 +5343,11 @@ second name for one of them. A second name by request,
 *(Provisional: if long names turn out to hurt in real programs, `as`
 is the way to add.)*
 
-### 7.4 Everything declared at the top of a file can be imported *(provisional)*
+### 7.4 Everything declared at the top of a file can be imported, unless it says `private`
+
+*(Was provisional. The word that hides a declaration is `private`,
+and it arrived in 10.1. The reasoning below is as it was written, and
+it held: no program had to change.)*
 
 Functions, classes, enums and their cases, and `let`, `var` and
 `const` variables. What the file itself imports is not passed on:
@@ -6089,3 +6093,138 @@ checked, so the text would flash from plain to coloured. A grammar in
 the editor colours at once and needs no server at all. *(Provisional:
 semantic tokens can be added on top for what a grammar cannot know,
 such as whether a name is a variable or a function.)*
+
+## 10. What real programs needed
+
+The last stage before the language is called version 0.1. Each
+section is something a program of more than a few files ran into, and
+the README's roadmap lists them.
+
+**Checked against "unambiguous and intuitive".** `private` is one
+word with one meaning wherever it stands: only the file it is written
+in can use this (10.1). There is no second level and no exception to
+remember. The message for a private name says that it is private and
+what to change, and never "no such name" (10.2).
+
+### 10.1 `private`: for the file it is written in
+
+```zeno
+private let highest = ["temperature": 60.0]
+
+private function wrapped(place: int, size: int) -> int {
+    return place % size
+}
+
+class Ring {
+    private slots: list[int]
+    private count: int
+
+    function size(self) -> int {
+        return self.count
+    }
+
+    private function slot(self, steps: int) -> int { ... }
+}
+```
+
+The word goes in front of a declaration at the top of a file
+(`function`, `class`, `enum`, `let`, `var`, `const`), and in front of
+a field or a function of a class. What it marks can be used by the
+file it is written in, and by no other.
+
+**Why at all.** 7.4 let every file use everything, and said a word
+that hides could come later without breaking a program. Later is
+now: a module of any size has parts that hold only as long as nobody
+else touches them. A ring's count has to agree with its slots. If
+any file can write `queue.count = 0`, the module cannot promise that,
+and whoever reads it cannot tell what is safe to change.
+
+**Why the file is the boundary, for a field as well.** In Java and
+C++ a private field is for the class. In Rust and Go it is for the
+module. Zeno takes the module, because then the word means one thing
+in both places it can stand, and "who can use this?" has the same
+answer everywhere: look at which file you are in. It also fits how
+Zeno code is written: a function that builds a `Ring` or prints one
+sits beside the class in its file, is not a method, and needs the
+fields. With privacy by class it would need a second word such as
+C++'s `friend`.
+
+**Why the word `private`.** It is the word Java, C++, C#, Kotlin,
+Swift and TypeScript use, so it is the one most readers know. It is
+a whole word (principle 2). `pub` on what is open (Rust) was turned
+down in 7.4: a mark on nearly every line. A leading underscore and a
+capital first letter were turned down there too.
+
+**Everything is still open unless it says otherwise.** A program in
+one file never needs the word, and a first module works with no mark
+on it. Hiding is something a module does once it has something to
+protect.
+
+**An enum is private whole.** `private enum Mode` hides the enum and
+its cases. A single case cannot be private: a `match` on the enum has
+to name every case, so a file that can see the enum must be able to
+see them all.
+
+**Not inside a block.** `private let x` in a function is refused,
+with the reason: a name declared in a block is seen only in the block
+already.
+
+**Turned down.**
+- *Three levels* (`private`, `protected`, `public`). `protected` is
+  about inheritance, which Zeno does not have. Two levels need one
+  word.
+- *Private to the package*, so that the files of a package share what
+  other packages cannot see. A real need in a big package, and it
+  can be added as its own word. No program here has needed it.
+- *Checking it when the program runs.* It is checked by `zeno check`,
+  as types are. It is there to keep a program's parts honest with
+  each other, and is not a lock.
+
+### 10.2 A private name is said to be private
+
+```
+error: `wrapped` is private in the module `ring`: only its own file
+can use it. To use it from another file, take the word `private` off
+where it is declared
+```
+
+**Why not "module `ring` has no `wrapped`".** That would be the
+safer thing to say to a stranger and the less useful thing to say to
+the person who wrote both files, which is who reads it. The name is
+there, the reader can see it, and a message that denies it sends them
+looking for a spelling mistake.
+
+When a module has no such name at all, the names it is said to have
+are the ones another file can use.
+
+### 10.3 Only its own file builds a class that has a private field
+
+```zeno
+# ring.zeno
+function ring(size: int) -> Ring {
+    return Ring([0 for slot in range(size)], 0, 0)
+}
+
+# main.zeno
+let queue = ring.ring(4)          # yes
+let mine = ring.Ring([1], 0, 1)   # no
+```
+
+A class gets a constructor for free, which takes a value for each
+field (3.7). Another file cannot see the private fields, so it cannot
+fill them in, so it cannot call that constructor. The module writes a
+function that builds one, and the other files call it.
+
+**Why not leave the private fields out of the constructor for other
+files**, so that `ring.Ring()` fills them from their defaults. Then
+one class would take different arguments depending on which file the
+call is in, and the third argument here would be the fifth there. One
+name, one list of arguments.
+
+**Why this is no burden.** It is what a module with something to
+protect wants anyway: `ring.ring(4)` asks for a size, and how the
+slots, the first place and the count start is the module's business.
+This is the rule Rust has for a struct with a private field.
+
+A class whose only private parts are functions is built as ever:
+there is nothing to fill in.

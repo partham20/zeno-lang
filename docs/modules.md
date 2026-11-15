@@ -67,7 +67,9 @@ comes with Zeno is.
    [`packages.md`](packages.md).)
 2. **What can be imported.** Everything a file declares at its top:
    functions, classes, enums and their cases, `let`, `var` and `const`.
-   What the file itself imports is not passed on (7.4).
+   What the file itself imports is not passed on (7.4). A declaration
+   with `private` in front is for its own file only
+   ([`private.md`](private.md)).
 3. **When an imported file runs.** Once, before the file that imports
    it. So an `import` of a file goes at the top of the file, above
    everything that is not an import (7.5).
@@ -340,9 +342,9 @@ use it.
 
 ## What is left out
 
-- **No way to hide a declaration.** Everything at the top of a file
-  can be imported. A word such as `private` can be added without
-  breaking any program (7.4).
+- **Hiding a declaration** was left out of this stage and has come
+  since: `private function helper()` is for its own file only. See
+  [`private.md`](private.md).
 - **No second name for a module** (`import drivers.uart as uart`).
   `from drivers.uart import send` gives the short form (7.3).
 - **The whole program is compiled together.** Change one file and
