@@ -1,3 +1,236 @@
 \chapter{Compiling}\label{ch-compiling}
 
-To be written.
+\verb|zeno run| reads a program and does what it says, a piece at a
+time. \verb|zeno build| turns the same program into C, and the
+machine's C compiler turns that into a program of its own: no Zeno
+needed to run it, and many times faster. The C can also be compiled for
+a microcontroller, which is where Zeno is going.
+
+\section{zeno build}
+
+\begin{zeno}[file=primes.zeno, cmd=zeno build {file} ;; ./primes]
+function is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+var count = 0
+for n in range(200000) {
+    if is_prime(n) {
+        count += 1
+    }
+}
+print(count, "primes below 200000")
+\end{zeno}
+
+\verb|zeno build| wrote \verb|primes.c|, called the C compiler on the
+machine (\verb|cc|, which is usually GCC or Clang), and left the
+program \verb|primes| beside it. On the computer this book was built
+on, \verb|zeno run| takes about two seconds over it, \verb|zeno run
+--vm| about one, and \verb|./primes| a fiftieth of a second.
+
+\section{Reading the C}
+
+The C file is kept, and it is meant to be read beside the Zeno. Here
+is \verb|is_prime|:
+
+\begin{zeno}[file=primes.zeno, show=no, cmd=zeno build {file} > /dev/null ;; grep -A12 "^static bool z_is_prime(int64_t z2_n) {" primes.c]
+function is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+var count = 0
+for n in range(200000) {
+    if is_prime(n) {
+        count += 1
+    }
+}
+print(count, "primes below 200000")
+\end{zeno}
+
+It is the Zeno, line for line. An \verb|int| is an \verb|int64_t|.
+\verb|d * d| is \verb|zeno_mul|, which checks for overflow with the
+compiler's own built-in and raises an \verb|OverflowError| with the
+line and column (the two numbers after the operands) when the answer
+does not fit. In front of the program stands Zeno's runtime, a small
+C library for text, lists, errors and \verb|print|, pasted into every
+file so that the C needs nothing else to compile.
+
+\begin{why}
+C runs on every processor there is, and every microcontroller vendor
+ships a C compiler for its chips. Writing C first gave Zeno all of them
+at once, and C that a person can read is a C that a person can check.
+(Decisions 5.5 and 5.5b.)
+\end{why}
+
+\section{Build agrees with run}
+
+A program must print the same whichever way it is run: \verb|zeno run|,
+\verb|zeno run --vm|, a C build, an LLVM build, a firmware build.
+Errors included: an uncaught error gives the same message, at the same
+line and column, in every one. Zeno's own tests run every test program
+every way and compare the output byte for byte.
+
+\begin{why}
+A program that behaves one way under test and another on the board is
+the worst kind to debug. If \verb|zeno run| is to be the place where
+firmware is tried, it must mean exactly what the compiled program
+means. (Decision 5.5d.)
+\end{why}
+
+\section{A build is strict}
+
+\verb|zeno build| always checks in strict mode: every type must be
+known, because a compiled program has no tags to carry them
+(\hyperref[ch-types]{Types, Written and Worked Out}). A program that
+runs with dynamic values under \verb|zeno run| is told which value is
+the trouble:
+
+\begin{zeno}[file=loose.zeno, cmd=zeno build {file}, fails=yes]
+function same(x) {
+    return x
+}
+print(same(1), same("one"))
+\end{zeno}
+
+\section{The options}
+
+\begin{center}
+\begin{tabular}{lp{8.5cm}}
+\toprule
+Option & Means \\
+\midrule
+\verb|--memory| & the program reports, as it ends, how much memory it used \\
+\verb|--llvm| & compile to LLVM's language in place of C, and hand it to \verb|clang| \\
+\verb|--firmware| & errors travel as values, with no \verb|setjmp|, as coding
+  standards for firmware ask (\hyperref[ch-firmware]{Firmware}) \\
+\verb|--no-collector| & no garbage collector; every list and object has
+  one owner, and memory comes from a pool of a fixed size
+  (\hyperref[ch-no-collector]{Building with No Collector}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{zeno}[file=lists.zeno, cmd=zeno build --memory {file} ;; ./lists]
+var squares: list[int] = []
+for n in range(1000) {
+    squares.append(n * n)
+}
+print(len(squares), squares[999])
+\end{zeno}
+
+\hyperref[ch-memory]{Memory} explains the report.
+
+\section{Through LLVM}
+
+\verb|zeno build --llvm| writes the program in LLVM's intermediate
+language, the one Clang, Rust and Swift compile through, and hands it
+to \verb|clang|. The program is the same, and prints the same:
+
+\begin{zeno}[file=primes.zeno, show=no, cmd=zeno build --llvm {file} ;; ./primes]
+function is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+var count = 0
+for n in range(200000) {
+    if is_prime(n) {
+        count += 1
+    }
+}
+print(count, "primes below 200000")
+\end{zeno}
+
+The IR is written as text by Zeno itself, with no LLVM library, and
+\verb|primes.ll| can be read like \verb|primes.c|. LLVM brings its own
+optimiser and every processor it knows. \hyperref[ch-inside]{Inside
+Zeno} shows a piece of it.
+
+\section{For another processor}
+
+\verb|zeno build| compiles for the computer it runs on. For a
+microcontroller, take the C file it wrote and give it to the
+microcontroller's own C compiler, with the board's header
+(\hyperref[ch-firmware]{Firmware}):
+
+\begin{zenofrag}[lang=shell]
+$ zeno build --firmware --no-collector blink.zeno
+$ arm-none-eabi-gcc -O2 -DZENO_BOARD='"nucleo.h"' -c blink.c
+\end{zenofrag}
+
+\begin{why}
+Building C for a target is a job the target's own tools already do
+well, with the flags, linker scripts and start-up code that only they
+know. Zeno's part ends at a C file that compiles anywhere.
+(Decision 5.12c.)
+\end{why}
+
+\section{What does not compile yet}
+
+Nearly the whole language compiles. A few corners do not, and
+\verb|zeno build| names each one and points at the line, while
+\verb|zeno run| still runs the program:
+
+\begin{zeno}[file=inner.zeno, cmd=zeno build {file}, fails=yes]
+function outer() -> int {
+    function inner() -> int {
+        return 2
+    }
+    return inner()
+}
+print(outer())
+\end{zeno}
+
+A function written with no name, \verb|let inner = function() { ... }|,
+does compile. \hyperref[app-limits]{Appendix G} has the full list.
+
+\begin{summary}
+\verb|zeno build| writes C, compiles it with the machine's compiler,
+and keeps both. The compiled program prints what \verb|zeno run|
+prints, errors included, and is many times faster. A build is always
+strict. \verb|--llvm| goes through LLVM; \verb|--memory|,
+\verb|--firmware| and \verb|--no-collector| are for the board. For
+another processor, the C goes to that processor's compiler.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Build a program from an earlier chapter, open its C file, and
+  find each of your functions in it.
+\item Time \verb|zeno run|, \verb|zeno run --vm| and the built program
+  on the primes example, with a larger limit.
+\item Make a program overflow an \verb|int| and build it. Is the message
+  the same as \verb|zeno run|'s?
+\item Build with \verb|--llvm|, open the \verb|.ll| file, and find
+  \verb|is_prime|.
+\end{enumerate}
+\end{tryit}

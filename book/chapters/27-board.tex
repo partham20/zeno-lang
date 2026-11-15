@@ -1,3 +1,222 @@
-\chapter{Pins, Time and the Board}\label{ch-board}
+\chapter{The Board}\label{ch-board}
 
-To be written.
+Zeno is for programs that run on a board: a microcontroller with pins
+that drive LEDs and relays, registers that control its peripherals,
+and a clock. This chapter is about the \verb|board| module, which is
+how a program reaches them, and about the simulated board that lets
+the same program run on a computer.
+
+\section{Blink}
+
+The program Zeno was made for, written on the first day, before there
+was a compiler, is this:
+
+\begin{zenofrag}[file=blink.zeno]
+from board import led
+from time import sleep
+
+while true {
+    led.toggle()
+    sleep(500 ms)
+}
+\end{zenofrag}
+
+It never ends, as firmware does not. Run on a computer, it prints
+\verb|led on|, \verb|led off|, \verb|led on| every half second, until
+Ctrl-C stops it. Compiled for a microcontroller, the same lines blink
+the LED.
+
+\section{The simulated board}
+
+A computer has no LED on pin 13, so \verb|zeno run| gives the program
+a \emph{simulated} board. It has 64 pins, all low to begin with, with
+the LED on pin 13, where an Arduino Uno has it. It prints a line each
+time a pin \emph{changes} level, which is what a logic analyser
+clipped to the pin would show:
+
+\begin{zeno}
+from board import led
+
+print(led, led.is_on())
+led.on()
+led.on()
+led.toggle()
+print(led.is_on())
+\end{zeno}
+
+The second \verb|led.on()| printed nothing, because the pin was
+already high and did not move.
+
+\section{Pins}
+
+\verb|led| is the pin the LED is on, and \verb|pin(n)| is the pin with
+that number. A pin can do four things:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Does \\
+\midrule
+\verb|p.on()|, \verb|p.off()| & drive it high or low \\
+\verb|p.toggle()| & give it the other level \\
+\verb|p.is_on()| & is it high? A \verb|bool| \\
+\verb|p.number| & which pin it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\verb|Pin| is a type, so a function can ask for one, and a pin can go
+in a list, a field or a \verb|Pin or none|:
+
+\begin{zeno}
+from board import pin
+from time import sleep
+
+function flash(light: Pin, times: int) {
+    for turn in range(times) {
+        light.toggle()
+        sleep(10 ms)
+    }
+}
+
+let lamps = [pin(2), pin(3)]
+for lamp in lamps {
+    flash(lamp, 2)
+}
+\end{zeno}
+
+A pin the board does not have is a \verb|ValueError|:
+
+\begin{zeno}[fails=yes]
+from board import pin
+let relay = pin(99)
+\end{zeno}
+
+\begin{why}
+A pin is not an \verb|int|: if it were, \verb|on(count)| would
+compile, and so would \verb|led + 1|. It is not an object either,
+because an object lives in memory from the collector, and blinking an
+LED should not need one. A pin is a kind of its own to the checker,
+and a plain number in the compiled program, so it costs what an
+\verb|int| costs. Units work the same way. (Decision 3.15.)
+\end{why}
+
+\section{The clock}
+
+\verb|sleep| waits for a time with a unit, and \verb|now()| reads a
+clock that only goes forward, in milliseconds, from a moment such as
+when the board was switched on (\hyperref[ch-units]{Numbers with
+Units}). Only the difference of two readings means anything:
+
+\begin{zeno}
+from time import sleep, now
+
+let start = now()
+sleep(50 ms)
+let took = now() - start
+print("took at least 50 ms:", took >= 50 ms)
+\end{zeno}
+
+\section{Registers}
+
+A microcontroller's peripherals, its timers, serial ports and
+converters, are controlled through \emph{registers}: words of memory
+at fixed addresses, given in the data sheet. \verb|register(u32,
+address)| names one, with its size:
+
+\begin{zeno}
+from board import register
+
+let control = register(u32, 0x4000_4400)
+let data = register(u8, 0x4000_440C)
+
+unsafe {
+    control.write(u32(control.read() | 1 << 0))
+    data.write(0x41)
+    print(control.read(), data.read())
+}
+\end{zeno}
+
+A value written must fit the register: \verb|control.read() | 1| is an
+\verb|int|, as every sum of sized numbers is
+(\hyperref[ch-sized-numbers]{Sized Numbers and Bits}), so
+\verb|u32(...)| puts it back, with a check.
+
+Reading and writing a register must be inside \verb|unsafe { }|,
+because a wrong address or a wrong bit can stop a chip, and Zeno
+cannot check either. The block marks the lines a reviewer should read
+twice:
+
+\begin{zeno}[fails=yes]
+from board import register
+let data = register(u8, 0x4000_440C)
+data.write(0x41)
+\end{zeno}
+
+On the simulated board a register is a word that remembers what was
+written, and each write is printed. On a real board it is the real
+address. \hyperref[ch-unsafe]{Unsafe Code} is about \verb|unsafe| and
+memory by hand.
+
+\section{A traffic light}
+
+This program from the \verb|examples| folder is a traffic light on
+three pins, written as a state machine with an enum. Its times are
+short, so the whole run takes a fifth of a second:
+
+\begin{zeno}[src=examples/signal.zeno]
+\end{zeno}
+
+\section{A real board underneath}
+
+A compiled program meets the hardware in four C functions, and these,
+with the number of pins, are everything Zeno knows about a board:
+
+\begin{zenofrag}[lang=shell]
+zeno_board_write(pin, level)   drive a pin high or low
+zeno_board_read(pin)           is the pin high?
+zeno_board_sleep(seconds)      wait
+zeno_board_now()               a clock that only goes forward, in ms
+\end{zenofrag}
+
+The simulated board is these four, written for a computer. For a real
+microcontroller they are written once, over the vendor's library, in a
+header, and the C compiler is told where it is.
+\hyperref[ch-firmware]{Firmware} shows how, with a sketch for an
+STM32. The Zeno program does not change by a line.
+
+\begin{why}
+Four functions is the smallest surface a port can have: a board is
+working the day those four are. The checks, such as a pin that does
+not exist or a wait below zero, are done once above them, for every
+board, so the four can be four lines each. (Decision 5.12.)
+\end{why}
+
+\section{What the board does not have yet}
+
+In version 0.1 \verb|is_on()| reads back what the program wrote:
+there is no button, and no way to make a pin an input. Interrupts,
+timers, PWM, an analogue converter and a serial port are not in the
+\verb|board| module either. Until they are, a program reaches them
+through their registers, at the addresses the data sheet gives.
+\hyperref[app-limits]{Appendix G} lists these.
+
+\begin{summary}
+\verb|from board import led, pin, register|. A pin is driven with
+\verb|on|, \verb|off| and \verb|toggle| and asked with \verb|is_on|;
+\verb|Pin| is a type. \verb|sleep| and \verb|now| keep time with units.
+A register is read and written inside \verb|unsafe|. \verb|zeno run|
+simulates the board and prints each change; a compiled program sits on
+four C functions that a real board provides.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Blink the LED in Morse code: \verb|SOS|, with dots of 100 ms.
+\item Write a class \verb|Relay| with a pin and a name, and methods
+  \verb|close| and \verb|open| that print what they do.
+\item Change the traffic light so that green lasts twice as long as
+  red, and add a pedestrian lamp on pin 5.
+\item Write a register without \verb|unsafe| and read the message.
+\end{enumerate}
+\end{tryit}
