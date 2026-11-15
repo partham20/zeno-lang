@@ -5260,3 +5260,249 @@ build asks for the type, as it does for `[]`.
 
 **A program that uses no dict pays nothing for them** in a build for a
 board: the C compiler drops the functions nobody calls.
+
+---
+
+## 7. Programs in several files
+
+A program that has grown past a few hundred lines wants more than one
+file. This section says how one file uses what another declares. The
+walk through the code is in [`modules.md`](modules.md).
+
+**Checked against "unambiguous and intuitive".** One name is one file
+(7.2). What is written at the import is what is written at the use
+(7.3). A file means the same in every program that imports it (7.7).
+A name that could be read two ways is refused with a message that
+says what to write (7.8). And there is one mechanism, not two: a file
+of your own is imported with the words that import `math` (7.1).
+
+### 7.1 A module is a file, and `import` is how it is brought in
+
+```zeno
+import shapes                     # then: shapes.area(s), shapes.Point
+from shapes import area, Point    # then: area(s), Point
+```
+
+`import shapes` reads the file `shapes.zeno`. These are the two forms
+that `import math` and `from math import sqrt` have had since the
+first stage, and a file of your own is used exactly as a module that
+comes with Zeno is.
+
+**Why a file is the module.** There is nothing to declare: no
+`module` line, no header, no list of exports to keep in step with the
+code. The file's name is the module's name, so the reader of
+`shapes.area` knows which file to open.
+
+**Turned down.** Pasting the other file in, as C's `#include` does:
+the names of two files meet, and what a line means depends on what was
+pasted above it. A header beside each file (C, C++): two places that
+describe one thing, and they drift apart. `mod` and `use` as two steps
+(Rust): the tree of modules is written out in one file and the files
+have to match it.
+
+### 7.2 A module is looked for from the folder of the program's first file
+
+`import shapes` is `shapes.zeno` in the folder of the file that was
+given to `zeno run` or `zeno build`. A dot is a folder:
+`import drivers.uart` is `drivers/uart.zeno`. That holds for every
+file of the program, wherever the file is: a file inside `drivers/`
+that wants its neighbour writes `import drivers.pins`.
+
+**Why from the first file, and not from the file that imports.** One
+name is then one file, everywhere in the program. If each file looked
+beside itself, `import pins` would mean one file in `drivers/` and
+another in `sensors/`, and one file could be reached under two names
+and be read twice.
+
+**Turned down.** A list of folders to search, set outside the program
+(Python's path, C's `-I`): which file is read then depends on the
+machine. That question comes back with the package manager, which
+will have to say where other people's files are.
+
+**The five modules that come with Zeno keep their names**: `math`,
+`time`, `board`, `files`, `program`. A file called `math.zeno` is
+never looked for by `import math`. *(Provisional: once library
+modules are themselves Zeno files, they will be found by one rule.)*
+
+### 7.3 `import a.b` is used as `a.b.name`
+
+```zeno
+import drivers.uart
+drivers.uart.send("ready")
+```
+
+What is written at the import is what is written at the use. A reader
+who meets `drivers.uart.send` halfway down the file can find its
+import by searching for the same words.
+
+**Turned down.** Only the last word, `uart.send` (Go, Rust): two
+modules called `uart` in two folders then collide, and the fix is a
+second name for one of them. A second name by request,
+`import drivers.uart as uart`: two spellings for one module, and
+`from drivers.uart import send` already gives the short form.
+*(Provisional: if long names turn out to hurt in real programs, `as`
+is the way to add.)*
+
+### 7.4 Everything declared at the top of a file can be imported *(provisional)*
+
+Functions, classes, enums and their cases, and `let`, `var` and
+`const` variables. What the file itself imports is not passed on:
+`shapes.math` is not a name, even though `shapes.zeno` imports `math`.
+
+**Why everything.** The first program anyone splits in two then
+works with no new word to learn. And it is the choice that can be
+changed without breaking programs: a word that hides a declaration
+(`private function helper()`) can be added later and every program
+written before it still means the same. Starting hidden and opening
+up later can be added too, but starting hidden means a mark on almost
+every line of every module from the first day.
+
+**Turned down.** A leading underscore that means "leave this alone"
+(Python): a convention the compiler does not check (principle 1). A
+capital first letter that means "visible" (Go): spelling that carries
+meaning (principle 2). `pub` or `export` on each declaration: see
+above.
+
+**The cases of an enum are names of their own**, as they are in one
+file. `from shapes import Shape` brings in the enum's name. Its cases
+are `shapes.Circle`, or `Shape.Circle`, or imported by name:
+`from shapes import Shape, Circle`.
+
+### 7.5 An imported file runs once, before the file that imports it
+
+A file can have lines at its top that do something: fill a table,
+print a banner. In a program of several files each file runs once,
+and a file's imports have all run before its own first line does. The
+file given to `zeno run` therefore runs last.
+
+**Why once.** There is then one copy of each of the module's
+variables, whoever imports it.
+
+**So an `import` of a file goes at the top of the file**, above
+everything that is not an import, and never inside a function or a
+block. The imported file runs first wherever the line is, and a line
+further down would say something else about the order than what
+happens. (`import math` may still be written anywhere. It has no
+lines of its own to run.)
+
+**Turned down.** Running the imported file when the import line is
+reached (Python). The order in which two modules run then depends on
+which file happened to import one of them first.
+
+### 7.6 Files that import each other are refused
+
+```
+error: these files import each other: `a` imports `b`, and `b` imports `a`.
+```
+
+Each would have to run before the other. Python runs one of them
+half-way and hands the other a module with some of its names missing.
+C has the programmer declare things ahead. Zeno says which files form
+the circle and what to do: move what they share into a file of its
+own, and import that from both.
+
+### 7.7 A file sees what it declares and what it imports, and nothing else
+
+**An imported file cannot see the file that imports it.** If
+`shapes.zeno` uses a name it does not declare, and the program's
+first file happens to declare one, that is an error. Otherwise what
+`shapes.zeno` means would depend on which program imports it.
+
+**Only the file of a module gives its variables a new value.**
+
+```zeno
+import counter
+print(counter.total)     # reading is fine
+counter.total = 0        # refused: give `counter` a function that does it
+```
+
+Where a variable can change is then one file, which is the first
+thing anyone debugging it wants to know. Python's
+`from counter import total` followed by `total = 0` changes a copy
+and leaves the module's own variable alone, silently. In Zeno there
+is one variable, and the assignment is refused under either
+spelling. A list or object that the variable holds can still be
+changed through it, exactly as through a `let`.
+
+### 7.8 A name that would have two readings is refused
+
+| Written | Refused because |
+|---|---|
+| `from a import x` and `from b import x` | which `x`? |
+| `from a import x` and `let x = 1` at the top of the same file | which `x`? |
+| `import shapes` and `let shapes = 1` at the top of the same file | `shapes.x` is a name of the module, or a field of the variable |
+| `import a` and `import a.b` | `a.b.x` is `x` of `a.b`, or `b.x` of `a` |
+| `let s = shapes` | a module is not a value |
+
+A name declared inside a function or a block hides an imported one,
+as it hides any name from the top of the file. That is the rule Zeno
+already has, and a parameter called `area` should not stop working
+because an import was added.
+
+### 7.9 A value prints by the name its file gave it
+
+`print(shapes.Point(1, 2))` prints `Point(x=1, y=2)`, and an enum
+case prints as `Dot`. An error that nothing catches is reported as
+`uncaught BadShape`.
+
+**Why not `shapes.Point(...)`.** Then what `shapes.zeno` prints would
+change when it is imported instead of run by itself.
+
+**The compiler's own messages use the full name**, `shapes.Point`,
+also for a mistake inside `shapes.zeno`. There the question is which
+`Point`, and two files may each have one.
+
+### 7.10 `strict` is asked of one file
+
+A file that begins with the line `strict` asks for every type in that
+file to be known before the program runs. Its imports are not made
+strict by it, and it does not make the file that imports it strict.
+`zeno check --strict` and `zeno build` ask it of every file.
+
+**Why.** A typed library must be usable from a quick script, and a
+script's looseness must not leak into the library.
+
+### 7.11 The files are joined into one program before anything checks it
+
+The stage that reads the files gives every name that an imported
+file declares at its top the module's name in front, `shapes.area`,
+in that file and in every file that uses it, and then puts all the
+statements in one list, an imported file before its importer
+([`src/modules.rs`](../src/modules.rs)). Nobody can write
+`shapes.area` as one word in a source file, so the name cannot
+collide with one that somebody did write.
+
+**Why.** The type checker, the interpreter, the VM and both compilers
+then take a program in ten files exactly as they take a program in
+one. Types that are worked out from use are worked out across files
+with no extra work. A C build is still one C file, and the C compiler
+still drops what nothing calls.
+
+**Turned down, for now.** Compiling each file by itself and linking
+the results. That needs a written-down description of what every
+module offers, and generics and worked-out types make that
+description large. It is what makes a big program quick to rebuild,
+and it will be wanted then. *(Provisional.)*
+
+**In C a module's name is part of the C name**: `shapes.area` is
+`z_shapes_area`. Two classes or enums that would get the same C name
+(`shapes.Point` and a class called `shapes_Point`) are refused with a
+message, as `Stack[int]` and `Stack_int` already were.
+
+### 7.12 One number says the file and the line
+
+Every part of a program remembers where it was written: a line and a
+column. With several files that is not enough, and adding a third
+number would have touched every place that passes a position along,
+down to each call into the runtime of a compiled program.
+
+Instead the lines of the whole program are numbered in one run. The
+first file's lines are 1 to 999,999, as the editor shows them. The
+second file's start at 1,000,001, the third's at 2,000,001. Only the
+places that show a position to a person take the number apart again.
+Clang and the Rust compiler keep positions the same way, as one
+number into all the source text.
+
+**The cost.** A file can have at most 999,999 lines and a program at
+most 2,000 files, so that the number fits in a C `int`. Both are
+checked.
