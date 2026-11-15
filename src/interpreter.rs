@@ -20,7 +20,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::board::Board;
 use crate::builtins;
-use crate::error::Error;
+use crate::error::{counted, Error};
 use crate::ops;
 use crate::token::Span;
 use crate::value::*;
@@ -543,8 +543,8 @@ impl Interpreter {
                 if fields.len() != case.fields.len() {
                     return fatal(
                         format!(
-                            "`{name}` carries {} value(s), but this pattern has {}",
-                            case.fields.len(),
+                            "`{name}` carries {}, but this pattern has {}",
+                            counted(case.fields.len(), "value"),
                             fields.len()
                         ),
                         span,
@@ -971,12 +971,12 @@ mod tests {
     fn argument_mistakes() {
         let f = "function f(a: int, b: int = 2) -> int { return a + b }\n";
         assert_eq!(error(&format!("{f}f()")), "`f` needs a value for `a`");
-        assert_eq!(error(&format!("{f}f(1, 2, 3)")), "`f` takes 2 argument(s), but 3 were given");
+        assert_eq!(error(&format!("{f}f(1, 2, 3)")), "`f` takes 2 arguments, but 3 were given");
         assert_eq!(error(&format!("{f}f(1, c=3)")), "`f` has no argument named `c`");
         assert_eq!(error(&format!("{f}f(1, a=3)")), "`f` was given `a` twice");
         assert_eq!(error(&format!("{f}f(a=1, 2)")), "plain arguments must come before named ones");
         assert_eq!(error("let x = 5\nx()"), "an int cannot be called");
-        assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument(s), but 2 were given");
+        assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument, but 2 were given");
     }
 
     #[test]
@@ -1026,7 +1026,7 @@ mod tests {
             "the function given to `filter` must return true or false, but it returned an int"
         );
         assert_eq!(error("[1].map(5)"), "an int cannot be called");
-        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 arguments, but 1 was given");
     }
 
     #[test]
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn match_mistakes() {
         assert_eq!(error("match 3 {\n case 1 { }\n}"), "no `case` matches 3");
-        assert_eq!(error("enum E {\n A(x: int)\n}\nmatch A(1) {\n case A(x, y) { }\n}"), "`A` carries 1 value(s), but this pattern has 2");
+        assert_eq!(error("enum E {\n A(x: int)\n}\nmatch A(1) {\n case A(x, y) { }\n}"), "`A` carries 1 value, but this pattern has 2");
         assert_eq!(error("match 1 {\n case Nope(x) { }\n}"), "`Nope` is not an enum case that carries values");
     }
 
@@ -1437,7 +1437,7 @@ mod tests {
             ),
             (
                 format!("{p}unsafe {{ free(p + 1) }}"),
-                "`free` needs the pointer that `allocate` gave, and this one points 1 item(s) further on. \
+                "`free` needs the pointer that `allocate` gave, and this one points 1 item further on. \
                  `zeno run` checks every `free`. A compiled program does not",
             ),
             ("let n = 0\nlet p = allocate(u8, n)".to_string(), "`allocate` needs at least one item, and this asks for 0"),

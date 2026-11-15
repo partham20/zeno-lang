@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::ast::{self, *};
-use crate::error::Error;
+use crate::error::{counted, were, Error};
 use crate::ints::{self, Width};
 use crate::token::Span;
 use crate::units;
@@ -1845,8 +1845,8 @@ impl Checker {
         if !(needed..=params.len()).contains(&wanted.params.len()) {
             self.error(
                 format!(
-                    "{what} should be {wanted_type}, but this function takes {} argument(s)",
-                    params.len()
+                    "{what} should be {wanted_type}, but this function takes {}",
+                    counted(params.len(), "argument")
                 ),
                 span,
             );
@@ -2055,9 +2055,9 @@ impl Checker {
                         if written_types.len() != generic.params.len() {
                             return self.error(
                                 format!(
-                                    "`{name}` takes {} type(s) in `[ ]`, as in `{example}`, but {} were written",
-                                    generic.params.len(),
-                                    written_types.len()
+                                    "`{name}` takes {} in `[ ]`, as in `{example}`, but {} written",
+                                    counted(generic.params.len(), "type"),
+                                    were(written_types.len())
                                 ),
                                 span,
                             );
@@ -3045,8 +3045,8 @@ impl Checker {
                 if slots.len() != fields.len() {
                     self.error(
                         format!(
-                            "`{name}` carries {} value(s), but this pattern has {}",
-                            slots.len(),
+                            "`{name}` carries {}, but this pattern has {}",
+                            counted(slots.len(), "value"),
                             fields.len()
                         ),
                         span,
@@ -4268,9 +4268,9 @@ impl Checker {
                 if arguments.len() != callable.params.len() {
                     return self.error(
                         format!(
-                            "this function takes {} argument(s), but {} were given",
-                            callable.params.len(),
-                            arguments.len()
+                            "this function takes {}, but {} given",
+                            counted(callable.params.len(), "argument"),
+                            were(arguments.len())
                         ),
                         span,
                     );
@@ -4308,7 +4308,7 @@ impl Checker {
         let positional = arguments.iter().filter(|a| a.name.is_none()).count();
         if positional > slots.len() {
             self.error(
-                format!("`{what}` takes {} argument(s), but {positional} were given", slots.len()),
+                format!("`{what}` takes {}, but {} given", counted(slots.len(), "argument"), were(positional)),
                 span,
             );
             return;
@@ -4354,9 +4354,9 @@ impl Checker {
         if (min..=max).contains(&arguments.len()) {
             return true;
         }
-        let wanted = if min == max { min.to_string() } else { format!("{min} to {max}") };
+        let wanted = if min == max { counted(min, "argument") } else { format!("{min} to {max} arguments") };
         self.error(
-            format!("`{name}` takes {wanted} argument(s), but {} were given", arguments.len()),
+            format!("`{name}` takes {wanted}, but {} given", were(arguments.len())),
             span,
         );
         false
@@ -5601,7 +5601,7 @@ mod tests {
         assert_eq!(error(&format!("{f}f(\"one\")")), "`a` of `f` should be int, but this is str");
         assert_eq!(error(&format!("{f}f(1, 2)")), "`b` of `f` should be str, but this is int");
         assert_eq!(error(&format!("{f}f()")), "`f` needs a value for `a`");
-        assert_eq!(error(&format!("{f}f(1, \"y\", 3)")), "`f` takes 2 argument(s), but 3 were given");
+        assert_eq!(error(&format!("{f}f(1, \"y\", 3)")), "`f` takes 2 arguments, but 3 were given");
         assert_eq!(error(&format!("{f}f(1, c=3)")), "`f` has no argument named `c`");
         assert_eq!(error(&format!("{f}f(1, a=3)")), "`f` was given `a` twice");
         assert_eq!(error(&format!("{f}f(b=\"y\", 1)")), "plain arguments must come before named ones");
@@ -5612,11 +5612,11 @@ mod tests {
     #[test]
     fn built_ins_are_checked() {
         assert_eq!(error("print(len(5))"), "`len` needs a str or a list, but this is int");
-        assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument(s), but 2 were given");
+        assert_eq!(error("print(len(1, 2))"), "`len` takes 1 argument, but 2 were given");
         assert_eq!(error("let s: str = len(\"abc\")"), "`s` should be str, but this is int");
         assert_eq!(error("range(\"3\")"), "an argument of `range` should be int, but this is str");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is int");
-        assert_eq!(error("print(\"x\".upper(1))"), "`upper` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("print(\"x\".upper(1))"), "`upper` takes 0 arguments, but 1 was given");
         assert_eq!(error("print(\"x\".nope())"), "str has no field or method `nope`");
         assert_eq!(error("let xs = [1]\nxs.append(\"two\")"), "an item added to this list should be int, but this is str");
         assert_eq!(error("import radio"), "there is no module `radio`. So far Zeno has `math`, `time` and `board`");
@@ -5635,7 +5635,7 @@ mod tests {
             error("let xs = [1, 2]\nxs.map(function(s: str) -> str { return s })"),
             "`s` of `function` should be str, but this is int"
         );
-        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("[1].map(function() { return 1 })"), "`function` takes 0 arguments, but 1 was given");
     }
 
     // ----- Functions -----
@@ -5755,7 +5755,7 @@ mod tests {
         );
         assert_eq!(error("let a = u8(2.5)"), "`u8` needs a whole number, but this is float. Make it one with `int( )` first");
         assert_eq!(error("let a = u8.wrap(\"x\")"), "`u8.wrap` needs a whole number, but this is str");
-        assert_eq!(error("let a = u8(1, 2)"), "`u8` takes 1 argument(s), but 2 were given");
+        assert_eq!(error("let a = u8(1, 2)"), "`u8` takes 1 argument, but 2 were given");
         assert_eq!(
             error("let a: u64 = 1"),
             "there is no type called `u64`. An `int` is 64 bits with a sign, \
@@ -5882,11 +5882,11 @@ mod tests {
         assert_eq!(error("function two[T, T](a: T) -> T {\n    return a\n}"), "the type parameter `T` is written twice");
         assert_eq!(
             error(&format!("{STACK}let s: Stack[int, str] = Stack(items=[])")),
-            "`Stack` takes 1 type(s) in `[ ]`, as in `Stack[int]`, but 2 were written"
+            "`Stack` takes 1 type in `[ ]`, as in `Stack[int]`, but 2 were written"
         );
         assert_eq!(
             error(&format!("{STACK}function f(s: Stack) {{ }}")),
-            "`Stack` takes 1 type(s) in `[ ]`, as in `Stack[int]`, but 0 were written"
+            "`Stack` takes 1 type in `[ ]`, as in `Stack[int]`, but 0 were written"
         );
         assert_eq!(error(&format!("{FIRST}let n: first = 4")), "`first` is a function, and this place needs a type");
         assert_eq!(
@@ -5917,7 +5917,7 @@ mod tests {
         strict_ok(include_str!("../examples/signal.zeno"));
         assert_eq!(error("from board import pin\npin(\"a\")"), "the number of a pin should be int, but this is str");
         assert_eq!(error("from board import led\nled.blink()"), "Pin has no field or method `blink`");
-        assert_eq!(error("from board import led\nled.on(1)"), "`on` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("from board import led\nled.on(1)"), "`on` takes 0 arguments, but 1 was given");
         assert_eq!(error("from board import led\nlet n: int = led"), "`n` should be int, but this is Pin");
         assert_eq!(error("from board import led\nprint(led == 13)"), "`==` between Pin and int is always false");
         assert_eq!(error("from board import button"), "module `board` has no `button`");
@@ -5929,7 +5929,7 @@ mod tests {
     fn the_clock_is_checked() {
         ok("from time import sleep, now\nlet start: ms = now()\nsleep(1 s)\nsleep(2 min)\nlet took: ms = now() - start");
         assert_eq!(error("from time import sleep\nsleep(3 V)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is a quantity in V");
-        assert_eq!(error("from time import now\nnow(1)"), "`now` takes 0 argument(s), but 1 were given");
+        assert_eq!(error("from time import now\nnow(1)"), "`now` takes 0 arguments, but 1 was given");
         assert_eq!(error("from time import now\nlet t: s = now()"), "`t` should be a quantity in s, but this is a quantity in ms. Convert it with `.s`");
     }
 
@@ -5995,7 +5995,7 @@ mod tests {
 
     #[test]
     fn patterns_are_checked() {
-        assert_eq!(error(&format!("{SHAPE}match Dot {{\n case Circle(a, b) {{ }}\n case _ {{ }}\n}}")), "`Circle` carries 1 value(s), but this pattern has 2");
+        assert_eq!(error(&format!("{SHAPE}match Dot {{\n case Circle(a, b) {{ }}\n case _ {{ }}\n}}")), "`Circle` carries 1 value, but this pattern has 2");
         assert_eq!(error(&format!("{SHAPE}match Dot {{\n case Nope(x) {{ }}\n case _ {{ }}\n}}")), "`Nope` is not an enum case that carries values");
         assert_eq!(error(&format!("{SHAPE}match 5 {{\n case Dot {{ }}\n case _ {{ }}\n}}")), "`Dot` is a case of Shape, which can never match int");
         assert_eq!(error("match 5 {\n case \"five\" { }\n case _ { }\n}"), "this case is str, which can never match int");
@@ -7300,7 +7300,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
                  The type is int, float, or one of u8, u16, u32, i8, i16 and i32",
             ),
             ("let p = allocate(bool, 4)".to_string(), "`bool` is a type and not a value, so it cannot be used here"),
-            ("let p = allocate(u8)".to_string(), "`allocate` takes 2 argument(s), but 1 were given"),
+            ("let p = allocate(u8)".to_string(), "`allocate` takes 2 arguments, but 1 was given"),
             ("let p = allocate(u8, 2.5)".to_string(), "the number of items should be int, but this is float"),
             (
                 "let p: pointer[str] = allocate(u8, 4)".to_string(),

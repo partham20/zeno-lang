@@ -7255,6 +7255,6 @@ safe1:
             return;
         };
         assert!(finished && printed == "<pointer[int]>\n", "{printed}{errors}");
-        assert!(errors.ends_with("by hand: 2 blocks from `allocate`, 1 of them never freed\n"), "{errors}");
+        assert!(errors.ends_with("by hand: 2 blocks from `allocate`, 1 never freed\n"), "{errors}");
     }
 }

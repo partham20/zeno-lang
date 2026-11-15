@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use crate::board;
 use crate::checker::Pointee;
+use crate::error::{counted, were};
 use crate::interpreter::{Env, Scope};
 use crate::ints::{self, Width};
 use crate::token::Span;
@@ -61,8 +62,8 @@ fn arity(name: &str, args: &[Value], min: usize, max: usize, span: Span) -> Resu
     if (min..=max).contains(&args.len()) {
         return Ok(());
     }
-    let wanted = if min == max { min.to_string() } else { format!("{min} to {max}") };
-    fatal(format!("`{name}` takes {wanted} argument(s), but {} were given", args.len()), span)
+    let wanted = if min == max { counted(min, "argument") } else { format!("{min} to {max} arguments") };
+    fatal(format!("`{name}` takes {wanted}, but {} given", were(args.len())), span)
 }
 
 fn wrong_type<T>(name: &str, wanted: &str, got: &Value, span: Span) -> Result<T> {
@@ -270,8 +271,9 @@ fn free(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         ),
         Value::Pointer(_, at) if *at != 0 => fatal(
             format!(
-                "`free` needs the pointer that `allocate` gave, and this one points {at} item(s) further on. \
-                 `zeno run` checks every `free`. A compiled program does not"
+                "`free` needs the pointer that `allocate` gave, and this one points {} further on. \
+                 `zeno run` checks every `free`. A compiled program does not",
+                counted(*at as usize, "item")
             ),
             span,
         ),

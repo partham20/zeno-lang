@@ -31,7 +31,7 @@ use crate::board::Board;
 use crate::builtins;
 use crate::bytecode::{From, Op, Proto};
 use crate::emit_bytecode;
-use crate::error::Error;
+use crate::error::{counted, Error};
 use crate::ops;
 use crate::token::Span;
 use crate::value::*;
@@ -420,8 +420,8 @@ impl Vm {
                             if case.fields.len() != count as usize {
                                 return fatal(
                                     format!(
-                                        "`{name}` carries {} value(s), but this pattern has {count}",
-                                        case.fields.len()
+                                        "`{name}` carries {}, but this pattern has {count}",
+                                        counted(case.fields.len(), "value")
                                     ),
                                     span,
                                 );
@@ -867,7 +867,7 @@ print(add(3, [0]), add(4, times=2), add(to=[9], item=5))
 
         let f = "function f(a, b) { return a }\n";
         assert_eq!(error(&format!("{f}f(1)")), "`f` needs a value for `b`");
-        assert_eq!(error(&format!("{f}f(1, 2, 3)")), "`f` takes 2 argument(s), but 3 were given");
+        assert_eq!(error(&format!("{f}f(1, 2, 3)")), "`f` takes 2 arguments, but 3 were given");
         assert_eq!(error(&format!("{f}f(1, c=2)")), "`f` has no argument named `c`");
         assert_eq!(error(&format!("{f}f(1, a=2)")), "`f` was given `a` twice");
         assert_eq!(error(&format!("{f}f(a=1, 2)")), "plain arguments must come before named ones");
@@ -896,7 +896,7 @@ print(c, Counter().bump().count, Counter(1, 2).bump(3).count)
 "#;
         assert_eq!(output(source), "Counter(count=25, step=5) 11 7\n");
         assert_eq!(error("class P {\n x: int\n}\nP()"), "`P` needs a value for `x`");
-        assert_eq!(error("class P {\n x: int\n}\nP(1, 2)"), "`P` takes 1 argument(s), but 2 were given");
+        assert_eq!(error("class P {\n x: int\n}\nP(1, 2)"), "`P` takes 1 argument, but 2 were given");
     }
 
     #[test]
@@ -1074,7 +1074,7 @@ match 3 {
         assert_eq!(error("match 5 {\n case 1 { print(1) }\n}"), "no `case` matches 5");
         assert_eq!(
             error("enum E {\n A(x: int)\n}\nmatch A(1) {\n case A(x, y) { print(x) }\n}"),
-            "`A` carries 1 value(s), but this pattern has 2"
+            "`A` carries 1 value, but this pattern has 2"
         );
         assert_eq!(
             error("match 1 {\n case Nope(x) { print(x) }\n}"),

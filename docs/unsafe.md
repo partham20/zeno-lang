@@ -189,7 +189,7 @@ The other three:
 |---|---|
 | using memory after `free` | `this reads memory that was freed. ...` |
 | `free` twice | `this memory was freed already. ...` |
-| `free(p + 1)` | `` `free` needs the pointer that `allocate` gave, and this one points 1 item(s) further on. ... `` |
+| `free(p + 1)` | `` `free` needs the pointer that `allocate` gave, and this one points 1 item further on. ... `` |
 
 Each message ends by saying what a compiled program would have done
 instead.
@@ -382,7 +382,7 @@ cargo run -- build --memory examples/driver.zeno && ./driver
 
 ```
 memory: 11 blocks made (161 bytes), at most 104 bytes in use at once, 0 collections, 2 blocks freed without the collector
-by hand: 1 blocks from `allocate`, 0 of them never freed
+by hand: 1 block from `allocate`, 0 never freed
 ```
 
 In an ordinary build and in `--firmware`, `allocate` takes memory from

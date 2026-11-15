@@ -14,7 +14,7 @@ use std::rc::Rc;
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::builtins;
 use crate::checker::Pointee;
-use crate::error::Error;
+use crate::error::{counted, were, Error};
 use crate::token::Span;
 use crate::units;
 use crate::value::*;
@@ -566,7 +566,7 @@ pub fn bind(
 ) -> Result<Vec<Option<Value>>> {
     if positional.len() > names.len() {
         return fatal(
-            format!("`{what}` takes {} argument(s), but {} were given", names.len(), positional.len()),
+            format!("`{what}` takes {}, but {} given", counted(names.len(), "argument"), were(positional.len())),
             span,
         );
     }

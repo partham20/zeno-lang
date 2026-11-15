@@ -10481,7 +10481,7 @@ print(d.value)
             return;
         };
         assert!(finished && printed == "<pointer[int]>\n", "{printed}{errors}");
-        assert!(errors.ends_with("by hand: 3 blocks from `allocate`, 1 of them never freed\n"), "{errors}");
+        assert!(errors.ends_with("by hand: 3 blocks from `allocate`, 1 never freed\n"), "{errors}");
         // A program that never calls `allocate` has no such line.
         let c = compile("print([1, 2])").unwrap();
         let (_, errors, _) = build_and_run("no-by-hand-report", &c, &["-O1", "-DZENO_MEMORY_REPORT"]).unwrap();
@@ -10492,7 +10492,7 @@ print(d.value)
         let (printed, errors, finished) =
             build_and_run("by-hand-report-no-collector", &c, &["-O1", "-DZENO_MEMORY_REPORT"]).unwrap();
         assert!(finished && printed == "<pointer[int]>\n", "{printed}{errors}");
-        assert!(errors.contains("3 blocks made (64 bytes)") && errors.contains("no collector, 1 blocks left at the end\n"), "{errors}");
+        assert!(errors.contains("3 blocks made (64 bytes)") && errors.contains("no collector, 1 block left at the end\n"), "{errors}");
         assert!(!errors.contains("by hand"), "{errors}");
     }
 

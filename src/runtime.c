@@ -290,15 +290,18 @@ static void zeno_free(void *memory) {
 #ifdef ZENO_MEMORY_REPORT
 static void zeno_memory_report(void) {
     fflush(stdout);
-    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, %zu collections",
-            zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_collections);
+    /* "1 block", "2 blocks": the report is read by people. */
+    fprintf(stderr, "memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, %zu collection%s",
+            zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
+            zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_collections, zeno_collections == 1 ? "" : "s");
     if (zeno_blocks_freed_at_once > 0) {
-        fprintf(stderr, ", %zu blocks freed without the collector", zeno_blocks_freed_at_once);
+        fprintf(stderr, ", %zu block%s freed without the collector", zeno_blocks_freed_at_once,
+                zeno_blocks_freed_at_once == 1 ? "" : "s");
     }
     fprintf(stderr, "\n");
     if (zeno_by_hand_made > 0) {
-        fprintf(stderr, "by hand: %zu blocks from `allocate`, %zu of them never freed\n", zeno_by_hand_made,
-                zeno_by_hand_made - zeno_by_hand_freed);
+        fprintf(stderr, "by hand: %zu block%s from `allocate`, %zu never freed\n", zeno_by_hand_made,
+                zeno_by_hand_made == 1 ? "" : "s", zeno_by_hand_made - zeno_by_hand_freed);
     }
 }
 #endif
@@ -561,10 +564,13 @@ static const char *zeno_text_return(size_t mark, const char *text) {
 #ifdef ZENO_MEMORY_REPORT
 static void zeno_memory_report(void) {
     fflush(stdout);
-    fprintf(stderr, "memory: %zu blocks made (%zu bytes), at most %zu bytes in use at once, no collector, %zu blocks left at the end\n",
-            zeno_blocks_made, zeno_bytes_made, zeno_most_in_use, zeno_blocks_held);
-    fprintf(stderr, "pool: %zu bytes taken, in a pool of %d\n", zeno_pool_top, (int)ZENO_POOL);
-    fprintf(stderr, "text: at most %zu bytes in use at once, in a room of %d\n", zeno_most_text, (int)ZENO_TEXT_ROOM);
+    /* "1 block", "2 blocks": the report is read by people. */
+    fprintf(stderr, "memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, no collector, %zu block%s left at the end\n",
+            zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
+            zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_blocks_held, zeno_blocks_held == 1 ? "" : "s");
+    fprintf(stderr, "pool: %zu byte%s taken, in a pool of %d\n", zeno_pool_top, zeno_pool_top == 1 ? "" : "s", (int)ZENO_POOL);
+    fprintf(stderr, "text: at most %zu byte%s in use at once, in a room of %d\n", zeno_most_text,
+            zeno_most_text == 1 ? "" : "s", (int)ZENO_TEXT_ROOM);
 }
 #endif
 
