@@ -7,7 +7,8 @@ adds the methods that nearly every program reaches for, and shows how
 one method is added to a compiler that has five engines.
 
 Part 2, [`reading-and-writing.md`](reading-and-writing.md), adds files,
-the keyboard and the command line.
+the keyboard and the command line. Part 3, [`math.md`](math.md), adds
+the rest of `math`. Part 4, [`dict.md`](dict.md), adds a dictionary.
 
 ```sh
 cargo run -- run examples/sentence.zeno

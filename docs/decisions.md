@@ -5047,3 +5047,216 @@ Two machines with different C libraries can differ in the last digit
 of a result that is not exact. **Why accept that.** The other choice
 is Zeno's own `sin`, a few hundred lines that would be slower and no
 more right than the one already on the machine.
+
+### 6.29 A dict is written `["Ada": 36]`, and one with nothing in it is `[:]`
+
+```zeno
+let ages = ["Ada": 36, "Alan": 41]
+let seen: dict[str, int] = [:]
+```
+
+A dict keeps one value under each key. It is written like a list, in
+square brackets, with `key: value` where a list has an item. Partha
+chose this form on 2026-11-15, from the forms that were put to him.
+
+**Why square brackets.** In Zeno a pair of braces is always a block of
+code, and a pair of square brackets always holds values. Somebody
+reading a line never has to work out which of the two a bracket is.
+
+**Turned down.** `{"Ada": 36}`, as in Python and JavaScript: braces
+would then mean a block in one place and a value in another, and `{}`
+after `if ready` could be read as either. JavaScript lives with exactly
+that puzzle. A word in front, as in `dict("Ada": 36)`: longer, and it
+looks like a call, which it is not.
+
+**Why `[:]` for the empty one.** `[]` is the empty list. The colon is
+what makes a dict a dict, so the empty dict keeps it. The parser knows
+which it is reading as soon as it has seen the first thing after `[`.
+
+**Unambiguous and intuitive.** After the first value comes `,` or `]`
+(a list) or `:` (a dict), and every entry after that must be the same
+kind. Mixing them is refused with a message that says how each is
+written. A dict prints exactly as it is written.
+
+### 6.30 Its type is `dict[str, int]`: the keys, then the values
+
+The same shape as `list[int]`. The name is Python's, which more people
+read than any other (the principles, last paragraph).
+
+**Turned down.** `map[str, int]`, as in Go: `map` is already the list
+method that changes every item. `[str: int]`, as in Swift: a type that
+looks like a value, where every other type in Zeno is a word.
+
+### 6.31 A key is a `str` or an `int`
+
+Names and numbers: `ages["Ada"]`, `meanings[404]`. Both compare
+exactly, which a key has to.
+
+**Why not a float.** `0.1 + 0.2` is not `0.3`, so a value stored under
+one could not be found under the other. That is a mistake the language
+can simply not offer.
+
+**Why not a bool, a list or an object.** Two keys are an `if`. A list
+or an object can change while it is a key, and then it is filed in the
+wrong place. An enum case would be a good key and is the likely next
+one.
+
+**All the keys of one dict are the same type**, and the checker refuses
+`["a": 1, 2: 3]`. That is what lets it say what a loop variable is.
+
+### 6.32 A value is an `int`, a `float`, a `bool` or a `str` *(provisional)*
+
+```
+error: a value of a dict is an int, a float, a bool or a str for now, and
+this says list[int]. Keep those in a list, and the position of each in the
+dict
+```
+
+**Why only these.** They are the values that are copied when they are
+stored. So a dict holds nothing that anything else can reach, and a
+build with no collector frees a dict in one step with no new rule. A
+list or an object as a value raises a question each: who owns it, the
+dict or the variable it came from? Is `d[key]` a look at it, and is
+`pop` the way to take it back? Those have answers, modelled on a list
+of owned items, and they will be given when a real program needs them
+(keep what works, and add when a real program asks).
+
+**Meanwhile.** Objects go in a list, and the dict holds the position of
+each: `people[index["Ada"]]`.
+
+**All the values of one dict are the same type**, like the items of a
+list that says what it holds.
+
+### 6.33 A dict remembers the order its keys were put in
+
+A loop over a dict, `keys()`, `values()` and `print` all follow the
+order in which the keys were first stored. Storing under a key that is
+there does not move it.
+
+**Why.** It is the one order a reader can predict from the program, and
+it is the same on every run, in every engine and in every build. The
+order a hash table happens to have differs between Rust and C, and the
+tests compare the output of eight builds line for line.
+
+**What it costs.** `pop` closes the gap, so it takes longer the more
+keys come after the one taken out. Finding, storing and `in` do not
+depend on the size.
+
+**Turned down.** No order at all (cheaper `pop`, and a program whose
+output changes when a key is added). Sorted by key (every store pays
+for it, whether or not anything is ever printed).
+
+### 6.34 `d[key]` of a key that is not there is a `KeyError`
+
+There are three ways to ask, and each says what the programmer knows:
+
+| Written | Means | A key that is not there |
+|---|---|---|
+| `d[key]` | it is there | `KeyError` |
+| `d.get(key)` | it may not be | `none` |
+| `key in d` | is it? | `false` |
+
+**Why not `none` from `d[key]`.** Every read would then be an
+`int or none` to test first, even where the key was stored on the line
+above. **Why not 0 or `""`.** That invents a value nobody stored, and
+a misspelt key becomes a wrong total (principle 1).
+
+**In a firmware build it is a fault** and stops the program where it
+happens, as a bad index does (6.9). `get` and `in` are how a program
+that must not stop asks first.
+
+### 6.35 `get(key)` gives the value or `none`, and `get(key, instead)` gives a value
+
+```zeno
+let fan = seen.get(40)              # int or none
+seen[code] = seen.get(code, 0) + 1  # int
+```
+
+With one argument the answer may be `none`, so the checker asks for
+the test before it is used, as it does for `find` (6.3). With two, the
+second is what to give when the key is not there, and it must be of
+the dict's value type, so the answer is a plain value.
+
+**Why one name for both.** Both ask without failing. The second
+argument does not change what is asked, only what is given instead.
+It is Python's `get`.
+
+**It never adds the key.** `get` only looks.
+
+### 6.36 `d[key] = value` stores: a new key is added, one that is there gets the new value
+
+**Why one form.** Counting, the commonest use, is
+`seen[word] = seen.get(word, 0) + 1`, where the program does not care
+which of the two happens. A program that does care asks with `in`.
+
+**Turned down.** A method (`d.set(key, value)`) beside the brackets:
+two ways to write one thing.
+
+**The same key written twice in a dict that is written out is
+refused**: `["a": 1, "a": 2]`. Stored one after the other the second
+would replace the first, which is fine in a loop and a slip of the
+hand in one pair of brackets.
+
+### 6.37 `pop(key)` takes a key out and gives its value
+
+The word a list already uses for "take it out and hand it to me"
+(6.5). A key that is not there is a `KeyError`, as for `d[key]`.
+
+**Turned down.** `remove`, which would give nothing back: then getting
+the value and removing it are two lookups. A `del d[key]` statement: a
+new kind of statement for one type. A second argument for a key that
+is missing: `in` asks.
+
+`clear()` empties the dict, as it empties a list.
+
+### 6.38 A loop over a dict is given its keys; `keys()` and `values()` are new lists
+
+```zeno
+for code in seen {
+    print(code, seen[code])
+}
+```
+
+**Why the keys.** With the key the value is one lookup away, and with
+only the value the key is lost. `in` asks about keys for the same
+reason.
+
+**Why not pairs.** `for code, count in seen` needs a value that is two
+values, and Zeno has no such thing yet. When it does, that loop can be
+added without changing what this one means.
+
+**The loop walks the keys as they were when it began**, like a loop
+over a list. The body may add keys and take them out. `keys()` and
+`values()` give lists that are the caller's own for the same reason:
+changing the dict afterwards does not change them.
+
+### 6.39 Two dicts are equal when the same keys have the same values
+
+`["x": 1, "y": 2] == ["y": 2, "x": 1]` is `true`. The order says how a
+dict was built, and `==` asks what it holds. `+` and `<` are not
+defined for dicts: there is no one meaning for either.
+
+### 6.40 A dict is a list or two and an index, and is owned like a list
+
+**How it is kept.** In a compiled program: a list of keys, a list of
+values beside it, and a table of positions that a key's hash leads
+into (open addressing, at most half full, doubled when it fills; text
+is hashed with FNV-1a). In `zeno run` and the VM: a `Vec` of entries
+and Rust's `HashMap` of positions. Both give the order of 6.33.
+
+**Why two lists.** `keys()`, `values()` and the loop are then the list
+code that already exists, and so is freeing them.
+
+**Who frees it.** In an ordinary build a dict is shared and the
+collector frees it, like a list. `owned dict[str, int]` gives it one
+owner by request. With no collector it always has one owner, and
+everything written in docs/ownership.md about a list holds for a dict:
+a second name takes it over, a parameter looks unless it says `take`,
+and the end of the owner's block frees it. The dict has copies of its
+own of any text in it (docs/text.md), and frees them too.
+
+**`[:]` with no type beside it** cannot say what it will hold, and a
+build asks for the type, as it does for `[]`.
+
+**A program that uses no dict pays nothing for them** in a build for a
+board: the C compiler drops the functions nobody calls.

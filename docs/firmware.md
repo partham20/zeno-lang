@@ -186,8 +186,9 @@ The compiler does not leave you to find this out when the board resets:
 ```
 error: nothing in this `try` can be caught. In a firmware build, an error
 the program raises itself (and `int` or `float` of text) travels as a value
-and can be caught. A division by zero, a bad index or an overflow stops the
-program. Test for it before it happens, or build without `--firmware`
+and can be caught. A division by zero, a bad index, a key that is not in a
+dict or an overflow stops the program. Test for it before it happens, or
+build without `--firmware`
 ```
 
 That is what `try { print(1 // n) } except ZeroDivisionError { ... }` gets
