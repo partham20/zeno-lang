@@ -93,12 +93,20 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then export CC=gcc; fi
           mkdir through-c
           cd through-c
+          # What goes wrong is also put on the summary page of the run,
+          # where it can be read without opening the log.
+          status=0
           for example in shapes sensor sentence; do
-            "$zeno" run ../examples/$example.zeno > ran.txt
-            "$zeno" build ../examples/$example.zeno
-            ./$example > built.txt
-            diff ran.txt built.txt
-          done
+            "$zeno" run ../examples/$example.zeno > ran.txt &&
+              "$zeno" build ../examples/$example.zeno &&
+              ./$example > built.txt &&
+              diff ran.txt built.txt || { status=1; break; }
+          done > log.txt 2>&1
+          cat log.txt
+          if [ $status -ne 0 ]; then
+            echo "::error title=Compiled through C on ${{ matrix.name }}::$(tail -n 14 log.txt | tr '\r\n' ' |' | cut -c1-1200)"
+          fi
+          exit $status
 
       - name: A program compiled through LLVM prints what `zeno run` prints
         if: matrix.compiled
@@ -107,12 +115,20 @@ jobs:
           zeno=$PWD/target/${{ matrix.target }}/release/zeno
           mkdir through-llvm
           cd through-llvm
+          # What goes wrong is also put on the summary page of the run,
+          # where it can be read without opening the log.
+          status=0
           for example in shapes sensor sentence; do
-            "$zeno" run ../examples/$example.zeno > ran.txt
-            "$zeno" build --llvm ../examples/$example.zeno
-            ./$example > built.txt
-            diff ran.txt built.txt
-          done
+            "$zeno" run ../examples/$example.zeno > ran.txt &&
+              "$zeno" build --llvm ../examples/$example.zeno &&
+              ./$example > built.txt &&
+              diff ran.txt built.txt || { status=1; break; }
+          done > log.txt 2>&1
+          cat log.txt
+          if [ $status -ne 0 ]; then
+            echo "::error title=Compiled through LLVM on ${{ matrix.name }}::$(tail -n 14 log.txt | tr '\r\n' ' |' | cut -c1-1200)"
+          fi
+          exit $status
 
       - name: Pack
         run: |
@@ -140,7 +156,19 @@ jobs:
       - name: The whole test suite, to see what it says on this system
         if: matrix.tests == 'try'
         continue-on-error: true
-        run: cargo test -q
+        run: |
+          # The whole of what the tests say is long. The end of it, and
+          # how many tests of each part failed, go on the summary page.
+          status=0
+          cargo test -q > tests.txt 2>&1 || status=$?
+          tail -n 3 tests.txt
+          parts=$(grep -E '^    [a-z_]+::tests::' tests.txt | sed 's/^ *//; s/::tests::.*//' | sort | uniq -c | tr '\n' ' ' || true)
+          echo "::notice title=The test suite on ${{ matrix.name }}::$(grep '^test result' tests.txt) Failed, by part: ${parts:-none}"
+          if [ $status -ne 0 ]; then
+            grep -m 4 -A 9 'panicked at' tests.txt | cut -c1-300 > first.txt || true
+            echo "::notice title=The first failures on ${{ matrix.name }}::$(tr '\r\n' ' |' < first.txt | cut -c1-2400)"
+          fi
+          exit $status
 
   release:
     name: release
