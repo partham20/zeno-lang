@@ -1,3 +1,151 @@
-\chapter{How Zeno Is Designed}\label{ch-design}
+\chapter{Why Zeno Is as It Is}\label{ch-design}
 
-To be written.
+Every chapter of this book has had boxes that give the reason for a
+choice. This last chapter steps back and looks at the choices
+together: the principles they come from, what Zeno took from the
+languages before it, what it left out on purpose, and what version 0.1
+does not have yet.
+
+\section{Unambiguous and intuitive}
+
+One sentence was set down at the start, and every feature was held to
+it: \emph{the entire language must be unambiguous and intuitive}.
+Unambiguous means a line has one reading, and a reader never has to
+work out which of two things a symbol means. Intuitive means the
+reading it has is the one a newcomer would guess. When the two pulled
+apart, a message from the compiler bridged them: \verb|elif|,
+\verb|&&|, \verb|def| and \verb|;| are each met with the Zeno spelling.
+
+\section{The five principles}
+
+Most decisions fall out of five principles. When two choices are
+otherwise equal, the one higher on the list wins.
+
+\begin{enumerate}
+\item \textbf{Catch the mistake as early as possible.} Before the
+  program runs is better than while it runs; while it runs is better
+  than a wrong answer. Zeno should never quietly do something the
+  programmer did not mean.
+\item \textbf{Read like plain words.} Code is read far more often than
+  it is written. A whole word beats a symbol or an abbreviation.
+\item \textbf{Punctuation has to earn its place.} A mark stays only if
+  removing it would make code harder to read or easier to get wrong.
+\item \textbf{One way to say a thing, with one meaning.} An operator or
+  keyword should not change meaning with the values it is given.
+\item \textbf{Nothing a microcontroller cannot afford.} Every feature
+  must compile to small, predictable C with no hidden runtime.
+\end{enumerate}
+
+Where Python already had a spelling that passed these tests, Zeno used
+it, because more people can read Python than any other language.
+
+\section{What came from where}
+
+Zeno set out to blend the good parts of the big languages. Here is
+where each part came from:
+
+\begin{center}
+\begin{tabular}{lp{9.4cm}}
+\toprule
+From & Zeno took \\
+\midrule
+Python & \verb|and|/\verb|or|/\verb|not|, \verb|in|, \verb|try|/\verb|except|/\verb|raise|,
+  f-strings, comprehensions, \verb|import| and \verb|from|, \verb|//| and \verb|**|,
+  the precedence of the bit operators, chained comparisons \\
+C & braces, \verb|0x| numbers, the bit operators, compiling to C itself,
+  integer promotion (without its silent cut) \\
+C++ & generics checked for each use, compiled to a copy for each type \\
+Rust & \verb|let|, one owner for a value, \verb|unsafe| blocks, the sized
+  number names, enums that carry data and a \verb|match| that must be complete \\
+Java & \verb|interface|, and a class that says which ones it is \\
+JavaScript & functions as values with closures, written in place \\
+Go and Swift & no semicolons; Go's square brackets for generics and its one
+  layout for every file \\
+Kotlin and TypeScript & a checker that follows \verb|if x is not none| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{What was left out, and why}
+
+As much of Zeno's design is in what it does not have:
+
+\begin{description}
+\item[No null that can appear anywhere.] Only \verb|T or none| can be
+  \verb|none|, and it must be asked about.
+\item[No quiet conversions.] An \verb|int| does not become a
+  \verb|float|, a \verb|bool| or a \verb|str| by itself, and nothing is
+  true or false but a \verb|bool|.
+\item[No wrapping arithmetic by default.] An overflow is an error;
+  wrapping is a word, \verb|wrap|.
+\item[No negative indexes.] A position below zero is a mistake, not the
+  other end of the list.
+\item[No inheritance.] A class is read in one place; interfaces do
+  what inheritance was mostly for.
+\item[No constructor of your own.] The fields are the constructor, and
+  a named function builds what needs checking.
+\item[No exceptions that unwind.] Errors are declared with
+  \verb|raises| and compile to jumps or to return values, with no
+  tables and no cost where they are not used.
+\item[No mutable default arguments shared between calls,] no
+  \verb|is| for comparing values, no \verb|elif|, no \verb|lambda|, no
+  \verb|=>|.
+\end{description}
+
+Each of these is something a language before Zeno had, and that
+somebody, somewhere, lost an afternoon to.
+
+\section{How decisions were made}
+
+Every decision in Zeno has a written reason, in the file
+\verb|docs/decisions.md| of the repository: what was decided, why, and
+what was turned down. A decision made on less than it deserved was
+marked \emph{provisional}. Before version 0.1 each of the eighty or so
+was read again and given one of three answers: settled, a stated limit
+of 0.1, or changed. A choice with no good reason should not be in the
+language, and if a better reason turns up for the opposite choice, the
+choice should change.
+
+The decisions are numbered, and the boxes in this book cite them, so
+anyone who wants the full argument for a rule can find it.
+
+\section{What 0.1 does not have}
+
+Every limit is refused today with a message, so each can be added later
+without changing what any program written now means. The main ones:
+
+\begin{itemize}
+\item \textbf{On a board:} reading a pin, an analogue converter or a
+  serial port, interrupts and timers. These must be designed against
+  real hardware.
+\item \textbf{Numbers:} a \verb|u64|, units made from other units, and
+  reading a file as bytes.
+\item \textbf{Types:} unions other than \verb|or none|, interfaces with
+  type parameters, and bounds on generics.
+\item \textbf{The library:} \verb|sort| by a function, reading a file
+  in pieces, \verb|program.exit|, random numbers.
+\item \textbf{Builds:} compiling for another processor in one step,
+  and a few corners such as a named function inside a function.
+\end{itemize}
+
+\hyperref[app-limits]{Appendix G} has the full list.
+
+\section{The name}
+
+Zeno is named after Zeno of Elea, whose paradoxes say that Achilles can
+never catch the tortoise: before he reaches it, he must reach halfway,
+and before that, halfway to halfway, for ever. And after the quantum
+Zeno effect, where a system watched closely enough never changes. Its
+motto is \emph{every journey is halfway done, forever}: a fitting name
+for a language that will always be almost finished, and a good thing
+for a language to be, since it means there is always the next half to
+build.
+
+\begin{summary}
+Zeno is held to one sentence, unambiguous and intuitive, and five
+principles: catch mistakes early, read like words, earn every mark, one
+way with one meaning, nothing a microcontroller cannot afford. It takes
+from Python, C, C++, Rust, Java, JavaScript, Go, Swift, Kotlin and
+TypeScript, leaves out what has cost programmers most, and writes the
+reason for every choice down.
+\end{summary}

@@ -1,3 +1,210 @@
-\chapter{How the Compiler Works}\label{ch-inside}
+\chapter{Inside Zeno}\label{ch-inside}
 
-To be written.
+Zeno was built to learn how a language is built, so the compiler is
+written to be read. It is a Rust program of about fifty thousand
+lines, with no libraries: the lexer, the parser, the checker, two
+engines that run programs and two that compile them are all written by
+hand. This chapter follows one small program through every stage, with
+the command that shows each.
+
+\begin{zeno}[file=square.zeno, dir=sq]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+\section{The stages}
+
+\begin{zenofrag}[lang=shell]
+files -> lexer -> parser -> modules -> checker -+-> interpreter     zeno run
+                                                +-> bytecode -> VM  zeno run --vm
+                                                +-> C -> cc         zeno build
+                                                +-> LLVM IR -> clang  zeno build --llvm
+\end{zenofrag}
+
+Each stage takes what the one before it made, and every stage after
+the parser works on the same syntax tree.
+
+\section{The lexer}
+
+The lexer turns the characters of a file into \emph{tokens}, the words
+of the language. It looks at one character, and that is enough to
+decide what kind of token starts there: a digit starts a number, a
+quote a string, a letter a name or a keyword, \verb|#| a comment.
+
+\begin{zeno}[file=square.zeno, dir=sq, show=no, cmd=zeno tokens {file} | head -12]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+A line end becomes a \verb|Newline| token only where a statement can
+end; after \verb|+| or inside brackets it is skipped, which is how a
+long statement goes on to the next line. The lexer reports every
+mistake it finds, not just the first, because after a bad character it
+can simply skip it and carry on. (\verb|src/lexer.rs|, about 700 lines.)
+
+\section{The parser}
+
+The parser turns tokens into a \emph{syntax tree}: the program's shape,
+with each expression inside the one it belongs to. It is a
+\emph{recursive descent} parser: one function for each kind of thing in
+the language (a statement, an \verb|if|, an expression), each calling
+the others for the parts inside it. Precedence comes from which
+function calls which: the function for \verb|+| calls the function for
+\verb|*| to read each side, so \verb|*| binds tighter without a table.
+
+\begin{zeno}[file=square.zeno, dir=sq, show=no, cmd=zeno parse {file}]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+\verb|zeno parse| prints the tree back as text, with brackets that show
+how it grouped every expression. The parser stops at the first mistake,
+because after a syntax error it no longer knows where it is, and what
+follows is usually nonsense caused by the first. (\verb|src/parser.rs|,
+about 2100 lines.)
+
+\section{Modules}
+
+The next stage loads every file the program imports, renames each
+top-level name with its module in front, and joins them into one
+program (\hyperref[ch-modules]{Programs in Several Files}). Every stage
+after it sees one tree, as if the program had been written in one
+file, so none of them had to learn about files. \verb|zeno join| shows
+the result.
+
+\section{The checker}
+
+The checker walks the tree and works out a type for every expression.
+It is the biggest stage, nearly ten thousand lines, because it is where
+most of the language's promises are kept: types, \verb|none|, units,
+sized numbers, \verb|match| covering every case, \verb|raises|, owned
+values, \verb|private|, interfaces and generics. It reports every
+mistake it is sure of, and marks a faulty expression so that nothing
+built on it is reported again.
+
+It makes several passes, because types flow backwards as well as
+forwards: a parameter's type comes from the calls, which may be below
+the function. Each pass notes what arrived at every untyped parameter,
+and the next starts from that, until a pass learns nothing new.
+
+\section{Two engines that run}
+
+\textbf{The interpreter} walks the tree. For \verb|n * n| it works out
+the left, then the right, then multiplies. It is the simplest way to
+run a program, and the default for \verb|zeno run|.
+
+\textbf{The VM} compiles the tree to \emph{bytecode}, instructions for
+a small stack machine, and runs those. \verb|n * n| becomes "push
+\verb|n|, push \verb|n|, multiply":
+
+\begin{zeno}[file=square.zeno, dir=sq, show=no, cmd=zeno bytecode {file}]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+Both engines share one file, \verb|ops.rs|, for what every operator
+does, so what \verb|*| means is written once. The VM is about twice as
+fast, and every test program runs on both and must print the same.
+
+\section{Two engines that compile}
+
+\textbf{The C backend} writes C, as \hyperref[ch-compiling]{Compiling}
+showed. \verb|square| becomes:
+
+\begin{zeno}[file=square.zeno, dir=sq, show=no, cmd=zeno build {file} > /dev/null ;; grep -A3 "^static int64_t z_square(int64_t z_n) {" square.c]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+\textbf{The LLVM backend} writes LLVM's intermediate language as text,
+with no LLVM library. Here the overflow check is spelled out: LLVM's
+own multiply-with-overflow gives the answer and a flag, and a branch
+goes to Zeno's overflow error with the line and column:
+
+\begin{zeno}[file=square.zeno, dir=sq, show=no, cmd=zeno build --llvm {file} > /dev/null ;; grep -A13 "define internal i64 @z_square" square.ll]
+function square(n: int) -> int {
+    return n * n
+}
+print(square(7))
+\end{zeno}
+
+Both backends share the C runtime, \verb|runtime.c|, which every
+compiled program carries: text, lists, printing, errors, the collector,
+the pool, and the board.
+
+\section{Agreement}
+
+Four ways of running one program could easily drift into four
+languages. They do not, because of one rule enforced by the tests:
+every test program is run by the interpreter, the VM, the C build and
+the LLVM build, in the build kinds that apply, and the outputs must be
+the same, byte for byte, error messages included. When a stage is
+changed, the tests show at once which of the others must change with
+it.
+
+\section{The files}
+
+\begin{center}
+\begin{tabular}{lp{8.4cm}}
+\toprule
+File & What it is \\
+\midrule
+\verb|main.rs| & the \verb|zeno| command \\
+\verb|token.rs|, \verb|lexer.rs| & characters to tokens \\
+\verb|ast.rs|, \verb|parser.rs| & tokens to a syntax tree \\
+\verb|printer.rs| & the tree back to text, for \verb|zeno parse| \\
+\verb|modules.rs|, \verb|package.rs| & files and packages to one tree \\
+\verb|checker.rs| & types, and every check before running \\
+\verb|value.rs|, \verb|ops.rs|, \verb|builtins.rs| & values and their operations, for both engines \\
+\verb|interpreter.rs| & runs the tree \\
+\verb|bytecode.rs|, \verb|emit_bytecode.rs|, \verb|vm.rs| & the VM \\
+\verb|emit_c.rs|, \verb|runtime.c| & the C backend and its runtime \\
+\verb|emit_llvm.rs| & the LLVM backend \\
+\verb|format.rs|, \verb|lsp.rs|, \verb|json.rs| & the formatter and the language server \\
+\verb|board.rs|, \verb|units.rs|, \verb|ints.rs| & the simulated board, units, sized numbers \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \verb|docs| folder of the repository has a walkthrough of each
+stage, written to be read beside the code, and each ends with things to
+try. They are the next book after this one.
+
+\begin{why}
+No libraries, so that every part of the compiler can be read and
+understood by one person, which was the reason for building it. An
+interpreter first, because it is the shortest way to a language that
+runs, and then C, because C reaches every microcontroller. The
+interpreter stayed, as the reference every other engine is held to.
+(Decisions 5.1 to 5.5.)
+\end{why}
+
+\begin{summary}
+A program goes through the lexer, the parser, the module loader and
+the checker, and then to one of four engines: the interpreter, the VM,
+C or LLVM. \verb|zeno tokens|, \verb|parse|, \verb|join| and
+\verb|bytecode|, and the kept \verb|.c| and \verb|.ll| files, show each
+stage. Every engine must print the same for every test program.
+\end{summary}
+
+\begin{tryit}
+\begin{enumerate}
+\item Run \verb|zeno tokens| on a file with a mistake, such as a
+  \verb|$| in the middle of a line. How many errors does the lexer give
+  for two such characters?
+\item Compare \verb|zeno bytecode| for a \verb|while| loop and for a
+  \verb|for| loop over \verb|range|.
+\item Read \verb|docs/lexer.md| beside \verb|src/lexer.rs|, and add a
+  token of your own.
+\end{enumerate}
+\end{tryit}
