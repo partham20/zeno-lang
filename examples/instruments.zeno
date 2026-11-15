@@ -1,0 +1,75 @@
+# Five small instruments, each a few lines of arithmetic that firmware
+# does every day. They use the `math` module: angles, logarithms, powers
+# of e, and rounding.
+#
+#     zeno run examples/instruments.zeno
+
+import math
+
+# A compass. A magnetometer gives the field along x and along y, and
+# `atan2` turns the two into an angle, all the way round. The angle comes
+# back in radians and says so; `.deg` changes it, and a heading is
+# counted from 0 to 360.
+function heading(x: float, y: float) -> deg {
+    let angle = math.atan2(y, x).deg
+    if angle < 0 deg {
+        return angle + 360 deg
+    }
+    return angle
+}
+
+# A thermistor. Its resistance falls as it warms, along a curve with a
+# logarithm in it (the "beta" equation). 10 kohm at 25 degC, beta 3950.
+function thermistor(ohms: float) -> float {
+    let kelvin = 1 / (1 / 298.15 + math.log(ohms / 10000.0) / 3950.0)
+    return kelvin - 273.15
+}
+
+# A level meter. Decibels are twenty times the logarithm, base ten, of
+# how many times bigger one voltage is than another.
+function decibels(volts: float, reference: float) -> float {
+    return 20 * math.log10(volts / reference)
+}
+
+# A capacitor charging through a resistor: the part of the supply it has
+# reached after `seconds`. `tau` is the resistance times the capacitance.
+function charged(seconds: float, tau: float) -> float {
+    return 1 - math.exp(-seconds / tau)
+}
+
+# A sine table for a digital-to-analogue converter of eight bits: one
+# turn in `steps` steps, each a whole number from 0 to 255.
+function sine_table(steps: int) -> list[int] {
+    var table: list[int] = []
+    for step in range(steps) {
+        let angle = step * 360 / steps * 1 deg
+        table.append(math.round(127.5 + 127.5 * math.sin(angle)))
+    }
+    return table
+}
+
+print("compass")
+let fields = [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [-1.0, 1.0], [-1.0, 0.0], [0.0, -1.0], [3.0, -4.0]]
+for field in fields {
+    let angle = heading(field[0], field[1])
+    print(f"  x {field[0]:5.1f}  y {field[1]:5.1f}  heading {angle / 1 deg:6.1f} deg")
+}
+
+print("thermistor")
+for ohms in [32650.0, 10000.0, 3603.0, 1070.0] {
+    print(f"  {ohms:8.0f} ohm  {thermistor(ohms):6.1f} degC")
+}
+
+print("level meter")
+for volts in [1.0, 0.5, 0.1, 2.0] {
+    print(f"  {volts:4.1f} V  {decibels(volts, 1.0):6.1f} dB")
+}
+
+print("capacitor, tau 0.5 s")
+for tenths in range(0, 30, 5) {
+    let seconds = tenths / 10
+    print(f"  after {seconds:.1f} s  {100 * charged(seconds, 0.5):5.1f} %")
+}
+
+print("sine table")
+print(" ", sine_table(16))

@@ -1339,8 +1339,19 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("math", "sqrt") => Ty::Builtin("sqrt"),
         ("math", "floor") => Ty::Builtin("floor"),
         ("math", "ceil") => Ty::Builtin("ceil"),
+        ("math", "e") => Ty::Float,
+        ("math", "round") => Ty::Builtin("round"),
         ("math", "sin") => Ty::Builtin("sin"),
         ("math", "cos") => Ty::Builtin("cos"),
+        ("math", "tan") => Ty::Builtin("tan"),
+        ("math", "asin") => Ty::Builtin("asin"),
+        ("math", "acos") => Ty::Builtin("acos"),
+        ("math", "atan") => Ty::Builtin("atan"),
+        ("math", "atan2") => Ty::Builtin("atan2"),
+        ("math", "exp") => Ty::Builtin("exp"),
+        ("math", "log") => Ty::Builtin("log"),
+        ("math", "log2") => Ty::Builtin("log2"),
+        ("math", "log10") => Ty::Builtin("log10"),
         ("time", "sleep") => Ty::Builtin("sleep"),
         ("time", "now") => Ty::Builtin("now"),
         ("files", "read") => Ty::Builtin("files.read"),
@@ -4793,11 +4804,38 @@ impl Checker {
                 }
                 joined
             }
-            "sqrt" | "sin" | "cos" | "floor" | "ceil" => {
+            "sqrt" | "floor" | "ceil" | "round" | "exp" | "log" | "log2" | "log10" => {
                 if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !first.is_loose() {
                     wrong(self, "a number");
                 }
-                if matches!(name, "floor" | "ceil") { Ty::Int } else { Ty::Float }
+                if matches!(name, "floor" | "ceil" | "round") { Ty::Int } else { Ty::Float }
+            }
+            // An angle goes in: a plain number is radians, as in
+            // mathematics, and `30 deg` or `0.5 rad` says which it is.
+            "sin" | "cos" | "tan" => {
+                let angle = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "rad").is_some());
+                if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !angle && !first.is_loose() {
+                    wrong(self, "a number or an angle, such as `30 deg`");
+                }
+                Ty::Float
+            }
+            // An angle comes out, and says that it is in radians.
+            "asin" | "acos" | "atan" => {
+                if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !first.is_loose() {
+                    wrong(self, "a number");
+                }
+                Ty::Quantity(Rc::from("rad"))
+            }
+            "atan2" => {
+                if self.arity(name, arguments, 2, 2, span) {
+                    for argument in arguments {
+                        let ty = argument.ty.widened();
+                        if !ty.is_number() && !ty.is_loose() {
+                            self.error(format!("`atan2` needs two numbers, but this is {ty}"), argument.span);
+                        }
+                    }
+                }
+                Ty::Quantity(Rc::from("rad"))
             }
             "sleep" => {
                 // A time, and not a voltage: `sleep(3 V)` is refused here
@@ -5654,6 +5692,12 @@ impl Checker {
                 let mut message = format!("`{}` does not work between {left} and {right}", op.text());
                 if matches!(left, Ty::Optional(_)) || matches!(right, Ty::Optional(_)) {
                     message += ". Check for `none` first";
+                }
+                // Degrees and radians meet only when one is changed.
+                if let (Ty::Quantity(a), Ty::Quantity(b)) = (&left, &right) {
+                    if units::convert(a, b).is_some() {
+                        message += &format!(". Change one of them first, with `.{a}` or `.{b}`");
+                    }
                 }
                 // One way to write it: the pointer first, then how far.
                 if matches!(op, Add) && fits(&left, &Ty::Int) && matches!(right, Ty::Pointer(_)) {
@@ -7746,6 +7790,59 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             error("print([1, 2].join(\", \"))"),
             "`join` puts text together, and this is list[int]. Make each item text first, with `str( )`"
         );
+    }
+
+    #[test]
+    fn more_of_math_is_checked() {
+        strict_ok(
+            "import math\nfrom math import atan2, e\n\
+             let n: int = math.round(2.5)\n\
+             let x: float = math.log(2) + math.log2(2) + math.log10(2) + math.exp(1) + math.e + e\n\
+             let s: float = math.sin(30 deg) + math.cos(0.5 rad) + math.tan(1) + math.sin(0.5)\n\
+             let a: rad = math.asin(0.5)\n\
+             let b: rad = math.acos(0.5) + math.atan(1) + atan2(1, 2.5)\n\
+             let d: deg = a.deg\n\
+             let back: rad = d.rad\n\
+             function turn(angle: rad) -> deg {\n    return (angle * 2).deg\n}\n\
+             print(turn(b), math.sin(a), d > 20 deg, back)",
+        );
+        // An angle, and not a time or a voltage.
+        assert_eq!(
+            error("import math\nprint(math.sin(3 s))"),
+            "`sin` needs a number or an angle, such as `30 deg`, but this is a quantity in s"
+        );
+        assert_eq!(
+            error("import math\nprint(math.tan(\"a\"))"),
+            "`tan` needs a number or an angle, such as `30 deg`, but this is str"
+        );
+        // What comes out is an angle in radians, not a plain number.
+        assert_eq!(
+            error("import math\nlet a: float = math.atan(1)"),
+            "`a` should be float, but this is a quantity in rad"
+        );
+        assert_eq!(error("import math\nprint(math.asin(30 deg))"), "`asin` needs a number, but this is a quantity in deg");
+        assert_eq!(error("import math\nprint(math.atan2(1))"), "`atan2` takes 2 arguments, but 1 was given");
+        assert_eq!(error("import math\nprint(math.atan2(1, \"x\"))"), "`atan2` needs two numbers, but this is str");
+        assert_eq!(error("import math\nprint(math.round(\"x\"))"), "`round` needs a number, but this is str");
+        assert_eq!(error("import math\nprint(math.log())"), "`log` takes 1 argument, but 0 were given");
+        assert_eq!(error("import math\nprint(math.tau)"), "module `math` has no `tau`");
+        // Degrees and radians never meet by themselves, and the message
+        // says how to bring them together.
+        assert_eq!(
+            error("import math\nprint(math.atan(1) + 90 deg)"),
+            "`+` does not work between a quantity in rad and a quantity in deg. Change one of them first, with `.rad` or `.deg`"
+        );
+        assert_eq!(
+            error("print(90 deg < 1 rad)"),
+            "`<` does not work between a quantity in deg and a quantity in rad. Change one of them first, with `.deg` or `.rad`"
+        );
+        assert_eq!(
+            error("function f(a: rad) -> rad { return a }\nprint(f(90 deg))"),
+            "`a` of `f` should be a quantity in rad, but this is a quantity in deg. Convert it with `.rad`"
+        );
+        // Other pairs are as far apart as they were.
+        assert_eq!(error("print((3 s).deg)"), "a quantity in s cannot be turned into deg. They measure different things");
+        assert_eq!(error("print((3 degC).K)"), "a quantity in degC cannot be turned into K. They measure different things");
     }
 
     #[test]

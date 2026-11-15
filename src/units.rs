@@ -12,7 +12,9 @@
 ///
 /// `degC` and `K` are kept apart: they differ by an offset, not a scale, so
 /// adding them means nothing. `deg` and `rad` are kept apart because the
-/// factor between them is not an exact number.
+/// factor between them is not an exact number: they never meet in `+` or
+/// a comparison by themselves, but `.rad` and `.deg` change one into the
+/// other when the program asks (see `convert`).
 pub const UNITS: &[(&str, &str, f64)] = &[
     ("ns", "time", 1.0),
     ("us", "time", 1e3),
@@ -83,6 +85,14 @@ fn find(name: &str) -> Option<(&'static str, &'static str, f64)> {
 /// How to turn a quantity in `from` into one in `to`, as `(3 s).ms` asks.
 /// `None` if the two measure different things.
 pub fn convert(from: &str, to: &str) -> Option<Scale> {
+    // An angle is the one thing with two units that are not a whole
+    // number apart. Asked for, it is changed: half a turn is `180 deg`
+    // and `pi rad`.
+    match (from, to) {
+        ("deg", "rad") => return Some(Scale { times: std::f64::consts::PI / 180.0, over: 1.0 }),
+        ("rad", "deg") => return Some(Scale { times: 180.0 / std::f64::consts::PI, over: 1.0 }),
+        _ => {}
+    }
     let ((_, from_kind, from_size), (_, to_kind, to_size)) = (find(from)?, find(to)?);
     if from_kind != to_kind {
         return None;
@@ -99,7 +109,12 @@ pub fn convert(from: &str, to: &str) -> Option<Scale> {
 /// both turned into: the finer of the two, so that neither loses anything.
 /// `1 s + 500 ms` is `1500 ms`. Also returns how to scale each side.
 pub fn common(a: &str, b: &str) -> Option<(&'static str, Scale, Scale)> {
-    let ((a_name, _, a_size), (b_name, _, b_size)) = (find(a)?, find(b)?);
+    let ((a_name, a_kind, a_size), (b_name, b_kind, b_size)) = (find(a)?, find(b)?);
+    // Degrees and radians convert when asked, but neither is the finer
+    // of the two, so they do not meet by themselves.
+    if a_kind != b_kind {
+        return None;
+    }
     let unit = if a_size <= b_size { a_name } else { b_name };
     Some((unit, convert(a, unit)?, convert(b, unit)?))
 }
@@ -116,6 +131,18 @@ mod tests {
         assert_eq!(convert("kWh", "J").map(|scale| scale.apply(1.0)), Some(3_600_000.0));
         assert_eq!(convert("s", "V"), None);
         assert_eq!(convert("degC", "K"), None);
+    }
+
+    #[test]
+    fn an_angle_converts_when_asked_and_never_by_itself() {
+        use std::f64::consts::PI;
+        assert_eq!(convert("deg", "rad").map(|scale| scale.apply(180.0)), Some(PI));
+        assert_eq!(convert("deg", "rad").map(|scale| scale.apply(90.0)), Some(PI / 2.0));
+        assert_eq!(convert("rad", "deg").map(|scale| scale.apply(PI)), Some(180.0));
+        assert_eq!(convert("rad", "rad").map(|scale| scale.apply(2.0)), Some(2.0));
+        assert!(common("deg", "rad").is_none());
+        assert!(common("rad", "deg").is_none());
+        assert_eq!(common("deg", "deg").map(|(unit, _, _)| unit), Some("deg"));
     }
 
     #[test]

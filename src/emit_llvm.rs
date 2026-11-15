@@ -183,6 +183,14 @@ const DECLARED: &[(&str, &str)] = &[
     ("ceil", "declare double @ceil(double)"),
     ("sin", "declare double @sin(double)"),
     ("cos", "declare double @cos(double)"),
+    ("tan", "declare double @tan(double)"),
+    ("atan", "declare double @atan(double)"),
+    ("atan2", "declare double @atan2(double, double)"),
+    ("exp", "declare double @exp(double)"),
+    ("round", "declare double @round(double)"),
+    ("zeno_asin", "declare double @zeno_asin(double, i32 signext, i32 signext)"),
+    ("zeno_acos", "declare double @zeno_acos(double, i32 signext, i32 signext)"),
+    ("zeno_log", "declare double @zeno_log(double, i32 signext, i32 signext, i32 signext)"),
     ("strcmp", "declare i32 @strcmp(ptr, ptr)"),
     ("strstr", "declare ptr @strstr(ptr, ptr)"),
     ("zeno_alloc", "declare ptr @zeno_alloc(i64)"),
@@ -3625,8 +3633,10 @@ impl Emitter<'_> {
                 }
                 return Ok(Val::new(bare_case(&owner, name), Kind::Enum(owner)));
             }
-            if name == "pi" && self.imported.get(name).is_some_and(|module| module == "math") {
-                return Ok(Val::new(float_code(std::f64::consts::PI), Kind::Float));
+            if let (Some(number), true) =
+                (emit_c::math_constant(name), self.imported.get(name).is_some_and(|module| module == "math"))
+            {
+                return Ok(Val::new(float_code(number), Kind::Float));
             }
             // `from board import led`: a pin is its number.
             if name == "led" && self.imported.get(name).is_some_and(|module| module == "board") {
@@ -3993,8 +4003,8 @@ impl Emitter<'_> {
     fn field(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
         if let ExprKind::Name(owner) = &object.kind {
             if self.lookup(owner).is_none() {
-                if owner == "math" && name == "pi" {
-                    return Ok(Val::new(float_code(std::f64::consts::PI), Kind::Float));
+                if let ("math", Some(number)) = (owner.as_str(), emit_c::math_constant(name)) {
+                    return Ok(Val::new(float_code(number), Kind::Float));
                 }
                 if owner == "board" && name == "led" {
                     return Ok(Val::new(LED.to_string(), Kind::Pin));
@@ -4571,14 +4581,34 @@ impl Emitter<'_> {
     }
 
     fn math(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let wrong = || cannot(format!("`{name}` called this way"), span);
+        if args.iter().any(|arg| arg.name.is_some()) {
+            return Err(wrong());
+        }
+        // An angle that a function works out is in radians, and says so.
+        let radians = Kind::Quantity("rad".to_string());
+        // `atan2(y, x)` is the one function of two numbers.
+        if let ("atan2", [y, x]) = (name, args) {
+            let (y, x) = (self.expr(&y.value)?, self.expr(&x.value)?);
+            if !matches!(y.kind, Kind::Int | Kind::Float) || !matches!(x.kind, Kind::Int | Kind::Float) {
+                return Err(wrong());
+            }
+            let (y, x) = (self.double(&y), self.double(&x));
+            return Ok(Val::new(self.call("double", "atan2", format!("double {y}, double {x}")), radians));
+        }
         let [arg] = args else {
-            return Err(cannot(format!("`{name}` called this way"), span));
+            return Err(wrong());
         };
         let val = self.expr(&arg.value)?;
-        if !matches!(val.kind, Kind::Int | Kind::Float) || arg.name.is_some() {
-            return Err(cannot(format!("`{name}` called this way"), span));
-        }
-        let x = self.double(&val);
+        let x = match &val.kind {
+            // `sin(30 deg)`: the C library counts in radians.
+            Kind::Quantity(unit) if matches!(name, "sin" | "cos" | "tan") => match units::convert(unit, "rad") {
+                Some(scale) => self.scaled(&val.code, scale),
+                None => return Err(cannot(format!("`{name}` of a quantity in {unit}"), span)),
+            },
+            Kind::Int | Kind::Float => self.double(&val),
+            _ => return Err(wrong()),
+        };
         Ok(match name {
             "sqrt" => Val::new(self.call("double", "zeno_sqrt", format!("double {x}, {}", at(span))), Kind::Float),
             // The C library rounds, and the runtime turns the float that
@@ -4587,8 +4617,29 @@ impl Emitter<'_> {
                 let rounded = self.call("double", if name == "floor" { "floor" } else { "ceil" }, format!("double {x}"));
                 Val::new(self.call("i64", "zeno_whole", format!("double {rounded}")), Kind::Int)
             }
+            // C's `round` sends a half away from zero, as Zeno's does.
+            "round" => {
+                let rounded = self.call("double", "round", format!("double {x}"));
+                Val::new(self.call("i64", "zeno_whole", format!("double {rounded}")), Kind::Int)
+            }
             "sin" => Val::new(self.call("double", "sin", format!("double {x}")), Kind::Float),
             "cos" => Val::new(self.call("double", "cos", format!("double {x}")), Kind::Float),
+            "tan" => Val::new(self.call("double", "tan", format!("double {x}")), Kind::Float),
+            "exp" => Val::new(self.call("double", "exp", format!("double {x}")), Kind::Float),
+            "atan" => Val::new(self.call("double", "atan", format!("double {x}")), radians),
+            // These two refuse a number that is the sine of no angle.
+            "asin" => Val::new(self.call("double", "zeno_asin", format!("double {x}, {}", at(span))), radians),
+            "acos" => Val::new(self.call("double", "zeno_acos", format!("double {x}, {}", at(span))), radians),
+            // And these a number that has no logarithm.
+            "log" | "log2" | "log10" => {
+                let base = match name {
+                    "log2" => 2,
+                    "log10" => 10,
+                    _ => 0,
+                };
+                let args = format!("double {x}, i32 signext {base}, {}", at(span));
+                Val::new(self.call("double", "zeno_log", args), Kind::Float)
+            }
             _ => return Err(cannot(format!("`math.{name}`"), span)),
         })
     }

@@ -1125,6 +1125,34 @@ static double zeno_sqrt(double x, int line, int col) {
     return sqrt(x);
 }
 
+/* A logarithm is of a number above zero. `base` is 2 or 10, or 0 for
+ * the natural one. */
+static double zeno_log(double x, int base, int line, int col) {
+    if (x <= 0.0) {
+        zeno_fail("ValueError", zeno_join(2, "cannot take the logarithm of ", zeno_str_float(x)), line, col);
+    }
+    return base == 2 ? log2(x) : base == 10 ? log10(x) : log(x);
+}
+
+/* `asin` and `acos` are given the sine or cosine of some angle, which
+ * lies from -1 to 1. */
+static void zeno_ratio(const char *name, double x, int line, int col) {
+    if (x < -1.0 || x > 1.0) {
+        zeno_fail("ValueError",
+                  zeno_join(4, "`", name, "` needs a number from -1 to 1, and this is ", zeno_str_float(x)), line, col);
+    }
+}
+
+static double zeno_asin(double x, int line, int col) {
+    zeno_ratio("asin", x, line, col);
+    return asin(x);
+}
+
+static double zeno_acos(double x, int line, int col) {
+    zeno_ratio("acos", x, line, col);
+    return acos(x);
+}
+
 /* ---------------------------------------------------------------- The board
  *
  * `from board import led` and `from time import sleep` end up here. A

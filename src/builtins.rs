@@ -757,11 +757,22 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             "math",
             vec![
                 ("pi", Value::Float(std::f64::consts::PI)),
+                ("e", Value::Float(std::f64::consts::E)),
                 ("sqrt", Value::Builtin(Builtin { name: "sqrt", call: sqrt })),
                 ("floor", Value::Builtin(Builtin { name: "floor", call: floor })),
                 ("ceil", Value::Builtin(Builtin { name: "ceil", call: ceil })),
+                ("round", Value::Builtin(Builtin { name: "round", call: round })),
                 ("sin", Value::Builtin(Builtin { name: "sin", call: sin })),
                 ("cos", Value::Builtin(Builtin { name: "cos", call: cos })),
+                ("tan", Value::Builtin(Builtin { name: "tan", call: tan })),
+                ("asin", Value::Builtin(Builtin { name: "asin", call: asin })),
+                ("acos", Value::Builtin(Builtin { name: "acos", call: acos })),
+                ("atan", Value::Builtin(Builtin { name: "atan", call: atan })),
+                ("atan2", Value::Builtin(Builtin { name: "atan2", call: atan2 })),
+                ("exp", Value::Builtin(Builtin { name: "exp", call: exp })),
+                ("log", Value::Builtin(Builtin { name: "log", call: log })),
+                ("log2", Value::Builtin(Builtin { name: "log2", call: log2 })),
+                ("log10", Value::Builtin(Builtin { name: "log10", call: log10 })),
             ],
         ),
         "time" => (
@@ -936,12 +947,105 @@ fn ceil(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     Ok(Value::Int(one_number("ceil", &args, span)?.ceil() as i64))
 }
 
+/// `round(2.5)` is 3 and `round(-2.5)` is -3: a half goes away from
+/// zero, as it is taught at school.
+fn round(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Int(one_number("round", &args, span)?.round() as i64))
+}
+
+/// The angle given to `sin`, `cos` or `tan`, in radians. A plain number
+/// is radians already, as in mathematics. An angle with a unit says
+/// which it is: `sin(30 deg)`.
+fn angle(name: &str, args: &[Value], span: Span) -> Result<f64> {
+    arity(name, args, 1, 1, span)?;
+    match &args[0] {
+        Value::Quantity(x, unit) => match crate::units::convert(unit, "rad") {
+            Some(scale) => Ok(scale.apply(*x)),
+            None => fatal(
+                format!("`{name}` needs a number or an angle, such as `30 deg`, not a quantity in {unit}"),
+                span,
+            ),
+        },
+        other => match other.number() {
+            Some(x) => Ok(x),
+            None => wrong_type(name, "a number or an angle, such as `30 deg`", other, span),
+        },
+    }
+}
+
+/// An angle that a function worked out. It is in radians, and says so.
+fn radians(x: f64) -> Result {
+    Ok(Value::Quantity(x, Rc::from("rad")))
+}
+
 fn sin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
-    Ok(Value::Float(one_number("sin", &args, span)?.sin()))
+    Ok(Value::Float(angle("sin", &args, span)?.sin()))
 }
 
 fn cos(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
-    Ok(Value::Float(one_number("cos", &args, span)?.cos()))
+    Ok(Value::Float(angle("cos", &args, span)?.cos()))
+}
+
+fn tan(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Float(angle("tan", &args, span)?.tan()))
+}
+
+/// The number given to `asin` or `acos`, which is the sine or cosine
+/// of some angle, and so lies from -1 to 1.
+fn ratio(name: &str, args: &[Value], span: Span) -> Result<f64> {
+    let x = one_number(name, args, span)?;
+    if x < -1.0 || x > 1.0 {
+        return raise("ValueError", format!("`{name}` needs a number from -1 to 1, and this is {x:?}"), span);
+    }
+    Ok(x)
+}
+
+fn asin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    radians(ratio("asin", &args, span)?.asin())
+}
+
+fn acos(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    radians(ratio("acos", &args, span)?.acos())
+}
+
+fn atan(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    radians(one_number("atan", &args, span)?.atan())
+}
+
+/// `atan2(y, x)`: the angle of the point (x, y) seen from (0, 0), all
+/// the way round, which `atan(y / x)` cannot tell.
+fn atan2(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("atan2", &args, 2, 2, span)?;
+    match (args[0].number(), args[1].number()) {
+        (Some(y), Some(x)) => radians(y.atan2(x)),
+        (None, _) => wrong_type("atan2", "two numbers", &args[0], span),
+        (_, None) => wrong_type("atan2", "two numbers", &args[1], span),
+    }
+}
+
+fn exp(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Float(one_number("exp", &args, span)?.exp()))
+}
+
+/// The number given to a logarithm, which has to be above zero.
+fn above_zero(name: &str, args: &[Value], span: Span) -> Result<f64> {
+    let x = one_number(name, args, span)?;
+    if x <= 0.0 {
+        return raise("ValueError", format!("cannot take the logarithm of {x:?}"), span);
+    }
+    Ok(x)
+}
+
+fn log(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Float(above_zero("log", &args, span)?.ln()))
+}
+
+fn log2(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Float(above_zero("log2", &args, span)?.log2()))
+}
+
+fn log10(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    Ok(Value::Float(above_zero("log10", &args, span)?.log10()))
 }
 
 /// `sleep(500 ms)`. A time without a unit is refused, because nobody can

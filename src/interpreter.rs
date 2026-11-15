@@ -1022,6 +1022,52 @@ mod tests {
     }
 
     #[test]
+    fn more_of_math() {
+        // Angles in, as a plain number (radians) or with a unit.
+        assert_eq!(
+            output("import math\nprint(math.sin(90 deg), math.cos(180 deg), math.sin(0), math.tan(0 rad), math.cos(0.0 rad))"),
+            "1.0 -1.0 0.0 0.0 1.0\n"
+        );
+        // Angles out, in radians, which `.deg` changes.
+        assert_eq!(
+            output(
+                "import math\nfrom math import atan2\n\
+                 print(math.asin(1).deg, math.acos(1), math.atan(1).deg, math.acos(-1) / 1 rad == math.pi)\n\
+                 print(atan2(1, 1).deg, atan2(1, -1).deg, atan2(-1, -1).deg, atan2(-1, 1).deg, atan2(0, -1).deg)\n\
+                 print((180 deg).rad / 1 rad == math.pi, (math.pi * 1 rad).deg, (90 deg).rad == math.asin(1))"
+            ),
+            "90 deg 0 rad 45 deg true\n45 deg 135 deg -135 deg -45 deg 180 deg\ntrue 180 deg true\n"
+        );
+        assert_eq!(
+            output(
+                "import math\nprint(math.exp(0), math.log(1), math.log(math.e), math.log2(8), math.log2(0.5), math.e > 2.718)\n\
+                 print(math.round(2.5), math.round(-2.5), math.round(2.4), math.round(-2.6), math.round(0.5), math.round(7))"
+            ),
+            "1.0 0.0 1.0 3.0 -1.0 true\n3 -3 2 -3 1 7\n"
+        );
+        assert_eq!(error("import math\nprint(math.log(0))"), "uncaught ValueError: cannot take the logarithm of 0.0");
+        assert_eq!(error("import math\nprint(math.log2(-8))"), "uncaught ValueError: cannot take the logarithm of -8.0");
+        assert_eq!(
+            error("import math\nprint(math.asin(1.5))"),
+            "uncaught ValueError: `asin` needs a number from -1 to 1, and this is 1.5"
+        );
+        assert_eq!(
+            error("import math\nprint(math.acos(-2))"),
+            "uncaught ValueError: `acos` needs a number from -1 to 1, and this is -2.0"
+        );
+        // What the checker would have caught, met while running.
+        assert_eq!(
+            error("import math\nprint(math.sin(3 s))"),
+            "`sin` needs a number or an angle, such as `30 deg`, not a quantity in s"
+        );
+        assert_eq!(error("import math\nprint(math.atan2(1, \"x\"))"), "`atan2` needs two numbers, but this is a str");
+        assert_eq!(
+            error("import math\nprint(math.atan(1) + 90 deg)"),
+            "`+` does not work between a quantity in rad and a quantity in deg"
+        );
+    }
+
+    #[test]
     fn the_arguments_of_the_program() {
         use crate::value::testing::with_outside;
         let source = "import program\nlet words = program.arguments()\nprint(len(words), words)\n\

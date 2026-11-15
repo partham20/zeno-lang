@@ -3096,9 +3096,11 @@ impl Emitter<'_> {
                 Ok(Val::plain(format!("(&zeno_case_{owner}_{name})"), Kind::Enum(owner)))
             }
             ExprKind::Name(name)
-                if self.lookup(name).is_none() && name == "pi" && self.imported.get(name).is_some_and(|m| m == "math") =>
+                if self.lookup(name).is_none()
+                    && math_constant(name).is_some()
+                    && self.imported.get(name).is_some_and(|m| m == "math") =>
             {
-                Ok(Val::plain(format!("{:?}", std::f64::consts::PI), Kind::Float))
+                Ok(Val::plain(format!("{:?}", math_constant(name).unwrap_or_default()), Kind::Float))
             }
             // `from board import led`
             ExprKind::Name(name)
@@ -4160,16 +4162,45 @@ impl Emitter<'_> {
     fn math(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
         let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
         let vals = self.sequence(&exprs)?;
+        // An angle that a function works out is in radians, and says so.
+        let radians = Kind::Quantity("rad".to_string());
+        // `atan2(y, x)` is the one function of two numbers.
+        if let ("atan2", [y, x]) = (name, vals.as_slice()) {
+            if y.is_number() && x.is_number() {
+                return Ok(Val::from(format!("atan2({}, {})", y.double(), x.double()), radians, &[y, x]));
+            }
+        }
         let [x] = vals.as_slice() else {
             return Err(cannot(format!("`{name}` called this way"), span));
         };
-        let d = x.double();
+        let d = match &x.kind {
+            // `sin(30 deg)`: the C library counts in radians.
+            Kind::Quantity(unit) if matches!(name, "sin" | "cos" | "tan") => match units::convert(unit, "rad") {
+                Some(scale) => scaled(&x.code, scale),
+                None => return Err(cannot(format!("`{name}` of a quantity in {unit}"), span)),
+            },
+            Kind::Int | Kind::Float => x.double(),
+            _ => return Err(cannot(format!("`{name}` called this way"), span)),
+        };
         Ok(match name {
             "sqrt" => Val::from(format!("zeno_sqrt({d}, {})", at(span)), Kind::Float, &[x]).failing(),
             "floor" => Val::from(format!("zeno_whole(floor({d}))"), Kind::Int, &[x]),
             "ceil" => Val::from(format!("zeno_whole(ceil({d}))"), Kind::Int, &[x]),
-            "sin" => Val::from(format!("sin({d})"), Kind::Float, &[x]),
-            "cos" => Val::from(format!("cos({d})"), Kind::Float, &[x]),
+            // C's `round` sends a half away from zero, as Zeno's does.
+            "round" => Val::from(format!("zeno_whole(round({d}))"), Kind::Int, &[x]),
+            "sin" | "cos" | "tan" | "exp" => Val::from(format!("{name}({d})"), Kind::Float, &[x]),
+            "atan" => Val::from(format!("atan({d})"), radians, &[x]),
+            // These two refuse a number that is the sine of no angle.
+            "asin" | "acos" => Val::from(format!("zeno_{name}({d}, {})", at(span)), radians, &[x]).failing(),
+            // And these a number that has no logarithm.
+            "log" | "log2" | "log10" => {
+                let base = match name {
+                    "log2" => 2,
+                    "log10" => 10,
+                    _ => 0,
+                };
+                Val::from(format!("zeno_log({d}, {base}, {})", at(span)), Kind::Float, &[x]).failing()
+            }
             _ => return Err(cannot(format!("`math.{name}`"), span)),
         })
     }
@@ -4592,8 +4623,8 @@ impl Emitter<'_> {
     fn field(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
         if let ExprKind::Name(owner) = &object.kind {
             if self.lookup(owner).is_none() {
-                if owner == "math" && name == "pi" {
-                    return Ok(Val::plain(format!("{:?}", std::f64::consts::PI), Kind::Float));
+                if let ("math", Some(number)) = (owner.as_str(), math_constant(name)) {
+                    return Ok(Val::plain(format!("{number:?}"), Kind::Float));
                 }
                 if owner == "board" && name == "led" {
                     return Ok(Val::plain("ZENO_LED", Kind::Pin));
@@ -5153,6 +5184,16 @@ fn names_in_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
                 names_in_functions(statement, true, names);
             }
         }
+    }
+}
+
+/// The numbers of the `math` module: `math.pi` and `math.e`. A compiled
+/// program has them written in it, to the last digit a float holds.
+pub(crate) fn math_constant(name: &str) -> Option<f64> {
+    match name {
+        "pi" => Some(std::f64::consts::PI),
+        "e" => Some(std::f64::consts::E),
+        _ => None,
     }
 }
 
@@ -9750,6 +9791,66 @@ print(readings.find(30))
             ("library-pop", "let xs = [\"a\"]\nprint(xs.pop(1))\n"),
             ("library-code", "let text = \"ab\"\nprint(text.code())\n"),
             ("library-char", "let n = 1114112\nprint(char(n))\n"),
+        ] {
+            same_as_interpreter(name, source);
+        }
+    }
+
+    /// The `math` module, past `sqrt`, `floor`, `ceil`, `sin` and `cos`.
+    const MATH: &str = r#"import math
+from math import atan2, e, log
+
+function turn(angle: rad) -> deg {
+    return (angle * 2).deg
+}
+
+print(math.e, e, math.pi)
+print(math.tan(0), math.tan(1), math.tan(45 deg), math.tan(math.pi / 4))
+print(math.sin(30 deg), math.cos(60 deg), math.sin(90 deg), math.cos(180 deg), math.sin(0.5 rad), math.sin(0.5))
+print(math.asin(1), math.acos(1), math.asin(0.5), math.acos(-1), math.atan(1), math.atan(-1e300))
+print(math.atan2(1, 1), math.atan2(-1, -1), math.atan2(0, -1), atan2(1.5, 0), math.atan2(0, 0))
+print(math.asin(1).deg, math.atan2(1, 1).deg, math.acos(0.5).deg, (180 deg).rad, (90 deg).rad, (1 rad).deg)
+print(math.exp(0), math.exp(1), math.exp(-1), math.exp(710), math.exp(2.5))
+print(math.log(1), math.log(math.e), log(10), math.log2(8), math.log2(1e-3), math.log10(1000), math.log10(2))
+print(math.round(2.5), math.round(-2.5), math.round(2.4), math.round(-2.6), math.round(0.5), math.round(-0.5))
+print(math.round(3), math.round(1e30), math.round(-1e30), math.round(0.49999999999999994))
+print(math.sin(math.asin(0.25)), math.cos(math.atan2(3, 4)), math.tan(math.atan(2)))
+let heading = math.atan2(1, -1)
+print(heading, heading.deg, heading.deg > 90 deg, heading * 2, heading / 1 rad)
+print(turn(math.atan(1)))
+var total = 0.0
+for step in range(360) {
+    total += math.sin(step * 1 deg) * math.sin(step * 1 deg)
+}
+print(total)
+let angles = [0 deg, 30 deg, 45 deg, 60 deg, 90 deg]
+for angle in angles {
+    print(angle, math.sin(angle), math.cos(angle), math.tan(angle.rad))
+}
+"#;
+
+    #[test]
+    fn more_of_math_is_the_same_in_every_build() {
+        no_collector_as_interpreter("math-more", MATH);
+        no_collector_as_interpreter("instruments", include_str!("../examples/instruments.zeno"));
+        // What can be caught, where errors jump. A firmware build says
+        // that nothing in the `try` can be caught, and is skipped.
+        same_as_interpreter(
+            "math-caught",
+            "import math\n\
+             for x in [8.0, 0.0, -2.5] {\n\
+             \x20   try {\n        print(math.log2(x))\n    } except ValueError as error {\n        print(error.message)\n    }\n\
+             \x20   try {\n        print(math.asin(x / 8))\n    } except ValueError as error {\n        print(error.message)\n    }\n\
+             }\n\
+             try {\n    print(math.acos(1.0000001))\n} except ValueError as error {\n    print(error.message)\n}\n",
+        );
+        // Left alone, each stops the program in every build, with the
+        // same words at the same place.
+        for (name, source) in [
+            ("math-log", "import math\nlet x = 0\nprint(math.log(x))\n"),
+            ("math-log10", "import math\nlet x = -0.001\nprint(math.exp(1))\nprint(math.log10(x))\n"),
+            ("math-asin", "import math\nlet x = 1.5\nprint(math.asin(x))\n"),
+            ("math-acos", "from math import acos\nlet x = -2\nprint(acos(x))\n"),
         ] {
             same_as_interpreter(name, source);
         }
