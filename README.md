@@ -73,6 +73,7 @@ Samples, none of them final:
 - [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/faults.zeno`](examples/faults.zeno): fault codes counted and looked up in a dict: `["mode": "auto"]`, `get`, `in`, `pop` and a loop over the keys.
 - [`examples/station`](examples/station/main.zeno): one program in four files. A weather station whose sensors, report and serial port are each a module that `main.zeno` imports.
+- [`examples/thermostat`](examples/thermostat/main.zeno): a program that needs a package. Its `zeno.package` says `needs filters in "../filters"`, and [`examples/filters`](examples/filters/main.zeno) is that package: a folder of modules with a `zeno.package` of its own.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -168,6 +169,8 @@ cargo run -- run examples/instruments.zeno      # math: atan2, log, exp, round, 
 cargo run -- run examples/faults.zeno           # a dict: fault codes counted and looked up
 cargo run -- run examples/station/main.zeno     # a program in four files: `import sensors`, `import drivers.uart`
 cargo run -- join examples/station/main.zeno    # the same four files as the one program the compiler sees
+cargo run -- run examples/thermostat/main.zeno  # a program that needs a package: `import filters.lowpass`
+cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
 cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
@@ -213,7 +216,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/library.md`](docs/library.md),
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
   [`docs/math.md`](docs/math.md), [`docs/dict.md`](docs/dict.md),
-  [`docs/modules.md`](docs/modules.md),
+  [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -312,8 +315,16 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     it is in. The files are joined into one program before it is
     checked, so every engine and every kind of build runs them the
     same. See [`docs/modules.md`](docs/modules.md))
-16. A package manager (next)
-17. Editor support: a formatter and a language server
+16. A package manager (done: a folder with a `zeno.package` is a
+    package. A program's own `zeno.package` says what it needs, in
+    plain words: `needs filters in "../filters"` for a folder, or
+    `needs units from "git address" at "v1.2.0"` for a repository.
+    `import filters.lowpass` then reads `lowpass.zeno` of that
+    package. `zeno fetch` gets the repositories with git into
+    `packages/` and pins each commit in `zeno.lock`; running a
+    program never uses the network.
+    See [`docs/packages.md`](docs/packages.md))
+17. Editor support: a formatter and a language server (next)
 
 ## Layout
 
@@ -325,6 +336,7 @@ src/ast.rs          the shapes of the syntax tree
 src/parser.rs       tokens -> syntax tree
 src/printer.rs      syntax tree -> text, for `zeno parse`
 src/modules.rs      the files of a program -> one syntax tree
+src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch`
 src/checker.rs      finds type mistakes before the program runs
 src/value.rs        what a value is while a program runs
 src/ops.rs          what each operator and step does, for both engines

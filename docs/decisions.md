@@ -5316,8 +5316,8 @@ and be read twice.
 
 **Turned down.** A list of folders to search, set outside the program
 (Python's path, C's `-I`): which file is read then depends on the
-machine. That question comes back with the package manager, which
-will have to say where other people's files are.
+machine. Where other people's files are is said in the program's
+`zeno.package`: see section 8.
 
 **The five modules that come with Zeno keep their names**: `math`,
 `time`, `board`, `files`, `program`. A file called `math.zeno` is
@@ -5431,7 +5431,7 @@ changed through it, exactly as through a `let`.
 | `from a import x` and `from b import x` | which `x`? |
 | `from a import x` and `let x = 1` at the top of the same file | which `x`? |
 | `import shapes` and `let shapes = 1` at the top of the same file | `shapes.x` is a name of the module, or a field of the variable |
-| `import a` and `import a.b` | `a.b.x` is `x` of `a.b`, or `b.x` of `a` |
+| `import a` and `import a.b`, where the module `a` declares a `b` | `a.b.x` is `x` of `a.b`, or `b.x` of `a`. (With no `b` in `a` there is one reading, and both can be imported: see 8.11) |
 | `let s = shapes` | a module is not a value |
 
 A name declared inside a function or a block hides an imported one,
@@ -5506,3 +5506,292 @@ number into all the source text.
 **The cost.** A file can have at most 999,999 lines and a program at
 most 2,000 files, so that the number fits in a C `int`. Both are
 checked.
+
+## 8. Packages
+
+A module is a file of the program itself. A **package** is a folder of
+modules that lives somewhere else: beside the program, or in somebody
+else's git repository. This section says how a program names the
+packages it needs, how an import finds a module of one, and how
+`zeno fetch` gets them. The walk through the code is in
+[`packages.md`](packages.md).
+
+**Checked against "unambiguous and intuitive".** The project file is
+read aloud as it is written (8.2). A version is one exact thing, never
+a range that something has to solve (8.4). An import still names one
+file, and a file still has one name (8.5, 8.8). A package means the
+same in every program that needs it (8.6). There is one copy of each
+package in a program (8.7). Running a program never reaches for the
+network: one command does, and it is the one you typed (8.9). And
+there is still one mechanism: a module of a package is imported with
+the words that import a file of your own.
+
+### 8.1 A package is a folder with a `zeno.package` in it
+
+```
+filters/
+    zeno.package        package filters
+    filters.zeno        the module `filters`
+    lowpass.zeno        the module `filters.lowpass`
+```
+
+The file `zeno.package` makes the folder a package and gives it its
+name. Every `.zeno` file in the folder is a module of it. Nothing is
+listed: no table of modules, no exports. That is 7.1 again, one step
+up: the folder is the package as the file is the module.
+
+A program is a package too. It has a `zeno.package` from the day it
+needs another package, and not before: a program in one folder that
+needs nothing has nothing to write.
+
+**Turned down.** A list of the package's modules in the project file
+(a Cargo `[lib]` path, a `package.json` `files` list): a second place
+that has to be kept in step with the folder.
+
+### 8.2 `zeno.package` is written in plain words
+
+```
+# What this program is called, and the packages it needs.
+package thermostat
+
+needs filters in "../filters"
+needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
+```
+
+One line names the package. One line for each package it needs. A
+comment starts with `#` and a string is written as in a program,
+because the file is split into words by Zeno's own lexer.
+
+**Why.** *Decided by Partha on 2026-11-15*, from a card with three
+options and three more in conversation. The file has two kinds of
+line, and both can be read aloud. It needs no second syntax to learn
+and no parser to add: Zeno has no dependencies, and a TOML reader
+would be the first. Minimal punctuation is the rule of the language
+(section 1), and it would be odd for the first file a newcomer opens to
+break it.
+
+**Turned down.**
+- TOML, `zeno.toml` (Cargo, Python): well known, but a second syntax,
+  and a parser for all of it to read two kinds of line.
+- A Zeno program, `package.zeno` (Swift, Zig): no new syntax, but then
+  the file can compute, and finding out what a program needs means
+  running code.
+- JSON: no comments, and more punctuation than words.
+- The address in the import line, `import units from "https://..."`
+  (Go before modules, Deno): the version is repeated in every file
+  that imports the package, and two files can disagree.
+- `needs` lines at the top of `main.zeno`: a package that is only a
+  library has no `main.zeno`.
+
+A mistake in a `zeno.package` is shown as a mistake in any file is,
+with the file, the line and what to write:
+
+```
+error: this does not say which version of `units` is needed. Add `at` and a tag,
+a branch or a commit of that repository, as in `needs units from "..." at "v1.0.0"`
+ --> zeno.package:4:1
+```
+
+### 8.3 A needed package is in a folder, or in a git repository
+
+| Line | Means |
+|---|---|
+| `needs filters in "../filters"` | the package in that folder, used where it is. The folder is counted from the folder of this `zeno.package` |
+| `needs units from "address" at "v1.2.0"` | a git repository, and a tag, a branch or a commit of it. `zeno fetch` gets it |
+
+`in` and `from` are words Zeno already has, and they say which of the
+two it is. A line with `from` and no `at` is refused: see 8.4.
+
+**Why a folder at all.** A package is written beside the first
+program that uses it, long before it has a repository of its own. And
+firmware projects often keep everything in one tree. The folder form
+makes a package something you can have in the first five minutes.
+
+**Why git, and no registry.** A registry is a server, accounts,
+uploads and a name-squatting problem, for a language whose goal is
+learning by building. Git is on every machine that builds firmware,
+it already knows how to reach a private repository with the keys that
+are there, and a commit hash already says exactly what was fetched.
+So `zeno fetch` runs `git`, and Zeno still links nothing.
+
+**Turned down.** Downloading an archive over HTTPS: Zeno would need a
+TLS library, its first dependency. A central registry with short
+names (`needs units "1.2"`): see above. *(Provisional: a registry
+could be added later as a third kind of line. The two here would stay
+as they are.)*
+
+### 8.4 A version is one exact thing: what stands after `at`
+
+`at "v1.2.0"` is a tag, a branch or a commit, looked for in that
+order. There are no ranges (`^1.2`, `>=1.0`), and a `zeno.package`
+has no `version` line of its own.
+
+**Why.** A range needs a solver, and what the solver picks depends on
+what was published this morning. Nobody can read the answer off the
+file. With one exact name after `at`, the file says what is built.
+And a `version` line in the package would be a second place for what
+the tag already says, with nothing to check that the two agree.
+
+**The cost.** Two packages that need the same package must name the
+same version (8.7). When they do not, the message says which lines to
+make agree, and a person decides. That is the work a solver would
+hide.
+
+### 8.5 An import whose first word is a needed package reads that package
+
+```zeno
+import filters              # filters.zeno in the package's folder
+import filters.lowpass      # lowpass.zeno in the package's folder
+import control              # control.zeno of the program itself
+```
+
+`zeno.package` says `needs filters ...`, so in this program an import
+that begins with `filters` is about the package. The words after it
+are a file inside the package's folder, with a dot for a folder as
+ever. `import filters` on its own is the package's module of its own
+name. Every other import is a file of the program, as before.
+
+What is written at the import is still what is written at the use
+(7.3): `filters.lowpass.start(...)`.
+
+**Why the package's name is the first word.** The reader of
+`filters.lowpass.start` sees which package it comes from, and
+`zeno.package` says where that package is. No import has to be looked
+up in a search path.
+
+**Why `import filters` is `filters.zeno`.** A small package is one
+file, and its users should write one word. Python's `__init__.py` and
+Rust's `lib.rs` do this with a special file name. Here no name is
+special: it is the file with the package's name.
+
+**Refused, each with what to write.** `import filters.filters` (it is
+`import filters`). A file `filters.zeno` of the program beside a
+needed package `filters`: `import filters` would have two readings.
+
+### 8.6 Inside a package, an import means the same in every program
+
+The files of the package `filters` import each other as `import
+lowpass` and `import filters`: files of their own folder. A package
+reaches another package only if its own `zeno.package` needs it, and
+it cannot reach a module of the program that uses it.
+
+This widens 7.2 by one word. A module is looked for from the folder
+of the **package** the importing file is in. For a file of the
+program that is the folder of the program's first file, as it always
+was.
+
+**Why.** A package is written once and used by many programs. If an
+import inside it were looked for from the program's folder, what the
+package means would depend on who uses it. This is 7.7 for packages.
+It also means a package can be run on its own: `examples/filters` has
+a `main.zeno` that tries its modules, and they are found the same way.
+
+**The program's folder is the folder of its first file.** Its
+`zeno.package` is looked for there and nowhere else. *Turned down:*
+walking up through the folders above until a project file is found
+(Cargo, npm). What an import means would then depend on a file in a
+folder you may not know is there.
+
+### 8.7 A program has one package of each name
+
+If the program needs `units` and so does `filters`, they get the same
+`units`. Fetched packages all go into one folder, `packages/`, beside
+the program's `zeno.package`, whichever package needs them. Two
+`needs` lines for one name that point at different folders, different
+repositories or different versions are refused, and the message names
+the lines.
+
+**Why.** One name is one file (7.2). With two copies of `units` in
+one program there would be two classes called `units.Length`, and a
+value of one would not be a value of the other, with both printing
+the same. npm allows this and it is a well known source of puzzles.
+In firmware it would also put the code in flash twice.
+
+### 8.8 A module of a package has the package's name in front
+
+In the joined program (7.11) the module `lowpass` of the package
+`filters` is `filters.lowpass`, and its `start` is
+`filters.lowpass.start`, whoever wrote the import. That is the name a
+compiler message uses. The package's own files write `lowpass.start`.
+The modules of the program itself keep their plain names.
+
+Because one name must be one file and one file one name, three things
+are refused when the loader meets them:
+
+| Met | Refused because |
+|---|---|
+| two different files that would both be the module `units` | which one is `units.x`? |
+| one file reached as two modules, `filters` and `lib.filters` | it would run twice, and its types would exist twice |
+| an import of the file the program starts in | it would run twice |
+
+### 8.9 Only `zeno fetch` uses the network
+
+```
+zeno fetch              in the folder of the program
+zeno fetch --update     look every version up again
+```
+
+`zeno run`, `zeno check` and `zeno build` read files and nothing
+else. A needed package that is not in `packages/` is a mistake with a
+message: "the package `units` has not been fetched ... Run `zeno
+fetch` in the folder of the program".
+
+**Why.** A build that may or may not download something is two
+different commands under one name. On a build machine with no
+network, or with firmware that must be the same next year, the one
+that downloads has to be a step somebody chose.
+
+**Turned down.** Fetching on the first `zeno run` (Cargo, Go).
+`zeno add units ...` that edits the project file: the file is two
+kinds of line, and writing one is the simplest way to say it.
+*(Provisional: `zeno new` and `zeno add` can come if typing the lines
+turns out to be a chore.)*
+
+### 8.10 `zeno.lock` pins what was fetched
+
+`zeno fetch` writes, for each fetched package, the commit it got:
+
+```
+units from "https://github.com/someone/zeno-units" at "v1.2.0" commit "9f8e7d6..."
+```
+
+The next `zeno fetch`, on this machine or another, gets that commit
+even if the tag or the branch has moved since. `--update` looks each
+`at` up again and writes the file afresh. The lock is kept with the
+program. A package in a folder (`needs ... in`) is not in it: it is
+used where it is, and there is nothing to pin.
+
+**Why.** `at "main"` is allowed (8.4), and a branch moves. Without
+the lock two people would build two programs from one source. With
+it, what `at` says is what you asked for and what the lock says is
+what you have.
+
+The lock of a needed package is not read: the program's own lock pins
+everything in the program. One file answers "what exactly is built?".
+
+### 8.11 A file can import a module and a module below it *(revises 7.8)*
+
+`import filters` and `import filters.lowpass` in one file was refused
+in 7.8, because `filters.lowpass.x` could be `x` of the module
+`filters.lowpass` or the field `x` of a `lowpass` that the module
+`filters` declares. With packages, that pair of imports is the most
+natural thing to write.
+
+It is now refused only when there really are two readings: when the
+module `filters` declares a `lowpass` of its own. Otherwise
+`filters.lowpass` can only be the module. The message, when it comes,
+names the name that clashes.
+
+### The rules, all of them
+
+1. **A package is a folder with a `zeno.package`**, which names it
+   (8.1, 8.2).
+2. **A program says what it needs** in its own `zeno.package`: a
+   folder, or a git repository and one exact version (8.3, 8.4).
+3. **An import whose first word is a needed package** reads a file of
+   that package. Any other import reads a file of the package the
+   importing file is in (8.5, 8.6).
+4. **One package of each name** in a program, and one name for each
+   module (8.7, 8.8).
+5. **`zeno fetch` fetches. Nothing else does** (8.9). `zeno.lock`
+   remembers what it got (8.10).

@@ -62,7 +62,9 @@ comes with Zeno is.
 
 1. **Where a module is looked for.** From the folder of the file you
    gave to `zeno run`, whichever file does the importing. One name is
-   one file, everywhere in the program (7.2).
+   one file, everywhere in the program (7.2). (An import whose first
+   word is a package the program needs reads that package:
+   [`packages.md`](packages.md).)
 2. **What can be imported.** Everything a file declares at its top:
    functions, classes, enums and their cases, `let`, `var` and `const`.
    What the file itself imports is not passed on (7.4).
@@ -215,16 +217,26 @@ what the renamer looks for:
 // `shapes.area`: the parser read a field of a variable `shapes`.
 // It is the name `area` of the module `shapes`.
 if let ExprKind::Field { object, name } = &expr.kind {
-    if let Some(module) = self.module_named(object).filter(|module| self.whole.contains(module)) {
-        let names = &self.declared[&module];
-        match names.contains(name) {
-            true => expr.kind = ExprKind::Name(format!("{module}.{name}")),
-            false => self.error(no_such_name(&module, name, names), span),
+    if let Some(module) = self.module_named(object) {
+        if self.starts.contains(&format!("{module}.{name}")) {
+            // Still the name of a module: `drivers.uart` of `drivers.uart.send`.
+        } else if let Some(global) = self.whole.get(&module) {
+            let names = &self.declared[global];
+            match names.contains(name) {
+                true => expr.kind = ExprKind::Name(format!("{global}.{name}")),
+                false => self.error(no_such_name(&module, name, names), span),
+            }
+            return;
         }
-        return;
+        ...
     }
 }
 ```
+
+`whole` holds the modules the file imported with `import`, each with
+the name it has in the whole program. In a program of one folder the
+two are the same word. They differ inside a package, which is the
+subject of [`packages.md`](packages.md).
 
 The one hard part is knowing when a name is *not* the module's. In
 
@@ -339,9 +351,10 @@ use it.
   across files (7.11).
 - **A module that comes with Zeno wins over a file of the same
   name.** `math.zeno` is never read by `import math` (7.2).
-- **Other people's modules.** A module is found from the program's
-  own folder and nowhere else. Saying where libraries live is the
-  package manager's job, which is the next stage.
+- **Other people's modules** are not on this page. A module of the
+  program is found from the program's own folder and nowhere else. A
+  folder of modules that lives somewhere else is a package, and
+  [`packages.md`](packages.md) is about those.
 
 ## Things to try
 
