@@ -6816,14 +6816,14 @@ pub(crate) mod tests {
         // failure is passed straight on to the caller.
         assert!(
             ir.contains(
-                "  %t4 = call zeroext i1 @zeno_parse_float(ptr %t1, i32 19, i32 17, ptr %answer.2)\n  \
+                "  %t4 = call zeroext i1 @zeno_parse_float(ptr %t1, i32 18, i32 17, ptr %answer.2)\n  \
                  br i1 %t4, label %worked3, label %failed3\n\nfailed3:\n  ret i1 false\n\nworked3:\n  \
                  %t5 = load double, ptr %answer.2\n"
             ),
             "{ir}"
         );
         // `raise` notes the error and gives back 0.
-        assert!(ir.contains("  call void @zeno_note(ptr %t13, i32 21, i32 9)\n  ret i1 false\n"), "{ir}");
+        assert!(ir.contains("  call void @zeno_note(ptr %t13, i32 20, i32 9)\n  ret i1 false\n"), "{ir}");
         assert!(ir.contains("declare zeroext i1 @zeno_parse_float(ptr, i32 signext, i32 signext, ptr)"), "{ir}");
         // A function that cannot raise is compiled exactly as before.
         let ordinary = compile(source).expect("it compiles");

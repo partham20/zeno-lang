@@ -6414,7 +6414,7 @@ print(word[5])
         // A function that can raise says whether it worked, and gives its
         // answer through a pointer. Its caller tests what came back.
         assert!(c.contains("static bool z_parse_line(const char *z_line, zeno_opt_float *zeno_result) {"));
-        assert!(c.contains("if (!zeno_parse_float(z_text, 19, 17, &t"));
+        assert!(c.contains("if (!zeno_parse_float(z_text, 18, 17, &t"));
         assert!(c.contains("if (!z_parse_line(z_line, &t"));
         assert!(c.contains(")) goto zeno_except_"));
         assert!(c.contains("if (zeno_is(zeno_caught_"));

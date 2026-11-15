@@ -17,6 +17,7 @@ mod emit_bytecode;
 mod emit_c;
 mod emit_llvm;
 mod error;
+mod format;
 mod interpreter;
 mod ints;
 mod lexer;
@@ -51,6 +52,9 @@ fn usage() {
     println!("                            files it imports are joined into");
     println!("  zeno bytecode <file.zeno> show the bytecode `zeno run --vm` runs");
     println!("  zeno build <file.zeno>    compile to C, then to a program you can run");
+    println!("  zeno format <file.zeno>   lay the file out the way Zeno lays programs");
+    println!("                            out. Several files can be named, and a");
+    println!("                            folder stands for the files in it");
     println!("  zeno fetch [folder]       get the packages that the program in this");
     println!("                            folder (or in that one) needs, as the");
     println!("                            `needs` lines of its `zeno.package` list them");
@@ -66,6 +70,8 @@ fn usage() {
     println!("  --vm                     with run: compile the program to bytecode and");
     println!("                           run that, in place of walking the syntax tree.");
     println!("                           The program does the same, faster");
+    println!("  --check                  with format: change nothing, and say which");
+    println!("                           files are not laid out that way");
     println!("  --update                 with fetch: look every version up again, and");
     println!("                           not at the commits `zeno.lock` has pinned");
     println!("  --firmware               with build: errors travel as values that every");
@@ -167,6 +173,61 @@ fn join(path: &str) -> Option<()> {
     let (_, program) = load(path)?;
     printer::print(&program).lines().for_each(value::print_line);
     Some(())
+}
+
+/// The `.zeno` files in a folder and the folders below it. The folder
+/// `packages` is left out: what `zeno fetch` put there is somebody
+/// else's, and is theirs to lay out.
+fn zeno_files(folder: &Path, found: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return eprintln!("zeno: cannot read the folder `{}`", folder.display());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if !path.ends_with(package::FOLDER) {
+                zeno_files(&path, found);
+            }
+        } else if path.extension().is_some_and(|extension| extension == "zeno") {
+            found.push(path.display().to_string());
+        }
+    }
+}
+
+/// `zeno format <file>`: write the file again in Zeno's one layout.
+/// With `check`, nothing is written: the answer is whether it would be.
+/// `None` if the file has a mistake, or (with `check`) is not laid out so.
+fn format(path: &str, check: bool) -> Option<()> {
+    let source = read(path)?;
+    let formatted = match format::format(&source) {
+        Ok(formatted) => formatted,
+        Err(errors) => {
+            for error in &errors {
+                report(&alone(path, &source), error);
+            }
+            return None;
+        }
+    };
+    if formatted == source {
+        if !check {
+            println!("{path} is laid out already");
+        }
+        return Some(());
+    }
+    if check {
+        println!("{path} is not laid out as `zeno format` lays it out");
+        return None;
+    }
+    match fs::write(path, formatted) {
+        Ok(()) => {
+            println!("Formatted {path}");
+            Some(())
+        }
+        Err(err) => {
+            eprintln!("zeno: cannot write `{path}`: {err}");
+            None
+        }
+    }
 }
 
 /// `zeno check <file>`: run the type checker, printing every error it finds.
@@ -444,6 +505,29 @@ fn main() -> ExitCode {
             match done {
                 Some(()) => ExitCode::SUCCESS,
                 None => ExitCode::FAILURE,
+            }
+        }
+        Some("format") => {
+            let check = args.iter().any(|arg| arg == "--check");
+            args.retain(|arg| arg != "--check");
+            if args.len() < 2 {
+                eprintln!("zeno: `format` needs a file or a folder, e.g. `zeno format examples/hello.zeno`");
+                return ExitCode::FAILURE;
+            }
+            // A folder stands for the `.zeno` files in it and below it.
+            let mut files = Vec::new();
+            for path in &args[1..] {
+                match Path::new(path).is_dir() {
+                    true => zeno_files(Path::new(path), &mut files),
+                    false => files.push(path.clone()),
+                }
+            }
+            files.sort();
+            // Every file is tried, so that one run says everything.
+            let done = files.iter().filter(|path| format(path, check).is_none()).count();
+            match done {
+                0 => ExitCode::SUCCESS,
+                _ => ExitCode::FAILURE,
             }
         }
         Some("fetch") => {

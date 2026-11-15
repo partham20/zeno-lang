@@ -5,19 +5,16 @@
 #   2. Punctuation has to earn its place. Braces mark blocks, and that's
 #      about it: no semicolons, no colons after if/for, no brackets around conditions.
 
-
 from math import sqrt
-
 
 # --- Variables: say once whether a value can change ---
 
 let name = "Zeno"                      # let: set once, never changes
 var count = 3                          # var: can change later
 count = count + 1                      # plain = updates an existing variable
-let ports: list[int] = [80, 443, 8080] # write the type only when you want to
+let ports: list[int] = [80, 443, 8080]  # write the type only when you want to
 
 const PI = 3.14159                     # const: fixed when the program is built
-
 
 # --- Functions ---
 
@@ -27,7 +24,6 @@ function greet(who: str, excited: bool = false) -> str {
     }
     return f"Hello, {who}."
 }
-
 
 # --- Classes: fields at the top, methods below ---
 
@@ -43,7 +39,6 @@ class Point {
 let origin = Point(0.0, 0.0)
 let here = Point(x=3.0, y=4.0)
 
-
 # --- Enums that carry data, and match to take them apart ---
 
 enum Shape {
@@ -58,7 +53,6 @@ function area(shape: Shape) -> float {
     }
     # Forget a case and the compiler tells you, before the program ever runs.
 }
-
 
 # --- Errors: try / except / raise, but checked ---
 
@@ -79,7 +73,6 @@ try {
 # Under the hood a `try` remembers one place to jump back to. There are no
 # unwinding tables as in C++, so it is cheap enough for a microcontroller.
 
-
 # --- No surprise none ---
 
 function find_user(id: int) -> str or none {
@@ -94,7 +87,6 @@ if user is not none {
     print(user.upper())                # allowed only inside this check
 }
 
-
 # --- Loops ---
 
 for shape in [Circle(1.0), Rect(2.0, 3.0)] {
@@ -108,7 +100,6 @@ while tries < 3 and ports[tries] != 8080 {
 
 let squares = [n * n for n in range(10) if n % 2 == 0]
 print(greet(name, excited=true), count, squares, origin.distance_to(here))
-
 
 # --- Functions are values, and units are types ---
 

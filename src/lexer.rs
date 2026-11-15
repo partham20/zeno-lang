@@ -30,6 +30,29 @@ pub fn lex_in(source: &str, file: usize) -> Result<Vec<Token>, Vec<Error>> {
     }
 }
 
+/// A program as it was written: the tokens, and beside them what the
+/// tokens alone do not say. `zeno format` works from this.
+pub struct Written {
+    pub tokens: Vec<Token>,
+    /// The text of each token, as it stands in the source: `0x4000_4400`
+    /// for the number, the quotes and all for a string. One for each of
+    /// `tokens`, and empty for a line break and the end of the file.
+    pub texts: Vec<String>,
+    /// Every comment, from its `#` to the end of its line, and where it is.
+    pub comments: Vec<(Span, String)>,
+}
+
+/// Turn a source file into tokens, and keep how each was written.
+pub fn lex_written(source: &str) -> Result<Written, Vec<Error>> {
+    let mut lexer = Lexer::new(source);
+    lexer.run();
+    if !lexer.errors.is_empty() {
+        return Err(lexer.errors);
+    }
+    let texts = lexer.extents.iter().map(|&(from, to)| lexer.chars[from..to].iter().collect()).collect();
+    Ok(Written { tokens: lexer.tokens, texts, comments: lexer.comments })
+}
+
 struct Lexer {
     chars: Vec<char>,
     /// Index into `chars` of the next unread character.
@@ -45,6 +68,11 @@ struct Lexer {
     /// inside brackets, as with a function written as an argument.
     outer_depths: Vec<usize>,
     tokens: Vec<Token>,
+    /// Where in `chars` the token being read began.
+    started: usize,
+    /// Where in `chars` each token began and ended: one for each of `tokens`.
+    extents: Vec<(usize, usize)>,
+    comments: Vec<(Span, String)>,
     errors: Vec<Error>,
 }
 
@@ -58,6 +86,9 @@ impl Lexer {
             depth: 0,
             outer_depths: Vec::new(),
             tokens: Vec::new(),
+            started: 0,
+            extents: Vec::new(),
+            comments: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -100,6 +131,12 @@ impl Lexer {
     // ----- Producing output -----
 
     fn push(&mut self, kind: TokenKind, span: Span) {
+        // A token is pushed when its last character has been read.
+        let written = match kind {
+            TokenKind::Newline | TokenKind::Eof => (self.pos, self.pos),
+            _ => (self.started, self.pos),
+        };
+        self.extents.push(written);
         self.tokens.push(Token { kind, span });
     }
 
@@ -113,6 +150,7 @@ impl Lexer {
         while let Some(c) = self.peek() {
             // Remember where this token starts before consuming anything.
             let span = Span { line: self.line, col: self.col };
+            self.started = self.pos;
 
             match c {
                 ' ' | '\t' | '\r' => {
@@ -122,7 +160,7 @@ impl Lexer {
                     self.advance();
                     self.end_statement(span);
                 }
-                '#' => self.comment(),
+                '#' => self.comment(span),
                 '"' | '\'' => self.string(false, span),
                 'f' if matches!(self.peek_at(1), Some('"' | '\'')) => {
                     self.advance(); // the f
@@ -156,13 +194,16 @@ impl Lexer {
 
     /// `# ...` runs to the end of the line. The line break itself is left for
     /// the main loop, because it may still end a statement.
-    fn comment(&mut self) {
+    fn comment(&mut self, span: Span) {
         while let Some(c) = self.peek() {
             if c == '\n' {
                 break;
             }
             self.advance();
         }
+        // The program does not need the comment. `zeno format` does.
+        let text: String = self.chars[self.started..self.pos].iter().collect();
+        self.comments.push((span, text.trim_end().to_string()));
     }
 
     /// A keyword or an identifier: letters, digits and underscores.
