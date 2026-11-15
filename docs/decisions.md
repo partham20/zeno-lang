@@ -4424,3 +4424,236 @@ Each was held against the five questions of 5.19 and kept.
 
 **What is left for later**, none of it part of the audit: the limits
 in 5.19f, and the lists in 5.16i and 5.17g.
+
+---
+
+## 6. The standard library
+
+### 6.1 What goes into the library, and in what order it is built
+
+The standard library is everything a program can use without writing
+it: the functions that have no module (`print`, `len`), the methods of
+text and lists, and the modules (`math`, `time`, `board`). It is built
+in this order:
+
+1. Text and lists (this stage).
+2. Reading and writing: a line from the keyboard, files, the arguments
+   a program was started with.
+3. More of `math`.
+4. A dictionary, which is a new type of the language and a stage of
+   its own.
+
+**Why text and lists first.** Everything after them is written with
+them: a file is read as text and cut into lines, and a line is found,
+sliced and joined.
+
+**What gets in.** A method is added only if (a) most programs in the
+big languages use it, and (b) it cannot be said in one short expression
+with what Zeno already has. That keeps out more than it lets in:
+
+| Left out | Because Zeno already says it |
+|---|---|
+| `text.contains(part)`, `xs.contains(x)` | `part in text`, `x in xs` |
+| `text.is_digit()` | `"0" <= ch and ch <= "9"` |
+| `sorted(xs)`, `reversed(xs)` | `xs.slice(0)`, then `sort()` or `reverse()` |
+| `xs.remove(x)` | `xs.find(x)`, then `pop(at)` (6.5) |
+| `xs.extend(ys)` | `xs += ys` |
+
+Python's `str` has 47 methods and its `list` 11. Zeno's text now has
+10 and its list 12. Every one of them was held against the five
+questions of the audit (5.19): one way to write it, one way to read
+it, nothing surprising, the same in every build, and a message that
+says what to write.
+
+### 6.2 A method is asked of a value, and a function makes a value of another kind
+
+`text.find(" ")`, `xs.sort()`, `words.join(", ")` are methods.
+`int("12")`, `str(3)`, `float("1.5")`, `u8(n)` and now `char(65)` are
+functions, each named for what it gives.
+
+**Why.** A method reads in the order things happen (3.6b), and the
+value in front says what is being worked on. A conversion has no
+value of the new kind to be asked of yet, so it is a function, and its
+name is the kind it makes.
+
+**So** the number of a character is `"A".code()` (asked of the
+character), and the character of a number is `char(65)` (made from a
+number, as `str(65)` makes `"65"`).
+
+**Turned down.** `ord` and `chr`, Python's names: abbreviations that
+say nothing to someone who has not met them (principle 2). A function
+`code("A")`: it would take a name, `code`, that half of all programs
+want for a variable.
+
+**Kept as they were.** `len`, `min`, `max` and `sum` are functions and
+stay functions. They were decided with the first interpreter, every
+example uses them, and making them methods would add a second way to
+write each for nothing.
+
+### 6.3 `find` answers a position or `none`, never -1
+
+```zeno
+let space = line.find(" ")
+if space is none { return line }
+return line.slice(0, space)
+```
+
+`text.find(part)` and `xs.find(item)` give an `int or none`.
+
+**Why.** -1 is a number. In Python `text[text.find("x")]` quietly
+reads the last character when there is no `x`. In Zeno a negative
+position is an error (2.6), so the mistake would at least stop the
+program, but far from where it was made. `none` cannot be used as a
+position at all: the checker asks for the test first (3.12), and `if`
+or `match` then gives the number (5.19h). The mistake is caught before
+the program runs (principle 1).
+
+**Turned down.** Raising an error when the thing is not there
+(Python's `index`): "not there" is an ordinary answer, not a failure.
+Having both, as Python does: two ways to ask one question.
+
+**With one owner.** `tasks.find(Task("d", 4))` only looks at what it
+is given. An item made in the brackets belongs to the statement, which
+frees it when it is over.
+
+### 6.4 A part is taken with `slice(from, to)`, and `xs[1:3]` is not Zeno
+
+`text.slice(1, 3)` and `xs.slice(1, 3)` take positions 1 and 2. `to`
+is not taken, as in `range`. `slice(from)` goes on to the end.
+
+**Why a method.** `[1:3]` would be the one place where `:` does not
+mean "a type follows". Python's slice has three optional parts and
+negative positions, and each needs a rule that has to be remembered.
+A method needs a name and nothing else.
+
+**Outside the text or the list is an `IndexError`.** Python cuts the
+slice to fit without a word, so `"abc"[2:9]` is `"c"`. A position that
+is out of range is nearly always a sum that went wrong, and Zeno says
+so, as it does for `xs[9]`.
+
+**Writing `xs[1:3]` gets told what to write**: "a part of a list or a
+str is taken with `.slice(from, to)`, as in `xs.slice(1, 3)`".
+
+**Positions in text count characters**, as `len` and `text[i]` do, and
+not bytes. In UTF-8 a character is one to four bytes, so finding
+position 7 means walking past seven characters. That is the price of
+`"wörld".slice(1, 2)` being `"ö"` and never half of it.
+
+**With one owner.** A slice of numbers or of text is a new list with
+copies. A slice of objects is refused, as `filter` is: the items would
+be in two lists, and each has one owner.
+
+### 6.5 `pop(at)`, `insert(at, item)`, `clear()` and `reverse()`
+
+`xs.pop()` takes the last item out, as before, and `xs.pop(2)` takes
+out the one at position 2. `xs.insert(0, x)` puts `x` in front; the
+position may be the length of the list, which is what `append` does.
+`clear()` empties the list. `reverse()` turns it round where it is.
+
+**Why `pop(at)` and no `remove`.** `remove` means "by value" in Python
+and "by position" in Rust, and in Java `list.remove(1)` on a list of
+numbers is a well-known trap, because it could be either. `pop(at)`
+can only be a position. Taking out by value is `find` and then `pop`,
+two lines that have to say what happens when the value is not there.
+
+**Why `clear()`.** Most lists are held by a `let`, which cannot be
+given a new list.
+
+**Why `reverse()` and `sort()` change the list and give nothing back.**
+A new list is a new block of memory, which a program on a small board
+may not want to spend. And a method that gives the list back invites
+`let ys = xs.sort()`, where it is not clear whether `xs` changed. A
+copy is asked for by name: `xs.slice(0)`.
+
+**With one owner** `pop(at)` and `clear()` take items out, so they are
+held to the rules of `pop()` (5.15e): only the owner, not in a loop
+over the list, and on a line of its own. `insert` keeps what it is
+given, as `append` does. A method of a class may do all of them to a
+list its object holds (5.19k).
+
+### 6.6 `sort()` is for numbers and text, smallest first, and is heapsort in every engine
+
+Only a list of ints, floats, sized numbers or text can be sorted.
+Anything else is refused: "`sort` puts numbers or text in order,
+smallest first, and this is list[bool]. There is no one order for
+those items, so write the loop that puts them in yours".
+
+**Why only those.** They are what `<` compares, and each has one order
+that nobody has to be told. Tasks could be ordered by name or by
+priority, and a `sort()` that picked one would be a guess. Sorting by
+a function that the program gives is left for when a real program
+needs it *(provisional)*.
+
+**Why heapsort.** It sorts inside the list, so it asks for no memory.
+It is a loop and not a function that calls itself, so it needs no
+deep stack, and MISRA has nothing to say against it. It takes about
+n log n steps whatever the order was to begin with, so there is no bad
+case to find on the bench.
+
+**Why the interpreter does not use Rust's `sort`.** Decision 5.5d says
+a compiled program prints what `zeno run` prints. Heapsort may swap two
+items that compare equal, and that can be seen: `0.0` and `-0.0` are
+equal and print differently. So `zeno run` sorts with the same steps
+as the compiled program, written once in Rust (`builtins.rs`) and once
+in C (`runtime.c`), and a test sorts such a list in every build.
+
+**Turned down.** C's `qsort`: it is missing from some firmware C
+libraries, and the order it leaves equal items in is not defined.
+
+**Text is ordered by the code of each character**, as `<` orders it,
+so `"B"` comes before `"a"`.
+
+### 6.7 `join` is a method of the list
+
+`words.join(", ")` reads in order: the words, joined with a comma.
+Python's `", ".join(words)` starts with the least important part.
+JavaScript and Rust write it Zeno's way.
+
+**Only a list of text.** A list of numbers is refused, with what to do:
+"Make each item text first, with `str( )`". Nothing in Zeno turns into
+text by itself (2.3).
+
+### 6.8 `code()` needs exactly one character, and `char` refuses 0
+
+`"A".code()` is 65 and `char(65)` is `"A"`. The numbers are Unicode's,
+so `"€".code()` is 8364.
+
+`code()` on text that is empty, or longer than one character, is a
+`ValueError`. Taking the first character without a word would hide a
+mistake.
+
+`char(n)` is a `ValueError` for a number that is no character: below
+1, above 1114111, or in the range Unicode keeps free (55296 to 57343).
+
+**Why not `char(0)`** *(provisional)*. In a compiled program text ends
+at the first zero byte, as in C, so text with a zero in it would be
+cut short there and not in `zeno run`. Bytes that may be zero belong
+in a `list[u8]`.
+
+### 6.9 In a firmware build, a bad position or a bad code stops the program
+
+A slice out of range, `insert` or `pop` at a position that is not
+there, `code()` of two characters and `char(0)` are faults, as a bad
+index always was (5.5l): `zeno run` and an ordinary build raise an
+error that can be caught, and a firmware build stops.
+
+The rule of 5.19m now covers `ValueError` as well: a function that
+says `raises ValueError` with nothing in it that raises one as a value
+is refused in a firmware build. `int(text)` does raise one as a value
+there, so `raises ValueError` beside `int(text)` is still right.
+
+### 6.10 These methods are written in Rust and C, not in Zeno *(provisional)*
+
+Each method is written once for `zeno run` and the VM (`builtins.rs`),
+described to the checker (`checker.rs`), and compiled by both backends
+(`emit_c.rs`, `emit_llvm.rs`) into a call of one C function in
+`runtime.c`.
+
+**Why not in Zeno itself.** Two things are missing. A library written
+in Zeno has to be brought into the program that uses it, which is the
+next stage (modules across files). And `pop(at)`, `insert` and `clear`
+take items out of a list or put them in, which a function that was
+only lent the list may not do when each item has one owner (5.15e).
+They have to be built in.
+
+Once modules exist, what can be written in Zeno will be.

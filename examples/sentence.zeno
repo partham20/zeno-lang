@@ -1,0 +1,120 @@
+# Lines from a sensor, in the style of a GPS receiver:
+#
+#     $TEMP,21.5,19.0,22.25*07
+#
+# A `$`, a name, some readings with commas between, a `*`, and a checksum
+# in hex: every character between the `$` and the `*`, XORed together.
+#
+# This uses the methods text and lists have (docs/library.md), and
+# builds every way, with no collector too:
+#
+#     zeno run examples/sentence.zeno
+#     zeno build --no-collector --memory examples/sentence.zeno && ./sentence
+
+# `code()` is the number of one character: 65 for "A".
+function checksum(body: str) -> int {
+    var sum_ = 0
+    for ch in body {
+        sum_ = sum_ ^ ch.code()
+    }
+    return sum_
+}
+
+# The part between `$` and `*`. `find` answers with a position, or with
+# `none` when there is no `*`, and the answer cannot be used as a number
+# until that has been asked.
+function body_of(line: str) -> str or none {
+    let star = line.find("*")
+    if star is none or not line.starts_with("$") {
+        return none
+    }
+    return line.slice(1, star)
+}
+
+# The two hex digits after the `*`, as a number.
+function sent_sum(line: str) -> int or none {
+    let star = line.find("*")
+    if star is none or len(line) != star + 3 {
+        return none
+    }
+    let digits = "0123456789ABCDEF"
+    let high = digits.find(line.slice(star + 1, star + 2))
+    let low = digits.find(line.slice(star + 2))
+    if high is none or low is none {
+        return none
+    }
+    return high * 16 + low
+}
+
+# The middle reading. The caller's list is left as it was: `slice(0)` is
+# a copy of all of it, and the copy is what gets sorted.
+function median(values: list[float]) -> float {
+    let sorted = values.slice(0)
+    sorted.sort()
+    return sorted[len(sorted) // 2]
+}
+
+function report(line: str) -> str {
+    let body = body_of(line)
+    let sent = sent_sum(line)
+    if body is none or sent is none {
+        return "not a sentence"
+    }
+    if checksum(body) != sent {
+        return f"bad checksum: {checksum(body):02X}, not {sent:02X}"
+    }
+    let fields = body.split(",")
+    let name = fields.pop(0)
+    var readings: list[float] = []
+    for field in fields {
+        try {
+            readings.append(float(field))
+        } except ValueError {
+            return f"{name}: `{field}` is not a number"
+        }
+    }
+    if len(readings) == 0 {
+        return f"{name}: no readings"
+    }
+    fields.insert(0, f"median {median(readings)} of")
+    return f"{name}: " + fields.join(" ")
+}
+
+# Makes a sentence, to try the other direction: `char` is `code` backwards.
+function sentence(name: str, readings: list[float]) -> str {
+    var fields = [name]
+    for reading in readings {
+        fields.append(str(reading))
+    }
+    let body = fields.join(",")
+    return f"${body}*{checksum(body):02X}"
+}
+
+let lines = [
+    sentence("TEMP", [21.5, 19.0, 22.25]),
+    "$VOLT,3.3,3.1,3.4,3.2,3.3*07",
+    "$VOLT,3.3,3.1*00",
+    "$VOLT,3.3,high*21",
+    "$FLOW*12",
+    "hello",
+]
+for line in lines {
+    print(line)
+    print("  ", report(line))
+}
+
+# The names of what arrived, in order, and without the ones that failed.
+var names: list[str] = []
+for line in lines {
+    let body = body_of(line)
+    if body is not none {
+        let comma = body.find(",")
+        if comma is not none and body.slice(0, comma) not in names {
+            names.append(body.slice(0, comma))
+        }
+    }
+}
+names.sort()
+names.reverse()
+print(names.join(" > "))
+print(char(90) + char(101) + char(110) + char(111))

@@ -9668,6 +9668,8 @@ print(readings.find(30))
         // collector, where `clear`, `pop(at)` and `insert` must leave 0
         // blocks behind.
         no_collector_as_interpreter("library", LIBRARY);
+        // A program that uses them for a job: lines from a sensor.
+        no_collector_as_interpreter("sentence", include_str!("../examples/sentence.zeno"));
     }
 
     #[test]

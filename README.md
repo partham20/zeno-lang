@@ -68,6 +68,7 @@ Samples, none of them final:
 - [`examples/commands.zeno`](examples/commands.zeno): commands read from text, as an enum whose cases carry values, with no collector. A line that is no command is `none`.
 - [`examples/handlers.zeno`](examples/handlers.zeno): steps kept as function values and faults kept as errors, with no collector. Each has one owner, which frees it.
 - [`examples/driver.zeno`](examples/driver.zeno): a driver for a serial port, with a queue of bytes that is allocated and freed by hand and three registers, inside `unsafe { }`.
+- [`examples/sentence.zeno`](examples/sentence.zeno): lines from a sensor, checked and taken apart with `find`, `slice`, `sort`, `join` and `code`, the methods of text and lists.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -157,6 +158,7 @@ cargo run -- build --no-collector --memory examples/words.zeno   # split, map, f
 cargo run -- build --no-collector --memory examples/scheduler.zeno  # lists of objects with no collector and no `owned`: each list frees its items
 cargo run -- build --no-collector --memory examples/commands.zeno   # enum cases that carry values, and values that may be none, with no collector
 cargo run -- build --no-collector --memory examples/handlers.zeno   # function values and kept errors with no collector: each has one owner
+cargo run -- run examples/sentence.zeno         # the methods of text and lists: find, slice, sort, join, code
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
 cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
@@ -198,7 +200,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
   [`docs/one-owner.md`](docs/one-owner.md), [`docs/enums-and-none.md`](docs/enums-and-none.md),
   [`docs/functions-and-errors.md`](docs/functions-and-errors.md),
-  [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md), [`docs/vm.md`](docs/vm.md),
+  [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md),
+  [`docs/library.md`](docs/library.md), [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
@@ -266,7 +269,15 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       file, a method can take out what its object holds, and a firmware
       build refuses what it cannot do instead of doing something else.
       See [`docs/audit.md`](docs/audit.md))
-14. A standard library (next)
+14. A standard library (in progress)
+    - Text and lists (done: `find`, `slice`, `code` and `char` for text;
+      `insert`, `pop(at)`, `reverse`, `sort`, `clear`, `find`, `slice`
+      and `join` for lists, in every engine and every kind of build.
+      See [`docs/library.md`](docs/library.md))
+    - Reading and writing: the keyboard, files, and the arguments a
+      program was started with (next)
+    - More of `math`
+    - A dictionary
 15. Modules across files
 16. A package manager
 17. Editor support: a formatter and a language server
