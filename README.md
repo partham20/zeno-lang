@@ -172,6 +172,7 @@ cargo run -- join examples/station/main.zeno    # the same four files as the one
 cargo run -- run examples/thermostat/main.zeno  # a program that needs a package: `import filters.lowpass`
 cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
 cargo run -- format --check examples            # is every example laid out the way `zeno format` lays programs out?
+python3 editors/talk.py target/debug/zeno examples/shapes.zeno  # play the editor's part to `zeno lsp`, and print both sides
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
 cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
@@ -218,7 +219,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
   [`docs/math.md`](docs/math.md), [`docs/dict.md`](docs/dict.md),
   [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
-  [`docs/format.md`](docs/format.md),
+  [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -333,8 +334,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       stays, so a program cannot come to mean something else, and the
       formatter checks that on every run. `--check` only looks.
       See [`docs/format.md`](docs/format.md))
-    - A language server, so that an editor shows mistakes as you type
-      (next)
+    - A language server (done: `zeno lsp` speaks the Language Server
+      Protocol, so VS Code, Neovim, Helix and others show the mistakes
+      in a file as it is typed, from the text in the editor, and lay
+      it out on save. It is the `zeno` program itself, running the
+      checker `zeno check` runs. Colours and setup for each editor
+      are in [`editors/`](editors/README.md).
+      See [`docs/lsp.md`](docs/lsp.md))
+18. Whatever real programs turn out to need (next)
 
 ## Layout
 
@@ -348,6 +355,9 @@ src/printer.rs      syntax tree -> text, for `zeno parse`
 src/modules.rs      the files of a program -> one syntax tree
 src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch`
 src/format.rs       `zeno format`: one layout for every file
+src/json.rs         reads and writes JSON, for the language server
+src/lsp.rs          `zeno lsp`: the language server an editor starts
+editors/            colours and setup for VS Code, Vim, Neovim and Helix
 src/checker.rs      finds type mistakes before the program runs
 src/value.rs        what a value is while a program runs
 src/ops.rs          what each operator and step does, for both engines

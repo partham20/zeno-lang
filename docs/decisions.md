@@ -5799,16 +5799,17 @@ names the name that clashes.
 ## 9. Editor support
 
 What an editor needs from a language: a formatter, so that every file
-looks the same, and later a language server, so that mistakes show as
-you type. This section starts with the formatter. The walk through
-the code is in [`format.md`](format.md).
+looks the same, and a language server, so that mistakes show as
+you type. The walks through the code are in [`format.md`](format.md)
+and [`lsp.md`](lsp.md).
 
 **Checked against "unambiguous and intuitive".** There is one layout
 and nothing to configure (9.1). Formatting cannot change what a
 program means, and the formatter proves that to itself on every run
 (9.2). Each rule of spacing is the one the examples and the documents
 have used since the first stage, so `zeno format` surprises nobody
-who has read Zeno (9.5).
+who has read Zeno (9.5). The language server shows what `zeno check`
+shows, and nothing it would have to guess (9.10, 9.11).
 
 ### 9.1 One layout, and no options
 
@@ -5977,3 +5978,83 @@ folder `packages`: what `zeno fetch` put there is somebody else's.
 **Turned down.** Printing the result and leaving the file (gofmt's
 default): the common wish is to fix the file, and the common wish
 should be the short command.
+
+### 9.10 A language server, and it is the `zeno` program itself
+
+`zeno lsp` speaks the Language Server Protocol on its standard input
+and output. An editor starts it and is then told the mistakes in each
+open file as it is typed, and can ask for a file to be laid out.
+
+**Why the protocol.** Writing a plugin for each editor is one piece
+of work per editor, each in that editor's own language. The protocol
+turns that into one server, which VS Code, Neovim, Helix, Zed, Emacs
+and others can all use. What is left per editor is a few lines that
+say "for `.zeno` files, start `zeno lsp`", and the colours.
+
+**Why inside `zeno`.** The server shows exactly what `zeno check`
+shows, because it runs the same loader and the same checker in the
+same program. A separate server program would be a second thing to
+build, install and keep at the same version. There is still no
+library: the protocol is JSON with a length in front, and
+`src/json.rs` reads and writes it in 250 lines.
+
+**Turned down.** A server written in TypeScript on a ready-made
+library: quick to start, but a second implementation of "what is a
+mistake in Zeno", which is the one thing that must not exist twice.
+
+### 9.11 The server shows mistakes and lays out, and nothing it has to guess
+
+| The editor says | The server does |
+|---|---|
+| a file was opened, or its text changed | checks every open file, and sends the mistakes of each file whose mistakes changed |
+| lay this file out | answers with the file as `zeno format` writes it |
+| what is under the cursor? where is this declared? | says it has no answer |
+
+A mistake is marked from where the checker says it is to the end of
+the word there, with the message `zeno check` prints.
+
+**Why no "go to declaration" yet.** *(Provisional.)* To answer it
+rightly the server must know which declaration a name means, with
+every rule of scope the checker applies. Guessing from the spelling
+is right most of the time, and an editor that is wrong some of the
+time teaches you not to trust it. The answer has to come from the
+checker, which does not record it yet. That is the next step for the
+server, and hovering and completion come from the same record.
+
+### 9.12 The editor's text is the program, and its folder is worked out
+
+The server checks what is in the editor, not what is on disk: a file
+that is open is read from the editor, also when another file imports
+it, and only a file that is not open is read from disk. So a mistake
+shows as it is typed, before anything is saved.
+
+`zeno check` is given the file a program starts in, and that file's
+folder is the program's (8.6). An editor opens any file, perhaps
+`drivers/uart.zeno`. The server takes as the program's folder the
+nearest folder, from the file's own upward, that has a `zeno.package`
+or a `main.zeno`, and no folder above the one the editor has open.
+With neither, it is the file's own folder, as for `zeno check`.
+
+**Why this is not the walking up that 8.6 turned down.** 8.6 is about
+what a program *means*, and that must not depend on a folder above.
+This is about which program a file on the screen most likely belongs
+to, so that its imports can be found at all. If the guess is wrong
+the worst is a mistake shown that `zeno check` on the real first file
+would not show, and a `zeno.package` in the right folder settles it.
+
+**Every open file is checked at every change.** A change in one file
+can make or mend a mistake in a file that imports it. Programs are
+small and the checker is fast, so the simple thing is done:
+everything open is checked again, and only what changed is sent.
+
+### 9.13 Colours are per editor, and are not the server's work
+
+The repository has a grammar for VS Code and a syntax file for Vim
+and Neovim, in `editors/`. Both know Zeno's words from a list.
+
+**Why not from the server.** The protocol can carry colours
+("semantic tokens"), but an editor asks for them after the file is
+checked, so the text would flash from plain to coloured. A grammar in
+the editor colours at once and needs no server at all. *(Provisional:
+semantic tokens can be added on top for what a grammar cannot know,
+such as whether a name is a variable or a function.)*
