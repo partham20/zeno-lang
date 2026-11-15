@@ -6106,6 +6106,14 @@ in can use this (10.1). There is no second level and no exception to
 remember. The message for a private name says that it is private and
 what to change, and never "no such name" (10.2).
 
+An interface is declared with one word, and a class says which
+interfaces it is with one more (10.4). Whether a class is a `Shape`
+is written on its first line and checked there. The class writes
+each function exactly as the interface does (10.6), so there is one
+way to write it and nothing to work out. A list of circles is not
+quietly a list of shapes (10.7), and nothing is cast: a list that is
+written out is told by the place it goes what it is a list of.
+
 ### 10.1 `private`: for the file it is written in
 
 ```zeno
@@ -6228,3 +6236,265 @@ This is the rule Rust has for a struct with a private field.
 
 A class whose only private parts are functions is built as ever:
 there is nothing to fill in.
+
+### 10.4 `interface`, and a class says which ones it is
+
+```zeno
+interface Shape {
+    function area(self) -> float
+    function scale(self, by: float)
+}
+
+class Circle is Shape {
+    radius: float
+
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+
+    function scale(self, by: float) {
+        self.radius = self.radius * by
+    }
+}
+
+function total(shapes: list[Shape]) -> float { ... }
+```
+
+An interface is a list of functions. A class says, on its first
+line, which interfaces it is, and from then on an object of the class
+goes wherever one of them is wanted. One function, `total`, serves
+every class that is a `Shape`, the ones written and the ones not
+written yet.
+
+**Why the class has to say so.** The other design is that any class
+with an `area` and a `scale` is a `Shape` without a word (Go, and
+Python's protocols). It saves one line, and costs two things. A class
+that happens to have an `area` meaning something else is a `Shape` by
+accident. And a class that was meant to be one and has `scale`
+misspelt is found out far away, at some call that passes it, with a
+message about that call. With `is Shape` the promise is written where
+the reader of the class sees it, and it is checked there:
+
+```
+error: `Dot` says it is a `Shape`, and a `Shape` has
+`function scale(self, by: float)`. Give `Dot` that function
+```
+
+*(Principle 1: found before the program runs, at the place the
+mistake is. And "unambiguous": whether a class is a `Shape` is
+written down, never worked out.)*
+
+**Why the words `interface` and `is`.** `interface` is the word Java,
+C#, Go and TypeScript use for this, and the word a firmware engineer
+uses for the thing itself: what a part shows to the rest. `trait` and
+`protocol` mean it only to people who already know those languages.
+`is` is already a word of the language, it reads as the sentence it
+is (`class Circle is Shape`), and it cannot be taken for the test
+`x is none`: one comes after the name of a class being declared, the
+other between two values. `implements` says the same in four more
+letters, and a colon (`class Circle: Shape`) is punctuation where a
+word will do (1.4).
+
+**A class has no parent class.** `class B is A` where `A` is a class
+is refused, and the message says what to do instead: declare what
+the two share as an interface. Inheriting fields and code brings the
+questions every language with it has had to answer (which `area`
+runs, what the object looks like in memory, what happens when two
+parents have the same field), and none of them is needed to write
+`total`. A class can be several interfaces: `class Box is Named,
+Sized`.
+
+### 10.5 An interface has functions, and nothing about how they are done
+
+No fields, no bodies, `self` first, and a type on every parameter and
+on the result.
+
+**Why no fields.** How a class keeps its data is the class's own
+business, and in firmware the layout of an object is something its
+author decides. A field in an interface would decide it for every
+class. If other code needs the value, the interface has a function
+that returns it.
+
+**Why no bodies.** A body in an interface is code that every class
+gets without writing it, which is inheritance again by another door,
+with its question of which body runs. With none, the code of a
+function is in exactly one place: the class.
+
+**Why everything is typed.** Elsewhere a type that is left out is
+worked out from the body. Here there is no body. The interface
+is all a caller has, so all of it is written.
+
+Also refused, each with a message that says so *(provisional)*: a
+default for a parameter, type parameters on an interface or on one of
+its functions, an interface that is another interface, and a private
+function (an interface lists what other code may ask).
+
+### 10.6 The class writes each function as the interface does
+
+The same names for the parameters, the same types, the same result.
+
+```
+error: `scale` of `Dot` is `function scale(self, factor: float)`, and
+`Shape` asks for `function scale(self, by: float)`. Write the two the
+same
+```
+
+**Why the names count.** An argument can be given by name (3.6):
+`shape.scale(by=2.0)`. Through the interface that has to mean the
+same for every class, so every class calls it `by`.
+
+**Why the types are the same and not merely fitting.** A class could
+safely take more than the interface asks, or return less. Allowing it
+means a reader has to work out whether two different first lines
+agree. The same line twice needs no working out. *("One obvious way
+to write each thing.")*
+
+**A class may raise less than its interface says, never more.**
+Whoever calls through the interface knows only what the interface
+says: `function send(self, text: str) -> int raises Full`. A class
+whose `send` never fills up raises nothing, and that is fine. One
+that raises something the interface does not list is an error at the
+class, because the caller could not have been warned. In a firmware
+build this is also what tells the compiler that a call through the
+interface carries an error as a value (5.5l).
+
+### 10.7 A class goes where its interface is wanted, and a list of it does not
+
+A `Circle` is a `Shape` in a variable, a parameter, a result, a
+field, and in each of those with `or none`. A `list[Circle]` is not a
+`list[Shape]`.
+
+**Why not the list.** Whoever holds it as a list of shapes may append
+a `Square`, and the first holder would then find a square in a list
+of circles. This is the reason a `list[u8]` is not a `list[int]`
+(2.8c), and it is given in the message:
+
+```
+error: `shapes` should be list[Shape], but this is list[Circle].
+Whoever holds it as a list of Shape could append another class to it.
+Say what the list holds where it is made, as in
+`let items: list[Shape] = [...]`
+```
+
+**A list that is written out is a list of what the place wants.**
+`[Circle(1.0), Square(2.0)]` has items of two classes, and the items
+do not say that they are shapes. The place does: a `let` with a type,
+a parameter, a result, a field, an `append`. So the list is told what
+it is a list of, and each item is checked against that. Nothing new
+has to be written, and there is no cast.
+
+The same rule repaired something older. `show([1, 2])`, where `show`
+takes a `list[int or none]`, was accepted, and the compiled program
+crashed: the list was built as a list of ints and read as a list of
+`int or none`, which are kept differently (5.5j). It worked in a
+`let` and not in an argument. Now a written list is built as what the
+place wants wherever it is written.
+
+**A generic takes the interface from the place its result goes.**
+`let pair: Pair[Shape] = Pair(Circle(1.0), Square(2.0))` is a pair of
+shapes, and `let box: Box[int or none] = Box(count)` can hold `none`
+later. This holds when each argument goes straight into a `T`. A
+`list[Circle]` given for a `list[T]` stays a list of circles, for the
+reason above.
+
+### 10.8 There is no way back from an interface to a class *(provisional)*
+
+A `Shape` cannot be asked which class it is, and it cannot go where a
+`Circle` is wanted. Through an interface only the interface's
+functions are there.
+
+**Why.** With a way back, code that was given a `Shape` begins to
+ask "are you a `Circle`?", and from then on it works only for the
+classes it asks about. The interface stops being the whole
+agreement. For a value that is one of a few known things there is
+already a better tool: an `enum`, where `match` has to name every
+case (3.11). An interface is for the open set, an enum for the closed
+one, and each is checked in its own way.
+
+It also keeps one promise simple: what a function is given is all it
+can use.
+
+**What it costs.** Now and then a program does know what it has and
+has to keep the object in a second variable of its own class. If
+real programs keep running into that, a checked way back
+(`match shape { case Circle as c ... }`) can be added without
+changing anything written before. The message says what to do today.
+
+Two shapes are equal when they are objects of the same class and
+that class says they are equal. An object prints as the class it
+really is.
+
+### 10.9 In a compiled program: a number in the object, and a `switch`
+
+```c
+struct z_Circle {
+    int32_t zeno_class;     /* 1: this is a Circle */
+    double z_radius;
+};
+
+static double z_Shape_area(z_Shape *a0) {
+    switch (a0->zeno_class) {
+    case 1: return z_Circle_area((z_Circle *)a0);
+    default: return z_Square_area((z_Square *)a0);
+    }
+}
+```
+
+A class that is some interface carries a small number as its first
+field, which says which class the object is. A call through the
+interface goes to one function per function of the interface, which
+looks at the number and calls the function of that class.
+
+**Why not a table of pointers to functions**, which is how C++, Java
+and Rust do it. Three reasons, and the first is the one that decides.
+
+- Zeno compiles a whole program at once (7.11), so every class that
+  is a `Shape` is known. A `switch` over a known set is something the
+  C compiler and LLVM can see through: they can put the class's
+  function inline, and they know every place a call can go. A call
+  through a pointer hides both.
+- No pointer to a function sits in memory where a stray write can
+  change where the program jumps. Firmware coding rules (MISRA among
+  them) ask for that, and a tool that works out the deepest the stack
+  can get needs to know every call.
+- It costs four bytes in an object, and nothing in an object of a
+  class that is no interface: such a class is exactly what it was.
+  Rust and Go instead make every reference to an interface two words
+  wide, which would change the size of every slot of every list
+  (5.5h).
+
+**What it costs.** Adding a class to an interface compiles the
+`switch` again, which a whole-program compiler does anyway. And the
+number is in the object, so a class cannot be made an interface
+after the fact from outside its own declaration, which 10.4 already
+rules out.
+
+The interpreter and the VM needed no change at all: they look a
+method up by its name on the object in front of them, and always
+did.
+
+To every stage after the parser an interface is a class with no
+fields whose functions have no bodies. That is why the change is
+small: the checker fills in what the functions are from their first
+lines, and the two compilers write the `switch` where they would
+have compiled a body.
+
+### 10.10 What interfaces leave out *(provisional)*
+
+Each is refused with a message that says so.
+
+- **An `owned class` that is an interface.** In a build with no
+  collector an owned object is freed by its one owner, through code
+  written for its class. Freeing through an interface works (the
+  example does it, and gives every block back), and an ordinary class
+  can be used. What has not been thought through is an owned class
+  whose functions take something out of the object, called through
+  an interface that says nothing about it.
+- **A function that takes out or replaces what its object owns**
+  cannot stand for one of an interface, for the same reason.
+- **Type parameters** on an interface or on its functions
+  (`interface Stack[T]`). Bounds on a generic (`T is Ordered`, 3.16d)
+  wait for the same thing.
+- **An interface that is another interface.** A class names both.
+- **A dict whose values are of an interface.** That comes with dicts
+  of any value type, which is next.
