@@ -210,6 +210,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_drop", "declare void @zeno_list_drop(ptr)"),
     ("zeno_free", "declare void @zeno_free(ptr)"),
     ("zeno_error_drop", "declare void @zeno_error_drop(ptr)"),
+    ("zeno_closure_drop", "declare void @zeno_closure_drop(ptr)"),
+    ("zeno_closure_release", "declare void @zeno_closure_release(ptr)"),
     // Text that is kept, in a build with no collector (docs/text.md).
     ("zeno_text_keep", "declare ptr @zeno_text_keep(ptr)"),
     ("zeno_text_drop", "declare void @zeno_text_drop(ptr)"),
@@ -741,10 +743,6 @@ struct Emitter<'a> {
     collector: bool,
     /// `zeno build --memory`: report the memory used as the program ends.
     memory: bool,
-    /// With no collector: the `raise` being written, by where its value
-    /// is. The error or object made there is the one thing that may be
-    /// made without an owner: the `except` that catches it frees it.
-    raising: Option<Span>,
     /// What a `for` loop is about to walk. If that is a list made right
     /// there, as in `for pin in [2, 3, 5]`, the loop frees it.
     walked: Option<usize>,
@@ -1086,7 +1084,6 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: 
         firmware,
         collector,
         memory,
-        raising: None,
         walked: None,
         functions: HashMap::new(),
         classes: HashMap::new(),
@@ -1958,7 +1955,7 @@ impl Emitter<'_> {
             }
             self.ins(format!("store {ty} {}, ptr {global}", val.code));
             (Place::Slot(global), mutable)
-        } else if mutable && self.code.shared.contains(name) {
+        } else if mutable && self.code.shared.contains(name) && self.collector {
             // A function written inside this one uses the variable too,
             // and either may change it, perhaps long after this function
             // has returned. So it lives in a box of its own that the
@@ -2185,30 +2182,15 @@ impl Emitter<'_> {
     }
 
     /// `val` is about to be kept: put in a variable, a field or a list,
-    /// given to a function, or returned. In a build with no collector an
-    /// error cannot be, because it is freed when the `except` that caught
-    /// it ends, and neither can a value that the statement owns (see
-    /// `belongs`). (Text can: see `keep`.)
+    /// given to a function, or returned. In a build with no collector a
+    /// value that the statement owns cannot be (see `belongs`). (Text
+    /// can: see `keep`. An error can: whoever keeps it owns it.)
     fn stays(&self, val: &Val, span: Span) -> Result<(), Error> {
-        if self.collector {
-            return Ok(());
-        }
-        if val.passing {
+        if !self.collector && val.passing {
             // It is freed when this statement is over.
             return Err(no_owner(span));
         }
-        let kind = match &val.kind {
-            Kind::Optional(inner) => &**inner,
-            kind => kind,
-        };
-        match kind {
-            Kind::Error => Err(emit_c::without_collector(
-                "an error lasts only until the end of the `except` block that caught it, so it cannot be kept. \
-                 Copy out what is needed from it",
-                span,
-            )),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
     // ------------------------------------------------ What a statement owns
@@ -2338,6 +2320,10 @@ impl Emitter<'_> {
             Kind::Optional(inner) if is_pointer(inner) => return self.free(inner, value, span),
             // An error that an `except` caught, in a build with no collector.
             Kind::Error => self.run("zeno_error_drop", format!("ptr {value}")),
+            // A function that was written where a value goes frees the
+            // block it is kept in. A function of the program has none,
+            // and is left alone.
+            Kind::Function(_) => self.run("zeno_closure_drop", format!("ptr {value}")),
             // Text that is kept by copy, and a list of such text, which
             // frees its items as well as itself.
             kind if is_text(kind) => self.run("zeno_text_drop", format!("ptr {value}")),
@@ -3062,32 +3048,11 @@ impl Emitter<'_> {
     /// come back here, which is what `unreachable` says.
     fn raise(&mut self, value: &Expr, span: Span) -> Result<(), Error> {
         let begin = self.text_begin();
-        if !self.collector {
-            // With no collector, an error is freed by the `except` that
-            // catches it. So each error is raised once: it has to be
-            // made right here.
-            let made_here = match &value.kind {
-                ExprKind::Call { callee, .. } => match &callee.kind {
-                    ExprKind::Name(name) => {
-                        self.lookup(name).is_none()
-                            && (self.classes.contains_key(name) || emit_c::ERROR_KINDS.contains(&name.as_str()))
-                    }
-                    _ => false,
-                },
-                _ => false,
-            };
-            if !made_here {
-                return Err(emit_c::without_collector(
-                    "`raise` needs a new error here, such as `raise ValueError(\"too hot\")`. An error that \
-                     was caught is freed when its `except` block ends, so it cannot be raised again",
-                    value.span,
-                ));
-            }
-            self.raising = Some(value.span);
-        }
-        let val = self.expr(value);
-        self.raising = None;
-        let val = val?;
+        // With no collector `raise` takes the error: whoever held it
+        // holds nothing now, and the `except` that catches it is its
+        // next owner.
+        let val = self.expr(value)?;
+        self.stays(&val, value.span)?;
         let error = match &val.kind {
             Kind::Error => val.code,
             // An object of a class can be raised too. It travels inside
@@ -3305,9 +3270,12 @@ impl Emitter<'_> {
                 self.place(&handle);
             }
             self.scopes.push(HashMap::new());
-            if !self.collector {
-                // This block is where the error ends its life. However
-                // the block is left, the error is freed on the way out.
+            // With no collector this block has received the error and
+            // owns it. However the block is left, the error is freed on
+            // the way out, unless the block gave it on: kept it,
+            // returned it or raised it again.
+            let named = handler.binding.is_some();
+            if !self.collector && !(named && holds == Kind::Error) {
                 self.hold(Kind::Error, &raised);
             }
             if let Some(name) = &handler.binding {
@@ -3315,11 +3283,26 @@ impl Emitter<'_> {
                     // An object that was raised travels inside the error.
                     Kind::Class(_) => {
                         let at = self.field_at(ERROR, &raised, 2);
-                        self.set(format!("load ptr, ptr {at}"))
+                        let object = self.set(format!("load ptr, ptr {at}"));
+                        if !self.collector {
+                            // The name owns the object from here, so it
+                            // is taken out of the error.
+                            self.store("ptr", "null", &at);
+                        }
+                        object
                     }
                     _ => raised.clone(),
                 };
-                let variable = Variable { place: Place::Value(value), kind: holds, open: false, owner: false };
+                let variable = match self.collector {
+                    true => Variable { place: Place::Value(value), kind: holds, open: false, owner: false },
+                    // The name is an owner, so it is a slot: giving the
+                    // error on leaves null behind.
+                    false => {
+                        let slot = self.slot(format!("%caught.{n}.{}", index + 1), "ptr");
+                        self.store("ptr", &value, &slot);
+                        Variable { place: Place::Slot(slot), kind: holds, open: false, owner: true }
+                    }
+                };
                 self.scopes.last_mut().expect("a scope").insert(name.clone(), variable);
             }
             let mut result = self.block(&handler.body);
@@ -4447,14 +4430,6 @@ impl Emitter<'_> {
         if args.iter().any(|arg| arg.name.is_some()) {
             return Err(cannot(format!("`{name}` with a named argument"), span));
         }
-        // With no collector, the one place an error can be made is the
-        // `raise` that sends it: see `raise`.
-        if emit_c::ERROR_KINDS.contains(&name) && !self.collector && self.raising.take() != Some(span) {
-            return Err(emit_c::without_collector(
-                format!("this makes a `{name}` that is not raised. An error is freed by the `except` that catches it"),
-                span,
-            ));
-        }
         let mut vals = Vec::new();
         for arg in args {
             vals.push(self.expr(&arg.value)?);
@@ -4976,7 +4951,14 @@ impl Emitter<'_> {
                 Ok(())
             })?;
             let text = self.string(name);
-            self.globals.push(format!("{value} = internal constant {{ ptr, ptr }} {{ ptr {wrap}, ptr {text} }}"));
+            self.globals.push(match self.collector {
+                true => format!("{value} = internal constant {{ ptr, ptr }} {{ ptr {wrap}, ptr {text} }}"),
+                // With no collector a function value says what frees
+                // it. Nothing frees this one: it is not in a block.
+                false => {
+                    format!("{value} = internal constant {{ ptr, ptr, ptr }} {{ ptr {wrap}, ptr {text}, ptr null }}")
+                }
+            });
         }
         Ok(Val::new(value, Kind::Function(Box::new(entry.kind))))
     }
@@ -5007,19 +4989,14 @@ impl Emitter<'_> {
         let Some(kind) = self.types.function(decl) else {
             return Err(cannot("this function", span));
         };
+        let owned: Vec<bool> = kind.params.iter().map(|param| matches!(param, Kind::Owned(_))).collect();
         let kind = FunctionKind { params: kind.params.iter().map(shared).collect(), returns: shared(&kind.returns) };
         if self.firmware && !decl.raises.is_empty() {
             return Err(raises_as_value(span));
         }
-        if !self.collector {
-            return Err(emit_c::without_collector(
-                "a function written where a value goes is kept in a block of its own, with the variables it \
-                 uses, and has no owner. Give the function a name at the top of the file and use the name",
-                span,
-            ));
-        }
         self.closures += 1;
         let code_name = format!("@zeno.fn.{}", self.closures);
+        let drop_name = format!("@zeno.fn.drop.{}", self.closures);
 
         // The variables of the functions around this spot that the new
         // function mentions. The top of the file is not among them: its
@@ -5036,10 +5013,28 @@ impl Emitter<'_> {
                 continue;
             }
             if let Some(variable) = self.scopes[1..].iter().rev().find_map(|scope| scope.get(&name)) {
-                taken.push((name, variable.clone()));
+                let mut variable = variable.clone();
+                if !self.collector {
+                    // With no collector nothing is shared. The function
+                    // takes what the variable holds at this moment: a
+                    // number, or the address of a list or an object that
+                    // it will only look at.
+                    if let Place::Slot(slot) = &variable.place {
+                        let ty = ir_type(&variable.kind, span)?;
+                        variable.place = Place::Value(self.load(ty, slot));
+                    }
+                    variable.owner = false;
+                }
+                taken.push((name, variable));
             }
         }
+        // Every function value begins with its code and its name. With
+        // no collector, what frees it comes third.
         let mut inside = vec!["ptr", "ptr"];
+        if !self.collector {
+            inside.push("ptr");
+        }
+        let first = inside.len();
         for (name, variable) in &taken {
             inside.push(match &variable.place {
                 Place::Value(_) => ir_type(&variable.kind, span)?,
@@ -5059,11 +5054,43 @@ impl Emitter<'_> {
         let name_at = self.field_at(&block, &made, 1);
         let name = self.string(&decl.name);
         self.ins(format!("store ptr {name}, ptr {name_at}"));
+        // With no collector the function has its own copy of any text
+        // it uses, which goes when the block goes.
+        let texts: Vec<usize> = taken
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, variable))| !self.collector && is_text(&variable.kind))
+            .map(|(index, _)| index + first)
+            .collect();
         for (index, (_, variable)) in taken.iter().enumerate() {
-            let at = self.field_at(&block, &made, index + 2);
+            let at = self.field_at(&block, &made, index + first);
             match &variable.place {
-                Place::Value(code) => self.ins(format!("store {} {code}, ptr {at}", inside[index + 2])),
+                Place::Value(code) if texts.contains(&(index + first)) => {
+                    let kept = self.call("ptr", "zeno_text_keep", format!("ptr {code}"));
+                    self.ins(format!("store ptr {kept}, ptr {at}"));
+                }
+                Place::Value(code) => self.ins(format!("store {} {code}, ptr {at}", inside[index + first])),
                 Place::Slot(boxed) => self.ins(format!("store ptr {boxed}, ptr {at}")),
+            }
+        }
+        if !self.collector {
+            let drop_at = self.field_at(&block, &made, 2);
+            if texts.is_empty() {
+                self.uses("zeno_closure_release");
+                self.ins(format!("store ptr @zeno_closure_release, ptr {drop_at}"));
+            } else {
+                let block = block.clone();
+                self.side(format!("define internal void {drop_name}(ptr %self)"), |emitter| {
+                    for index in &texts {
+                        let at = emitter.field_at(&block, "%self", *index);
+                        let text = emitter.set(format!("load ptr, ptr {at}"));
+                        emitter.run("zeno_text_drop", format!("ptr {text}"));
+                    }
+                    emitter.run("zeno_free", "ptr %self");
+                    emitter.end("ret void");
+                    Ok(())
+                })?;
+                self.ins(format!("store ptr {drop_name}, ptr {drop_at}"));
             }
         }
 
@@ -5074,16 +5101,31 @@ impl Emitter<'_> {
         // It begins by taking its variables out of the block.
         let mut brought = HashMap::new();
         for (index, (name, variable)) in taken.iter().enumerate() {
-            let at = self.field_at(&block, "%self", index + 2);
+            let at = self.field_at(&block, "%self", index + first);
             let place = match &variable.place {
-                Place::Value(_) => Place::Value(self.set(format!("load {}, ptr {at}", inside[index + 2]))),
+                Place::Value(_) => Place::Value(self.set(format!("load {}, ptr {at}", inside[index + first]))),
                 Place::Slot(_) => Place::Slot(self.set(format!("load ptr, ptr {at}"))),
             };
             brought.insert(name.clone(), Variable { place, kind: variable.kind.clone(), open: variable.open, owner: false });
         }
-        let (params, list) = self.parameters(decl, &kind, span)?;
+        let (mut params, list) = self.parameters(decl, &kind, span)?;
+        // A parameter that takes over a value is its owner, as in a
+        // function of the program: see `function`.
+        for (index, param) in decl.params.iter().enumerate() {
+            if owned.get(index) == Some(&true) {
+                let kind = kind.params[index].clone();
+                let ty = ir_type(&kind, span)?;
+                let slot = self.stack_slot(&param.name, ty);
+                self.store(ty, &named('%', "arg.", &param.name), &slot);
+                params.insert(param.name.clone(), Variable { place: Place::Slot(slot), kind, open: false, owner: true });
+            }
+        }
         self.scopes = vec![globals, brought, params];
-        let done = self.block(&decl.body);
+        let mut done = self.block(&decl.body);
+        if done.is_ok() && !self.code.ended {
+            // The end of the body: free what the parameters still own.
+            done = self.free_owned(1);
+        }
 
         // Put everything back as it was.
         outside.insert(0, self.scopes.remove(0));
@@ -5110,11 +5152,11 @@ impl Emitter<'_> {
         if args.len() != kind.params.len() {
             return Err(cannot("a call with this many arguments", span));
         }
+        // What may be given to each parameter, and what it does with
+        // it, is the checker's to say: the function's type tells it.
         let mut vals = Vec::new();
         for arg in args {
-            let val = self.expr(&arg.value)?;
-            self.stays(&val, span)?;
-            vals.push(val);
+            vals.push(self.expr(&arg.value)?);
         }
         self.invoke(&function.code, &kind, vals, span)
     }
@@ -5929,6 +5971,7 @@ pub(crate) mod tests {
         same_as_interpreter("words", include_str!("../examples/words.zeno"));
         same_as_interpreter("scheduler", include_str!("../examples/scheduler.zeno"));
         same_as_interpreter("commands", include_str!("../examples/commands.zeno"));
+        same_as_interpreter("handlers", include_str!("../examples/handlers.zeno"));
     }
 
     #[test]
@@ -6591,6 +6634,76 @@ bare:
     }
 
     #[test]
+    fn the_ir_for_a_function_value_that_has_one_owner() {
+        // docs/functions-and-errors.md, in IR.
+        let ir = compile_no_collector(crate::emit_c::tests::FUNCTION_C).unwrap();
+        // A function of the program is a fixed value with no `drop`.
+        assert!(
+            ir.contains("@zeno.value.double = internal constant { ptr, ptr, ptr } { ptr @zeno.wrap.double, ptr @.str.3, ptr null }\n"),
+            "{ir}"
+        );
+        // One written where a value goes is a block: code, name, what
+        // frees it, and then what it uses. The text is a copy.
+        let make = ir.split("define internal ptr @z_make_tagger(ptr %arg.tag, i64 %arg.width) {\n").nth(1).expect("the function");
+        assert_eq!(
+            make.split("\n}\n").next().unwrap(),
+            "entry:
+  %t1 = call ptr @zeno_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr, ptr, i64 }, ptr null, i32 1) to i64))
+  store ptr @zeno.fn.2, ptr %t1
+  %t2 = getelementptr { ptr, ptr, ptr, ptr, i64 }, ptr %t1, i32 0, i32 1
+  store ptr @.str.4, ptr %t2
+  %t3 = getelementptr { ptr, ptr, ptr, ptr, i64 }, ptr %t1, i32 0, i32 3
+  %t4 = call ptr @zeno_text_keep(ptr %arg.tag)
+  store ptr %t4, ptr %t3
+  %t5 = getelementptr { ptr, ptr, ptr, ptr, i64 }, ptr %t1, i32 0, i32 4
+  store i64 %arg.width, ptr %t5
+  %t6 = getelementptr { ptr, ptr, ptr, ptr, i64 }, ptr %t1, i32 0, i32 2
+  store ptr @zeno.fn.drop.2, ptr %t6
+  ret ptr %t1"
+        );
+        let drop = ir.split("define internal void @zeno.fn.drop.2(ptr %self) {\n").nth(1).expect("the function");
+        assert_eq!(
+            drop.split("\n}\n").next().unwrap(),
+            "entry:
+  %t1 = getelementptr { ptr, ptr, ptr, ptr, i64 }, ptr %self, i32 0, i32 3
+  %t2 = load ptr, ptr %t1
+  call void @zeno_text_drop(ptr %t2)
+  call void @zeno_free(ptr %self)
+  ret void"
+        );
+        // A new value frees the old one, whichever kind each is.
+        let program = ir.split("define internal void @zeno_program() noinline {\n").nth(1).expect("the program");
+        assert_eq!(
+            program.split("\n}\n").next().unwrap(),
+            "entry:
+  %t1 = call ptr @z_make_tagger(ptr @.str.1, i64 4)
+  store ptr %t1, ptr @z_tagger
+  %t2 = call ptr @z_make_tagger(ptr @.str.2, i64 2)
+  %t3 = load ptr, ptr @z_tagger
+  call void @zeno_closure_drop(ptr %t3)
+  store ptr %t2, ptr @z_tagger
+  store ptr @zeno.value.double, ptr @z_current
+  %t4 = call ptr @zeno_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr }, ptr null, i32 1) to i64))
+  store ptr @zeno.fn.1, ptr %t4
+  %t5 = getelementptr { ptr, ptr, ptr }, ptr %t4, i32 0, i32 1
+  store ptr @.str.4, ptr %t5
+  %t6 = getelementptr { ptr, ptr, ptr }, ptr %t4, i32 0, i32 2
+  store ptr @zeno_closure_release, ptr %t6
+  %t7 = load ptr, ptr @z_current
+  call void @zeno_closure_drop(ptr %t7)
+  store ptr %t4, ptr @z_current
+  %t8 = load ptr, ptr @z_current
+  call void @zeno_closure_drop(ptr %t8)
+  %t9 = load ptr, ptr @z_tagger
+  call void @zeno_closure_drop(ptr %t9)
+  ret void"
+        );
+        // Where there is a collector, a function value has no third word.
+        let shared = compile(crate::emit_c::tests::FUNCTION_C).unwrap();
+        assert!(shared.contains("@zeno.value.double = internal constant { ptr, ptr } { ptr @zeno.wrap.double,"), "{shared}");
+    }
+
+    #[test]
     fn the_ir_for_kept_text() {
         // docs/text.md, in IR.
         let ir = compile_no_collector(
@@ -6795,6 +6908,8 @@ for n in [1, 5] {
             "zeno_list_copy_text",
             "zeno_list_keep_text",
             "zeno_error_of",
+            "zeno_closure_drop",
+            "zeno_closure_release",
         ];
         for runtime in [&ordinary, &firmware, &bare] {
             assert!(!runtime.lines().any(|line| line.starts_with("static ")));

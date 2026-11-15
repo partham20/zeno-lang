@@ -1,0 +1,111 @@
+# Handlers and faults: function values and errors that are kept.
+#
+#   zeno run examples/handlers.zeno
+#   zeno build --no-collector examples/handlers.zeno && ./handlers
+#
+# A raw sensor reading goes through a chain of steps. Each step is a
+# function value, kept in a list. A reading that ends up too high raises
+# an error, and the error is kept in a log instead of being thrown away.
+#
+# Built with `--no-collector`, every function value and every error here
+# has one owner, which frees it. docs/functions-and-errors.md walks
+# through how.
+
+class OutOfRange {
+    channel: str
+    value: int
+}
+
+class Channel {
+    name: str
+    limit: int
+    steps: list[function(int) -> int]
+
+    # `step` is taken: the list owns the function from here on.
+    function add(self, step: function(int) -> int) {
+        self.steps.append(step)
+    }
+
+    function process(self, raw: int) -> int raises OutOfRange {
+        var value = raw
+        for step in self.steps {
+            value = step(value)
+        }
+        if value > self.limit {
+            raise OutOfRange(self.name, value)
+        }
+        return value
+    }
+}
+
+# A function that makes a function. `factor` is copied into it.
+function scale_by(factor: int) -> function(int) -> int {
+    return function(n: int) -> int { return n * factor }
+}
+
+function offset_by(amount: int) -> function(int) -> int {
+    return function(n: int) -> int { return n + amount }
+}
+
+# A function of the program is a value too. It is never freed.
+function not_below_zero(n: int) -> int {
+    if n < 0 { return 0 }
+    return n
+}
+
+function describe(fault: borrow OutOfRange) -> str {
+    return f"{fault.channel} read {fault.value}"
+}
+
+# Catches the error, says so, and raises the same error again.
+function checked(channel: borrow Channel, raw: int) -> int raises OutOfRange {
+    try {
+        return channel.process(raw)
+    } except OutOfRange as fault {
+        print("  passing on:", describe(fault))
+        raise fault
+    }
+}
+
+let temperature = Channel("temp", 120, [])
+temperature.add(offset_by(-40))
+temperature.add(not_below_zero)
+temperature.add(scale_by(2))
+
+let faults: list[OutOfRange] = []
+for raw in [35, 60, 120, 70, 130] {
+    try {
+        print(raw, "->", checked(temperature, raw))
+    } except OutOfRange as fault {
+        faults.append(fault)              # kept: the list owns the error now
+    }
+}
+print(len(faults), "faults kept")
+for fault in faults {
+    print("  ", describe(fault))
+}
+
+# A variable can hold one function and then another. The old one is freed.
+var alarm: function(int) -> int = not_below_zero
+print(alarm(-5))
+alarm = offset_by(1000)
+print(alarm(-5))
+
+# A function that uses a list or an object from outside it only looks at
+# it, so it lives for the line that writes it and no longer.
+let over = [90, 130, 150].filter(function(n: int) -> bool { return n > temperature.limit })
+print(over, [1, 2].map(function(n: int) -> int { return n + len(faults) }))
+
+# An error is a value like any other: made here, raised later.
+function open(door: int, problem: ValueError) -> int raises ValueError {
+    if door > 3 {
+        raise problem
+    }
+    return door
+}
+try {
+    print(open(2, ValueError("not raised")))
+    print(open(7, ValueError("no such door")))
+} except ValueError as problem {
+    print("refused:", problem.message)
+}

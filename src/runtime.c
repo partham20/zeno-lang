@@ -1763,7 +1763,30 @@ typedef void (*zeno_code)(void);
 typedef struct zeno_closure {
     zeno_code code;
     const char *name; /* for `print`; empty when the function has no name */
+#ifdef ZENO_NO_COLLECTOR
+    /* What frees the block this is in. NULL for a function of the program,
+     * which is not in a block. */
+    void (*drop)(struct zeno_closure *);
+#endif /* ZENO_NO_COLLECTOR */
 } zeno_closure;
+
+#ifdef ZENO_NO_COLLECTOR
+
+/* With no collector a function value has one owner, which calls this when
+ * it is done with it. A function that was written where a value goes is in
+ * a block, and says how to free it. A function of the program is not, and
+ * is left alone. */
+static void zeno_closure_drop(zeno_closure *function) {
+    if (function == NULL || function->drop == NULL) return;
+    function->drop(function);
+}
+
+/* The `drop` of a function value that keeps no text. */
+static void zeno_closure_release(zeno_closure *function) {
+    zeno_free(function);
+}
+
+#endif /* ZENO_NO_COLLECTOR */
 
 static const char *zeno_show_function(zeno_closure *function) {
     if (function->name[0] == '\0') return "<function>";

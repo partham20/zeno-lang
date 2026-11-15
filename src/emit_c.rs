@@ -117,7 +117,6 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
         built: false,
         marks: 0,
         holds: 0,
-        raising: None,
         walked: None,
         passing: Vec::new(),
         fallible: false,
@@ -532,7 +531,9 @@ impl Drops {
     pub fn owns(&self, item: &Kind) -> bool {
         match item {
             Kind::Class(name) | Kind::Enum(name) => self.owned.contains(name),
-            Kind::List(_) => self.nested,
+            // An error is a block too, where there is no collector, and
+            // so is a function written where a value goes.
+            Kind::List(_) | Kind::Error | Kind::Function(_) => self.nested,
             // What may be `none` is a pointer that may be NULL, and
             // every function that frees does nothing with NULL.
             Kind::Optional(inner) => is_pointer(inner) && self.owns(inner),
@@ -548,6 +549,10 @@ impl Drops {
             Kind::Optional(inner) if is_pointer(inner) => self.name(inner),
             // An error that an `except` caught, in a build with no collector.
             Kind::Error => "zeno_error_drop".to_string(),
+            // A function that was written where a value goes frees the
+            // block it is kept in. A function of the program has none,
+            // and is left alone.
+            Kind::Function(_) => "zeno_closure_drop".to_string(),
             kind if is_text(kind) => "zeno_text_drop".to_string(),
             Kind::List(item) if self.texts && is_text(item) => "zeno_list_drop_text".to_string(),
             Kind::List(item) if self.owns(item) => {
@@ -565,6 +570,8 @@ impl Drops {
                 // of the other two.
                 let name = match inner {
                     Kind::Class(name) | Kind::Enum(name) => format!("zeno_list_drop_{depth}_{}", ident(name)),
+                    Kind::Error => format!("zeno_list_drop_errors{depth}"),
+                    Kind::Function(_) => format!("zeno_list_drop_functions{depth}"),
                     Kind::List(text) if self.texts && is_text(text) => format!("zeno_list_drop_texts{depth}"),
                     _ => format!("zeno_list_drop_lists{depth}"),
                 };
@@ -755,9 +762,6 @@ struct Emitter<'a> {
     /// How many values are being held for a moment, to number them. See
     /// `hold`.
     holds: usize,
-    /// Where the error that a `raise` is about to send is written. An
-    /// error may only be made there.
-    raising: Option<Span>,
     /// What a `for` loop is about to walk. If that is a list made right
     /// there, as in `for pin in [2, 3, 5]`, the loop frees it.
     walked: Option<usize>,
@@ -1351,30 +1355,15 @@ impl Emitter<'_> {
     }
 
     /// `val` is about to be kept: put in a variable, a field or a list,
-    /// given to a function, or returned. In a build with no collector an
-    /// error cannot be, because it is freed when the `except` that caught
-    /// it ends, and neither can a value that the statement owns (see
-    /// `belongs`). (Text can: see `keep`.)
+    /// given to a function, or returned. In a build with no collector a
+    /// value that the statement owns cannot be (see `belongs`). (Text
+    /// can: see `keep`. An error can: whoever keeps it owns it.)
     fn stays(&self, val: &Val, span: Span) -> Result<(), Error> {
-        if self.collector {
-            return Ok(());
-        }
-        if val.passing {
+        if !self.collector && val.passing {
             // It is freed when this statement is over.
             return Err(Self::no_owner(span));
         }
-        let kind = match &val.kind {
-            Kind::Optional(inner) => &**inner,
-            kind => kind,
-        };
-        match kind {
-            Kind::Error => Err(without_collector(
-                "an error lasts only until the end of the `except` block that caught it, so it cannot be kept. \
-                 Copy out what is needed from it",
-                span,
-            )),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
     /// Each item of a list sits in one slot. A number that may be `none`
@@ -1903,7 +1892,7 @@ impl Emitter<'_> {
                         self.roots.push(c_name.clone());
                     }
                     self.line(format!("{c_name} = {};", val.code));
-                } else if mutable && self.shared.contains(name) {
+                } else if mutable && self.shared.contains(name) && self.collector {
                     // A function written inside this one uses the variable
                     // too, and either may change it. So it lives in a box on
                     // the heap, and both hold a pointer to the box.
@@ -2088,32 +2077,12 @@ impl Emitter<'_> {
 
             StmtKind::Raise(value) if self.firmware => {
                 let begin = self.text_begin();
-                if !self.collector {
-                    // With no collector, an error is freed by the `except`
-                    // that catches it. So each error is raised once: it
-                    // has to be made right here.
-                    let made_here = match &value.kind {
-                        ExprKind::Call { callee, .. } => match &callee.kind {
-                            ExprKind::Name(name) => {
-                                self.lookup(name).is_none()
-                                    && (self.classes.contains_key(name) || ERROR_KINDS.contains(&name.as_str()))
-                            }
-                            _ => false,
-                        },
-                        _ => false,
-                    };
-                    if !made_here {
-                        return Err(without_collector(
-                            "`raise` needs a new error here, such as `raise ValueError(\"too hot\")`. An error that \
-                             was caught is freed when its `except` block ends, so it cannot be raised again",
-                            value.span,
-                        ));
-                    }
-                    self.raising = Some(value.span);
-                }
                 // Note the error, then go where a failed call would go.
+                // With no collector `raise` takes the error: whoever
+                // held it holds nothing now, and the `except` that
+                // catches it is its next owner.
                 let val = self.expr(value)?;
-                self.raising = None;
+                self.stays(&val, value.span)?;
                 let (error, kind) = match &val.kind {
                     Kind::Error => match &value.kind {
                         // `raise ValueError("...")` says its kind. An error
@@ -2460,9 +2429,12 @@ impl Emitter<'_> {
             self.line(if index == 0 { format!("{test}{{") } else { format!("}} else {test}{{") });
             self.scopes.push(HashMap::new());
             self.indent += 1;
-            if !self.collector {
-                // This block is where the error ends its life. However
-                // the block is left, the error is freed on the way out.
+            // With no collector this block has received the error and
+            // owns it. However the block is left, the error is freed on
+            // the way out, unless the block gave it on: kept it, returned
+            // it or raised it again.
+            let named = handler.binding.is_some();
+            if !self.collector && !(named && holds == Kind::Error) {
                 self.hold(Kind::Error, &caught);
             }
             if let Some(name) = &handler.binding {
@@ -2471,9 +2443,21 @@ impl Emitter<'_> {
                     Kind::Class(_) => format!("({}){caught}->object", c_type.trim_end()),
                     _ => caught.clone(),
                 };
+                let object = matches!(holds, Kind::Class(_));
                 let c_name = self.declare(name, holds);
                 self.line(format!("{c_type}{c_name} = {value};"));
                 self.line(format!("(void){c_name};"));
+                if !self.collector {
+                    // The name is the owner. Of an object that was
+                    // raised, it owns the object, which is taken out of
+                    // the error it travelled in.
+                    if object {
+                        self.line(format!("{caught}->object = NULL;"));
+                    }
+                    if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+                        variable.owner = true;
+                    }
+                }
             }
             let result = handler.body.iter().try_for_each(|statement| self.stmt(statement));
             if result.is_ok() {
@@ -3514,13 +3498,6 @@ impl Emitter<'_> {
         if self.firmware && !decl.raises.is_empty() {
             return Err(raises_as_value(span));
         }
-        if !self.collector {
-            return Err(without_collector(
-                "a function written where a value goes is kept in a block of its own, with the variables it \
-                 uses, and has no owner. Give the function a name at the top of the file and use the name",
-                span,
-            ));
-        }
         self.closures += 1;
         let id = self.closures;
 
@@ -3583,9 +3560,16 @@ impl Emitter<'_> {
         // The value itself is made here, on the heap, each time this spot
         // is reached: two function values are equal only if they are the
         // very same one, as in `zeno run`.
+        //
+        // With no collector the block has one owner, which frees it
+        // (docs/functions-and-errors.md). A number it uses is copied in.
+        // Text is copied in too, as a copy of its own that goes when the
+        // block goes. A list or an object is looked at where it is: the
+        // checker has made sure such a function is gone before they are.
         let made = self.new_temp();
         let mut fields = String::new();
         let mut fill = Vec::new();
+        let mut texts = Vec::new();
         for (zeno_name, variable) in &taken {
             let field_type = c_type(&variable.kind, span)?;
             let star = if variable.boxed.is_some() { "*" } else { "" };
@@ -3596,7 +3580,12 @@ impl Emitter<'_> {
                 return Err(cannot(format!("a function that uses `{zeno_name}` from outside it"), span));
             };
             let source = source.boxed.clone().unwrap_or_else(|| source.c_name.clone());
-            fill.push(format!("{made}->z_{zeno_name} = {source};"));
+            if !self.collector && is_text(&variable.kind) {
+                fill.push(format!("{made}->z_{zeno_name} = zeno_text_keep({source});"));
+                texts.push(format!("z_{zeno_name}"));
+            } else {
+                fill.push(format!("{made}->z_{zeno_name} = {source};"));
+            }
         }
         if taken.is_empty() {
             // It uses nothing from outside: the plain header is all of it.
@@ -3604,6 +3593,9 @@ impl Emitter<'_> {
             self.line(format!("zeno_closure *{made} = (zeno_closure *)zeno_alloc(sizeof(zeno_closure));"));
             self.line(format!("{made}->code = (zeno_code)zeno_fn_{id};"));
             self.line(format!("{made}->name = {name};"));
+            if !self.collector {
+                self.line(format!("{made}->drop = zeno_closure_release;"));
+            }
             return Ok(Val::plain(made, kind));
         }
         let env = format!("struct zeno_env_{id}");
@@ -3612,6 +3604,18 @@ impl Emitter<'_> {
         self.line(format!("{env} *{made} = ({env} *)zeno_alloc(sizeof({env}));"));
         self.line(format!("{made}->base.code = (zeno_code)zeno_fn_{id};"));
         self.line(format!("{made}->base.name = {name};"));
+        if !self.collector && texts.is_empty() {
+            self.line(format!("{made}->base.drop = zeno_closure_release;"));
+        } else if !self.collector {
+            // The text it took copies of goes with it.
+            let mut frees = format!("    {env} *env = ({env} *)zeno_self;\n");
+            for text in &texts {
+                frees += &format!("    zeno_text_drop(env->{text});\n");
+            }
+            frees += "    zeno_free(env);\n";
+            self.helper(format!("static void zeno_fn_drop_{id}(zeno_closure *zeno_self)"), frees);
+            self.line(format!("{made}->base.drop = zeno_fn_drop_{id};"));
+        }
         for line in fill {
             self.line(line);
         }
@@ -3635,8 +3639,9 @@ impl Emitter<'_> {
         let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
         let vals = self.sequence_after(vec![function], &exprs)?;
         let mut codes = Vec::new();
+        // What may be given to each parameter, and what it does with
+        // it, is the checker's to say: the function's type tells it.
         for (val, param) in vals[1..].iter().zip(&kind.params) {
-            self.stays(val, span)?;
             codes.push(self.coerce(val.clone(), param, span)?.code);
         }
         let call = invoke(&vals[0].code, &kind, &codes, span)?;
@@ -3936,12 +3941,6 @@ impl Emitter<'_> {
                 }
                 if args.iter().any(|arg| arg.name.is_some()) {
                     return Err(cannot("named arguments to a built-in", span));
-                }
-                if ERROR_KINDS.contains(&name.as_str()) && !self.collector && self.raising.take() != Some(span) {
-                    return Err(without_collector(
-                        format!("this makes a `{name}` that is not raised. An error is freed by the `except` that catches it"),
-                        span,
-                    ));
                 }
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence(&exprs)?;
@@ -5796,6 +5795,7 @@ print(word[5])
             ("words", include_str!("../examples/words.zeno")),
             ("scheduler", include_str!("../examples/scheduler.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
+            ("handlers", include_str!("../examples/handlers.zeno")),
         ] {
             same_as_interpreter(name, source);
         }
@@ -8185,20 +8185,18 @@ let x = 7
         // or a plain class: whoever receives one owns it. See
         // `with_no_collector_a_list_and_an_object_need_no_word`.)
 
-        // An error is freed when its `except` ends, so it cannot be kept
-        // or raised again, and one can only be made by `raise`.
+        // (Nor is an error: the `except` that catches it owns it, and it
+        // can be kept, given away and raised again. Nor a function
+        // written where a value goes. See
+        // `with_no_collector_an_error_and_a_function_value_have_one_owner`.)
+
+        // An error that was given away is gone, like any other value.
         let caught = "try { print(risky(5)) } except Bad as e";
-        one_owner(&format!("{caught} {{ let again = e\nprint(again.id) }}"), "is the error that this `except` caught");
+        one_owner(&format!("{caught} {{ let again = e\nprint(e.id) }}"), "was given away on line");
         one_owner(
-            &format!("function pass_on(b: Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e)) }}"),
-            "is the error that this `except` caught",
+            &format!("function pass_on(b: Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e))\nprint(e) }}"),
+            "was given away on line",
         );
-        refused("try { print(risky(5)) } except Error as e { let again = e\nprint(again) }", "so it cannot be kept");
-        refused(
-            &format!("function f() -> int raises Bad {{ try {{ return risky(5) }} except Bad as e {{ raise e }} }}\n{caught} {{ print(f()) }}"),
-            "`raise` needs a new error here",
-        );
-        refused("print(ValueError(\"x\"))", "this makes a `ValueError` that is not raised");
 
         // A value that was given away is gone, and a look cannot be kept.
         one_owner("let xs = [1, 2, 3]\nlet ys = xs\nprint(len(xs))", "was given away on line");
@@ -8214,8 +8212,21 @@ let x = 7
         one_owner("let s = Circle(1.0)\nlet t = s\nprint(s)", "was given away on line");
         one_owner("var last: Bad or none = Bad(1, \"x\")\nlet other = last\nprint(last is none)", "was given away on line");
 
+        // A function value has one owner as well. One that uses a list
+        // from outside it looks at the list, so it cannot be kept, and
+        // nothing is shared, so it cannot use a `var` of the function
+        // around it.
+        one_owner("let f = function(n: int) -> int { return n + x }\nlet g = f\nprint(f(1))", "was given away on line");
+        one_owner(
+            "let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))",
+            "so it must be gone before that value is",
+        );
+        one_owner(
+            "function counter() -> function() -> int {\n    var count = 0\n    return function() -> int { return count }\n}\nprint(counter()())",
+            "the two functions would share it",
+        );
+
         // Whatever else makes a block that nothing owns.
-        refused("let f = function(n: int) { return n + x }\nprint(f(1))", "a function written where a value goes");
         refused("let m: owned list[int or none] = [1, none]", "numbers that may be `none`");
 
         // What sits right beside those refusals, and is accepted.
@@ -8263,6 +8274,17 @@ try {
 } except ValueError as e {
     print(e)
 }
+let ready = ValueError("made early")   # an error is a value like any other
+print(ready.message)
+let seen: list[Bad] = []
+try {
+    print(risky(9))
+} except Bad as e {
+    seen.append(e)                     # kept: the list owns it now
+}
+print(len(seen), seen[0].why)
+let scaled = function(n: int) -> int { return n * x }   # a function value
+print(scaled(2), plain.map(function(n: int) -> int { return n + len(plain) }))
 "#
         );
         no_collector_as_interpreter("accepted", &accepted);
@@ -9170,6 +9192,545 @@ print(kept, state)
         shape = Dot\n\
         var last: Shape or none = none\n\
         last = Circle(1.0)\n";
+
+    /// Errors that are kept, handed on, returned and raised again.
+    const KEPT_ERRORS: &str = r##"# Errors that are kept, given on and raised again.
+class Overload {
+    channel: int
+    name: str
+    amps: list[int]
+}
+
+class Log {
+    last: Overload or none
+    seen: list[Overload]
+    faults: list[ValueError]
+}
+
+function measure(channel: int) -> int raises Overload {
+    if channel % 3 == 0 {
+        raise Overload(channel, f"ch{channel}", [channel, channel * 2])
+    }
+    return channel * 10
+}
+
+function parse(text: str) -> int raises ValueError {
+    if text == "" {
+        raise ValueError("nothing to read")
+    }
+    return int(text)
+}
+
+# Seen, noted, and raised again for the caller.
+function checked(channel: int) -> int raises Overload {
+    try {
+        return measure(channel)
+    } except Overload as overload {
+        print("  passing on", overload.name)
+        raise overload
+    }
+}
+
+# The error is the answer.
+function attempt(channel: int) -> Overload or none {
+    try {
+        print("  read", measure(channel))
+    } except Overload as overload {
+        return overload
+    }
+    return none
+}
+
+function describe(overload: borrow Overload) -> str {
+    return f"{overload.name} at {overload.amps}"
+}
+
+function why(fault: borrow ValueError) -> str {
+    return fault.message
+}
+
+let log = Log(none, [], [])
+for channel in range(7) {
+    try {
+        print(channel, checked(channel))
+    } except Overload as overload {
+        print(channel, describe(overload))
+        if channel == 0 {
+            log.last = overload
+        } else {
+            log.seen.append(overload)
+        }
+    }
+}
+print(log)
+
+for channel in [3, 4] {
+    let found = attempt(channel)
+    if found is none {
+        print("fine")
+    } else {
+        print("kept", describe(found))
+        log.last = found
+    }
+}
+print(log.last)
+
+for text in ["12", "", "x1", "7"] {
+    try {
+        print(parse(text))
+    } except ValueError as fault {
+        print("  ", why(fault))
+        if text == "" { continue }
+        log.faults.append(fault)
+    }
+}
+print(len(log.faults), log.faults)
+
+# An error made ahead of time, and raised later.
+function fail_with(fault: ValueError, really: bool) -> int raises ValueError {
+    if really {
+        raise fault
+    }
+    return 1
+}
+let ready = ValueError("made early")
+print(ready.message, ready.kind)
+try {
+    print(fail_with(ValueError("not raised"), false))
+    print(fail_with(ready, true))
+} except Error as anything {
+    print("caught", anything.kind, anything.message)
+    var again: Error or none = none
+    again = anything
+    print(again)
+}
+"##;
+
+    /// Function values: made, kept, lent, given away, replaced, and
+    /// written where they look at a list or an object.
+    const FUNCTION_VALUES: &str = r##"# Function values that have one owner.
+class Counter {
+    count: int
+    name: str
+}
+
+class Menu {
+    title: str
+    actions: list[function(int) -> int]
+    on_done: function(str) -> str
+
+    function add(self, action: function(int) -> int) {
+        self.actions.append(action)
+    }
+
+    function run(self, start: int) -> int {
+        var value = start
+        for action in self.actions {
+            value = action(value)
+        }
+        return value
+    }
+
+    # A function that looks at `self` is lent straight to `map`.
+    function titles(self, names: borrow list[str]) -> list[str] {
+        return names.map(function(name: str) -> str { return f"{self.title}/{name}" })
+    }
+}
+
+function double(n: int) -> int { return n * 2 }
+
+function make_adder(n: int) -> function(int) -> int {
+    return function(x: int) -> int { return x + n }
+}
+
+function make_tagger(tag: str) -> function(str) -> str {
+    let mark = f"[{tag}]"
+    return function(text: str) -> str { return f"{mark} {text}" }
+}
+
+function apply(f: borrow function(int) -> int, x: int) -> int {
+    return f(x)
+}
+
+function twice(f: function(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+function choose(big: bool) -> function(int) -> int {
+    if big {
+        return make_adder(100)
+    }
+    return double
+}
+
+let add2 = make_adder(2)
+print(add2(3), apply(add2, 10), apply(double, 10))
+print(twice(make_adder(5), 1), twice(double, 3))
+print(add2, double)
+
+# A variable can hold one function and then another. The old one goes.
+var current: function(int) -> int = double
+print(current(4))
+current = make_adder(7)
+print(current(4))
+current = choose(true)
+print(current(4))
+current = choose(false)
+print(current(4))
+
+let tagger = make_tagger("warn")
+print(tagger("low battery"))
+print(tagger("door open"))
+
+let menu = Menu("main", [], make_tagger("done"))
+menu.add(double)
+menu.add(make_adder(1))
+menu.add(add2)
+let step = 10
+menu.add(function(n: int) -> int { return n * step })
+print(menu.run(1), len(menu.actions))
+print(menu.on_done("all"))
+menu.on_done = make_tagger("again")
+print(menu.on_done("all"))
+let last = menu.actions.pop()
+print(last(3), menu.run(1))
+menu.actions[0] = make_adder(50)
+print(menu.run(1))
+print(menu.titles(["file", "edit"]))
+
+# A function that looks at a list, an object and a loop's item.
+let table = [10, 20, 30]
+let counter = Counter(0, "calls")
+let picks = [2, 0, 1].map(function(i: int) -> int {
+    counter.count += 1
+    return table[i]
+})
+print(picks, counter.count)
+print(table.filter(function(n: int) -> bool { return n > table[0] }))
+print(table.reduce(function(total: int, n: int) -> int { return total + n + counter.count }, 0))
+for row in [[1, 2], [3, 4, 5]] {
+    print(row.map(function(n: int) -> int { return n * len(row) + apply(function(m: int) -> int { return m + table[0] }, n) }))
+}
+print(apply(function(n: int) -> int { return n + len(counter.name) }, 1), counter)
+
+# Early ways out, with functions in hand.
+function first_big(limit: int) -> int {
+    let bump = make_adder(limit)
+    for n in range(10) {
+        let scaled = make_adder(n)
+        if scaled(n) > limit {
+            return bump(n)
+        }
+        if n % 2 == 0 {
+            continue
+        }
+        print("  tried", n)
+    }
+    return 0
+}
+print(first_big(5), first_big(100))
+"##;
+
+    /// Function types that say what each parameter does with a list or
+    /// an object, and errors that leave a statement holding a function.
+    const FUNCTION_TYPES: &str = r##"# Function types that mention lists and objects, and functions with errors about.
+class Reading {
+    channel: int
+    values: list[int]
+}
+
+class TooHot {
+    channel: int
+    note: str
+}
+
+function total(xs: borrow list[int]) -> int {
+    var sum = 0
+    for x in xs { sum += x }
+    return sum
+}
+
+function drain(xs: list[int]) -> int {
+    return len(xs)
+}
+
+function spread(n: int) -> list[int] {
+    return [n, n + 1, n + 2]
+}
+
+function describe(reading: borrow Reading) -> str {
+    return f"ch{reading.channel}: {reading.values}"
+}
+
+function make(channel: int) -> Reading {
+    return Reading(channel, spread(channel))
+}
+
+# Each of these takes a function whose type says what it does with a list.
+function measure(with: borrow function(borrow list[int]) -> int, data: borrow list[int]) -> int {
+    return with(data)
+}
+
+function consume(with: borrow function(list[int]) -> int, n: int) -> int {
+    return with(spread(n)) + with([n])
+}
+
+function build(with: borrow function(int) -> list[int], n: int) -> int {
+    let made = with(n)
+    return total(made) + len(with(n + 1))
+}
+
+function show(with: borrow function(borrow Reading) -> str, reading: borrow Reading) -> str {
+    return with(reading)
+}
+
+function produce(with: borrow function(int) -> Reading, n: int) -> Reading {
+    return with(n)
+}
+
+function check(level: int) -> int raises TooHot {
+    if level > 30 {
+        raise TooHot(level, f"level {level}")
+    }
+    return level
+}
+
+let data = [5, 6, 7]
+print(measure(total, data), measure(function(xs: borrow list[int]) -> int { return len(xs) }, data))
+print(consume(drain, 4), consume(function(xs: list[int]) -> int { return total(xs) }, 4))
+print(build(spread, 1), build(function(n: int) -> list[int] { return [n] }, 1))
+let reading = make(3)
+print(show(describe, reading), show(function(r: borrow Reading) -> str { return f"{len(r.values)} values" }, reading))
+let fresh = produce(make, 9)
+let other = produce(function(n: int) -> Reading { return Reading(n, []) }, 8)
+print(fresh, other)
+
+# A variable and a field with such a type.
+class Pipeline {
+    name: str
+    source: function(int) -> list[int]
+    sink: function(list[int]) -> int
+
+    function run(self, n: int) -> int {
+        return self.sink(self.source(n))
+    }
+}
+let offset = 100
+let pipeline = Pipeline("p", function(n: int) -> list[int] { return [n + offset, n] }, drain)
+print(pipeline.run(1), pipeline.run(2))
+pipeline.sink = function(xs: list[int]) -> int { return total(xs) + offset }
+print(pipeline.run(1))
+var reducer: function(borrow list[int]) -> int = total
+print(reducer(data))
+reducer = function(xs: borrow list[int]) -> int { return xs[0] * offset }
+print(reducer(data), reducer(spread(2)))
+
+# An error leaves a statement that had a function in hand.
+function apply(f: borrow function(int) -> int, x: int) -> int {
+    return f(x)
+}
+for level in [10, 40, 20] {
+    try {
+        let scale = level * 2
+        let adder = function(n: int) -> int { return n + scale }
+        print(apply(function(n: int) -> int { return n + len(data) }, check(level)), adder(1))
+        print(apply(adder, check(level + 15)))
+    } except TooHot as hot {
+        print("too hot:", hot.note)
+    }
+}
+class Task {
+    id: int
+}
+function each(with: borrow function(list[int]), n: int) {
+    with([n, n])
+    with([n])
+}
+function hand(with: borrow function(Task), n: int) {
+    with(Task(n))
+}
+let seen = [0]
+each(function(xs: list[int]) { seen.append(len(xs)) }, 3)
+hand(function(t: Task) { seen.append(t.id) }, 7)
+hand(function(t: Task) {
+    if t.id > 3 { return }
+    seen.append(t.id)
+}, 2)
+print(seen)
+var sink: function(Task) = function(t: Task) { print("got", t.id) }
+sink(Task(1))
+let kept: list[Task] = []
+sink = function(t: Task) { print("again", t.id) }
+sink(Task(2))
+print(len(kept))
+"##;
+
+    /// Function types that mention an owned class, where a collector
+    /// runs beside the owners.
+    const OWNED_FUNCTION_TYPES: &str = r##"owned class Packet {
+    id: int
+    data: owned list[int]
+}
+function make(n: int) -> Packet { return Packet(n, [n, n + 1]) }
+function send(p: Packet) -> int { return p.id + len(p.data) }
+function look(p: borrow Packet) -> int { return p.id }
+function twice(with: function(borrow Packet) -> int, p: borrow Packet) -> int { return with(p) + with(p) }
+function feed(with: function(Packet) -> int, n: int) -> int { return with(make(n)) }
+function produce(with: function(int) -> Packet, n: int) -> int { return send(with(n)) }
+var total = 0
+for round in range(300) {
+    let p = make(round)
+    total += twice(look, p) + feed(send, round) + produce(make, round)
+    total += twice(function(q: borrow Packet) -> int { return len(q.data) }, p)
+    total += feed(function(q: Packet) -> int { return q.id * 2 }, round)
+}
+print(total)
+"##;
+
+    #[test]
+    fn with_no_collector_an_error_and_a_function_value_have_one_owner() {
+        no_collector_as_interpreter("kept-errors", KEPT_ERRORS);
+        no_collector_as_interpreter("function-values", FUNCTION_VALUES);
+        no_collector_as_interpreter("function-types", FUNCTION_TYPES);
+        no_collector_as_interpreter("handlers", include_str!("../examples/handlers.zeno"));
+    }
+
+    #[test]
+    fn a_function_type_says_who_owns_what_in_every_build() {
+        // With a collector the function values are shared, and the
+        // packets they are handed still have one owner each.
+        same_as_interpreter("owned-function-types", OWNED_FUNCTION_TYPES);
+        crate::emit_llvm::tests::same_as_interpreter("owned-function-types", OWNED_FUNCTION_TYPES);
+        let Some((printed, [_, _, collections])) = memory_of("owned-function-types-memory", OWNED_FUNCTION_TYPES) else {
+            return;
+        };
+        assert_eq!(printed, interpreted(OWNED_FUNCTION_TYPES));
+        assert_eq!(collections, 0, "the collector should have nothing to do");
+    }
+
+    #[test]
+    fn with_no_collector_errors_and_function_values_do_not_fill_the_pool_over_time() {
+        // A function value made and replaced on every trip, one that
+        // keeps text, one that looks at a list, and an error that is
+        // caught, raised again and kept. A hundred times the trips needs
+        // no more of the pool.
+        let program = |trips: usize| r#"class Fault {
+    code: int
+    note: str
+}
+function risky(n: int) -> int raises Fault {
+    if n % 3 == 0 { raise Fault(n % 100, f"fault {n % 10}") }
+    return n
+}
+function make_adder(n: int) -> function(int) -> int {
+    return function(x: int) -> int { return x + n }
+}
+function tagger(tag: str) -> function(int) -> str {
+    return function(n: int) -> str { return f"{tag}{n % 10}" }
+}
+function retry(n: int) -> int raises Fault {
+    try {
+        return risky(n)
+    } except Fault as fault {
+        if n % 2 == 0 { raise fault }
+        return 0
+    }
+}
+var last: Fault or none = none
+var step: function(int) -> int = make_adder(0)
+var total = 0
+let kept: list[function(int) -> str] = []
+for trip in range({trips}) {
+    step = make_adder(trip % 5)
+    let name = tagger(f"t{trip % 7}")
+    try {
+        total += step(retry(trip)) + len(name(trip))
+    } except Fault as fault {
+        last = fault
+    }
+    total += len([trip, total].map(function(n: int) -> int { return n + step(1) }))
+    if len(kept) < 3 { kept.append(name) }
+}
+print(total, last, len(kept), kept[0](3))
+"#.replace("{trips}", &trips.to_string());
+        let mut needed = Vec::new();
+        for trips in [50, 5000] {
+            let source = program(trips);
+            let c = compile_no_collector(&source).unwrap();
+            let name = format!("handlers-{trips}-trips");
+            let Some((printed, report, finished)) = build_and_run(&name, &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert!(finished, "{report}");
+            assert_eq!(printed, interpreted(&source));
+            assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+            crate::emit_llvm::tests::no_collector_as_c(&name, &source, &printed, &report);
+            needed.push(pool_needed(&report));
+        }
+        assert_eq!(needed[0], needed[1], "a hundred times the trips needed a bigger pool");
+        assert!(needed[0] < 1024, "{needed:?}");
+    }
+
+    #[test]
+    fn the_c_for_a_function_value_that_has_one_owner() {
+        // docs/functions-and-errors.md.
+        let c = compile_no_collector(FUNCTION_C).unwrap();
+        // A function of the program is one fixed value. Its `drop` is
+        // NULL, so freeing it does nothing.
+        assert!(c.contains("static zeno_closure zeno_value_double = {(zeno_code)zeno_wrap_double, \"double\"};\n"), "{c}");
+        // One written where a value goes is a block, with a copy of the
+        // text it uses and a function that frees both.
+        assert!(
+            c.contains(
+                "static void zeno_fn_drop_2(zeno_closure *zeno_self) {
+    struct zeno_env_2 *env = (struct zeno_env_2 *)zeno_self;
+    zeno_text_drop(env->z_tag);
+    zeno_free(env);
+}
+
+static zeno_closure *z_make_tagger(const char *z_tag, int64_t z_width) {
+    struct zeno_env_2 *t5 = (struct zeno_env_2 *)zeno_alloc(sizeof(struct zeno_env_2));
+    t5->base.code = (zeno_code)zeno_fn_2;
+    t5->base.name = \"\";
+    t5->base.drop = zeno_fn_drop_2;
+    t5->z_tag = zeno_text_keep(z_tag);
+    t5->z_width = z_width;
+    return (&t5->base);
+}
+"
+            ),
+            "{c}"
+        );
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        let program = program.split("\n}\n").next().unwrap();
+        // A new value frees the old one, whichever kind each is.
+        assert_eq!(
+            program,
+            "    z_tagger = z_make_tagger(\"warn\", 4);
+    zeno_closure *t1 = z_make_tagger(\"note\", 2);
+    zeno_closure_drop(z_tagger);
+    z_tagger = t1;
+    z_current = (&zeno_value_double);
+    zeno_closure *t2 = (zeno_closure *)zeno_alloc(sizeof(zeno_closure));
+    t2->code = (zeno_code)zeno_fn_1;
+    t2->name = \"\";
+    t2->drop = zeno_closure_release;
+    zeno_closure *t3 = t2;
+    zeno_closure_drop(z_current);
+    z_current = t3;
+    zeno_closure_drop(z_current);
+    zeno_closure_drop(z_tagger);"
+        );
+        // Where there is a collector, a function value has no `drop`.
+        let shared = compile(FUNCTION_C).unwrap();
+        assert!(!shared.contains("zeno_closure_drop") && !shared.contains("->drop"), "{shared}");
+    }
+
+    pub(crate) const FUNCTION_C: &str = "function make_tagger(tag: str, width: int) -> function(str) -> str {\n    \
+        return function(text: str) -> str { return f\"[{tag}:{width}] {text}\" }\n}\n\
+        function double(n: int) -> int { return n * 2 }\n\
+        var tagger = make_tagger(\"warn\", 4)\n\
+        tagger = make_tagger(\"note\", 2)\n\
+        var current: function(int) -> int = double\n\
+        current = function(n: int) -> int { return n + 1 }\n";
 
     #[test]
     fn with_no_collector_lists_of_objects_do_not_fill_the_pool_over_time() {
