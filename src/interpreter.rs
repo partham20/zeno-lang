@@ -406,13 +406,24 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second, iterable, body } => {
                 let iterable_span = iterable.span;
                 let iterable = self.eval(iterable, env)?;
-                for item in ops::items(&iterable, iterable_span)? {
+                // With one name each round is given an item. With two it
+                // is given a key, or a position, and what is there.
+                let rounds: Vec<(Value, Option<Value>)> = match second {
+                    None => ops::items(&iterable, iterable_span)?.into_iter().map(|item| (item, None)).collect(),
+                    Some(_) => {
+                        ops::pairs(&iterable, iterable_span)?.into_iter().map(|(key, value)| (key, Some(value))).collect()
+                    }
+                };
+                for (item, value) in rounds {
                     // A fresh scope and a fresh loop variable for every round.
                     let scope = Scope::child(env);
                     scope.declare(variable, item, false);
+                    if let (Some(second), Some(value)) = (second, value) {
+                        scope.declare(second, value, false);
+                    }
                     match self.run_statements(body, &scope) {
                         Ok(()) | Err(Control::Continue(_)) => {}
                         Err(Control::Break(_)) => break,
@@ -1048,6 +1059,31 @@ mod tests {
         );
         // The loop walks the keys as they were when it began.
         assert_eq!(output("let d = [1: 1]\nfor k in d {\n d[k + 1] = 0\n d[k + 2] = 0\n}\nprint(d)"), "[1: 1, 2: 0, 3: 0]\n");
+        // With two names it is given each key and what is under it, also
+        // as they were when it began.
+        assert_eq!(
+            output("let d = [\"b\": 1, \"a\": 2]\nfor k, v in d {\n d[k] = v * 10\n d[k + k] = 0\n print(k, v)\n}\nprint(d)"),
+            "b 1\na 2\n[\"b\": 10, \"a\": 20, \"bb\": 0, \"aa\": 0]\n"
+        );
+        // Over a list, text and a range the first name is the position,
+        // from 0, and the second is what is there.
+        assert_eq!(
+            output(
+                "for i, word in [\"zero\", \"one\"] {\n print(i, word)\n}\nfor i, c in \"h\u{e9}y\" {\n print(i, c)\n}\n\
+                 for i, n in range(10, 0, -4) {\n if i == 2 {\n  break\n }\n print(i, n)\n}"
+            ),
+            "0 zero\n1 one\n0 h\n1 \u{e9}\n2 y\n0 10\n1 6\n"
+        );
+        // A value is anything a list can hold, and it is the thing
+        // itself that is under the key, not a copy.
+        assert_eq!(
+            output(
+                "class Point {\n x: int\n}\nlet lists = [\"a\": [1]]\nlists[\"a\"].append(2)\nlists[\"b\"] = []\n\
+                 let points = [1: Point(5)]\npoints[1].x = 6\nlet nested = [\"in\": [\"x\": 1]]\nnested[\"in\"][\"y\"] = 2\n\
+                 print(lists, points, nested, lists.values(), points.get(2))\nprint(points.pop(1), points)"
+            ),
+            "[\"a\": [1, 2], \"b\": []] [1: Point(x=6)] [\"in\": [\"x\": 1, \"y\": 2]] [[1, 2], []] none\nPoint(x=6) [:]\n"
+        );
         // `get`: `none`, or what the second argument says, for a key
         // that is not there.
         assert_eq!(

@@ -989,9 +989,9 @@ impl<'a> Renamer<'a> {
                 self.expr(condition);
                 self.block(body);
             }
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second, iterable, body } => {
                 self.expr(iterable);
-                self.scopes.push(HashSet::from([variable.clone()]));
+                self.scopes.push(second.iter().chain([&*variable]).cloned().collect());
                 self.block(body);
                 self.scopes.pop();
             }

@@ -94,8 +94,12 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             line("unsafe", depth, out);
             block(body, depth + 1, out);
         }
-        StmtKind::For { variable, iterable, body } => {
-            line(&format!("for {variable} in {}", expr(iterable)), depth, out);
+        StmtKind::For { variable, second, iterable, body } => {
+            let names = match second {
+                Some(second) => format!("{variable}, {second}"),
+                None => variable.clone(),
+            };
+            line(&format!("for {names} in {}", expr(iterable)), depth, out);
             block(body, depth + 1, out);
         }
         StmtKind::Match { subject, arms } => {

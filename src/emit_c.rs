@@ -1028,7 +1028,9 @@ fn is_empty_dict(kind: &Kind) -> bool {
 
 /// What a dict is told about its keys and its values when it is made, so
 /// that the runtime can compare and show them: 's' for text, 'i' for a
-/// whole number, 'f' for a float, 'b' for a bool.
+/// whole number, 'f' for a float, 'b' for a bool. Any other value is
+/// 'p': the runtime keeps it, and the compiler writes the function that
+/// shows one and the function that compares two (`plain_value`).
 pub fn dict_kinds(key: &Kind, value: &Kind, span: Span) -> Result<(char, char), Error> {
     let letter = |kind: &Kind| match kind {
         Kind::Str => Some('s'),
@@ -1039,8 +1041,15 @@ pub fn dict_kinds(key: &Kind, value: &Kind, span: Span) -> Result<(char, char), 
     };
     match (letter(key), letter(value)) {
         (Some(key @ ('s' | 'i')), Some(value)) => Ok((key, value)),
+        (Some(key @ ('s' | 'i')), None) if !matches!(value, Kind::None | Kind::Other(_) | Kind::Owned(_)) => Ok((key, 'p')),
         _ => Err(cannot("a dict with these keys and values", span)),
     }
+}
+
+/// Can the runtime show and compare a value of this kind in a dict by
+/// itself, from the letter the dict was made with?
+pub fn plain_value(value: &Kind) -> bool {
+    matches!(value, Kind::Str | Kind::Int | Kind::Float | Kind::Bool)
 }
 
 /// The C return type of a function that gives back a value of this kind.
@@ -2249,9 +2258,9 @@ impl Emitter<'_> {
                 self.line("}");
             }
 
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second, iterable, body } => {
                 let begin = self.text_begin();
-                let walked = self.open_loop(variable, iterable)?;
+                let walked = self.open_loop(variable, second.as_deref(), iterable)?;
                 if let Some(release) = self.text_end(begin) {
                     // Text built to find what to loop over. The loop has
                     // its list or its numbers in hand by now, so the text
@@ -3136,7 +3145,11 @@ impl Emitter<'_> {
     /// items`. It declares the loop variable in a scope of its own; the
     /// caller writes the body, the closing `}`, drops the scope, and gives
     /// what this returns to `close_loop`.
-    fn open_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
+    ///
+    /// With two names, `for key, value in ages`, `second` is the second:
+    /// the first is then the key of a dict, or the position in a list, a
+    /// str or a range, and the second is what is there.
+    fn open_loop(&mut self, variable: &str, second: Option<&str>, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
         let range = match &iterable.kind {
             ExprKind::Call { callee, args }
@@ -3148,7 +3161,7 @@ impl Emitter<'_> {
             _ => None,
         };
         let Some(args) = range else {
-            return self.open_list_loop(variable, iterable);
+            return self.open_list_loop(variable, second, iterable);
         };
         // A range becomes a plain counting loop: no list of numbers is built.
         let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
@@ -3160,11 +3173,25 @@ impl Emitter<'_> {
         }
 
         self.scopes.push(HashMap::new());
-        let c_name = self.declare(variable, Kind::Int);
+        // With two names the second is the number, and the first counts
+        // the trips from 0.
+        let c_name = self.declare(second.unwrap_or(variable), Kind::Int);
+        let trips = second.map(|_| self.declare(variable, Kind::Int));
+        let counted = |emitter: &mut Self, from: String| {
+            if let Some(trips) = &trips {
+                emitter.indent += 1;
+                emitter.line(format!("int64_t {trips} = {from};"));
+                emitter.indent -= 1;
+            }
+        };
         match bounds.as_slice() {
-            [stop] => self.line(format!("for (int64_t {c_name} = 0; {c_name} < {stop}; {c_name}++) {{")),
+            [stop] => {
+                self.line(format!("for (int64_t {c_name} = 0; {c_name} < {stop}; {c_name}++) {{"));
+                counted(self, c_name.clone());
+            }
             [start, stop] => {
-                self.line(format!("for (int64_t {c_name} = {start}; {c_name} < {stop}; {c_name}++) {{"))
+                self.line(format!("for (int64_t {c_name} = {start}; {c_name} < {stop}; {c_name}++) {{"));
+                counted(self, format!("{c_name} - {start}"));
             }
             // With a step, count the trips first. Counting up or down to
             // `stop` directly could run past the end of what an int holds.
@@ -3179,6 +3206,7 @@ impl Emitter<'_> {
                 self.indent += 1;
                 self.line(format!("int64_t {c_name} = {start} + {trip} * {step};"));
                 self.indent -= 1;
+                counted(self, trip);
             }
             _ => return Err(cannot("this `range`", span)),
         }
@@ -3191,7 +3219,8 @@ impl Emitter<'_> {
     /// of being left for the collector. (A `return` from inside the loop
     /// skips this line, and frees the copy itself: see `open_list_loop`.)
     fn close_loop(&mut self, walked: Option<String>) {
-        if let Some(drop) = walked {
+        // A loop over the pairs of a dict walked two lists.
+        for drop in walked.iter().flat_map(|drops| drops.lines()) {
             self.line(drop);
         }
     }
@@ -3199,8 +3228,15 @@ impl Emitter<'_> {
     /// `for x in items`. The loop walks the list as it was when the loop
     /// began, so a body that adds to the list or removes from it cannot
     /// confuse the loop. That is what `zeno run` does too.
-    fn open_list_loop(&mut self, variable: &str, iterable: &Expr) -> Result<Option<String>, Error> {
+    ///
+    /// `for key, value in ages` walks two lists side by side, the keys
+    /// and the values, both made for the loop. `for i, item in items`
+    /// walks the one list, and `i` is how far the walk has got.
+    fn open_list_loop(&mut self, variable: &str, second: Option<&str>, iterable: &Expr) -> Result<Option<String>, Error> {
         let span = iterable.span;
+        // The values of a dict, for a loop with two names: the list of
+        // them, and what kind they are.
+        let mut values: Option<(String, Kind)> = None;
         self.walked = Some(iterable as *const Expr as usize);
         let list = self.expr(iterable);
         self.walked = None;
@@ -3212,14 +3248,33 @@ impl Emitter<'_> {
         // A dict that was made right here (`for key in ["a": 1]`) is
         // nobody's, and has done its work once the keys are out of it.
         let list = match &list.kind {
-            Kind::Dict(key, _) => {
+            Kind::Dict(key, value) => {
                 let keys_kind = Kind::List(key.clone());
+                let value = (**value).clone();
+                // The dict is asked twice, so it is worked out once.
+                let list = match (second, list.made) {
+                    (Some(_), false) => self.temp(list, span)?,
+                    _ => list,
+                };
                 let mut keys = match list.made {
                     true => {
                         let dict = self.temp(list, span)?;
                         let keys = Val::from(format!("zeno_dict_keys({})", dict.code), keys_kind, &[&dict]);
                         let keys = self.temp(keys, span)?;
+                        if second.is_some() {
+                            let name = self.new_temp();
+                            self.line(format!("zeno_list *{name} = zeno_dict_values({});", dict.code));
+                            values = Some((name, value));
+                        }
                         self.line(format!("zeno_dict_drop({});", dict.code));
+                        keys
+                    }
+                    false if second.is_some() => {
+                        let keys = Val::from(format!("zeno_dict_keys({})", list.code), keys_kind, &[&list]);
+                        let keys = self.temp(keys, span)?;
+                        let name = self.new_temp();
+                        self.line(format!("zeno_list *{name} = zeno_dict_values({});", list.code));
+                        values = Some((name, value));
                         keys
                     }
                     false => Val::from(format!("zeno_dict_keys({})", list.code), keys_kind, &[&list]),
@@ -3271,17 +3326,48 @@ impl Emitter<'_> {
                 self.hold(Kind::List(Box::new(item.clone())), &items);
             }
         }
-        let c_type = c_type(&item, span)?;
-        let c_name = self.declare(variable, item.clone());
+        // The list of values is the loop's own as well. What is in it
+        // still belongs to the dict.
+        if let Some((list, value)) = &values {
+            self.hold_copy(value.clone(), list);
+        }
+        let c_type_of_item = c_type(&item, span)?;
+        // With two names over a list, the second is the item and the
+        // first is the position. Over a dict the first is the key, which
+        // is the item of the list of keys.
+        let c_name = match (second, &values) {
+            (Some(second), None) => self.declare(second, item.clone()),
+            _ => self.declare(variable, item.clone()),
+        };
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
         self.indent += 1;
         let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
-        self.line(format!("{c_type}{c_name} = {value};"));
+        self.line(format!("{c_type_of_item}{c_name} = {value};"));
+        match (second, &values) {
+            (Some(second), Some((list, kind))) => {
+                let c_type = c_type(kind, span)?;
+                let c_name = self.declare(second, kind.clone());
+                let value = from_slot(kind, &format!("{list}->items[{position}]"), span)?;
+                self.line(format!("{c_type}{c_name} = {value};"));
+            }
+            (Some(_), None) => {
+                let c_name = self.declare(variable, Kind::Int);
+                self.line(format!("int64_t {c_name} = {position};"));
+            }
+            _ => {}
+        }
         self.indent -= 1;
-        Ok((!own).then(|| match copied {
-            true => self.drops.code_for_copy(&item, &items),
-            false => self.drops.code(&Kind::List(Box::new(item)), &items),
-        }))
+        let mut drops = Vec::new();
+        if !own {
+            drops.push(match copied {
+                true => self.drops.code_for_copy(&item, &items),
+                false => self.drops.code(&Kind::List(Box::new(item)), &items),
+            });
+        }
+        if let Some((list, value)) = &values {
+            drops.push(self.drops.code_for_copy(value, list));
+        }
+        Ok((!drops.is_empty()).then(|| drops.join("\n")))
     }
 
     // ---------------------------------------------------------- Expressions
@@ -3643,13 +3729,28 @@ impl Emitter<'_> {
                     val.made = true;
                     return Ok(val);
                 }
-                let (key, value) = (vals[0].kind.clone(), vals[1].kind.clone());
+                // The values are all of one kind. Where the place says
+                // more than they do (a `dict[str, Shape]`), the checker
+                // has said what that kind is.
+                let key = vals[0].kind.clone();
+                let mut value = Some(vals[1].kind.clone());
+                for pair in vals.chunks(2) {
+                    value = value.and_then(|value| joined(&value, &pair[1].kind));
+                }
+                if let Some(wanted) = self.types.items(expr) {
+                    value = Some(disown(wanted.clone()).0);
+                }
+                let Some(value) = value else {
+                    return Err(cannot("a dict whose values are not all one type", span));
+                };
+                self.fits_a_slot(&value, span)?;
                 let (key_letter, value_letter) = dict_kinds(&key, &value, span)?;
                 let mut slots = Vec::new();
                 for (pair, (_, written)) in vals.chunks_mut(2).zip(entries) {
-                    if pair[0].kind != key || pair[1].kind != value {
-                        return Err(cannot("a dict whose keys, or whose values, are not all one type", span));
+                    if pair[0].kind != key {
+                        return Err(cannot("a dict whose keys are not all one type", span));
                     }
+                    pair[1] = self.coerce(pair[1].clone(), &value, span)?;
                     if !self.collector && is_text(&value) && !is_written(written) {
                         // The dict keeps a copy of its own of each value
                         // that is text, as a list does of each item.
@@ -3673,7 +3774,7 @@ impl Emitter<'_> {
                 // an item fails, the failure frees what there is of it.
                 let filling = self.hold(Kind::List(Box::new(Kind::None)), &list);
                 let filled_from = self.lines.len();
-                let walked = self.open_loop(variable, iterable)?;
+                let walked = self.open_loop(variable, None, iterable)?;
                 self.indent += 1;
                 // Text built for one item is given back before the next.
                 let begin = self.text_begin();
@@ -4988,13 +5089,27 @@ impl Emitter<'_> {
                     // number that may be `none` travels with a flag.
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
-                            Kind::Int => "int",
-                            Kind::Float => "float",
+                            Kind::Int | Kind::Pin | Kind::Register(_) => "int",
+                            Kind::Float | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
+                            // A list, an object, another dict: NULL is
+                            // `none`, and is what comes back for a key
+                            // that is not there.
+                            value if is_pointer(value) => "",
                             _ => return Err(cannot("`get` on a dict with these values", span)),
                         };
-                        let code = format!("zeno_dict_get_{which}({}, {})", dict.code, to_slot(&key, &wanted.code, span)?);
+                        let code = match which {
+                            "" => {
+                                let slot = format!(
+                                    "zeno_dict_get({}, {}, (zeno_slot){{.p = NULL}})",
+                                    dict.code,
+                                    to_slot(&key, &wanted.code, span)?
+                                );
+                                from_slot(&value, &slot, span)?
+                            }
+                            which => format!("zeno_dict_get_{which}({}, {})", dict.code, to_slot(&key, &wanted.code, span)?),
+                        };
                         let mut val = Val::from(code, Kind::Optional(value.clone()), &parts);
                         val.reads = true;
                         Ok(self.lend(val))
@@ -5141,6 +5256,9 @@ impl Emitter<'_> {
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
+            Kind::Dict(_, value) if !plain_value(value) && !matches!(**value, Kind::Other(_)) => {
+                format!("zeno_dict_str_with({}, {})", val.code, self.repr_adapter(value, span)?)
+            }
             Kind::Dict(..) => format!("zeno_dict_str({})", val.code),
             Kind::Error => format!("{}->message", val.code),
             Kind::Function(_) => format!("zeno_show_function({})", val.code),
@@ -5175,6 +5293,9 @@ impl Emitter<'_> {
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
+            Kind::Dict(_, value) if !plain_value(value) && !matches!(**value, Kind::Other(_)) => {
+                format!("zeno_dict_eq_with({a}, {b}, {})", self.eq_adapter(value, span)?)
+            }
             Kind::Dict(..) => format!("zeno_dict_eq({a}, {b})"),
             Kind::Error => format!("zeno_error_same({a}, {b})"),
             Kind::Optional(inner) => format!("{}({a}, {b})", self.optional_same(inner, span)?),
@@ -5248,10 +5369,46 @@ impl Emitter<'_> {
                         }
                     }
                 }
+                // C does not say in which order the arguments of a call
+                // are worked out. Making the text of a list, a dict or an
+                // object takes room for its pieces while it is made, and
+                // so can a call. So how much room is in use at most would
+                // depend on the C compiler. Where two or more of the
+                // values have work to do and one of them is such a one,
+                // the work is done on lines of its own, in the order the
+                // LLVM backend does it: every value first, then every text.
+                let named = |val: &Val| {
+                    val.code.starts_with('"') || val.code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+                };
+                let plain = |val: &Val| matches!(val.kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str);
+                // A call may use the room while it runs, and text that
+                // is made here is put in it.
+                let roomy = |val: &Val| !plain(val) || val.calls || (val.kind == Kind::Str && !named(val));
+                let works = |val: &Val| val.kind != Kind::Str || !named(val);
+                let values_first = vals.iter().filter(|val| works(val)).count() > 1 && vals.iter().any(roomy);
+                if values_first {
+                    for val in &mut vals {
+                        if !named(val) {
+                            let taken = std::mem::replace(val, Val::plain("", Kind::None));
+                            *val = self.temp(taken, span)?;
+                        }
+                    }
+                }
+                // The text of a number takes no room while it is made, so
+                // numbers alone have no order to get wrong.
+                let in_turn = vals.iter().filter(|val| val.kind != Kind::Str).count() > 1
+                    && vals.iter().any(|val| !plain(val));
                 let parts: Vec<&Val> = vals.iter().collect();
                 let mut texts = vec![vals.len().to_string()];
                 for val in &vals {
-                    texts.push(self.text(val, span)?);
+                    let text = self.text(val, span)?;
+                    if in_turn && val.kind != Kind::Str {
+                        let name = self.new_temp();
+                        self.line(format!("const char *{name} = {text};"));
+                        texts.push(name);
+                    } else {
+                        texts.push(text);
+                    }
                 }
                 self.line(format!("zeno_print({});", texts.join(", ")));
                 let mut val = Val::from(String::new(), Kind::None, &parts);
@@ -11043,6 +11200,206 @@ print(maybe)
         );
     }
 
+    /// A loop with two names: over a dict, a list, text and a range.
+    const DICT_PAIRS: &str = r#"let ages = ["Ada": 36, "Alan": 41, "Grace": 45]
+for name, age in ages {
+    print(name, age)
+}
+let words = ["zero", "one", "two"]
+for i, word in words {
+    print(i, word)
+}
+for i, ch in "héy" {
+    print(i, ch)
+}
+for i, n in range(3) {
+    print(i, n)
+}
+for i, n in range(5, 8) {
+    print(i, n)
+}
+for i, n in range(10, 0, -4) {
+    print(i, n)
+}
+function total(prices: dict[str, float]) -> float {
+    var sum = 0.0
+    for item, price in prices {
+        if item == "skip" {
+            continue
+        }
+        sum += price
+    }
+    return sum
+}
+print(total(["a": 1.5, "skip": 100.0, "b": 2.5]))
+var counts: dict[int, int] = [:]
+for i, n in [5, 5, 7] {
+    counts[n] = counts.get(n, 0) + 1
+}
+for n, count in counts {
+    counts[n + 100] = count
+    print(n, count)
+}
+print(counts)
+for key, flag in ["x": true] {
+    print(key, flag)
+}
+let functions = [function(x: int) -> int { return x + 1 }]
+for i, f in functions {
+    print(i, f(i))
+}
+function find(words: list[str], wanted: str) -> int {
+    for at, word in words {
+        if word == wanted {
+            return at
+        }
+    }
+    return -1
+}
+print(find(words, "two"), find(words, "nine"))
+"#;
+
+    /// What a dict can hold: lists, objects, values of an interface,
+    /// enums, dicts, quantities, functions and sized numbers.
+    const DICT_ANY: &str = r#"interface Shape {
+    function area(self) -> float
+}
+
+class Circle is Shape {
+    radius: float
+
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+}
+
+class Square is Shape {
+    side: float
+
+    function area(self) -> float {
+        return self.side * self.side
+    }
+}
+
+class Point {
+    x: int
+    y: int
+}
+
+enum Level {
+    Low
+    High(limit: int)
+}
+
+let lists: dict[str, list[int]] = ["odd": [1, 3], "even": [2]]
+lists["even"].append(4)
+lists["none"] = []
+print(lists, lists["odd"][1], len(lists))
+for name, numbers in lists {
+    print(name, len(numbers))
+}
+
+let points = ["origin": Point(0, 0), "far": Point(9, 9)]
+points["far"].x = 10
+print(points, points["far"].x)
+let found = points.get("origin")
+if found is not none {
+    print(found.y)
+}
+print(points.get("nowhere") is none)
+let gone = points.pop("origin")
+print(gone, points)
+
+let shapes: dict[str, Shape] = ["round": Circle(1.0), "square": Square(2.0)]
+shapes["big"] = Circle(10.0)
+for name, shape in shapes {
+    print(name, shape.area())
+}
+print(shapes)
+
+let levels = [1: Low, 2: High(7)]
+match levels[2] {
+    case High(limit) {
+        print("high", limit)
+    }
+    case Low {
+        print("low")
+    }
+}
+print(levels, levels == [1: Low, 2: High(7)], levels == [1: Low])
+
+let nested: dict[str, dict[str, int]] = ["a": ["x": 1], "b": [:]]
+nested["b"]["y"] = 2
+print(nested, nested["a"]["x"])
+let same = nested == ["a": ["x": 1], "b": ["y": 2]]
+print(same)
+
+let times = ["blink": 500 ms, "wait": 2000 ms]
+print(times, times["wait"])
+let wait = times.get("blink")
+print(wait)
+
+let steps: dict[str, function(int) -> int] = ["double": function(n: int) -> int { return n * 2 }]
+print(steps["double"](21))
+let values = lists.values()
+print(values, points.values())
+let bytes: dict[str, u8] = ["a": 200, "b": 7]
+print(bytes, bytes["a"] + 100)
+"#;
+
+    /// A dict of a type parameter, in a generic function and class.
+    const DICT_GENERIC: &str = r#"function first[T](d: dict[str, T], key: str) -> T {
+    return d[key]
+}
+function flip[K, V](d: dict[K, V]) -> dict[V, K] {
+    var out: dict[V, K] = [:]
+    for key, value in d {
+        out[value] = key
+    }
+    return out
+}
+function count[T](items: list[T]) -> dict[int, T] {
+    var out: dict[int, T] = [:]
+    for at, item in items {
+        out[at] = item
+    }
+    return out
+}
+class Table[T] {
+    rows: dict[str, T]
+
+    function put(self, key: str, row: T) {
+        self.rows[key] = row
+    }
+
+    function each(self) -> list[T] {
+        return self.rows.values()
+    }
+}
+print(first(["a": 1], "a"), first(["b": [1.5]], "b"))
+print(flip(["one": 1, "two": 2]))
+print(count(["x", "y"]), count([[1], [2, 3]]))
+let table: Table[list[str]] = Table([:])
+table.put("k", ["v"])
+print(table.rows, table.each())
+let n: int or none = first(["a": 1], "a")
+print(n)
+"#;
+
+    /// The same with plain values, which a build with no collector takes.
+    const DICT_GENERIC_PLAIN: &str = r#"function flip[K, V](d: dict[K, V]) -> dict[V, K] {
+    var out: dict[V, K] = [:]
+    for key, value in d {
+        out[value] = key
+    }
+    return out
+}
+function tally[T](d: dict[str, T], key: str, instead: T) -> T {
+    return d.get(key, instead)
+}
+print(flip(["one": 1, "two": 2]), tally(["a": 2.5], "b", 0.0), tally(["a": "x"], "a", ""))
+"#;
+
     #[test]
     fn a_dict_is_the_same_in_every_build() {
         // Each of these also checks that a build with no collector frees
@@ -11052,6 +11409,15 @@ print(maybe)
         no_collector_as_interpreter("dict-shapes", DICT_SHAPES);
         no_collector_as_interpreter("dict-exits", DICT_EXITS);
         no_collector_as_interpreter("faults", include_str!("../examples/faults.zeno"));
+        // A loop with two names, which lends each value and leaves the
+        // dict whole, also where a `continue` or a `return` leaves early.
+        no_collector_as_interpreter("dict-pairs", DICT_PAIRS);
+        no_collector_as_interpreter("dict-generic-plain", DICT_GENERIC_PLAIN);
+        // Values that are lists, objects and so on are shared, and need
+        // the collector (decision 10.14).
+        same_as_interpreter("dict-any", DICT_ANY);
+        same_as_interpreter("dict-generic", DICT_GENERIC);
+        same_as_interpreter("channels", include_str!("../examples/channels.zeno"));
         // A key that is not there can be caught where errors jump. A
         // firmware build says that nothing in the `try` can be caught,
         // and is skipped.
@@ -11098,11 +11464,57 @@ print(maybe)
         assert!(program.contains("zeno_list_drop(t2);"), "{program}");
         // With a collector nothing frees the dict. With none, its owner does.
         assert!(!program.contains("zeno_dict_drop"), "{program}");
+        // With two names the loop has a list of the values beside the
+        // list of the keys, and one position for both. Over a list the
+        // first name is that position.
+        let pairs = "let ages = [\"Ada\": 36]\nfor name, age in ages {\n    print(name, age)\n}\n\
+                     for at, n in [5, 6] {\n    print(at, n)\n}\nlet lists = [\"a\": [1.5]]\nprint(lists, lists == lists)\n";
+        let c = compile(pairs).unwrap();
+        let program = &c[c.rfind("static void zeno_program(void)").expect("the program")..];
+        assert!(program.contains("zeno_list *t2 = zeno_dict_keys(t1);\n    zeno_list *t3 = zeno_dict_values(t1);"), "{program}");
+        assert!(program.contains("const char *z_name = t4->items[t5].s;\n        int64_t z_age = t3->items[t5].i;"), "{program}");
+        assert!(program.contains("int64_t z_n = t6->items[t7].i;\n        int64_t z_at = t7;"), "{program}");
+        // A value that is not a plain one is a pointer to the dict, and
+        // the compiler writes how such a value is shown and compared.
+        assert!(program.contains("zeno_dict_of('s', 'p', 1, (zeno_slot){.s = \"a\"}, (zeno_slot){.p = zeno_list_of("), "{program}");
+        assert!(program.contains("zeno_dict_str_with(z_lists, zeno_item_repr_list_float)"), "{program}");
+        assert!(program.contains("zeno_dict_eq_with(z_lists, z_lists, zeno_item_eq_list_float)"), "{program}");
         let c = compile_no_collector(source).unwrap();
         let program = &c[c.rfind("static void zeno_program(void)").expect("the program")..];
         // The keys are text, and the list the loop walks has copies of them.
         assert!(program.contains("    zeno_list_drop_text(t"), "{program}");
         assert!(program.contains("    zeno_dict_drop(z_ages);\n}"), "{program}");
+    }
+
+    #[test]
+    fn print_makes_its_texts_in_the_order_written() {
+        // C does not say in which order the arguments of a call are
+        // worked out, and making the text of a list takes room while it
+        // is made. So beside a list each text gets a line of its own:
+        // first the values that are made by a call, then the texts.
+        let source = "let w = [\"x\", \"y\"]\nlet x = 2.5\nprint(w, x, w.join(\"+\"))\nprint(x, 3, len(w))\nprint(\"a\", w)\n";
+        let c = compile(source).unwrap();
+        let program = &c[c.rfind("static void zeno_program(void)").expect("the program")..];
+        assert!(
+            program.contains(
+                "    const char *t1 = zeno_list_join(z_w, \"+\");\n    \
+                 const char *t2 = zeno_list_str(z_w, zeno_item_repr_str);\n    \
+                 const char *t3 = zeno_str_float(z_x);\n    \
+                 zeno_print(3, t2, t3, t1);\n"
+            ),
+            "{program}"
+        );
+        // Numbers take no room while they are made, and one text alone
+        // has no order to get wrong. Those stay in the call.
+        assert!(program.contains("zeno_print(3, zeno_str_float(z_x), zeno_str_int(3), zeno_str_int(z_w->len));"), "{program}");
+        assert!(program.contains("zeno_print(2, \"a\", zeno_list_str(z_w, zeno_item_repr_str));"), "{program}");
+        // The two backends then use the text room alike (5.11t).
+        no_collector_as_interpreter(
+            "print-order",
+            "function names() -> list[str] {\n    return [\"x\", \"y\"]\n}\n\
+             let w = names()\nlet d = [\"one\": 1, \"two\": 2]\nlet x = 2.5\n\
+             print(w, d, w.join(\"+\"))\nprint(d, x)\nprint(names(), x, f\"{x} and {d}\")\n",
+        );
     }
 
     /// A place for a test's file that no other test uses.
@@ -12764,10 +13176,10 @@ static void z_set_bit(int64_t z_port, int64_t z_bit) {
             first.ends_with(
                 "    {
         zeno_release(z_box->z_bytes);
-        int64_t t6 = -1;
+        int64_t t7 = -1;
         zeno_drop_Box(z_box);
         zeno_list_drop_text(z_names);
-        return t6;
+        return t7;
     }"
             ),
             "{first}"

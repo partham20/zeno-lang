@@ -81,8 +81,10 @@ pub enum StmtKind {
     /// `else if` is stored as an else block holding one `If` statement.
     If { condition: Expr, then_block: Block, else_block: Option<Block> },
     While { condition: Expr, body: Block },
-    /// `for variable in iterable { body }`
-    For { variable: String, iterable: Expr, body: Block },
+    /// `for variable in iterable { body }`. With two names, `for key,
+    /// value in ages`, `variable` is the key (or the position, in a
+    /// list) and `second` is what is there.
+    For { variable: String, second: Option<String>, iterable: Expr, body: Block },
     Match { subject: Expr, arms: Vec<Arm> },
     Try { body: Block, handlers: Vec<Handler> },
     /// `unsafe { ... }`: the only place where a pointer may be read

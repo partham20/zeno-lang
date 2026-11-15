@@ -129,6 +129,19 @@ pub enum Op {
     /// The top two values are a list and a position in it. If there is an
     /// item left, push it and move the position on. If not, jump to n.
     ForNext(u32),
+    /// The same for a loop with two names. Replace the top with two
+    /// values: what the loop gives its second name each round (the values
+    /// of a dict, or the items of a list or the characters of a str), and
+    /// above it the keys of the dict, or `none` where the first name is
+    /// given positions.
+    ForStartPairs,
+    /// The top three values are what `ForStartPairs` left and a position.
+    /// If there is a round left, push what the first name is given (the
+    /// key, or the position) and move the position on. If not, jump to n.
+    ForNextPair(u32),
+    /// Push what the second name is given this round. n says how far
+    /// below the top the position is.
+    ForSecond(u32),
 
     // --------------------------------------------------------------- match
     /// Pop the name a pattern like `Circle(r)` was written with, and look

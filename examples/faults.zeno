@@ -24,13 +24,14 @@ for code in arrived {
     seen[code] = seen.get(code, 0) + 1
 }
 
-# A loop over a dict is given its keys, in the order they were put in.
-for code in seen {
+# A loop with two names is given each key and what is under it, in the
+# order the keys were put in.
+for code, count in seen {
     let meaning = meanings.get(code, "a code nobody wrote down")
-    print(f"{code}: {meaning} (x{seen[code]})")
+    print(f"{code}: {meaning} (x{count})")
 }
 
-# Which one came most often?
+# Which one came most often? A loop with one name is given the keys.
 var worst = arrived[0]
 for code in seen {
     if seen[code] > seen[worst] {

@@ -437,6 +437,41 @@ impl Vm {
                     }
                 }
 
+                Op::ForStartPairs => {
+                    let value = pop!();
+                    let (keys, values): (Vec<Value>, Vec<Value>) = ops::pairs(&value, span)?.into_iter().unzip();
+                    self.stack.push(Value::list(values));
+                    self.stack.push(match value {
+                        Value::Dict(_) => Value::list(keys),
+                        _ => Value::None,
+                    });
+                }
+                Op::ForNextPair(to) => {
+                    let top = self.stack.len() - 1;
+                    let (Value::List(seconds), Value::Int(position)) = (&self.stack[top - 2], &self.stack[top]) else {
+                        unreachable!("`ForNextPair` runs on what `ForStartPairs` left");
+                    };
+                    let position = *position;
+                    if position as usize >= seconds.borrow().len() {
+                        frame.ip = to as usize;
+                    } else {
+                        let first = match &self.stack[top - 1] {
+                            Value::List(keys) => keys.borrow()[position as usize].clone(),
+                            _ => Value::Int(position),
+                        };
+                        self.stack[top] = Value::Int(position + 1);
+                        self.stack.push(first);
+                    }
+                }
+                Op::ForSecond(below) => {
+                    let at = self.stack.len() - 1 - below as usize;
+                    let (Value::List(seconds), Value::Int(position)) = (&self.stack[at - 2], &self.stack[at]) else {
+                        unreachable!("`ForSecond` runs on what `ForStartPairs` left");
+                    };
+                    let second = seconds.borrow()[*position as usize - 1].clone();
+                    self.stack.push(second);
+                }
+
                 // ----------------------------------------------------- match
                 Op::IsCase(name, count) => {
                     let name = text(&frame.proto, name);

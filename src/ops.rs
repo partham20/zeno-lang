@@ -397,6 +397,17 @@ pub fn items(value: &Value, span: Span) -> Result<Vec<Value>> {
     }
 }
 
+/// The same for a loop with two names, `for key, value in ages`: each
+/// key of a dict with what is under it, or each position of a list or a
+/// str with what is there. They are taken as they were when the loop
+/// began, like the items of a loop with one name.
+pub fn pairs(value: &Value, span: Span) -> Result<Vec<(Value, Value)>> {
+    match value {
+        Value::Dict(dict) => Ok(dict.borrow().entries().to_vec()),
+        other => Ok(items(other, span)?.into_iter().enumerate().map(|(at, item)| (Value::Int(at as i64), item)).collect()),
+    }
+}
+
 /// Check an index and turn it into a position. Positions start at 0 and
 /// negative ones are refused; see docs/decisions.md.
 pub fn position(index: &Value, len: usize, what: &str, span: Span) -> Result<usize> {

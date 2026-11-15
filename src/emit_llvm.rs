@@ -271,6 +271,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_dict_drop", "declare void @zeno_dict_drop(ptr)"),
     ("zeno_dict_str", "declare ptr @zeno_dict_str(ptr)"),
     ("zeno_dict_eq", "declare zeroext i1 @zeno_dict_eq(ptr, ptr)"),
+    ("zeno_dict_str_with", "declare ptr @zeno_dict_str_with(ptr, ptr)"),
+    ("zeno_dict_eq_with", "declare zeroext i1 @zeno_dict_eq_with(ptr, ptr, ptr)"),
     ("zeno_find", "declare i64 @zeno_find(ptr, ptr)"),
     ("zeno_slice", "declare ptr @zeno_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
     // The `files` module. In a firmware build the four that can fail
@@ -697,6 +699,9 @@ struct Count {
     /// is the loop's own, and is freed when the loop is over. See
     /// `close_loop`.
     walked: Option<(String, Kind)>,
+    /// For a loop over the pairs of a dict: the list of its values, which
+    /// is walked beside the list of its keys.
+    values: Option<(String, Kind)>,
 }
 
 /// The function being written.
@@ -2126,11 +2131,11 @@ impl Emitter<'_> {
                 Ok(())
             }
 
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second, iterable, body } => {
                 // Text built to find what to loop over is given back
                 // before the first trip: see `open_loop`.
                 let begin = self.text_begin();
-                let count = self.open_loop(variable, iterable, Some(begin))?;
+                let count = self.open_loop(variable, second.as_deref(), iterable, Some(begin))?;
                 self.code.loops.push(Loop {
                     next: count.next.clone(),
                     done: count.done.clone(),
@@ -2903,6 +2908,7 @@ impl Emitter<'_> {
             next: format!("next{n}"),
             done: format!("done{n}"),
             walked: None,
+            values: None,
         };
         self.place(&count.test);
         let trip = self.load("i64", &count.counter);
@@ -2938,11 +2944,16 @@ impl Emitter<'_> {
         // Its third field is where the items are, one slot after another.
         // This `getelementptr` has no `i32 0` in front: it steps along an
         // array of slots, where the others stepped into a struct.
+        let slot = self.slot_of(items, &trip);
+        (count, slot)
+    }
+
+    /// The slot at position `at` of the list at `items`.
+    fn slot_of(&mut self, items: &str, at: &str) -> String {
         let array_at = self.field_at("%zeno_list", items, 2);
         let array = self.set(format!("load ptr, ptr {array_at}"));
-        let slot_at = self.set(format!("getelementptr i64, ptr {array}, i64 {trip}"));
-        let slot = self.set(format!("load i64, ptr {slot_at}"));
-        (count, slot)
+        let slot_at = self.set(format!("getelementptr i64, ptr {array}, i64 {at}"));
+        self.set(format!("load i64, ptr {slot_at}"))
     }
 
     /// The first part of a `for` loop: `for i in range(...)` or `for x in
@@ -2952,8 +2963,23 @@ impl Emitter<'_> {
     /// `begin` is for a `for` statement in a build with no collector:
     /// text built to find what to loop over is given back once the loop
     /// has its list or its numbers in hand, before the first trip.
-    fn open_loop(&mut self, variable: &str, iterable: &Expr, begin: Option<(usize, bool)>) -> Result<Count, Error> {
+    ///
+    /// With two names, `for key, value in ages`, `second` is the second:
+    /// the first is then the key of a dict, or the position in a list, a
+    /// str or a range, and the second is what is there.
+    fn open_loop(
+        &mut self,
+        variable: &str,
+        second: Option<&str>,
+        iterable: &Expr,
+        begin: Option<(usize, bool)>,
+    ) -> Result<Count, Error> {
         let span = iterable.span;
+        // What the first name is given, where there are two.
+        let mut first: Option<Val> = None;
+        // The list of a dict's values, for a loop over its pairs.
+        let mut values: Option<(String, Kind)> = None;
+        let mut value_kind = Kind::None;
         let range = match &iterable.kind {
             ExprKind::Call { callee, args }
                 if matches!(&callee.kind, ExprKind::Name(name) if name == "range" && self.lookup(name).is_none())
@@ -2996,6 +3022,14 @@ impl Emitter<'_> {
                 let (count, trip) = self.count_open(variable, &start);
                 let more = self.set(format!("icmp slt i64 {trip}, {stop}"));
                 self.count_body(&count, &more);
+                // With two names the first counts the trips from 0.
+                if second.is_some() {
+                    let trips = match (&step, start.as_str()) {
+                        (None, "0") | (Some(_), _) => trip.clone(),
+                        (None, start) => self.set(format!("sub i64 {trip}, {start}")),
+                    };
+                    first = Some(Val::new(trips, Kind::Int));
+                }
                 let number = match step {
                     None => trip,
                     Some((start, step)) => {
@@ -3019,8 +3053,18 @@ impl Emitter<'_> {
                 // ["a": 1]`) is nobody's, and has done its work once the
                 // keys are out of it.
                 let list = match &list.kind {
-                    Kind::Dict(key, _) => {
+                    Kind::Dict(key, value) => {
                         let keys = self.call("ptr", "zeno_dict_keys", format!("ptr {}", list.code));
+                        if second.is_some() {
+                            let list = self.call("ptr", "zeno_dict_values", format!("ptr {}", list.code));
+                            // The values still belong to the dict. With
+                            // no collector the list has its own copies
+                            // of the ones that are text.
+                            let whole = !self.collector && is_text(value);
+                            let kind = Kind::List(Box::new(if whole { (**value).clone() } else { Kind::None }));
+                            values = Some((list, kind));
+                            value_kind = (**value).clone();
+                        }
                         if list.made {
                             self.run("zeno_dict_drop", format!("ptr {}", list.code));
                         }
@@ -3055,6 +3099,11 @@ impl Emitter<'_> {
                 };
                 self.text_given_back(begin);
                 let (count, slot) = self.walk_open(variable, &items);
+                if second.is_some() && values.is_none() {
+                    // Over a list the first name is the position.
+                    let trip = self.load("i64", &count.counter);
+                    first = Some(Val::new(trip, Kind::Int));
+                }
                 // What frees the list: its items too, if they are text
                 // it has copies of, or if the list is the one that was
                 // made and its items have no other owner. The items in
@@ -3064,11 +3113,34 @@ impl Emitter<'_> {
                 (count, self.from_slot(&item, &slot, span)?.fixed(), (!own).then_some((items, kind)))
             }
         };
+        // Over a dict the first name is the key, which is what the list
+        // of keys gave, and the second is in the list of values at the
+        // same position.
+        let (value, first) = match (&values, first) {
+            (Some((list, _)), _) => {
+                let trip = self.load("i64", &count.counter);
+                let slot = self.slot_of(list, &trip);
+                (self.from_slot(&value_kind, &slot, span)?.fixed(), Some(value))
+            }
+            (None, first) => (value, first),
+        };
         // What the body sees is a value, which it cannot change.
-        self.scopes.push(HashMap::from([(
-            variable.to_string(),
-            Variable { place: Place::Value(value.code), kind: value.kind, open: false, owner: false },
-        )]));
+        let seen = |val: Val| Variable { place: Place::Value(val.code), kind: val.kind, open: false, owner: false };
+        let mut scope = HashMap::new();
+        match (second, first) {
+            (Some(second), Some(first)) => {
+                scope.insert(variable.to_string(), seen(first));
+                scope.insert(second.to_string(), seen(value));
+            }
+            _ => {
+                scope.insert(variable.to_string(), seen(value));
+            }
+        }
+        self.scopes.push(scope);
+        if let Some((list, kind)) = &values {
+            self.hold(kind.clone(), list);
+        }
+        count.values = values;
         // The list being walked is the loop's own: a copy, or a list
         // written out for it. A `return` or a failed call inside the loop
         // frees it on the way out; `close_loop` does when the loop ends
@@ -3096,6 +3168,9 @@ impl Emitter<'_> {
         self.count_close(count);
         if let Some((items, kind)) = &count.walked {
             self.free(kind, items, Span { line: 0, col: 0 }).expect("a list can be freed");
+        }
+        if let Some((values, kind)) = &count.values {
+            self.free(kind, values, Span { line: 0, col: 0 }).expect("a list can be freed");
         }
     }
 
@@ -3881,7 +3956,7 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::List(items) => self.list(expr, items, span)?.made(),
-            ExprKind::Dict(entries) => self.dict(entries, span)?.made(),
+            ExprKind::Dict(entries) => self.dict(expr, entries, span)?.made(),
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 self.comprehension(element, variable, iterable, condition.as_deref(), span)?.made()
             }
@@ -4438,7 +4513,7 @@ impl Emitter<'_> {
     ///   %t2 = ptrtoint ptr @.str.1 to i64
     ///   call void @zeno_dict_set(ptr %t1, i64 %t2, i64 36)
     /// ```
-    fn dict(&mut self, entries: &[(Expr, Expr)], span: Span) -> Result<Val, Error> {
+    fn dict(&mut self, expr: &Expr, entries: &[(Expr, Expr)], span: Span) -> Result<Val, Error> {
         let mut vals = Vec::new();
         for (key, value) in entries {
             let key = self.expr(key)?;
@@ -4452,10 +4527,24 @@ impl Emitter<'_> {
             let dict = self.call("ptr", "zeno_dict_new", "i32 0, i32 0");
             return Ok(Val::new(dict, Kind::Dict(nothing_yet(), nothing_yet())));
         };
-        let (key, value) = (first_key.kind.clone(), first_value.kind.clone());
+        // The values are all of one kind. Where the place says more
+        // than they do (a `dict[str, Shape]`), the checker has said what
+        // that kind is.
+        let key = first_key.kind.clone();
+        let mut value = Some(first_value.kind.clone());
+        for (_, a_value) in &vals {
+            value = value.and_then(|value| joined(&value, &a_value.kind));
+        }
+        if let Some(wanted) = self.types.items(expr) {
+            value = Some(shared(wanted));
+        }
+        let Some(value) = value else {
+            return Err(cannot("a dict whose values are not all one type", span));
+        };
+        self.fits_a_slot(&value, span)?;
         let kinds = dict_kinds(&key, &value, span)?;
-        if vals.iter().any(|(a_key, a_value)| a_key.kind != key || a_value.kind != value) {
-            return Err(cannot("a dict whose keys, or whose values, are not all one type", span));
+        if vals.iter().any(|(a_key, _)| a_key.kind != key) {
+            return Err(cannot("a dict whose keys are not all one type", span));
         }
         let dict = self.call("ptr", "zeno_dict_new", kinds);
         for ((a_key, mut a_value), (_, written)) in vals.into_iter().zip(entries) {
@@ -4465,6 +4554,7 @@ impl Emitter<'_> {
             // statement holds.
             a_value.lent = None;
             let a_value = self.keep(a_value, is_written(written));
+            let a_value = self.coerce(a_value, &value, span)?;
             let key_slot = self.to_slot(&a_key, span)?;
             let value_slot = self.to_slot(&a_value, span)?;
             self.run("zeno_dict_set", format!("ptr {dict}, i64 {key_slot}, i64 {value_slot}"));
@@ -4486,7 +4576,7 @@ impl Emitter<'_> {
         // fails, the failure frees what there is of it.
         let filling = self.hold(Kind::List(Box::new(Kind::None)), &list);
         let filled_from = self.code.lines.len();
-        let count = self.open_loop(variable, iterable, None)?;
+        let count = self.open_loop(variable, None, iterable, None)?;
         // Text built for one item is given back before the next.
         let begin = self.text_begin();
         if let Some(condition) = condition {
@@ -6220,7 +6310,13 @@ impl Emitter<'_> {
                 let show = self.repr_adapter(item, span)?;
                 self.call("ptr", "zeno_list_str", format!("ptr {}, ptr {show}", val.code))
             }
-            // A dict knows what it holds, and shows itself.
+            // A dict of numbers, bools or text knows what it holds, and
+            // shows itself. For any other value it is handed a function
+            // that shows one, as a list is.
+            Kind::Dict(_, value) if !emit_c::plain_value(value) && !matches!(**value, Kind::Other(_)) => {
+                let show = self.repr_adapter(value, span)?;
+                self.call("ptr", "zeno_dict_str_with", format!("ptr {}, ptr {show}", val.code))
+            }
             Kind::Dict(..) => self.call("ptr", "zeno_dict_str", format!("ptr {}", val.code)),
             Kind::Error => {
                 let at = self.field_at(ERROR, &val.code, 1);
@@ -6277,6 +6373,10 @@ impl Emitter<'_> {
             Kind::List(item) => {
                 let same = self.eq_adapter(item, span)?;
                 self.call("i1", "zeno_list_eq", format!("ptr {a}, ptr {b}, ptr {same}"))
+            }
+            Kind::Dict(_, value) if !emit_c::plain_value(value) && !matches!(**value, Kind::Other(_)) => {
+                let same = self.eq_adapter(value, span)?;
+                self.call("i1", "zeno_dict_eq_with", format!("ptr {a}, ptr {b}, ptr {same}"))
             }
             Kind::Dict(..) => self.call("i1", "zeno_dict_eq", format!("ptr {a}, ptr {b}")),
             Kind::Error => self.call("i1", "zeno_error_same", format!("ptr {a}, ptr {b}")),
@@ -6855,6 +6955,7 @@ pub(crate) mod tests {
         same_as_interpreter("handlers", include_str!("../examples/handlers.zeno"));
         same_as_interpreter("driver", include_str!("../examples/driver.zeno"));
         same_as_interpreter("ports", include_str!("../examples/ports.zeno"));
+        same_as_interpreter("channels", include_str!("../examples/channels.zeno"));
     }
 
     #[test]

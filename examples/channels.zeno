@@ -1,0 +1,95 @@
+# A dict can hold anything a list can: lists, objects, other dicts. Here
+# a logger keeps the readings of each channel under the channel's name,
+# and what each channel may read as an object under the same name.
+#
+#     zeno run examples/channels.zeno
+
+class Limit {
+    low: float
+    high: float
+
+    function holds(self, value: float) -> bool {
+        return value >= self.low and value <= self.high
+    }
+}
+
+class Reading {
+    channel: str
+    value: float
+}
+
+# What each channel may read. The values are objects, so this is a
+# `dict[str, Limit]`.
+let limits = [
+    "voltage": Limit(11.5, 12.5),
+    "current": Limit(0.0, 3.0),
+    "temperature": Limit(-10.0, 85.0),
+]
+
+# The readings, in the order they arrived.
+let arrived = [
+    Reading("voltage", 12.0),
+    Reading("current", 1.5),
+    Reading("voltage", 13.0),
+    Reading("temperature", 40.0),
+    Reading("current", 3.5),
+    Reading("voltage", 11.0),
+    Reading("humidity", 55.0),
+    Reading("temperature", 44.0),
+]
+
+# The readings of each channel, as a list under its name. `[:]` alone
+# does not say what will be put in, so the type is written.
+let readings: dict[str, list[float]] = [:]
+for reading in arrived {
+    if reading.channel not in readings {
+        readings[reading.channel] = []
+    }
+    # What is under a key is the list itself, and not a copy of it.
+    readings[reading.channel].append(reading.value)
+}
+print(readings)
+
+# A loop with two names is given each key and what is under it, in the
+# order the keys were put in.
+for channel, values in readings {
+    var sum = 0.0
+    for value in values {
+        sum += value
+    }
+    print(f"{channel}: mean {sum / len(values)} over {len(values)}")
+}
+
+# The lowest and the highest of each channel: a dict inside a dict.
+let ranges: dict[str, dict[str, float]] = [:]
+for channel, values in readings {
+    ranges[channel] = ["low": min(values), "high": max(values)]
+}
+print(ranges["voltage"], ranges["current"]["high"])
+
+# Over a list, the first of two names is the position, from 0, and the
+# second is the item there.
+var faults = 0
+for channel, values in readings {
+    # `get` gives `none` for a key that is not there.
+    let limit = limits.get(channel)
+    if limit is none {
+        print(f"{channel}: nobody said what this may read")
+        continue
+    }
+    for at, value in values {
+        if not limit.holds(value) {
+            print(f"{channel}: reading {at} is {value}, outside {limit.low} to {limit.high}")
+            faults += 1
+        }
+    }
+}
+print(faults, "readings out of range")
+
+# An object under a key can be changed where it is.
+limits["voltage"].high = 13.5
+print(limits["voltage"].holds(13.0), limits["voltage"])
+
+# `pop` takes a key out and gives what was under it.
+let dropped = readings.pop("humidity")
+print("dropped", dropped, "and kept", readings.keys())

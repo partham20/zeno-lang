@@ -1019,6 +1019,7 @@ fn mentions(ty: &Ty, name: Option<&str>) -> bool {
     match ty {
         Ty::Param(param) => name.is_none_or(|name| name == param.as_ref()),
         Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => mentions(inner, name),
+        Ty::Dict(key, value) => mentions(key, name) || mentions(value, name),
         Ty::Applied(_, types) => types.iter().any(|ty| mentions(ty, name)),
         Ty::Callable(callable) => {
             callable.params.iter().any(|ty| mentions(ty, name)) || mentions(&callable.returns, name)
@@ -1172,7 +1173,7 @@ fn of_an_interface(ty: &Ty) -> bool {
 fn asks_more(ty: &Ty) -> bool {
     match ty {
         Ty::Optional(_) => true,
-        Ty::List(item) => asks_more(item),
+        Ty::List(item) | Ty::Dict(_, item) => asks_more(item),
         Ty::Owned(inner) | Ty::Borrowed(inner) => asks_more(inner),
         ty => of_an_interface(ty),
     }
@@ -2330,13 +2331,14 @@ impl Checker {
                         return self.error("`list` takes one type, as in `list[int]`", span)
                     }
                     // `dict[str, int]`: what the keys are, then what the
-                    // values are. Both are plain values for now: the dict
-                    // holds copies of them and nothing else has to be freed
-                    // or shared (decision 6.32).
+                    // values are. A value is anything a list can hold
+                    // (decision 10.11).
                     ("dict", [key, value]) => {
                         let key = self.resolve_inside(key, env, span, Inside::Other);
-                        let value = self.resolve_inside(value, env, span, Inside::Other);
-                        if !matches!(key, Ty::Str | Ty::Int) && !key.is_loose() {
+                        let value = self.resolve_inside(value, env, span, Inside::List);
+                        // A `K` of a generic is checked when it is known
+                        // what `K` is, in each copy.
+                        if !matches!(key, Ty::Str | Ty::Int | Ty::Param(_)) && !key.is_loose() {
                             return self.error(
                                 format!(
                                     "a key of a dict is a str or an int, and this says {}. Write `dict[str, ...]` \
@@ -2346,15 +2348,8 @@ impl Checker {
                                 span,
                             );
                         }
-                        if !matches!(value, Ty::Int | Ty::Float | Ty::Bool | Ty::Str) && !value.is_loose() {
-                            return self.error(
-                                format!(
-                                    "a value of a dict is an int, a float, a bool or a str for now, and this says {}. \
-                                     Keep those in a list, and the position of each in the dict",
-                                    value.clone().looked_at()
-                                ),
-                                span,
-                            );
+                        if let Some(why) = self.no_such_value(&value) {
+                            return self.error(why, span);
                         }
                         let dict = Ty::dict(key, value);
                         match inside {
@@ -2922,13 +2917,27 @@ impl Checker {
                 // `while true` with no `break` never finishes, so nothing follows it.
                 condition.kind == ExprKind::Bool(true) && !has_break(body)
             }
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second, iterable, body } => {
                 let iterable_type = self.look(iterable, env);
-                let item = self.item_type(&iterable_type, iterable.span);
+                // With two names the first is the key, or the position,
+                // and the second is what is there.
+                let (first, item) = match second {
+                    None => (None, self.item_type(&iterable_type, iterable.span)),
+                    Some(_) => {
+                        let (first, item) = self.pair_types(&iterable_type, iterable.span);
+                        (Some(first), item)
+                    }
+                };
                 let walks = self.walk(iterable, &item, env);
                 let scope = Scope::child(env);
                 forget_assigned(body, &scope);
-                self.loop_variable(&scope, variable, item, span);
+                match (first, second) {
+                    (Some(first), Some(second)) => {
+                        self.loop_variable(&scope, variable, first, span);
+                        self.loop_variable(&scope, second, item, span);
+                    }
+                    _ => self.loop_variable(&scope, variable, item, span),
+                }
                 self.frame().loops += 1;
                 let entry = self.enter_loop();
                 let exits = self.statements(body, &scope);
@@ -3275,6 +3284,19 @@ impl Checker {
                 span,
             ),
             ty => self.error(format!("{ty} cannot be looped over"), span),
+        }
+    }
+
+    /// What the two names of `for key, value in ages` are given, when
+    /// looping over a value of type `ty`: each key of a dict and what is
+    /// under it, or each position of a list or a str and what is there.
+    /// Either way the second is what `ages[key]` would be.
+    fn pair_types(&mut self, ty: &Ty, span: Span) -> (Ty, Ty) {
+        match ty {
+            Ty::Dict(key, value) if value.is_owned() => ((**key).clone(), lent(value)),
+            Ty::Dict(key, value) => ((**key).clone(), (**value).clone()),
+            ty if ty.is_loose() => (ty.clone(), ty.clone()),
+            ty => (Ty::Int, self.item_type(ty, span)),
         }
     }
 
@@ -4042,22 +4064,44 @@ impl Checker {
     /// The type of a dict that is written out: `["Ada": 36, "Alan": 41]`.
     /// The keys are all of one type and so are the values, which is what
     /// lets a line further down say what `ages["Ada"]` is.
-    fn dict_written(&mut self, entries: &[(Expr, Expr)], env: &Env) -> Ty {
+    fn dict_written(&mut self, expr: &Expr, entries: &[(Expr, Expr)], env: &Env) -> Ty {
         let (mut keys, mut values): (Option<Ty>, Option<Ty>) = (None, None);
+        // A place that says more about the values than they say
+        // themselves, as for a list: `["a": Circle(1.0), "b": Square(2.0)]`
+        // where a `dict[str, Shape]` is wanted.
+        let told = self.expected_items.take().filter(|(place, _)| *place == expr as *const Expr as usize);
+        if let Some((_, wanted)) = &told {
+            self.types.items.insert(expr as *const Expr as usize, kind(wanted));
+            values = Some(wanted.clone());
+        }
         for (index, (key, value)) in entries.iter().enumerate() {
             let key_type = self.look(key, env).looked_at().widened();
-            let value_type = self.look(value, env).looked_at().widened();
+            let value_type = match &told {
+                Some((_, wanted)) => {
+                    let given = self.kept(value, wanted, env);
+                    let given = self.adapted(written(value), given, wanted, value.span);
+                    if fits(&given, wanted) {
+                        self.arrives(&given, wanted, "a value of this dict", value.span);
+                        wanted.clone()
+                    } else {
+                        let advice = match (&given, wanted) {
+                            (Ty::Int, Ty::Float) => ". Write the number with a decimal point, as in `1.0`",
+                            _ => "",
+                        };
+                        return self.error(
+                            format!("the values of this dict are {wanted} here, but this one is {given}{advice}"),
+                            value.span,
+                        );
+                    }
+                }
+                // The dict keeps the value.
+                None => self.item(value, env).looked_at().widened(),
+            };
             if !matches!(key_type, Ty::Str | Ty::Int) && !key_type.is_loose() {
                 return self.error(format!("a key of a dict is a str or an int, and this is {key_type}"), key.span);
             }
-            if !matches!(value_type, Ty::Int | Ty::Float | Ty::Bool | Ty::Str) && !value_type.is_loose() {
-                return self.error(
-                    format!(
-                        "a value of a dict is an int, a float, a bool or a str for now, and this is {value_type}. \
-                         Keep those in a list, and the position of each in the dict"
-                    ),
-                    value.span,
-                );
+            if let Some(why) = self.no_such_value(&value_type) {
+                return self.error(why, value.span);
             }
             // The same key written twice: the second would quietly
             // replace the first.
@@ -4078,6 +4122,10 @@ impl Checker {
             {
                 match known {
                     Some(known) if known.is_loose() || found.is_loose() || same(known, &found) => {}
+                    // `[:]` beside a dict that says what it holds, a u8
+                    // beside an int: the one that says more stands.
+                    Some(known) if fits(&found, known) => {}
+                    Some(known) if fits(known, &found) => *known = found,
                     Some(known) => {
                         return self.error(
                             format!(
@@ -4093,6 +4141,37 @@ impl Checker {
         }
         // `[:]` holds nothing yet, so what it will hold is open.
         Ty::dict(keys.unwrap_or(Ty::Dynamic), values.unwrap_or(Ty::Dynamic))
+    }
+
+    /// Why a dict cannot have values of type `value`, if it cannot.
+    fn no_such_value(&self, value: &Ty) -> Option<String> {
+        let plain = value.clone().looked_at();
+        match &plain {
+            // `get` says `none` for a key that is not there.
+            Ty::Optional(inner) => Some(format!(
+                "a value of a dict cannot be `{inner} or none`: `get` gives `none` for a key that is not there, and \
+                 that could not be told from a value that is `none`. Make it a `dict[..., {inner}]`, and leave \
+                 the key out where there is no value"
+            )),
+            Ty::None => Some(
+                "a value of a dict cannot be `none`: `get` gives `none` for a key that is not there. \
+                 Leave the key out instead"
+                    .to_string(),
+            ),
+            // With no collector the dict would have to free what it
+            // holds, and a value that has one owner cannot be in a dict
+            // yet.
+            _ if self.one_owner
+                && !matches!(plain, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Sized(_) | Ty::Quantity(_) | Ty::Param(_))
+                && !plain.is_loose() =>
+            {
+                Some(format!(
+                    "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is {plain}. \
+                     Keep those in a list, and the position of each in the dict"
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// The type of an error of one of the kinds Zeno knows, such as a
@@ -4297,6 +4376,9 @@ impl Checker {
         let decl = &function.decl;
         let span = function.span;
         let name = if decl.name.is_empty() { "function".to_string() } else { decl.name.clone() };
+        // A mistake in a copy of a generic, in its first line as much
+        // as in its body, says which copy it is in.
+        self.copy_notes.push(function.copy_note.clone());
 
         let mut params = Vec::new();
         for (index, param) in decl.params.iter().enumerate() {
@@ -4337,6 +4419,7 @@ impl Checker {
                 .insert(Arc::as_ptr(&function.decl) as usize, params.iter().map(|slot| slot.ty.is_look()).collect());
             let signature = Rc::new(Signature { name, params, returns, raises: decl.raises.clone(), takes_out: false });
             *function.state.borrow_mut() = State::Checked(signature.clone());
+            self.copy_notes.pop();
             return signature;
         }
 
@@ -4405,7 +4488,6 @@ impl Checker {
         });
         self.raised.push(Vec::new());
         self.worked_out.push(worked_out);
-        self.copy_notes.push(function.copy_note.clone());
         // How many mistakes there were before the body was read.
         let mistakes = self.errors.len();
         let exits = self.statements(&decl.body, &scope);
@@ -4647,7 +4729,7 @@ impl Checker {
                     Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
                 }
             }
-            ExprKind::Dict(entries) => self.dict_written(entries, env),
+            ExprKind::Dict(entries) => self.dict_written(expr, entries, env),
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let iterable_type = self.look(iterable, env);
                 let item = self.item_type(&iterable_type, iterable.span);
@@ -5804,6 +5886,22 @@ impl Checker {
                 self.expected_items = Some((value as *const Expr as usize, item));
             }
         }
+        // The same for the values of a dict that is written out, whatever
+        // they are: a number written where a `dict[str, u8]` goes is a u8,
+        // and a function is held to the function type the place wants.
+        if matches!(value.kind, ExprKind::Dict(_)) && says_something {
+            let wanted_value = match wanted.clone().looked_at() {
+                Ty::Dict(_, value) => Some(*value),
+                Ty::Optional(inner) => match inner.looked_at() {
+                    Ty::Dict(_, value) => Some(*value),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(value_type) = wanted_value.filter(|ty| !ty.is_loose() && !has_param(ty)) {
+                self.expected_items = Some((value as *const Expr as usize, value_type));
+            }
+        }
     }
 
     /// The parameters of a generic function (or the fields of a generic
@@ -6085,6 +6183,11 @@ impl Checker {
             | (Ty::Optional(pattern), Ty::Optional(actual))
             | (Ty::Owned(pattern), Ty::Owned(actual))
             | (Ty::Borrowed(pattern), Ty::Borrowed(actual)) => self.bind(pattern, actual, found),
+            // `dict[str, T]` over `dict[str, int]`.
+            (Ty::Dict(key, value), Ty::Dict(actual_key, actual_value)) => {
+                self.bind(key, actual_key, found);
+                self.bind(value, actual_value, found);
+            }
             // A plain value where `T or none` is wanted, a value lent to a
             // parameter that looks, and a result that goes into an `or none`.
             (Ty::Optional(pattern), actual) if !matches!(actual, Ty::None) => self.bind(pattern, actual, found),
@@ -6124,6 +6227,21 @@ impl Checker {
         Some(match pattern {
             Ty::Param(name) => found.get(name.as_ref())?.clone(),
             Ty::List(inner) => Ty::list(self.filled(inner, found, span)?),
+            Ty::Dict(key, value) => {
+                let key = self.filled(key, found, span)?;
+                let value = self.filled(value, found, span)?;
+                // A `dict[K, V]` is a dict like any other: its keys are
+                // text or ints, and no value of it is `none`.
+                if !matches!(key.clone().looked_at(), Ty::Str | Ty::Int) && !key.is_loose() {
+                    self.error(format!("a key of a dict is a str or an int, and this is {key}"), span);
+                    return None;
+                }
+                if let Some(why) = self.no_such_value(&value) {
+                    self.error(why, span);
+                    return None;
+                }
+                Ty::dict(key, value)
+            }
             Ty::Optional(inner) => Ty::Optional(Box::new(self.filled(inner, found, span)?)),
             Ty::Owned(inner) => Ty::Owned(Box::new(self.filled(inner, found, span)?)),
             Ty::Borrowed(inner) => Ty::Borrowed(Box::new(self.filled(inner, found, span)?)),
@@ -8708,11 +8826,6 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         // all of one type.
         assert_eq!(error("let d = [1.5: \"x\"]"), "a key of a dict is a str or an int, and this is float");
         assert_eq!(
-            error("let d = [\"a\": [1, 2]]"),
-            "a value of a dict is an int, a float, a bool or a str for now, and this is list[int]. \
-             Keep those in a list, and the position of each in the dict"
-        );
-        assert_eq!(
             error("let d = [\"a\": 1, 2: 3]"),
             "the keys of a dict are all of one type. This one is int, and the ones before it are str"
         );
@@ -8735,11 +8848,9 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "a key of a dict is a str or an int, and this says float. Write `dict[str, ...]` or `dict[int, ...]`"
         );
         assert_eq!(
-            error("let d: dict[str, list[int]] = [:]"),
-            "a value of a dict is an int, a float, a bool or a str for now, and this says list[int]. \
-             Keep those in a list, and the position of each in the dict"
+            error("let d: dict[str, float] = [\"a\": 1]"),
+            "the values of this dict are float here, but this one is int. Write the number with a decimal point, as in `1.0`"
         );
-        assert_eq!(error("let d: dict[str, float] = [\"a\": 1]"), "`d` should be dict[str, float], but this is dict[str, int]");
         assert_eq!(
             strict_error("let d = [:]"),
             "strict mode: the type of `d` cannot be worked out. Give it one, as in `d: dict[str, int]`"
@@ -8770,6 +8881,126 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
     }
 
+    /// Two classes that are one interface, for the tests of what a dict
+    /// can hold.
+    const TWO_SHAPES: &str = "interface Shape {\n function area(self) -> float\n}\n\
+        class Circle is Shape {\n r: float\n function area(self) -> float {\n  return self.r\n }\n}\n\
+        class Square is Shape {\n s: float\n function area(self) -> float {\n  return self.s\n }\n}\n";
+
+    #[test]
+    fn a_dict_holds_what_a_list_can() {
+        let with = |rest: &str| format!("{TWO_SHAPES}{rest}");
+        // Lists, objects, enums, dicts, quantities, functions and sized
+        // numbers, each read back as what it is.
+        strict_ok(&with(
+            "enum Level {\n Low\n High(limit: int)\n}\n\
+             let lists: dict[str, list[int]] = [\"odd\": [1, 3], \"none\": []]\n\
+             lists[\"odd\"].append(5)\nlet numbers: list[int] = lists[\"odd\"]\nlet all: list[list[int]] = lists.values()\n\
+             let circles = [\"a\": Circle(1.0)]\nlet c: Circle = circles[\"a\"]\nlet maybe: Circle or none = circles.get(\"b\")\n\
+             let other: Circle = circles.get(\"b\", Circle(2.0))\nlet gone: Circle = circles.pop(\"a\")\n\
+             let levels: dict[int, Level] = [1: Low, 2: High(7)]\nlet level: Level = levels[2]\n\
+             let nested: dict[str, dict[str, int]] = [\"a\": [\"x\": 1], \"b\": [:]]\nlet inner: dict[str, int] = nested[\"a\"]\n\
+             let times = [\"blink\": 500 ms]\nlet wait: ms = times[\"blink\"]\n\
+             let steps: dict[str, function(int) -> int] = [\"double\": function(n: int) -> int {\n return n * 2\n}]\n\
+             let n: int = steps[\"double\"](21)\n\
+             let bytes: dict[str, u8] = [\"a\": 200]\nlet byte: u8 = bytes[\"a\"]\n\
+             print(numbers, all, c, maybe, other, gone, level, inner, wait, n, byte)",
+        ));
+        // A dict that is written out is a dict of what the place wants:
+        // here, of shapes. A dict of circles that is made already stays
+        // what it is, as a list of circles does.
+        strict_ok(&with(
+            "function total(shapes: dict[str, Shape]) -> float {\n var sum = 0.0\n for name, shape in shapes {\n  sum += shape.area()\n }\n return sum\n}\n\
+             let shapes: dict[str, Shape] = [\"a\": Circle(1.0), \"b\": Square(2.0)]\nshapes[\"c\"] = Square(3.0)\n\
+             print(total(shapes), total([\"a\": Circle(1.0)]), shapes.get(\"z\", Circle(0.0)).area())",
+        ));
+        assert_eq!(
+            error(&with("let circles = [\"a\": Circle(1.0)]\nlet shapes: dict[str, Shape] = circles")),
+            "`shapes` should be dict[str, Shape], but this is dict[str, Circle]"
+        );
+        assert_eq!(
+            error(&with("let shapes: dict[str, Shape] = [\"a\": Circle(1.0), \"b\": 5]")),
+            "the values of this dict are Shape here, but this one is int"
+        );
+        assert_eq!(
+            error(&with("let shapes = [\"a\": Circle(1.0), \"b\": Square(2.0)]")),
+            "the values of a dict are all of one type. This one is Square, and the ones before it are Circle"
+        );
+        assert_eq!(
+            error("let d = [\"a\": [1], \"b\": [\"x\"]]"),
+            "the values of a dict are all of one type. This one is list[str], and the ones before it are list[int]"
+        );
+        assert_eq!(error("let d: dict[str, u8] = [\"a\": 300]"), "300 does not fit in a u8 (0 to 255)");
+        // An empty list or dict beside one that says what it holds.
+        ok("let d = [\"a\": [1], \"b\": []]\nlet e = [\"a\": [:], \"b\": [\"x\": 1]]\nprint(d, e)");
+        // `get` says `none` for a key that is not there, so no value of
+        // a dict is `none`.
+        assert_eq!(
+            error("let d: dict[str, int or none] = [:]"),
+            "a value of a dict cannot be `int or none`: `get` gives `none` for a key that is not there, and that could \
+             not be told from a value that is `none`. Make it a `dict[..., int]`, and leave the key out where there is no value"
+        );
+        assert_eq!(
+            error("let d = [\"a\": none]"),
+            "a value of a dict cannot be `none`: `get` gives `none` for a key that is not there. Leave the key out instead"
+        );
+        // Inside a value it is as anywhere.
+        ok("let d: dict[str, list[int or none]] = [\"a\": [1, none]]\nprint(d)");
+    }
+
+    #[test]
+    fn a_generic_can_have_a_dict_of_its_type_parameter() {
+        strict_ok(
+            "function first[T](d: dict[str, T], key: str) -> T {\n return d[key]\n}\n\
+             function flip[K, V](d: dict[K, V]) -> dict[V, K] {\n var out: dict[V, K] = [:]\n for key, value in d {\n  out[value] = key\n }\n return out\n}\n\
+             class Table[T] {\n rows: dict[str, T]\n function put(self, key: str, row: T) {\n  self.rows[key] = row\n }\n}\n\
+             let n: int = first([\"a\": 1], \"a\")\nlet x: list[float] = first([\"b\": [1.5]], \"b\")\n\
+             let back: dict[int, str] = flip([\"one\": 1])\n\
+             let table: Table[list[str]] = Table([:])\ntable.put(\"k\", [\"v\"])\nprint(n, x, back, table.rows)",
+        );
+        // What `K` and `V` are is checked in each copy, which says which
+        // copy it is.
+        let wrong = errors(
+            "function flip[K, V](d: dict[K, V]) -> dict[V, K] {\n var out: dict[V, K] = [:]\n return out\n}\nprint(flip([\"a\": 1.5]))",
+        );
+        assert_eq!(
+            wrong[0],
+            "a key of a dict is a str or an int, and this says float. Write `dict[str, ...]` or `dict[int, ...]`"
+        );
+        assert!(
+            error("function wrap[T](x: T) -> dict[str, T] {\n return [:]\n}\nlet n: int or none = none\nprint(wrap(n))")
+                .starts_with("a value of a dict cannot be `int or none`")
+        );
+    }
+
+    #[test]
+    fn a_loop_with_two_names_is_checked() {
+        // A dict gives each key and its value. A list, text and a range
+        // give the position, from 0, and what is there.
+        strict_ok(
+            "let ages = [\"Ada\": 36]\nfor name, age in ages {\n let n: str = name\n let a: int = age\n print(n, a)\n}\n\
+             for at, word in [\"a\", \"b\"] {\n let i: int = at\n let w: str = word\n print(i, w)\n}\n\
+             for at, letter in \"abc\" {\n let i: int = at\n let c: str = letter\n print(i, c)\n}\n\
+             for trip, n in range(5, 8) {\n let i: int = trip\n let m: int = n\n print(i, m)\n}\n\
+             for name, numbers in [\"odd\": [1, 3]] {\n let l: list[int] = numbers\n print(name, l)\n}",
+        );
+        assert_eq!(error("let ages = [\"Ada\": 36]\nfor name, age in ages {\n let n: int = name\n}"), "`n` should be int, but this is str");
+        assert_eq!(error("for at, letter in \"abc\" {\n let n: str = at\n}"), "`n` should be str, but this is int");
+        assert_eq!(error("for a, b in 5 {\n print(a)\n}"), "int cannot be looped over");
+        // The two names are the loop's own, and gone after it.
+        assert_eq!(error("for k, v in [\"a\": 1] {\n print(k)\n}\nprint(v)"), "`v` is not defined");
+        assert_eq!(
+            error("for k, v in [\"a\": 1] {\n v = 2\n}"),
+            "`v` cannot be changed. Declare it with `var` to allow that"
+        );
+        // The dict can be changed inside: the loop goes over the pairs
+        // as they were when it began.
+        ok("let seen = [1: 1]\nfor n, count in seen {\n seen[n + 100] = count\n}\nprint(seen)");
+        // With no collector the value is looked at, and the dict is whole
+        // again after the loop.
+        one_owner_ok("let ages = [\"Ada\": 36]\nfor name, age in ages {\n print(name, age)\n}\nprint(ages)");
+    }
+
     #[test]
     fn with_one_owner_a_dict_has_one_too() {
         // Made, lent to a parameter, changed through the look, given back.
@@ -8792,6 +9023,19 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // In an ordinary build `owned` in front makes it so by request.
         ok("let d: owned dict[str, int] = [\"a\": 1]\nd[\"b\"] = 2\nprint(d)");
+        // The dict frees what it holds in one step, so with no collector
+        // it holds only what needs no freeing of its own (decision 10.14).
+        one_owner_ok("let times = [\"blink\": 500 ms]\nlet bytes: dict[str, u8] = [\"a\": 200]\nprint(times, bytes)");
+        assert_eq!(
+            one_owner_error("let d = [\"a\": [1, 2]]\nprint(d)"),
+            "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is list[int]. \
+             Keep those in a list, and the position of each in the dict"
+        );
+        assert_eq!(
+            one_owner_error("class P {\n n: int\n}\nlet d: dict[str, P] = [:]\nprint(d)"),
+            "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is P. \
+             Keep those in a list, and the position of each in the dict"
+        );
     }
 
     #[test]

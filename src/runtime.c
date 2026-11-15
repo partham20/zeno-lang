@@ -2688,7 +2688,16 @@ static void zeno_dict_drop(zeno_dict *dict) {
 
 /* A dict as `print` shows it, which is also how it is written:
  * `["Ada": 36, "Alan": 41]`, and `[:]` when it holds nothing. */
+static const char *zeno_dict_str_with(zeno_dict *dict, const char *(*show)(zeno_slot));
+
 static const char *zeno_dict_str(zeno_dict *dict) {
+    return zeno_dict_str_with(dict, NULL);
+}
+
+/* The same for a dict whose values the runtime cannot show by itself:
+ * a list, an object, another dict. `show` is a function the compiler
+ * wrote that shows one of them. */
+static const char *zeno_dict_str_with(zeno_dict *dict, const char *(*show)(zeno_slot)) {
     if (dict->keys->len == 0) return "[:]";
 #ifdef ZENO_NO_COLLECTOR
     size_t start = zeno_text_top;
@@ -2696,7 +2705,8 @@ static const char *zeno_dict_str(zeno_dict *dict) {
     const char *text = "[";
     for (int64_t i = 0; i < dict->keys->len; i++) {
         text = zeno_join(3, text, i > 0 ? ", " : "", zeno_dict_show(dict->key_kind, dict->keys->items[i]));
-        text = zeno_join(3, text, ": ", zeno_dict_show(dict->value_kind, dict->values->items[i]));
+        zeno_slot value = dict->values->items[i];
+        text = zeno_join(3, text, ": ", show != NULL ? show(value) : zeno_dict_show(dict->value_kind, value));
 #ifdef ZENO_NO_COLLECTOR
         text = zeno_text_settle(start, text);
 #endif /* ZENO_NO_COLLECTOR */
@@ -2710,7 +2720,15 @@ static const char *zeno_dict_str(zeno_dict *dict) {
 
 /* Two dicts are equal when they have the same keys with the same values.
  * The order the keys were put in does not count. */
+static bool zeno_dict_eq_with(zeno_dict *a, zeno_dict *b, bool (*same_value)(zeno_slot, zeno_slot));
+
 static bool zeno_dict_eq(zeno_dict *a, zeno_dict *b) {
+    return zeno_dict_eq_with(a, b, NULL);
+}
+
+/* The same for values the runtime cannot compare by itself: `same_value`
+ * is a function the compiler wrote that compares two of them. */
+static bool zeno_dict_eq_with(zeno_dict *a, zeno_dict *b, bool (*same_value)(zeno_slot, zeno_slot)) {
     if (a->keys->len != b->keys->len) return false;
     for (int64_t i = 0; i < a->keys->len; i++) {
         int64_t at = zeno_dict_find(b, a->keys->items[i]);
@@ -2718,6 +2736,10 @@ static bool zeno_dict_eq(zeno_dict *a, zeno_dict *b) {
         zeno_slot x = a->values->items[i];
         zeno_slot y = b->values->items[at];
         bool same;
+        if (same_value != NULL) {
+            if (!same_value(x, y)) return false;
+            continue;
+        }
         switch (a->value_kind) {
         case 's': same = strcmp(x.s, y.s) == 0; break;
         case 'f': same = x.f == y.f; break;

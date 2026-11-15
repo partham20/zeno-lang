@@ -384,10 +384,28 @@ impl Parser {
     fn for_loop(&mut self) -> Result<StmtKind, Error> {
         self.advance(); // for
         let variable = self.name("a name for the loop variable")?;
+        // `for key, value in ages`: the key and what is under it.
+        let mut second = None;
+        if self.eat(TokenKind::Comma) {
+            let span = self.span();
+            let name = self.name("a name for the value")?;
+            if name == variable {
+                return Err(Error::new(
+                    format!("the two names of a loop are two variables, and both are called `{name}`. Give them different names"),
+                    span,
+                ));
+            }
+            if self.check(TokenKind::Comma) {
+                return self.error(
+                    "a loop has one name, or two: `for key, value in ages` is given each key and what is under it",
+                );
+            }
+            second = Some(name);
+        }
         self.expect(TokenKind::In)?;
         let iterable = self.expression()?;
         let body = self.block()?;
-        Ok(StmtKind::For { variable, iterable, body })
+        Ok(StmtKind::For { variable, second, iterable, body })
     }
 
     /// `match subject { case pattern { } ... }`
@@ -1558,6 +1576,21 @@ mod tests {
             "while ((tries < 3) and (not done()))\n    tries += 1\n    if bad\n        break\n    continue\n"
         );
         assert_eq!(tree("for s in [1, 2] {\n    print(s)\n}"), "for s in [1, 2]\n    print(s)\n");
+        // With two names: the key and what is under it, or the position
+        // and what is there.
+        assert_eq!(
+            tree("for name, age in ages {\n    print(name, age)\n}"),
+            "for name, age in ages\n    print(name, age)\n"
+        );
+        assert_eq!(
+            error("for a, a in ages {\n}"),
+            "the two names of a loop are two variables, and both are called `a`. Give them different names"
+        );
+        assert_eq!(
+            error("for a, b, c in ages {\n}"),
+            "a loop has one name, or two: `for key, value in ages` is given each key and what is under it"
+        );
+        assert_eq!(error("for a, in ages {\n}"), "expected a name for the value, found `in`");
     }
 
     #[test]

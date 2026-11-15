@@ -209,6 +209,7 @@ impl Compiler {
         let change: i64 = match op {
             Op::Const(_) | Op::GetLocal(_) | Op::GetCell(_) | Op::GetCaptured(_) => 1,
             Op::Closure(_) | Op::Class(_) | Op::Enum(_) | Op::ForNext(_) => 1,
+            Op::ForStartPairs | Op::ForNextPair(_) | Op::ForSecond(_) => 1,
             Op::Pop(n) => -(n as i64),
             Op::SetLocal(_) | Op::DefineCell(_) | Op::SetCell(_) | Op::SetCaptured(_) => -1,
             Op::Binary(_) | Op::And(_) | Op::Or(_) | Op::Chain(..) => -1,
@@ -249,6 +250,7 @@ impl Compiler {
             Op::Or(_) => Op::Or(here),
             Op::Chain(op, _) => Op::Chain(op, here),
             Op::ForNext(_) => Op::ForNext(here),
+            Op::ForNextPair(_) => Op::ForNextPair(here),
             Op::Default(slot, _) => Op::Default(slot, here),
             Op::Try(_) => Op::Try(here),
             Op::Except(name, _) => Op::Except(name, here),
@@ -597,7 +599,37 @@ impl Compiler {
                 self.patch(to_end);
                 self.end_loop();
             }
-            StmtKind::For { variable, iterable, body } => {
+            StmtKind::For { variable, second: Some(second), iterable, body } => {
+                // `for key, value in ages`. Three values the program
+                // cannot see sit under the loop: what the second name is
+                // given each round, the keys (or `none`, where the first
+                // name is given positions), and how far the walk has got.
+                self.expr(iterable);
+                self.emit(Op::ForStartPairs, iterable.span);
+                self.constant(Value::Int(0), span);
+                let position = self.f().height - 1;
+
+                let start = self.emit(Op::ForNextPair(0), span);
+                self.f().height -= 1;
+                self.begin_loop(start);
+                self.f().height += 1;
+                self.open();
+                self.block().height -= 1;
+                self.declare(variable, false, false, span);
+                // The first name may have left the stack for a cell, so
+                // how far down the position is, is worked out here.
+                let below = self.f().height - 1 - position;
+                self.emit(Op::ForSecond(below as u32), span);
+                self.declare(second, false, false, span);
+                self.statements(body);
+                self.close(span);
+                self.emit(Op::Jump(start as u32), span);
+
+                self.patch(start);
+                self.end_loop();
+                self.emit(Op::Pop(3), span);
+            }
+            StmtKind::For { variable, second: None, iterable, body } => {
                 // Two values the program cannot see sit under the loop:
                 // the list being walked, and how far the walk has got.
                 self.expr(iterable);
