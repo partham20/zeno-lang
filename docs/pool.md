@@ -305,6 +305,9 @@ next two requests of that size would both be handed it, and two owners
 would write over each other. That is the worst kind of bug to find,
 and the check is one comparison: `asked` is 0 while a block is spare.
 
+Since memory can be asked for and freed by hand ([`unsafe.md`](unsafe.md)),
+a program can reach this message itself: with `free(p)` written twice.
+
 ## What this does not claim
 
 - **MISRA Directive 4.12 is wider than Rule 21.3.** The rule bans the

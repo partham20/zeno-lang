@@ -49,6 +49,7 @@ Underneath:
 - **Enums carry data**, and `match` must cover every case.
 - **Generics.** `class Ring[T]` is written once and used for bytes, voltages and text. Each use is checked, and compiled as if written by hand for that type.
 - **Whole numbers have a size where it matters.** A `u8` field is one byte, a number that does not fit is an error, and wrapping is something you ask for.
+- **Memory by hand, where you ask for it.** `allocate`, raw pointers, `free` and registers at fixed addresses, as in C. The lines Zeno cannot check go inside `unsafe { }`, and `zeno run` checks them anyway.
 - **Compiled, not interpreted**, so it is fast and small enough for a microcontroller.
 
 Samples, none of them final:
@@ -66,6 +67,7 @@ Samples, none of them final:
 - [`examples/scheduler.zeno`](examples/scheduler.zeno): tasks in a list, with no collector and not one `owned`: each list frees its items.
 - [`examples/commands.zeno`](examples/commands.zeno): commands read from text, as an enum whose cases carry values, with no collector. A line that is no command is `none`.
 - [`examples/handlers.zeno`](examples/handlers.zeno): steps kept as function values and faults kept as errors, with no collector. Each has one owner, which frees it.
+- [`examples/driver.zeno`](examples/driver.zeno): a driver for a serial port, with a queue of bytes that is allocated and freed by hand and three registers, inside `unsafe { }`.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -117,6 +119,12 @@ Text that such a program keeps is a copy that its keeper frees
 nobody is freed by the statement that made it
 ([`docs/temporaries.md`](docs/temporaries.md)).
 
+Beside both, a program can look after memory by hand, as C does:
+`allocate`, a raw `pointer[u8]`, `free`, and a `Register[u32]` at a
+fixed address. The lines that Zeno cannot check go inside `unsafe { }`.
+`zeno run` checks every one of them anyway, and a compiled program
+does what C does ([`docs/unsafe.md`](docs/unsafe.md)).
+
 `zeno run` has two engines. The interpreter walks the syntax tree. With
 `--vm` the program is compiled to bytecode and run by a small virtual
 machine, which is two to three times as fast and prints exactly the same
@@ -149,6 +157,8 @@ cargo run -- build --no-collector --memory examples/words.zeno   # split, map, f
 cargo run -- build --no-collector --memory examples/scheduler.zeno  # lists of objects with no collector and no `owned`: each list frees its items
 cargo run -- build --no-collector --memory examples/commands.zeno   # enum cases that carry values, and values that may be none, with no collector
 cargo run -- build --no-collector --memory examples/handlers.zeno   # function values and kept errors with no collector: each has one owner
+cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
+cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
@@ -188,7 +198,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
   [`docs/one-owner.md`](docs/one-owner.md), [`docs/enums-and-none.md`](docs/enums-and-none.md),
   [`docs/functions-and-errors.md`](docs/functions-and-errors.md),
-  [`docs/vm.md`](docs/vm.md),
+  [`docs/unsafe.md`](docs/unsafe.md), [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
@@ -244,12 +254,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       one owner, and `match` looks at it without taking it. A function
       value has one owner, and so has an error, which can be kept and
       raised again)
-    - Manual memory in `unsafe { }` blocks: raw pointers, `alloc` and
-      `free`, and registers at fixed addresses (next)
+    - Memory by hand in `unsafe { }` blocks (done: `pointer[T]`,
+      `allocate` and `free`, and `Register[T]` at a fixed address, in
+      every build and through both backends. `zeno run` checks every
+      use of a pointer, and a compiled program checks none, as in C)
     - A pass over the whole language for "unambiguous and intuitive".
       One change is already decided for it: a plain parameter will look
       at a list or an object, and a word will mark the one that takes
-      it (after that)
+      it (next)
 
 ## Layout
 

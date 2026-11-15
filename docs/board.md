@@ -39,6 +39,7 @@ Zeno. This page is about how both of those work.
 |---|---|---|
 | `board` | `led` | the pin the LED is on |
 | | `pin(7)` | the pin with that number. A `ValueError` if the board has none |
+| | `register(u32, 0x4002_0014)` | the register at that address, read and written inside `unsafe { }` ([`unsafe.md`](unsafe.md)) |
 | `time` | `sleep(500 ms)` | wait. The time must have a unit |
 | | `now()` | the reading of a clock that only goes forward, in `ms` |
 
@@ -310,7 +311,9 @@ as `now() - start >= 200 ms` after sleeping that long.
   button, and no way to say a pin is an input.
 - **Everything else on a microcontroller**: interrupts, timers, PWM, an
   ADC, a serial port. Each would be a few more functions in the board
-  layer.
+  layer. Until then a program can reach the hardware itself, through
+  registers at the addresses the data sheet gives
+  ([`unsafe.md`](unsafe.md)).
 - **The runtime is still a desktop runtime.** A firmware build with no
   collector has no `setjmp`, no garbage collector and no `malloc`
   ([`pool.md`](pool.md)), but it still calls `printf` and `exit`

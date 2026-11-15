@@ -53,6 +53,10 @@ memory from the machine while the program runs:
 Each of these is a **block**: a piece of memory from C's `malloc`. The
 question of this stage is when to call `free`.
 
+(Memory that a program asks for itself with `allocate` is not on this
+list. The collector never looks at it and never frees it: see
+[`unsafe.md`](unsafe.md).)
+
 ## The question nobody can answer in advance
 
 ```

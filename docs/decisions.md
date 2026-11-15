@@ -3820,3 +3820,220 @@ top-level lists and objects, methods taking out what the object owns,
 narrowing after `case none`, the order C evaluates arguments in (5.9q),
 `list[int] + list[str]` under `--strict`, `list[int or none]`, and
 `var f = double` (5.17b).
+
+### 5.18 Memory by hand lives beside the other two, and only inside `unsafe { }`
+
+Asked by the owner of the language: can C-like manual memory still be
+used, with the collector and with one owner already in place? Yes. A
+program asks for memory with `allocate`, uses it through a pointer, and
+gives it back with `free`. The lines that Zeno cannot check go inside
+`unsafe { }` (docs/unsafe.md).
+
+**Why have it.** Firmware needs two things that neither the collector
+nor one owner can give: a register at an address the data sheet names,
+and now and then a block of bytes laid out exactly as the program says.
+Without them the language stops one step short of the hardware.
+
+**Why the block.** A wrong pointer damages something far from the line
+that is wrong. If every such line is inside a marked block, the search
+for the mistake has an end: `grep -n unsafe`. Everything outside the
+blocks keeps every promise Zeno made before this stage.
+
+**Turned down: no block, as in C.** Then any line may be the one, and
+the promises hold nowhere. **Turned down: a flag for the whole file or
+build.** It says "somewhere in here", which is what the block is for
+avoiding.
+
+**Checked against "unambiguous and intuitive".** One word, one meaning
+(5.18a). One way to write each thing (5.18c, 5.18d). The messages say
+what to write. The one thing that is not intuitive, that a compiled
+program does not check, is said in every message of `zeno run` (5.18e).
+
+### 5.18a `unsafe` is a reserved word, and the block is a statement that opens a scope
+
+`unsafe { ... }` is a statement, like the body of an `if`. What is
+declared inside ends with it. The word cannot be used as a name.
+
+**Why reserved.** The first version made `unsafe` an ordinary name
+except in front of `{`. It worked, and it meant that `if unsafe {` was
+a condition while `unsafe {` was the block: one word with two meanings,
+told apart by where it stands. Nothing is lost by reserving it.
+
+**Why a statement.** `if` and `match` are statements in Zeno. A block
+that gives a value would be the only one. `let x = unsafe { p[0] }` is
+refused, and the message says to put the whole line inside.
+
+**Why it opens a scope.** Every `{ }` in Zeno does. One that did not
+would be a surprise of its own. The cost is real: a value read inside
+the block and used after it needs a `var` declared before the block, or
+the `return` goes inside, as `Queue.take` does.
+
+**Turned down: `unsafe function`, as Rust has.** It would be a second
+way to mark the same thing. A function that takes a pointer is safe to
+call. Only the lines that use the pointer are not.
+
+**For the audit.** `owned`, `borrow` and `strict` are still ordinary
+names except in one place each. They should be looked at with the same
+eyes.
+
+### 5.18b Five things need the block, and nothing else does
+
+Reading through a pointer, writing through one, `free`, reading a
+register and writing a register. Making a pointer or a register,
+passing it, keeping it in a field or a list, `p + n`, `p - n`, `==` and
+`print` are safe anywhere.
+
+**Why.** Those five are exactly the things that can damage memory or
+hardware. An address that points nowhere harms nothing until it is
+used, so working one out is not marked. If harmless lines needed the
+block too, the blocks would grow, and a big block says less.
+
+**Why `allocate` is safe.** It can fail in one way, by running out,
+and that stops the program with a message. It damages nothing.
+
+A function written inside the block starts safe again. It is a new
+function and may be called from anywhere, so its body needs its own
+block. The checker counts blocks per function (`Frame.unsafe_blocks`).
+
+### 5.18c `pointer[T]` points at numbers of one size
+
+`T` is `int`, `float`, or one of `u8 u16 u32 i8 i16 i32`. `p[i]` is
+item `i`. `p + n` and `p - n` move by items. Two pointers compare with
+`==`.
+
+**Why `pointer[u8]`.** It is written like `list[int]`, which every
+Zeno programmer already reads. **Turned down: `*u8`, `ptr[u8]`.** The
+syntax direction is whole words and little punctuation.
+
+**Why numbers only.** A bool has no size the language promises. An
+object or a list has an owner or the collector, and a raw pointer to
+one would be a second way to reach it that neither knows about.
+
+**Why items and not bytes.** `(p + 1)[0]` and `p[1]` must be the same
+thing. It is also what C does, so nothing has to be unlearned.
+
+**Why `1 + p` is refused.** One way to write it: the pointer, then how
+far. The message says so.
+
+**Turned down for now: `<` between pointers, `p - q`, reading a
+`pointer[u8]` as a `pointer[u32]`, the address of a variable.** Nothing
+written so far needs them, and each is a new way to be wrong. They can
+be added when a program asks.
+
+What is written through a pointer follows the sized-number rules
+(2.8 to 2.8c and docs/sized-ints.md), so `p[0] = 300` on a `pointer[u8]` is an
+error as you compile, and arithmetic needs `u8(...)`.
+
+### 5.18d `allocate(u8, 16)` and `free(p)`
+
+The type of one item first, then how many. The memory is all zero.
+Fewer than one item stops the program. `free` wants the pointer that
+`allocate` gave.
+
+**Why the type first.** The type decides what comes back, so it is
+read first. `register(u32, address)` has the same order.
+
+**Why whole words.** **Turned down: `malloc`**, a name that says
+nothing to someone who has not met C. **Turned down: `alloc`**, an
+abbreviation. `free` is already the whole word.
+
+**Why zero.** C's `malloc` gives whatever was there before. A program
+that read it would print one thing under `zeno run` and another when
+compiled. Zeroing costs one `calloc`.
+
+**Why running out stops the program.** Giving back `none` would put a
+check on every `allocate`, for a case most programs cannot recover
+from. *Provisional*: firmware that must survive it will want
+`pointer[u8] or none`.
+
+There is no null pointer. A pointer that may be missing is
+`pointer[u8] or none`, checked like any other value that may be `none`.
+
+### 5.18e `zeno run` checks every use of a pointer, and a compiled program checks nothing
+
+`zeno run` and the VM keep the block behind each pointer: its length
+and whether it was freed. Out of bounds, use after `free`, a second
+`free`, and `free` of a pointer into the middle each stop the program
+at that line. A compiled program has the address only, as in C.
+
+**Why not check when compiled.** A check needs the length and a freed
+mark to travel with every pointer. Then a pointer is no longer an
+address: it cannot be handed to C or taken from it, and every access
+costs a comparison. Zeno has a checked sequence already. It is called
+a list. A pointer is for when the check is what you want to leave out.
+
+**Why check in `zeno run`.** It is the cheapest place to find these
+mistakes, and it makes `zeno run` the tool that C programmers reach
+for a sanitizer for. Every message says that a compiled program would
+not have stopped, so nobody learns the wrong thing from it.
+
+This is the one place where `zeno run` and a compiled program may
+differ, and only for a program that is wrong.
+
+### 5.18f Memory by hand comes from the heap, outside the collector, or from the pool
+
+In an ordinary build and with `--firmware`, `allocate` is `calloc`. The
+collector does not scan the block and never frees it. With
+`--no-collector` there is no heap (5.9k), so it comes from the pool.
+
+**Why outside the collector.** The program said it would free it. A
+collector that freed it too would free it twice. The block holds only
+numbers (5.18c), so there is nothing in it for the collector to find.
+
+`--memory` adds one line where there is a collector: how many blocks
+`allocate` gave and how many were never freed. With no collector the
+ordinary report already says it: blocks left at the end.
+
+An object that holds a pointer does not free what it points at when
+its owner frees the object. Memory asked for by hand is given back by
+hand.
+
+### 5.18g A register is its own type: `Register[u32]`, from `board`
+
+`register(u32, 0x4002_0014)` gives a `Register[u32]`. `r.read()` and
+`r.write(v)` go inside `unsafe { }`. The size is `u8`, `u16` or `u32`.
+
+**Turned down: a register as a pointer at a fixed address, as C writes
+it.** That needs turning a number into a pointer, which is the most
+dangerous thing a pointer can do, and it would be needed in every
+driver. And memory and a register are not the same: the C compiler may
+skip or repeat a memory access, and must not do that to a register.
+Two types let each be compiled as what it is: `[ ]` for one, one
+`volatile` access for the other.
+
+**Why `read()` and `write(v)`, and not a field.** Reading a register
+can change the hardware. It should look like something that happens,
+which a call does and a field does not.
+
+**Why the capital letter.** What the language has built in is written
+small (`int`, `list`, `pointer`). What comes from a module is written
+like a class (`Pin`, `Register`).
+
+**Why unsigned only.** A register is a pattern of bits.
+
+**No helpers such as `set_bit`.** `|`, `&` and `~` already do it, and
+keep whatever works.
+
+### 5.18h The simulated board prints every write to a register
+
+A pin that is driven high twice prints one line, because it is still
+high. A register prints a line for every write, also one that changes
+nothing.
+
+**Why.** On real hardware a write is an event. The same byte written
+twice to a serial port is two bytes sent. The first version printed
+only on a change, and the driver example then lost a line whenever two
+equal bytes followed each other.
+
+### 5.18i Found on the way
+
+- `bool` used as a value (`allocate(bool, 4)`) said "`bool` is not
+  defined". It is defined, as a type. The message now says that.
+- The C backend wrote an unreachable second `return` after
+  `unsafe { return p[0] }`. A block that ends in `return` now ends the
+  function.
+
+**For the audit**, added to the list in 5.17h: the three words that are
+names except in one place (5.18a); a `--firmware` build cannot catch an
+`OverflowError` that `u8(...)` raises, which `zeno run` can; and
+messages that say "1 blocks" or "1 item(s)".

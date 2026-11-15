@@ -75,6 +75,7 @@ each has such a line.
 | Text that is kept | the pool | when the variable, field or list that keeps it is done with it |
 | An error | the pool | when its owner's block ends. The `except` that catches it is its first owner ([`functions-and-errors.md`](functions-and-errors.md)) |
 | A function written where a value goes | the pool | when its owner's block ends, or after one line if it looks at a list or an object |
+| Memory asked for with `allocate` | the pool | when the program says `free`, and not before ([`unsafe.md`](unsafe.md)) |
 
 Numbers, bools, quantities, enum cases without data and text written in
 the program (`"idle"`) need no memory at all, here as in every build.
