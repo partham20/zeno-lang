@@ -21,8 +21,8 @@ class Channel {
     limit: int
     steps: list[function(int) -> int]
 
-    # `step` is taken: the list owns the function from here on.
-    function add(self, step: function(int) -> int) {
+    # `take`: the list owns the function from here on.
+    function add(self, step: take function(int) -> int) {
         self.steps.append(step)
     }
 
@@ -53,12 +53,12 @@ function not_below_zero(n: int) -> int {
     return n
 }
 
-function describe(fault: borrow OutOfRange) -> str {
+function describe(fault: OutOfRange) -> str {
     return f"{fault.channel} read {fault.value}"
 }
 
 # Catches the error, says so, and raises the same error again.
-function checked(channel: borrow Channel, raw: int) -> int raises OutOfRange {
+function checked(channel: Channel, raw: int) -> int raises OutOfRange {
     try {
         return channel.process(raw)
     } except OutOfRange as fault {
@@ -97,7 +97,7 @@ let over = [90, 130, 150].filter(function(n: int) -> bool { return n > temperatu
 print(over, [1, 2].map(function(n: int) -> int { return n + len(faults) }))
 
 # An error is a value like any other: made here, raised later.
-function open(door: int, problem: ValueError) -> int raises ValueError {
+function open(door: int, problem: take ValueError) -> int raises ValueError {
     if door > 3 {
         raise problem
     }

@@ -25,10 +25,9 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
 
     parser.skip_newlines();
 
-    // A first line that says just `strict` puts the whole file in strict mode.
-    // `strict` is an ordinary name everywhere else.
-    let strict = matches!(parser.peek(), TokenKind::Ident(word) if word == "strict")
-        && matches!(parser.peek_at(1), TokenKind::Newline | TokenKind::Eof);
+    // A first line that says just `strict` puts the whole file in strict
+    // mode. The word is reserved, and this is its only place.
+    let strict = parser.check(TokenKind::Strict) && matches!(parser.peek_at(1), TokenKind::Newline | TokenKind::Eof);
     if strict {
         parser.advance();
         parser.skip_newlines();
@@ -129,7 +128,19 @@ impl Parser {
     }
 
     fn unexpected<T>(&self, wanted: &str) -> Result<T, Error> {
-        self.error(format!("expected {wanted}, found {}", self.peek().describe()))
+        // `owned`, `take` and `strict` each have one place. Anywhere else
+        // somebody most likely meant a name, so say where the word goes.
+        let place = match self.peek() {
+            TokenKind::Owned => " `owned` is a word of the language, so it cannot be a name. It goes in front of \
+                                 `class`, or in front of a type: `owned list[int]`",
+            TokenKind::Take => " `take` is a word of the language, so it cannot be a name. It goes in front of the \
+                                type of a parameter: `frame: take Frame`",
+            TokenKind::Strict => " `strict` is a word of the language, so it cannot be a name. It goes alone on the \
+                                  first line of a file",
+            _ => "",
+        };
+        let stop = if place.is_empty() { "" } else { "." };
+        self.error(format!("expected {wanted}, found {}{stop}{place}", self.peek().describe()))
     }
 
     // ----------------------------------------------------------- Statements
@@ -157,9 +168,9 @@ impl Parser {
                 StmtKind::Function(Arc::new(self.function()?))
             }
             TokenKind::Class => self.class(false)?,
-            // `owned` is an ordinary name everywhere except in front of
-            // `class` and in front of a type.
-            TokenKind::Ident(word) if word == "owned" && *self.peek_at(1) == TokenKind::Class => {
+            // `owned class`. The word is reserved (decision 5.19c): it
+            // stands here and in front of a type, and nowhere else.
+            TokenKind::Owned if *self.peek_at(1) == TokenKind::Class => {
                 self.advance(); // owned
                 self.class(true)?
             }
@@ -557,6 +568,15 @@ impl Parser {
 
     /// `int`, `list[int]`, `str or none`, `function(int) -> int`
     fn type_(&mut self) -> Result<Type, Error> {
+        // `owned list[int]`, `take Packet`: the word, then the type it is
+        // about. Both words are reserved, so neither is ever a name
+        // (decision 5.19c).
+        if self.eat(TokenKind::Owned) {
+            return Ok(Type::Owned(Box::new(self.type_()?)));
+        }
+        if self.eat(TokenKind::Take) {
+            return Ok(Type::Take(Box::new(self.type_()?)));
+        }
         let ty = if self.eat(TokenKind::Function) {
             // The type of a function: the types it takes, then what it returns.
             self.expect(TokenKind::LParen)?;
@@ -572,11 +592,13 @@ impl Parser {
             Type::Function { params, returns }
         } else {
             let name = self.name("a type")?;
-            // `owned list[int]`, `borrow Packet`: the word, then the type
-            // it is about.
-            if (name == "owned" || name == "borrow") && matches!(self.peek(), TokenKind::Ident(_) | TokenKind::Function) {
-                let inner = Box::new(self.type_()?);
-                return Ok(if name == "owned" { Type::Owned(inner) } else { Type::Borrow(inner) });
+            // `borrow` was the word for a parameter that only looks.
+            // Every parameter only looks now, so the word is gone.
+            if name == "borrow" && matches!(self.peek(), TokenKind::Ident(_) | TokenKind::Function) {
+                return self.error(
+                    "`borrow` is no longer a word. A parameter looks at what it is given without one: \
+                     write the type alone. A parameter that takes the value over says `take`",
+                );
             }
             let mut args = Vec::new();
             if self.eat(TokenKind::LBracket) {
@@ -1252,8 +1274,17 @@ mod tests {
         assert!(parse_source("strict\nlet x = 1").unwrap().strict);
         assert!(parse_source("# a comment first\n\nstrict\n").unwrap().strict);
         assert!(!parse_source("let x = 1").unwrap().strict);
-        // Anywhere else, `strict` is an ordinary name.
-        assert!(!parse_source("let strict = 1\nprint(strict)").unwrap().strict);
+        // The word is reserved, and the first line is its only place.
+        assert_eq!(
+            error("let strict = 1"),
+            "expected a name for the variable, found `strict`. `strict` is a word of the language, so it cannot be \
+             a name. It goes alone on the first line of a file"
+        );
+        assert_eq!(
+            error("let x = 1\nstrict"),
+            "expected an expression, found `strict`. `strict` is a word of the language, so it cannot be a name. \
+             It goes alone on the first line of a file"
+        );
         assert_eq!(tree("strict\nlet x = 1"), "strict\nlet x = 1\n");
     }
 
@@ -1451,6 +1482,43 @@ mod tests {
                 panic!("examples/{name}.zeno:{}:{}: {}", e.span.line, e.span.col, e.message);
             }
         }
+    }
+
+    #[test]
+    fn a_parameter_that_takes_says_take() {
+        // The word goes in front of the type, as `owned` does.
+        assert_eq!(
+            tree("function send(frame: take Frame, log: list[str]) {\n}"),
+            "function send(frame: take Frame, log: list[str])\n"
+        );
+        assert_eq!(tree("let f: function(take Frame, int) -> int = g"), "let f: function(take Frame, int) -> int = g\n");
+        assert_eq!(tree("let xs: owned list[int] = []"), "let xs: owned list[int] = []\n");
+        // `owned` and `take` are reserved, like every word of the
+        // language, so neither has to be told apart from a name.
+        assert_eq!(
+            error("let take = 3"),
+            "expected a name for the variable, found `take`. `take` is a word of the language, so it cannot be a \
+             name. It goes in front of the type of a parameter: `frame: take Frame`"
+        );
+        assert_eq!(
+            error("let n = owned + 1"),
+            "expected an expression, found `owned`. `owned` is a word of the language, so it cannot be a name. It \
+             goes in front of `class`, or in front of a type: `owned list[int]`"
+        );
+        assert_eq!(
+            error("queue.take()"),
+            "expected a name after `.`, found `take`. `take` is a word of the language, so it cannot be a name. It \
+             goes in front of the type of a parameter: `frame: take Frame`"
+        );
+        // `borrow` was the word for a parameter that only looks. Every
+        // parameter looks now, so writing it says what to write instead.
+        assert_eq!(
+            error("function total(xs: borrow list[int]) -> int { return len(xs) }"),
+            "`borrow` is no longer a word. A parameter looks at what it is given without one: write the type \
+             alone. A parameter that takes the value over says `take`"
+        );
+        // It is an ordinary name everywhere else.
+        assert_eq!(tree("let borrow = 3"), "let borrow = 3\n");
     }
 
     #[test]

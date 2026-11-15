@@ -192,7 +192,7 @@ fn type_(ty: &Type) -> String {
         Type::Named { name, args } => format!("{name}[{}]", join(args, type_)),
         Type::Optional(inner) => format!("{} or none", type_(inner)),
         Type::Owned(inner) => format!("owned {}", type_(inner)),
-        Type::Borrow(inner) => format!("borrow {}", type_(inner)),
+        Type::Take(inner) => format!("take {}", type_(inner)),
         Type::Function { params, returns } => {
             let mut text = format!("function({})", join(params, type_));
             if let Some(returns) = returns {

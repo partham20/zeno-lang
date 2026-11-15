@@ -281,9 +281,10 @@ pub enum Type {
     Function { params: Vec<Type>, returns: Option<Box<Type>> },
     /// `owned list[int]`: a value with exactly one owner.
     Owned(Box<Type>),
-    /// `borrow Packet`, on a parameter: the function may use the value
-    /// for the length of the call, and must not keep it.
-    Borrow(Box<Type>),
+    /// `take Packet`, on a parameter: the function takes the value over,
+    /// and the caller's variable holds nothing afterwards. A parameter
+    /// without the word only looks.
+    Take(Box<Type>),
 }
 
 // --------------------------------------------------------------- Expressions

@@ -40,6 +40,12 @@ pub enum TokenKind {
     In,
     While,
     Unsafe,
+    /// `owned class`, `owned list[int]`: a value with one owner.
+    Owned,
+    /// `frame: take Frame`: a parameter that takes the value over.
+    Take,
+    /// `strict`, alone on the first line: every type must be known.
+    Strict,
     Break,
     Continue,
     Match,
@@ -125,6 +131,9 @@ pub fn keyword(word: &str) -> Option<TokenKind> {
         "in" => In,
         "while" => While,
         "unsafe" => Unsafe,
+        "owned" => Owned,
+        "take" => Take,
+        "strict" => Strict,
         "break" => Break,
         "continue" => Continue,
         "match" => Match,
@@ -171,6 +180,9 @@ impl TokenKind {
             In => "in",
             While => "while",
             Unsafe => "unsafe",
+            Owned => "owned",
+            Take => "take",
+            Strict => "strict",
             Break => "break",
             Continue => "continue",
             Match => "match",

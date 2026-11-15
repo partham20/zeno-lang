@@ -437,7 +437,7 @@ struct FunctionEntry {
     kind: FunctionKind,
     /// For each parameter: does the function take over an owned value?
     owned: Vec<bool>,
-    /// For each parameter: does it say `borrow`? Then the function only
+    /// For each parameter: is it without `take`? Then the function only
     /// looks, and may be lent a value that is gone when the statement is.
     lends: Vec<bool>,
 }
@@ -1469,7 +1469,7 @@ impl Emitter<'_> {
         };
         let (kind, owned) = disown_all(kind);
         let c_name = self.c_name(c_name);
-        let lends = decl.params.iter().map(|param| matches!(param.ty, Some(Type::Borrow(_)))).collect();
+        let lends = self.types.looks(decl);
         Ok(FunctionEntry { c_name, decl: decl.clone(), kind, owned, lends })
     }
 
@@ -2531,7 +2531,7 @@ impl Emitter<'_> {
         let (name, args) = match ty {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how C holds it.
-            Type::Owned(inner) | Type::Borrow(inner) => return self.kind_of_type(inner),
+            Type::Owned(inner) | Type::Take(inner) => return self.kind_of_type(inner),
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
             Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
@@ -4166,7 +4166,7 @@ impl Emitter<'_> {
         for (index, arg) in args.iter().enumerate() {
             let mark = self.lines.len();
             let mut next = self.expr(&arg.value)?;
-            // A `borrow` parameter only looks, so it may be lent what
+            // A parameter without `take` only looks, so it may be lent what
             // the statement owns. Anything else may keep what it is given.
             let lent = next.passing && lends.get(places[index]).copied().unwrap_or(false);
             if !lent {
@@ -5104,7 +5104,10 @@ pub(crate) mod tests {
         let tokens = crate::lexer::lex(source).expect("the test program lexes");
         let program = crate::parser::parse(tokens).expect("the test program parses");
         let (errors, types) = crate::checker::check_with_types(&program, true);
-        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        if let Some(error) = errors.first() {
+            let line = source.lines().nth(error.span.line - 1).unwrap_or_default();
+            panic!("the test program has mistakes: {:?}\nline {}: {line}", error.message, error.span.line);
+        }
         emit(&program, &types, "test.zeno", Build::Ordinary).map_err(|error| error.message)
     }
 
@@ -6500,7 +6503,7 @@ try {
     }
 }
 
-function total(xs: borrow list[int]) -> int {
+function total(xs: owned list[int]) -> int {
     var sum_of = 0
     for x in xs {
         sum_of += x
@@ -6518,7 +6521,7 @@ function send(p: Packet) -> int {
     return p.size()
 }
 
-function describe(p: borrow Packet) -> str {
+function describe(p: Packet) -> str {
     return f"packet {p.id}: {p.data}"
 }
 
@@ -6589,13 +6592,13 @@ function transmit(frame: Frame) -> int raises Timeout {
     return frame.checksum()
 }
 
-function parse(text: str, into: borrow list[int]) raises ValueError {
+function parse(text: str, into: owned list[int]) raises ValueError {
     for part in text.split(",") {
         into.append(int(part))
     }
 }
 
-function longest(a: borrow list[int], b: borrow list[int]) -> int {
+function longest(a: owned list[int], b: owned list[int]) -> int {
     if len(a) > len(b) {
         return len(a)
     }
@@ -6653,7 +6656,7 @@ print(link.last.checksum(), link)
 link = Link("uart1", build(9, 2), 0)
 print(link.name, link.last)
 
-function swap_in(link: Link, frame: Frame) -> Link {
+function swap_in(link: take Link, frame: take Frame) -> Link {
     link.last = frame
     link.sent += 1
     return link
@@ -6693,7 +6696,7 @@ function fresh(tag: str, n: int) -> Buf {
 }
 
 # Takes the buffer, frees it itself, and then raises.
-function swallow(b: Buf, fail: bool) -> int raises Refused {
+function swallow(b: take Buf, fail: bool) -> int raises Refused {
     let size = len(b.data)
     if fail {
         let inner = b
@@ -6716,7 +6719,7 @@ function attempt(n: int, fail: bool) -> str {
     return result + " / " + spare.tag
 }
 
-function takes_and_tries(b: Buf, fail: bool) -> int {
+function takes_and_tries(b: take Buf, fail: bool) -> int {
     try {
         return swallow(b, fail)
     } except Refused {
@@ -6724,7 +6727,7 @@ function takes_and_tries(b: Buf, fail: bool) -> int {
     }
 }
 
-function regrow(b: Buf) -> Buf {
+function regrow(b: take Buf) -> Buf {
     b.data.append(len(b.data))
     return b
 }
@@ -6867,13 +6870,13 @@ print(work(400))
 class Refused {
     id: int
 }
-function check(frame: borrow Frame) -> int raises Refused {
+function check(frame: Frame) -> int raises Refused {
     if frame.id > 9 {
         raise Refused(frame.id)
     }
     return len(frame.bytes)
 }
-function send(frame: Frame) -> int raises Refused {
+function send(frame: take Frame) -> int raises Refused {
     let size = check(frame)
     return size + 1
 }
@@ -6889,7 +6892,7 @@ function main() -> int raises Refused {
         assert!(c.contains(" = z_frame;\n    z_frame = NULL;\n"), "{c}");
         // The one that took it over frees it before it returns.
         assert!(c.contains("    zeno_drop_Frame(z_frame);\n    return t"), "{c}");
-        // A borrowed value is an ordinary pointer, and nothing frees it.
+        // A value that is looked at is an ordinary pointer, and nothing frees it.
         let check = c.split("static int64_t z_check(z_Frame *z_frame) {").nth(1).expect("the C for `check`");
         assert!(!check.split("\n}\n").next().expect("its body").contains("zeno_drop"), "{c}");
 
@@ -6920,7 +6923,14 @@ function main() -> int raises Refused {
     fn no_collector_as_interpreter(name: &str, source: &str) -> Option<usize> {
         let c = match compile_no_collector(source) {
             Ok(c) => c,
-            Err(message) => panic!("the build with no collector refused this: {message}"),
+            Err(message) => {
+                // Say where, when it is the checker that refused.
+                let program = crate::parser::parse(crate::lexer::lex(source).unwrap()).unwrap();
+                let (errors, _) = crate::checker::check_by(&program, Build::NoCollector.rules());
+                let line = errors.first().map_or(0, |error| error.span.line);
+                let text = source.lines().nth(line.saturating_sub(1)).unwrap_or_default();
+                panic!("the build with no collector refused this: {message}\nline {line}: {text}")
+            }
         };
         // The point of the build: none of this is in the C file.
         for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_block_count", "setjmp"] {
@@ -7206,7 +7216,7 @@ function join(a: Batch, b: Batch, extra: int) -> int {
     return len(a.values) + len(b.values) + extra
 }
 
-function total(xs: borrow list[int]) -> int {
+function total(xs: owned list[int]) -> int {
     var t = 0
     for x in xs {
         t += x
@@ -7277,7 +7287,7 @@ function larger(a: int, b: int) -> int {
     return b
 }
 
-function first_even(xs: borrow list[int]) -> int or none {
+function first_even(xs: owned list[int]) -> int or none {
     for x in xs {
         if x % 2 == 0 and x > 0 {
             return x
@@ -7549,7 +7559,7 @@ maybe = f"{x}!"
 if maybe is not none { print(maybe + "?") }
 maybe = none
 print(maybe)
-function first(names: borrow list[str]) -> str { return names[0] }
+function first(names: owned list[str]) -> str { return names[0] }
 function pick(n: int) -> str or none {
     if n > 1 { return f"n{n}" }
     return none
@@ -7898,7 +7908,7 @@ int main(void) {
         // refused once ("would have no owner").
         no_collector_as_interpreter("statement-lists", r#"function double(n: int) -> int { return n * 2 }
 function big(n: int) -> bool { return n > 2 }
-function look(xs: borrow list[int]) -> int { return len(xs) }
+function look(xs: owned list[int]) -> int { return len(xs) }
 function make() -> owned list[int] { return [1, 2, 3] }
 
 let a: owned list[int] = [1, 2, 3]
@@ -7940,7 +7950,7 @@ function shout(word: str) -> str { return word.upper() + "!" }
 function long(word: str) -> bool { return len(word) > 2 }
 function words(text: str) -> owned list[str] { return text.split() }
 function bag(text: str) -> Bag { return Bag(text, text.split(",")) }
-function count(xs: borrow list[str]) -> int { return len(xs) }
+function count(xs: owned list[str]) -> int { return len(xs) }
 function first(text: str) -> str raises ValueError {
     let parts: owned list[str] = text.split(",")
     if len(parts) < 2 { raise ValueError("no comma in " + text) }
@@ -8009,7 +8019,7 @@ function risky(n: int) -> int raises ValueError {
     if n > 2 { raise ValueError("too big: " + str(n)) }
     return n
 }
-function sum_of(xs: borrow list[int]) -> int {
+function sum_of(xs: owned list[int]) -> int {
     var total = 0
     for x in xs { total += x }
     return total
@@ -8080,8 +8090,8 @@ match sum_of(make(1).items) {
         // blocks that may be skipped in IR. Inside an item and a test of
         // a comprehension. As what `not` is in front of. Inside another
         // list that is itself only looked at.
-        no_collector_as_interpreter("statement-awkward", r#"function n(xs: borrow list[int]) -> int { return len(xs) }
-function twice(xs: borrow list[int]) -> owned list[int] { return xs + xs }
+        no_collector_as_interpreter("statement-awkward", r#"function n(xs: owned list[int]) -> int { return len(xs) }
+function twice(xs: owned list[int]) -> owned list[int] { return xs + xs }
 owned class Box {
     items: owned list[int]
 
@@ -8125,7 +8135,7 @@ print(n([n([1, 2]), n(twice([3]))]))
         // the trips needs no more of the pool.
         let program = |trips: usize| r#"function loud(word: str) -> str { return word.upper() }
 function short(word: str) -> bool { return len(word) < 4 }
-function count(items: borrow list[str]) -> int { return len(items) }
+function count(items: owned list[str]) -> int { return len(items) }
 var total = 0
 var last: owned list[str] = []
 for n in range({trips}) {
@@ -8161,7 +8171,7 @@ print(last)
     #[test]
     fn the_c_for_what_a_statement_owns() {
         let c = compile_no_collector(
-            "function longest(words: borrow list[str]) -> int {
+            "function longest(words: list[str]) -> int {
     var most = 0
     for word in words {
         if len(word) > most { most = len(word) }
@@ -8215,7 +8225,7 @@ print(ok)
     bytes: owned list[int]
 }
 function make(round: int) -> Packet { return Packet(round, [n * round for n in range(500)]) }
-function last(p: borrow Packet) -> int { return p.bytes[499] % 7 }
+function last(p: Packet) -> int { return p.bytes[499] % 7 }
 function work(rounds: int) -> int {
     var total = 0
     for round in range(rounds) {
@@ -8274,7 +8284,7 @@ function risky(n: int) -> int raises Bad {
     return n
 }
 function name_len(text: str) -> int { return len(text) }
-function look(xs: borrow list[int]) -> int { return len(xs) }
+function look(xs: owned list[int]) -> int { return len(xs) }
 function double(n: int) -> int { return n * 2 }
 function add(a: int, b: int) -> int { return a + b }
 let x = 7
@@ -8314,14 +8324,14 @@ let x = 7
         let caught = "try { print(risky(5)) } except Bad as e";
         one_owner(&format!("{caught} {{ let again = e\nprint(e.id) }}"), "was given away on line");
         one_owner(
-            &format!("function pass_on(b: Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e))\nprint(e) }}"),
+            &format!("function pass_on(b: take Bad) -> int {{ return b.id }}\n{caught} {{ print(pass_on(e))\nprint(e) }}"),
             "was given away on line",
         );
 
         // A value that was given away is gone, and a look cannot be kept.
         one_owner("let xs = [1, 2, 3]\nlet ys = xs\nprint(len(xs))", "was given away on line");
         one_owner(
-            "function total(xs: list[int]) -> int { return len(xs) }\nlet xs = [1, 2]\nprint(total(xs))\nprint(total(xs))",
+            "function total(xs: take list[int]) -> int { return len(xs) }\nlet xs = [1, 2]\nprint(total(xs))\nprint(total(xs))",
             "was given away on line",
         );
         one_owner("let b = Bad(1, \"x\")\nlet c = b\nprint(b.id)", "was given away on line");
@@ -8418,14 +8428,14 @@ print(scaled(2), plain.map(function(n: int) -> int { return n + len(plain) }))
     function sum(self) -> int { return self.x + self.y }
 }
 
-function total(ps: borrow list[Point]) -> int {
+function total(ps: list[Point]) -> int {
     var t = 0
     for p in ps { t += p.sum() }
     return t
 }
 
-function sum_of(p: borrow Point) -> int { return p.sum() }
-function add_point(so_far: int, p: borrow Point) -> int { return so_far + p.x }
+function sum_of(p: Point) -> int { return p.sum() }
+function add_point(so_far: int, p: Point) -> int { return so_far + p.x }
 function row(n: int) -> list[int] {
     return [i for i in range(n)]
 }
@@ -8488,7 +8498,7 @@ print(made)
 class Log {
     title: str
     readings: list[Reading]
-    function add(self, r: Reading) {
+    function add(self, r: take Reading) {
         self.readings.append(r)
     }
     function peak(self) -> int {
@@ -8508,7 +8518,7 @@ function reading(name: str, n: int) -> Reading raises ValueError {
     return Reading(name, [i * n for i in range(n)])
 }
 
-function build(sizes: borrow list[int]) -> Log raises ValueError {
+function build(sizes: list[int]) -> Log raises ValueError {
     let log = Log("run", [])
     for n in sizes {
         log.add(reading(f"r{n}", n))
@@ -8516,7 +8526,7 @@ function build(sizes: borrow list[int]) -> Log raises ValueError {
     return log
 }
 
-function first_big(log: borrow Log, limit: int) -> str {
+function first_big(log: Log, limit: int) -> str {
     for r in log.readings {
         if r.peak() > limit { return r.name }
     }
@@ -8599,7 +8609,7 @@ print(table, words, len(words[1]))
 owned class Queue {
     waiting: owned list[Packet]
 
-    function add(self, p: Packet) {
+    function add(self, p: take Packet) {
         self.waiting.append(p)
     }
 
@@ -8633,11 +8643,11 @@ function fill(counts: list[int]) -> Queue raises ValueError {
     return q
 }
 
-function describe(p: borrow Packet) -> str {
+function describe(p: Packet) -> str {
     return f"{p.name}: {p.data}"
 }
 
-function first_over(ps: borrow list[Packet], limit: int) -> str {
+function first_over(ps: owned list[Packet], limit: int) -> str {
     for p in ps {
         if p.size() > limit {
             return p.name
@@ -8735,7 +8745,7 @@ function parse(line: str) -> Task or none {
     return Task(words[1], [len(words)])
 }
 
-function describe(task: borrow Task or none) -> str {
+function describe(task: Task or none) -> str {
     if task is none {
         return "nothing"
     }
@@ -8747,7 +8757,7 @@ function run(task: Task) -> int {
     return len(task.runs)
 }
 
-function count(xs: borrow list[int] or none) -> int {
+function count(xs: list[int] or none) -> int {
     if xs is none { return -1 }
     return len(xs)
 }
@@ -8844,7 +8854,7 @@ function parse(line: str) -> Command or none {
     }
 }
 
-function cost(command: borrow Command) -> int {
+function cost(command: Command) -> int {
     match command {
         case Stop { return 0 }
         case Wait(ms) { return ms }
@@ -8959,14 +8969,14 @@ function build(depth: int) -> Tree raises Bad {
     return Node(build(depth - 1), Leaf(risky(depth)))
 }
 
-function sum(tree: borrow Tree) -> int {
+function sum(tree: Tree) -> int {
     match tree {
         case Leaf(value) { return value }
         case Node(left, right) { return sum(left) + sum(right) }
     }
 }
 
-function depth(tree: borrow Tree) -> int {
+function depth(tree: Tree) -> int {
     match tree {
         case Leaf(_) { return 0 }
         case Node(Leaf(_), Leaf(_)) { return 1 }
@@ -8983,7 +8993,7 @@ function event(n: int) -> Event raises Bad {
     return Burst([Reading(1, "kept"), Reading(risky(n), "never")])
 }
 
-function describe(e: borrow Event) -> str {
+function describe(e: Event) -> str {
     match e {
         case Quiet { return "quiet" }
         case Sample(reading) { return f"sample {reading.channel} {reading.label}" }
@@ -9092,12 +9102,12 @@ function find(n: int) -> Packet or none {
     return Packet(n, f"packet {n}", [n, n * 2])
 }
 
-function describe(p: borrow Packet or none) -> str {
+function describe(p: Packet or none) -> str {
     if p is none { return "nothing" }
     return f"{p.name} {p.data}"
 }
 
-function size(xs: borrow list[int] or none) -> int {
+function size(xs: owned list[int] or none) -> int {
     if xs is none { return 0 }
     return len(xs)
 }
@@ -9201,7 +9211,7 @@ for n in range(4) {
     Counting(n: int)
     Named(name: str, history: list[int])
 }
-function next(state: borrow State, trip: int) -> State or none {
+function next(state: State, trip: int) -> State or none {
     match state {
         case Idle { return Counting(trip) }
         case Counting(n) {
@@ -9361,11 +9371,11 @@ function attempt(channel: int) -> Overload or none {
     return none
 }
 
-function describe(overload: borrow Overload) -> str {
+function describe(overload: Overload) -> str {
     return f"{overload.name} at {overload.amps}"
 }
 
-function why(fault: borrow ValueError) -> str {
+function why(fault: ValueError) -> str {
     return fault.message
 }
 
@@ -9407,7 +9417,7 @@ for text in ["12", "", "x1", "7"] {
 print(len(log.faults), log.faults)
 
 # An error made ahead of time, and raised later.
-function fail_with(fault: ValueError, really: bool) -> int raises ValueError {
+function fail_with(fault: take ValueError, really: bool) -> int raises ValueError {
     if really {
         raise fault
     }
@@ -9439,7 +9449,7 @@ class Menu {
     actions: list[function(int) -> int]
     on_done: function(str) -> str
 
-    function add(self, action: function(int) -> int) {
+    function add(self, action: take function(int) -> int) {
         self.actions.append(action)
     }
 
@@ -9452,7 +9462,7 @@ class Menu {
     }
 
     # A function that looks at `self` is lent straight to `map`.
-    function titles(self, names: borrow list[str]) -> list[str] {
+    function titles(self, names: list[str]) -> list[str] {
         return names.map(function(name: str) -> str { return f"{self.title}/{name}" })
     }
 }
@@ -9468,7 +9478,7 @@ function make_tagger(tag: str) -> function(str) -> str {
     return function(text: str) -> str { return f"{mark} {text}" }
 }
 
-function apply(f: borrow function(int) -> int, x: int) -> int {
+function apply(f: function(int) -> int, x: int) -> int {
     return f(x)
 }
 
@@ -9564,7 +9574,7 @@ class TooHot {
     note: str
 }
 
-function total(xs: borrow list[int]) -> int {
+function total(xs: list[int]) -> int {
     var sum = 0
     for x in xs { sum += x }
     return sum
@@ -9578,7 +9588,7 @@ function spread(n: int) -> list[int] {
     return [n, n + 1, n + 2]
 }
 
-function describe(reading: borrow Reading) -> str {
+function describe(reading: Reading) -> str {
     return f"ch{reading.channel}: {reading.values}"
 }
 
@@ -9587,24 +9597,24 @@ function make(channel: int) -> Reading {
 }
 
 # Each of these takes a function whose type says what it does with a list.
-function measure(with: borrow function(borrow list[int]) -> int, data: borrow list[int]) -> int {
+function measure(with: function(list[int]) -> int, data: list[int]) -> int {
     return with(data)
 }
 
-function consume(with: borrow function(list[int]) -> int, n: int) -> int {
+function consume(with: function(list[int]) -> int, n: int) -> int {
     return with(spread(n)) + with([n])
 }
 
-function build(with: borrow function(int) -> list[int], n: int) -> int {
+function build(with: function(int) -> list[int], n: int) -> int {
     let made = with(n)
     return total(made) + len(with(n + 1))
 }
 
-function show(with: borrow function(borrow Reading) -> str, reading: borrow Reading) -> str {
+function show(with: function(Reading) -> str, reading: Reading) -> str {
     return with(reading)
 }
 
-function produce(with: borrow function(int) -> Reading, n: int) -> Reading {
+function produce(with: function(int) -> Reading, n: int) -> Reading {
     return with(n)
 }
 
@@ -9616,11 +9626,11 @@ function check(level: int) -> int raises TooHot {
 }
 
 let data = [5, 6, 7]
-print(measure(total, data), measure(function(xs: borrow list[int]) -> int { return len(xs) }, data))
+print(measure(total, data), measure(function(xs: list[int]) -> int { return len(xs) }, data))
 print(consume(drain, 4), consume(function(xs: list[int]) -> int { return total(xs) }, 4))
 print(build(spread, 1), build(function(n: int) -> list[int] { return [n] }, 1))
 let reading = make(3)
-print(show(describe, reading), show(function(r: borrow Reading) -> str { return f"{len(r.values)} values" }, reading))
+print(show(describe, reading), show(function(r: Reading) -> str { return f"{len(r.values)} values" }, reading))
 let fresh = produce(make, 9)
 let other = produce(function(n: int) -> Reading { return Reading(n, []) }, 8)
 print(fresh, other)
@@ -9640,13 +9650,13 @@ let pipeline = Pipeline("p", function(n: int) -> list[int] { return [n + offset,
 print(pipeline.run(1), pipeline.run(2))
 pipeline.sink = function(xs: list[int]) -> int { return total(xs) + offset }
 print(pipeline.run(1))
-var reducer: function(borrow list[int]) -> int = total
+var reducer: function(list[int]) -> int = total
 print(reducer(data))
-reducer = function(xs: borrow list[int]) -> int { return xs[0] * offset }
+reducer = function(xs: list[int]) -> int { return xs[0] * offset }
 print(reducer(data), reducer(spread(2)))
 
 # An error leaves a statement that had a function in hand.
-function apply(f: borrow function(int) -> int, x: int) -> int {
+function apply(f: function(int) -> int, x: int) -> int {
     return f(x)
 }
 for level in [10, 40, 20] {
@@ -9662,11 +9672,11 @@ for level in [10, 40, 20] {
 class Task {
     id: int
 }
-function each(with: borrow function(list[int]), n: int) {
+function each(with: function(list[int]), n: int) {
     with([n, n])
     with([n])
 }
-function hand(with: borrow function(Task), n: int) {
+function hand(with: function(Task), n: int) {
     with(Task(n))
 }
 let seen = [0]
@@ -9693,15 +9703,15 @@ print(len(kept))
 }
 function make(n: int) -> Packet { return Packet(n, [n, n + 1]) }
 function send(p: Packet) -> int { return p.id + len(p.data) }
-function look(p: borrow Packet) -> int { return p.id }
-function twice(with: function(borrow Packet) -> int, p: borrow Packet) -> int { return with(p) + with(p) }
+function look(p: Packet) -> int { return p.id }
+function twice(with: function(Packet) -> int, p: Packet) -> int { return with(p) + with(p) }
 function feed(with: function(Packet) -> int, n: int) -> int { return with(make(n)) }
 function produce(with: function(int) -> Packet, n: int) -> int { return send(with(n)) }
 var total = 0
 for round in range(300) {
     let p = make(round)
     total += twice(look, p) + feed(send, round) + produce(make, round)
-    total += twice(function(q: borrow Packet) -> int { return len(q.data) }, p)
+    total += twice(function(q: Packet) -> int { return len(q.data) }, p)
     total += feed(function(q: Packet) -> int { return q.id * 2 }, round)
 }
 print(total)
@@ -10288,7 +10298,7 @@ print(doubled(["a"], function(s: str) -> str { return s + s }))
         return self.value
     }
 }
-function show[T](box: borrow Box[T]) -> T {
+function show[T](box: Box[T]) -> T {
     return box.get()
 }
 function open[T](box: Box[T]) -> T {

@@ -22,7 +22,7 @@ class Task {
 class Scheduler {
     tasks: list[Task]     # the scheduler owns the list, and the list owns each task
 
-    function add(self, task: Task) {
+    function add(self, task: take Task) {
         self.tasks.append(task)         # the task is the list's from here
     }
 
@@ -39,8 +39,9 @@ class Scheduler {
     }
 }
 
-# `borrow`: these two only look. The caller goes on owning what it lends.
-function busiest(tasks: borrow list[Task]) -> str {
+# These two only look, as every parameter does unless it says otherwise.
+# The caller goes on owning what it passes.
+function busiest(tasks: list[Task]) -> str {
     var best = "nothing"
     var most = 0
     for task in tasks {
@@ -52,12 +53,12 @@ function busiest(tasks: borrow list[Task]) -> str {
     return best
 }
 
-function report(task: borrow Task) -> str {
+function report(task: Task) -> str {
     return f"{task.name} ran {len(task.runs)} times: {task.runs}"
 }
 
-# No `borrow`: this one takes the task over, and frees it when it returns.
-function retire(task: Task) -> int {
+# `take`: this one takes the task over, and frees it when it returns.
+function retire(task: take Task) -> int {
     print("retiring", task.name)
     return len(task.runs)
 }

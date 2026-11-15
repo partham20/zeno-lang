@@ -31,7 +31,7 @@ function label_for(id: int) -> str {
     return f"ch{id}"
 }
 
-function check(channel: borrow Channel, reading: int) -> int raises TooHot {
+function check(channel: Channel, reading: int) -> int raises TooHot {
     if reading > 90 { raise TooHot(channel.label, reading) }
     return reading
 }

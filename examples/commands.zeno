@@ -52,10 +52,10 @@ function parse(line: str) -> Command or none {
     return none
 }
 
-# `borrow`: this only looks at the command. `match` looks too: a number
+# A parameter only looks at the command. `match` looks too: a number
 # or a text that a case carries is copied out, and `pins` is a look at
 # the list, which stays in the command.
-function cost(command: borrow Command) -> int {
+function cost(command: Command) -> int {
     match command {
         case Stop { return 0 }
         case Wait(ms) { return ms }
@@ -71,8 +71,8 @@ class Machine {
     waiting: list[Command]        # the list owns each command in it
     last: Command or none         # what ran last, when something has
 
-    # No `borrow`: the machine takes the command, and its list keeps it.
-    function queue(self, command: Command) {
+    # `take`: the machine takes the command, and its list keeps it.
+    function queue(self, command: take Command) {
         self.waiting.append(command)
     }
 
@@ -87,7 +87,7 @@ class Machine {
 
 # Run one command. It is the caller's to give: `command` is freed when
 # this returns, unless it is given on.
-function run(machine: borrow Machine, command: Command) -> Mode {
+function run(machine: Machine, command: take Command) -> Mode {
     machine.clock += cost(command)
     match command {
         case Stop { return Halted }

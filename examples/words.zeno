@@ -32,7 +32,7 @@ function not_empty(word: str) -> bool { return len(word) > 0 }
 
 function loud(word: str) -> str { return word.upper() }
 
-function count(items: borrow list[str]) -> int { return len(items) }
+function count(items: list[str]) -> int { return len(items) }
 
 # `split` makes a list and `filter` makes another. The first belongs to
 # the `return` statement, which frees it. The second is given back to

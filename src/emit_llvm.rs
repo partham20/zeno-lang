@@ -572,7 +572,7 @@ struct Entry {
     name: String,
     /// For each parameter: does the function take over an owned value?
     owned: Vec<bool>,
-    /// For each parameter: does it say `borrow`? Then the function only
+    /// For each parameter: is it without `take`? Then the function only
     /// looks, and may be lent a value that is gone when the statement is.
     lends: Vec<bool>,
 }
@@ -1536,7 +1536,7 @@ impl Emitter<'_> {
             ir_type(param, span)?;
         }
         return_type(&kind.returns, span)?;
-        let lends = decl.params.iter().map(|param| matches!(param.ty, Some(Type::Borrow(_)))).collect();
+        let lends = self.types.looks(decl);
         Ok(Entry { decl: decl.clone(), kind, name, owned, lends })
     }
 
@@ -1690,7 +1690,7 @@ impl Emitter<'_> {
         let (name, args) = match ty {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how it is held.
-            Type::Owned(inner) | Type::Borrow(inner) => return self.kind_of_type(inner),
+            Type::Owned(inner) | Type::Take(inner) => return self.kind_of_type(inner),
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
             Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
@@ -4370,7 +4370,7 @@ impl Emitter<'_> {
     /// even when names put them elsewhere.
     ///
     /// `owned` says which places take over an owned value, and `lends`
-    /// which only look (`borrow`).
+    /// which only look (no `take`).
     fn bind(&mut self, slots: &Slots, owned: &[bool], lends: &[bool], args: &[Arg], span: Span) -> Result<Vec<String>, Error> {
         let mut given: Vec<Option<Val>> = vec![None; slots.len()];
         let mut held = Vec::new();
@@ -4383,7 +4383,7 @@ impl Emitter<'_> {
                 },
             };
             let val = self.expr(&arg.value)?;
-            // A `borrow` parameter only looks, so it may be lent what
+            // A parameter without `take` only looks, so it may be lent what
             // the statement owns. Anything else may keep what it is given.
             if !(val.passing && lends.get(place) == Some(&true)) {
                 self.stays(&val, arg.value.span)?;
@@ -6381,7 +6381,7 @@ function make(id: int) -> Frame {
     return Frame(id, bytes)
 }
 
-function size(frame: Frame) -> int {
+function size(frame: take Frame) -> int {
     return len(frame.bytes)
 }
 
@@ -6582,7 +6582,7 @@ entry:
     fn the_ir_for_what_a_statement_owns() {
         // docs/temporaries.md, in IR.
         let ir = compile_no_collector(
-            "function longest(words: borrow list[str]) -> int {
+            "function longest(words: list[str]) -> int {
     var most = 0
     for word in words {
         if len(word) > most { most = len(word) }

@@ -85,7 +85,7 @@ pub enum Kind {
     /// A function held as a value.
     Function(Box<FunctionKind>),
     /// A list or an object with one owner, which frees it. Seen only on a
-    /// parameter, a field or a return type; a value that is merely borrowed
+    /// parameter, a field or a return type; a value that is merely looked at
     /// has the plain kind inside.
     Owned(Box<Kind>),
     /// Anything else, described in words for an error message.
@@ -178,6 +178,10 @@ pub struct FunctionKind {
 #[derive(Default)]
 pub struct Types {
     functions: HashMap<usize, FunctionKind>,
+    /// For each function, which parameters only look at a value that
+    /// somebody else owns. Such a parameter may be handed what the
+    /// statement owns, and never frees what it was given.
+    looks: HashMap<usize, Vec<bool>>,
     /// The type of each field of each class, in the order they are listed.
     classes: HashMap<usize, Vec<Kind>>,
     /// For each class, which of its fields are sized whole numbers. Such a
@@ -302,6 +306,11 @@ impl Types {
 
     pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
         self.functions.get(&(Arc::as_ptr(decl) as usize))
+    }
+
+    /// Which parameters of the function only look (see `looks`).
+    pub fn looks(&self, decl: &Arc<ast::Function>) -> Vec<bool> {
+        self.looks.get(&(Arc::as_ptr(decl) as usize)).cloned().unwrap_or_default()
     }
 
     /// If `expr` is a variable read where a check has narrowed it (`user`
@@ -486,7 +495,7 @@ enum Ty {
     /// `owned class` is an `Instance` whose class says so.)
     Owned(Box<Ty>),
     /// A look at a value that something else owns: what reading an owner
-    /// gives, and the type of a `borrow` parameter. Inside is the plain
+    /// gives, and the type of a parameter that only looks. Inside is the plain
     /// type. It fits nowhere that would keep the value, which is the whole
     /// point: only the places that just look take the wrapper off.
     Borrowed(Box<Ty>),
@@ -797,7 +806,7 @@ impl Ty {
 
     /// Is this a look at a value that somebody else owns? `or none` is
     /// always written outermost: a look at a `Task or none` is "a
-    /// borrowed Task, or none".
+    /// Task that is only looked at, or none".
     fn is_look(&self) -> bool {
         match self {
             Ty::Borrowed(_) => true,
@@ -866,12 +875,12 @@ impl fmt::Display for Ty {
             Ty::List(item) => write!(f, "list[{item}]"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
             Ty::Owned(inner) => write!(f, "owned {inner}"),
-            Ty::Borrowed(inner) => write!(f, "a borrowed {inner}"),
+            Ty::Borrowed(inner) => write!(f, "a {inner} that is only looked at"),
             Ty::Instance(class) => write!(f, "{}", class.name),
             Ty::EnumValue(info) => write!(f, "{}", info.name),
             Ty::Error(kind) => write!(f, "{kind}"),
             Ty::Callable(callable) => {
-                let params: Vec<String> = callable.params.iter().map(Ty::to_string).collect();
+                let params: Vec<String> = callable.params.iter().map(as_parameter).collect();
                 write!(f, "function({})", params.join(", "))?;
                 match &callable.returns {
                     Ty::None => Ok(()),
@@ -932,6 +941,17 @@ fn mentions(ty: &Ty, name: Option<&str>) -> bool {
     }
 }
 
+/// A type as it is written on a parameter. One that looks at a value
+/// with an owner is written as the plain type, and one that takes the
+/// value over says `take`.
+fn as_parameter(ty: &Ty) -> String {
+    match ty {
+        ty if ty.is_look() => ty.clone().looked_at().to_string(),
+        ty if ty.is_owned() => format!("take {}", ty.clone().looked_at()),
+        ty => ty.to_string(),
+    }
+}
+
 /// Are these the same type?
 fn same(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
@@ -968,7 +988,7 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         return true;
     }
     match (from, to) {
-        // Lending. A `borrow` parameter takes a look at an owned value, or
+        // Lending. A parameter that looks takes a look at an owned value, or
         // a shared value, which anyone may look at. It does not take an
         // owned value that has no owner yet: nobody would ever free it.
         (Ty::Borrowed(from), Ty::Borrowed(to)) => fits(from, to),
@@ -1413,7 +1433,7 @@ struct Ownership {
     /// The owners that hold nothing at this point in the code, because
     /// their value was given away: each one's name, and where it went.
     moved: Moved,
-    /// The owned and borrowed variables the statement being checked has
+    /// The owned and looked-at variables the statement being checked has
     /// looked at so far. None of them may be given away by the same
     /// statement: the look might still be in use.
     looking: Vec<usize>,
@@ -1550,9 +1570,19 @@ impl Checker {
                          Give it a name with `let` first, and pass the name"
                     )
                 }
+                // An ordinary build, and a list with one owner handed to
+                // a parameter written `list[...]`, which is a shared list
+                // that the function may keep.
+                (Ty::Borrowed(inner) | Ty::Owned(inner), Ty::List(_)) if matches!(**inner, Ty::List(_)) => {
+                    message = format!(
+                        "{what} is written `{to}`, which is a shared list that the function may keep, \
+                         and this list has one owner. Write the parameter as `owned {to}`: \
+                         then it only looks, and any list can be passed to it"
+                    )
+                }
                 (Ty::Borrowed(_), _) => {
-                    message += ". A value with an owner can only go to a parameter that borrows it \
-                                (`borrow`) or takes it over (an owned type)"
+                    message += ". Something else owns it, so it can go to a parameter that looks, \
+                                and not to one that says `take` or to anything else that keeps it"
                 }
                 (Ty::List(_), Ty::Owned(_)) => {
                     message += ". Only a list made right here can become an owned one: one written out, \
@@ -1829,8 +1859,13 @@ impl Checker {
             if !fits(given, &slot.ty) {
                 self.error(
                     format!(
-                        "{what} should be {wanted_type}, but the parameter `{}` of this function is {}",
-                        slot.name, slot.ty
+                        "{what} should be {wanted_type}, but the parameter `{}` of this function {}",
+                        slot.name,
+                        match &slot.ty {
+                            ty if ty.is_look() => format!("only looks at what it is given (`{}`)", as_parameter(ty)),
+                            ty if ty.is_owned() => format!("takes over what it is given (`{}`)", as_parameter(ty)),
+                            ty => format!("is {ty}"),
+                        }
                     ),
                     span,
                 );
@@ -1850,9 +1885,32 @@ impl Checker {
     }
 
     /// `resolve`, knowing whether the type is a parameter's. `owned` and
-    /// `borrow` are words about the whole value, so they are only looked
-    /// for here, at the front, and `borrow` only on a parameter.
+    /// `take` are words about the whole value, so they are only looked
+    /// for here, at the front, and `take` only on a parameter.
+    ///
+    /// A parameter looks at what it is given. If the value has one
+    /// owner, the caller goes on owning it, and the parameter's type is
+    /// a look at it. `take` is the word for a parameter that takes the
+    /// value over: its type is then what a variable's would be.
     fn resolve_for(&mut self, ty: &ast::Type, env: &Env, span: Span, parameter: bool) -> Ty {
+        if parameter {
+            return match ty {
+                ast::Type::Take(inner) => match self.resolve_for(inner, env, span, false) {
+                    ty if borrowable(&ty) || ty.is_loose() => ty,
+                    ty => self.error(
+                        format!(
+                            "`take` is for a value that has an owner: a list, an object, a function, an error \
+                             or an enum value that carries values. This is {ty}, which is copied. Write the type alone"
+                        ),
+                        span,
+                    ),
+                },
+                _ => match self.resolve_for(ty, env, span, false) {
+                    ty if ty.is_owned() && borrowable(&ty) => lent(&ty),
+                    ty => ty,
+                },
+            };
+        }
         match ty {
             ast::Type::Owned(inner) => match self.resolve_inside(inner, env, span, Inside::Front) {
                 list @ Ty::List(_) => Ty::Owned(Box::new(list)),
@@ -1869,21 +1927,11 @@ impl Checker {
                     span,
                 ),
             },
-            ast::Type::Borrow(_) if !parameter => self.error(
-                "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to",
+            ast::Type::Take(_) => self.error(
+                "`take` can only be written on a parameter, where it says that the function takes the value over. \
+                 A variable, a field and what a function gives back always own what they hold",
                 span,
             ),
-            ast::Type::Borrow(inner) => match self.resolve_inside(inner, env, span, Inside::Front) {
-                ty if borrowable(&ty) => lent(&ty),
-                ty if ty.is_loose() => ty,
-                ty => self.error(
-                    format!(
-                        "only a list, an object, a function, an error or an enum value that carries values \
-                         can be borrowed, and this is {ty}. Pass it as it is"
-                    ),
-                    span,
-                ),
-            },
             _ => match self.resolve_inside(ty, env, span, Inside::Front) {
                 // Where everything has one owner, a list does too.
                 list @ Ty::List(_) if self.one_owner => Ty::Owned(Box::new(list)),
@@ -1894,32 +1942,29 @@ impl Checker {
                      Write `owned list[...] or none`",
                     span,
                 ),
-                Ty::List(item) if item.is_owned() => {
-                    let lend = if parameter { ", or `borrow list[...]` to only look at it" } else { "" };
-                    self.error(
-                        format!(
-                            "each item of this list is {}, which has one owner: the list. So the list needs an \
-                             owner too. Write `owned list[...]`{lend}",
-                            an_owned(&item)
-                        ),
-                        span,
-                    )
-                }
+                Ty::List(item) if item.is_owned() => self.error(
+                    format!(
+                        "each item of this list is {}, which has one owner: the list. So the list needs an \
+                         owner too. Write `owned list[...]`",
+                        an_owned(&item)
+                    ),
+                    span,
+                ),
                 ty => ty,
             },
         }
     }
 
-    /// The part of a type after any `owned` or `borrow`. `inside` says
+    /// The part of a type after any `owned` or `take`. `inside` says
     /// what the type is written in. A list can hold values that have one
     /// owner: it is their owner. An `or none`, a function type and the
     /// `[ ]` of a generic cannot yet.
     fn resolve_inside(&mut self, ty: &ast::Type, env: &Env, span: Span, inside: Inside) -> Ty {
         let written = ty as *const ast::Type as usize;
         let ty = match ty {
-            ast::Type::Owned(_) | ast::Type::Borrow(_) => {
+            ast::Type::Owned(_) | ast::Type::Take(_) => {
                 return self.error(
-                    "`owned` and `borrow` describe a whole value, so they go at the very front of a type, \
+                    "`owned` and `take` describe a whole value, so they go at the very front of a type, \
                      and not inside `list[ ]` or `or none`",
                     span,
                 )
@@ -1941,9 +1986,8 @@ impl Checker {
                 }
                 Ty::Optional(Box::new(inner))
             }
-            // Each parameter of a function type is a parameter: it can
-            // say `borrow`, and a list there has an owner where a
-            // parameter's list would have.
+            // Each parameter of a function type is a parameter: it looks
+            // unless it says `take`.
             ast::Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.resolve_for(param, env, span, true)).collect();
                 let returns = match returns {
@@ -2308,7 +2352,7 @@ impl Checker {
                     decl: method.clone(),
                     env,
                     span,
-                    // A method of an owned class borrows the object it is
+                    // A method of an owned class looks at the object it is
                     // called on: the caller goes on owning it.
                     self_type: Some(match info.owned {
                         true => Ty::Borrowed(Box::new(Ty::Instance(info.clone()))),
@@ -2551,7 +2595,7 @@ impl Checker {
                     // An error travels to wherever it is caught, and can be
                     // kept there for any length of time.
                     ty if ty.is_tied() && !self.one_owner => {
-                        self.error(format!("an owned or borrowed value cannot be raised, and this is {ty}"), span);
+                        self.error(format!("a value that has one owner cannot be raised, and this is {ty}"), span);
                     }
                     Ty::Error(kind) => self.can_raise(&kind, span),
                     // `raises` and `except` name a class, and `Problem[int]`
@@ -3097,7 +3141,7 @@ impl Checker {
     //   field, a parameter that takes it, a `return`). If it comes from a
     //   variable, that variable has given it away and may not be used again.
     // - `look`: the value is read where it stands (printed, indexed,
-    //   compared, lent to a `borrow` parameter). Nothing changes hands.
+    //   compared, lent to a parameter that looks). Nothing changes hands.
     // - `expr`, used anywhere else, gives an owner's value the type
     //   `Borrowed`, which fits nowhere. So a place this section forgot is
     //   an error message, never a second owner.
@@ -3136,7 +3180,7 @@ impl Checker {
         ))
     }
 
-    /// What reading the variable `name` gives. For an owner, or a `borrow`
+    /// What reading the variable `name` gives. For an owner, or a looking
     /// parameter, that is a look at the value and no more.
     fn read(&mut self, name: &str, variable: Variable, env: &Env, span: Span) -> Ty {
         // A bare case of an enum, such as `Stop`, is not a variable that
@@ -3167,7 +3211,7 @@ impl Checker {
             return self.error(
                 format!(
                     "`{name}` was given away on line {} and holds nothing now. \
-                     Lend it instead (a `borrow` parameter), or use it before it goes",
+                     Use it before it goes, or give it only to what looks: a parameter without `take`",
                     at.line
                 ),
                 span,
@@ -3219,7 +3263,7 @@ impl Checker {
     /// place of an item or of a field, and the old one is freed. Anybody
     /// who was lent that part would be left looking at nothing. So:
     ///
-    /// - Only the owner may do it. A function that borrowed the list or
+    /// - Only the owner may do it. A function that was lent the list or
     ///   the object cannot know who else was lent a part of it.
     /// - Not inside a `for` loop that walks it: the loop was lent each item.
     /// - Not on a line that has already looked at it: the look might be
@@ -3250,13 +3294,13 @@ impl Checker {
         }
         if !variable.ty.is_owned() {
             let what = match &inside.kind {
-                ExprKind::Name(_) => format!("`{name}` is"),
-                _ => format!("what `{name}` holds is"),
+                ExprKind::Name(_) => format!("`{name}` only looks at it"),
+                _ => format!("what `{name}` holds is only looked at"),
             };
             self.error(
                 format!(
                     "only the owner can {does}: somebody else may have been lent it. \
-                     Here {what} only borrowed"
+                     Here {what}"
                 ),
                 span,
             );
@@ -3327,29 +3371,33 @@ impl Checker {
                 let message = match &expr.kind {
                     ExprKind::Name(name) if item(name) => format!(
                         "`{name}` is a look at an item of the list that the loop is walking. The list owns the item, \
-                         so it cannot be kept, returned or given away. Use it here, or lend it to a `borrow` parameter"
+                         so it cannot be kept, returned or given away. Use it here, or pass it to a parameter that looks"
                     ),
                     ExprKind::Name(name) if part(name) => format!(
                         "`{name}` is a look at the value that the `match` is looking at, or at a part of it. \
                          Its owner still has it, so it cannot be kept, returned or given away. \
-                         Use it here, or lend it to a `borrow` parameter"
+                         Use it here, or pass it to a parameter that looks"
                     ),
+                    ExprKind::Name(name) if name == "self" => "`self` is the object the method was called on. \
+                         Its owner still has it, so it cannot be kept, returned or given away"
+                        .to_string(),
                     ExprKind::Name(name) => format!(
-                        "`{name}` is only borrowed here, so it cannot be kept, returned or given away. \
-                         To keep it, take it as an owned parameter instead"
+                        "`{name}` is only looked at here: its owner still has it. So it cannot be kept, \
+                         returned or given away. If it is a parameter, write `take` in front of its type \
+                         to take the value over"
                     ),
                     ExprKind::Field { name, .. } => format!(
                         "`{name}` holds an owned value, which cannot be taken out of the object it is in. \
-                         Use it where it is, or lend it to a `borrow` parameter"
+                         Use it where it is, or pass it to a parameter that looks"
                     ),
                     ExprKind::Index { .. } => format!(
                         "this item is {}, which has one owner: the list. `[ ]` only looks at it. \
-                         Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`",
+                         Use it where it is, pass it to a parameter that looks, or take it out with `pop()`",
                         an_owned(&inner)
                     ),
                     ExprKind::Function(_) => "this function uses a value from outside it that has one owner, \
                          so it must be gone before that value is, and cannot be kept, returned or given away. \
-                         Pass it straight to `map`, `filter`, `reduce` or a `borrow` parameter, \
+                         Pass it straight to `map`, `filter`, `reduce` or a parameter that looks, \
                          or give the function what it needs as a parameter of its own"
                         .to_string(),
                     _ => format!("this is {look}, which cannot be kept"),
@@ -3711,6 +3759,7 @@ impl Checker {
             Arc::as_ptr(&function.decl) as usize,
             FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
         );
+        self.types.looks.insert(Arc::as_ptr(&function.decl) as usize, params.iter().map(|slot| slot.ty.is_look()).collect());
         let signature = Rc::new(Signature { name, params, returns, raises });
         *function.state.borrow_mut() = State::Checked(signature.clone());
         signature
@@ -3911,7 +3960,7 @@ impl Checker {
                         self.error(
                             format!(
                                 "`{}` was given away on line {} and holds nothing now, and this function uses it. \
-                                 Lend it instead (a `borrow` parameter), or use it before it goes",
+                                 Use it before it goes, or give it only to what looks: a parameter without `take`",
                                 capture.name, at.line
                             ),
                             span,
@@ -4000,7 +4049,7 @@ impl Checker {
                         Some(slot) if slot.ty.is_owned() => self.kept(&arg.value, &slot.ty, env),
                         // `print`, `len` and the rest only look.
                         _ if only_looks => self.look(&arg.value, env),
-                        // So does a parameter that says `borrow`. An owned
+                        // So does a parameter without `take`. An owned
                         // value made in the argument itself is lent for
                         // the length of the statement, which owns it.
                         Some(slot) if slot.ty.is_look() => {
@@ -4015,7 +4064,7 @@ impl Checker {
                         }
                         // Anything else is checked against the parameter
                         // by `call`. A look at an owned value fits there
-                        // only if the parameter says `borrow`.
+                        // only if the parameter looks.
                         _ => {
                             if let Some(slot) = slot {
                                 self.expecting(&arg.value, &slot.ty);
@@ -4050,7 +4099,7 @@ impl Checker {
                 match self.field(&object, name, span) {
                     // The method would carry the object away inside it.
                     Ty::BoundMethod(_) | Ty::BuiltinMethod(..) if tied => self.error(
-                        format!("a method of an owned or borrowed value cannot be kept as a value. Call it here: `.{name}(...)`"),
+                        format!("a method of a value that has one owner cannot be kept as a value. Call it here: `.{name}(...)`"),
                         span,
                     ),
                     // An owned value in a field stays where it is. This
@@ -4827,7 +4876,7 @@ impl Checker {
                 }
             };
             if ty.is_tied() {
-                self.error(format!("`{name}` would be {ty} here. An owned or borrowed value cannot fill a type parameter yet"), span);
+                self.error(format!("`{name}` would be {ty} here. A value that has one owner cannot fill a type parameter yet"), span);
                 return None;
             }
             // With one owner for everything, a list is an owned value
@@ -4886,7 +4935,7 @@ impl Checker {
             | (Ty::Owned(pattern), Ty::Owned(actual))
             | (Ty::Borrowed(pattern), Ty::Borrowed(actual)) => self.bind(pattern, actual, found),
             // A plain value where `T or none` is wanted, a value lent to a
-            // `borrow`, and a result that goes into an `or none`.
+            // parameter that looks, and a result that goes into an `or none`.
             (Ty::Optional(pattern), actual) if !matches!(actual, Ty::None) => self.bind(pattern, actual, found),
             (Ty::Borrowed(pattern), actual) => self.bind(pattern, actual, found),
             (pattern, Ty::Optional(actual)) => self.bind(pattern, actual, found),
@@ -5229,7 +5278,7 @@ enum Covers {
 /// What a type is written inside of. See `Checker::resolve_inside`.
 #[derive(Clone, Copy, PartialEq)]
 enum Inside {
-    /// Nothing: it is the whole type, or follows `owned` or `borrow`.
+    /// Nothing: it is the whole type, or follows `owned` or `take`.
     Front,
     /// The `[ ]` of a list.
     List,
@@ -5255,7 +5304,8 @@ fn lent(ty: &Ty) -> Ty {
     }
 }
 
-/// May a parameter say `borrow` in front of this type? A list, an
+/// Does a value of this type have an owner, so that a parameter can
+/// look at it or `take` it? A list, an
 /// object, an enum value that is kept in a block of its own, or one of
 /// those that may be `none`.
 fn borrowable(ty: &Ty) -> bool {
@@ -5305,7 +5355,7 @@ fn shared(name: &str) -> String {
 fn elsewhere(name: &str) -> String {
     format!(
         "`{name}` holds an owned value, which belongs to the block that declares it. \
-         A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter"
+         A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given"
     )
 }
 
@@ -5757,7 +5807,7 @@ mod tests {
         );
         // An owned class can be generic, and its copies are owned.
         strict_ok(
-            "owned class Box[T] {\n    value: T\n}\nfunction look[T](box: borrow Box[T]) -> T {\n    return box.value\n}\n\
+            "owned class Box[T] {\n    value: T\n}\nfunction look[T](box: Box[T]) -> T {\n    return box.value\n}\n\
              function open[T](box: Box[T]) -> T {\n    return box.value\n}\nlet b = Box(5)\nlet n: int = look(b)\nlet m: int = open(b)",
         );
     }
@@ -5853,7 +5903,7 @@ mod tests {
         );
         assert_eq!(
             error("function keep[T](x: T) -> T {\n    return x\n}\nlet xs: owned list[int] = [1]\nlet ys = keep(xs)"),
-            "`T` would be a borrowed list[int] here. An owned or borrowed value cannot fill a type parameter yet"
+            "`T` would be a list[int] that is only looked at here. A value that has one owner cannot fill a type parameter yet"
         );
     }
 
@@ -6253,9 +6303,9 @@ mod tests {
     function size(self) -> int { return len(self.data) }
 }
 function make() -> Packet { return Packet(1, [1, 2]) }
-function send(p: Packet) -> int { return p.id }
-function look(p: borrow Packet) -> int { return p.id }
-function total(xs: borrow list[int]) -> int { return len(xs) }
+function send(p: take Packet) -> int { return p.id }
+function look(p: Packet) -> int { return p.id }
+function total(xs: owned list[int]) -> int { return len(xs) }
 ";
 
     fn owned_ok(source: &str) {
@@ -6266,7 +6316,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         strict_error(&format!("{OWNED}{source}"))
     }
 
-    const GONE: &str = "holds nothing now. Lend it instead (a `borrow` parameter), or use it before it goes";
+    const GONE: &str = "holds nothing now. Use it before it goes, or give it only to what looks: a parameter without `take`";
 
     #[test]
     fn an_owned_value_can_be_made_lent_and_given_away() {
@@ -6290,12 +6340,12 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
             format!("`p` was given away on line 11 and {GONE}")
         );
         // Unless that path never reaches what follows.
-        owned_ok("function f(p: Packet) -> int {\n if p.id > 0 { return send(p) }\n return look(p)\n}");
+        owned_ok("function f(p: take Packet) -> int {\n if p.id > 0 { return send(p) }\n return look(p)\n}");
         // A `var` can be given a new value, and holds something again.
         owned_ok("var p = make()\nsend(p)\np = make()\nprint(p.id)");
         // An error can leave a `try` after the value has gone.
         assert_eq!(
-            owned_error("class Bad { }\nfunction risky(p: Packet) raises Bad { raise Bad() }\nlet p = make()\ntry { risky(p) } except Bad { print(p.id) }"),
+            owned_error("class Bad { }\nfunction risky(p: take Packet) raises Bad { raise Bad() }\nlet p = make()\ntry { risky(p) } except Bad { print(p.id) }"),
             format!("`p` was given away on line 13 and {GONE}")
         );
     }
@@ -6324,30 +6374,31 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     }
 
     #[test]
-    fn a_borrowed_value_cannot_be_kept() {
+    fn a_value_that_is_only_looked_at_cannot_be_kept() {
         assert_eq!(
-            owned_error("function keep(p: borrow Packet) -> Packet { return p }"),
-            "`p` is only borrowed here, so it cannot be kept, returned or given away. To keep it, take it as an owned parameter instead"
+            owned_error("function keep(p: Packet) -> Packet { return p }"),
+            "`p` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. If it is a parameter, write `take` in front of its type to take the value over"
         );
         assert_eq!(
-            owned_error("function pass_on(p: borrow Packet) -> int { return send(p) }"),
-            "`p` is only borrowed here, so it cannot be kept, returned or given away. To keep it, take it as an owned parameter instead"
+            owned_error("function pass_on(p: Packet) -> int { return send(p) }"),
+            "`p` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. If it is a parameter, write `take` in front of its type to take the value over"
         );
         assert_eq!(
             owned_error("let p = make()\nlet d = p.data"),
-            "`data` holds an owned value, which cannot be taken out of the object it is in. Use it where it is, or lend it to a `borrow` parameter"
+            "`data` holds an owned value, which cannot be taken out of the object it is in. Use it where it is, or pass it to a parameter that looks"
         );
         assert_eq!(
             owned_error("function f(xs: list[int]) -> int { return len(xs) }\nlet ys: owned list[int] = [1]\nprint(f(ys))"),
-            "`xs` of `f` should be list[int], but this is a borrowed list[int]. A value with an owner can only go to a parameter that borrows it (`borrow`) or takes it over (an owned type)"
+            "`xs` of `f` is written `list[int]`, which is a shared list that the function may keep, and this list has one owner. \
+             Write the parameter as `owned list[int]`: then it only looks, and any list can be passed to it"
         );
         assert_eq!(
             owned_error("let p = make()\nlet m = p.size"),
-            "a method of an owned or borrowed value cannot be kept as a value. Call it here: `.size(...)`"
+            "a method of a value that has one owner cannot be kept as a value. Call it here: `.size(...)`"
         );
         assert_eq!(
-            owned_error("function reset(p: borrow Packet) { p.data = [] }"),
-            "only the owner can replace what `data` holds: somebody else may have been lent it. Here `p` is only borrowed"
+            owned_error("function reset(p: Packet) { p.data = [] }"),
+            "only the owner can replace what `data` holds: somebody else may have been lent it. Here `p` only looks at it"
         );
         owned_ok("let p = make()\np.data = [5, 6]\nprint(p)");
     }
@@ -6378,7 +6429,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             owned_error("let data = make().data"),
             "`data` holds an owned value, which cannot be taken out of the object it is in. \
-             Use it where it is, or lend it to a `borrow` parameter"
+             Use it where it is, or pass it to a parameter that looks"
         );
     }
 
@@ -6404,7 +6455,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     #[test]
     fn an_owned_value_stays_in_the_function_that_holds_it() {
         let elsewhere = "holds an owned value, which belongs to the block that declares it. \
-                         A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter";
+                         A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given";
         assert_eq!(
             owned_error("let p = make()\nfunction peek() -> int { return p.id }\nprint(peek())"),
             format!("`p` {elsewhere}")
@@ -6413,29 +6464,35 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // A function written where a value goes may look at it, and
         // is then a look itself: it cannot outlive what it looks at.
         assert_eq!(
-            owned_error("function f(p: borrow Packet) -> function() -> int {\n return function() -> int { return p.id }\n}"),
+            owned_error("function f(p: Packet) -> function() -> int {\n return function() -> int { return p.id }\n}"),
             LOOKS
         );
     }
 
     const LOOKS: &str = "this function uses a value from outside it that has one owner, so it must be gone before \
                          that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, \
-                         `reduce` or a `borrow` parameter, or give the function what it needs as a parameter of its own";
+                         `reduce` or a parameter that looks, or give the function what it needs as a parameter of its own";
 
     #[test]
     fn shared_things_cannot_hold_owned_ones() {
         // A function type can mention one: each of its parameters is a
         // parameter, and says what it does with what it is given.
-        owned_ok("function f(g: function(Packet) -> int) -> int { return g(make()) }\nprint(f(send))");
-        owned_ok("function f(g: function(borrow Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}\nprint(f(look))");
+        owned_ok("function f(g: function(take Packet) -> int) -> int { return g(make()) }\nprint(f(send))");
+        owned_ok("function f(g: function(Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}\nprint(f(look))");
         owned_ok("function f(g: function(Packet or none) -> int) { }");
         owned_ok("function f(g: function(int) -> Packet) -> int { return send(g(1)) }");
         assert_eq!(
-            owned_error("function f(g: function(Packet) -> int) { }\nf(look)"),
-            "`g` of `f` should be function(Packet) -> int, but the parameter `p` of this function is a borrowed Packet"
+            owned_error("function f(g: function(take Packet) -> int) { }\nf(look)"),
+            "`g` of `f` should be function(take Packet) -> int, but the parameter `p` of this function \
+             only looks at what it is given (`Packet`)"
         );
         assert_eq!(
-            owned_error("function f(g: function(Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}"),
+            owned_error("function f(g: function(Packet) -> int) { }\nf(send)"),
+            "`g` of `f` should be function(Packet) -> int, but the parameter `p` of this function \
+             takes over what it is given (`take Packet`)"
+        );
+        assert_eq!(
+            owned_error("function f(g: function(take Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}"),
             "`p` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
         );
         assert_eq!(
@@ -6453,7 +6510,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             owned_error("function f(xs: list[Packet]) { }"),
             "each item of this list is an owned Packet, which has one owner: the list. So the list needs an owner too. \
-             Write `owned list[...]`, or `borrow list[...]` to only look at it"
+             Write `owned list[...]`"
         );
         assert_eq!(
             owned_error("let x: owned list[list[Packet]] = []"),
@@ -6467,7 +6524,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(owned_error("enum E { A(p: Packet) }"), "a case of the enum `E` cannot carry an owned value yet");
         assert_eq!(
             owned_error("let p = make()\nraise p"),
-            "an owned or borrowed value cannot be raised, and this is a borrowed Packet"
+            "a value that has one owner cannot be raised, and this is a Packet that is only looked at"
         );
         assert_eq!(
             owned_error("let xs: list[Packet] or none = none"),
@@ -6485,8 +6542,8 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     #[test]
     fn what_may_be_none_can_have_one_owner() {
         const MAYBE: &str = "function find(n: int) -> Packet or none {\n if n > 0 { return make() }\n return none\n}\n\
-                             function peek(p: borrow Packet or none) -> bool { return p is none }\n\
-                             function eat(p: Packet or none) -> bool { return p is none }\n";
+                             function peek(p: Packet or none) -> bool { return p is none }\n\
+                             function eat(p: take Packet or none) -> bool { return p is none }\n";
         let ok = |source: &str| owned_ok(&format!("{MAYBE}{source}"));
         let error = |source: &str| owned_error(&format!("{MAYBE}{source}"));
 
@@ -6509,26 +6566,26 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // A look at one cannot be kept, and a field does not give its
         // value up.
         assert_eq!(
-            error("function keep(p: borrow Packet or none) -> Packet or none { return p }"),
-            "`p` is only borrowed here, so it cannot be kept, returned or given away. \
-             To keep it, take it as an owned parameter instead"
+            error("function keep(p: Packet or none) -> Packet or none { return p }"),
+            "`p` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
         );
         assert_eq!(
             error("owned class Slot { held: Packet or none }\nlet s = Slot(find(1))\nlet p = s.held"),
             "`held` holds an owned value, which cannot be taken out of the object it is in. \
-             Use it where it is, or lend it to a `borrow` parameter"
+             Use it where it is, or pass it to a parameter that looks"
         );
         // Only the owner may put something else there: that frees what
         // was there.
         assert_eq!(
-            error("owned class Slot { held: Packet or none }\nfunction clear(s: borrow Slot) { s.held = none }"),
-            "only the owner can replace what `held` holds: somebody else may have been lent it. Here `s` is only borrowed"
+            error("owned class Slot { held: Packet or none }\nfunction clear(s: Slot) { s.held = none }"),
+            "only the owner can replace what `held` holds: somebody else may have been lent it. Here `s` only looks at it"
         );
-        // `borrow` is for what has, or could have, one owner.
+        // `take` is for what has, or could have, one owner.
         assert_eq!(
-            error("function f(n: borrow int or none) { }"),
-            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
-             and this is int or none. Pass it as it is"
+            error("function f(n: take int or none) { }"),
+            "`take` is for a value that has an owner: a list, an object, a function, an error or an enum value \
+             that carries values. This is int or none, which is copied. Write the type alone"
         );
     }
 
@@ -6543,7 +6600,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
             owned_error("let p = make()\nmatch p { case other { print(send(other)) } }"),
             "`other` is a look at the value that the `match` is looking at, or at a part of it. \
              Its owner still has it, so it cannot be kept, returned or given away. \
-             Use it here, or lend it to a `borrow` parameter"
+             Use it here, or pass it to a parameter that looks"
         );
         // While the name is in use the owner keeps the value where it is.
         let looking = "the `match` on line 11 gave a name to a part of what `p` holds, and this `case` is still looking at it.";
@@ -6589,15 +6646,15 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         owned_ok("let ps = [make()]\nps[0] = make()\nps[0] = Packet(3, [])");
         // `map` and `reduce` lend each item to the function.
         owned_ok("let ps = [make()]\nprint(ps.map(look))");
-        owned_ok("function add(n: int, p: borrow Packet) -> int { return n + p.id }\nlet ps = [make()]\nprint(ps.reduce(add, 0))");
+        owned_ok("function add(n: int, p: Packet) -> int { return n + p.id }\nlet ps = [make()]\nprint(ps.reduce(add, 0))");
         // Made and only looked at: the statement owns it.
         owned_ok("print(len([make(), make()]), [make()][0].id)\nfor p in [make()] { print(p.id) }");
         // It can be lent, given away, returned and kept in an object.
         owned_ok(
             "owned class Queue { waiting: owned list[Packet] }\n\
-             function count(ps: borrow list[Packet]) -> int { return len(ps) }\n\
+             function count(ps: owned list[Packet]) -> int { return len(ps) }\n\
              function all() -> owned list[Packet] { return [make()] }\n\
-             function keep(ps: owned list[Packet]) -> Queue { return Queue(ps) }\n\
+             function keep(ps: take owned list[Packet]) -> Queue { return Queue(ps) }\n\
              let q = keep(all())\nprint(count(q.waiting), count(all()))\nq.waiting.append(make())\nq.waiting = all()",
         );
     }
@@ -6609,13 +6666,13 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             item("let first = ps[0]"),
             "this item is an owned Packet, which has one owner: the list. `[ ]` only looks at it. \
-             Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`"
+             Use it where it is, pass it to a parameter that looks, or take it out with `pop()`"
         );
         assert_eq!(item("print(send(ps[0]))"), item("let first = ps[0]"));
         assert_eq!(
             item("for p in ps { print(send(p)) }"),
             "`p` is a look at an item of the list that the loop is walking. The list owns the item, \
-             so it cannot be kept, returned or given away. Use it here, or lend it to a `borrow` parameter"
+             so it cannot be kept, returned or given away. Use it here, or pass it to a parameter that looks"
         );
         assert_eq!(item("let again = [p for p in ps]"), item("for p in ps { print(send(p)) }"));
         // What would put an item in two lists.
@@ -6630,7 +6687,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
              Add the items one at a time with `append`"
         );
         assert_eq!(
-            item("function big(p: borrow Packet) -> bool { return p.id > 1 }\nlet some = ps.filter(big)"),
+            item("function big(p: Packet) -> bool { return p.id > 1 }\nlet some = ps.filter(big)"),
             "`filter` would put the items it keeps in a second list, and each has one owner. \
              Use a `for` loop that makes what the new list needs"
         );
@@ -6643,29 +6700,29 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     #[test]
     fn only_the_owner_takes_out_what_has_one_owner() {
         // Somebody who was lent the list cannot know who else was lent an item.
-        let borrowed = "somebody else may have been lent it. Here `ps` is only borrowed";
+        let looking = "somebody else may have been lent it. Here `ps` only looks at it";
         assert_eq!(
-            owned_error("function last(ps: borrow list[Packet]) -> Packet { return ps.pop() }"),
-            format!("only the owner can take an item out of this list: {borrowed}")
+            owned_error("function last(ps: owned list[Packet]) -> Packet { return ps.pop() }"),
+            format!("only the owner can take an item out of this list: {looking}")
         );
         assert_eq!(
-            owned_error("function reset(ps: borrow list[Packet]) { ps[0] = make() }"),
-            format!("only the owner can replace an item of this list: {borrowed}")
+            owned_error("function reset(ps: owned list[Packet]) { ps[0] = make() }"),
+            format!("only the owner can replace an item of this list: {looking}")
         );
         assert_eq!(
             owned_error("owned class Queue {\n waiting: owned list[Packet]\n function next(self) -> Packet { return self.waiting.pop() }\n}"),
             "only the owner can take an item out of this list: somebody else may have been lent it. \
-             Here what `self` holds is only borrowed"
+             Here what `self` holds is only looked at"
         );
         // It can add to it, and change what is inside an item.
-        owned_ok("function more(ps: borrow list[Packet]) { ps.append(make())\nps[0].id = 4 }");
+        owned_ok("function more(ps: owned list[Packet]) { ps.append(make())\nps[0].id = 4 }");
         // The owner can reach in as far as it likes.
         owned_ok(
             "owned class Queue { waiting: owned list[Packet] }\n\
              let q = Queue([make()])\nlet p = q.waiting.pop()\nq.waiting.append(p)\nq.waiting[0] = make()\nq.waiting[0].data = [7]",
         );
         // A list of numbers has nothing with an owner in it.
-        owned_ok("function last(xs: borrow list[int]) -> int { return xs.pop() }");
+        owned_ok("function last(xs: owned list[int]) -> int { return xs.pop() }");
 
         // Not while a `for` loop is looking at the items.
         let ps = "let ps = [make(), make()]\n";
@@ -6707,12 +6764,12 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
 
         // Not on a line that has looked at the list, either way round.
         assert_eq!(
-            owned_error(&format!("function two(a: borrow Packet, b: Packet) {{ }}\n{ps}two(ps[0], ps.pop())")),
+            owned_error(&format!("function two(a: Packet, b: take Packet) {{ }}\n{ps}two(ps[0], ps.pop())")),
             "this line has already looked at `ps`, and the look might still be in use. \
              Do the other thing on a line of its own first"
         );
         assert_eq!(
-            owned_error(&format!("function two(a: Packet, b: borrow Packet) {{ }}\n{ps}two(ps.pop(), ps[0])")),
+            owned_error(&format!("function two(a: take Packet, b: Packet) {{ }}\n{ps}two(ps.pop(), ps[0])")),
             "this line takes an item out of `ps`, so it cannot use `ps` for anything else. \
              Do the other thing on a line of its own"
         );
@@ -6742,10 +6799,10 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     #[test]
     fn with_one_owner_a_list_and_an_object_need_no_word() {
         const POINT: &str = "class Point {\n x: int\n y: int\n}\n\
-                             function look(p: borrow Point) -> int { return p.x }\n\
-                             function take(p: Point) -> int { return p.y }\n\
-                             function total(xs: borrow list[int]) -> int { return len(xs) }\n\
-                             function eat(xs: list[int]) -> int { return len(xs) }\n\
+                             function look(p: Point) -> int { return p.x }\n\
+                             function consume(p: take Point) -> int { return p.y }\n\
+                             function total(xs: list[int]) -> int { return len(xs) }\n\
+                             function eat(xs: take list[int]) -> int { return len(xs) }\n\
                              function make(n: int) -> list[int] { return [i for i in range(n)] }\n";
         let ok = |source: &str| one_owner_ok(&format!("{POINT}{source}"));
         let error = |source: &str| one_owner_error(&format!("{POINT}{source}"));
@@ -6755,8 +6812,8 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // A list that is made belongs to whoever receives it.
         ok("let xs = [1, 2]\nprint(total(xs), xs)\nlet ys = xs\nprint(eat(ys), eat([3]), eat(make(2)))");
         ok("var xs = make(3)\nxs = make(4)\nxs.append(1)\nxs += [2]\nlet words = \"a b\".split()\nprint(xs, words)");
-        // Giving it to another name, or to a parameter that does not say
-        // `borrow`, gives it away.
+        // Giving it to another name, or to a parameter that says `take`,
+        // gives it away.
         let gone = "let xs = [1, 2]\nlet ys = xs\nprint(xs)";
         assert!(error(gone).contains(GONE));
         shared(gone);
@@ -6764,43 +6821,44 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert!(error(eaten).contains(GONE));
         shared(eaten);
         // So is every object, of every class.
-        ok("let p = Point(1, 2)\nprint(look(p), p.x, p)\nprint(take(p))");
-        let taken = "let p = Point(1, 2)\nprint(take(p))\nprint(p.x)";
+        ok("let p = Point(1, 2)\nprint(look(p), p.x, p)\nprint(consume(p))");
+        let taken = "let p = Point(1, 2)\nprint(consume(p))\nprint(p.x)";
         assert!(error(taken).contains(GONE));
         shared(taken);
         // A list in a list, and an object in a list, belong to that list.
         ok("var grid = [[1, 2], [3]]\ngrid.append([4])\ngrid[0] = make(2)\ngrid[1].append(5)\nlet row = grid.pop()\nprint(grid, row, grid[0][1])");
-        ok("let ps = [Point(1, 2)]\nps.append(Point(3, 4))\nfor p in ps { print(look(p)) }\nprint(take(ps.pop()))");
+        ok("let ps = [Point(1, 2)]\nps.append(Point(3, 4))\nfor p in ps { print(look(p)) }\nprint(consume(ps.pop()))");
         ok("let table: list[list[str]] = [\"a b\".split()]\nfor row in table { for word in row { print(word) } }");
         assert_eq!(
             error("let grid = [[1], [2]]\nlet row = grid[0]"),
             "this item is an owned list[int], which has one owner: the list. `[ ]` only looks at it. \
-             Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`"
+             Use it where it is, pass it to a parameter that looks, or take it out with `pop()`"
         );
         // A field that holds one belongs to the object.
         ok("class Bag {\n items: list[int]\n spare: Point\n}\nlet b = Bag([1], Point(0, 0))\nb.items = [2]\nb.spare = Point(1, 1)\nprint(b)");
         assert_eq!(
             error("class Bag {\n items: list[int]\n function empty(self) { self.items = [] }\n}"),
-            "only the owner can replace what `items` holds: somebody else may have been lent it. Here `self` is only borrowed"
+            "only the owner can replace what `items` holds: somebody else may have been lent it. Here `self` only looks at it"
         );
         // What may be `none` has one owner too, when it is there.
-        ok("var p: Point or none = none\np = Point(1, 2)\nif p is not none { print(look(p))\nprint(take(p)) }");
+        ok("var p: Point or none = none\np = Point(1, 2)\nif p is not none { print(look(p))\nprint(consume(p)) }");
         ok("var xs: list[int] or none = none\nxs = make(2)\nif xs is not none { print(total(xs))\nprint(eat(xs)) }");
         let maybe = "var xs: list[int] or none = make(2)\nlet ys = xs\nprint(xs is none)";
         assert!(error(maybe).contains(GONE));
         shared(maybe);
         // A function type says what each parameter does with a list or
         // an object, as a function does.
-        ok("function f(g: borrow function(Point) -> int) -> int { return g(Point(1, 2)) }\nprint(f(take))");
-        ok("function f(g: borrow function(borrow list[int]) -> int) -> int {\n let xs = make(3)\n return g(xs) + g(xs)\n}\nprint(f(total))");
-        ok("function f(g: borrow function(int) -> list[int]) -> int { return eat(g(2)) }\nprint(f(make))");
-        assert!(error("function f(g: borrow function(list[int]) -> int) -> int {\n let xs = make(3)\n print(g(xs))\n return g(xs)\n}").contains(GONE));
+        ok("function f(g: function(take Point) -> int) -> int { return g(Point(1, 2)) }\nprint(f(consume))");
+        ok("function f(g: function(list[int]) -> int) -> int {\n let xs = make(3)\n return g(xs) + g(xs)\n}\nprint(f(total))");
+        ok("function f(g: function(int) -> list[int]) -> int { return eat(g(2)) }\nprint(f(make))");
+        assert!(error("function f(g: function(take list[int]) -> int) -> int {\n let xs = make(3)\n print(g(xs))\n return g(xs)\n}").contains(GONE));
         assert_eq!(
-            error("function f(g: borrow function(list[int]) -> int) { }\nf(total)"),
-            "`g` of `f` should be function(owned list[int]) -> int, but the parameter `xs` of this function is a borrowed list[int]"
+            error("function f(g: function(take list[int]) -> int) { }\nf(total)"),
+            "`g` of `f` should be function(take list[int]) -> int, but the parameter `xs` of this function \
+             only looks at what it is given (`list[int]`)"
         );
         // Nor as what a type parameter stands for. An item type is fine.
-        ok("function first[T](items: borrow list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
+        ok("function first[T](items: list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
         assert_eq!(
             error("function same[T](x: T) -> T { return x }\nlet xs = same([1, 2])"),
             "`T` would be list[int] here. With no collector a list has one owner, \
@@ -6808,7 +6866,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         );
         assert_eq!(
             error("function same[T](x: T) -> T { return x }\nlet p = same(Point(1, 2))"),
-            "`T` would be Point here. An owned or borrowed value cannot fill a type parameter yet"
+            "`T` would be Point here. A value that has one owner cannot fill a type parameter yet"
         );
     }
 
@@ -6816,8 +6874,8 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     fn with_one_owner_an_enum_value_that_carries_values_has_one() {
         const SHAPE: &str = "enum Shape {\n Dot\n Circle(r: float)\n Path(points: list[int])\n Named(name: str, inner: Shape)\n}\n\
                              enum Color {\n Red\n Green\n}\n\
-                             function area(s: borrow Shape) -> float { return 1.0 }\n\
-                             function eat(s: Shape) -> float { return 2.0 }\n\
+                             function area(s: Shape) -> float { return 1.0 }\n\
+                             function eat(s: take Shape) -> float { return 2.0 }\n\
                              function pick(n: int) -> Shape {\n if n > 0 { return Dot }\n return Circle(1.0)\n}\n";
         let ok = |source: &str| one_owner_ok(&format!("{SHAPE}{source}"));
         let error = |source: &str| one_owner_error(&format!("{SHAPE}{source}"));
@@ -6840,21 +6898,21 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // An enum whose cases carry nothing is a number, and is copied.
         ok("var c = Red\nlet d = c\nc = Green\nprint(c, d, c == d)\nfunction flip() { c = Red }");
         assert_eq!(
-            error("function f(c: borrow Color) { }"),
-            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
-             and this is Color. Pass it as it is"
+            error("function f(c: take Color) { }"),
+            "`take` is for a value that has an owner: a list, an object, a function, an error or an enum value \
+             that carries values. This is Color, which is copied. Write the type alone"
         );
 
         // `match` looks. A number or a text that a case carries is copied
         // out, so the owner is free to change.
         ok("var s = pick(0)\nmatch s {\n case Dot { s = Circle(0.0) }\n case Circle(r) { s = Circle(r + 1.0) }\n case Path(_) { s = Dot }\n case Named(name, _) { s = Named(name, Dot) }\n}\nprint(s)");
-        ok("function sum(s: borrow Shape) -> int {\n match s {\n  case Path(points) { return len(points) }\n  case Named(_, inner) { return sum(inner) }\n  case _ { return 0 }\n }\n}");
+        ok("function sum(s: Shape) -> int {\n match s {\n  case Path(points) { return len(points) }\n  case Named(_, inner) { return sum(inner) }\n  case _ { return 0 }\n }\n}");
         // A part that has one owner stays in the value: its name is a look.
         assert_eq!(
             error("let s = pick(0)\nmatch s {\n case Path(points) { let mine = points }\n case _ { }\n}"),
             "`points` is a look at the value that the `match` is looking at, or at a part of it. \
              Its owner still has it, so it cannot be kept, returned or given away. \
-             Use it here, or lend it to a `borrow` parameter"
+             Use it here, or pass it to a parameter that looks"
         );
         assert_eq!(
             error("var s = pick(0)\nmatch s {\n case Path(points) { s = Dot }\n case _ { }\n}"),
@@ -6865,7 +6923,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             error("let shapes = [Dot, Circle(2.0)]\nlet first = shapes[0]"),
             "this item is an owned Shape, which has one owner: the list. `[ ]` only looks at it. \
-             Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`"
+             Use it where it is, pass it to a parameter that looks, or take it out with `pop()`"
         );
     }
 
@@ -6874,9 +6932,9 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         const BAD: &str = "class Bad {\n id: int\n}\n\
                            function risky(n: int) -> int raises Bad {\n if n > 2 { raise Bad(n) }\n return n\n}\n\
                            function parse(text: str) -> int raises ValueError {\n if text == \"\" { raise ValueError(\"empty\") }\n return 1\n}\n\
-                           function look(b: borrow Bad) -> int { return b.id }\n\
-                           function why(e: borrow ValueError) -> str { return e.message }\n\
-                           function take(b: Bad) -> int { return b.id }\n";
+                           function look(b: Bad) -> int { return b.id }\n\
+                           function why(e: ValueError) -> str { return e.message }\n\
+                           function consume(b: take Bad) -> int { return b.id }\n";
         let ok = |source: &str| one_owner_ok(&format!("{BAD}{source}"));
         let error = |source: &str| one_owner_error(&format!("{BAD}{source}"));
         let caught = "try { print(risky(5)) } except Bad as e";
@@ -6884,14 +6942,14 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         // away and raised again.
         ok(&format!("{caught} {{ print(e.id, look(e), e) }}"));
         ok(&format!("{caught} {{ let again = e\nprint(again.id) }}"));
-        ok(&format!("{caught} {{ print(take(e)) }}"));
+        ok(&format!("{caught} {{ print(consume(e)) }}"));
         ok(&format!("var last: Bad or none = none\n{caught} {{ last = e }}\nprint(last)"));
         ok(&format!("let seen: list[Bad] = []\n{caught} {{ seen.append(e) }}\nprint(len(seen))"));
         ok(&format!("function again() -> int raises Bad {{\n {caught} {{ raise e }}\n return 0\n}}"));
         ok(&format!("function found() -> Bad or none {{\n {caught} {{ return e }}\n return none\n}}"));
         // Given away is gone, as for any owner.
         assert!(error(&format!("{caught} {{ let again = e\nprint(e.id) }}")).contains(GONE));
-        assert!(error(&format!("{caught} {{ print(take(e))\nraise e }}")).contains(GONE));
+        assert!(error(&format!("{caught} {{ print(consume(e))\nraise e }}")).contains(GONE));
         // An error of a kind Zeno knows has one owner too.
         let fault = "try { print(parse(\"\")) } except ValueError as e";
         ok(&format!("{fault} {{ print(e.message, e.kind, why(e), e) }}"));
@@ -6899,18 +6957,18 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         ok(&format!("let faults: list[ValueError] = []\n{fault} {{ faults.append(e) }}"));
         ok(&format!("function again() -> int raises ValueError {{\n {fault} {{ raise e }}\n return 0\n}}"));
         ok("let ready = ValueError(\"x\")\nprint(ready.message, why(ready))\nlet other = ready\nprint(other)");
-        ok("function fail(e: ValueError) raises ValueError { raise e }");
+        ok("function fail(e: take ValueError) raises ValueError { raise e }");
         ok("try { print(parse(\"\")) } except Error as e { var any: Error or none = none\nany = e\nprint(any) }");
         assert!(error(&format!("{fault} {{ let again = e\nprint(e.message) }}")).contains(GONE));
         assert!(error("let ready = ValueError(\"x\")\nlet other = ready\nprint(ready)").contains(GONE));
         // `raise` takes the error: a look cannot be raised.
         assert_eq!(
-            error("function fail(e: borrow ValueError) raises ValueError { raise e }"),
-            "`e` is only borrowed here, so it cannot be kept, returned or given away. \
-             To keep it, take it as an owned parameter instead"
+            error("function fail(e: ValueError) raises ValueError { raise e }"),
+            "`e` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
         );
         // Where values are shared, an error can be kept like any other.
-        strict_ok(&format!("{BAD}{caught} {{ let again = e\nprint(take(e)) }}"));
+        strict_ok(&format!("{BAD}{caught} {{ let again = e\nprint(consume(e)) }}"));
         strict_ok(&format!("{BAD}{fault} {{ let again = e\nprint(again, e) }}"));
     }
 
@@ -6919,9 +6977,9 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         const ADD: &str = "class Task {\n id: int\n}\n\
                            function double(n: int) -> int { return n * 2 }\n\
                            function make_adder(n: int) -> function(int) -> int {\n return function(x: int) -> int { return x + n }\n}\n\
-                           function apply(f: borrow function(int) -> int, x: int) -> int { return f(x) }\n\
-                           function keep(f: function(int) -> int) -> int { return f(1) }\n\
-                           function send(xs: list[int]) -> int { return len(xs) }\n";
+                           function apply(f: function(int) -> int, x: int) -> int { return f(x) }\n\
+                           function keep(f: take function(int) -> int) -> int { return f(1) }\n\
+                           function send(xs: take list[int]) -> int { return len(xs) }\n";
         let ok = |source: &str| one_owner_ok(&format!("{ADD}{source}"));
         let error = |source: &str| one_owner_error(&format!("{ADD}{source}"));
         let shared = |source: &str| strict_ok(&format!("{ADD}{source}"));
@@ -6945,7 +7003,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             error("let fs: list[function(int) -> int] = [double]\nlet f = fs[0]"),
             "this item is an owned function(int) -> int, which has one owner: the list. `[ ]` only looks at it. \
-             Use it where it is, lend it to a `borrow` parameter, or take it out with `pop()`"
+             Use it where it is, pass it to a parameter that looks, or take it out with `pop()`"
         );
         assert_eq!(
             error("var f = double\nf = make_adder(1)"),
@@ -6965,7 +7023,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(error("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }"), LOOKS);
         assert_eq!(error("let xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), LOOKS);
         assert_eq!(
-            error("function f(xs: borrow list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}"),
+            error("function f(xs: list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}"),
             LOOKS
         );
         // The line that lends it is looking at what it uses.
@@ -6976,7 +7034,7 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         assert_eq!(
             error("let xs = [1, 2]\nprint(send(xs))\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1))"),
             format!("`xs` was given away on line 12 and holds nothing now, and this function uses it. \
-                     Lend it instead (a `borrow` parameter), or use it before it goes")
+                     Use it before it goes, or give it only to what looks: a parameter without `take`")
         );
         // It only looks: it cannot take an item out, or give the value away.
         assert_eq!(
@@ -6986,14 +7044,14 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
         );
         assert_eq!(
             error("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + send(xs) }, 1))"),
-            "`xs` is only borrowed here, so it cannot be kept, returned or given away. \
-             To keep it, take it as an owned parameter instead"
+            "`xs` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
         );
         // A function of the program still cannot reach it.
         assert_eq!(
             error("let xs = [1, 2]\nfunction f() -> int { return apply(function(n: int) -> int { return n + len(xs) }, 1) }"),
             "`xs` holds an owned value, which belongs to the block that declares it. \
-             A function written elsewhere cannot reach it. Lend it to the function through a `borrow` parameter"
+             A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given"
         );
 
         // Nothing is shared, so a `var` of the function around cannot
@@ -7012,30 +7070,62 @@ function total(xs: borrow list[int]) -> int { return len(xs) }
     }
 
     #[test]
-    fn where_owned_and_borrow_can_be_written() {
-        assert_eq!(
-            owned_error("let x: borrow list[int] = [1]"),
-            "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to"
-        );
-        assert_eq!(
-            owned_error("function f() -> borrow Packet { return make() }"),
-            "`borrow` can only be written on a parameter. A borrowed value cannot outlive the call it is lent to"
-        );
+    fn where_owned_and_take_can_be_written() {
+        let only_parameters = "`take` can only be written on a parameter, where it says that the function takes the value over. \
+                               A variable, a field and what a function gives back always own what they hold";
+        assert_eq!(owned_error("let x: take list[int] = [1]"), only_parameters);
+        assert_eq!(owned_error("function f() -> take Packet { return make() }"), only_parameters);
+        assert_eq!(owned_error("owned class Box { inside: take Packet }"), only_parameters);
         assert_eq!(
             owned_error("let x: owned int = 1"),
             "`owned` goes in front of a list type, as in `owned list[int]`, and this is int. A class is made owned where it is declared: `owned class`"
         );
+        // `take` is for what has, or could have, one owner. A number is
+        // copied, and there is one way to write that.
         assert_eq!(
-            owned_error("function f(n: borrow int) { }"),
-            "only a list, an object, a function, an error or an enum value that carries values can be borrowed, \
-             and this is int. Pass it as it is"
+            owned_error("function f(n: take int) { }"),
+            "`take` is for a value that has an owner: a list, an object, a function, an error or an enum value \
+             that carries values. This is int, which is copied. Write the type alone"
         );
+        // On a shared value it changes nothing, so that one program can
+        // be written for both kinds of build.
+        owned_ok("class Point { x: int }\nfunction f(p: take Point, xs: take list[int]) { }\nlet p = Point(1)\nf(p, [1])\nprint(p)");
         assert_eq!(
             owned_error("let x: list[owned list[int]] = []"),
-            "`owned` and `borrow` describe a whole value, so they go at the very front of a type, and not inside `list[ ]` or `or none`"
+            "`owned` and `take` describe a whole value, so they go at the very front of a type, and not inside `list[ ]` or `or none`"
         );
-        // `owned` and `borrow` are ordinary names everywhere else.
-        owned_ok("let owned = 1\nlet borrow = owned + 1\nprint(owned, borrow)");
+    }
+
+    #[test]
+    fn a_plain_parameter_looks_and_take_takes() {
+        const FRAME: &str = "class Frame {\n    id: int\n    bytes: list[int]\n}\n\
+            function size(frame: Frame) -> int { return len(frame.bytes) }\n\
+            function send(frame: take Frame) -> int { return frame.id }\n\
+            let frame = Frame(7, [1, 2])\n";
+        // A parameter that is written with its type alone looks: the
+        // caller still has the value, as often as it likes.
+        one_owner_ok(&format!("{FRAME}print(size(frame))\nprint(size(frame))\nprint(send(frame))"));
+        // `take` takes the value over, and the caller's variable is empty.
+        assert_eq!(
+            one_owner_error(&format!("{FRAME}print(send(frame))\nprint(frame.id)")),
+            "`frame` was given away on line 8 and holds nothing now. Use it before it goes, or give it only to what \
+             looks: a parameter without `take`"
+        );
+        // What only looks cannot keep, and the message names the word.
+        assert_eq!(
+            one_owner_error("class Frame {\n    id: int\n}\nfunction keep(frame: Frame) -> Frame { return frame }"),
+            "`frame` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
+        );
+        // Where values are shared, the same program means the same
+        // thing: `take` on a shared value changes nothing.
+        strict_ok(&format!("{FRAME}print(size(frame))\nprint(send(frame))\nprint(frame.id)"));
+        // The word is for what has an owner. A number is copied.
+        assert_eq!(
+            error("function f(n: take int) -> int { return n }"),
+            "`take` is for a value that has an owner: a list, an object, a function, an error or an enum value that \
+             carries values. This is int, which is copied. Write the type alone"
+        );
     }
 
     #[test]

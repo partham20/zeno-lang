@@ -41,7 +41,7 @@ class Queue {
     }
 
     # Take the oldest byte out. `none` when nothing waits.
-    function take(self) -> u8 or none {
+    function get(self) -> u8 or none {
         if self.count == 0 {
             return none
         }
@@ -78,10 +78,10 @@ function stop() {
 }
 
 # Send everything that waits. The answer is how many bytes went out.
-function flush(queue: borrow Queue) -> int {
+function flush(queue: Queue) -> int {
     var sent = 0
     while true {
-        let byte = queue.take()
+        let byte = queue.get()
         if byte is none {
             return sent
         }

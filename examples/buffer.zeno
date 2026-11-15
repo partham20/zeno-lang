@@ -42,15 +42,15 @@ function capture(channel: int, size: int) -> Frame {
     return Frame(channel, samples)    # `samples` moves into the frame
 }
 
-# `borrow`: this function looks at a list and cannot keep it. Any list
-# will do, owned or shared, and the caller still has it afterwards.
-function average(samples: borrow list[int]) -> int {
+# A parameter looks at what it is given and cannot keep it. Any list
+# will do here, owned or shared, and the caller still has it afterwards.
+function average(samples: owned list[int]) -> int {
     return sum(samples) // len(samples)
 }
 
-# No `borrow` here: `send` takes the frame over. The caller's variable is
-# empty after the call, and the frame is freed when `send` is done with it.
-function send(frame: Frame) -> int raises Overload {
+# `take`: `send` takes the frame over. The caller's variable is empty
+# after the call, and the frame is freed when `send` is done with it.
+function send(frame: take Frame) -> int raises Overload {
     if frame.peak() > 480 {
         raise Overload(frame.channel, frame.peak())
     }
