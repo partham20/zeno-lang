@@ -8051,3 +8051,15 @@ different, from a command that suggested it was.
   `page.rs`.
 - Only Chromium has run it.
 - A compiled page, small and fast (14.1).
+
+### 14.15 This is version 0.2
+
+`Cargo.toml` says 0.2.0 from the commit that brought the `web` module
+into `main`, which was the first commit after 0.1.0 was published.
+
+**Why 0.2 and not 0.1.1.** It adds a module, a type and a build. A
+third number is for a mend, and nothing here mends anything.
+
+**Why not 1.0.** Nothing that ran under 0.1 changes, so nothing was
+learnt about whether the language holds up. 1.0 should mean that
+programs written by somebody else have been through it.

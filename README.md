@@ -95,7 +95,7 @@ piece of the compiler:
 | Microcontrollers and firmware | Compile to C, no heap required |
 | Command-line tools, desktop, servers | Native code through C or LLVM |
 | Calling existing C libraries | C interop, in both directions |
-| Web front ends | WebAssembly backend |
+| Web front ends | Zeno itself built for WebAssembly, and the `web` module (`zeno build --web`) |
 | Web back ends, networking | `async` / `await` and a standard library |
 | Data and numerics | Fast arrays and operator overloading |
 | Mobile apps, games | Native code plus platform bindings |
@@ -108,24 +108,25 @@ machine, on the
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.1.0-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.1.0-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.1.0-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.1.0-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.1.0-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.1.0-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.1.0-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.1.0-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.1.0-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.1.0-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.2.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.2.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.2.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.2.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.2.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.2.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.2.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.2.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.2.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.2.0-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
-`PATH`. It is one file and needs nothing else installed.
+`PATH`. It is one file and needs nothing else installed. To build web
+pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.1.0-linux-x86_64.tar.gz
-cd zeno-0.1.0-linux-x86_64
-./zeno --version                 # zeno 0.1.0
+tar -xzf zeno-0.2.0-linux-x86_64.tar.gz
+cd zeno-0.2.0-linux-x86_64
+./zeno --version                 # zeno 0.2.0
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
@@ -140,16 +141,19 @@ Everything else needs nothing.
 
 Or build it from this source, which needs only
 [Rust](https://rustup.rs): `cargo build --release` puts `zeno` in
-`target/release/`. How a release is made, and what is checked before
+`target/release/`. For web pages, `cargo build --release --target
+wasm32-unknown-unknown` builds `zeno.wasm` as well
+([`docs/web.md`](docs/web.md)). How a release is made, and what is checked before
 one goes out, is in [`docs/release.md`](docs/release.md).
 
 ## Status
 
-**Zeno is at version 0.1.** The language is complete as it was set out:
-everything on the roadmap below is done, and every decision that was
-once marked provisional has been read again and settled
+**Zeno is at version 0.2.** The language is complete as it was set out
+for 0.1: everything on the roadmap below is done, and every decision
+that was once marked provisional has been read again and settled
 ([`docs/version-0.1.md`](docs/version-0.1.md), which also lists what
-0.1 leaves out).
+0.1 leaves out). Version 0.2 adds one thing, a program in a web page
+([`docs/web.md`](docs/web.md)), and changes nothing that ran before.
 
 Zeno checks and runs programs, and compiles nearly all of the language to C:
 numbers, strings, functions, control flow, classes, lists, enums and `match`,
@@ -491,7 +495,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     Zeno makes is written with `/`. Every test of Zeno passes on
     Windows, tried there by a small workflow for one machine.
     See [`docs/release.md`](docs/release.md))
-23. A program in a web page (done, for the release after 0.1.0:
+23. A program in a web page (done, and what version 0.2 is:
     `import web` gives a program the elements of a page, their text
     and classes, clicks, keys and timers. `zeno build --web` writes
     one `.html` file that a browser opens, with the program and Zeno

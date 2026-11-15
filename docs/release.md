@@ -32,7 +32,7 @@ Windows), this README, the `docs`, the `examples` and the `editors`
 folder. `zeno` is one file that needs nothing else installed: put it
 anywhere on the `PATH` and it works.
 
-From the release after 0.1.0 the folder also has `zeno.wasm`, which is
+From 0.2.0 on the folder also has `zeno.wasm`, which is
 Zeno built for a browser. `zeno build --web` writes it into the page
 it makes ([`web.md`](web.md)), and looks for it beside `zeno`, so the
 two are moved together. Nothing else needs it.
