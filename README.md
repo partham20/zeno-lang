@@ -64,6 +64,7 @@ Samples, none of them final:
 - [`examples/labels.zeno`](examples/labels.zeno): text that is built and kept, in a build with no collector.
 - [`examples/words.zeno`](examples/words.zeno): a line split into words, with lists that nobody keeps and the statement frees.
 - [`examples/scheduler.zeno`](examples/scheduler.zeno): tasks in a list, with no collector and not one `owned`: each list frees its items.
+- [`examples/commands.zeno`](examples/commands.zeno): commands read from text, as an enum whose cases carry values, with no collector. A line that is no command is `none`.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -103,7 +104,9 @@ values that every caller tests ([`docs/firmware.md`](docs/firmware.md)).
 collector out of the C altogether
 ([`docs/no-collector.md`](docs/no-collector.md)). In that build every
 list and object has one owner, whoever received it, with no word to
-write ([`docs/one-owner.md`](docs/one-owner.md)). Such a program does
+write ([`docs/one-owner.md`](docs/one-owner.md)), and so has an enum
+value that carries something and a value that may be `none`
+([`docs/enums-and-none.md`](docs/enums-and-none.md)). Such a program does
 not use the heap either: its lists and objects live in a pool of a
 fixed size that is part of the program ([`docs/pool.md`](docs/pool.md)).
 Text that such a program keeps is a copy that its keeper frees
@@ -141,6 +144,7 @@ cargo run -- build --no-collector --memory examples/buffer.zeno  # no garbage co
 cargo run -- build --no-collector --memory examples/labels.zeno  # text that is kept, with no collector: every copy is freed
 cargo run -- build --no-collector --memory examples/words.zeno   # split, map, filter and + with no collector: each statement frees what it made
 cargo run -- build --no-collector --memory examples/scheduler.zeno  # lists of objects with no collector and no `owned`: each list frees its items
+cargo run -- build --no-collector --memory examples/commands.zeno   # enum cases that carry values, and values that may be none, with no collector
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
@@ -178,7 +182,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/firmware.md`](docs/firmware.md), [`docs/ownership.md`](docs/ownership.md),
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/pool.md`](docs/pool.md),
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
-  [`docs/one-owner.md`](docs/one-owner.md),
+  [`docs/one-owner.md`](docs/one-owner.md), [`docs/enums-and-none.md`](docs/enums-and-none.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -230,8 +234,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       statement that made them, which frees them when it is over.
       Done: plain lists and classes have one owner without the word
       `owned`, and a list owns its items, so lists of objects and lists
-      of lists work. Next: enum cases that carry values and values that
-      may be `none`; function values)
+      of lists work. Done: an enum value that carries something has
+      one owner, a list, object or enum value that may be `none` has
+      one owner, and `match` looks at it without taking it. Next:
+      function values that capture, and errors that are kept)
 
 ## Layout
 

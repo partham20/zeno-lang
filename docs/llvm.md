@@ -1549,11 +1549,13 @@ file. In a C build they are in the same file and can be inlined.
 ## What it does not do yet
 
 - **What `--no-collector` refuses in C it refuses here**: function
-  literals, enum cases that carry values, lists of `int or none`
+  literals and lists of `int or none`
   ([`no-collector.md`](no-collector.md), "What is refused"). Lists of
   objects and lists of lists are freed with their items, by functions
   written into the IR when a program needs them (`drop_list`;
-  [`one-owner.md`](one-owner.md)).
+  [`one-owner.md`](one-owner.md)). An enum value that carries something
+  is freed by `drop_enum`, which goes by its tag
+  ([`enums-and-none.md`](enums-and-none.md)).
 - **What the C backend also refuses**: a named function, class or enum
   declared inside a function, a default for a parameter that is not
   a literal, a method used as a value.

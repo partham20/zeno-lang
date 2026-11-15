@@ -330,8 +330,8 @@ report, line for line.
 
 | Refused | Why | When |
 |---|---|---|
-| A list or object inside an `or none`: `var last: Task or none` | taking it out would have to leave a `none` behind | step 4 |
-| An enum case that carries values, a list of `int or none` | each sits in a block of its own | step 4 |
+| ~~A list or object inside an `or none`, an enum case that carries values~~ | both build now: [`enums-and-none.md`](enums-and-none.md) | done in step 4 |
+| A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
 | A function written where a value goes | so does it, with the variables it uses | step 5 |
 | A function type that mentions a list or an object | the type cannot say `borrow` yet | step 5 |
 | An error that is kept or raised again | its `except` frees it | step 5 |
@@ -339,7 +339,7 @@ report, line for line.
 | A method that pops an item or replaces a field that has one owner | `self` is a borrow (rule 1) | noted |
 | A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |
 
-The sixth row is the one a firmware program will meet first: a table of
+The row about the top of the file is the one a firmware program will meet first: a table of
 numbers at the top of the file that several functions read. For now,
 lend it through a `borrow` parameter. A top-level `let` that is never
 given away could be lent to every function without being asked, and
@@ -393,4 +393,5 @@ that is on the list for the audit that follows these five steps.
    never appends, the copy is wasted. Find `open_list_loop` in
    `emit_c.rs` and decide what the checker would have to tell it.
 7. Build `examples/tour.zeno` with `--no-collector` and read what it is
-   refused for. That is step 4.
+   refused for. Which one word, written in one place, makes it build?
+   ([`enums-and-none.md`](enums-and-none.md) is the next page.)

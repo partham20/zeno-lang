@@ -3427,7 +3427,8 @@ order fails it.
 
 ### 5.15j What a no-collector build still refuses *(provisional)*
 
-This replaces the list in 5.9g.
+This replaces the list in 5.9g. *(Step 4 took the first row off it. The
+list as it stands is in 5.16i.)*
 
 - A list or object inside an `or none`, an enum case with values, a
   list of `int or none`. *(Step 4.)*
@@ -3448,3 +3449,184 @@ one `print` that shows two lists is enough for the C and LLVM builds
 to report text-room peaks a byte or more apart. What is printed is the
 same. The fix described there still stands, and the test programs
 still avoid the mix.
+
+### 5.16 With no collector, an enum value that carries something has one owner
+
+`Wait(250)` and `Blink([2, 3, 5])` are kept in a block from the pool,
+as an object is, and whoever receives one owns it and frees it. The
+walkthrough is `docs/enums-and-none.md`.
+
+**Why.** It is 5.15 again, for the last kind of value that was made
+and never freed. One rule for lists, objects and enum values means
+there is nothing new to learn: a programmer who has read
+`docs/one-owner.md` already knows what `let b = a` does to a command.
+*(Principle: unambiguous and intuitive. One rule, not one per kind of
+value.)*
+
+**Turned down: keep the value in place, with no block, like a C tagged
+union passed by value.** It would need no pool at all for a `Wait`. But
+a case may carry a list, which has one owner, so a copy of the value
+would give that list two. Copying would then have to be refused for
+some enums and not others, depending on what the cases carry. List
+slots are 8 bytes, so an enum bigger than that could not sit in a list
+without a second way of storing it. And the two backends would each
+need a second representation of every enum. A block of the case's own
+size (5.16d) costs a `Wait` 16 bytes of pool and keeps one
+representation everywhere.
+
+### 5.16a A case that carries nothing is a fixed value, and a plain enum is copied
+
+There is one `Stop` in a program, placed before it starts. Making it
+takes no memory and freeing it does nothing. An enum in which no case
+carries anything (a `Mode` that is `Idle`, `Busy` or `Halted`) is
+not owned at all: its values are copied like numbers in every build.
+
+**Why.** A state or a mode is the commonest enum in firmware, and
+making every `Idle` cost a block, or making `let b = a` take `a` away
+for a value with nothing in it, would be a surprise with no safety
+bought. **Why the type decides and not the case.** A variable of type
+`Command` has one owner even at a moment when it holds `Stop`. Which
+case a value is at some line is not known when the program is checked,
+and a rule that depended on it could not be read off the page.
+
+### 5.16b What may be `none` can have one owner, in every build
+
+`Command or none`, `Packet or none` and `list[int] or none` are owned
+when the thing inside is. `none` owns nothing. This holds in a build
+with a collector too, when the words are written
+(`owned list[int] or none`, a `Packet or none` of an `owned class`).
+
+**Why now.** The old refusal (`docs/ownership.md` said "taking one
+back out would have to leave a hole") mixed up two things. A *variable* that may be `none` is an ordinary
+owner: it is given away whole, and the checker already knows a
+given-away variable holds nothing. Only a *field* has the hole
+problem, and a field is already protected by the rule that nothing
+moves out of an object. So nothing new was needed, only the refusal
+taken away.
+
+**How it is written down in the checker.** `or none` is always the
+outermost part of the type: an owner is "maybe (owned X)" and a look
+is "maybe (look at X)". So `borrow Packet or none` reads as it is
+written, a look at a packet or at nothing, and `is not none` narrows
+both the same way. **Turned down: an owned "maybe X".** Narrowing would
+then have to rebuild the type from the inside, and a look at it would
+be a third shape.
+
+**Still refused inside a function type and the `[ ]` of a generic**,
+with every other value that has one owner (5.15j).
+
+### 5.16c `match` looks, and a name in a pattern is a copy or a look
+
+`match` never takes anything out of the value it is given. In
+`case Blink(pins)` the name is a look at the list. In `case Wait(ms)`
+and `case Say(text)` the number and the text are copied. `case other`
+is a look at the whole value.
+
+**Why.** Reading a command must not use it up: `cost(command)` and
+then `run(command)` is the ordinary shape. Rust lets a `match` move
+parts out, and then has "partially moved" values that can be used in
+some ways and not others. That is hard to hold in the head, and the
+unambiguity rule is against it. If taking a part out is ever wanted
+it will be a word of its own, not a second meaning of `match`.
+
+**Why text is copied.** Text is copied whenever it is kept (5.9l), so
+this is the existing rule and not a new one. The copy is freed when
+the `case` ends.
+
+### 5.16d While a `case` holds a look, the owner cannot change
+
+If a pattern gave a name to a part that is looked at, then for the
+length of that `case` the owner of the matched value cannot be given
+away, be given a new value, or have items taken out. A `case` with no
+such name is free to do all three.
+
+**Why.** The look points into the owner's block. `state = Stop` would
+free that block under it. This is the loop rule of 5.15e, for the same
+reason, and the checker keeps both in one list (`owned.walked`, with
+`Looking::Loop` or `Looking::Case`), so the messages differ and the
+mechanism does not.
+
+**Why only when there is a look.** A state machine is
+`match state { case Waiting(ms) { state = Running } ... }`. `ms` is a
+number, copied out, and nothing points into the old state. Refusing
+that would make the most natural use of an enum impossible. The
+message for the refused case says what to do: write `_` for a name
+that is not needed.
+
+### 5.16e `borrow` can be written on an enum that carries values, in every build
+
+`function cost(command: borrow Command)`. With a collector it changes
+nothing about memory.
+
+**Why.** The same file has to build with and without a collector
+(5.15a). If `borrow` on an enum were an error with a collector, a
+program written for `--no-collector` would not run under `zeno run`.
+On an enum that carries nothing it is still an error, with a message
+that says to pass the value as it is: there is nothing to lend.
+
+### 5.16f In C, each case takes its own size from the pool
+
+`zeno_new_Command_Wait` asks for `offsetof(z_Command, as) +
+sizeof(as.c1)`, not `sizeof(z_Command)`. This is in every C build.
+
+**Why.** The LLVM backend has always made a struct for each case
+(5.11h), and the two backends must give the same memory report
+(5.11t). And on a small pool it matters: one large case would
+otherwise make every small one pay for it. **The cost.** A value can
+never change its case in place, since its block may be too small for
+another. Zeno has no way to write that, and "a new value takes the
+place of the old one" is the rule everywhere else, so nothing is lost.
+
+### 5.16g Found on the way: a case pattern on a value that may be `none`
+
+`case Stop` and `case Wait(ms)` on a `Command or none` were compiled
+wrongly by both backends, with or without a collector: the first as a
+new name that matches anything, the second refused. The interpreter
+and the VM were right. Both backends now test "is it there" and then
+the tag.
+
+**Why it is written down.** Four engines must agree, and this one
+slipped through because no test matched an enum case against an
+optional subject. `a_case_of_an_enum_matches_a_value_that_may_be_none`
+does now.
+
+### 5.16h `list[int or none]` stays refused with no collector *(provisional)*
+
+A number that may be `none` is kept in a small block of its own when
+it sits in a list (5.11i). Giving those blocks an owner would mean a
+deep copy in every place a list is copied, as text needed (5.9x).
+
+**Why not now.** There is a way to write it today that costs less and
+says more: an enum `Reading` with a `Missing` case and a
+`Value(n: int)` case, and a `list[Reading]`. `Missing` takes no memory and the list owns each
+`Value`. The compiler's message says so. The right fix is to keep the
+pair in the slot without a block, which touches the slot's size, and
+is for later. *(Keep whatever works.)*
+
+### 5.16i What a no-collector build still refuses *(provisional)*
+
+This replaces the list in 5.15j.
+
+- A function written where a value goes, a function type that mentions
+  a list or an object, an error that is kept or raised again.
+  *(Step 5.)*
+- A value that has one owner inside a function type or as what a type
+  parameter stands for.
+- `list[int or none]` (5.16h).
+
+**For the audit that follows these steps**, all of them about what is
+intuitive rather than what is safe:
+
+- A function cannot use a list or object declared at the top of the
+  file (5.15j). A top-level `let` that is never given away could be
+  lent to every function without being passed.
+- A method cannot take out what its object owns, because `self` is a
+  borrow (5.15e). `machine.waiting.pop()` has to be written outside
+  the class today.
+- A plain parameter takes and `borrow` looks (5.15b). Most functions
+  only look, so most parameters carry the word. `examples/tour.zeno`
+  and `examples/shapes.zeno` do not build with no collector for want
+  of it. Whether looking should be the plain form is a question about
+  the direction of the language, and is the owner's to answer.
+- After `case none`, a later `case name` still has the type
+  `T or none`. The checker could narrow it.

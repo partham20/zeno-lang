@@ -115,9 +115,11 @@ that is given a new value frees the old one at that line.
 **6. Owned may hold shared. Shared may not hold owned.** A shared list can
 be reached from many places. If it held an owned value, each of those
 places would think the value was still there after its owner had freed it.
-So a shared list, an `or none`, an enum case and an ordinary class cannot
-hold an owned value. An owned class can, and so can an owned list: it owns
-its items and frees them with itself ([`one-owner.md`](one-owner.md)).
+So a shared list and an ordinary class cannot hold an owned value. An
+owned class can, and so can an owned list: it owns its items and frees
+them with itself ([`one-owner.md`](one-owner.md)). An `or none` can too:
+`var last: Packet or none` owns a packet or nothing
+([`enums-and-none.md`](enums-and-none.md)).
 
 That is the whole of it. There are no lifetimes to write and no `&`.
 
@@ -376,10 +378,12 @@ Each of these would need a rule the simple checker does not have. They are
 errors today, with a message that says so, and can be allowed later without
 breaking any program that works now.
 
-- **An owned value inside an `or none`, an enum case or a function
-  type.** Taking one back out would have to leave a hole. (An owned list
-  can hold owned values: `pop()` takes one out and leaves no hole. See
-  [`one-owner.md`](one-owner.md).)
+- **An owned value inside a function type, or inside an enum case in a
+  build with a collector.** (An owned list can hold owned values, and so
+  can an `or none`: see [`one-owner.md`](one-owner.md) and
+  [`enums-and-none.md`](enums-and-none.md). With no collector an enum
+  case can hold them as well, because there the enum value itself has
+  one owner.)
 - **Moving a field out of an object** (`let d = packet.data`). Same reason.
 - **Replacing an owned field through a borrow**, which includes `self` in a
   method. Somebody else may have been lent the old value at that moment.
@@ -443,6 +447,7 @@ breaking any program that works now.
 7. `for x in items` copies the list. For an owned list that nobody else can
    change during the loop, is the copy needed? What would the checker have
    to know to leave it out?
-8. Allow an owned value inside an `or none`. Start with `let p: Packet or
-   none = none`: what should `let q = p` mean, and what does `p` hold
-   afterwards?
+8. An owned value can sit inside an `or none`
+   ([`enums-and-none.md`](enums-and-none.md)). With
+   `let p: Packet or none = none`, what does `let q = p` mean, and what
+   does `p` hold afterwards? Try it, then read that page.

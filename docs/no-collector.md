@@ -69,6 +69,7 @@ each has such a line.
 | What | Where it lives | When it is given back |
 |---|---|---|
 | An owned list or object | the pool, a fixed array | when its owner's block ends |
+| An enum value that carries something (`Wait(250)`) | the pool | when its owner's block ends ([`enums-and-none.md`](enums-and-none.md)) |
 | A list or object that is made and given to nobody | the pool | when the statement that made it is over |
 | Text built while the program runs | the text room, a fixed array | when the statement that built it is over |
 | Text that is kept | the pool | when the variable, field or list that keeps it is done with it |
@@ -246,18 +247,19 @@ line and says what to write instead where there is something.
 
 | Refused | Why |
 |---|---|
-| A list or object used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
-| A list or object inside an `or none` | taking it out would leave a hole |
+| A list, object or enum value used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
 | An error that is kept, given away, or raised again | its `except` frees it |
 | An error made anywhere but in `raise` | no `except` would free it |
-| An enum case that carries values | it sits in a block of its own |
-| A function written where a value goes | so does it, with the variables it uses |
-| A list of `int or none` | each item sits in a block of its own |
+| A function written where a value goes | it sits in a block of its own, with the variables it uses |
+| A list of `int or none` | each item sits in a block of its own. Use an enum with a case for the missing value |
 
-Six things you might expect on this list are not. A plain list or
+Eight things you might expect on this list are not. A plain list or
 object is fine: whoever receives it owns it. A list of objects or of
 lists is fine: the list owns its items
-([`one-owner.md`](one-owner.md)). A named function
+([`one-owner.md`](one-owner.md)). An enum case that carries values is
+fine: the value has one owner, like an object. A list, an object or an
+enum value that may be `none` is fine: `none` owns nothing
+([`enums-and-none.md`](enums-and-none.md)). A named function
 used as a value (`items.reduce(add, 0)`) is fine: it takes no memory.
 Text that is kept is fine: the keeper has a copy
 ([`text.md`](text.md)). A list that is made and only looked at is fine,
@@ -267,9 +269,9 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 `for ch in text`): the loop frees it. Both are in
 [`temporaries.md`](temporaries.md).
 
-Most of these are provisional. An enum value and a function value
-could be owned by whoever receives them, as lists and objects now are.
-Those are the next steps.
+Most of these are provisional. A function value could be owned by
+whoever receives it, as lists, objects and enum values now are. That
+is the next step.
 
 ## What this does not claim
 
