@@ -71,7 +71,15 @@ pub struct Loaded {
 /// `source`. `read` gives the text of another file, or `None` if there is
 /// no such file. (The tests hand in files that exist only in memory.)
 pub fn load(path: &str, source: String, read: &dyn Fn(&str) -> Option<String>) -> Loaded {
-    let root = tidy(Path::new(path).parent().unwrap_or(Path::new("")));
+    load_in(Path::new(path).parent().unwrap_or(Path::new("")), path, source, read)
+}
+
+/// The same, for a file that is not the one its program starts in:
+/// `folder` is the program's folder, which `load` takes to be the
+/// folder of the file. The language server checks whichever file is
+/// open in the editor, and that may be one in a folder below.
+pub fn load_in(folder: &Path, path: &str, source: String, read: &dyn Fn(&str) -> Option<String>) -> Loaded {
+    let root = tidy(folder);
     let mut loader = Loader {
         read,
         packages: vec![Package { name: String::new(), folder: root, needs: HashMap::new() }],

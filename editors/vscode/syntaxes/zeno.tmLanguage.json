@@ -1,0 +1,140 @@
+{
+  "name": "Zeno",
+  "scopeName": "source.zeno",
+  "fileTypes": ["zeno"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#formatted" },
+    { "include": "#text" },
+    { "include": "#number" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#constant" },
+    { "include": "#type" },
+    { "include": "#call" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.zeno",
+      "match": "#.*$"
+    },
+    "escape": {
+      "name": "constant.character.escape.zeno",
+      "match": "\\\\[ntr0\\\\\"']"
+    },
+    "formatted": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.formatted.zeno",
+          "begin": "\\bf\"",
+          "end": "\"|$",
+          "patterns": [{ "include": "#escape" }, { "include": "#placeholder" }]
+        },
+        {
+          "name": "string.quoted.single.formatted.zeno",
+          "begin": "\\bf'",
+          "end": "'|$",
+          "patterns": [{ "include": "#escape" }, { "include": "#placeholder" }]
+        }
+      ]
+    },
+    "placeholder": {
+      "name": "meta.embedded.line.zeno",
+      "begin": "\\{",
+      "end": "\\}|$",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.zeno" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.zeno" } },
+      "patterns": [
+        { "include": "#number" },
+        { "include": "#keyword" },
+        { "include": "#constant" },
+        { "include": "#call" },
+        { "include": "#operator" }
+      ]
+    },
+    "text": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.zeno",
+          "begin": "\"",
+          "end": "\"|$",
+          "patterns": [{ "include": "#escape" }]
+        },
+        {
+          "name": "string.quoted.single.zeno",
+          "begin": "'",
+          "end": "'|$",
+          "patterns": [{ "include": "#escape" }]
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.hex.zeno", "match": "\\b0[xX][0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.binary.zeno", "match": "\\b0[bB][01_]+\\b" },
+        { "name": "constant.numeric.octal.zeno", "match": "\\b0[oO][0-7_]+\\b" },
+        { "name": "constant.numeric.zeno", "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?" }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.zeno" },
+            "2": { "name": "entity.name.function.zeno" }
+          }
+        },
+        {
+          "match": "\\b(class|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.zeno" },
+            "2": { "name": "entity.name.type.zeno" }
+          }
+        },
+        {
+          "match": "\\b(import|from)\\s+([A-Za-z_][A-Za-z0-9_.]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.zeno" },
+            "2": { "name": "entity.name.namespace.zeno" }
+          }
+        },
+        { "name": "storage.type.zeno", "match": "\\b(let|var|const|function|class|enum)\\b" },
+        { "name": "storage.modifier.zeno", "match": "\\b(owned|take|strict|unsafe)\\b" }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.zeno",
+          "match": "\\b(if|else|for|in|while|break|continue|match|case|try|except|raise|raises|return|import|from|as)\\b"
+        },
+        { "name": "keyword.operator.word.zeno", "match": "\\b(and|or|not|is)\\b" }
+      ]
+    },
+    "constant": {
+      "patterns": [
+        { "name": "constant.language.zeno", "match": "\\b(true|false|none)\\b" },
+        { "name": "variable.language.self.zeno", "match": "\\bself\\b" }
+      ]
+    },
+    "type": {
+      "patterns": [
+        {
+          "name": "support.type.zeno",
+          "match": "\\b(int|float|bool|str|list|dict|pointer|u8|u16|u32|i8|i16|i32)\\b"
+        },
+        { "name": "entity.name.type.zeno", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "call": {
+      "name": "entity.name.function.call.zeno",
+      "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\()"
+    },
+    "operator": {
+      "name": "keyword.operator.zeno",
+      "match": "->|\\*\\*|//|<<=|>>=|<<|>>|==|!=|<=|>=|[-+*/&|^]=|[-+*/%&|^~<>=]"
+    }
+  }
+}

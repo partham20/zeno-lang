@@ -19,8 +19,10 @@ mod emit_llvm;
 mod error;
 mod format;
 mod interpreter;
+mod json;
 mod ints;
 mod lexer;
+mod lsp;
 mod modules;
 mod ops;
 mod package;
@@ -55,6 +57,8 @@ fn usage() {
     println!("  zeno format <file.zeno>   lay the file out the way Zeno lays programs");
     println!("                            out. Several files can be named, and a");
     println!("                            folder stands for the files in it");
+    println!("  zeno lsp                  the language server: an editor starts this to");
+    println!("                            show mistakes as you type (docs/lsp.md)");
     println!("  zeno fetch [folder]       get the packages that the program in this");
     println!("                            folder (or in that one) needs, as the");
     println!("                            `needs` lines of its `zeno.package` list them");
@@ -507,6 +511,7 @@ fn main() -> ExitCode {
                 None => ExitCode::FAILURE,
             }
         }
+        Some("lsp") => lsp::run(),
         Some("format") => {
             let check = args.iter().any(|arg| arg == "--check");
             args.retain(|arg| arg != "--check");
