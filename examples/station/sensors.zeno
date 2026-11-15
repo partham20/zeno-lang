@@ -1,9 +1,10 @@
 # The module `sensors`: what a reading is, and whether one can be trusted.
 #
-# Everything declared at the top of this file can be used by a file
-# that imports it: the class, the enum and its cases, the dict and the
-# function. Inside this file they are written as they are declared.
-# Another file writes `sensors.check`, or imports the name with `from`.
+# What is declared at the top of this file can be used by a file that
+# imports it: the class, the enum and its cases, and the function.
+# Inside this file they are written as they are declared. Another file
+# writes `sensors.check`, or imports the name with `from`. The dict is
+# marked `private`, so it is for this file only.
 
 class Reading {
     name: str
@@ -17,8 +18,9 @@ enum Health {
     Suspect(why: str)
 }
 
-# The highest value each sensor can really give.
-let highest = ["temperature": 60.0, "humidity": 100.0, "pressure": 1100.0]
+# The highest value each sensor can really give. Other files ask
+# `check`, and have no use for the table itself.
+private let highest = ["temperature": 60.0, "humidity": 100.0, "pressure": 1100.0]
 
 function check(reading: Reading) -> Health {
     if reading.name not in highest {

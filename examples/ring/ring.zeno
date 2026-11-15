@@ -1,0 +1,62 @@
+# The module `ring`: a queue of bytes that never grows.
+#
+# A ring keeps its bytes in a list of a fixed size and goes round it:
+# after the last slot comes the first again. An interrupt that receives
+# bytes and a main loop that reads them share one of these on almost
+# every board.
+#
+# `private` in front of a declaration keeps it to this file. Another
+# file can call `put`, `get`, `size` and `room`. It cannot touch
+# `slots`, `first` or `count`, so it cannot make a ring whose count
+# says one thing and whose slots say another.
+
+class Ring {
+    private slots: list[int]
+    private first: int       # the slot the oldest byte is in
+    private count: int       # how many bytes are waiting
+
+    # Put a byte in. False if the ring is full: the byte is not kept.
+    function put(self, byte: int) -> bool {
+        if self.count == len(self.slots) {
+            return false
+        }
+        self.slots[self.slot(self.count)] = byte
+        self.count += 1
+        return true
+    }
+
+    # Take the oldest byte out, or `none` if nothing is waiting.
+    function get(self) -> int or none {
+        if self.count == 0 {
+            return none
+        }
+        let byte = self.slots[self.first]
+        self.first = self.slot(1)
+        self.count -= 1
+        return byte
+    }
+
+    function size(self) -> int {
+        return self.count
+    }
+
+    function room(self) -> int {
+        return len(self.slots) - self.count
+    }
+
+    # The slot that is `steps` after the oldest byte, going round.
+    private function slot(self, steps: int) -> int {
+        return wrapped(self.first + steps, len(self.slots))
+    }
+}
+
+# Only this file can build a `Ring`, because only this file can fill in
+# its private fields. So it gives the others a function that does.
+function ring(size: int) -> Ring {
+    return Ring([0 for slot in range(size)], 0, 0)
+}
+
+# A function the other files have no use for.
+private function wrapped(place: int, size: int) -> int {
+    return place % size
+}

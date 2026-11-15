@@ -10579,6 +10579,9 @@ function ratio(a: int, b: int) -> int {
             include_str!("../examples/station/drivers/uart.zeno"),
         ];
         no_collector_as_interpreter("station", &station.concat());
+        // A module that keeps its insides to itself with `private`.
+        let ring = [include_str!("../examples/ring/main.zeno"), "==> ring.zeno\n", include_str!("../examples/ring/ring.zeno")];
+        no_collector_as_interpreter("ring", &ring.concat());
         // A program that needs a package: its own files, its
         // `zeno.package`, and the package in the folder beside it.
         let filters = [

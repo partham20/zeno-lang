@@ -1,0 +1,37 @@
+# What `private` is for: a module that keeps its insides to itself.
+#
+#     zeno run examples/ring/main.zeno
+#
+# `ring.zeno` declares a queue of a fixed size. This file uses it
+# through the four functions the module lets it see.
+import ring
+
+let queue = ring.ring(4)
+
+for byte in [10, 20, 30, 40, 50] {
+    if not queue.put(byte) {
+        print(f"no room for {byte}")
+    }
+}
+print(f"{queue.size()} waiting, room for {queue.room()}")
+
+# Two come out, and two more fit in: the ring goes round.
+print(queue.get())
+print(queue.get())
+queue.put(60)
+queue.put(70)
+
+var next = queue.get()
+while next is not none {
+    print(next)
+    next = queue.get()
+}
+print(f"{queue.size()} waiting, room for {queue.room()}")
+
+# Each of these lines is refused by `zeno check`, with a message that
+# says the name is private:
+#
+#     queue.count = 0
+#     print(queue.slots)
+#     let mine = ring.Ring([1, 2], 0, 2)
+#     print(ring.wrapped(5, 4))

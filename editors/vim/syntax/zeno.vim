@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 syntax keyword zenoDeclare let var const function class enum
-syntax keyword zenoModifier owned take strict unsafe
+syntax keyword zenoModifier owned take strict unsafe private
 syntax keyword zenoControl if else for in while break continue match case
 syntax keyword zenoControl try except raise raises return import from as
 syntax keyword zenoWord and or not is

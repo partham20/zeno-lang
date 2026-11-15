@@ -101,7 +101,7 @@
           }
         },
         { "name": "storage.type.zeno", "match": "\\b(let|var|const|function|class|enum)\\b" },
-        { "name": "storage.modifier.zeno", "match": "\\b(owned|take|strict|unsafe)\\b" }
+        { "name": "storage.modifier.zeno", "match": "\\b(owned|take|strict|unsafe|private)\\b" }
       ]
     },
     "keyword": {
