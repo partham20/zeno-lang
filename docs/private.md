@@ -36,7 +36,10 @@ class Ring {
     }
 }
 
-function ring(size: int) -> Ring {
+function ring(size: int) -> Ring raises ValueError {
+    if size < 1 {
+        raise ValueError("a ring has room for one byte at least")
+    }
     return Ring([0 for slot in range(size)], 0, 0)
 }
 

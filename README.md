@@ -75,7 +75,7 @@ Samples, none of them final:
 - [`examples/channels.zeno`](examples/channels.zeno): a dict that holds lists and objects. The readings of each channel are a list under its name, and `for channel, values in readings` is given each key and what is under it.
 - [`examples/station`](examples/station/main.zeno): one program in four files. A weather station whose sensors, report and serial port are each a module that `main.zeno` imports.
 - [`examples/thermostat`](examples/thermostat/main.zeno): a program that needs a package. Its `zeno.package` says `needs filters in "../filters"`, and [`examples/filters`](examples/filters/main.zeno) is that package: a folder of modules with a `zeno.package` of its own.
-- [`examples/ring`](examples/ring/main.zeno): a module that keeps its insides to itself. A queue of a fixed size whose slots and count are `private`, so that only `ring.zeno` can change them.
+- [`examples/ring`](examples/ring/main.zeno): a module that keeps its insides to itself. A queue of a fixed size whose slots and count are `private`, so that only `ring.zeno` can change them. The module has its tests at the end of its file: `zeno test examples/ring` runs them.
 - [`examples/ports.zeno`](examples/ports.zeno): an `interface`. A UART and a log in memory are both a `Port`, and the code that sends a report takes either.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
@@ -177,6 +177,7 @@ cargo run -- run examples/ring/main.zeno        # a module with `private` fields
 cargo run -- run examples/ports.zeno            # an interface: `class Uart is Port`, and a list of ports
 cargo run -- run examples/channels.zeno         # a dict of lists and of objects, and `for key, value in ...`
 cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
+cargo run -- test examples/ring                 # run the tests written in the files of a folder: `test "name" { assert ... }`
 cargo run -- format --check examples            # is every example laid out the way `zeno format` lays programs out?
 python3 editors/talk.py target/debug/zeno examples/shapes.zeno  # play the editor's part to `zeno lsp`, and print both sides
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
@@ -227,6 +228,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
+  [`docs/testing.md`](docs/testing.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -373,6 +375,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       collector a dict still holds plain values only.
       See [`docs/dict.md`](docs/dict.md))
     - `zeno test`: the tests of a Zeno program, written in Zeno
+      (done: `test "what it checks" { ... }` at the top of a file,
+      with `assert total == 6` and `assert raises ValueError { ... }`
+      inside. A failed `assert` shows what was on each side. `zeno
+      test` runs the tests of a file or of every file in a folder,
+      `zeno run` goes past them, and a build leaves them out.
+      See [`docs/testing.md`](docs/testing.md))
     - `zeno new`: a new program or package in one command
     - The gaps programs have run into: `+=` on a sized number, and a
       number of decimals for a quantity (`f"{angle:.1f}"`)

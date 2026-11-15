@@ -6101,6 +6101,11 @@ way to write it and nothing to work out. A list of circles is not
 quietly a list of shapes (10.7), and nothing is cast: a list that is
 written out is told by the place it goes what it is a list of.
 
+A test is a block with a name, and `assert` says what must be so
+(10.16, 10.17). There is one way to write each, a failure shows the
+two values that were compared, and no test runs by surprise: `zeno
+run` and a build go past them.
+
 A dict holds what a list holds (10.11), so there is one answer to
 "what can I keep in a collection" and not two. The one thing it does
 not hold is `none`, because `get` already means something by it. A
@@ -6202,7 +6207,10 @@ are the ones another file can use.
 
 ```zeno
 # ring.zeno
-function ring(size: int) -> Ring {
+function ring(size: int) -> Ring raises ValueError {
+    if size < 1 {
+        raise ValueError("a ring has room for one byte at least")
+    }
     return Ring([0 for slot in range(size)], 0, 0)
 }
 
@@ -6670,3 +6678,174 @@ backend does it: every value first, and then the text of each, as
 written. Numbers alone stay inside the call, since their text takes
 no room while it is made. What is printed never differed, and does
 not change.
+
+### 10.16 A test is `test "what it checks" { ... }`, at the top of a file
+
+```zeno
+test "a full ring keeps what it has" {
+    let queue = ring(2)
+    assert queue.put(1)
+    assert queue.put(2)
+    assert not queue.put(3)
+}
+```
+
+A block with a name. The name is plain text in quotes, so it can say
+what is checked in ordinary words, and it is what a failure is
+reported under. Two tests of one file cannot have the same name.
+
+**Where.** At the top of a file, and in any file. A test that stands
+in the file it tests sees what is private to that file (10.1), which
+is where the things worth testing usually are. A file of tests alone
+(`ring_test.zeno`, which imports `ring`) is the same thing with
+nothing else in it.
+
+**What a test is to the rest.** A block of its own: what it declares
+is gone when it ends. An error that leaves it fails that test, so a
+test needs no `try` around what should work. It is checked with the
+program, by `zeno check` and `zeno run`, so a test cannot go stale
+unseen. It is run only by `zeno test`.
+
+**`test` is not a reserved word.** `test "` at the start of a
+statement can be nothing else, since a name followed by text means
+nothing in Zeno. Everywhere else `test` is a name, and programs use
+it as one: `examples/generics.zeno` has a parameter called `test`.
+`owned`, `take` and `strict` are reserved (5.19c) because each stands
+where a name could, and here no name could.
+
+**Turned down.**
+- Functions whose names begin with `test_`, as in Python and Go: a
+  name that changes what a function is for is a rule nobody can see
+  in the program, and names with spaces say more.
+- A mark above a function, `@test`: Zeno has no marks, and one kind
+  of them for one use is a new piece of syntax to learn.
+- Tests only in files of their own: then nothing private could be
+  tested, or `private` would need an exception for test files.
+- Reserving `test`: it takes a common name away and settles nothing.
+
+### 10.17 `assert` says what must be so, and a failure shows both sides
+
+```
+FAILED: a push is counted
+error: this is false. The left of `==` is 1, and the right is 2
+  --> ring.zeno:33:12
+   |
+33 |     assert length(r) == 2
+   |            ^
+```
+
+`assert` and a condition. If the condition is a comparison (`==`,
+`!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `is`, `is not`), a
+failure says what was on each side, shown as `print` would show it
+inside a list, so that text has its quotes.
+
+**Why one statement.** Other languages grow a family: `assert_eq`,
+`assert_ne`, `assertTrue`, `assertIn`. Each exists so that a failure
+can show the values. The interpreter has the comparison in front of
+it, so it can show them for the plain `assert`, and there is one
+thing to learn.
+
+**A failed `assert` ends its test, and nothing catches it.** It is
+not an error of the program, so `except Error` does not see it. A
+test that expects an error can then be written without care for
+what its own asserts raise.
+
+**Only in a test.** In the program itself, `if` and `raise` say what
+is wrong and to whom, and can be caught. An `assert` that vanishes
+from a build, or that stops a board, would be a second way to report
+a mistake with rules of its own. The word is reserved, so that
+`assert (a or b)` is never read as a call.
+
+**Turned down.** A message after the condition (`assert x > 0,
+"..."`): the test has a name and the failure shows the line and the
+values. It can be added without changing anything here.
+
+### 10.18 `assert raises ValueError { ... }`: the block must raise that
+
+```zeno
+test "a ring of no size is refused" {
+    assert raises ValueError {
+        ring(0)
+    }
+}
+```
+
+The test goes on if the block raises an error of that kind, or of a
+kind that is one (`Error` takes any). It fails if the block raises
+nothing, or raises something else, and says which.
+
+**Why a form of its own.** Fault paths are half of what firmware has
+to get right, so tests for them should be the easy ones to write.
+Without this it is `try`, the call, an `assert false` that says
+nothing when it fails, and an `except`. `raises` is the word a
+function's first line already uses for the same thing.
+
+### 10.19 `zeno test` runs a file and then the tests written in it
+
+```
+$ zeno test examples/ring
+examples/ring/ring.zeno
+  ok      a new ring is empty
+  ok      bytes come out in the order they went in
+  ok      a full ring keeps what it has
+  ok      the ring goes round
+  ok      a ring of no size is refused
+
+5 tests: 5 passed, 0 failed.
+```
+
+`zeno test ring.zeno` runs the file as `zeno run` would, and then
+each test in it, in the order written. `zeno test folder` does that
+for every file in the folder and below it that has a test, and `zeno
+test` alone means the folder it is run in. The command fails (for a
+script or a CI job) if any test failed or any file could not be run.
+
+**Each file is tested as a program of its own.** Its tests start
+from the state the file leaves, and the tests of two files cannot
+disturb each other. A file with no test in it is not run at all, so
+`main.zeno` does not blink its LED because its folder was tested.
+
+**The tests of an imported file are not run** when the file that
+imports it is tested. They are that file's own, and run when it is
+tested. So a test runs once, however many files import its module.
+
+**Where a file's imports are looked for.** In the folder of its
+program: the nearest folder, from the file's own upward, with a
+`zeno.package` or a `main.zeno` in it. That is the rule the language
+server has (9.12), and it is what lets `drivers/uart.zeno` be tested
+with the `import sensors` it has in the real program.
+
+**Tests of one file share what the file declares.** A test that
+changes a variable of the file leaves it changed for the next. That
+is what a `var` at the top of a file is, and a test that needs a
+fresh one makes it inside itself.
+
+**The tests run in `zeno run`'s engine.** The compiler's own tests
+hold every engine and build to the same output, so a second run of
+a program's tests in the VM or in C would test Zeno and not the
+program.
+
+### 10.20 A build leaves the tests out
+
+`zeno build`, with any of its options, takes the tests out before
+the program is checked. They are not in the C, the IR or the
+program, so a board pays nothing for them. And they are not held to
+the rules of the build: a test may share a list, or use a dict of
+lists, in a program that is built with no collector. `zeno check
+--no-collector` checks what that build would build, so it leaves
+them out too. `zeno run` and plain `zeno check` check them.
+
+**Why.** A test is run on the computer where the program is written.
+Asking it to follow the rules of a board would make tests harder to
+write than the code they test, and fewer would be written.
+
+### 10.21 What tests leave out *(provisional)*
+
+- A message on `assert` (10.17).
+- `assert` in a function outside a test. A helper gives back a
+  `bool` and the test asserts it.
+- Lines to run before and after each test. A function that builds
+  what the tests need does that today.
+- Choosing tests by name on the command line, and running them side
+  by side.
+- Running the tests of a compiled program, on a board or in the VM.
