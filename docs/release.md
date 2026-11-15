@@ -143,7 +143,8 @@ because they are different on every machine and most machines that
 build programs have them.
 
 On Windows the C compiler is MinGW's gcc, named with `set CC=gcc`,
-and `zeno build --llvm` does not work yet (decision 12.7 says why).
+and `zeno build --llvm` uses the clang that comes with Visual Studio.
+The program is `hello.exe`, run with `.\hello`.
 
 ## Line ends
 
@@ -180,9 +181,58 @@ mend 32-bit x86, where gcc had the same effect for a different reason.
 it is told not to. It is told not to now (decision 12.6).
 
 Both were found by a test that had always passed, and both were
-mended before the release. A third thing was found and left for the
-next one: `zeno build --llvm` on Windows (decision 12.7). A test only tests
-the machines it is run on.
+mended before the release. A test only tests the machines it is run
+on.
+
+## What Windows found
+
+Of the tests of Zeno itself, 337 of 454 passed the first time they
+were run on Windows. Now all of them do. What was in the way, in the
+order it was found (decisions 12.8 and 12.9):
+
+**Waiting.** `zeno build --llvm` did not work at all. The runtime
+waited with `nanosleep` and read the clock with `clock_gettime`, and
+Microsoft's C library has neither. On Windows it now uses `Sleep` and
+the performance counter:
+
+```c
+#ifdef _WIN32
+static void zeno_board_sleep(double seconds) {
+    fflush(stdout);
+    Sleep((unsigned long)(seconds * 1000.0 + 0.5));
+}
+#else
+    ... nanosleep ...
+#endif
+```
+
+Behind that were three smaller things of the same kind: `setjmp`
+takes a second argument there, the linker does not know `-lm`, and a
+program is called `hello.exe`.
+
+**A path.** Windows writes `drivers\uart.zeno` and takes
+`drivers/uart.zeno` too. Zeno now writes every path it makes with
+`/`, so a message is the same on every system, and so that the file
+an editor has open is the file an `import` finds.
+
+**A word in Tamil.** `program.arguments()` in a compiled program
+gave `?????` for `தமிழ்`, because Windows hands `main` its words in
+an older encoding. The runtime now asks for them the way Windows
+keeps them.
+
+**Line ends, again.** `zeno fetch` got a package with `\r\n` in
+every file, because that is how git is set on Windows. It is told to
+leave them.
+
+## A trial on one machine
+
+Each of those was tried on a real Windows machine before it was kept,
+with `.github/workflows/trial.yml`. On the Actions page choose
+"trial", press "Run workflow" and pick the machine. It builds Zeno,
+runs `tools/release-check.sh`, compiles three examples both ways and
+runs every test, and writes what it found at the top of the run's
+page. It releases nothing, and costs a quarter of what a run of the
+release workflow does, or less.
 
 ## Things to try
 

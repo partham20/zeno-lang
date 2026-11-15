@@ -134,8 +134,8 @@ run.
 
 `zeno build` hands the C it writes to a C compiler, so it needs one:
 `cc`, or the one `CC` names (on Windows, MinGW's gcc with `set
-CC=gcc`). `zeno build --llvm` needs clang, and does not work on
-Windows yet. `zeno fetch` needs git. Everything else needs nothing.
+CC=gcc`). `zeno build --llvm` needs clang. `zeno fetch` needs git.
+Everything else needs nothing.
 
 Or build it from this source, which needs only
 [Rust](https://rustup.rs): `cargo build --release` puts `zeno` in
@@ -475,6 +475,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `None`, `null`, `True` and `elif` each get a message that says
     what Zeno writes.
     See [`docs/found-by-the-book.md`](docs/found-by-the-book.md))
+22. Windows as a whole (done: `zeno build --llvm` works with the clang
+    that comes with Visual Studio. A compiled program waits, reads
+    the clock and takes its arguments the Windows way. Every path
+    Zeno makes is written with `/`. Every test of Zeno passes on
+    Windows, tried there by a small workflow for one machine.
+    See [`docs/release.md`](docs/release.md))
 
 ## Layout
 
@@ -510,5 +516,6 @@ docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs
 tools/release-check.sh        runs a built `zeno` before it is released
 .github/workflows/release.yml builds and releases `zeno` when a tag is pushed
+.github/workflows/trial.yml   tries Zeno on one kind of machine, and releases nothing
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```

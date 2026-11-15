@@ -7483,26 +7483,108 @@ has one layout on every system.
 
 ### 12.7 What Windows does not have yet
 
-`zeno.exe` is checked like every other build, and `zeno build` with
-MinGW's gcc makes programs that print what `zeno run` prints (three
-examples are compared in the release workflow). Four things are
-limits of 0.1:
+`zeno.exe` is checked like every other build, and `zeno build` makes
+programs that print what `zeno run` prints, through C with MinGW's
+gcc and through LLVM with the clang that comes with Visual Studio
+(three examples are compared each way). These are the limits:
 
-- `zeno build --llvm` does not work with the clang that comes with
-  Visual Studio. The runtime sleeps and reads the clock with
-  `nanosleep` and `clock_gettime`, which Linux, macOS and MinGW have
-  and Microsoft's C library does not. It was found by the first
-  release and left for the next one, because a mend that cannot be
-  tried before the release is not one to put in it.
 - `zeno build` needs a C compiler that takes gcc's options.
   Microsoft's own compiler (`cl`) takes different ones and has not
   been tried.
-- A path in a `zeno.package` is text, where `\` starts an escape, so
-  it is written with `/`, which Windows accepts.
-- Of the tests of Zeno itself, about three in four pass on Windows
-  (337 of 454 when it was first tried). Nearly all the
-  others fail in the LLVM build above. Ten compare paths written with
-  `/`: they test the tests' own folders, not what a program does.
+- A path in a Zeno program or a `zeno.package` is text, where `\`
+  starts an escape, so it is written with `/`, which Windows accepts.
+- What a compiled program prints to a Windows console has not been
+  looked at. The bytes are UTF-8, as they are into a file or another
+  program, where they are the same as `zeno run` gives. A console set
+  to an older code page may show a word in Tamil wrongly. No machine
+  at hand has a Windows console to look at, and a mend that cannot be
+  tried is not one to put in.
+
+The first release (0.1.0) had two more, both mended since: 12.8 and
+12.9.
+
+### 12.8 A compiled program on Windows asks Windows
+
+The first trial on Windows found that `zeno build --llvm` did not
+work there. Four things were in the way, and each is a place where C
+on Windows is not C elsewhere.
+
+**Waiting and the clock.** The runtime used `nanosleep` and
+`clock_gettime`. Linux, macOS and MinGW have them. Microsoft's C
+library does not. On Windows the runtime now calls `Sleep` and the
+performance counter, which every C compiler there can reach.
+
+**`setjmp`.** A `try` is built on it. Microsoft's takes a second
+thing, the frame of the calling function, which its `longjmp` uses
+to run clean-up code on the way back. A C compiler adds it unasked,
+because in C `setjmp` is a macro. LLVM IR has no macros, so on
+Windows the IR that Zeno writes passes `null` there, which asks for
+a plain jump, as on every other system.
+
+**`-lm` and `.exe`.** The maths library is part of the C library on
+Windows, and Visual Studio's linker stops when asked for it. And a
+program there is called `hello.exe`, which gcc adds and clang does
+not. Zeno leaves out the first and writes the second.
+
+**Arguments.** `main` is given its words through the machine's code
+page, so a word in Tamil arrived as `?????`. The runtime asks Windows
+for the command line as Windows keeps it and turns each word into
+UTF-8, in a buffer on the stack: a build with no collector has no
+heap on Windows either.
+
+**Why this way.** One runtime, with the Windows calls behind
+`#ifdef _WIN32`, for both compilers. The three functions are declared
+by hand in the runtime and `<windows.h>` is not read: it is very
+large and defines thousands of names, `min` and `max` among them,
+that a program's own names could meet.
+
+**Turned down.** Using MinGW's `nanosleep` where there is one and
+`Sleep` otherwise: two ways to wait on one system, and only one of
+them tried by any given build. Telling people to use MinGW's clang:
+the clang most Windows machines have is the one Visual Studio brings.
+
+**Tried how.** Here, with a Windows compiler and an emulator. Then
+on a Windows machine (12.10), where every test of Zeno now passes.
+
+### 12.9 A path Zeno makes is written with `/`
+
+`import drivers.uart` reads `drivers/uart.zeno`. On Windows that was
+`drivers\uart.zeno`, since Windows puts `\` between the parts of a
+path, and takes `/` as well.
+
+**The decision.** Every path Zeno puts together is written with `/`,
+on every system: in a message, and wherever a path is kept as text
+(`modules::shown`). A path the person typed is shown as they typed
+it.
+
+**Why.** Three things went wrong with two ways. A path in a
+`zeno.package` is written with `/` (12.7), so joined the Windows way
+it came out as `lib/filters\zeno.package`. An editor names a file
+with `/` on every system, so the file it has open and the file an
+`import` asks for were two names for one file, and the editor's text
+was not used. And every message with a path in it had two spellings,
+one of which no test saw. It is the reasoning of 12.6: one way, on
+every system.
+
+**Turned down.** Writing `\` throughout on Windows. It is what
+Windows people are used to, but the `zeno.package` would have to be
+turned round too, and `\` in Zeno text is an escape.
+
+**With it.** `zeno fetch` tells git to leave line ends alone, so a
+fetched package is the same bytes on every machine. Git on Windows is
+usually set to write `\r\n`.
+
+### 12.10 A trial on one machine
+
+`.github/workflows/trial.yml` builds Zeno on one kind of machine,
+chosen when it is started, compiles three examples through C and
+through LLVM, and runs every test. It writes what it found on the
+summary page of the run. Nothing is packed or released.
+
+**Why.** A mend for Windows can only be seen to work on Windows. The
+release workflow shows it too, on ten machines, and a month of
+GitHub's free time is about twenty such runs. A trial on Windows
+costs a quarter of one, and on Linux less.
 
 ---
 
