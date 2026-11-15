@@ -198,11 +198,13 @@ is in keeping the set right as the code branches:
   (nothing has to be saved before the move) and it is rarely what anyone
   meant. Put the look on a line of its own.
 - **An owned value stays in the function whose block holds it.** A function
-  cannot reach an owned variable declared somewhere else, including at the
-  top of the file, and a function written inside another cannot carry one
-  away. Pass it in as a parameter. This is what makes it safe to
-  free the value when the block ends: nothing outside the block ever knew
-  where it was.
+  cannot reach an owned variable declared somewhere else, and a function
+  written inside another cannot carry one away. Pass it in as a
+  parameter. This is what makes it safe to free the value when the block
+  ends: nothing outside the block ever knew where it was. The one
+  exception is a `let` at the top of the file. It is there until the
+  program ends, so every function may look at it, and in return the top
+  of the file may not give it away ([`audit.md`](audit.md)).
 - **An owned value made in the middle of a statement, and only looked
   at, belongs to the statement.** In `print(look(make()))` nobody is
   given what `make()` returns, so the statement frees it when it is

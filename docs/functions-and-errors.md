@@ -232,7 +232,8 @@ see. With no collector, what it may use depends on what the thing is:
 | a `let` text | a copy of the text is kept in the block, and freed with it |
 | a `var` of the function around it | refused |
 | anything at the top of the file that is a number, bool, text or function | used where it is |
-| a list, an object, an error or a function value | looked at, for one line (next section) |
+| a list or an object that a `let` at the top of the file holds | looked at where it is, for as long as the function likes ([`audit.md`](audit.md)) |
+| any other list, object, error or function value | looked at, for one line (next section) |
 
 The `var` is refused because the two functions would share it:
 

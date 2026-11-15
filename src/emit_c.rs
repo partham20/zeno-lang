@@ -8348,7 +8348,7 @@ let x = 7
         // around it.
         one_owner("let f = function(n: int) -> int { return n + x }\nlet g = f\nprint(f(1))", "was given away on line");
         one_owner(
-            "let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))",
+            "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))",
             "so it must be gone before that value is",
         );
         one_owner(
@@ -9241,6 +9241,90 @@ for n in range(5) {
         // stored differently from a number, so each read has to unwrap.
         same_as_interpreter("after-case-none", AFTER_CASE_NONE);
         no_collector_as_interpreter("after-case-none", AFTER_CASE_NONE);
+    }
+
+    /// Tables at the top of the file, which functions, methods and a kept
+    /// function read and change.
+    pub(crate) const TOP_TABLES: &str = r##"# Tables at the top of the file, read by functions.
+class Config {
+    gain: int
+    name: str
+    limits: list[int]
+}
+enum Mode {
+    Idle
+    Run(speed: int)
+}
+let table = [10, 20, 30, 40]
+let config = Config(3, "main", [0, 100])
+let grid = [[1, 2], [3, 4]]
+let mode = Run(7)
+let names = ["a", "bb", "ccc"]
+let spare: Config or none = none
+
+class Channel {
+    id: int
+    function scaled(self, i: int) -> int {
+        return table[i] * config.gain + self.id
+    }
+}
+
+function total() -> int {
+    var sum = 0
+    for value in table { sum += value }
+    for row in grid {
+        for cell in row { sum += cell }
+    }
+    return sum
+}
+
+function in_range(value: int) -> bool {
+    return value >= config.limits[0] and value <= config.limits[1]
+}
+
+function speed() -> int {
+    match mode {
+        case Idle { return 0 }
+        case Run(s) { return s }
+    }
+}
+
+function longest() -> str {
+    var best = ""
+    for name in names {
+        if len(name) > len(best) { best = name }
+    }
+    return best
+}
+
+function tune(by: int) {
+    config.gain += by
+    table[0] = table[0] + by
+    grid[1].append(by)
+}
+
+function has_spare() -> bool { return spare is not none }
+
+function count(xs: list[int]) -> int { return len(xs) }
+
+let pick = function(i: int) -> int { return table[i] + config.gain }
+let channel = Channel(5)
+
+print(total(), in_range(50), in_range(500), speed(), longest(), has_spare())
+print(channel.scaled(2), pick(1))
+tune(2)
+print(total(), channel.scaled(0), pick(0), count(table), count(grid[1]))
+print(table.map(function(v: int) -> int { return v + config.gain }))
+print(table)
+print(config.gain)
+print(grid)
+"##;
+
+    #[test]
+    fn a_let_at_the_top_of_the_file_can_be_read_by_every_function() {
+        // With no collector the top of the file owns each table, and
+        // frees it when the program ends: 0 blocks left.
+        no_collector_as_interpreter("top-tables", TOP_TABLES);
     }
 
     #[test]

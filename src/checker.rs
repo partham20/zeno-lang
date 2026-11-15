@@ -1406,6 +1406,17 @@ struct Checker {
     /// Which owned values have been given away, in the function body being
     /// checked. See the section "Owned values".
     owned: Ownership,
+    /// The `let`s at the top of the file that some function looks at,
+    /// and the line of the first look. Such a value stays where it is
+    /// until the program ends (decision 5.19i).
+    reached: HashMap<usize, usize>,
+    /// The `let`s at the top of the file that are given away, and where.
+    /// No function may look at one of these.
+    given_top: HashMap<usize, usize>,
+    /// Every name the top of the file declares with `let`, `var` or
+    /// `const`, and the line. Only for the message when a name is used
+    /// above its declaration.
+    later: HashMap<String, usize>,
     /// Every generic function and class the pass has met.
     generics: Vec<Rc<Generic>>,
     /// The copies made so far, by the generic and the types: `first` and
@@ -1480,6 +1491,9 @@ impl Checker {
             frames: vec![Frame { declared_return: None, returns: Vec::new(), loops: 0, unsafe_blocks: 0 }],
             raised: vec![Vec::new()],
             owned: Ownership::default(),
+            reached: HashMap::new(),
+            given_top: HashMap::new(),
+            later: HashMap::new(),
             early: Vec::new(),
             generics: Vec::new(),
             copies: HashMap::new(),
@@ -1493,6 +1507,11 @@ impl Checker {
 
     fn run(&mut self, program: &Program) {
         let env = Scope::program(&globals());
+        for statement in &program.statements {
+            if let StmtKind::Let { name, .. } | StmtKind::Const { name, .. } = &statement.kind {
+                self.later.entry(name.clone()).or_insert(statement.span.line);
+            }
+        }
         self.statements(&program.statements, &env);
         self.finish_generics();
     }
@@ -2761,7 +2780,7 @@ impl Checker {
                     self.error(shared(name), span)
                 }
                 (Some(variable), None) if variable.ty.is_owned() && variable.function != env.function => {
-                    self.error(elsewhere(name), span)
+                    self.error(elsewhere(name, false), span)
                 }
                 // A new value frees the old one, items and all, and the
                 // loop is still looking at one of those items.
@@ -3252,6 +3271,26 @@ impl Checker {
         if !variable.ty.is_tied() || variable.case.is_some() {
             return variable.ty;
         }
+        // A `let` at the top of the file holds its value until the
+        // program ends, as long as the top of the file never gives it
+        // away. So any function may look at it, and may be kept while it
+        // does. A `var` could be given a new value while a function is
+        // still looking (decision 5.19i).
+        if outside && variable.top && !variable.mutable {
+            return match self.given_top.get(&variable.id) {
+                Some(line) => self.error(
+                    format!(
+                        "`{name}` is given away on line {line}, so a function cannot use it: the function could \
+                         be called when `{name}` holds nothing. Keep `{name}` where it is, or pass it to the function"
+                    ),
+                    span,
+                ),
+                None => {
+                    self.reached.entry(variable.id).or_insert(span.line);
+                    lent(&variable.ty)
+                }
+            };
+        }
         if outside {
             // A function written where a value goes may look at a value
             // of the function around it. That makes the function a look
@@ -3264,7 +3303,7 @@ impl Checker {
                     }
                     lent(&variable.ty)
                 }
-                None => self.error(elsewhere(name), span),
+                None => self.error(elsewhere(name, variable.top), span),
             };
         }
         if let Some((_, at)) = self.owned.moved.get(&variable.id) {
@@ -3349,6 +3388,16 @@ impl Checker {
                     ),
                     span,
                 );
+            } else if variable.top && !variable.mutable {
+                // A `let` at the top of the file, which every function
+                // may look at.
+                self.error(
+                    format!(
+                        "only the owner can {does}: somebody else may have been lent it. \
+                         Here `{name}` belongs to the top of the file, and a function only looks at it"
+                    ),
+                    span,
+                );
             }
             return None;
         }
@@ -3414,6 +3463,21 @@ impl Checker {
             // this is the function it belongs to.
             if matches!(self.expr(expr, env), Ty::Invalid) {
                 return Ty::Invalid;
+            }
+            // A `let` at the top of the file that a function looks at
+            // stays where it is.
+            if variable.top && !variable.mutable {
+                if let Some(line) = self.reached.get(&variable.id) {
+                    return self.error(
+                        format!(
+                            "`{name}` is used by a function, on line {line}, so it cannot be given away: the function \
+                             could be called when `{name}` holds nothing. Pass `{name}` to that function instead, \
+                             or give away a copy"
+                        ),
+                        expr.span,
+                    );
+                }
+                self.given_top.insert(variable.id, expr.span.line);
             }
             let record = (name.clone(), expr.span);
             for body in &mut self.owned.tries {
@@ -3888,7 +3952,18 @@ impl Checker {
                     // `allocate(bool, 4)`, `bool(1)`: the one type name
                     // that is not also a function that converts to it.
                     None if name == "bool" => self.error("`bool` is a type and not a value, so it cannot be used here", span),
-                    None => self.error(format!("`{name}` is not defined"), span),
+                    None => match self.later.get(name) {
+                        // Declared, but below this line. A name means
+                        // what is above it, in a function too.
+                        Some(line) if *line > span.line => self.error(
+                            format!(
+                                "`{name}` is declared on line {line}, which is further down. A line can use only \
+                                 what is declared above it, also inside a function. Move the declaration of `{name}` up"
+                            ),
+                            span,
+                        ),
+                        _ => self.error(format!("`{name}` is not defined"), span),
+                    },
                 },
             },
 
@@ -4011,7 +4086,7 @@ impl Checker {
                                 }
                             }
                             None => {
-                                self.error(elsewhere(&capture.name), span);
+                                self.error(elsewhere(&capture.name, false), span);
                             }
                         }
                         continue;
@@ -5423,10 +5498,17 @@ fn shared(name: &str) -> String {
 }
 
 /// The error for an owned variable used from another function's body.
-fn elsewhere(name: &str) -> String {
+/// `top` says it is a `var` at the top of the file: a `let` there could
+/// be reached.
+fn elsewhere(name: &str, top: bool) -> String {
+    let instead = match top {
+        true => ". Or declare it with `let`, if it is never given a new value: every function can look at a `let` \
+                 at the top of the file",
+        false => "",
+    };
     format!(
         "`{name}` holds an owned value, which belongs to the block that declares it. \
-         A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given"
+         A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given{instead}"
     )
 }
 
@@ -6578,10 +6660,13 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         let elsewhere = "holds an owned value, which belongs to the block that declares it. \
                          A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given";
         assert_eq!(
-            owned_error("let p = make()\nfunction peek() -> int { return p.id }\nprint(peek())"),
+            owned_error("function outer() -> int {\n let p = make()\n function peek() -> int { return p.id }\n return peek()\n}"),
             format!("`p` {elsewhere}")
         );
         assert_eq!(owned_error("var p = make()\nfunction swap() { p = make() }"), format!("`p` {elsewhere}"));
+        // A `let` at the top of the file is the exception: it is there
+        // until the program ends, so every function may look at it.
+        owned_ok("let p = make()\nfunction peek() -> int { return p.id }\nprint(peek())");
         // A function written where a value goes may look at it, and
         // is then a look itself: it cannot outlive what it looks at.
         assert_eq!(
@@ -7141,36 +7226,39 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ok("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return apply(function(m: int) -> int { return m + len(xs) }, n) }, 1))");
         ok("for t in [Task(1), Task(2)] { print(apply(function(n: int) -> int { return n + t.id }, 1)) }");
         ok("let add = make_adder(1)\nprint(apply(function(n: int) -> int { return add(n) }, 1), add(2))");
-        assert_eq!(error("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }"), LOOKS);
-        assert_eq!(error("let xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), LOOKS);
+        assert_eq!(error("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }"), LOOKS);
+        assert_eq!(error("var xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), LOOKS);
+        // Unless what it looks at is a `let` at the top of the file,
+        // which is there until the program ends.
+        ok("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(keep(f))");
         assert_eq!(
             error("function f(xs: list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}"),
             LOOKS
         );
         // The line that lends it is looking at what it uses.
         assert_eq!(
-            error("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, send(xs)))"),
+            error("var xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, send(xs)))"),
             "`xs` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
         );
         assert_eq!(
-            error("let xs = [1, 2]\nprint(send(xs))\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1))"),
+            error("var xs = [1, 2]\nprint(send(xs))\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1))"),
             format!("`xs` was given away on line 12 and holds nothing now, and this function uses it. \
                      Use it before it goes, or give it only to what looks: a parameter without `take`")
         );
         // It only looks: it cannot take an item out, or give the value away.
         assert_eq!(
-            error("let ts = [Task(1)]\nprint(apply(function(n: int) -> int { return n + ts.pop().id }, 1))"),
+            error("var ts = [Task(1)]\nprint(apply(function(n: int) -> int { return n + ts.pop().id }, 1))"),
             "only the owner can take an item out of this list: somebody else may have been lent it. \
              Here `ts` belongs to the function around this one, which is only looked at from here"
         );
         assert_eq!(
-            error("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + send(xs) }, 1))"),
+            error("var xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + send(xs) }, 1))"),
             "`xs` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
              If it is a parameter, write `take` in front of its type to take the value over"
         );
-        // A function of the program still cannot reach it.
+        // A function of the program still cannot reach a `var`.
         assert_eq!(
-            error("let xs = [1, 2]\nfunction f() -> int { return apply(function(n: int) -> int { return n + len(xs) }, 1) }"),
+            error("var xs = [1, 2]\nfunction f() -> int { return apply(function(n: int) -> int { return n + len(xs) }, 1) }"),
             "`xs` holds an owned value, which belongs to the block that declares it. \
              A function written elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given"
         );
@@ -7246,6 +7334,58 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             error("function f(n: take int) -> int { return n }"),
             "`take` is for a value that has an owner: a list, an object, a function, an error or an enum value that \
              carries values. This is int, which is copied. Write the type alone"
+        );
+    }
+
+    #[test]
+    fn every_function_can_look_at_a_let_at_the_top_of_the_file() {
+        const TABLE: &str = "class Task {\n    id: int\n}\nlet table = [10, 20]\nlet tasks = [Task(1)]\n";
+        // The value is there until the program ends, so a function, a
+        // method and a function that is kept may all look at it, and
+        // change what is inside it.
+        one_owner_ok(&format!(
+            "{TABLE}function first() -> int {{ return table[0] + tasks[0].id }}\n\
+             function bump() {{\n    table[0] += 1\n    tasks[0].id = 5\n    tasks.append(Task(2))\n}}\n\
+             let pick = function(i: int) -> int {{ return table[i] }}\n\
+             bump()\nprint(first(), pick(1), len(table))"
+        ));
+        // It stays where it is: it cannot be given away, before or after.
+        assert_eq!(
+            one_owner_error(&format!("{TABLE}function first() -> int {{ return table[0] }}\nlet other = table")),
+            "`table` is used by a function, on line 6, so it cannot be given away: the function could be called \
+             when `table` holds nothing. Pass `table` to that function instead, or give away a copy"
+        );
+        assert_eq!(
+            one_owner_error(&format!("{TABLE}let other = table\nfunction first() -> int {{ return table[0] }}")),
+            "`table` is given away on line 6, so a function cannot use it: the function could be called when \
+             `table` holds nothing. Keep `table` where it is, or pass it to the function"
+        );
+        // A function only looks. The top of the file is the owner.
+        assert_eq!(
+            one_owner_error(&format!("{TABLE}function all() -> list[int] {{ return table }}")),
+            "`table` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
+        );
+        assert_eq!(
+            one_owner_error(&format!("{TABLE}function last() -> Task {{ return tasks.pop() }}")),
+            "only the owner can take an item out of this list: somebody else may have been lent it. \
+             Here `tasks` belongs to the top of the file, and a function only looks at it"
+        );
+        // A `var` could be given a new value while a function looks.
+        assert_eq!(
+            one_owner_error("var table = [1, 2]\nfunction first() -> int { return table[0] }"),
+            "`table` holds an owned value, which belongs to the block that declares it. A function written \
+             elsewhere cannot reach it. Pass it to the function: a parameter looks at what it is given. Or declare \
+             it with `let`, if it is never given a new value: every function can look at a `let` at the top of the file"
+        );
+        // The same holds for an `owned` value where there is a collector.
+        owned_ok("let window: owned list[int] = [1, 2]\nfunction first() -> int { return window[0] }\nprint(first())");
+        // A name is still only known below its declaration, and the
+        // message says where that is.
+        assert_eq!(
+            error("function first() -> int { return table[0] }\nlet table = [1, 2]\nprint(first())"),
+            "`table` is declared on line 2, which is further down. A line can use only what is declared above it, \
+             also inside a function. Move the declaration of `table` up"
         );
     }
 

@@ -445,7 +445,7 @@ own size: the LLVM build always did, and the two reports must agree.
 | A list of numbers that may be `none`: `list[int or none]` | each number sits in a block of its own, which the list would have to copy and free everywhere | noted. Use an enum with a `Missing` case |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | A value with one owner as what a type parameter stands for | the copy for `T` would have to know it moves | noted |
-| A function that uses a list or object declared at the top of the file | the top of the file owns it, and could give it away first | for the audit |
+| ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: [`audit.md`](audit.md) | done in the audit |
 | A method that pops an item or replaces a field that has one owner | `self` only looks | for the audit |
 
 The first row has an answer today, and the compiler's message gives

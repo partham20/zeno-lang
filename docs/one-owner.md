@@ -324,15 +324,17 @@ report, line for line.
 | ~~A list or object inside an `or none`, an enum case that carries values~~ | both build now: [`enums-and-none.md`](enums-and-none.md) | done in step 4 |
 | A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
-| A function that uses a list or object declared at the top of the file | the owner is the top of the file, which could give it away first | noted, see below |
+| ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: see below | done in the audit |
 | A method that pops an item or replaces a field that has one owner | `self` only looks (rule 1) | noted |
 | A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |
 
-The row about the top of the file is the one a firmware program will meet first: a table of
-numbers at the top of the file that several functions read. For now,
-pass it as a parameter. A top-level `let` that is never
-given away could be lent to every function without being asked, and
-that is on the list for the audit that follows these five steps.
+The row about the top of the file was the one a firmware program met
+first: a table of numbers at the top of the file that several functions
+read. The audit made it work. A `let` at the top of the file holds its
+value until the program ends, so every function may look at it, and the
+top of the file may not give it away ([`audit.md`](audit.md)). A `var`
+there is still out of reach, because it could be given a new value
+while a function is looking at the old one.
 
 ## How it is tested
 
