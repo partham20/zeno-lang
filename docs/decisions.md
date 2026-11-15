@@ -5795,3 +5795,185 @@ names the name that clashes.
    module (8.7, 8.8).
 5. **`zeno fetch` fetches. Nothing else does** (8.9). `zeno.lock`
    remembers what it got (8.10).
+
+## 9. Editor support
+
+What an editor needs from a language: a formatter, so that every file
+looks the same, and later a language server, so that mistakes show as
+you type. This section starts with the formatter. The walk through
+the code is in [`format.md`](format.md).
+
+**Checked against "unambiguous and intuitive".** There is one layout
+and nothing to configure (9.1). Formatting cannot change what a
+program means, and the formatter proves that to itself on every run
+(9.2). Each rule of spacing is the one the examples and the documents
+have used since the first stage, so `zeno format` surprises nobody
+who has read Zeno (9.5).
+
+### 9.1 One layout, and no options
+
+```
+zeno format main.zeno        write the file again, laid out
+zeno format examples         every .zeno file in the folder and below
+zeno format --check .        change nothing; say which files are not laid out
+```
+
+There is no setting for the width of an indent, where a brace goes or
+how many blank lines are allowed.
+
+**Why.** "One obvious way to write each thing" is the first principle
+of the language, and layout is where programmers disagree most and
+gain least. With no options there is nothing to decide per project,
+no file of settings to copy around, and a diff shows what changed and
+never how somebody likes their spaces. Go showed that this works.
+
+**Turned down.** A settings file (clang-format, rustfmt.toml): every
+project then has its own Zeno.
+
+### 9.2 The formatter changes white space, and nothing else
+
+It works on the tokens of the file. Every token stays as it was
+written, in the order it was written, on the line it was written on.
+Numbers keep their spelling (`0x4000_4400`), texts keep their quotes.
+
+**Why.** A formatter that works from the syntax tree has to print
+every construct of the language, and the tree has already forgotten
+the comments, the blank lines and how a number was spelled. Each new
+piece of syntax would need a new piece of printer, and a slip in one
+would quietly change a program. Working on tokens, the formatter
+needs to know only which token it is looking at and which came
+before. It cannot change a meaning, because it never adds, removes or
+moves a token.
+
+**Checked on every run.** After laying a file out, the formatter
+reads its own output back and compares the tokens and the comments
+with the ones it started from. If they differ it writes nothing and
+says that the mistake is Zeno's.
+
+**A file with a mistake is not formatted.** It has to lex and parse.
+Indentation is counted from brackets that match, and the parser is
+what knows that they do. The mistakes are shown as `zeno check` shows
+them.
+
+### 9.3 Line breaks are the author's *(provisional)*
+
+The formatter never joins two lines and never splits one. There is no
+line width.
+
+**Why.** `case Off { return 0 }` on one line and a long block on
+several are both right, and which is right depends on the code around
+it. Choosing for the author needs a width limit and a search for the
+best way to break each line, which is most of the code of prettier
+and rustfmt, and still produces layouts people fight. A line break in
+Zeno also ends a statement, so moving one is no longer only layout.
+
+**The cost.** Two people can break one long call in two ways. If that
+turns out to matter, a rule for where a too-long line breaks is the
+thing to add.
+
+### 9.4 Four spaces for each bracket open, counted in lines
+
+```zeno
+each(items, function(item) {
+    print(item)
+})
+```
+
+A line is indented once for each line above it that has left a `{`,
+`(` or `[` open. The first line here opens two brackets and the body
+is still indented once. A line that starts by closing brackets goes
+back to where the line that opened them is. A statement that goes on
+after an operator is indented once more:
+
+```zeno
+let total = price +
+    tax
+```
+
+Tabs are replaced. Four spaces is what every example has used, and a
+file that mixes tabs and spaces looks different in every editor.
+
+### 9.5 Where a space goes
+
+| Rule | Example |
+|---|---|
+| one space around an operator, `=` and `->` | `a + b`, `x = 1`, `-> int` |
+| one space after `,` and `:`, none before | `f(a, b)`, `port: int`, `["a": 1]` |
+| none inside `( )` and `[ ]` | `(a + b)`, `[1, 2]` |
+| none before the `(` of a call or the `[` of an index or a type | `print(x)`, `items[0]`, `list[int]` |
+| one space before any other `(` or `[` | `if (a or b) and c`, `return [1, 2]` |
+| none around `.` | `shapes.area` |
+| one inside `{ }` on one line, and before `{` | `if ready { go() }`, `case _ { }` |
+| a `-` that is a sign holds on to its number | `-1`, `a - -1`, `f(-x)` |
+| one space between two words | `500 ms`, `not ready` |
+
+These are the spaces the examples and the documents already had. The
+proof is a test: every file in `examples/` is taken apart into its
+tokens, put together again with three spaces between each two, and
+formatted. What comes out is the file as it is in the repository.
+
+**How a `-` is told apart.** If the token ahead of it can end a value
+(a name, a number, a text, `)` or `]`), it subtracts. Otherwise it is
+a sign. The same question, "can a value end here?", tells a call's
+`(` from a grouping one and an index's `[` from a list's.
+
+### 9.6 The `=` that names an argument has no spaces
+
+```zeno
+let here = Point(x=3.0, y=4.0)
+function greet(who: str, excited: bool = false, times=1) { }
+```
+
+Inside `( )`, an `=` straight after a name that begins an argument
+names that argument, and is written tight. Every other `=` has a
+space on each side, including a parameter's value after its type.
+
+**Why.** A call with named arguments reads as a list of pairs, and
+the tight `=` keeps each pair together and apart from the next:
+`Point(x=3.0, y=4.0)` against `Point(x = 3.0, y = 4.0)`. It also
+tells naming an argument from assigning to a variable at a glance.
+Python settled on the same two forms for the same reason.
+
+### 9.7 At most one blank line
+
+Never two in a row. None at the top of the file or of a block, and
+none at the bottom of either. A blank line after a comment stays.
+
+**Why.** One blank line parts two things. A second one says nothing
+more, and "one or two?" is a choice nobody needs to make.
+
+### 9.8 Comments
+
+A comment gets a space after its `#` when a word follows: `#note`
+becomes `# note`. What stands after that is the author's, so a
+commented-out example keeps its indentation, and `#!` and `#---` are
+left alone. A comment on a line of its own is indented as code there
+would be.
+
+A comment after code keeps the distance the author gave it, with at
+least two spaces. So comments that were lined up stay lined up:
+
+```zeno
+bytes: pointer[u8]    # `size` bytes, asked for with `allocate`
+size: int             # how many fit
+```
+
+*(Provisional.)* The formatter does not line comments up by itself.
+gofmt does, and needs rules for when a long line should break the
+column. Keeping the author's distance is simple and never fights a
+layout somebody made on purpose.
+
+### 9.9 `zeno format` writes the file, and `--check` only looks
+
+`zeno format main.zeno` changes the file in place and says
+"Formatted main.zeno", or that it was laid out already. With
+`--check` nothing is written, each file that would change is named,
+and the command fails if there is one: that is the form for a script
+that guards a repository.
+
+A folder stands for every `.zeno` file in it and below it, except the
+folder `packages`: what `zeno fetch` put there is somebody else's.
+
+**Turned down.** Printing the result and leaving the file (gofmt's
+default): the common wish is to fix the file, and the common wish
+should be the short command.
