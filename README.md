@@ -65,6 +65,7 @@ Samples, none of them final:
 - [`examples/words.zeno`](examples/words.zeno): a line split into words, with lists that nobody keeps and the statement frees.
 - [`examples/scheduler.zeno`](examples/scheduler.zeno): tasks in a list, with no collector and not one `owned`: each list frees its items.
 - [`examples/commands.zeno`](examples/commands.zeno): commands read from text, as an enum whose cases carry values, with no collector. A line that is no command is `none`.
+- [`examples/handlers.zeno`](examples/handlers.zeno): steps kept as function values and faults kept as errors, with no collector. Each has one owner, which frees it.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -106,7 +107,9 @@ collector out of the C altogether
 list and object has one owner, whoever received it, with no word to
 write ([`docs/one-owner.md`](docs/one-owner.md)), and so has an enum
 value that carries something and a value that may be `none`
-([`docs/enums-and-none.md`](docs/enums-and-none.md)). Such a program does
+([`docs/enums-and-none.md`](docs/enums-and-none.md)), and so has a
+function value and an error
+([`docs/functions-and-errors.md`](docs/functions-and-errors.md)). Such a program does
 not use the heap either: its lists and objects live in a pool of a
 fixed size that is part of the program ([`docs/pool.md`](docs/pool.md)).
 Text that such a program keeps is a copy that its keeper frees
@@ -145,6 +148,7 @@ cargo run -- build --no-collector --memory examples/labels.zeno  # text that is 
 cargo run -- build --no-collector --memory examples/words.zeno   # split, map, filter and + with no collector: each statement frees what it made
 cargo run -- build --no-collector --memory examples/scheduler.zeno  # lists of objects with no collector and no `owned`: each list frees its items
 cargo run -- build --no-collector --memory examples/commands.zeno   # enum cases that carry values, and values that may be none, with no collector
+cargo run -- build --no-collector --memory examples/handlers.zeno   # function values and kept errors with no collector: each has one owner
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
@@ -183,6 +187,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/no-collector.md`](docs/no-collector.md), [`docs/pool.md`](docs/pool.md),
   [`docs/text.md`](docs/text.md), [`docs/temporaries.md`](docs/temporaries.md),
   [`docs/one-owner.md`](docs/one-owner.md), [`docs/enums-and-none.md`](docs/enums-and-none.md),
+  [`docs/functions-and-errors.md`](docs/functions-and-errors.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -227,17 +232,24 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       taken and given back in constant time, from one array whose size
       is chosen when the C is compiled)
     - Values owned by whoever receives them, in `--no-collector` builds
-      (in progress. Done: text that is built can be kept, returned and
-      stored in objects and lists, as a copy its keeper frees. Done:
-      a list made by `split`, `map`, `filter` or `+`, or written out,
+      (done. Text that is built can be kept, returned and
+      stored in objects and lists, as a copy its keeper frees.
+      A list made by `split`, `map`, `filter` or `+`, or written out,
       and an owned value that is only looked at, belong to the
       statement that made them, which frees them when it is over.
-      Done: plain lists and classes have one owner without the word
+      Plain lists and classes have one owner without the word
       `owned`, and a list owns its items, so lists of objects and lists
-      of lists work. Done: an enum value that carries something has
+      of lists work. An enum value that carries something has
       one owner, a list, object or enum value that may be `none` has
-      one owner, and `match` looks at it without taking it. Next:
-      function values that capture, and errors that are kept)
+      one owner, and `match` looks at it without taking it. A function
+      value has one owner, and so has an error, which can be kept and
+      raised again)
+    - Manual memory in `unsafe { }` blocks: raw pointers, `alloc` and
+      `free`, and registers at fixed addresses (next)
+    - A pass over the whole language for "unambiguous and intuitive".
+      One change is already decided for it: a plain parameter will look
+      at a list or an object, and a word will mark the one that takes
+      it (after that)
 
 ## Layout
 

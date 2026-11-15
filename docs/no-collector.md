@@ -73,7 +73,8 @@ each has such a line.
 | A list or object that is made and given to nobody | the pool | when the statement that made it is over |
 | Text built while the program runs | the text room, a fixed array | when the statement that built it is over |
 | Text that is kept | the pool | when the variable, field or list that keeps it is done with it |
-| An error that was raised | the pool | when the `except` block that caught it ends |
+| An error | the pool | when its owner's block ends. The `except` that catches it is its first owner ([`functions-and-errors.md`](functions-and-errors.md)) |
+| A function written where a value goes | the pool | when its owner's block ends, or after one line if it looks at a list or an object |
 
 Numbers, bools, quantities, enum cases without data and text written in
 the program (`"idle"`) need no memory at all, here as in every build.
@@ -176,25 +177,31 @@ before the first trip, and a `match` as soon as a case is chosen.
 
 ## Errors
 
-`raise Overload(channel, peak)` makes an object, and an error to carry it.
-Neither has an owner in the usual sense: the error leaves the function
-that made it. So this build gives it one rule of its own. **The `except`
-block that catches an error frees it when the block ends**, however the
-block is left:
+`raise Overload(channel, peak)` makes an object, and a small wrapper to
+carry it out of the function. `raise` takes the error, and **the
+`except` that catches it owns it**: the name after `as` is an owner
+like any other. If the block ends with the error still in that name,
+it is freed there, however the block is left:
 
 ```c
 if (zeno_is(zeno_caught_1, "Overload")) {
     z_Overload *z_overload = (z_Overload *)zeno_caught_1->object;
+    zeno_caught_1->object = NULL;             /* the name owns the object now */
     zeno_list_append(z_refused, (zeno_slot){.i = z_overload->z_channel});
-    zeno_error_drop(zeno_caught_1);
+    zeno_drop_Overload(z_overload);           /* still here, so it is freed */
+    zeno_error_drop(zeno_caught_1);           /* and the wrapper */
 }
 ```
 
-Inside the block the error can be read, printed, asked for its fields
-and lent to a `borrow` parameter. It cannot be kept, given away or
-raised again. Copy out what you need. The other half of the rule: an error can only be made by `raise`, as
-in `raise ValueError("too hot")`. `let e = ValueError("too hot")` is
-refused, because no `except` would ever free it.
+Inside the block the error can be read, printed and lent to a `borrow`
+parameter. It can also be kept (`last = overload`), put in a list,
+returned, and raised again (`raise overload`). Then the name gave it
+away and holds nothing, and the line that frees it frees nothing. An
+error can be made anywhere, not only by `raise`:
+`let ready = ValueError("too hot")` is an owner too.
+[`functions-and-errors.md`](functions-and-errors.md) walks through all
+of it. (Until that step an error could only be read inside its
+`except`.)
 
 The error's message is often built text (`raise ValueError(f"{n} is too
 big")`), which would be gone before the `except` runs. So in this build
@@ -248,12 +255,12 @@ line and says what to write instead where there is something.
 | Refused | Why |
 |---|---|
 | A list, object or enum value used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
-| An error that is kept, given away, or raised again | its `except` frees it |
-| An error made anywhere but in `raise` | no `except` would free it |
-| A function written where a value goes | it sits in a block of its own, with the variables it uses |
+| A function that uses a `var` of the function around it | the two would share the variable, and nothing is shared. Use `let`, or an object |
+| Keeping a function that uses a list or an object from outside it | it only looks, so it lives for the line that writes it ([`functions-and-errors.md`](functions-and-errors.md)) |
+| A list or an object as what a type parameter stands for | the copy for `T` would have to know it moves |
 | A list of `int or none` | each item sits in a block of its own. Use an enum with a case for the missing value |
 
-Eight things you might expect on this list are not. A plain list or
+Ten things you might expect on this list are not. A plain list or
 object is fine: whoever receives it owns it. A list of objects or of
 lists is fine: the list owns its items
 ([`one-owner.md`](one-owner.md)). An enum case that carries values is
@@ -261,6 +268,9 @@ fine: the value has one owner, like an object. A list, an object or an
 enum value that may be `none` is fine: `none` owns nothing
 ([`enums-and-none.md`](enums-and-none.md)). A named function
 used as a value (`items.reduce(add, 0)`) is fine: it takes no memory.
+A function written where a value goes is fine: it has one owner. An
+error that is kept or raised again is fine: so does it
+([`functions-and-errors.md`](functions-and-errors.md)).
 Text that is kept is fine: the keeper has a copy
 ([`text.md`](text.md)). A list that is made and only looked at is fine,
 whatever makes it (`x in [1, 2]`, `count(line.split())`,
@@ -269,9 +279,8 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 `for ch in text`): the loop frees it. Both are in
 [`temporaries.md`](temporaries.md).
 
-Most of these are provisional. A function value could be owned by
-whoever receives it, as lists, objects and enum values now are. That
-is the next step.
+The first two rows are by design: with no collector nothing is shared.
+The other two are provisional.
 
 ## What this does not claim
 
@@ -300,7 +309,8 @@ cargo run -- build --llvm --no-collector --memory examples/buffer.zeno
 An owner is a slot that is set to null when it gives its value away
 and dropped where its block ends. The text room's top is a global the
 IR loads before a statement that builds text and stores back after it.
-An `except` drops the error it caught. The runtime file beside the IR
+An `except` owns the error it caught, and drops it if it still has it
+when the block ends. The runtime file beside the IR
 is the one from this page, and what is refused is refused in the same
 words. [`llvm.md`](llvm.md), "Owned values" and "With no collector",
 walks through the IR.
@@ -345,9 +355,10 @@ tests of the pool itself.
    are gone? (Look at where the text went.)
 2. In `buffer.zeno`, take the word `owned` off `refused` and build
    with `--no-collector`. Nothing changes: in this build the list has
-   one owner either way. Then try keeping an error:
+   one owner either way. Then keep an error:
    `var last: Overload or none = none` and `last = overload` in the
-   `except`. Read the error.
+   `except`. Build with `--memory`. Which line of `buffer.c` frees the
+   error now?
 3. Compile `buffer.c` by hand with `-DZENO_TEXT_ROOM=32`. Which statement
    stops the program? What is the smallest room it runs in, and does the
    report agree?
@@ -368,6 +379,6 @@ tests of the pool itself.
    the list, then make `look` fail (give it a `raises`) and find the
    second line that does. [`temporaries.md`](temporaries.md) says how
    both got there.
-8. `raise e` inside `except ... as e` is refused. It could be a move: the
-   error goes back to `zeno_raised` and the block no longer frees it. What
-   would the checker have to know?
+8. `raise e` inside `except ... as e` used to be refused. It is a move
+   now. Write one, find the `zeno_error_of` call in the C, and explain
+   why the old wrapper can still be freed on the next line.

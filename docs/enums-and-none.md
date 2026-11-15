@@ -440,10 +440,8 @@ own size: the LLVM build always did, and the two reports must agree.
 | Refused | Why | When |
 |---|---|---|
 | A list of numbers that may be `none`: `list[int or none]` | each number sits in a block of its own, which the list would have to copy and free everywhere | noted. Use an enum with a `Missing` case |
-| A function written where a value goes | it sits in a block too, with the variables it uses | step 5 |
-| A function type that mentions a list or an object | the type cannot say `borrow` yet | step 5 |
-| An error that is kept or raised again | its `except` frees it | step 5 |
-| A value with one owner inside a function type or the `[ ]` of a generic | as above, and the copy for `T` would have to know it moves | noted |
+| ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
+| A value with one owner as what a type parameter stands for | the copy for `T` would have to know it moves | noted |
 | A function that uses a list or object declared at the top of the file | the top of the file owns it, and could give it away first | for the audit |
 | A method that pops an item or replaces a field that has one owner | `self` is a borrow | for the audit |
 

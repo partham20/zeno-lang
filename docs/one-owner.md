@@ -286,22 +286,12 @@ the order `zeno run` uses. `an_assignment_can_reach_through_a_list` in
 
 ## Errors
 
-The `except` block that catches an error owns it, and frees it when the
-block ends ([`no-collector.md`](no-collector.md), "Errors"). That used
-to be said by the compiler in its own words. It is the checker's now,
-because it is the same rule as a loop's item: `e` is a look.
-
-```zeno
-try { print(risky(5)) } except Bad as e { let again = e }
-```
-
-```
-error: `e` is the error that this `except` caught. It is freed when the
-block ends, so it cannot be kept, returned or given away. Copy out what
-is needed from it
-```
-
-One thing got wider: `e` can be lent to a `borrow` parameter now.
+The `except` block that catches an error owns it
+([`no-collector.md`](no-collector.md), "Errors"). At this step `e` was
+only a look, like a loop's item: it could be read and lent to a
+`borrow` parameter, and `let again = e` was refused. Step 5 made `e` an
+owner, so the error can be kept, given away and raised again
+([`functions-and-errors.md`](functions-and-errors.md)).
 
 ## The same, through LLVM
 
@@ -332,9 +322,7 @@ report, line for line.
 |---|---|---|
 | ~~A list or object inside an `or none`, an enum case that carries values~~ | both build now: [`enums-and-none.md`](enums-and-none.md) | done in step 4 |
 | A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
-| A function written where a value goes | so does it, with the variables it uses | step 5 |
-| A function type that mentions a list or an object | the type cannot say `borrow` yet | step 5 |
-| An error that is kept or raised again | its `except` frees it | step 5 |
+| ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | A function that uses a list or object declared at the top of the file | the owner is the top of the file, which could give it away first | noted, see below |
 | A method that pops an item or replaces a field that has one owner | `self` is a borrow (rule 1) | noted |
 | A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |

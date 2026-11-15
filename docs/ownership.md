@@ -378,12 +378,14 @@ Each of these would need a rule the simple checker does not have. They are
 errors today, with a message that says so, and can be allowed later without
 breaking any program that works now.
 
-- **An owned value inside a function type, or inside an enum case in a
-  build with a collector.** (An owned list can hold owned values, and so
-  can an `or none`: see [`one-owner.md`](one-owner.md) and
+- **An owned value inside an enum case in a build with a collector, or
+  as what a type parameter stands for.** (An owned list can hold owned
+  values, and so can an `or none`: see [`one-owner.md`](one-owner.md) and
   [`enums-and-none.md`](enums-and-none.md). With no collector an enum
   case can hold them as well, because there the enum value itself has
-  one owner.)
+  one owner. A function type can mention one, and says what each
+  parameter does with it, as in `function(borrow Packet) -> int`:
+  [`functions-and-errors.md`](functions-and-errors.md).)
 - **Moving a field out of an object** (`let d = packet.data`). Same reason.
 - **Replacing an owned field through a borrow**, which includes `self` in a
   method. Somebody else may have been lent the old value at that moment.

@@ -1358,24 +1358,27 @@ except2:
   %t12 = load ptr, ptr @zeno_raised
 ```
 
-**An error is freed by the `except` that catches it.** The error is
+**An error is owned by the `except` that catches it.** The error is
 one block, made by `zeno_error_new`, with a copy of its message in the
 same block. (The message is copied out of the text room, which is why
-`raise` can put the mark back.) The handler holds the error while it
-runs:
+`raise` can put the mark back.) The name after `as` is an owner slot,
+freed like any other when the handler is over:
 
 ```llvm
 except2.1:
+  store ptr %t12, ptr %caught.2.1           ; `error` owns it
   ...
-  call void (i32, ...) @zeno_print(i32 2, ptr @.str.4, ptr %t16)
+  call void (i32, ...) @zeno_print(i32 2, ptr @.str.4, ptr %t17)
   ...
-  call void @zeno_error_drop(ptr %t12)      ; the handler is over
+  %t18 = load ptr, ptr %caught.2.1
+  call void @zeno_error_drop(ptr %t18)      ; the handler is over
   br label %end2
 ```
 
-A `return` or a `continue` inside the handler gets the same call,
-because the error is held with `hold`, like a value between two
-owners.
+A `return` or a `continue` inside the handler gets the same call. If
+the handler kept the error or raised it again, the slot holds null by
+then and the call frees nothing
+([`functions-and-errors.md`](functions-and-errors.md)).
 
 **Text that is kept is copied.** The room is about to be emptied, so
 wherever text is stored (a `let`, an assignment, a field, a list
@@ -1548,9 +1551,10 @@ file. In a C build they are in the same file and can be inlined.
 
 ## What it does not do yet
 
-- **What `--no-collector` refuses in C it refuses here**: function
-  literals and lists of `int or none`
-  ([`no-collector.md`](no-collector.md), "What is refused"). Lists of
+- **What `--no-collector` refuses in C it refuses here**, in the same
+  words ([`no-collector.md`](no-collector.md), "What is refused"). A
+  function written where a value goes is a block with a `drop` entry,
+  freed by its owner ([`functions-and-errors.md`](functions-and-errors.md)). Lists of
   objects and lists of lists are freed with their items, by functions
   written into the IR when a program needs them (`drop_list`;
   [`one-owner.md`](one-owner.md)). An enum value that carries something
