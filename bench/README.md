@@ -33,42 +33,41 @@ Big sizes, compiled:
 
 | Program | C | Rust | Zeno before | `zeno build` | `--release` | `--release --owned` |
 |---|---|---|---|---|---|---|
-| fib 40 | 0.157 | 0.246 | 0.460 | 0.482 | **0.122** | 0.145 |
-| loop 10⁹ | 0.847 | 0.879 | 1.249 | 1.388 | 0.957 | 0.959 |
-| sort 10⁷ | 0.998 | 1.158 | 1.292 | 1.379 | 1.171 | 1.389 |
-| strings 10⁷ | 0.921 | 0.729 | 24.5 | 3.446 | 3.547 | 3.812 |
-| trees 20 | 6.269 | 6.975 | 57.8 | 12.05 | 12.13 | **4.325** |
-| nbody 10⁷ | 0.431 | 0.373 | 1.325 | 1.120 | 1.198 | 0.928 |
+| fib 40 | 0.153 | 0.248 | 0.460 | 0.463 | 0.143 | **0.116** |
+| loop 10⁹ | 0.840 | 0.885 | 1.249 | 1.181 | 0.894 | 1.044 |
+| sort 10⁷ | 1.04 | 1.16 | 1.29 | 1.33 | 1.23 | 1.30 |
+| strings 10⁷ | 0.872 | 0.684 | 24.5 | 1.088 | 1.097 | 1.259 |
+| trees 20 | 6.16 | 7.08 | 57.8 | 11.06 | 11.54 | **4.09** |
+| nbody 10⁷ | 0.515 | 0.389 | 1.325 | **0.416** | 0.508 | 0.490 |
 
-("Zeno before" is `zeno build` before the paged collector and the loop change;
-`results/before-big.json`.)
+("Zeno before" is `zeno build` before this round of work;
+`results/before-big.json`. Times move by about 10 % from run to run on
+this machine, so a difference smaller than that is noise.)
 
 Small sizes, interpreted, against Python 3.13:
 
 | Program | Python | `zeno run --vm` | `zeno run` |
 |---|---|---|---|
-| fib 32 | 0.244 | 1.06 | 2.89 |
-| loop 10⁸ | 11.5 | 15.5 | 32.3 |
-| sort 10⁶ | 2.25 | 4.70 | 13.5 |
-| strings 10⁶ | 0.422 | 1.93 | 2.86 |
-| trees 16 | 3.81 | 20.8 | 30.2 |
-| nbody 10⁶ | 3.49 | 23.5 | 51.4 |
+| fib 32 | 0.221 | 0.98 | 2.84 |
+| loop 10⁸ | 11.0 | 14.9 | 30.8 |
+| sort 10⁶ | 1.98 | 4.63 | 13.0 |
+| strings 10⁶ | 0.41 | 1.82 | 2.91 |
+| trees 16 | 3.59 | 19.2 | 29.8 |
+| nbody 10⁶ | 4.07 | 23.2 | 52.3 |
 
 ## What the numbers say
 
-- With `--release --owned`, Zeno is as fast as C or faster on `fib` and
-  `trees`, and within 15 % on `loop` and `sort`.
-- Without `--release`, every `+ - *` checks for overflow; that costs 10 to 60 %
-  in tight arithmetic. `--release` makes whole numbers wrap round instead.
-- The collector is now about 2.8 times slower than ownership on `trees`
-  (it was 12 times slower before). A generational collector would close more of
-  that gap.
-- `strings` is still 4 times slower than C: `for ch in text` builds a list of
-  one-letter texts first. Walking the text directly is the next fix.
-- `nbody` is 2 times slower than C: fields of objects are reached through a
-  pointer each time, and C keeps them in registers.
-- The interpreters are slower than Python. They exist for checking and for the
-  playground; `zeno build` is the fast path.
+- Compiled Zeno is now within about 25 % of C on every program, and
+  faster than C on `fib` and `trees` with `--release --owned`, and on
+  `nbody` as it is.
+- What closed the gaps: a collector that keeps blocks in pages (22.5),
+  `memory owned` (22.1), `--release` (22.3), loops that walk a list in
+  place (22.4) or text in place (22.7), and fields read once (22.8).
+- The collector is still about 2.7 times slower than ownership on
+  `trees`, which makes millions of small objects. A generational
+  collector would close more of that gap.
+- The interpreters are slower than Python. They exist for checking and for
+  the playground; `zeno build` is the fast path.
 
 The results live in `results/*.json`, and zeno-lang.org/benchmarks draws its
 page from them.

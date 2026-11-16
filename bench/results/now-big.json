@@ -29,58 +29,58 @@
   },
   "times": {
     "fib": {
-      "c": 0.157,
-      "rust": 0.246,
-      "zeno": 0.482,
-      "zeno-llvm": 0.443,
-      "zeno-release": 0.122,
-      "zeno-owned": 0.145,
-      "zeno-owned-checked": 0.479
+      "c": 0.153,
+      "rust": 0.248,
+      "zeno": 0.463,
+      "zeno-llvm": 0.448,
+      "zeno-release": 0.143,
+      "zeno-owned": 0.116,
+      "zeno-owned-checked": 0.405
     },
     "loop": {
-      "c": 0.847,
-      "rust": 0.879,
-      "zeno": 1.388,
-      "zeno-llvm": 1.157,
-      "zeno-release": 0.957,
-      "zeno-owned": 0.959,
-      "zeno-owned-checked": 1.332
+      "c": 0.84,
+      "rust": 0.885,
+      "zeno": 1.181,
+      "zeno-llvm": 1.025,
+      "zeno-release": 0.894,
+      "zeno-owned": 1.044,
+      "zeno-owned-checked": 1.285
     },
     "sort": {
-      "c": 0.998,
-      "rust": 1.158,
-      "zeno": 1.379,
-      "zeno-llvm": 1.927,
-      "zeno-release": 1.171,
-      "zeno-owned": 1.389,
-      "zeno-owned-checked": 1.353
+      "c": 1.032,
+      "rust": 1.07,
+      "zeno": 1.386,
+      "zeno-llvm": 1.941,
+      "zeno-release": 1.233,
+      "zeno-owned": 1.296,
+      "zeno-owned-checked": 1.327
     },
     "strings": {
-      "c": 0.921,
-      "rust": 0.729,
-      "zeno": 3.446,
-      "zeno-llvm": 3.652,
-      "zeno-release": 3.547,
-      "zeno-owned": 3.812,
-      "zeno-owned-checked": 3.848
+      "c": 0.872,
+      "rust": 0.684,
+      "zeno": 1.088,
+      "zeno-llvm": 1.338,
+      "zeno-release": 1.097,
+      "zeno-owned": 1.259,
+      "zeno-owned-checked": 1.239
     },
     "trees": {
-      "c": 6.269,
-      "rust": 6.975,
-      "zeno": 12.051,
-      "zeno-llvm": 11.8,
-      "zeno-release": 12.13,
-      "zeno-owned": 4.325,
-      "zeno-owned-checked": 4.793
+      "c": 6.156,
+      "rust": 7.076,
+      "zeno": 11.058,
+      "zeno-llvm": 11.517,
+      "zeno-release": 11.538,
+      "zeno-owned": 4.091,
+      "zeno-owned-checked": 4.475
     },
     "nbody": {
-      "c": 0.431,
-      "rust": 0.373,
-      "zeno": 1.12,
-      "zeno-llvm": 0.72,
-      "zeno-release": 1.198,
-      "zeno-owned": 0.928,
-      "zeno-owned-checked": 0.879
+      "c": 0.515,
+      "rust": 0.389,
+      "zeno": 0.416,
+      "zeno-llvm": 0.516,
+      "zeno-release": 0.508,
+      "zeno-owned": 0.49,
+      "zeno-owned-checked": 0.52
     }
   }
 }
