@@ -142,6 +142,40 @@ let flags = [true, false]
 flags.sort()
 \end{zeno}
 
+\subsection{sort with a function (new in 0.3)}
+
+{\itshape This is in Zeno 0.3, which is on its way and not yet released.
+In 0.2.0, \texttt{sort} takes no function.\par}
+
+A list of objects has no order of its own. A program says which order
+it wants by giving \verb|sort| a function that takes one item and gives
+what the item is ordered by, a number or text: its \emph{key}. The
+function comes in \hyperref[ch-function-values]{Functions as Values};
+here it is written in place:
+
+\begin{zeno}
+class Person {
+    name: str
+    age: int
+}
+
+let people = [Person("Ada", 36), Person("Bo", 20), Person("Cy", 36)]
+people.sort(function(person: Person) -> int { return person.age })
+for person in people {
+    print(person.name, person.age)
+}
+\end{zeno}
+
+The function is called once for each item, before anything moves.
+Items with the same key stay in the order they were: Ada was before
+Cy, both are 36, and Ada is still first. So sorting by name and then
+by age gives people in order of age, and by name within an age. For
+biggest first, give the key with a minus, \verb|return 0 - person.age|.
+
+The function is not asked which of two items comes first, as a sort
+is in C or JavaScript. A function that takes two items is refused,
+with the reason. (Decision 21.1.)
+
 \begin{why}
 A new list is new memory, which a program on a small board may not
 want to spend, and a method that gives the list back invites
