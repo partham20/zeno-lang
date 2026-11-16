@@ -26,7 +26,8 @@ python3 run.py --json results/mine.json         # keep the numbers
 `--engines` picks from `c rust zeno zeno-llvm zeno-nc zeno-release zeno-owned
 zeno-owned-checked zeno-fast zeno-fast-gc vm run python` (`zeno-fast` is
 `--fast --owned`, `zeno-fast-gc` is `--fast` with the collector). Each time is the best of three runs (one
-run for the slow interpreters). C is built with `cc -O2`, Rust with `rustc -O`.
+run for the slow interpreters), taken in rounds: every engine once,
+then every engine again. `--count` counts instructions instead. C is built with `cc -O2`, Rust with `rustc -O`.
 
 ## Results (2026-11-16, 4-core Xeon 2.1 GHz, seconds)
 
@@ -34,16 +35,37 @@ Big sizes, compiled:
 
 | Program | C | Rust | `zeno build` | `--release` | `--release --owned` | `--fast --owned` |
 |---|---|---|---|---|---|---|
-| fib 40 | 0.146 | 0.273 | 0.483 | 0.138 | 0.119 | **0.129** |
-| loop 10⁹ | 0.841 | 0.870 | 1.350 | 0.948 | 0.995 | **0.987** |
-| sort 10⁷ | 1.067 | 1.117 | 1.360 | 1.470 | 1.088 | **1.106** |
-| strings 10⁷ | 0.899 | 0.725 | 0.847 | 0.799 | 0.745 | **0.704** |
-| trees 20 | 6.294 | 7.076 | 7.468 | 6.732 | 3.816 | **3.735** |
-| nbody 10⁷ | 0.413 | 0.366 | 0.495 | 0.503 | 0.484 | **0.496** |
+| fib 40 | 0.167 | 0.204 | 0.473 | 0.144 | 0.156 | **0.167** |
+| loop 10⁹ | 0.875 | 0.874 | 1.110 | 0.921 | 0.970 | **0.913** |
+| sort 10⁷ | 1.009 | 1.160 | 1.422 | 1.243 | 1.096 | **1.095** |
+| strings 10⁷ | 0.936 | 0.714 | 0.867 | 0.788 | 0.741 | **0.689** |
+| trees 20 | 6.162 | 6.889 | 7.740 | 6.826 | 3.441 | **3.599** |
+| nbody 10⁷ | 0.477 | 0.359 | 0.510 | 0.510 | 0.472 | **0.473** |
 
-(Times move by 10 to 15 % from run to run on this machine, so a
-difference smaller than that is noise. The first `zeno build` times,
-before any of the speed work, are in `results/before-big.json`.)
+(Times move by a tenth and more from run to run on this machine, so a
+difference smaller than that is noise: `--release` and `--release
+--owned` run the very same loop on `loop`. The first `zeno build`
+times, before any of the speed work, are in `results/before-big.json`.)
+
+The same programs counted, not timed: millions of instructions run,
+under valgrind (`python3 run.py --count`, at smaller sizes because
+valgrind is slow). A count is the same on every run, so it shows what
+the clock cannot. It is not a time: a copy between registers costs
+nothing, a square root costs twenty additions, and memory that is far
+away costs more than either. The last column is `--fast --owned`
+divided by C.
+
+| Program | C | Rust | `zeno build` | `--release` | `--release --owned` | `--fast --owned` | × C |
+|---|---|---|---|---|---|---|---|
+| fib 30 | 26.5 | 26.8 | 38.0 | 24.1 | 24.0 | **28.1** | 1.06 |
+| loop 2×10⁷ | 300.3 | 290.4 | 460.3 | 340.3 | 340.3 | **300.3** | 1.00 |
+| sort 3×10⁵ | 73.3 | 78.7 | 121.5 | 106.2 | 92.9 | **72.7** | 0.99 |
+| strings 3×10⁵ | 304.2 | 173.5 | 188.1 | 184.9 | 176.2 | **174.7** | 0.57 |
+| trees 14 | 699.1 | 924.8 | 499.1 | 467.5 | 328.6 | **288.5** | 0.41 |
+| nbody 2×10⁵ | 120.5 | 82.8 | 126.3 | 129.9 | 129.1 | **119.5** | 0.99 |
+
+(`results/now-count.json`; `results/before-count.json` is the same
+count before decisions 23.5, 23.6 and 23.8.)
 
 Small sizes, interpreted, against Python 3.13:
 
@@ -58,12 +80,21 @@ Small sizes, interpreted, against Python 3.13:
 
 ## What the numbers say
 
-- `zeno build --fast --owned` (0.4, decision 23.1) is level with C or
-  ahead of it on fib, sort, strings and trees, and with Rust on all of
-  them. Two gaps are left. On loop, Zeno's `%` rounds toward minus
-  infinity (it pairs with `//`), which costs a few instructions that C's
-  and Rust's `%` do not pay. On nbody, Rust knows the two bodies of its
-  inner loop are different and keeps one in registers (23.4).
+- `zeno build --fast --owned` (0.4, decisions 23.1, 23.6 and 23.8) runs
+  no more instructions than C on five of the six programs, far fewer
+  on strings and trees, and 6 % more on fib, where the time is the
+  same. On `loop` it runs the instructions C runs (300.27 million
+  against 300.26 million): it gives the C compiler C's own signed `+`,
+  `-` and `*`, so the compiler knows what it knows of a C program, that
+  a count going up from 0 is never below zero, and Zeno's `%` (which
+  rounds the other way from C's for numbers below zero) needs no
+  mending.
+- Rust is ahead of C and of Zeno on `nbody` alone, by a third. Its
+  compiler sees that the list of bodies is exactly five long and builds
+  both loops for five, two pairs of bodies at a time. With the list
+  behind `std::hint::black_box` the same Rust takes 125.8 million
+  instructions and 0.51 s, behind C and Zeno. Nothing in Zeno was
+  changed to chase it (23.4).
 
 - Compiled Zeno is now within about 25 % of C on every program, and
   faster than C on `fib` and `trees` with `--release --owned`, and on

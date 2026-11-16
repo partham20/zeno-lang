@@ -1,0 +1,86 @@
+{
+  "size": "count",
+  "sizes": {
+    "fib": 30,
+    "loop": 20000000,
+    "sort": 300000,
+    "strings": 300000,
+    "trees": 14,
+    "nbody": 200000
+  },
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.4.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "engines": {
+    "c": "C (cc -O2)",
+    "rust": "Rust (rustc -O)",
+    "zeno": "zeno build",
+    "zeno-release": "zeno build --release",
+    "zeno-owned": "zeno build --release --owned",
+    "zeno-fast": "zeno build --fast --owned",
+    "zeno-fast-gc": "zeno build --fast"
+  },
+  "counts": {
+    "fib": {
+      "c": 26499967,
+      "rust": 26847141,
+      "zeno": 37990191,
+      "zeno-release": 24057921,
+      "zeno-owned": 24035444,
+      "zeno-fast": 25910236,
+      "zeno-fast-gc": 25932714
+    },
+    "loop": {
+      "c": 300261285,
+      "rust": 290436146,
+      "zeno": 511723448,
+      "zeno-release": 391723443,
+      "zeno-owned": 391700962,
+      "zeno-fast": 391700929,
+      "zeno-fast-gc": 391723418
+    },
+    "sort": {
+      "c": 73265763,
+      "rust": 78674364,
+      "zeno": 131967382,
+      "zeno-release": 115321076,
+      "zeno-owned": 103175710,
+      "zeno-fast": 87625096,
+      "zeno-fast-gc": 116853192
+    },
+    "strings": {
+      "c": 304178246,
+      "rust": 173546218,
+      "zeno": 193482862,
+      "zeno-release": 190293971,
+      "zeno-owned": 181560434,
+      "zeno-fast": 180360369,
+      "zeno-fast-gc": 187933034
+    },
+    "trees": {
+      "c": 699113584,
+      "rust": 924816936,
+      "zeno": 499141711,
+      "zeno-release": 467527879,
+      "zeno-owned": 328625913,
+      "zeno-fast": 289334459,
+      "zeno-fast-gc": 454813374
+    },
+    "nbody": {
+      "c": 120464683,
+      "rust": 82839785,
+      "zeno": 126307770,
+      "zeno-release": 129107803,
+      "zeno-owned": 129084041,
+      "zeno-fast": 123882737,
+      "zeno-fast-gc": 123906002
+    }
+  }
+}
