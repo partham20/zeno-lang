@@ -593,5 +593,6 @@ tools/installer/              the setup program for Windows (Inno Setup)
 .github/workflows/release.yml builds and releases `zeno` when a tag is pushed
 .github/workflows/trial.yml   tries Zeno on one kind of machine, and releases nothing
 .github/workflows/installer.yml  tries the installers on one kind of machine
+.github/workflows/add-installers.yml  makes the installers for a version already released
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```

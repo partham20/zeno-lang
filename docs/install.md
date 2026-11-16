@@ -223,6 +223,34 @@ A release then has twelve files and their checksums: the ten archives,
 without a release, and keeps the setup program it made for a week, to
 download and run by hand.
 
+## For a version that was released before
+
+Zeno 0.1.0 was released the day before there were installers. It has
+them too, added afterwards by
+[`add-installers.yml`](../.github/workflows/add-installers.yml), which
+is started by hand with a version:
+
+1. It downloads the three Windows archives of that release, checks
+   them against the release's `SHA256SUMS.txt`, and makes the setup
+   program from the three `zeno.exe` in them. Nothing is built again:
+   what the setup program installs is what was released.
+2. It takes today's `install.sh`, writes that version into its
+   `version=` line, and has it install the released Linux archive into
+   a home folder of its own.
+3. Only if both passed, and "add" was ticked, it adds the two files to
+   the release, and two lines to its `SHA256SUMS.txt`. The lines of
+   the archives stay as they were.
+
+Two things differ for 0.1.0, and the installers allow for both.
+It has no `zeno.wasm`, so the setup program leaves that out and
+`try.ps1` does not build a page. And its `zeno build` runs `cc` and
+nothing else, so on Windows it still wants `set CC=gcc` first: the
+box that offers the compiler says so.
+
+So each release has its own `install.sh`, at
+`releases/download/v0.1.0/install.sh`, which installs that version.
+`releases/latest/download/install.sh` is the one of the newest.
+
 ## What it does not do yet
 
 - **The setup program is not signed**, and neither is `zeno` on

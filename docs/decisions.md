@@ -8204,6 +8204,32 @@ change both files. It protects against everything less than that.
   GitHub's Windows machines have no winget.
 - `zeno` does not update itself. The installer, run again, does.
 
+### 15.11 An earlier release gets installers added, and nothing in it changed
+
+Zeno 0.1.0 was released before the installers. A workflow,
+`add-installers.yml`, makes them for it from the files of that
+release: the setup program from the three `zeno.exe` that were
+released, and `install.sh` with `version=0.1.0` in it. It adds the two
+files to the release, and two lines to the list of checksums.
+
+**Why.** Somebody who has an archive of 0.1.0 and its checksum must
+find the same file and the same checksum there tomorrow. So a release
+is added to and never changed. Making the installers from the released
+files, and not from the source of that day, means there is one
+`zeno 0.1.0` and not two that should be the same.
+
+**Turned down.** *A 0.1.1 that differs only by having installers*: a
+new version says that Zeno changed, and it did not. *Building 0.1.0
+again from its tag*: a second build is not the first one byte for
+byte, so the setup program would install a `zeno` that nobody checked.
+*Leaving 0.1.0 as it was*: it is the only release there is until 0.2.0
+is published.
+
+The installers are today's, so they had to allow for what 0.1.0 lacks:
+no `zeno.wasm`, and a `zeno build` that knows only `cc` (15.5). The
+setup program leaves the first out and says the second in the box that
+offers a compiler.
+
 ## 16. A page that does more
 
 Chapter 14 made the least that is a page. Its last section (14.14)

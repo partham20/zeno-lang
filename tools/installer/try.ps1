@@ -31,21 +31,30 @@ if ($said -notmatch '^zeno \d+\.\d+\.\d+$') { throw "zeno --version said: $said"
 if (";$(UserPath);" -notlike "*;$app;*") { throw "the PATH does not have $app in it: $(UserPath)" }
 Write-Output "the PATH has $app"
 
-foreach ($thing in 'zeno.wasm', 'README.md', 'docs\web.md', 'examples\hello.zeno', 'editors', 'unins000.exe') {
+# A program in a web page came with 0.2.0. The setup program is also
+# made for 0.1.0, which has no `zeno.wasm` and no `zeno build --web`.
+$web = [version]($said -replace '^zeno ', '') -ge [version]'0.2.0'
+$things = 'README.md', 'docs\release.md', 'examples\hello.zeno', 'editors', 'unins000.exe'
+if ($web) { $things += 'zeno.wasm', 'docs\web.md' }
+foreach ($thing in $things) {
     if (-not (Test-Path (Join-Path $app $thing))) { throw "the installed folder has no $thing" }
 }
 $hello = & $zeno run (Join-Path $app 'examples\hello.zeno')
 if ($hello -ne 'Hello, Zeno!') { throw "hello.zeno printed: $hello" }
 
-# A page builds: `zeno.wasm` is found beside `zeno.exe`.
-$work = Join-Path $env:TEMP "zeno-try-$PID"
-New-Item -ItemType Directory -Force $work | Out-Null
-Push-Location $work
-& $zeno build --web (Join-Path $app 'examples\todo.zeno')
-if (-not (Test-Path 'todo.web.html')) { throw '`zeno build --web` wrote no page' }
-Pop-Location
-Remove-Item -Recurse -Force $work
-Write-Output 'it runs a program and builds a page'
+if ($web) {
+    # A page builds: `zeno.wasm` is found beside `zeno.exe`.
+    $work = Join-Path $env:TEMP "zeno-try-$PID"
+    New-Item -ItemType Directory -Force $work | Out-Null
+    Push-Location $work
+    & $zeno build --web (Join-Path $app 'examples\todo.zeno')
+    if (-not (Test-Path 'todo.web.html')) { throw '`zeno build --web` wrote no page' }
+    Pop-Location
+    Remove-Item -Recurse -Force $work
+    Write-Output 'it runs a program and builds a page'
+} else {
+    Write-Output 'it runs a program'
+}
 
 # Installed a second time, it is still in the PATH once.
 $run = Start-Process -FilePath $setupFile -ArgumentList $quiet -Wait -PassThru

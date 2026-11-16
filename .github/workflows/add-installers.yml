@@ -1,0 +1,148 @@
+# Makes the two installers for a version that is already released, from
+# that release's own files, and adds them to it.
+#
+# Zeno 0.1.0 was released before there were installers. Its archives
+# are not built again and not changed: the setup program is made from
+# the three `zeno.exe` that were released, and `install.sh` is today's
+# script with that version written in it. Each is tried on what was
+# released before anything is added.
+#
+# Started by hand from the Actions page ("Run workflow"), saying the
+# version. It makes and tries both, and keeps them with the run. With
+# "add" ticked it also adds them to the release, and their two lines to
+# its list of checksums. docs/install.md has more.
+
+name: add-installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version to make installers for
+        type: string
+        default: 0.1.0
+      add:
+        description: Add them to that release too
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+  # `gh` reads and writes the releases of this repository with these.
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  setup:
+    name: windows-setup
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The three Windows builds of that release
+        run: |
+          case $VERSION in
+            *[!0-9.]* | "") echo "\`$VERSION\` is not a version such as 0.1.0"; exit 1 ;;
+          esac
+          gh release download "v$VERSION" --dir got \
+            --pattern "zeno-$VERSION-windows-*.zip" --pattern SHA256SUMS.txt
+          # They must be the files that were released.
+          (cd got && sha256sum --check --ignore-missing SHA256SUMS.txt)
+          mkdir files
+          for kind in x86_64 x86 arm64; do
+            7z x -y "got/zeno-$VERSION-windows-$kind.zip" -ounpacked > /dev/null
+            mkdir files/$kind
+            cp "unpacked/zeno-$VERSION-windows-$kind/zeno.exe" files/$kind
+          done
+          # The rest is the same in all three. 0.1.0 has no `zeno.wasm`.
+          cd "unpacked/zeno-$VERSION-windows-x86_64"
+          cp -r README.md docs examples editors ../../files
+          if [ -f zeno.wasm ]; then cp zeno.wasm ../../files; fi
+
+      - name: Build the setup program
+        shell: cmd
+        run: tools\installer\build.cmd %VERSION% files
+
+      - name: Install with it, run Zeno, and uninstall
+        shell: pwsh
+        run: |
+          $said = tools\installer\try.ps1 "zeno-$($env:VERSION)-windows-setup.exe"
+          $said
+          if ($said -notcontains "installed: zeno $($env:VERSION)") { throw "it did not install Zeno $($env:VERSION)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: zeno-*-windows-setup.exe
+          if-no-files-found: error
+
+  line:
+    name: install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install.sh installs the released build, and takes it off again
+        run: |
+          case $VERSION in
+            *[!0-9.]* | "") echo "\`$VERSION\` is not a version such as 0.1.0"; exit 1 ;;
+          esac
+          gh release download "v$VERSION" --dir got \
+            --pattern "zeno-$VERSION-linux-x86_64.tar.gz" --pattern SHA256SUMS.txt
+          # Today's script, with that version as the one it installs.
+          mkdir out
+          sed "s/^version=[0-9].*/version=$VERSION/" tools/install.sh > out/install.sh
+          grep -qx "version=$VERSION" out/install.sh
+          # Into a home folder of its own, from the folder of downloads.
+          home=$(mktemp -d)
+          HOME=$home ZENO_FROM=$PWD/got sh out/install.sh --no-tools
+          said=$("$home/.zeno/bin/zeno" --version)
+          [ "$said" = "zeno $VERSION" ] || { echo "it installed: $said"; exit 1; }
+          [ "$("$home/.zeno/bin/zeno" run "$home/.zeno/examples/hello.zeno")" = "Hello, Zeno!" ]
+          grep -q 'added by the Zeno installer' "$home/.bashrc"
+          HOME=$home sh out/install.sh --uninstall
+          [ ! -e "$home/.zeno" ] || { echo "after uninstalling, .zeno is still there"; exit 1; }
+          ! grep -q 'added by the Zeno installer' "$home/.bashrc"
+          echo "ok"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: install-sh
+          path: out/install.sh
+          if-no-files-found: error
+
+  add:
+    name: add them to the release
+    needs: [setup, line]
+    if: inputs.add
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: made
+          merge-multiple: true
+
+      - name: Add the two files, and their checksums
+        run: |
+          cd made
+          setup=zeno-$VERSION-windows-setup.exe
+          ls -l "$setup" install.sh
+          gh release download "v$VERSION" --pattern SHA256SUMS.txt
+          # The list gains two lines. The lines of the archives stay as
+          # they are. Run a second time, the two are replaced.
+          grep -v -e " $setup\$" -e " install.sh\$" SHA256SUMS.txt > sums
+          sha256sum "$setup" install.sh >> sums
+          mv sums SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "v$VERSION" "$setup" install.sh SHA256SUMS.txt --clobber
+          # The notes say how to install with them.
+          notes=../docs/releases/$VERSION.md
+          if [ -f "$notes" ]; then gh release edit "v$VERSION" --notes-file "$notes"; fi

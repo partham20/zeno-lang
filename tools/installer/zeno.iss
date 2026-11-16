@@ -11,7 +11,7 @@
 ;     files\x86_64\zeno.exe     at least one of these three
 ;     files\x86\zeno.exe
 ;     files\arm64\zeno.exe
-;     files\zeno.wasm           Zeno built for a browser
+;     files\zeno.wasm           Zeno built for a browser (from 0.2.0)
 ;     files\README.md  files\docs  files\examples  files\editors
 ;
 ; What the setup program does, on the machine it is run on:
@@ -52,6 +52,13 @@
   #error There is no zeno.exe in the folder of files
 #endif
 
+; Zeno 0.1 runs `cc` and nothing else, and Windows has no `cc`. From
+; 0.2.0 `zeno build` looks for gcc and clang by itself.
+#define CompilerNote ""
+#if Copy(Version, 1, 4) == "0.1."
+  #define CompilerNote ", and in Zeno 0.1 `set CC=gcc` before it"
+#endif
+
 [Setup]
 ; This says which program an installer is for. A later version has the
 ; same one, and so is installed over the earlier one and not beside it.
@@ -83,7 +90,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "path"; Description: "Add Zeno to the PATH, so that a terminal finds `zeno`"
 ; These two are offered only when the program is missing and winget is
 ; there to install it.
-Name: "compiler"; Description: "Install a C compiler (gcc and clang, from WinLibs: a download of about 300 MB). `zeno build` needs one"; GroupDescription: "Programs that Zeno hands work to, and that this computer does not have:"; Check: CanInstall('gcc.exe') and CanInstall('clang.exe') and CanInstall('cc.exe')
+Name: "compiler"; Description: "Install a C compiler (gcc and clang, from WinLibs: a download of about 300 MB). `zeno build` needs one{#CompilerNote}"; GroupDescription: "Programs that Zeno hands work to, and that this computer does not have:"; Check: CanInstall('gcc.exe') and CanInstall('clang.exe') and CanInstall('cc.exe')
 Name: "git"; Description: "Install Git. `zeno fetch` needs it, to get packages"; GroupDescription: "Programs that Zeno hands work to, and that this computer does not have:"; Check: CanInstall('git.exe')
 
 [Files]
@@ -97,8 +104,11 @@ Source: "{#Files}\x86\zeno.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: 
 #if FileExists(AddBackslash(Files) + "arm64\zeno.exe")
 Source: "{#Files}\arm64\zeno.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: Installs('arm64')
 #endif
-; Zeno built for a browser. `zeno build --web` looks for it beside zeno.exe.
+; Zeno built for a browser. `zeno build --web` looks for it beside
+; zeno.exe. A version before 0.2.0 has none.
+#if FileExists(AddBackslash(Files) + "zeno.wasm")
 Source: "{#Files}\zeno.wasm"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 Source: "{#Files}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Files}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Files}\examples\*"; DestDir: "{app}\examples"; Flags: ignoreversion recursesubdirs createallsubdirs
