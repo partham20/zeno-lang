@@ -590,6 +590,69 @@ pub fn mentions(body: &[Stmt], name: &str) -> bool {
     format!("{body:?}").contains(&format!("Name({name:?})"))
 }
 
+/// The fields a function may read once, at its start, and keep in a
+/// local instead of reading them from the object every time: decision
+/// 22.8. Returns the names of the parameters whose fields qualify, and
+/// the names of the fields that are written somewhere in the body (which
+/// do not), or `None` when nothing qualifies.
+///
+/// A field `p.f` qualifies when `p` is a parameter that no `let`, `const`
+/// or `for` in the body takes the name of, no statement anywhere in the
+/// body writes a field called `f`, and the body calls nothing but the
+/// built-ins that only look (`print`, `len`, `math.sqrt`, ...): any other
+/// function could change the field. Then the field holds the same value
+/// from the first line to the last, and C (or LLVM) need not read it
+/// again after each write to another field, in case the two objects are
+/// the same. (The caller checks that `p` holds an object and `f` a
+/// number.)
+pub fn fields_read_once<'a>(
+    params: impl Iterator<Item = &'a str>,
+    body: &[Stmt],
+    built_in: &dyn Fn(&str) -> bool,
+) -> Option<(Vec<String>, std::collections::HashSet<String>)> {
+    // `stmt_leaves` with a name no variable has: only the calls and the
+    // kinds of statement it allows.
+    if !body.iter().all(|stmt| stmt_leaves(stmt, "", built_in)) {
+        return None;
+    }
+    let mut bound = std::collections::HashSet::new();
+    let mut written = std::collections::HashSet::new();
+    fn walk(block: &[Stmt], bound: &mut std::collections::HashSet<String>, written: &mut std::collections::HashSet<String>) {
+        for stmt in block {
+            match &stmt.kind {
+                StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => {
+                    bound.insert(name.clone());
+                }
+                StmtKind::Assign { target, .. } => match &target.kind {
+                    ExprKind::Field { name, .. } => {
+                        written.insert(name.clone());
+                    }
+                    ExprKind::Name(name) => {
+                        bound.insert(name.clone());
+                    }
+                    _ => {}
+                },
+                StmtKind::If { then_block, else_block, .. } => {
+                    walk(then_block, bound, written);
+                    if let Some(block) = else_block {
+                        walk(block, bound, written);
+                    }
+                }
+                StmtKind::While { body, .. } => walk(body, bound, written),
+                StmtKind::For { variable, second, body, .. } => {
+                    bound.insert(variable.clone());
+                    bound.extend(second.clone());
+                    walk(body, bound, written);
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(body, &mut bound, &mut written);
+    let params: Vec<String> = params.filter(|name| !bound.contains(*name)).map(str::to_string).collect();
+    (!params.is_empty()).then_some((params, written))
+}
+
 /// The built-in functions that only look at what they are given.
 const LOOKING: &[&str] = &["print", "len", "str", "int", "float", "bool", "abs", "min", "max", "round", "chr", "ord"];
 

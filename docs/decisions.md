@@ -9540,7 +9540,32 @@ change. Asking the body not to name the text even with a collector:
 there the text cannot go away while the loop holds it, so it is not
 needed.
 
-### 22.8 Left for later
+### 22.8 A field a function never writes is read once
+
+**Decision.** In a function that calls nothing but the built-ins that
+only look (`print`, `len`, `abs`, `math.sqrt`, ...), a number in an
+object that a parameter holds is read once, at the start, and kept in
+a local, when no statement of the function writes a field of that name
+on any object. The LLVM build reads it in the function's entry block.
+`math.sqrt` in the LLVM build is written in the program's own IR, as
+`/` already was (`WRITTEN` in `src/emit_llvm.rs`), so that it can be
+inlined.
+
+**Why.** `pull(b, c)` in the n-body benchmark reads `b.mass` after it has
+written `b.vz`. C must read it again in case `b` and `c` are the same
+object, and the compiler joined that read with the write before it in
+a way the processor stalls on. Zeno knows more than C here: nothing in
+the function writes `mass`, and nothing it calls can. Read once, the
+benchmark went from 1.0 to 0.44 seconds, where C takes 0.43. It is what
+a C programmer does by hand, `double m = b->mass;`, done for them.
+
+**What it keeps.** The meaning of the program: the field cannot change
+while the function runs, so the first value is the only value. A field
+that is written anywhere in the function, through any object, is read
+each time; so is every field in a function that calls one of the
+program's own functions or a method.
+
+### 22.9 Left for later
 
 - Choosing per file or per function, in one program. The checker
   already applies the owned rules to a whole program; applying them to

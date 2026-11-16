@@ -196,6 +196,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_int", "declare i64 @zeno_int(double, i32 signext, i32 signext)"),
     ("zeno_whole", "declare i64 @zeno_whole(double)"),
     ("zeno_sqrt", "declare double @zeno_sqrt(double, i32 signext, i32 signext)"),
+    ("llvm.sqrt.f64", "declare double @llvm.sqrt.f64(double)"),
     ("pow", "declare double @pow(double, double)"),
     ("fabs", "declare double @fabs(double)"),
     ("floor", "declare double @floor(double)"),
@@ -431,6 +432,26 @@ by_zero:
 
 divide:
   %result = fdiv double %a, %b
+  ret double %result
+}
+",
+    ),
+    (
+        "zeno.sqrt",
+        "; `math.sqrt`, which reports a number below zero. The runtime's
+; `zeno_sqrt` says so; any other number is LLVM's own square root, which
+; is one instruction where the runtime's would be a call.
+define internal double @zeno.sqrt(double %x, i32 %line, i32 %col) {
+entry:
+  %below = fcmp olt double %x, 0.0
+  br i1 %below, label %refuse, label %root
+
+refuse:
+  %never = call double @zeno_sqrt(double %x, i32 %line, i32 %col)
+  ret double %never
+
+root:
+  %result = call double @llvm.sqrt.f64(double %x)
   ret double %result
 }
 ",
@@ -841,6 +862,10 @@ struct Emitter<'a> {
     /// For a `for` loop over a variable holding text: the body never
     /// names the variable, so the text stays put while the loop walks it.
     text_stays: bool,
+    /// The fields this function reads once, in its entry block: the
+    /// parameters, the fields written somewhere in it, and the loads made
+    /// so far (decision 22.8, `ast::fields_read_once`).
+    once: Option<(HashSet<String>, HashSet<String>, HashMap<(String, String), Val>)>,
     /// Which values have one owner, and so what freeing a list frees.
     /// The C backend's, so that both agree.
     drops: emit_c::Drops,
@@ -1262,6 +1287,7 @@ pub fn emit_with(
         release: options.release,
         in_place: false,
         text_stays: false,
+        once: None,
         types,
         drops: emit_c::Drops::of(program, types, collector),
         firmware,
@@ -1544,7 +1570,10 @@ impl Emitter<'_> {
         debug_assert!(known, "{name} is not declared");
         self.used.insert(name);
         // The ones written in IR lean on the runtime in their turn.
-        if name.starts_with("zeno.box") {
+        if name == "zeno.sqrt" {
+            self.used.insert("zeno_sqrt");
+            self.used.insert("llvm.sqrt.f64");
+        } else if name.starts_with("zeno.box") {
             self.used.insert("zeno_alloc_text");
         } else if name.starts_with("zeno.") && !name.starts_with("zeno.unbox") {
             self.used.insert("zeno_by_zero");
@@ -1942,7 +1971,12 @@ impl Emitter<'_> {
             }
         }
         let outer = std::mem::replace(&mut self.scopes, vec![sees, params]);
+        let built_in = |name: &str| self.lookup(name).is_none() && !self.functions.contains_key(name);
+        let once = crate::ast::fields_read_once(entry.decl.params.iter().map(|param| param.name.as_str()), &entry.decl.body, &built_in)
+            .map(|(params, written)| (params.into_iter().collect(), written, HashMap::new()));
+        let once = std::mem::replace(&mut self.once, once);
         let mut done = self.block(&entry.decl.body);
+        self.once = once;
         if done.is_ok() && !self.code.ended {
             // The end of the body: free what the parameters still own.
             done = self.free_owned(1);
@@ -4466,7 +4500,41 @@ impl Emitter<'_> {
     }
 
     /// `object.name`: a field of an object, or a quantity in another unit.
+    /// `object.name`. A number in an object a parameter holds may be read
+    /// once, in the function's entry block, and the value used from then
+    /// on: see `ast::fields_read_once` for when.
     fn field(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
+        let key = match (&object.kind, &self.once) {
+            (ExprKind::Name(param), Some((params, written, _)))
+                if params.contains(param)
+                    && !written.contains(name)
+                    && self.lookup(param).is_some_and(|variable| matches!(variable.place, Place::Value(_))) =>
+            {
+                (param.clone(), name.to_string())
+            }
+            _ => return self.field_read(object, name, span),
+        };
+        if let Some(val) = self.once.as_ref().and_then(|(_, _, made)| made.get(&key)) {
+            return Ok(val.clone());
+        }
+        let before = self.code.lines.len();
+        let val = self.field_read(object, name, span)?;
+        let number = matches!(val.kind, Kind::Int | Kind::Float | Kind::Bool);
+        let plain = self.code.lines[before..].iter().all(|line| {
+            let line = line.trim_start();
+            line.starts_with("%t") && (line.contains("= getelementptr ") || line.contains("= load ") || line.contains("= sext ") || line.contains("= zext "))
+        });
+        if number && plain {
+            let moved: Vec<String> = self.code.lines.drain(before..).collect();
+            self.code.slots.extend(moved);
+            if let Some((_, _, made)) = self.once.as_mut() {
+                made.insert(key, val.clone());
+            }
+        }
+        Ok(val)
+    }
+
+    fn field_read(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
         if let ExprKind::Name(owner) = &object.kind {
             if self.lookup(owner).is_none() {
                 if let ("math", Some(number)) = (owner.as_str(), emit_c::math_constant(name)) {
@@ -5161,7 +5229,7 @@ impl Emitter<'_> {
             _ => return Err(wrong()),
         };
         Ok(match name {
-            "sqrt" => Val::new(self.call("double", "zeno_sqrt", format!("double {x}, {}", at(span))), Kind::Float),
+            "sqrt" => Val::new(self.call("double", "zeno.sqrt", format!("double {x}, {}", at(span))), Kind::Float),
             // The C library rounds, and the runtime turns the float that
             // comes back into an int.
             "floor" | "ceil" => {

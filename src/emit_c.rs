@@ -156,6 +156,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         release: options.release,
         in_place: false,
         text_stays: false,
+        once: None,
         drops: Drops::of(program, types, collector),
         drops_written: 0,
         firmware,
@@ -764,6 +765,15 @@ struct EnumEntry {
     takes: Vec<Vec<bool>>,
 }
 
+/// The fields of a function's parameters that it reads once, at its
+/// start, and keeps in locals: see `ast::fields_read_once`.
+struct Once {
+    params: HashSet<String>,
+    written: HashSet<String>,
+    /// The locals made so far: (parameter, field) to the local and its kind.
+    made: HashMap<(String, String), (String, Kind)>,
+}
+
 struct Emitter<'a> {
     types: &'a Types,
     /// `--release`: whole-number `+`, `-` and `*` wrap round, unchecked.
@@ -774,6 +784,8 @@ struct Emitter<'a> {
     /// For a `for` loop over a variable holding text: the body never names
     /// the variable, so the text stays where it is while the loop walks it.
     text_stays: bool,
+    /// The fields this function reads once, at its start (decision 22.8).
+    once: Option<Once>,
     /// How each kind of value is freed. See `Drops`.
     drops: Drops,
     /// How many of the functions `drops` has asked for are written.
@@ -2121,8 +2133,13 @@ impl Emitter<'_> {
         let returns = self.returns.replace(kind.returns.clone());
         let arriving = std::mem::take(&mut self.arriving);
         let fallible = std::mem::replace(&mut self.fallible, fallible);
+        let built_in = |name: &str| self.lookup_depth(name).is_none() && !self.functions.contains_key(name);
+        let once = crate::ast::fields_read_once(decl.params.iter().map(|param| param.name.as_str()), &decl.body, &built_in)
+            .map(|(params, written)| Once { params: params.into_iter().collect(), written, made: HashMap::new() });
+        let once = std::mem::replace(&mut self.once, once);
 
         let mut result = decl.body.iter().try_for_each(|statement| self.stmt(statement));
+        self.once = once;
         let ends = ends(decl.body.last());
         // Reaching the end of the body: free what its owners still hold.
         if result.is_ok() && !ends {
@@ -5334,7 +5351,37 @@ impl Emitter<'_> {
     }
 
     /// `object.name`: a field of an object, or a quantity in another unit.
+    /// `object.name`. A number in an object a parameter holds may be read
+    /// once, at the start of the function, and kept in a local:
+    ///
+    ///     double t4 = z_c->z_mass;
+    ///
+    /// See `ast::fields_read_once` for when.
     fn field(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
+        let key = match (&object.kind, &self.once) {
+            (ExprKind::Name(param), Some(once)) if once.params.contains(param) && !once.written.contains(name) => {
+                (param.clone(), name.to_string())
+            }
+            _ => return self.field_read(object, name, span),
+        };
+        if let Some((local, kind)) = self.once.as_ref().and_then(|once| once.made.get(&key)) {
+            return Ok(Val::plain(local.clone(), kind.clone()));
+        }
+        let val = self.field_read(object, name, span)?;
+        if !matches!(val.kind, Kind::Int | Kind::Float | Kind::Bool) || val.code.contains("zeno_") {
+            return Ok(val);
+        }
+        let local = self.new_temp();
+        // At the top, after the ones before it.
+        let at = self.once.as_ref().map_or(0, |once| once.made.len());
+        self.lines.insert(at, (1, format!("{}{local} = {};", c_type(&val.kind, span)?, val.code)));
+        if let Some(once) = self.once.as_mut() {
+            once.made.insert(key, (local.clone(), val.kind.clone()));
+        }
+        Ok(Val::plain(local, val.kind))
+    }
+
+    fn field_read(&mut self, object: &Expr, name: &str, span: Span) -> Result<Val, Error> {
         if let ExprKind::Name(owner) = &object.kind {
             if self.lookup(owner).is_none() {
                 if let ("math", Some(number)) = (owner.as_str(), math_constant(name)) {
@@ -6411,6 +6458,69 @@ pub(crate) mod tests {
             let Some((_, errors, finished)) = build_and_run(name, &compile_release(source), &["-O2"]) else { return };
             assert!(!finished && errors.contains(error), "{errors}");
         }
+    }
+
+    #[test]
+    fn a_field_that_a_function_never_writes_is_read_once() {
+        let source = r##"class P {
+    x: float
+    y: float
+    weight: int
+}
+function pull(a: P, b: P) {
+    a.x += b.weight * 0.5
+    b.x -= a.weight * 0.5
+    a.y = a.x + b.y
+}
+function moved(a: P, b: P) {
+    a.weight = 7
+    print(b.weight)
+}
+function shown(a: P) -> int {
+    print(a.weight)
+    return a.weight + abs(-1)
+}
+function told(a: P) -> int {
+    let w = a.weight
+    show(a)
+    return a.weight - w
+}
+function show(a: P) {
+    a.weight += 1
+}
+let p = P(1.0, 2.0, 3)
+let q = P(4.0, 5.0, 6)
+pull(p, q)
+pull(p, p)
+print(p.x)
+print(p.y)
+print(q.x)
+moved(p, p)
+print(shown(q))
+print(told(q))
+"##;
+        let c = compile(source).expect("it compiles");
+        // The body of a function: from the line that opens it to its end.
+        let body = |name: &str| {
+            let head = c.lines().find(|line| line.starts_with("static ") && line.contains(&format!(" {name}(")) && line.ends_with('{'));
+            let after = c.split(head.expect("the function")).nth(1).unwrap();
+            after.split("\n}\n").next().unwrap().to_string()
+        };
+        // `weight` is read once from each; `x` and `y` are written, and
+        // read each time.
+        let pull = body("z_pull");
+        assert_eq!(pull.matches("->z_weight;").count(), 2, "{pull}");
+        assert!(pull.contains("z_a->z_x = ") && pull.contains("z_b->z_y"), "{pull}");
+        assert!(body("z_shown").contains("int64_t t"), "{}", body("z_shown"));
+        // A field written anywhere in the function is read each time,
+        // even through another parameter that may be the same object;
+        // and a function that calls another reads each time.
+        for name in ["z_moved", "z_told"] {
+            let read_once = body(name).lines().any(|line| line.trim_start().starts_with("int64_t t") && line.ends_with("->z_weight;"));
+            assert!(!read_once, "{name}: {}", body(name));
+        }
+        same_as_interpreter("read-once", source);
+        no_collector_as_interpreter("read-once", source);
     }
 
     #[test]
@@ -13480,7 +13590,8 @@ print(d.value)
         assert!(c.contains("struct z_Cell_float {\n    double z_value;\n};"), "{c}");
         assert!(c.contains("struct z_Cell_u8 {\n    uint8_t z_value;\n};"), "{c}");
         assert!(c.contains("struct z_Cell_list_int {\n    zeno_list *z_value;\n};"), "{c}");
-        assert!(c.contains("static double z_Cell_float_get(z_Cell_float *z_self) {\n    return z_self->z_value;\n}"), "{c}");
+        // (The field is read once, into a local: decision 22.8.)
+        assert!(c.contains("static double z_Cell_float_get(z_Cell_float *z_self) {\n    double t10 = z_self->z_value;\n    return t10;\n}"), "{c}");
         // It still prints as a `Cell`.
         assert!(c.contains("zeno_join(3, \"Cell(value=\", "), "{c}");
         // Nothing is written for the generic itself, or for one that
