@@ -81,9 +81,9 @@ Option & With & What it does \\
   collector, whatever \verb|zeno.package| says \\
 \verb|--release| & \verb|build| & whole numbers wrap round on overflow
   instead of stopping the program; every other check stays \\
-\verb|--fast| & \verb|build| & \verb|--release|, with no index check,
-  no check of a float divided by zero or of a square root below zero,
-  and \verb|-O3| \\
+\verb|--fast| & \verb|build| & no index check, no check of a float
+  divided by zero or of a square root below zero, overflow with no
+  defined result (as in C), and \verb|-O3| \\
 \verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
   to \verb|clang|. Goes with the three options around it \\
 \verb|--web| & \verb|build| & write a web page that runs the program:

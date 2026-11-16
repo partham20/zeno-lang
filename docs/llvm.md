@@ -324,7 +324,9 @@ divide:
 `srem` is the processor's remainder. `select` is "this value or that
 one, depending on an `i1`": an `if` with no jump. The program calls
 `@zeno.mod`, and because it is in the same file LLVM inlines it. In
-`n % 2` it then sees that `%b` is 2 and throws nearly all of it away.
+`n % 7` it then sees that `%b` is 7 and throws the two checks away.
+(`n % 8` never gets here: by a power of two written as a number, `%`
+is one `and` and `//` is one `ashr`, decision 23.5.)
 A name with a dot in it (`zeno.mod`) cannot be a Zeno name or a C name,
 so it can meet neither (decision 5.11c).
 
@@ -885,7 +887,7 @@ a pointer the caller supplies:
 ```llvm
 define internal zeroext i1 @z_halve(i64 %arg.n, ptr %result) {
 entry:
-  %t1 = call i64 @zeno.mod(i64 %arg.n, i64 2, i32 2, i32 8)
+  %t1 = and i64 %arg.n, 1                          ; n % 2: the low bit
   %t2 = icmp ne i64 %t1, 0
   br i1 %t2, label %then1, label %end1
 
@@ -897,7 +899,7 @@ then1:
   ret i1 false                                     ; ...and say "it failed"
 
 end1:
-  %t6 = call i64 @zeno.floordiv(i64 %arg.n, i64 2, i32 5, i32 12)
+  %t6 = ashr i64 %arg.n, 1                         ; n // 2: one shift
   store i64 %t6, ptr %result                       ; return: the answer...
   ret i1 true                                      ; ...and "it worked"
 }

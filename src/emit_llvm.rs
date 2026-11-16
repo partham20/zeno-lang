@@ -4201,9 +4201,13 @@ impl Emitter<'_> {
     fn checked(&mut self, op: &'static str, left: &str, right: &str, span: Span) -> String {
         // `--release`: the plain instruction, which wraps round. With no
         // `nsw` flag LLVM may not assume it does not.
+        // `--fast`: with `nsw` ("no signed wrap"), which is what a C
+        // compiler says of a C program's `+`: it does not overflow, and
+        // LLVM may build on that (decision 23.6).
         if self.release {
             let plain = match op { "sadd" => "add", "ssub" => "sub", _ => "mul" };
-            return self.set(format!("{plain} i64 {left}, {right}"));
+            let sure = if self.fast { " nsw" } else { "" };
+            return self.set(format!("{plain}{sure} i64 {left}, {right}"));
         }
         let name = match op {
             "sadd" => "llvm.sadd.with.overflow.i64",
@@ -4264,6 +4268,19 @@ impl Emitter<'_> {
             // down, `%` follows the right side's sign). `//` and `%` are
             // functions written in IR (see `WRITTEN`), `**` is in the
             // runtime.
+            //
+            // By 2, 4, 8 and so on, written as a number, they are one
+            // instruction and cannot fail: a shift that keeps the sign
+            // rounds down, and the low bits are what is left over
+            // (decision 23.5).
+            (FloorDiv, Int, Int) if emit_c::power_of_two(&r).is_some() => {
+                let by = emit_c::power_of_two(&r).unwrap_or(0);
+                Val::new(self.set(format!("ashr i64 {l}, {by}")), Int)
+            }
+            (Mod, Int, Int) if emit_c::power_of_two(&r).is_some() => {
+                let low = (1u64 << emit_c::power_of_two(&r).unwrap_or(0)) - 1;
+                Val::new(self.set(format!("and i64 {l}, {low}")), Int)
+            }
             (FloorDiv | Mod | Pow, Int, Int) => {
                 let name = match op {
                     FloorDiv => "zeno.floordiv",
@@ -6911,6 +6928,35 @@ pub(crate) mod tests {
         let Some((printed, errors, finished)) = build_and_run_as("fast", &ir, Build::Ordinary, &flags) else { return };
         assert!(finished, "{errors}");
         assert_eq!(printed, "2.0 inf 2.0 NaN\n");
+    }
+
+    #[test]
+    fn with_fast_whole_number_sums_say_they_do_not_overflow() {
+        // `nsw` is what clang writes for a C program's signed `+`
+        // (decision 23.6). `--release` leaves it out: there a sum wraps.
+        let source = "function sum(n: int) -> int {\n    var total = 0\n    var i = 0\n    while i < n {\n        total += (i * i) % 7 - i\n        i += 1\n    }\n    return -total\n}\nprint(sum(1000), sum(0), 3 - 5 * 4)";
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_with_types(&program, true);
+        let fast = emit_c::Options { release: true, grows: false, fast: true };
+        let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, fast).expect("it builds");
+        assert!(ir.contains("add nsw i64") && ir.contains("mul nsw i64") && ir.contains("sub nsw i64"), "{ir}");
+        assert!(!ir.contains("with.overflow"), "{ir}");
+        let release = emit_c::Options { release: true, grows: false, fast: false };
+        let wraps = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, release).expect("it builds");
+        assert!(!wraps.contains(" nsw "), "{wraps}");
+        let Some((printed, errors, finished)) = build_and_run_as("fast-sums", &ir, Build::Ordinary, &["-DZENO_UNCHECKED", "-O3"]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, "497499 0 -17\n");
+    }
+
+    #[test]
+    fn dividing_by_a_power_of_two_is_one_instruction() {
+        let source = "for x in [-17, -8, -1, 0, 7, 8, 1000] {\n    print(x // 8, x % 8, x // 1, x % 1, x // 3, x % 3)\n}";
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_with_types(&program, true);
+        let ir = emit(&program, &types, "test.zeno", Build::Ordinary, false).expect("it builds");
+        assert!(ir.contains("ashr i64") && ir.contains(", 7\n"), "{ir}");
+        same_as_interpreter("power-of-two", source);
     }
 
     /// The heart of these tests, as for the C backend: the compiled

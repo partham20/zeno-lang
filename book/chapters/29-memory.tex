@@ -216,15 +216,28 @@ build of a program that makes millions of small objects runs as fast
 as the same program in C, or faster, and the collector build about two
 times slower. (Decision 22.3.)
 
-\verb|--fast| goes further. It is \verb|--release|, and it leaves out
-the other checks that a correct program never fails, as C and Rust
-leave them out: a list index out of range reads whatever memory is
-there, a float divided by zero is infinity, and the square root of a
-number below zero is NaN. A whole number divided by zero is still
-caught, because C would stop the program with a signal or worse. The
-C compiler is asked to try harder too (\verb|-O3|). Use it for a
-program whose tests pass, when every last bit of speed matters; build
-it the ordinary way while it is being written. (Decision 23.1.)
+\verb|--fast| goes further. It leaves out every check that a correct
+program never fails, as C leaves them out: a list index out of range
+reads whatever memory is there, a float divided by zero is infinity,
+and the square root of a number below zero is NaN. A whole number
+divided by zero is still caught, because C would stop the program with
+a signal or worse. The C compiler is asked to try harder too
+(\verb|-O3|).
+
+Overflow is where \verb|--fast| and \verb|--release| part. With
+\verb|--release| a sum that overflows wraps round: a wrong number, but
+a known one. With \verb|--fast| it has no defined result, as in C, and
+the C compiler builds on its not happening: a count that starts at 0
+and only goes up is never below zero, so the \verb|%| of it needs no
+care for numbers below zero. That one piece of knowledge is what makes
+a tight loop of whole numbers the very same instructions a C program
+gets. A program that does overflow may print a wrong number or never
+leave a loop. Since an overflow is an error in Zeno, a program that
+runs clean under \verb|zeno run| has none.
+
+Use \verb|--fast| for a program whose tests pass, when every last bit
+of speed matters; build it the ordinary way while it is being written.
+(Decisions 23.1 and 23.6.)
 
 Memory a program asks for itself with \verb|allocate| is apart from all
 of these: the collector never looks at it, and the program gives it back

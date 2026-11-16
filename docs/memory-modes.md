@@ -126,8 +126,8 @@ the check costs a little on every step of a tight loop. Decision 22.3.
 zeno build --fast --owned main.zeno
 ```
 
-`--fast` is `--release`, and it leaves out the other checks that a
-correct program never fails, as C and Rust leave them out:
+`--fast` leaves out every check that a correct program never fails, as
+C leaves them out:
 
 | | other builds | `--fast` |
 |---|---|---|
@@ -135,7 +135,7 @@ correct program never fails, as C and Rust leave them out:
 | `x / 0.0` | `ZeroDivisionError` | infinity, or NaN for `0.0 / 0.0` |
 | `math.sqrt(-1.0)` | `ValueError` | NaN |
 | `n // 0`, `n % 0` of whole numbers | `ZeroDivisionError` | `ZeroDivisionError` still |
-| overflow of `+ - *` | `OverflowError` | wraps round (as `--release`) |
+| overflow of `+ - *` | `OverflowError` (`--release`: wraps round) | no defined result: the C compiler is told it does not happen |
 
 The C compiler is asked for `-O3` and told that no line reads `errno`
 after a function of maths (`-fno-math-errno`), so `sqrt` is one
@@ -144,10 +144,22 @@ so the file builds the same way by hand. It goes with `--llvm`, where
 an item is read with a `getelementptr` and `/` is `fdiv`, and with any
 way of freeing memory. `zeno run` checks everything, as always.
 
+The last row is where `--fast` and `--release` part. With `--release`
+a sum that overflows wraps round: a wrong number, but a known one.
+With `--fast` the `+`, `-` and `*` are C's own (`add nsw` in LLVM IR),
+and the C compiler builds on their not overflowing, as it does for a
+program written in C: a count that starts at 0 and goes up is never
+below zero, so `count % 7` needs no care for a number below zero. That
+knowledge is what made the loop benchmark the same instructions as C's
+(decision 23.6). A program that does overflow may then print a wrong
+number or never leave a loop. An overflow is an error in Zeno, so a
+program that runs clean under `zeno run` and `zeno build` has none.
+
 Build it the ordinary way while a program is being written and tested,
 and with `--fast` when its tests pass and the last bit of speed
 matters. A wrong index in a `--fast` build is a wrong answer or a crash
-far from the line that caused it, exactly as in C. Decision 23.1.
+far from the line that caused it, exactly as in C. Decisions 23.1 and
+23.6.
 
 ## What it buys
 
@@ -182,6 +194,10 @@ times slower than C.
 5. Build `let xs = [1, 2, 3]` / `print(xs[5])` with `--release` and with
    `--fast`, and run both. Then look for `ZENO_UNCHECKED` in the two `.c`
    files.
-5. Move `Node`, `make` and `check` of `bench/trees.zeno` into a file
+6. Write a loop that adds `(i * i) % 7` for a thousand million `i`,
+   build it with `--release` and with `--fast`, and time the two. Then
+   find the loop in each `.c` file: which one could a C compiler know
+   more about?
+7. Move `Node`, `make` and `check` of `bench/trees.zeno` into a file
    of their own that says `memory owned`, import it, and build with
    `--memory`. How many collections are left?

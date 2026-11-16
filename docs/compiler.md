@@ -260,8 +260,8 @@ if h is not none { print(h + 1) }
 ```
 ```c
 static zeno_opt_int z_half(int64_t z_n) {
-    if (zeno_mod(z_n, 2, 2, 8) == 0) {
-        return (zeno_opt_int){true, zeno_floordiv(z_n, 2, 2, 28)};
+    if ((z_n & INT64_C(1)) == 0) {
+        return (zeno_opt_int){true, zeno_halved(z_n, 1)};
     }
     return (zeno_opt_int){false, 0};
 }
@@ -270,6 +270,10 @@ if (z_h.present) {
     zeno_print(1, zeno_str_int(zeno_add(z_h.value, 1, 6, 26)));
 }
 ```
+
+(`n % 2` and `n // 2` are the low bit and a shift, because 2 is a power
+of two written as a number; `n % 3` would be `zeno_mod(z_n, 3, 2, 8)`,
+with the line and column for its error. Decision 23.5.)
 
 Three things to see there:
 

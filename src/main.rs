@@ -120,10 +120,11 @@ fn usage() {
     println!("  --release                with build: `+`, `-` and `*` of whole numbers");
     println!("                           wrap round instead of being checked for");
     println!("                           overflow. Every other check stays");
-    println!("  --fast                   with build: everything --release leaves out,");
-    println!("                           and the checks a correct program never fails:");
-    println!("                           a list index out of range, a float divided by");
-    println!("                           zero, the square root of a number below zero.");
+    println!("  --fast                   with build: no check that a correct program");
+    println!("                           never fails: a list index out of range, a float");
+    println!("                           divided by zero, the square root of a number");
+    println!("                           below zero, and overflow, which has no defined");
+    println!("                           result here (--release wraps round).");
     println!("                           As fast as C, and as unforgiving");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");

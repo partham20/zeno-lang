@@ -150,7 +150,9 @@ pub struct Options {
     /// fails are left out too: list indexes, a float divided by zero, the
     /// square root of a number below zero (decision 23.1). The C says so
     /// in its first line, `#define ZENO_UNCHECKED 1`, so the file builds
-    /// the same by hand.
+    /// the same by hand. Whole-number `+`, `-` and `*` are C's own signed
+    /// ones, which tell the C compiler that they do not overflow
+    /// (decision 23.6).
     pub fast: bool,
 }
 
@@ -160,6 +162,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
         release: options.release || options.fast,
+        fast: options.fast,
         in_place: false,
         text_stays: false,
         once: None,
@@ -783,10 +786,25 @@ struct Once {
     made: HashMap<(String, String), (String, Kind)>,
 }
 
+/// `Some(3)` for the code of the number 8: which power of two a whole
+/// number written in the program is, if it is one. `x // 8` and `x % 8`
+/// are then a shift and a mask (decision 23.5).
+pub(crate) fn power_of_two(code: &str) -> Option<u32> {
+    let digits = code.strip_prefix("INT64_C(").and_then(|rest| rest.strip_suffix(')')).unwrap_or(code);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    (n.is_power_of_two() && n <= 1 << 62).then(|| n.trailing_zeros())
+}
+
 struct Emitter<'a> {
     types: &'a Types,
     /// `--release`: whole-number `+`, `-` and `*` wrap round, unchecked.
     release: bool,
+    /// `--fast`: they are C's signed `+`, `-` and `*`, which the C
+    /// compiler may take never to overflow (decision 23.6).
+    fast: bool,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
@@ -3685,6 +3703,7 @@ impl Emitter<'_> {
                     Kind::Int if matches!(operand.kind, ExprKind::Int(_)) => {
                         Ok(Val::plain(format!("-{}", val.code), Kind::Int))
                     }
+                    Kind::Int if self.fast => Ok(Val::from(format!("(-({}))", val.code), Kind::Int, &[&val])),
                     Kind::Int if self.release => {
                         Ok(Val::from(format!("((int64_t)(0 - (uint64_t)({})))", val.code), Kind::Int, &[&val]))
                     }
@@ -4487,6 +4506,13 @@ impl Emitter<'_> {
             // `--release`: the processor's own arithmetic, which wraps
             // round. It is done on unsigned numbers because in C only
             // those are allowed to wrap; the bits come out the same.
+            //
+            // `--fast`: C's signed arithmetic as it stands. In C a signed
+            // number that overflows has no defined result, so the C
+            // compiler takes it that none does, as it does for a program
+            // written in C: a count that only goes up is never below
+            // zero, and the `%` of it needs no mending (decision 23.6).
+            (Add | Sub | Mul, Int, Int) if self.fast => Val::from(format!("({l} {symbol} {r})"), Int, &parts),
             (Add | Sub | Mul, Int, Int) if self.release => {
                 let sign = match op { Add => "+", Sub => "-", _ => "*" };
                 Val::from(format!("((int64_t)((uint64_t)({l}) {sign} (uint64_t)({r})))"), Int, &parts)
@@ -4494,6 +4520,16 @@ impl Emitter<'_> {
             (Add, Int, Int) => Val::from(format!("zeno_add({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Sub, Int, Int) => Val::from(format!("zeno_sub({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Mul, Int, Int) => Val::from(format!("zeno_mul({l}, {r}, {})", at(span)), Int, &parts).failing(),
+            // By 2, 4, 8 and so on, written as a number: rounding down is a
+            // shift of the bits and what is left over is the low bits, for
+            // numbers below zero too. Nothing can fail (decision 23.5).
+            (FloorDiv, Int, Int) if power_of_two(r).is_some() => {
+                Val::from(format!("zeno_halved({l}, {})", power_of_two(r).unwrap_or(0)), Int, &parts)
+            }
+            (Mod, Int, Int) if power_of_two(r).is_some() => {
+                let low = (1u64 << power_of_two(r).unwrap_or(0)) - 1;
+                Val::from(format!("({l} & INT64_C({low}))"), Int, &parts)
+            }
             (FloorDiv, Int, Int) => {
                 Val::from(format!("zeno_floordiv({l}, {r}, {})", at(span)), Int, &parts).failing()
             }
@@ -6511,6 +6547,55 @@ print(str(9223372036854775807), str(-9223372036854775807 - 1), str(0), str(-7))
             assert_eq!(printed, expected);
             // Owned, every block is given back, the grown rows too.
             assert!(!grows || errors.contains(", 0 blocks left at the end"), "{errors}");
+        }
+    }
+
+    #[test]
+    fn a_fast_build_does_whole_number_sums_as_c_does() {
+        // `+`, `-` and `*` are C's own on signed numbers, so the C
+        // compiler knows what it knows of a C program: they do not
+        // overflow (decision 23.6). `--release` keeps the sums that wrap.
+        let source = "function sum(n: int) -> int {\n    var total = 0\n    var i = 0\n    while i < n {\n        total += (i * i) % 7 - i\n        i += 1\n    }\n    return -total\n}\nprint(sum(1000), sum(0), 3 - 5 * 4)";
+        let body = |c: &str| c.split("static int64_t z_sum(int64_t z_n) {\n").nth(1).expect("the function").split("\n}\n").next().unwrap_or_default().to_string();
+        let fast = body(&compile_fast(source, false));
+        assert!(fast.contains("z_i = (z_i + 1);") && fast.contains("(z_i * z_i)") && fast.contains("return (-(z_total));"), "{fast}");
+        assert!(!fast.contains("uint64_t") && !fast.contains("zeno_add("), "{fast}");
+        let release = body(&compile_release(source));
+        assert!(release.contains("z_i = ((int64_t)((uint64_t)(z_i) + (uint64_t)(1)));"), "{release}");
+        let Some((printed, errors, finished)) = build_and_run("fast-sums", &compile_fast(source, false), &["-O3"]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, interpreted(source));
+    }
+
+    #[test]
+    fn dividing_by_a_power_of_two_is_a_shift_and_a_mask_in_every_build() {
+        // `x // 8` rounds down and `x % 8` is never below zero, for an
+        // `x` below zero too: exactly what a shift that keeps the sign
+        // and the low bits give. Neither can fail, so neither is checked
+        // (decision 23.5). Any other number goes the usual way.
+        let source = r#"let big = 9223372036854775807
+let small = -big - 1
+for x in [-17, -16, -9, -8, -7, -1, 0, 1, 7, 8, 9, 16, 17, big, small] {
+    print(x // 1, x % 1, x // 2, x % 2, x // 8, x % 8, x // 4611686018427387904, x % 4611686018427387904)
+    print(x // 3, x % 3, x // -8, x % -8)
+}
+"#;
+        let c = compile(source).expect("it compiles");
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        assert!(program.contains("zeno_halved(z_x, 3)") && program.contains("(z_x & INT64_C(7))"), "{program}");
+        assert!(program.contains("zeno_halved(z_x, 62)") && program.contains("(z_x & INT64_C(4611686018427387903))"), "{program}");
+        assert!(program.contains("zeno_floordiv(z_x, 3,") && program.contains("zeno_mod(z_x, 3,"), "{program}");
+        assert!(program.contains("zeno_floordiv(z_x, -8,") && program.contains("zeno_mod(z_x, -8,"), "{program}");
+        let expected = interpreted(source);
+        let Some((printed, errors, finished)) = build_and_run("power-of-two", &c, &["-O2"]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, expected);
+        let Some((printed, _, _)) = build_and_run("power-of-two-fast", &compile_fast(source, false), &["-O3"]) else { return };
+        assert_eq!(printed, expected);
+        assert_eq!(power_of_two("INT64_C(1024)"), Some(10));
+        assert_eq!(power_of_two("1"), Some(0));
+        for code in ["0", "12", "-8", "z_n", "INT64_C(9223372036854775807)", ""] {
+            assert_eq!(power_of_two(code), None, "{code}");
         }
     }
 
@@ -9717,7 +9802,7 @@ print(work(400))
         t3 = z_make(z_round);
         int64_t t5 = z_last(t3);
         t4 = z_make(z_round);
-        z_total = zeno_add(z_total, zeno_add(t5, zeno_mod(t4->z_id, 2, 10, 38), 10, 18), 10, 9);
+        z_total = zeno_add(z_total, zeno_add(t5, (t4->z_id & INT64_C(1)), 10, 18), 10, 9);
         zeno_drop_Packet(t4);
         zeno_drop_Packet(t3);
     }

@@ -1538,8 +1538,16 @@ static int64_t zeno_floordiv(int64_t a, int64_t b, int line, int col) {
     if (b == 0) zeno_by_zero(line, col);
     if (a == INT64_MIN && b == -1) zeno_overflow(line, col);
     int64_t q = a / b;
-    if (a % b != 0 && (a < 0) != (b < 0)) q -= 1;
+    if ((a ^ b) < 0 && a % b != 0) q -= 1;
     return q;
+}
+
+/* `a // 2`, `a // 4` and so on: `a` with its bits moved `by` places
+ * down, which rounds down for a number below zero too. C leaves the
+ * shift of a number below zero to the compiler, so it is done on the
+ * number turned over; a C compiler makes one instruction of it. */
+static int64_t zeno_halved(int64_t a, int by) {
+    return a < 0 ? ~(~a >> by) : a >> by;
 }
 
 /* `%` takes the sign of the right side, to pair with `//`. */
@@ -1547,7 +1555,9 @@ static int64_t zeno_mod(int64_t a, int64_t b, int line, int col) {
     if (b == 0) zeno_by_zero(line, col);
     if (b == -1) return 0; /* also avoids INT64_MIN % -1, which C leaves undefined */
     int64_t r = a % b;
-    if (r != 0 && (r < 0) != (b < 0)) r += b;
+    /* Signs first: a branch on them is almost always guessed right,
+       while one on `r != 0` is not (decision 23.5). */
+    if ((r ^ b) < 0 && r != 0) r += b;
     return r;
 }
 
@@ -2274,15 +2284,22 @@ static zeno_list *zeno_list_new(int64_t room) {
     return list;
 }
 
+/* A full list moves to a place twice the size. Only the list itself ever
+ * points at its `items`, so the old place can go back at once.
+ *
+ * This is kept out of line. It runs once in many appends, and with it
+ * apart, what is left of `zeno_list_append` is a compare, a store and a
+ * count, which the C compiler puts where the program appends, as a C
+ * programmer writes a growing array by hand (decision 23.8). */
+__attribute__((noinline)) static void zeno_list_grow(zeno_list *list) {
+    int64_t room = list->room == 0 ? 4 : list->room * 2;
+    list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len * sizeof(zeno_slot),
+                                              (size_t)room * sizeof(zeno_slot));
+    list->room = room;
+}
+
 static void zeno_list_append(zeno_list *list, zeno_slot item) {
-    if (list->len == list->room) {
-        /* Full: move to a place twice the size. Only the list itself ever
-         * points at its `items`, so the old place can go back at once. */
-        int64_t room = list->room == 0 ? 4 : list->room * 2;
-        list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len * sizeof(zeno_slot),
-                                                  (size_t)room * sizeof(zeno_slot));
-        list->room = room;
-    }
+    if (list->len == list->room) zeno_list_grow(list);
     list->items[list->len++] = item;
 }
 
