@@ -1,0 +1,29 @@
+# Files, JSON, the clock and reading lines.
+import files
+import json
+import time
+from program import arguments
+let path = "zeno-targets-io.txt"
+files.write(path, "one\ntwo\n")
+files.append(path, "three")
+print(files.exists(path), files.read(path).lines())
+files.remove(path)
+print(files.exists(path))
+try { files.read(path) } except FileError as e { print(e.message) }
+let value = json.parse("{\"name\": \"Ada\", \"age\": 36, \"tags\": [\"a\", 1.5, true, null], \"skip\": null, \"u\": \"\\u00e9\\ud83d\\ude00\"}")
+print(value, json.write(value))
+print(json.write([1, 2.5, "q\"\n", ["k": [true, none]]]))
+class Pet {
+    name: str
+    legs: int
+}
+print(json.write(Pet("Rex", 4)), json.parse("12"), json.parse("1.0"), json.parse(" [ ] "))
+try { json.parse("{bad") } except ValueError as e { print(e.message) }
+let start = time.now()
+time.sleep(5 ms)
+print(time.now() - start >= 5 ms, arguments())
+var line = input("name? ")
+while line is not none {
+    print(f"got [{line}]")
+    line = input()
+}

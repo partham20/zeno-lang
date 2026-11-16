@@ -20,6 +20,8 @@ mod checker;
 mod deflate;
 mod emit_bytecode;
 mod emit_c;
+mod emit_js;
+mod emit_py;
 mod emit_llvm;
 mod error;
 mod format;
@@ -28,6 +30,7 @@ mod interpreter;
 mod json;
 mod ints;
 mod lexer;
+mod lower;
 mod lsp;
 mod modules;
 mod ops;
@@ -133,6 +136,10 @@ fn usage() {
     println!("                           that runs the program in a browser. The");
     println!("                           program reaches the page with `import web`");
     println!("                           (docs/web.md)");
+    println!("  --target <language>      with build: write the program in another");
+    println!("                           language, by fixed rules: js, html (a page");
+    println!("                           that runs it), py. It prints what `zeno run`");
+    println!("                           prints (docs/targets.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -790,6 +797,72 @@ fn own_page(path: &str) -> Option<String> {
     fs::read_to_string(Path::new(path).with_extension("html")).ok()
 }
 
+/// The languages `--target` can write a program in: the name after
+/// `--target`, the file it writes, and how to run that file.
+const TARGETS: &[(&str, &str, &str)] =
+    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}")];
+
+/// `zeno build --target js <file>`: write the program in another
+/// language (lower.rs, and emit_js.rs and the others).
+///
+/// The program is checked as `zeno run` checks it, and what is written
+/// does what `zeno run` does: each value is a value of the target's
+/// runtime, which is a port of ops.rs and builtins.rs.
+fn build_target(path: &str, target: &str) -> Option<()> {
+    let Some((_, extension, how)) = TARGETS.iter().find(|(name, _, _)| *name == target) else {
+        let names: Vec<String> = TARGETS.iter().map(|(name, _, _)| format!("`{name}`")).collect();
+        eprintln!("zeno: there is no target `{target}`. The targets are {}", modules::listed(&names));
+        return None;
+    };
+    let (files, program) = load(path)?;
+    let (program, errors, _) = checker::checked(program.without_tests(), checker::Rules::default());
+    for error in &errors {
+        report(&files, error);
+    }
+    if !errors.is_empty() {
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. Nothing was built.", errors.len());
+        return None;
+    }
+    let names: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let tree = match lower::lower(&program, names, lower::Options::default()) {
+        Ok(tree) => tree,
+        Err(error) => {
+            report(&files, &error);
+            return None;
+        }
+    };
+    let source = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
+    let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
+    let file = format!("{name}.{extension}");
+    let text = match target {
+        // The page written for the program, if there is one, with the
+        // program put in it. Building must not write over that page.
+        "html" => {
+            let own_page = Path::new(path).with_extension("html");
+            if fs::canonicalize(&own_page).ok().is_some_and(|own| fs::canonicalize(&file).ok() == Some(own)) {
+                eprintln!("zeno: building here would write over `{file}`, the page written for {path}.");
+                eprintln!("      Build from another folder, as in: mkdir built && cd built && zeno build --target html ../{path}");
+                return None;
+            }
+            let page = fs::read_to_string(&own_page).unwrap_or_else(|_| DEFAULT_PAGE.replace("NAME", name));
+            emit_js::page(&tree, &page)
+        }
+        "py" => emit_py::emit(&tree, source),
+        _ => emit_js::emit(&tree, source),
+    };
+    if let Err(err) = fs::write(&file, text) {
+        eprintln!("zeno: cannot write `{file}`: {err}");
+        return None;
+    }
+    if target == "html" {
+        println!("Wrote {file}. Open it in a browser");
+    } else {
+        println!("Wrote {file}. Run it with `{}`", how.replace("{file}", &file));
+    }
+    Some(())
+}
+
 /// `zeno build --web <file>`: write one page that runs the program in a
 /// browser.
 ///
@@ -956,6 +1029,16 @@ fn main() -> ExitCode {
     // `--web` builds a page for a browser.
     let web = args.iter().any(|arg| arg == "--web");
     args.retain(|arg| arg != "--web");
+    // `--target js` writes the program in another language (docs/targets.md).
+    let mut target: Option<String> = None;
+    if let Some(at) = args.iter().position(|arg| arg == "--target" || arg.starts_with("--target=")) {
+        let option = args.remove(at);
+        target = match option.strip_prefix("--target=") {
+            Some(named) => Some(named.to_string()),
+            None if at < args.len() => Some(args.remove(at)),
+            None => Some(String::new()),
+        };
+    }
     // `--owned` and `--collector` say how a program frees its memory,
     // over what its `zeno.package` says (docs/memory-modes.md).
     let owned = args.iter().any(|arg| arg == "--owned");
@@ -1155,6 +1238,18 @@ fn main() -> ExitCode {
                 eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast` and `--memory`");
                 eprintln!("      are for a compiled program");
                 return ExitCode::FAILURE;
+            }
+            if let Some(target) = &target {
+                if web || llvm || memory_report || firmware || no_collector || owned || release || fast {
+                    eprintln!("zeno: `--target` writes the program in another language, which builds and runs it.");
+                    eprintln!("      `--web`, `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast` and");
+                    eprintln!("      `--memory` are for a program compiled to machine code");
+                    return ExitCode::FAILURE;
+                }
+                return match build_target(path, target) {
+                    Some(()) => ExitCode::SUCCESS,
+                    None => ExitCode::FAILURE,
+                };
             }
             let (kind, options) = built(path);
             let built = match (web, llvm) {

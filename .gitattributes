@@ -1,3 +1,6 @@
 # Every text file is kept with Unix line ends, on Windows too, so that
 # `zeno format --check` and the tests see the same bytes everywhere.
 * text=auto eol=lf
+
+# Typed at a corner program as it is, carriage returns and all.
+tools/targets/*.stdin -text

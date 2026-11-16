@@ -96,7 +96,7 @@ piece of the compiler:
 | Microcontrollers and firmware | Compile to C, no heap required |
 | Command-line tools, desktop, servers | Native code through C or LLVM |
 | Calling existing C libraries | C interop, in both directions |
-| Web front ends | Zeno itself built for WebAssembly, and the `web` module (`zeno build --web`) |
+| Web front ends | Zeno itself built for WebAssembly, and the `web` module (`zeno build --web`); the program compiled to JavaScript (`--target js`, `--target html`) |
 | Web back ends, networking | `async` / `await` and a standard library |
 | Data and numerics | Fast arrays and operator overloading |
 | Mobile apps, games | Native code plus platform bindings |
@@ -252,6 +252,13 @@ compiles, and the tests build every program both ways. It takes the
 same flags: `--firmware` (errors as values, no `setjmp` in the IR),
 `--no-collector` (owned values freed where their owner ends, no
 collector in the program) and `--memory`.
+
+`zeno build --target <language>` writes the program in another language,
+by fixed rules, as a file that runs with that language's own tools:
+`js` (Node), `html` (a page that runs it) and `py` (Python), with more
+to come ([`docs/targets.md`](docs/targets.md)). The written program
+prints what `zeno run` prints, overflows and errors included, and
+`tools/targets.py` checks that for every example and book sample.
 
 ```sh
 cargo run -- run examples/tour.zeno             # check a program, then run it

@@ -1,0 +1,40 @@
+# Whole numbers to the edge of 64 bits, floats as Zeno shows them, and
+# the errors in between. tools/targets.py holds every target to this.
+let big = 9223372036854775807
+print(big, -big - 1, big // 2, big % 1000)
+print(9007199254740993, 9007199254740993 + 2, 4611686018427387904 * -2)
+try { print(big + 1) } except OverflowError as e { print("overflow:", e.message) }
+try { print(-big - 1 - 1) } except OverflowError { print("overflow below") }
+try { print(big * 2) } except OverflowError { print("overflow times") }
+try { print(2 ** 63) } except OverflowError { print("overflow power") }
+print(2 ** 62, (-2) ** 63, 3 ** 0, 0 ** 0)
+try { print(1 // 0) } except ZeroDivisionError as e { print(e.kind, e.message) }
+try { print(1.5 % 0) } except ZeroDivisionError { print("mod by zero") }
+print(7 // 2, -7 // 2, 7 // -2, -7 // -2, 7 % 3, -7 % 3, 7 % -3, -7 % -3)
+print(-9223372036854775807 // 10, -9223372036854775807 % 10)
+print(1 << 62, 5 >> 1, -5 >> 1, 255 & 15, 8 | 1, 6 ^ 3, ~5)
+try { print(1 << 63) } except OverflowError { print("shift overflow") }
+try { print(1 << 64) } except ValueError as e { print(e.message) }
+print(0.1 + 0.2, 1.0 / 3, 2.0 ** 0.5, 1e16, 1.5e16, 1e15, 0.0001, 0.00001, 123456789.125)
+print(-0.0, 1.0 / 4, 100.0, 1e300 * 10, -1e300 * 10, 3.0 * 1e-320)
+print(7 / 2, 6 / 2, 7.5 // 2, -7.5 // 2, 7.5 % 2, -7.5 % 2)
+print(int(3.99), int(-3.99), int("  -42 "), int("1_000"), float("2.5"), float(" 1e3 "), float("inf"))
+try { print(int("12x")) } except ValueError as e { print(e.message) }
+try { print(float("")) } except ValueError as e { print(e.message) }
+print(abs(-3), abs(-2.5), min(3, 1, 2), max([1, 5.5]), sum([1, 2, 3]), sum([1, 0.5]), sum([]))
+print(1 == 1.0, 2 < 2.5, 3 >= 3, "a" < "b", "B" < "a", "é" > "z", [1, 2] == [1, 2])
+print(u8(255), i8(-128), u8.wrap(300), i8.wrap(200), u16.wrap(-1), i32.wrap(4294967295), u32(4294967295))
+let n256 = 256
+try { print(u8(n256)) } except OverflowError as e { print(e.message) }
+let low = -40000
+try { print(i16(low)) } except OverflowError as e { print(e.message) }
+var count: u8 = 250
+count += 5
+print(count)
+try { count += 1 } except OverflowError as e { print(e.message) }
+import math
+print(math.sqrt(16), math.floor(-2.5), math.ceil(2.1), math.round(2.5), math.round(-2.5), math.round(0.49999999999999994))
+print(math.pi, math.e, math.sin(0), math.cos(180 deg), math.exp(1), math.log(math.e), math.log2(1024), math.log10(0.001))
+print(math.atan2(1, 1).deg, math.asin(1), (90 deg).rad, math.round(7))
+try { print(math.sqrt(-1)) } except ValueError as e { print(e.message) }
+try { print(math.log(0)) } except ValueError as e { print(e.message) }

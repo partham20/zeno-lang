@@ -10059,3 +10059,170 @@ match C would then take two words, and the word `fast` would mean
 "nearly". Checking only the multiplications whose result goes into a
 `%`: one rule for one benchmark.
 
+
+## 24. 0.5: the program written in other languages
+
+Partha asked (2026-11-16) for `zeno build` to write a program "in
+almost all mainstream languages", HTML among them, by fixed rules and
+with no AI when it builds. `zeno build --target <language>` does it;
+docs/targets.md is the walkthrough.
+
+### 24.1 Fixed rules, the same file every time
+
+Each target is a printer of a lowered program (24.3) plus a runtime
+(24.2). Nothing is guessed: the same program gives the same file, byte
+for byte, on every machine.
+
+**Why.** Partha asked for it, and it is the only way the written
+program can be trusted: a rule that is right once is right every time,
+and `tools/targets.py` (24.9) can prove it for every program it runs.
+A translation that varies cannot be tested this way.
+
+### 24.2 The rules of Zeno go with the program: a runtime per language
+
+Each target has a runtime (`src/runtime.js`, `src/runtime.py`) that
+does what `ops.rs` and `builtins.rs` do, step for step and message for
+message, and every operator goes through it: `a + b` is `Z.add(a, b,
+line)`. The runtime is put at the top of the written file.
+
+**Why.** The promise is "it prints what `zeno run` prints", including
+where it stops. A `+` of the target language would wrap (C++, Go,
+Java, C#, Rust in release), lose precision (JavaScript) or never
+overflow (Python), and print floats in its own way. Zeno's `+` is the
+one that has to happen.
+
+**Why at the top of the file, not a package beside it.** One file that
+runs by itself, with nothing to install, which is what a person who
+asked for "the program in Python" expects to get. The runtime is about
+900 lines; it costs nothing to carry.
+
+**Rejected.** Typed code (a plain `+` where the checker knows both
+sides are ints), for now: it is faster, but each shortcut is a place
+where the target could disagree with `zeno run`, and correctness comes
+first. It is the next step for speed, one proven case at a time.
+
+### 24.3 One lowering for every target
+
+`src/lower.rs` turns the checked program into a small one any language
+can say: unique names, each block's variables listed at its top,
+functions moved to the top of their block, and what Zeno writes as one
+expression but most languages need statements for (comprehensions,
+`0 <= t < 10`, `and`/`or` whose right side needs statements) made into
+statements, in Zeno's order of evaluation. Pattern matching becomes a
+chain of `if`s; `try` becomes the target's own `try` with a chain of
+tests that throws on what no `except` catches.
+
+**Why.** Every hard question (what order things happen in, what a
+name refers to, which variable an inner function shares) is answered
+once, where it can be tested once. The printers only spell.
+
+### 24.4 Names
+
+Every variable gets a name no other variable in the program has
+(`total`, `total_2`). A name that is a word of any target language
+(one list for all of them) gets a `_` after it. Names starting with
+`z_`, `Z` or `__`, which the runtime and the printers use, get `v_` in
+front.
+
+**Why one list for all targets.** A program's names are then the same
+in every language it is written in, which makes the files easy to
+compare with each other and with the Zeno.
+
+### 24.5 Functions before they are written
+
+A function declared in a block is set at the top of the block, so it
+can be called from a line above it, as in Zeno. A `let` or `import`
+it uses that is written further down is made at the top of the block
+too, empty until its line runs.
+
+**Why.** It is Zeno's rule, and the only order in which two functions
+that call each other can both be set.
+
+### 24.6 Ints in JavaScript
+
+A Zeno int is a JavaScript number while it is a safe integer (below
+2^53), and a `BigInt` beyond that, held to 64 bits by the runtime. A
+float is a `Float` object, so that `2.0` stays a float.
+
+**Why.** Almost every int a program uses is small, and a number is many
+times faster than a `BigInt`. A `BigInt` for every int was simpler and
+three to ten times slower. A float has to be told from an int (`2.0`
+prints as `2.0`), and JavaScript has one kind of number.
+
+### 24.7 Variables an inner function shares, in Python
+
+A variable that an inner function uses is kept in a `Cell` (a new one
+each time its block starts, so each round of a loop has its own), and
+the inner function is handed its cells as keyword parameters of its own
+(`def f(x, *, total=total)`). A function made inside an expression is
+written as a `def` on the lines before the statement.
+
+**Why.** Python's closures share one variable across every round of a
+loop, where Zeno gives each round its own; handing the cell over when
+the function is made gives Zeno's rule. A `lambda` holds one
+expression and a Zeno function holds statements, so it must be a `def`;
+making a function has no effect that can be seen, so it can be made a
+moment early.
+
+### 24.8 What a target cannot do: board, web, unsafe
+
+A program that uses `import board`, `import web` or `unsafe` is
+refused with a message naming the line.
+
+**Why.** The pins of a board, the page of `--web` and manual memory
+belong to a program compiled for that place. Pretending (a pin that
+does nothing) would print something `zeno run` never does.
+
+### 24.9 `tools/targets.py`: every target held to `zeno run`
+
+The tool runs every example, every sample of the book and the corner
+programs in `tools/targets/` with `zeno run`, then builds each for each
+target, runs it with that language's own tools and compares what it
+printed and whether it stopped with an error. A weekly job on GitHub
+runs it on the newest version of every language.
+
+**Why.** "Prints what `zeno run` prints" is a claim about 300 programs
+and a dozen languages; only a machine can check it, and only on the
+newest versions can it catch a language changing under us.
+
+### 24.10 `--target html`: a page, built on the JavaScript
+
+`--target html` writes one `.html` file with the JavaScript program and
+its runtime in a `<script>`. What the program prints goes into the
+element `zeno-output` (a `<pre>` is added if the page has none); an
+error is shown under it. The program's own page (`counter.html` beside
+`counter.zeno`) is used if there is one, and Zeno refuses to write over
+it. A page cannot write files or `sleep`, and says so when the program
+tries; `input` asks with the browser's question box, as in `--web`.
+
+**Why a page and not "HTML".** HTML is not a language a program can be
+written in: it describes a page. What a person asking for "Zeno in
+HTML" wants is a file that opens in a browser and runs the program,
+and that is a page with the program in it, in JavaScript, which is the
+browser's language.
+
+**Why one file.** It opens from a disk, an email or any host, with
+nothing beside it to lose.
+
+**Why beside `--web` and not in place of it.** `--web` runs Zeno itself
+in the page, so `import web` works and the program can answer buttons;
+it is a bigger file and the program runs at `zeno run` speed.
+`--target html` is the program compiled: small and fast, but without
+`import web` for now.
+
+**Why `sleep` is refused.** A page does one thing at a time; a program
+that slept would freeze it. `--web` refuses `sleep` for the same reason
+(14.11).
+
+### 24.11 The order of the targets
+
+JavaScript first, since the page is built on it and Node runs it
+everywhere; then HTML; then Python, whose model (one kind of int that
+never overflows, dicts that keep order) is closest to JavaScript's and
+so tests the shared lowering against a second language early; then Go,
+Java, C#, C++ and Rust, the statically typed ones; then WebAssembly.
+
+**Why Python earlier than the order first suggested.** It shares the
+most with JavaScript, so it was the cheapest way to find what in the
+lowering was really JavaScript's; it found nothing, which is the
+evidence that the lowering is not tied to one language.

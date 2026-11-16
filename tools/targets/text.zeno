@@ -1,0 +1,26 @@
+# Text: characters, escapes, methods and formats.
+let t = "héllo wörld 😀"
+print(len(t), t[1], t[12], t.find("w"), t.find("z"), t.slice(6, 11), t.upper(), "ÀB".lower())
+print("a\tb\\c\"d", ["a\tb", "q\"", "\n", char(1), "é", "😀"])
+print(" x y  ".strip(), "a,b,,c".split(","), " one  two\tthree\n".split(), "x".split(","))
+print("one\r\ntwo\n\nthree\n".lines(), "".lines(), "\n".lines())
+print("aaa".replace("a", "bb"), "abc".replace("", "-"), "".replace("", "x"))
+print("zeno".starts_with("ze"), "zeno".ends_with("no"), "A".code(), char(233), char(128512))
+try { print("ab".code()) } except ValueError as e { print(e.message) }
+try { print("abc"[5]) } except IndexError as e { print(e.message) }
+try { print("abc".slice(2, 1)) } except IndexError as e { print(e.message) }
+try { print("a".split("")) } except ValueError as e { print(e.message) }
+print(f"{3.14159:.2f}|{42:5}|{'ab':5}|{'ab':>5}|{'a:}':^6}|{-7:04}|{255:x}|{255:X}|{5:08b}|{-10:x}")
+print(f"{0.125:.2f} {2.5:.0f} {0.5:.0f} {1.5:.0f} {-0.125:.2f} {1e21:.1f} {2:.3f} {7:d}")
+print(f"{1.5 V:.2f} {500 ms} {1.5 s:.0f} {[1, 2]} {none} {true:>6}|{1.25:8.3f}|")
+print("é" < "😀", "z" < "é", "abc" < "abd", "" < "a", sorted_words())
+function sorted_words() -> list[str] {
+    let words = ["pear", "Apple", "fig", "äpfel", "banana"]
+    words.sort()
+    return words
+}
+print(str(1.0), str([1.5, "x"]), str(["k": "v"]), repr_like("q"))
+function repr_like(s: str) -> str {
+    return f"<{s}>"
+}
+print(["a": [1], "b": [1, 2]], [1: "one"])
