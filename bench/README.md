@@ -33,12 +33,12 @@ Big sizes, compiled:
 
 | Program | C | Rust | Zeno before | `zeno build` | `--release` | `--release --owned` |
 |---|---|---|---|---|---|---|
-| fib 40 | 0.153 | 0.248 | 0.460 | 0.463 | 0.143 | **0.116** |
-| loop 10⁹ | 0.840 | 0.885 | 1.249 | 1.181 | 0.894 | 1.044 |
-| sort 10⁷ | 1.04 | 1.16 | 1.29 | 1.33 | 1.23 | 1.30 |
-| strings 10⁷ | 0.872 | 0.684 | 24.5 | 1.088 | 1.097 | 1.259 |
-| trees 20 | 6.16 | 7.08 | 57.8 | 11.06 | 11.54 | **4.09** |
-| nbody 10⁷ | 0.515 | 0.389 | 1.325 | **0.416** | 0.508 | 0.490 |
+| fib 40 | 0.156 | 0.249 | 0.460 | 0.480 | 0.121 | 0.138 |
+| loop 10⁹ | 0.920 | 0.880 | 1.249 | 1.258 | 1.010 | 0.947 |
+| sort 10⁷ | 1.09 | 1.14 | 1.29 | 1.43 | 1.44 | 1.35 |
+| strings 10⁷ | 0.919 | 0.704 | 24.5 | 1.157 | 1.337 | 1.285 |
+| trees 20 | 6.14 | 7.49 | 57.8 | 7.70 | 6.66 | **3.98** |
+| nbody 10⁷ | 0.488 | 0.368 | 1.325 | 0.511 | 0.479 | 0.515 |
 
 ("Zeno before" is `zeno build` before this round of work;
 `results/before-big.json`. Times move by about 10 % from run to run on
@@ -63,11 +63,14 @@ Small sizes, interpreted, against Python 3.13:
 - What closed the gaps: a collector that keeps blocks in pages (22.5),
   `memory owned` (22.1), `--release` (22.3), loops that walk a list in
   place (22.4) or text in place (22.7), and fields read once (22.8).
-- The collector is still about 2.7 times slower than ownership on
-  `trees`, which makes millions of small objects. A generational
-  collector would close more of that gap.
+- Since the collector has two generations (22.10), `trees` with it is
+  7.7 s instead of 11.1 s, within 25 % of C. Ownership is still twice
+  as fast there.
 - The interpreters are slower than Python. They exist for checking and for
   the playground; `zeno build` is the fast path.
+
+`python3 record.py --version X` keeps a record of one version in
+`results/versions/` (see docs/release.md).
 
 The results live in `results/*.json`, and zeno-lang.org/benchmarks draws its
 page from them.

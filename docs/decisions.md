@@ -9660,6 +9660,28 @@ which is faster still but needs to know exactly which words are
 pointers, and this collector does not (5.7). A bigger limit between
 collections, which trades memory for time without changing the work.
 
+### 22.12 Each release keeps its benchmark times
+
+`bench/record.py --version X` times the benchmarks with every engine
+that version has and writes `bench/results/versions/X.json`; the
+release steps (docs/release.md) say to run it after a tag. 0.1.0 and
+0.2.0 were recorded afterwards from their tags. Partha asked for a
+history (2026-11-16).
+
+**Why a script and not a step of the release workflow.** GitHub's
+machines are shared; the same program's time moves by a quarter
+between runs there, which hides most changes worth seeing. One
+machine, run by hand, gives numbers that can be compared.
+
+**Why each time is shown against C's.** C, Rust and Python run in the
+same record. A version's time divided by C's time on the same machine
+stays meaningful when the machine is a new one, so records made a
+year apart still line up.
+
+**Why a missing engine is left out.** 0.1.0 has no `--release`; a
+build that fails because the flag does not exist is not a slow build,
+and a "failed" in the history would read as a bug.
+
 ### 22.11 Left for later
 
 - Generations on Windows, with `VirtualProtect` and a handler of its

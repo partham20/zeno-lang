@@ -91,6 +91,30 @@ step 6 as well, and makes the tag itself, named after the version in
 `Cargo.toml`. That is a release from a web page, with no `git` at
 hand: tick the box, press the button, and wait about six minutes.
 
+## Keeping its benchmark times
+
+Each release keeps a record of how fast it is, so that the history can
+be seen later (the benchmarks page on zeno-lang.org draws it). After
+the tag is pushed, on the machine the earlier versions were timed on:
+
+```sh
+cargo build --release
+python3 bench/record.py --version 0.3.0
+git add bench/results/versions/0.3.0.json
+```
+
+[`bench/record.py`](../bench/record.py) times every program with every
+engine the version has, beside C, Rust and Python, and writes
+`bench/results/versions/<version>.json`. The page shows each time as a
+number of times C's time, taken in the same run, so a record made on a
+different machine still lines up with the others. An older version can
+be recorded at any time by building it from its tag in a `git
+worktree` and passing `--zeno` to that build.
+
+It is not a step of the release workflow: GitHub's machines are shared
+and their times move by a quarter from one run to the next, more than
+most of the changes the record is there to show (decisions 22.12).
+
 ## Where each one is built
 
 GitHub lends three kinds of machine: Linux on x86-64, macOS on Apple
