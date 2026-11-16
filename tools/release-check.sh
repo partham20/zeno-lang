@@ -94,7 +94,7 @@ if [ -f "$wasm" ]; then
         cd "$work"
         ZENO_WASM=$wasm run playground >/dev/null
         grep -q 'window.zenoModule' playground.html
-        ! grep -q '__WASM__' playground.html
+        if grep -q '__WASM__' playground.html; then exit 1; fi
     ) || { echo "\`zeno playground\` did not write the playground"; exit 1; }
     echo "\`zeno playground\` writes the playground with Zeno in it"
 fi

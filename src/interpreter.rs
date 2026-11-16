@@ -76,9 +76,11 @@ pub struct Tested {
 /// `zeno test`: run the program, and then each test that is written in
 /// its first file, in the order written. The tests of the files it
 /// imports are those files' own, and are run when they are tested.
+/// With `only`, the tests that have that text in their name are run
+/// and the others are passed over.
 /// Each test says `ok` or `FAILED` on a line as it ends. `Err` if the
 /// program itself stopped before its tests could run.
-pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String, Result<Vec<Tested>, Error>) {
+pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Option<&str>) -> (String, Result<Vec<Tested>, Error>) {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
@@ -94,6 +96,11 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String,
                             continue;
                         };
                         if statement.span.file() != 0 {
+                            continue;
+                        }
+                        // `zeno test --only "empty"`: the tests with
+                        // that in their name, and no others.
+                        if only.is_some_and(|text| !name.contains(text)) {
                             continue;
                         }
                         // A test that stopped half way may have left
@@ -701,7 +708,7 @@ impl Interpreter {
                     span,
                 ),
             },
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 let object = self.eval(object, env)?;
                 // `title.text = "Hello"` is a change to the page.
                 match builtins::set_on_page(self, &object, name, &value, span) {
@@ -908,7 +915,7 @@ impl Interpreter {
                 self.call(callee, positional, named, span)
             }
 
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 let object = self.eval(object, env)?;
                 // `title.text` is asked of the page.
                 match builtins::on_page(self, &object, name) {
@@ -1666,9 +1673,21 @@ mod tests {
         let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
         let complaints = crate::checker::check(&program, false);
         assert!(complaints.is_empty(), "the checker rejected the program: {complaints:?}\n{source}");
-        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside());
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside(), None);
         let tested = tested.expect("the program ran");
         (output, tested.into_iter().map(|test| (test.name, test.failure.map(|failure| failure.message))).collect())
+    }
+
+    #[test]
+    fn tests_are_chosen_by_what_is_in_their_name() {
+        let source = "print(\"the program\")\ntest \"an empty box\" {\n assert true\n}\n\
+                      test \"a full box\" {\n assert false\n}\ntest \"empty again\" {\n assert true\n}";
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let run = |only| super::run_tests(&program, true, crate::value::testing::outside(), only).0;
+        // The program still runs whole: its tests may need what it made.
+        assert_eq!(run(Some("empty")), "the program\n  ok      an empty box\n  ok      empty again\n");
+        assert_eq!(run(Some("full box")), "the program\n  FAILED  a full box\n");
+        assert_eq!(run(Some("Empty")), "the program\n");
     }
 
     #[test]
@@ -1722,7 +1741,7 @@ mod tests {
     #[test]
     fn a_program_that_stops_runs_no_test() {
         let program = parser::parse(lexer::lex("print(1 // 0)\ntest \"x\" {\n assert true\n}").unwrap()).unwrap();
-        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside());
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside(), None);
         assert_eq!(output, "");
         assert_eq!(tested.err().map(|error| error.message).as_deref(), Some("uncaught ZeroDivisionError: division by zero"));
     }

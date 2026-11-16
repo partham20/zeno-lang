@@ -7742,7 +7742,8 @@ when they are wanted: `f"{supply:.1f}"` is `3.0 V` (10.29).
 
 ### 13.8 Found and left for later
 
-(Three more were on this list at first, and are in 13.9.)
+(Three more were on this list at first, and are in 13.9. The three
+below were taken up after the release: chapter 17.)
 
 - For `let x: str = first([1])` the error is reported at the
   argument (`items` should be `list[str]`), not at `x`. A list that
@@ -8531,3 +8532,104 @@ program in a Worker cannot reach the page).
   walks through.
 - Other browsers. Only Chromium has run any of this.
 - A compiled page, small and fast (14.1). It is still the big one.
+
+## 17. What 0.1 left, taken up
+
+13.8 and the last list of [`version-0.1.md`](version-0.1.md) named
+things that were found and left. This chapter is the ones that have
+been taken up since, each with what was done and why, and one that
+was looked at and left as it is.
+
+### 17.1 A written list says what it holds, when the place could never agree
+
+`let x: str = first([1])` used to say that `items` of `first[str]`
+should be `list[str]`, at the argument. Now it says "`x` should be
+str, but this is int", at `x`.
+
+The rule of 3.16b stays: a list that is written out waits for the
+place the result goes, so that `let b: list[u8] = twice([1, 2])` is
+a list of bytes. What changed is that the place is listened to only
+if the written values could be what it asks for. A written number
+can be an int, a float, a sized number or a quantity. It can never
+be a str. Where it never can, the list is what it looks like, and
+the mismatch is reported where it really is: an int is being put
+into a str.
+
+**Why.** The old message was true and in the wrong order (13.8). It
+named a type, `first[str]`, that the reader never wrote, and pointed
+at the half of the line that was right.
+
+### 17.2 `Box([])` outside strict mode stays of unknown type
+
+`let b = Box([])`, with `class Box[T] { items: list[T] }`, gives a
+`Box` whose `T` nothing says. In strict mode that is an error that
+asks for the type. Outside it, `T` is unknown, and no message is
+given. 13.8 called that "without a word" and left it open. It is
+now settled as it is.
+
+**Why.** It is the rule of 0.2 (types are optional) and nothing
+else. `let xs = []` is a list of unknown type outside strict mode
+and an error in it, and `Box([])` is the same list with a class
+around it. A message for the one and not the other would be a rule
+with an exception, and a message for both would end optional types
+for the commonest line in a first program.
+
+### 17.3 `min` and `max` take quantities in one unit. `sum` does not
+
+`max(3 V, 2 V)` is `3 V`, and `min(readings)` of a `list[V]` is in
+volts, in every engine. Quantities in two units are refused, with
+the conversion to write (`x.V`), and so is a quantity beside a plain
+number.
+
+**Why now.** 13.6 refused them with a message that said to compare
+with `<`. That was honest and it was a loop to write for something
+every list of readings wants.
+
+**Why one unit.** `min` gives back one of the values it was given,
+as it is. `min(3 V, 200 mV)` would be `200 mV`, and `min(1 V, 2000
+mV)` would be `1 V`: the unit of the answer would depend on the
+numbers, and the checker has to know the unit before the program
+runs (1.15). With one unit going in, one unit comes out.
+
+**Why not `sum`.** The sum of no volts is `0 V`. A list that is
+running does not know its unit when it is empty: the unit is in the
+values. `zeno run` would print `0` where the compiled program, which
+knows the type, prints `0 V`, and the two must print the same
+(5.19). So `sum` still refuses, and its message now gives the three
+lines to write: start from `var total = 0 V`, and add each in a
+loop. `min` and `max` have no such case, because the least of
+nothing is an error already.
+
+### 17.4 Resting the mouse on a field says its type
+
+In an editor, the `x` of `p.x` answers `x: int`, and a method what
+it takes and returns. `ExprKind::Field` now keeps where the name
+after the dot is written (`at`), and the checker notes each one it
+reads with its type.
+
+**Why only the type, and not where it was declared.** A use of a
+variable points back to its declaration through a number the
+checker gives each one (9.11). A field has no such number and
+`ast::Field` has no place. Giving it one is a change to the tree
+that every stage reads, for a question ("where is `x` declared?")
+whose answer is nearly always "in the class two screens up", which
+"go to declaration" on the class already finds.
+
+### 17.5 `zeno test --only "text"` chooses tests by their name
+
+It runs the tests whose name has the text in it, exactly as
+written, and passes over the rest. The file itself runs whole
+first, as always.
+
+**Why text in the name, and not a pattern.** A test's name is a
+sentence (10.16), so a word or two of it is how anyone would point
+at it. A pattern language is a second thing to learn for a tool
+that is used in a hurry.
+
+**Why the capitals count.** "The same text" has one meaning.
+"The same, give or take capitals" has one for English and several
+for other languages (3.14 is the same choice for `upper`).
+
+**Why the program still runs whole.** Tests use what the file
+declares and what its top level did (10.19). Running less would
+make a test pass alone and fail in company, or the other way.

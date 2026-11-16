@@ -842,7 +842,7 @@ impl Compiler {
                     }
                 };
             }
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 self.expr(object);
                 let name = self.text(name);
                 self.emit(Op::SetField(name), span);
@@ -1213,7 +1213,7 @@ impl Compiler {
                 }
             }
 
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 self.expr(object);
                 let name = self.text(name);
                 self.emit(Op::GetField(name), span);

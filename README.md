@@ -542,6 +542,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     with nothing installed.
     See [`docs/web.md`](docs/web.md) and
     [`docs/playground.md`](docs/playground.md))
+26. What 0.1 left, taken up (done, in 0.2: `min` and `max` take
+    quantities in one unit. A mistake in `let x: str = first([1])`
+    is said at `x`. An editor says the type of a field. `zeno test
+    --only "text"` chooses tests by name.
+    See chapter 17 of [`docs/decisions.md`](docs/decisions.md))
 
 ## Layout
 

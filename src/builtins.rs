@@ -211,28 +211,62 @@ fn abs(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     }
 }
 
-/// The numbers `min`, `max` and `sum` work on: one list, or several arguments.
-fn numbers(name: &str, args: Vec<Value>, span: Span) -> Result<Vec<Value>> {
+/// What `sum` says to quantities, here and in the checker.
+pub const SUM_OF_QUANTITIES: &str = "`sum` works on plain numbers, and these have a unit. Add quantities with `+`, \
+                                     which keeps the unit: start from `var total = 0 V` and add each in a loop";
+
+/// How much a number or a quantity is, without its unit.
+fn amount(value: &Value) -> Option<f64> {
+    match value {
+        Value::Quantity(x, _) => Some(*x),
+        other => other.number(),
+    }
+}
+
+/// The numbers `min`, `max` and `sum` work on: one list, or several
+/// arguments. They are all plain numbers, or all quantities in one
+/// unit, and the unit is given back with them.
+fn numbers(name: &str, args: Vec<Value>, span: Span) -> Result<(Vec<Value>, Option<Rc<str>>)> {
     let items = match args.as_slice() {
         [Value::List(items)] => items.borrow().clone(),
         _ => args,
     };
-    for item in &items {
-        if item.number().is_none() {
-            return wrong_type(name, "numbers", item, span);
+    let mut unit: Option<Rc<str>> = None;
+    for (place, item) in items.iter().enumerate() {
+        match item {
+            Value::Quantity(_, its) => match &unit {
+                Some(first) if first != its => {
+                    return fatal(
+                        format!(
+                            "`{name}` needs quantities in one unit, but these are in {first} and in {its}. \
+                             Turn one into the other first, as in `x.{first}`"
+                        ),
+                        span,
+                    )
+                }
+                None if place > 0 => {
+                    return fatal(format!("`{name}` needs all plain numbers or all quantities, but these are both"), span)
+                }
+                _ => unit = Some(its.clone()),
+            },
+            _ if item.number().is_none() => return wrong_type(name, "numbers", item, span),
+            _ if unit.is_some() => {
+                return fatal(format!("`{name}` needs all plain numbers or all quantities, but these are both"), span)
+            }
+            _ => {}
         }
     }
-    Ok(items)
+    Ok((items, unit))
 }
 
 /// Shared by `min` and `max`: keep the item that `better` prefers.
 fn pick(name: &str, args: Vec<Value>, span: Span, better: fn(f64, f64) -> bool) -> Result {
-    let mut items = numbers(name, args, span)?.into_iter();
+    let mut items = numbers(name, args, span)?.0.into_iter();
     let Some(mut best) = items.next() else {
         return raise("ValueError", format!("`{name}` of nothing"), span);
     };
     for item in items {
-        if better(item.number().unwrap(), best.number().unwrap()) {
+        if better(amount(&item).unwrap(), amount(&best).unwrap()) {
             best = item;
         }
     }
@@ -248,7 +282,12 @@ fn max(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
-    let items = numbers("sum", args, span)?;
+    let (items, unit) = numbers("sum", args, span)?;
+    // Not quantities: the sum of an empty list would have no unit to
+    // be in (decision 17.3).
+    if unit.is_some() {
+        return fatal(SUM_OF_QUANTITIES, span);
+    }
     // Stay an int while every item is an int.
     let mut int_total: Option<i64> = Some(0);
     let mut float_total = 0.0;

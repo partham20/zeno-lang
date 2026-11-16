@@ -654,13 +654,15 @@ mod tests {
         assert_eq!(says(&mut server, 10, "(p").as_deref(), Some("p: shapes.Point"));
         assert_eq!(says(&mut server, 5, "twice").as_deref(), Some("twice: function(count: int) -> int"));
         assert_eq!(says(&mut server, 5, "print").as_deref(), Some("print: a function"));
-        // No answer where the server would have to guess: a field, a
-        // word of the language, a name that comes with Zeno, a module.
+        // A field says what it holds, and a method what it takes.
+        assert_eq!(says(&mut server, 10, ".x").as_deref(), Some("x: int"));
+        // No answer where the server would have to guess: where a field
+        // was declared, a word of the language, a name that comes with
+        // Zeno, a module.
         assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 10, ".x"), Json::Null);
         assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 1, "let"), Json::Null);
         assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 5, "print"), Json::Null);
         assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 5, "shapes"), Json::Null);
-        assert_eq!(says(&mut server, 10, ".x"), None);
     }
 
     #[test]

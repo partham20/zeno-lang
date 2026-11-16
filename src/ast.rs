@@ -448,8 +448,9 @@ pub enum ExprKind {
     Function(Arc<Function>),
     /// `callee(args)`
     Call { callee: Box<Expr>, args: Vec<Arg> },
-    /// `object.name`
-    Field { object: Box<Expr>, name: String },
+    /// `object.name`. `at` is where the name is written, which is what
+    /// an editor asks about when the mouse rests on a field.
+    Field { object: Box<Expr>, name: String, at: Span },
     /// `object[index]`
     Index { object: Box<Expr>, index: Box<Expr> },
 }

@@ -349,6 +349,11 @@ mod tests {
     /// Unpack with Python's zlib, which is the reader everybody trusts.
     /// `None` on a machine with no Python.
     fn unpacked(packed: &[u8]) -> Option<Vec<u8>> {
+        // A machine may have something called `python3` that is not one.
+        let works = Command::new("python3").args(["-c", "import zlib; print(1)"]).output().ok()?;
+        if !works.status.success() || works.stdout.first() != Some(&b'1') {
+            return None;
+        }
         let script = "import sys, zlib; sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read(), -15))";
         let mut python = Command::new("python3").args(["-c", script]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().ok()?;
         let mut stdin = python.stdin.take()?;

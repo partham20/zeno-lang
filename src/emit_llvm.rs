@@ -2339,7 +2339,7 @@ impl Emitter<'_> {
                 }
                 self.store(ty, &new.code, &slot);
             }
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 let object = self.expr(object)?;
                 let field = match &object.kind {
                     Kind::Class(class) => self.field_of(class, name).map(|field| (class.clone(), field)),
@@ -3935,7 +3935,7 @@ impl Emitter<'_> {
                 }
             }
             ExprKind::Call { callee, args } => self.call_expr(callee, args, span)?,
-            ExprKind::Field { object, name } => self.field(object, name, span)?,
+            ExprKind::Field { object, name, .. } => self.field(object, name, span)?,
             ExprKind::Index { object, index } => {
                 let list = self.expr(object)?;
                 let position = self.expr(index)?;
@@ -4822,7 +4822,7 @@ impl Emitter<'_> {
                 }
                 self.builtin(name, args, span)
             }
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 if let ExprKind::Name(owner) = &object.kind {
                     if self.lookup(owner).is_none() {
                         // `math.sqrt(x)`
@@ -5231,7 +5231,7 @@ impl Emitter<'_> {
                 let (returns, function, args) = match (name, &**item) {
                     ("sum", Kind::Int) => ("i64", "zeno_list_sum_int", format!("ptr {code}, {}", at(span))),
                     ("sum", Kind::Float) => ("double", "zeno_list_sum_float", format!("ptr {code}")),
-                    (_, Kind::Int | Kind::Float) => {
+                    (_, Kind::Int | Kind::Float) | ("min" | "max", Kind::Quantity(_)) => {
                         // The runtime is told which of the two is wanted,
                         // and the name, for its message about an empty list.
                         let said = self.string(name);
@@ -5247,7 +5247,7 @@ impl Emitter<'_> {
             }
             ("min" | "max", [first, rest @ ..])
                 if !rest.is_empty()
-                    && matches!(first.kind, Kind::Int | Kind::Float)
+                    && matches!(first.kind, Kind::Int | Kind::Float | Kind::Quantity(_))
                     && rest.iter().all(|val| val.kind == first.kind) =>
             {
                 // `select` picks one of two values by a bool, with no

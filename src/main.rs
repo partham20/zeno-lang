@@ -94,6 +94,8 @@ fn usage() {
     println!("  --vm                     with run: compile the program to bytecode and");
     println!("                           run that, in place of walking the syntax tree.");
     println!("                           The program does the same, faster");
+    println!("  --only <text>            with test: run only the tests that have this");
+    println!("                           text in their name");
     println!("  --check                  with format: change nothing, and say which");
     println!("                           files are not laid out that way");
     println!("  --package                with new: make a package, a folder of modules");
@@ -292,7 +294,7 @@ struct Tally {
 /// the command line, and not found in a folder: then a file with no
 /// test in it is worth a line. `None` if the tests could not be run: a
 /// mistake in the program, or an error before its tests.
-fn test(path: &str, strict: bool, asked: bool) -> Option<Tally> {
+fn test(path: &str, strict: bool, asked: bool, only: Option<&str>) -> Option<Tally> {
     let source = read(path)?;
     // The file alone says whether it has tests. One with none is not run.
     let tokens = lex(path, &source)?;
@@ -326,7 +328,7 @@ fn test(path: &str, strict: bool, asked: bool) -> Option<Tally> {
         return None;
     }
     value::print_line(path);
-    let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()).with_page(own_page(path)));
+    let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()).with_page(own_page(path)), only);
     let tested = match tested {
         Ok(tested) => tested,
         Err(error) => {
@@ -928,6 +930,17 @@ fn main() -> ExitCode {
             // folder stands for the `.zeno` files in it and below it,
             // and no name at all for the folder this is run in.
             let mut named = args[1..].to_vec();
+            // `zeno test --only "empty box"`: only the tests that have
+            // that in their name.
+            let mut only = None;
+            if let Some(at) = named.iter().position(|arg| arg == "--only") {
+                if at + 1 >= named.len() {
+                    eprintln!("zeno: `--only` needs the text to look for in the names of tests, e.g. `zeno test --only \"empty\"`");
+                    return ExitCode::FAILURE;
+                }
+                only = Some(named.remove(at + 1));
+                named.remove(at);
+            }
             if named.is_empty() {
                 named.push(".".to_string());
             }
@@ -946,7 +959,7 @@ fn main() -> ExitCode {
             // Every file is tried, so that one run says everything.
             let (mut tests, mut failed, mut stopped) = (0, 0, 0);
             for path in &files {
-                match test(path, strict, asked(path)) {
+                match test(path, strict, asked(path), only.as_deref()) {
                     Some(tally) => {
                         tests += tally.tests;
                         failed += tally.failed;
@@ -955,8 +968,9 @@ fn main() -> ExitCode {
                 }
             }
             value::print_line("");
-            value::print_line(&match tests {
-                0 => "No tests were run.".to_string(),
+            value::print_line(&match (tests, &only) {
+                (0, Some(text)) => format!("No tests were run: none has `{text}` in its name."),
+                (0, None) => "No tests were run.".to_string(),
                 _ => format!("{}: {} passed, {} failed.", error::counted(tests, "test"), tests - failed, failed),
             });
             if stopped > 0 {
@@ -1175,7 +1189,7 @@ mod tests {
         assert_eq!(program_folder(&at("app/drivers/uart.zeno")), root.join("app"));
         assert_eq!(program_folder(&at("alone/one.zeno")), root.join("alone"));
 
-        let counts = |path: &str| test(&at(path), false, true).map(|tally| (tally.tests, tally.failed));
+        let counts = |path: &str| test(&at(path), false, true, None).map(|tally| (tally.tests, tally.failed));
         assert_eq!(counts("app/sensors.zeno"), Some((1, 0)));
         assert_eq!(counts("app/drivers/uart.zeno"), Some((2, 1)));
         assert_eq!(counts("alone/one.zeno"), Some((1, 0)));
@@ -1201,9 +1215,9 @@ mod tests {
         // What a program prints, and how many of its tests pass and fail.
         let run = |path: &str| {
             let (_, program) = check(&at(path), checker::Rules { strict: true, one_owner: false, firmware: false }).expect("no mistake");
-            interpreter::run_tests(&program, true, value::Outside::started_with(Vec::new())).0
+            interpreter::run_tests(&program, true, value::Outside::started_with(Vec::new()), None).0
         };
-        let counts = |path: &str| test(&at(path), true, true).map(|tally| (tally.tests, tally.failed));
+        let counts = |path: &str| test(&at(path), true, true, None).map(|tally| (tally.tests, tally.failed));
 
         // A program: its name, where it starts, and a module with a test.
         let said = package::new(&root.join("blinker"), false).expect("it is made");

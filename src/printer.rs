@@ -308,7 +308,7 @@ pub fn expr(e: &Expr) -> String {
             }
         }
         ExprKind::Call { callee, args } => format!("{}({})", expr(callee), join(args, arg)),
-        ExprKind::Field { object, name } => format!("{}.{name}", expr(object)),
+        ExprKind::Field { object, name, .. } => format!("{}.{name}", expr(object)),
         ExprKind::Index { object, index } => format!("{}[{}]", expr(object), expr(index)),
     }
 }

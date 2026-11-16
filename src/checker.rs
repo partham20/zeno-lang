@@ -1082,6 +1082,17 @@ fn as_parameter(ty: &Ty) -> String {
     }
 }
 
+/// Can a number that is written out, such as `1`, be of this type? It
+/// can be an int, a float, a sized number or a quantity, and any of
+/// those `or none`. What is not known yet is not ruled out.
+fn takes_a_number(ty: &Ty) -> bool {
+    match ty {
+        Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Quantity(_) | Ty::Dynamic | Ty::Invalid | Ty::Param(_) => true,
+        Ty::Optional(inner) => takes_a_number(inner),
+        _ => false,
+    }
+}
+
 /// Are these the same type?
 fn same(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
@@ -1924,6 +1935,15 @@ impl Checker {
             self.functions_used.push((self.types.used.len(), function.clone()));
         }
         self.types.used.push((span, name.to_string(), variable.ty.to_string(), variable.id));
+    }
+
+    /// Note that a field or a method is read here, and what its type is,
+    /// for an editor that asks (`Types::uses`). Where it was declared is
+    /// not noted: a field has no place of its own in the tree yet.
+    fn field_used(&mut self, name: &str, ty: &Ty, at: Span) {
+        if !matches!(ty, Ty::Invalid) {
+            self.types.used.push((at, name.to_string(), ty.to_string(), usize::MAX));
+        }
     }
 
     /// Report an error unless a `from` can go where a `to` is wanted.
@@ -2915,7 +2935,7 @@ impl Checker {
             ExprKind::Call { callee, args } => {
                 let converts = match &callee.kind {
                     ExprKind::Name(name) => crate::ints::width(name).is_some() || matches!(name.as_str(), "int" | "float"),
-                    ExprKind::Field { object, name } => {
+                    ExprKind::Field { object, name, .. } => {
                         name == "wrap" && matches!(&object.kind, ExprKind::Name(of) if crate::ints::width(of).is_some())
                     }
                     _ => false,
@@ -3429,9 +3449,12 @@ impl Checker {
                     return (declared, variable.ty, None);
                 }
             },
-            ExprKind::Field { object, name } => match self.look(object, env) {
+            ExprKind::Field { object, name, at } => match self.look(object, env) {
                 Ty::Instance(class) => {
                     let field = class.fields.borrow().iter().find(|f| f.name == *name).cloned();
+                    if let Some(field) = &field {
+                        self.field_used(name, &field.ty, *at);
+                    }
                     if self.kept_private(&class, name, span) {
                         return (Ty::Invalid, Ty::Invalid, None);
                     }
@@ -5161,7 +5184,7 @@ impl Checker {
                 let mut taker = None;
                 let callee = match &callee.kind {
                     // `object.method(...)`: the call looks at the object.
-                    ExprKind::Field { object: receiver, name } => {
+                    ExprKind::Field { object: receiver, name, .. } => {
                         let looked = self.owned.looking.len();
                         let object = self.look(receiver, env);
                         if matches!(name.as_str(), "pop" | "clear") && owns_items(&object) {
@@ -5288,11 +5311,13 @@ impl Checker {
                 ty
             }
 
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, at } => {
                 let object_type = self.expr(object, env);
                 let tied = object_type.is_tied();
                 let object = self.looked(object_type, object);
-                match self.field(&object, name, span) {
+                let found = self.field(&object, name, span);
+                self.field_used(name, &found, *at);
+                match found {
                     // The method would carry the object away inside it.
                     Ty::BoundMethod(_) | Ty::BuiltinMethod(..) if tied => self.error(
                         format!("a method of a value that has one owner cannot be kept as a value. Call it here: `.{name}(...)`"),
@@ -5878,16 +5903,34 @@ impl Checker {
                     [Argument { ty: Ty::List(item), .. }] => vec![item.widened()],
                     _ => arguments.iter().map(|a| a.ty.widened()).collect(),
                 };
-                let joined = self.join_all(&types).unwrap_or(Ty::Int);
-                // Not yet for quantities. What works is said, so that
-                // nobody takes the unit off by hand to get past this.
-                if types.iter().any(|ty| matches!(ty, Ty::Quantity(_))) {
-                    let way = match name {
-                        "sum" => "Add quantities with `+`, which keeps the unit",
-                        _ => "Compare quantities with `<` and `>`, which know the units",
-                    };
-                    return self.error(format!("`{name}` works on plain numbers, and these have a unit. {way}"), span);
+                // Quantities, if they are all in one unit: the answer is
+                // in that unit too (17.3).
+                let units: Vec<&Rc<str>> = types.iter().filter_map(|ty| if let Ty::Quantity(unit) = ty { Some(unit) } else { None }).collect();
+                if let Some(first) = units.first() {
+                    // `sum` of an empty list of volts would have to be
+                    // `0 V`, and a running list does not know its unit.
+                    if name == "sum" {
+                        return self.error(crate::builtins::SUM_OF_QUANTITIES, span);
+                    }
+                    let plain = types.iter().find(|ty| !matches!(ty, Ty::Quantity(_)) && !ty.is_loose());
+                    if let Some(plain) = plain {
+                        return self.error(
+                            format!("`{name}` needs all plain numbers or all quantities, but one of these is {plain} and one is in {first}"),
+                            span,
+                        );
+                    }
+                    if let Some(other) = units.iter().find(|unit| *unit != first) {
+                        return self.error(
+                            format!(
+                                "`{name}` needs quantities in one unit, but these are in {first} and in {other}. \
+                                 Turn one into the other first, as in `x.{first}`"
+                            ),
+                            span,
+                        );
+                    }
+                    return if types.iter().any(|ty| ty.is_loose()) { Ty::Dynamic } else { Ty::Quantity((*first).clone()) };
                 }
+                let joined = self.join_all(&types).unwrap_or(Ty::Int);
                 if !joined.is_number() && !joined.is_loose() {
                     return self.error(format!("`{name}` needs numbers, but this is {joined}"), span);
                 }
@@ -6545,10 +6588,29 @@ impl Checker {
         }
         // Then, for what no argument has settled, the place the result
         // goes: `let bytes: Ring[u8] = ring(4, 0)`.
+        // What the written arguments say by themselves: the `[1]` of
+        // `first([1])` says a list of ints.
+        let mut from_written = HashMap::new();
+        for (slot, argument) in pairs.iter().filter(|(_, argument)| argument.written.is_some()) {
+            self.bind(&slot.ty, &argument.ty, &mut from_written);
+        }
         if let (Some(returns), Some(wanted)) = (&outline.returns, &wanted) {
             let mut from_wanted = HashMap::new();
             self.bind(returns, wanted, &mut from_wanted);
             for (name, ty) in from_wanted {
+                // The place can say which kind of number a written one
+                // is (`let bytes: list[u8] = twice([1, 2])`). It cannot
+                // make it something it could never be: in
+                // `let x: str = first([1])` the list is a list of ints
+                // whatever `x` wants, and the mistake is that an int is
+                // put in a str, which is then said at `x` (17.1).
+                let never = from_written.get(&name).is_some_and(|said: &Ty| {
+                    let a_number = matches!(said, Ty::Int | Ty::Float) && takes_a_number(&ty);
+                    !found.contains_key(&name) && !fits(said, &ty) && !a_number
+                });
+                if never {
+                    continue;
+                }
                 // The place can ask for more than the arguments say:
                 // `let pair: Pair[Shape] = Pair(circle, square)` is a pair
                 // of shapes, and `let box: Box[int or none] = Box(count)`
@@ -6578,10 +6640,6 @@ impl Checker {
         }
         // Last, the written numbers, as the ints they are if nothing
         // else has spoken.
-        let mut from_written = HashMap::new();
-        for (slot, argument) in pairs.iter().filter(|(_, argument)| argument.written.is_some()) {
-            self.bind(&slot.ty, &argument.ty, &mut from_written);
-        }
         for (name, ty) in from_written {
             found.entry(name).or_insert(ty);
         }
@@ -7785,13 +7843,20 @@ mod tests {
         assert_eq!(error("let a = False"), "`False` is not defined. Zeno spells it `false`");
         // A program may still use such a name for something of its own.
         ok("let nil = 0\nprint(nil)");
+        // `min` and `max` take quantities in one unit (17.3).
+        ok("let low: V = min(3 V, 200 V)\nlet high: ms = max([1 ms, 2 ms])\nprint(low, high)");
         assert_eq!(
             error("print(min(3 V, 200 mV))"),
-            "`min` works on plain numbers, and these have a unit. Compare quantities with `<` and `>`, which know the units"
+            "`min` needs quantities in one unit, but these are in V and in mV. Turn one into the other first, as in `x.V`"
+        );
+        assert_eq!(
+            error("print(max(3 V, 2))"),
+            "`max` needs all plain numbers or all quantities, but one of these is int and one is in V"
         );
         assert_eq!(
             error("print(sum([3 V, 5 V]))"),
-            "`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit"
+            "`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: \
+             start from `var total = 0 V` and add each in a loop"
         );
     }
 
@@ -8035,7 +8100,7 @@ mod tests {
 
     #[test]
     fn the_types_of_a_generic_come_from_the_call() {
-        assert_eq!(error(&format!("{FIRST}let x: str = first([1, 2])")), "`items` of `first[str]` should be list[str], but this is list[int]");
+        assert_eq!(error(&format!("{FIRST}let x: str = first([1, 2])")), "`x` should be str, but this is int");
         assert_eq!(error(&format!("{FIRST}let n = 5\nlet x: str = first([n])")), "`x` should be str, but this is int");
         assert_eq!(error(&format!("{FIRST}print(first(5))")), "`items` of `first` should be list[T], but this is int");
         assert_eq!(error(&format!("{STACK}let a: Stack[int] = Stack([1])\nlet b: Stack[str] = a")), "`b` should be Stack[str], but this is Stack[int]");

@@ -1150,8 +1150,9 @@ impl Parser {
                 }
                 TokenKind::Dot => {
                     self.advance();
+                    let at = self.span();
                     let name = self.name("a name after `.`")?;
-                    ExprKind::Field { object: Box::new(expr), name }
+                    ExprKind::Field { object: Box::new(expr), name, at }
                 }
                 TokenKind::LBracket => {
                     self.advance();

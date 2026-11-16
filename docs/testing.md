@@ -104,6 +104,7 @@ error: this block was expected to raise KeyError, and it raised ValueError: a ri
 zeno test ring.zeno        # the tests in this file
 zeno test examples/ring    # the tests in every file of this folder, and below
 zeno test                  # the same, for the folder you are in
+zeno test --only "empty"   # only the tests with `empty` in their name
 ```
 
 For each file that has a test, `zeno test` runs the file as `zeno
@@ -115,6 +116,10 @@ So a test can use everything the file declares.
 - **The tests of an imported file are not run.** Testing `main.zeno`
   would not run the tests of `ring.zeno`. They are that file's own.
 - **The command fails if a test did**, so a script can ask.
+- **`--only` chooses by what is in the name.** `zeno test --only
+  "empty box"` runs the tests whose name has that text in it, as
+  written, capitals and all. The file itself still runs whole first,
+  since its tests may use what it made (17.5).
 
 `zeno run` and `zeno build` go past the tests. `zeno run` and `zeno
 check` still check them, so a test with a mistake in it is found
@@ -228,7 +233,7 @@ with the imports it has in the real program.
 - A message on `assert`.
 - `assert` in a function outside a test.
 - Lines to run before and after each test.
-- Choosing tests by name, and running them side by side.
+- Running tests side by side.
 - Running tests in a compiled program or on a board.
 
 ## Things to try

@@ -1201,7 +1201,7 @@ impl<'a> Renamer<'a> {
     fn module_named(&self, expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::Name(name) if self.starts.contains(name) && !self.is_local(name) => Some(name.clone()),
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 let before = self.module_named(object)?;
                 // `drivers.uart` goes on being a module's name as long
                 // as this file imports a module that begins so. (Where it
@@ -1218,7 +1218,7 @@ impl<'a> Renamer<'a> {
         let span = expr.span;
         // `shapes.area`: the parser read a field of a variable `shapes`.
         // It is the name `area` of the module `shapes`.
-        if let ExprKind::Field { object, name } = &expr.kind {
+        if let ExprKind::Field { object, name, .. } = &expr.kind {
             if let Some(module) = self.module_named(object) {
                 if self.starts.contains(&format!("{module}.{name}")) {
                     // Still the name of a module: seen to just below.
@@ -1293,7 +1293,7 @@ impl<'a> Renamer<'a> {
                 self.expr(callee);
                 args.iter_mut().for_each(|arg| self.expr(&mut arg.value));
             }
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 self.expr(object);
                 // `Shape.Dot`, where `Shape` is an enum of a module: the
                 // case has the module's name in front, like every name
@@ -1860,7 +1860,7 @@ mod tests {
         );
         let complaints = crate::checker::check(&program, true);
         assert!(complaints.is_empty(), "{complaints:?}");
-        let (output, tested) = crate::interpreter::run_tests(&program, true, crate::value::testing::outside());
+        let (output, tested) = crate::interpreter::run_tests(&program, true, crate::value::testing::outside(), None);
         assert_eq!(output, "  ok      from outside\n");
         assert_eq!(tested.map(|tested| tested.len()).ok(), Some(1));
         // A build has no tests in it.

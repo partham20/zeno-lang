@@ -2912,7 +2912,7 @@ impl Emitter<'_> {
             // The object may be reached through a list, as in
             // `points[1].x = 30`. Finding it can fail, so it is found
             // once, after the value, and pinned down as well.
-            ExprKind::Field { object: reached, name } => {
+            ExprKind::Field { object: reached, name, .. } => {
                 let val = if val.calls || !is_place(reached) { self.temp(val, span)? } else { val };
                 let object = self.expr(reached)?;
                 let object = if is_place(reached) { object } else { self.temp(object, span)? };
@@ -3640,7 +3640,7 @@ impl Emitter<'_> {
             }
             ExprKind::Call { callee, args } => self.call(callee, args, span),
 
-            ExprKind::Field { object, name } => self.field(object, name, span),
+            ExprKind::Field { object, name, .. } => self.field(object, name, span),
             ExprKind::Index { object, index } => {
                 let mut vals = self.sequence(&[object, index])?;
                 let index = vals.pop().expect("two values");
@@ -4512,7 +4512,7 @@ impl Emitter<'_> {
                 }
                 self.builtin(name, vals, span)
             }
-            ExprKind::Field { object, name } => {
+            ExprKind::Field { object, name, .. } => {
                 if let ExprKind::Name(owner) = &object.kind {
                     if self.lookup(owner).is_none() {
                         // `math.sqrt(x)`
@@ -5543,6 +5543,10 @@ impl Emitter<'_> {
                 let code = match (name, &**item) {
                     ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, at(span)),
                     ("sum", Kind::Float) => format!("zeno_list_sum_float({})", list.code),
+                    // A quantity is kept as a float, in its own unit.
+                    ("min" | "max", Kind::Quantity(_)) => {
+                        format!("zeno_list_best_float({}, {}, {}, {})", list.code, name == "min", c_string(name), at(span))
+                    }
                     (_, Kind::Int | Kind::Float) => format!(
                         "zeno_list_best_{}({}, {}, {}, {})",
                         key(item),
@@ -5566,7 +5570,7 @@ impl Emitter<'_> {
                 };
                 let helper = match kind {
                     Kind::Int => format!("zeno_{name}"),
-                    Kind::Float => format!("zeno_{name}_float"),
+                    Kind::Float | Kind::Quantity(_) => format!("zeno_{name}_float"),
                     _ => return Err(cannot(format!("`{name}` of anything but numbers"), span)),
                 };
                 let mut code = vals[0].code.clone();
@@ -6037,6 +6041,17 @@ pub(crate) mod tests {
         }
         // The LLVM backend is held to every program the C backend is.
         crate::emit_llvm::tests::same_as_interpreter(&format!("{name}-llvm"), source);
+    }
+
+    #[test]
+    fn the_smallest_and_largest_of_quantities() {
+        same_as_interpreter(
+            "min-max-quantities",
+            "let readings = [1.5 V, 3 V, 2 V]\nprint(max(readings))\nprint(min(readings))\n\
+             print(max(2 s, 3 s))\nprint(min(4 ms, 2 ms, 3 ms))\n\
+             let low: V = min(readings)\nprint(low + 1 V)\n\
+             var total = 0 V\nfor reading in readings {\n    total += reading\n}\nprint(total)\n",
+        );
     }
 
     #[test]

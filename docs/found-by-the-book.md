@@ -156,7 +156,7 @@ for `a`". The last two were made by counting the misplaced argument.
 | `let a = True` | `True` is not defined | `True` is not defined. Zeno spells it `true` |
 | `elif` at the start of a line | expected the end of the line, found the name `x` | Zeno spells `elif` as `else if` |
 | `let y: float = x`, `x` an int | Write the number with a decimal point | Write a number with a decimal point, as in `1.0`, and convert a value with `float( )` |
-| `min(3 V, 200 mV)` | `min` needs numbers, but this is a quantity in V | `min` works on plain numbers, and these have a unit. Compare quantities with `<` and `>`, which know the units |
+| `sum([3 V, 5 V])` | `sum` needs numbers, but this is a quantity in V | `sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop |
 
 The same hint is given for `null`, `nil`, `NULL`, `nullptr`,
 `undefined` and `False`. A program can still use any of them as a name
@@ -164,10 +164,11 @@ of its own: the hint is only for a name that means nothing.
 
 ## What was left
 
-Decision 13.8 lists three things that were found and not changed,
-with the reason for each. The one most likely to be met: for `let x:
-str = first([1])` the error is true and points at the argument
-instead of at `x`.
+Decision 13.8 listed three things that were found and not changed.
+Chapter 17 took them up after the release: the error for `let x: str
+= first([1])` is now at `x` (17.1), `min` and `max` take quantities
+in one unit (17.3), and `Box([])` outside strict mode stays as it is,
+with the reason written down (17.2).
 
 ## Three more messages
 

@@ -78,7 +78,8 @@ changing what any program written now means.
   `program.exit`, random numbers, and a library written in Zeno
   itself.
 - **Tools:** compiling one file at a time, hover on a field, choosing
-  tests by name, and tests of a compiled program.
+  tests by name, and tests of a compiled program. (Hover on a field
+  and `zeno test --only` came in 0.2: decisions 17.4 and 17.5.)
 
 And three things are not limits, because they are decided: Zeno has
 no inheritance, no second way to write a function, and no second name

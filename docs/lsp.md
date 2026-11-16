@@ -32,8 +32,8 @@ editor underlines is exactly what `zeno check` would print.
 
 The two questions about a name are answered for variables,
 parameters, functions, classes, enums and the names of a module. A
-field or a method (`p.x`) gets an empty answer for now. Decision 9.11
-says why.
+field or a method (`p.x`) says what it is, and not yet where it was
+declared (17.4).
 
 ## Watching it work
 
@@ -277,9 +277,13 @@ checker gives only where a mistake starts.
 
 ## What is left out
 
-- **Fields and methods.** `p.x` and `queue.put` get no answer to
-  "where is this declared?". The checker records names, and not yet
-  what stands after a dot (9.11).
+- **Where a field or a method was declared.** Resting the mouse on
+  the `x` of `p.x` says `x: int`, and on `queue.put` what `put` takes
+  and returns: the checker notes each read of a field with its type
+  (`Checker::field_used`, and `at` in `ExprKind::Field` is where the
+  name is written). "Go to declaration" on a field still gets no
+  answer, because a field does not yet keep where it was written
+  (17.4).
 - **Names in other places than code.** A type after a colon
   (`p: Point`), a case in a `match`, and a name inside an `f"..."`
   text get no answer either.
