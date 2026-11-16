@@ -81,12 +81,19 @@ use crate::units;
 /// Here the program is in a second file, of IR, so the word has to go.
 /// Only a `static` at the start of a line is removed, which is one that
 /// stands outside any function.
+#[cfg(test)]
 pub fn runtime(build: Build) -> String {
+    runtime_for(build, false)
+}
+
+/// The same, saying whether the pool of a build with no collector grows
+/// (see `emit_c::Options::grows`).
+pub fn runtime_for(build: Build, grows: bool) -> String {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     // A function that never returns has that said in front of `static`.
     const NEVER: &str = "__attribute__((noreturn)) ";
     let mut text = String::new();
-    for line in emit_c::runtime(firmware, collector).lines() {
+    for line in emit_c::runtime_for(firmware, collector, grows && !collector).lines() {
         match line.strip_prefix(NEVER) {
             Some(rest) => {
                 text += NEVER;
@@ -821,6 +828,11 @@ impl Code {
 
 struct Emitter<'a> {
     types: &'a Types,
+    /// `--release`: whole-number `+`, `-` and `*` wrap round, unchecked.
+    release: bool,
+    /// The `for` loop being opened has a body that cannot change its
+    /// list, so it needs no copy of it (`ast::walks_in_place`).
+    in_place: bool,
     /// Which values have one owner, and so what freeing a list frees.
     /// The C backend's, so that both agree.
     drops: emit_c::Drops,
@@ -1223,9 +1235,24 @@ const ERROR: &str = "{ ptr, ptr, ptr }";
 /// error messages. `build` says which of the three kinds of build this
 /// is, as for the C backend. `memory` is `zeno build --memory`: the
 /// program reports how much memory it used as it ends.
+#[cfg(test)]
 pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: bool) -> Result<String, Error> {
+    emit_with(program, types, file, build, memory, emit_c::Options::default())
+}
+
+/// `emit`, with the options of `emit_c::Options`.
+pub fn emit_with(
+    program: &Program,
+    types: &Types,
+    file: &str,
+    build: Build,
+    memory: bool,
+    options: emit_c::Options,
+) -> Result<String, Error> {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     let mut emitter = Emitter {
+        release: options.release,
+        in_place: false,
         types,
         drops: emit_c::Drops::of(program, types, collector),
         firmware,
@@ -2152,7 +2179,12 @@ impl Emitter<'_> {
                 // Text built to find what to loop over is given back
                 // before the first trip: see `open_loop`.
                 let begin = self.text_begin();
-                let count = self.open_loop(variable, second.as_deref(), iterable, Some(begin))?;
+                // A body that cannot change the list walks it in place.
+                let built_in = |name: &str| self.lookup(name).is_none() && !self.functions.contains_key(name);
+                self.in_place = crate::ast::walks_in_place(iterable, body, &built_in);
+                let count = self.open_loop(variable, second.as_deref(), iterable, Some(begin));
+                self.in_place = false;
+                let count = count?;
                 self.code.loops.push(Loop {
                     next: count.next.clone(),
                     done: count.done.clone(),
@@ -3103,7 +3135,9 @@ impl Emitter<'_> {
                 // Nor does a list that the statement owns: nothing the
                 // body does can reach it. The statement frees it, after
                 // the loop.
-                let own = list.passing && list.kind != Kind::Str;
+                // Nor does a list the body cannot change (see the C
+                // backend's `open_list_loop`).
+                let own = (list.passing || (self.in_place && !fresh)) && list.kind != Kind::Str;
                 let (items, item) = match &list.kind {
                     Kind::List(item) if fresh || own => (list.code.clone(), (**item).clone()),
                     // With no collector a list of text has its own copies
@@ -4052,6 +4086,12 @@ impl Emitter<'_> {
     /// a block that reports the error if the flag is set. The runtime
     /// function does not come back, which is what `unreachable` says.
     fn checked(&mut self, op: &'static str, left: &str, right: &str, span: Span) -> String {
+        // `--release`: the plain instruction, which wraps round. With no
+        // `nsw` flag LLVM may not assume it does not.
+        if self.release {
+            let plain = match op { "sadd" => "add", "ssub" => "sub", _ => "mul" };
+            return self.set(format!("{plain} i64 {left}, {right}"));
+        }
         let name = match op {
             "sadd" => "llvm.sadd.with.overflow.i64",
             "ssub" => "llvm.ssub.with.overflow.i64",
@@ -6698,6 +6738,19 @@ pub(crate) mod tests {
         ))
     }
 
+    #[test]
+    fn with_release_whole_numbers_wrap_round() {
+        let source = "var n = 9223372036854775807\nn += 1\nprint(n)\nprint(n - 1)\nprint(-n)\nlet k = 4611686018427387904\nprint(k * 4)";
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_with_types(&program, true);
+        let options = emit_c::Options { release: true, grows: false };
+        let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, options).expect("it builds");
+        assert!(!ir.contains("with.overflow"), "{ir}");
+        let Some((printed, errors, finished)) = build_and_run_as("release", &ir, Build::Ordinary, &[]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, "-9223372036854775808\n9223372036854775807\n-9223372036854775808\n0\n");
+    }
+
     /// The heart of these tests, as for the C backend: the compiled
     /// program must print exactly what the interpreter and the VM print,
     /// and stop with the same error at the same place.
@@ -7566,7 +7619,7 @@ end1:
             "class Point {\n    x: int\n}\n\
              let points = [Point(1), Point(2)]\n\
              points[0] = Point(3)\n\
-             for p in points {\n    print(p.x)\n}\n\
+             for p in points {\n    print(p.x, len(points))\n}\n\
              let grid = [[points.pop()]]\n",
         )
         .unwrap();
@@ -7598,10 +7651,10 @@ end1:
         // The end of the program frees each list with its items.
         assert!(
             program.ends_with(
-                "  %t33 = load ptr, ptr @z_grid
-  call void @zeno_list_drop_2_Point(ptr %t33)
-  %t34 = load ptr, ptr @z_points
-  call void @zeno_list_drop_1_Point(ptr %t34)
+                "  %t36 = load ptr, ptr @z_grid
+  call void @zeno_list_drop_2_Point(ptr %t36)
+  %t37 = load ptr, ptr @z_points
+  call void @zeno_list_drop_1_Point(ptr %t37)
   ret void"
             ),
             "{program}"
@@ -7967,7 +8020,7 @@ for n in [1, 5] {
         for runtime in [&firmware, &bare] {
             assert!(!runtime.contains("setjmp") && !runtime.contains("longjmp"));
         }
-        for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_block_count"] {
+        for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_pages"] {
             assert!(ordinary.contains(gone) && firmware.contains(gone) && !bare.contains(gone), "{gone}");
         }
         assert!(bare.contains("char zeno_text_room[") && bare.contains("size_t zeno_text_top"));

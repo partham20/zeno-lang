@@ -539,3 +539,100 @@ impl BinaryOp {
         }
     }
 }
+
+// ------------------------------------------------- Loops that need no copy
+
+/// Can `for item in iterable { body }` walk the list where it is, with no
+/// copy made for the loop?
+///
+/// A loop walks the list as it was when the loop began (decision 5.5c),
+/// so the compilers give it a copy of its own: the body may add to the
+/// list, take from it, or give its variable another list. The copy costs
+/// a block of memory and a pass over the list on every loop, which in a
+/// short loop run often (the planets of bench/nbody.zeno, five of them,
+/// moved ten million times) is a large part of the time.
+///
+/// When the body cannot change the list, the copy and the list are the
+/// same, and the copy can go. This answers yes only when that is plain
+/// from the words of the body, whatever the types:
+///
+/// - the name the list is reached from (`bodies` in `bodies` or in
+///   `bodies.inner`, `self` in `self.tasks`) is not written anywhere in
+///   the body, so the body neither changes it nor hands it to anything;
+/// - nothing is called but the built-in functions that only look at
+///   their arguments (`print`, `len`, `str`, `math.sqrt`, ...), which
+///   `built_in` says, so no function can reach the list another way;
+/// - no item of any list is replaced (`xs[i] = v`), which with no
+///   collector frees the item that was there, and there is no function
+///   literal, which could be kept and called later.
+///
+/// Changing a field of an item (`b.x += dt * b.vx`) is allowed: the list
+/// is the same list, holding the same items, after it.
+pub fn walks_in_place(iterable: &Expr, body: &[Stmt], built_in: &dyn Fn(&str) -> bool) -> bool {
+    let mut root = iterable;
+    loop {
+        match &root.kind {
+            ExprKind::Field { object, .. } => root = object,
+            ExprKind::Name(name) => return body.iter().all(|stmt| stmt_leaves(stmt, name, built_in)),
+            _ => return false,
+        }
+    }
+}
+
+/// The built-in functions that only look at what they are given.
+const LOOKING: &[&str] = &["print", "len", "str", "int", "float", "bool", "abs", "min", "max", "round", "chr", "ord"];
+
+fn stmt_leaves(stmt: &Stmt, root: &str, built_in: &dyn Fn(&str) -> bool) -> bool {
+    let expr = |e: &Expr| expr_leaves(e, root, built_in);
+    let block = |b: &Block| b.iter().all(|s| stmt_leaves(s, root, built_in));
+    match &stmt.kind {
+        StmtKind::Let { name, value, .. } | StmtKind::Const { name, value, .. } => name != root && expr(value),
+        StmtKind::Assign { target, value, .. } => {
+            let target_ok = match &target.kind {
+                ExprKind::Name(name) => name != root,
+                ExprKind::Field { object, .. } => expr(object),
+                _ => false,
+            };
+            target_ok && expr(value)
+        }
+        StmtKind::Expr(e) | StmtKind::Assert(e) | StmtKind::Raise(e) => expr(e),
+        StmtKind::Return(value) => value.as_ref().is_none_or(expr),
+        StmtKind::If { condition, then_block, else_block } => {
+            expr(condition) && block(then_block) && else_block.as_ref().is_none_or(block)
+        }
+        StmtKind::While { condition, body } => expr(condition) && block(body),
+        StmtKind::For { variable, second, iterable, body } => {
+            variable != root && second.as_deref() != Some(root) && expr(iterable) && block(body)
+        }
+        StmtKind::Break | StmtKind::Continue => true,
+        _ => false,
+    }
+}
+
+fn expr_leaves(e: &Expr, root: &str, built_in: &dyn Fn(&str) -> bool) -> bool {
+    let go = |e: &Expr| expr_leaves(e, root, built_in);
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => true,
+        ExprKind::Name(name) => name != root,
+        ExprKind::Unit { value, .. } => go(value),
+        ExprKind::FormatStr(parts) => parts.iter().all(|part| match part {
+            FormatPart::Text(_) => true,
+            FormatPart::Value { value, .. } => go(value),
+        }),
+        ExprKind::Unary { operand, .. } => go(operand),
+        ExprKind::Binary { left, right, .. } => go(left) && go(right),
+        ExprKind::Compare { first, rest } => go(first) && rest.iter().all(|(_, e)| go(e)),
+        ExprKind::Field { object, .. } => go(object),
+        ExprKind::Index { object, index } => go(object) && go(index),
+        ExprKind::Call { callee, args } => {
+            let looks = match &callee.kind {
+                ExprKind::Name(name) => LOOKING.contains(&name.as_str()) && built_in(name),
+                // `math.sqrt(x)`: a function of the math module.
+                ExprKind::Field { object, .. } => matches!(&object.kind, ExprKind::Name(module) if module == "math" && built_in(module)),
+                _ => false,
+            };
+            looks && args.iter().all(|arg| go(&arg.value))
+        }
+        _ => false,
+    }
+}

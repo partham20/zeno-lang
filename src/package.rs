@@ -47,7 +47,26 @@ pub const LOCK: &str = "zeno.lock";
 pub struct Manifest {
     pub name: String,
     pub needs: Vec<Need>,
+    /// `memory owned` or `memory collector`: how the program frees its
+    /// memory when it is built, unless `zeno build` is told otherwise.
+    /// `None` when the file does not say, which means `collector`.
+    pub memory: Option<Memory>,
 }
+
+/// How a built program frees memory. docs/memory-modes.md compares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Memory {
+    /// A garbage collector frees whatever nothing can reach any more.
+    /// Lists and objects can be shared freely. `zeno build` with nothing
+    /// said.
+    Collector,
+    /// Every list and object has one owner, and is freed on the line its
+    /// owner ends, with no collector in the program: what Rust does, and
+    /// what `--no-collector` does on a chip. On a computer the memory
+    /// grows as the program needs it.
+    Owned,
+}
+
 
 /// One `needs` line.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +88,7 @@ pub enum Source {
 
 const LINES: &str = "A line of `zeno.package` is one of:\n    \
     package name\n    \
+    memory owned            (or `memory collector`)\n    \
     needs name in \"folder\"\n    \
     needs name from \"address of a git repository\" at \"tag, branch or commit\"";
 
@@ -82,6 +102,7 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
     let mut errors = Vec::new();
     let mut name: Option<String> = None;
     let mut needs: Vec<Need> = Vec::new();
+    let mut memory: Option<Memory> = None;
 
     for line in tokens.split(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Eof)) {
         let Some(first) = line.first() else { continue };
@@ -101,6 +122,27 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
                     ));
                 }
                 name.get_or_insert(package.clone());
+            }
+            // `owned` is a word of the language, so it comes from the
+            // lexer as a keyword, and `collector` as a name.
+            [_, mode] if word(0, "memory") => {
+                let said = match mode {
+                    TokenKind::Owned => Memory::Owned,
+                    TokenKind::Ident(word) if word == "collector" => Memory::Collector,
+                    _ => {
+                        errors.push(Error::new(
+                            "a program frees its memory in one of two ways: `memory collector` (the garbage \
+                             collector, as when nothing is said) or `memory owned` (one owner for each value, and \
+                             no collector)",
+                            span,
+                        ));
+                        continue;
+                    }
+                };
+                if memory.is_some() {
+                    errors.push(Error::new("a `zeno.package` says `memory` once", span));
+                }
+                memory.get_or_insert(said);
             }
             [_, TokenKind::Ident(need), rest @ ..] if word(0, "needs") => {
                 let source = match rest {
@@ -143,7 +185,7 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
     }
     let top = Span { line: file * crate::token::LINES_A_FILE + 1, col: 1 };
     match name {
-        Some(name) if errors.is_empty() => Ok(Manifest { name, needs }),
+        Some(name) if errors.is_empty() => Ok(Manifest { name, needs, memory }),
         Some(_) => Err(errors),
         None => {
             errors.insert(
@@ -561,6 +603,20 @@ mod tests {
             error("package a\nneeds time in \"t\"\n"),
             "`time` is a module that comes with Zeno. `import time` gets it, with no `needs` line"
         );
+    }
+
+    #[test]
+    fn a_package_file_says_how_memory_is_freed() {
+        let read = |text: &str| parse(text, 0).expect("it is read").memory;
+        assert_eq!(read("package a\n"), None);
+        assert_eq!(read("package a\nmemory owned\n"), Some(Memory::Owned));
+        assert_eq!(read("package a\nmemory collector  # as when nothing is said\n"), Some(Memory::Collector));
+        assert_eq!(read("package a\nmemory owned\nneeds b in \"../b\"\n"), Some(Memory::Owned));
+        let two_ways = "a program frees its memory in one of two ways: `memory collector` (the garbage collector, \
+                        as when nothing is said) or `memory owned` (one owner for each value, and no collector)";
+        assert_eq!(error("package a\nmemory manual\n"), two_ways);
+        assert_eq!(error("package a\nmemory\n"), format!("this is not a line of a `zeno.package`. {LINES}"));
+        assert_eq!(error("package a\nmemory owned\nmemory owned\n"), "a `zeno.package` says `memory` once");
     }
 
     #[test]

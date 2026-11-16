@@ -110,6 +110,16 @@ fn usage() {
     println!("                           one owner, and is freed where its owner's");
     println!("                           block ends. Memory comes from a pool of a");
     println!("                           fixed size, not from malloc");
+    println!("  --owned                  with build, check or run: every list and object");
+    println!("                           has one owner and there is no collector, as");
+    println!("                           `memory owned` in zeno.package says. On a");
+    println!("                           computer memory grows as the program needs it");
+    println!("                           (docs/memory-modes.md)");
+    println!("  --collector              with build, check or run: the garbage collector,");
+    println!("                           whatever zeno.package says");
+    println!("  --release                with build: `+`, `-` and `*` of whole numbers");
+    println!("                           wrap round instead of being checked for");
+    println!("                           overflow. Every other check stays");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");
@@ -406,8 +416,14 @@ fn bytecode(path: &str) -> Option<()> {
 /// `zeno run <file>`: check the program, and if it is sound, run it.
 ///
 /// There are two engines to run it with. Both give the same result.
-fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<()> {
-    let (files, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
+fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>, owned: bool) -> Option<()> {
+    // A program whose memory is `owned` is checked by the rules its
+    // build will be checked by, so that what runs also builds.
+    let rules = match owned {
+        true => emit_c::Build::NoCollector.rules(),
+        false => checker::Rules { strict, one_owner: false, firmware: false },
+    };
+    let (files, program) = check(path, rules)?;
     // The words after the file are the program's (`program.arguments()`),
     // and what it reads with `input()` is the keyboard.
     let outside = value::Outside::started_with(arguments).with_page(own_page(path));
@@ -424,13 +440,43 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<
     }
 }
 
+/// What the `memory` line of the `zeno.package` beside `path` says, if
+/// there is one. A mistake in the file is not reported here: loading the
+/// program reads the file again and reports it with the rest.
+fn package_memory(path: &str) -> Option<package::Memory> {
+    let folder = Path::new(path).parent().unwrap_or(Path::new(""));
+    let source = fs::read_to_string(folder.join(package::FILE)).ok()?;
+    package::parse(&source, 0).ok()?.memory
+}
+
+/// Which kind of build the options and the program's `memory` ask for.
+///
+/// `--no-collector` is a build for a chip: no collector, and a pool and a
+/// text room of fixed sizes. `memory owned` is the same rules on a
+/// computer, where the pool grows, unless `--firmware` says the program
+/// is for a chip too. docs/memory-modes.md has the whole table.
+fn how_built(
+    no_collector: bool,
+    firmware: bool,
+    release: bool,
+    memory: Option<package::Memory>,
+) -> (emit_c::Build, emit_c::Options) {
+    let (kind, grows) = match (no_collector, memory, firmware) {
+        (true, _, _) => (emit_c::Build::NoCollector, false),
+        (false, Some(package::Memory::Owned), _) => (emit_c::Build::NoCollector, !firmware),
+        (false, _, true) => (emit_c::Build::Firmware, false),
+        (false, _, false) => (emit_c::Build::Ordinary, false),
+    };
+    (kind, emit_c::Options { release, grows })
+}
+
 /// `zeno build <file>`: compile the program to C, then hand the C to the
 /// machine's C compiler to make a program that runs by itself.
 ///
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
+fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options) -> Option<()> {
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.
@@ -445,7 +491,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
         return None;
     }
 
-    let c = match emit_c::emit(&program, &types, path, kind) {
+    let c = match emit_c::emit_with(&program, &types, path, kind, options) {
         Ok(c) => c,
         Err(error) => {
             report(&files, &error);
@@ -507,7 +553,7 @@ fn how_to_run(name: &str) -> String {
 /// `hello.zeno` becomes `hello.ll`, `hello_runtime.c` and `hello`. The IR
 /// holds the program. The C file is the runtime the program calls for
 /// text, printing and memory, which a C build has pasted in front of it.
-fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
+fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options) -> Option<()> {
     let (files, program) = load(path)?;
     let (program, errors, types) = checker::checked(program.without_tests(), kind.rules());
     for error in &errors {
@@ -519,7 +565,7 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
         return None;
     }
 
-    let ir = match emit_llvm::emit(&program, &types, path, kind, memory_report) {
+    let ir = match emit_llvm::emit_with(&program, &types, path, kind, memory_report, options) {
         Ok(ir) => ir,
         Err(error) => {
             report(&files, &error);
@@ -528,7 +574,7 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()
     };
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
     let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
-    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime(kind))] {
+    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime_for(kind, options.grows))] {
         if let Err(err) = fs::write(file, text) {
             eprintln!("zeno: cannot write `{file}`: {err}");
             return None;
@@ -875,11 +921,29 @@ fn main() -> ExitCode {
     // `--web` builds a page for a browser.
     let web = args.iter().any(|arg| arg == "--web");
     args.retain(|arg| arg != "--web");
-    let kind = match (no_collector, firmware) {
-        (true, _) => emit_c::Build::NoCollector,
-        (false, true) => emit_c::Build::Firmware,
-        (false, false) => emit_c::Build::Ordinary,
+    // `--owned` and `--collector` say how a program frees its memory,
+    // over what its `zeno.package` says (docs/memory-modes.md).
+    let owned = args.iter().any(|arg| arg == "--owned");
+    let collector = args.iter().any(|arg| arg == "--collector");
+    args.retain(|arg| arg != "--owned" && arg != "--collector");
+    // `--release` builds without overflow checks.
+    let release = args.iter().any(|arg| arg == "--release");
+    args.retain(|arg| arg != "--release");
+    if owned && collector {
+        eprintln!("zeno: `--owned` and `--collector` are two ways to free memory. Choose one");
+        return ExitCode::FAILURE;
+    }
+    if no_collector && collector {
+        eprintln!("zeno: `--no-collector` leaves the collector out, and `--collector` asks for it. Choose one");
+        return ExitCode::FAILURE;
+    }
+    // What the program's own file says, unless the command line says.
+    let memory = |path: &str| match (owned, collector) {
+        (true, _) => Some(package::Memory::Owned),
+        (_, true) => Some(package::Memory::Collector),
+        _ => package_memory(path),
     };
+    let built = |path: &str| how_built(no_collector, firmware, release, memory(path));
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -900,10 +964,12 @@ fn main() -> ExitCode {
                 "parse" => parse(path),
                 "join" => join(path),
                 "bytecode" => bytecode(path),
-                "check" if no_collector => check_no_collector(path).map(|_| println!("No errors found.")),
+                "check" if no_collector || memory(path) == Some(package::Memory::Owned) => {
+                    check_no_collector(path).map(|_| println!("No errors found."))
+                }
                 "check" => check(path, checker::Rules { strict, one_owner: false, firmware: false })
                     .map(|_| println!("No errors found.")),
-                _ => run(path, strict, on_vm, arguments),
+                _ => run(path, strict, on_vm, arguments, memory(path) == Some(package::Memory::Owned)),
             };
             match done {
                 Some(()) => ExitCode::SUCCESS,
@@ -1045,15 +1111,17 @@ fn main() -> ExitCode {
             };
             // A page is not compiled, so the options that say how to
             // compile have nothing to say about it.
-            if web && (llvm || memory_report || firmware || no_collector) {
+            if web && (llvm || memory_report || firmware || no_collector || owned || release) {
                 eprintln!("zeno: `build --web` writes a page, which the browser runs as `zeno run` would.");
-                eprintln!("      `--llvm`, `--firmware`, `--no-collector` and `--memory` are for a compiled program");
+                eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release` and `--memory`");
+                eprintln!("      are for a compiled program");
                 return ExitCode::FAILURE;
             }
+            let (kind, options) = built(path);
             let built = match (web, llvm) {
                 (true, _) => build_web(path),
-                (false, true) => build_llvm(path, memory_report, kind),
-                (false, false) => build(path, memory_report, kind),
+                (false, true) => build_llvm(path, memory_report, kind, options),
+                (false, false) => build(path, memory_report, kind, options),
             };
             match built {
                 Some(()) => ExitCode::SUCCESS,
@@ -1082,6 +1150,34 @@ mod tests {
             fs::write(path, text).expect("the file can be written");
         }
         root
+    }
+
+    #[test]
+    fn the_memory_a_program_asks_for_chooses_the_build() {
+        use emit_c::Build::*;
+        use package::Memory::*;
+        let built = |no_collector, firmware, memory| {
+            let (kind, options) = how_built(no_collector, firmware, false, memory);
+            (kind, options.grows)
+        };
+        // Nothing said: the collector.
+        assert_eq!(built(false, false, None), (Ordinary, false));
+        assert_eq!(built(false, false, Some(Collector)), (Ordinary, false));
+        assert_eq!(built(false, true, None), (Firmware, false));
+        // `memory owned`: no collector, and on a computer the memory grows.
+        assert_eq!(built(false, false, Some(Owned)), (NoCollector, true));
+        // On a chip (`--firmware`) the pool is fixed, as `--no-collector`.
+        assert_eq!(built(false, true, Some(Owned)), (NoCollector, false));
+        assert_eq!(built(true, false, None), (NoCollector, false));
+        assert_eq!(built(true, false, Some(Owned)), (NoCollector, false));
+        assert!(how_built(false, false, true, None).1.release);
+
+        let root = folder("memory", &[("zeno.package", "package app\nmemory owned\n"), ("main.zeno", "print(1)\n")]);
+        assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), Some(Owned));
+        let root = folder("no-memory", &[("zeno.package", "package app\n"), ("main.zeno", "print(1)\n")]);
+        assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), None);
+        let root = folder("no-package", &[("main.zeno", "print(1)\n")]);
+        assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), None);
     }
 
     #[test]
@@ -1177,7 +1273,7 @@ mod tests {
         let at = |name: &str| root.join(name).display().to_string();
         assert!(check(&at("gaps.zeno"), checker::Rules { strict: true, one_owner: true, firmware: true }).is_some());
         assert!(check_no_collector(&at("gaps.zeno")).is_none());
-        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector).is_none());
+        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector, emit_c::Options::default()).is_none());
         assert!(check_no_collector(&at("fine.zeno")).is_some());
         let _ = fs::remove_dir_all(&root);
     }

@@ -75,7 +75,15 @@ impl Build {
 /// what the program uses and nothing else. (That matters to a reviewer,
 /// who must not find `setjmp` anywhere in a firmware build, nor a
 /// collector in a build that says it has none.)
+#[cfg(test)]
 pub fn runtime(firmware: bool, collector: bool) -> String {
+    runtime_for(firmware, collector, false)
+}
+
+/// The same, saying also whether the pool and the text room of a build
+/// with no collector grow (`memory owned` on a computer, marked `#ifdef
+/// ZENO_HEAP`) or are fixed arrays (`--no-collector`, for a chip).
+pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
     let mut text = String::new();
     // One entry for each marked part the line is inside: is it being kept?
     let mut keeping: Vec<bool> = Vec::new();
@@ -85,12 +93,14 @@ pub fn runtime(firmware: bool, collector: bool) -> String {
             "#ifndef ZENO_FIRMWARE" => keeping.push(!firmware),
             "#ifdef ZENO_NO_COLLECTOR" => keeping.push(!collector),
             "#ifndef ZENO_NO_COLLECTOR" => keeping.push(collector),
-            "#else /* ZENO_FIRMWARE */" | "#else /* ZENO_NO_COLLECTOR */" => {
+            "#ifdef ZENO_HEAP" => keeping.push(grows),
+            "#ifndef ZENO_HEAP" => keeping.push(!grows),
+            "#else /* ZENO_FIRMWARE */" | "#else /* ZENO_NO_COLLECTOR */" | "#else /* ZENO_HEAP */" => {
                 if let Some(kept) = keeping.last_mut() {
                     *kept = !*kept;
                 }
             }
-            "#endif /* ZENO_FIRMWARE */" | "#endif /* ZENO_NO_COLLECTOR */" => {
+            "#endif /* ZENO_FIRMWARE */" | "#endif /* ZENO_NO_COLLECTOR */" | "#endif /* ZENO_HEAP */" => {
                 keeping.pop();
             }
             _ if keeping.iter().all(|kept| *kept) => {
@@ -123,9 +133,28 @@ pub fn program_file(name: &str) -> String {
 /// the Zeno source, which the compiled program uses in its error messages.
 /// `build` says which of the three kinds of build this is.
 pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Result<String, Error> {
+    emit_with(program, types, file, build, Options::default())
+}
+
+/// What a build may do beyond its kind (docs/memory-modes.md).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Options {
+    /// `--release`: `+`, `-` and `*` on whole numbers wrap round on
+    /// overflow, as the processor does, instead of stopping the program.
+    pub release: bool,
+    /// With no collector: the pool and the text room grow as the program
+    /// needs (`memory owned`), instead of being fixed arrays for a chip
+    /// (`--no-collector`).
+    pub grows: bool,
+}
+
+/// `emit`, with the options of `Options`.
+pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, options: Options) -> Result<String, Error> {
     let firmware = build != Build::Ordinary;
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
+        release: options.release,
+        in_place: false,
         drops: Drops::of(program, types, collector),
         drops_written: 0,
         firmware,
@@ -278,7 +307,7 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build) -> Resul
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = runtime(firmware, collector);
+    let mut c = runtime_for(firmware, collector, options.grows && !collector);
     for section in [&emitter.typedefs, &emitter.structs, &emitter.globals, &emitter.prototypes, &emitter.definitions] {
         if !section.is_empty() {
             c.push('\n');
@@ -736,6 +765,11 @@ struct EnumEntry {
 
 struct Emitter<'a> {
     types: &'a Types,
+    /// `--release`: whole-number `+`, `-` and `*` wrap round, unchecked.
+    release: bool,
+    /// The `for` loop being opened has a body that cannot change its
+    /// list, so it needs no copy of it (`ast::walks_in_place`).
+    in_place: bool,
     /// How each kind of value is freed. See `Drops`.
     drops: Drops,
     /// How many of the functions `drops` has asked for are written.
@@ -2288,7 +2322,12 @@ impl Emitter<'_> {
 
             StmtKind::For { variable, second, iterable, body } => {
                 let begin = self.text_begin();
-                let walked = self.open_loop(variable, second.as_deref(), iterable)?;
+                // A body that cannot change the list walks it in place.
+                let built_in = |name: &str| self.lookup_depth(name).is_none() && !self.functions.contains_key(name);
+                self.in_place = crate::ast::walks_in_place(iterable, body, &built_in);
+                let walked = self.open_loop(variable, second.as_deref(), iterable);
+                self.in_place = false;
+                let walked = walked?;
                 if let Some(release) = self.text_end(begin) {
                     // Text built to find what to loop over. The loop has
                     // its list or its numbers in hand by now, so the text
@@ -3329,7 +3368,10 @@ impl Emitter<'_> {
         };
         // Nor does a list that the statement owns: nothing the body does
         // can reach it. The statement frees it, after the loop.
-        let own = list.passing && list.kind != Kind::Str;
+        //
+        // Nor does a list the body cannot change: the copy would be the
+        // list itself. The loop walks it where it is, and frees nothing.
+        let own = (list.passing || (self.in_place && !fresh)) && list.kind != Kind::Str;
         let items = self.new_temp();
         let source = match (&list.kind, fresh || own) {
             (Kind::Str, _) => format!("zeno_chars({})", list.code),
@@ -3569,6 +3611,9 @@ impl Emitter<'_> {
                     // `-5` written out is just the number minus five.
                     Kind::Int if matches!(operand.kind, ExprKind::Int(_)) => {
                         Ok(Val::plain(format!("-{}", val.code), Kind::Int))
+                    }
+                    Kind::Int if self.release => {
+                        Ok(Val::from(format!("((int64_t)(0 - (uint64_t)({})))", val.code), Kind::Int, &[&val]))
                     }
                     Kind::Int => {
                         Ok(Val::from(format!("zeno_neg({}, {})", val.code, at(span)), Kind::Int, &[&val]).failing())
@@ -4366,6 +4411,13 @@ impl Emitter<'_> {
             // `p + 4`: C counts in items too.
             (Add | Sub, Kind::Pointer(_), Int) => Val::from(format!("({l} {symbol} {r})"), left.kind.clone(), &parts),
             // Whole numbers go through the runtime, which checks them.
+            // `--release`: the processor's own arithmetic, which wraps
+            // round. It is done on unsigned numbers because in C only
+            // those are allowed to wrap; the bits come out the same.
+            (Add | Sub | Mul, Int, Int) if self.release => {
+                let sign = match op { Add => "+", Sub => "-", _ => "*" };
+                Val::from(format!("((int64_t)((uint64_t)({l}) {sign} (uint64_t)({r})))"), Int, &parts)
+            }
             (Add, Int, Int) => Val::from(format!("zeno_add({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Sub, Int, Int) => Val::from(format!("zeno_sub({l}, {r}, {})", at(span)), Int, &parts).failing(),
             (Mul, Int, Int) => Val::from(format!("zeno_mul({l}, {r}, {})", at(span)), Int, &parts).failing(),
@@ -6279,6 +6331,41 @@ pub(crate) mod tests {
         same_as_interpreter("first-error", "let z = 0\nlet big = 9223372036854775807\nprint((1 // z) + (big * 2))");
     }
 
+    /// The same program built with `--release`.
+    fn compile_release(source: &str) -> String {
+        let program = crate::modules::testing::built(source);
+        let (errors, types) = crate::checker::check_with_types(&program, true);
+        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        emit_with(&program, &types, "test.zeno", Build::Ordinary, Options { release: true, grows: false })
+            .expect("it builds")
+    }
+
+    #[test]
+    fn with_release_whole_numbers_wrap_round_and_nothing_else_changes() {
+        // An overflow wraps round, as the processor does, instead of
+        // stopping the program.
+        let source = "var n = 9223372036854775807\nn += 1\nprint(n)\nprint(n - 1)\nprint(-n)\nlet k = 4611686018427387904\nprint(k * 4)";
+        let c = compile_release(source);
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        assert!(!program.contains("zeno_add(") && !program.contains("zeno_sub(") && !program.contains("zeno_mul("), "{program}");
+        let Some((printed, errors, finished)) = build_and_run("release-wraps", &c, &["-O2"]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, "-9223372036854775808\n9223372036854775807\n-9223372036854775808\n0\n");
+        // What does not overflow comes out as in every other build, and
+        // the checks that are not about overflow stay: `//` by zero, an
+        // index past the end.
+        let source = include_str!("../examples/primes.zeno");
+        let Some((printed, _, _)) = build_and_run("release-primes", &compile_release(source), &["-O2"]) else { return };
+        assert_eq!(printed, interpreted(source));
+        for (name, source, error) in [
+            ("release-zero", "let z = 0\nprint(1 // z)", "ZeroDivisionError"),
+            ("release-index", "let xs = [1, 2]\nlet i = 2\nprint(xs[i])", "IndexError"),
+        ] {
+            let Some((_, errors, finished)) = build_and_run(name, &compile_release(source), &["-O2"]) else { return };
+            assert!(!finished && errors.contains(error), "{errors}");
+        }
+    }
+
     #[test]
     fn values_that_may_be_none_match() {
         same_as_interpreter("none", r##"function find(id: int) -> str or none {
@@ -7282,8 +7369,9 @@ print(total, kept)
         assert_eq!(printed, interpreted(source));
         assert!(made > 4_000_000, "the program made {made} bytes");
         assert!(collections > 20, "the collector ran {collections} times");
-        // Without a collector `most` would equal `made`.
-        assert!(most < 200_000, "at most {most} bytes were in use at once, of {made} made");
+        // Without a collector `most` would equal `made`. (A block counts
+        // as the size of its page's blocks, which rounds it up a little.)
+        assert!(most < 400_000, "at most {most} bytes were in use at once, of {made} made");
     }
 
     #[test]
@@ -7847,7 +7935,7 @@ function main() -> int raises Refused {
             }
         };
         // The point of the build: none of this is in the C file.
-        for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_block_count", "setjmp"] {
+        for gone in ["zeno_collect", "zeno_roots", "zeno_stack_base", "zeno_pages", "setjmp"] {
             assert!(!c.contains(gone), "`{gone}` is still in a build with no collector");
         }
         // Nor is the heap: lists, objects and errors come from the pool.
@@ -7857,6 +7945,10 @@ function main() -> int raises Refused {
         assert!(finished, "the compiled program failed: {errors}");
         assert_eq!(compiled, interpreted(source), "\n{source}");
         assert!(errors.contains("no collector, 0 blocks left at the end\n"), "blocks were never freed: {errors}");
+        // `memory owned` on a computer is the same build with a pool and
+        // a text room that grow. Starting both tiny makes the program
+        // grow them many times over, which is where a mistake would be.
+        grown_as_interpreter(&name, source, &compiled, &errors);
         let text = errors.lines().find(|line| line.starts_with("text:")).expect("a line about the text room");
         let most = text.split(|c: char| !c.is_ascii_digit()).find(|word| !word.is_empty()).expect("a number");
         // A program with no shared values is still a Zeno program: the
@@ -7866,6 +7958,43 @@ function main() -> int raises Refused {
         // exactly as this one did: the same report, line for line.
         crate::emit_llvm::tests::no_collector_as_c(&name, source, &compiled, &errors);
         Some(most.parse().expect("a number"))
+    }
+
+    /// The program built as `memory owned` builds it on a computer: no
+    /// collector, and memory that grows. It must print what the fixed
+    /// build printed, and make and free the same blocks.
+    fn grown_as_interpreter(name: &str, source: &str, printed: &str, report: &str) {
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        let options = Options { release: false, grows: true };
+        let c = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+        assert!(c.contains("zeno_pool_cut") && !c.contains("zeno_pool.bytes"), "the pool does not grow");
+        let flags = ["-O1", "-DZENO_MEMORY_REPORT", "-DZENO_POOL=64", "-DZENO_TEXT_ROOM=64"];
+        let Some((compiled, errors, finished)) = build_and_run(&format!("{name}-grown"), &c, &flags) else { return };
+        assert!(finished, "the program built with `memory owned` failed: {errors}");
+        assert_eq!(compiled, printed, "\n{source}");
+        // The first line counts blocks and bytes, which do not depend on
+        // where the blocks are.
+        assert_eq!(errors.lines().next(), report.lines().next(), "\n{source}");
+    }
+
+    #[test]
+    fn with_memory_owned_the_pool_and_the_text_room_grow() {
+        // Far more than either a fixed pool or a fixed text room of the
+        // first sizes could hold, in many sizes of block and of text.
+        let source = "var words: list[str] = []\nfor i in range(20000) {\n    words.append(f\"word {i}\")\n}\n\
+                      let all = words.join(\" \")\nprint(len(words), len(all))\nvar long = \"\"\n\
+                      for i in range(300) {\n    long = long + str(i)\n}\nprint(len(long), long.slice(0, 10))";
+        let program = crate::modules::testing::built(source);
+        let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        assert!(errors.is_empty(), "{:?}", errors[0].message);
+        let fixed = emit(&program, &types, "test.zeno", Build::NoCollector).expect("it builds");
+        let room = ["-O1", "-DZENO_MEMORY_REPORT", "-DZENO_POOL=8000000", "-DZENO_TEXT_ROOM=1000000"];
+        let Some((printed, report, finished)) = build_and_run("grows-fixed", &fixed, &room) else { return };
+        assert!(finished, "{report}");
+        assert_eq!(printed, interpreted(source));
+        assert!(report.contains("no collector, 0 blocks left at the end\n"), "{report}");
+        grown_as_interpreter("grows", source, &printed, &report);
     }
 
     #[test]
@@ -12703,7 +12832,7 @@ print(total)
             "class Point {\n    x: int\n}\n\
              let points = [Point(1), Point(2)]\n\
              points[0] = Point(3)\n\
-             for p in points {\n    print(p.x)\n}\n\
+             for p in points {\n    print(p.x, len(points))\n}\n\
              let grid = [[points.pop()]]\n",
         )
         .unwrap();
@@ -12729,6 +12858,11 @@ print(total)
         assert!(after_loop.contains("    }\n    zeno_list_drop(t"), "{program}");
         // The end of the program frees each list with its items.
         assert!(program.contains("zeno_list_drop_2_Point(z_grid);\n    zeno_list_drop_1_Point(z_points);"), "{program}");
+        // A body that cannot change the list (it does not name it, and
+        // calls nothing of the program's) walks it where it is.
+        let c = compile_no_collector("class Point {\n    x: int\n}\nlet points = [Point(1), Point(2)]\nfor p in points {\n    p.x += 1\n    print(p.x)\n}\n").unwrap();
+        let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
+        assert!(!program.contains("zeno_list_copy") && program.contains("zeno_list *t2 = z_points;"), "{program}");
     }
 
     #[test]
