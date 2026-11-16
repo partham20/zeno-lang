@@ -21,6 +21,7 @@
 #
 #     Formula/zeno.rb            Homebrew
 #     packaging/arch/PKGBUILD    pacman (and the AUR)
+#     packaging/arch/.SRCINFO    the same as plain lines, for the AUR
 #     packaging/winget/*.yaml    winget
 #
 # `recipes` is laid out as this repository is, because that is where
@@ -401,10 +402,16 @@ if have docker && docker info >/dev/null 2>&1 && [ -f "$files/zeno-$version-linu
         useradd -m maker
         cp -r /made /home/maker/zeno && chown -R maker /home/maker/zeno
         su maker -c "cd /home/maker/zeno && makepkg" >/dev/null
-        cp /home/maker/zeno/*.pkg.tar.zst /made
+        su maker -c "cd /home/maker/zeno && makepkg --printsrcinfo > .SRCINFO"
+        cp /home/maker/zeno/*.pkg.tar.zst /home/maker/zeno/.SRCINFO /made
     '
     cp "$work/arch"/*.pkg.tar.zst "$out"
     say "made zeno-bin-$version-1-x86_64.pkg.tar.zst"
+    # The AUR does not run a PKGBUILD to find out what a package is: it
+    # reads `.SRCINFO`, which is the same said as plain lines, and which
+    # `makepkg` writes. It goes wherever the PKGBUILD goes.
+    cp "$work/arch/.SRCINFO" "$recipes/packaging/arch/.SRCINFO"
+    say "wrote recipes/packaging/arch/.SRCINFO"
 else
     say "no pacman package: this machine has no docker to run Arch in"
 fi
@@ -416,26 +423,36 @@ fi
 # version this is, where the setup program is and its checksum, and
 # what to show somebody who searches for it. The setup program is one
 # file for three processors, so it is named three times.
+#
+# The files are in the form Microsoft's list takes today, 1.12.0, and
+# each begins by naming the schema it is checked against. `ProductCode`
+# is the name Windows keeps the installed Zeno under (the setup
+# program's own id, with the `_is1` that Inno Setup adds), by which
+# winget knows a Zeno that is already there.
 
 setup=zeno-$version-windows-setup.exe
 if checksum=$(sum "$setup"); then
     id=ZenoLang.Zeno
     checksum=$(say "$checksum" | tr a-f A-F)
+    schema=1.12.0
     cat > "$recipes/packaging/winget/$id.yaml" <<EOF
 # Written by tools/package.sh when a version is released.
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.$schema.schema.json
 PackageIdentifier: $id
 PackageVersion: $version
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.6.0
+ManifestVersion: $schema
 EOF
     {
         cat <<EOF
 # Written by tools/package.sh when a version is released.
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.$schema.schema.json
 PackageIdentifier: $id
 PackageVersion: $version
 InstallerType: inno
 Scope: user
+ProductCode: '{BFA50675-706F-4C99-A355-0C786FDB36B9}_is1'
 InstallModes:
   - interactive
   - silent
@@ -458,29 +475,32 @@ EOF
         done
         cat <<EOF
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: $schema
 EOF
     } > "$recipes/packaging/winget/$id.installer.yaml"
     cat > "$recipes/packaging/winget/$id.locale.en-US.yaml" <<EOF
 # Written by tools/package.sh when a version is released.
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.$schema.schema.json
 PackageIdentifier: $id
 PackageVersion: $version
 PackageLocale: en-US
 Publisher: The Zeno language
 PublisherUrl: $site
+PublisherSupportUrl: https://github.com/partham20/zeno-lang/issues
 PackageName: Zeno
 PackageUrl: $site
 $(if [ -n "$licence" ]; then say "License: $licence"; say "LicenseUrl: https://github.com/partham20/zeno-lang/blob/v$version/LICENSE"; else say "# No licence had been chosen for Zeno $version."; say "License: All rights reserved"; fi)
 ShortDescription: $summary
 Description: $about
 Moniker: zeno
+ReleaseNotesUrl: https://github.com/partham20/zeno-lang/releases/tag/v$version
 Tags:
   - compiler
   - firmware
   - language
   - programming-language
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: $schema
 EOF
     say "wrote recipes/packaging/winget, three files"
 else

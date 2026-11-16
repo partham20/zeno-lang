@@ -1,9 +1,11 @@
 # Written by tools/package.sh when a version is released.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: ZenoLang.Zeno
 PackageVersion: 0.2.0
 PackageLocale: en-US
 Publisher: The Zeno language
 PublisherUrl: https://zeno-lang.org
+PublisherSupportUrl: https://github.com/partham20/zeno-lang/issues
 PackageName: Zeno
 PackageUrl: https://zeno-lang.org
 License: MIT
@@ -11,10 +13,11 @@ LicenseUrl: https://github.com/partham20/zeno-lang/blob/v0.2.0/LICENSE
 ShortDescription: The Zeno programming language
 Description: A small, readable, statically typed language for firmware and for everything around it. One `zeno` checks a program, runs it, tests it, formats it, and compiles it to C or to LLVM IR.
 Moniker: zeno
+ReleaseNotesUrl: https://github.com/partham20/zeno-lang/releases/tag/v0.2.0
 Tags:
   - compiler
   - firmware
   - language
   - programming-language
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0

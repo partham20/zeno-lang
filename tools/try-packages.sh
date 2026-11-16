@@ -16,13 +16,28 @@
 # Each needs its system: apt on Debian or Ubuntu, snap and flatpak
 # where they are installed, docker (to run Arch in) for pacman, and
 # Homebrew. The release workflow runs all five.
+#
+# Three more try the places a package manager finds Zeno in by itself,
+# which the `stores` workflow runs:
+#
+#     tools/try-packages.sh apt 0.2.0 lists files
+#     tools/try-packages.sh apt 0.2.0 lists https://github.com/partham20/zeno-lang/releases/latest/download/
+#     tools/try-packages.sh tap 0.2.0
+#     tools/try-packages.sh aur 0.2.0 packaging/arch
+#
+# `apt` is given the folder tools/apt-repo.sh wrote into, and either
+# the folder of the .deb files, which it then hands out from this
+# machine as a release would, or the address of a release that has the
+# lists already. `tap` is the two lines of Homebrew that somebody
+# types, against the repository itself. `aur` builds the package from
+# the PKGBUILD as somebody on Arch would, downloading from the release.
 
 set -eu
 
-[ $# -ge 3 ] || { echo "try-packages.sh: say the kind of package, the version, and the folder of packages" >&2; exit 1; }
+[ $# -ge 3 ] || [ "${1:-}" = tap ] && [ $# -ge 2 ] || { echo "try-packages.sh: say the kind of package, the version, and the folder of packages" >&2; exit 1; }
 kind=$1
 version=$2
-out=$(cd "$3" && pwd)
+out=$(cd "${3:-.}" && pwd)
 
 say() { printf '%s\n' "$*"; }
 stop() { printf 'try-packages.sh: %s\n' "$*" >&2; exit 1; }
@@ -53,7 +68,15 @@ runs() {
 # Where a page is built. It is in the home folder because a flatpak
 # sees that and little else.
 page=$(mktemp -d "$HOME/zeno-try.XXXXXX")
-trap 'rm -rf "$page"' EXIT
+# What the `apt` kind starts and leaves behind, to be taken away again.
+server=
+served=
+tidy() {
+    rm -rf "$page" $served
+    if [ -n "$server" ]; then kill "$server" 2>/dev/null || true; fi
+    $as_root rm -f /etc/apt/sources.list.d/zeno-try.list /usr/share/keyrings/zeno-try.asc
+}
+trap tidy EXIT
 
 case $kind in
     deb)
@@ -150,6 +173,79 @@ case $kind in
         say "  removed: nothing is left"
         ;;
 
-    *) stop "there is no kind of package \`$kind\`. The kinds are deb, snap, flatpak, pacman and brew" ;;
+    apt)
+        [ $# = 4 ] || stop "for apt, also say the folder of .deb files, or the address of a release"
+        case $4 in
+            https://*)
+                place=$4
+                curl -fsSL "${place%/}/zeno-apt-key.asc" | $as_root tee /usr/share/keyrings/zeno-try.asc >/dev/null
+                ;;
+            *)
+                # The lists and the .deb files in one folder, as they
+                # are in a release, handed out from this machine.
+                served=$(mktemp -d)
+                cp "$out/InRelease" "$out/Packages" "$out/Packages.gz" "$4"/zeno_*.deb "$served"
+                (cd "$served" && exec python3 -m http.server 8734 --bind 127.0.0.1 >/dev/null 2>&1) &
+                server=$!
+                sleep 1
+                place=http://127.0.0.1:8734/
+                $as_root cp "$out/zeno-apt-key.asc" /usr/share/keyrings/zeno-try.asc
+                ;;
+        esac
+        $as_root chmod 644 /usr/share/keyrings/zeno-try.asc
+        # The line that tells apt of the place, and of the one key that
+        # may sign for it.
+        say "deb [signed-by=/usr/share/keyrings/zeno-try.asc] $place /" |
+            $as_root tee /etc/apt/sources.list.d/zeno-try.list >/dev/null
+        # Only this one place is read again, and what is known of the
+        # others is kept.
+        $as_root apt-get update -q \
+            -o Dir::Etc::sourcelist=sources.list.d/zeno-try.list \
+            -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 >/dev/null ||
+            stop "apt could not read the lists at $place"
+        apt-cache policy zeno | grep -q "$version" || stop "apt does not know of zeno $version at $place"
+        $as_root apt-get install -y --no-install-recommends zeno >/dev/null
+        [ "$(command -v zeno)" = /usr/bin/zeno ] || stop "zeno is not at /usr/bin/zeno"
+        runs /usr/share/zeno/examples zeno
+        $as_root apt-get remove -y zeno >/dev/null
+        if [ -e /usr/bin/zeno ] || [ -e /usr/lib/zeno ]; then stop "after removing it, Zeno is still there"; fi
+        say "  apt found it at $place, checked the signature, and removed it again"
+        ;;
+
+    tap)
+        export HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
+        brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang >/dev/null
+        brew install partham20/zeno-lang/zeno >/dev/null
+        runs "$(brew --prefix)/share/zeno/examples" "$(brew --prefix)/bin/zeno"
+        brew test partham20/zeno-lang/zeno >/dev/null
+        brew uninstall partham20/zeno-lang/zeno >/dev/null
+        if [ -e "$(brew --prefix)/bin/zeno" ]; then stop "after removing it, Zeno is still there"; fi
+        brew untap partham20/zeno-lang >/dev/null
+        say "  removed: nothing is left"
+        ;;
+
+    aur)
+        [ -f "$out/PKGBUILD" ] && [ -f "$out/.SRCINFO" ] || stop "there is no PKGBUILD and .SRCINFO in $out"
+        grep -qx "pkgver=$version" "$out/PKGBUILD" || stop "the PKGBUILD in $out is not for $version"
+        # In Arch, in a container. `makepkg` will not run as root, so a
+        # user is made for it. `.SRCINFO` is what the AUR reads in
+        # place of the PKGBUILD, so it must say the same.
+        docker run --rm -v "$out:/recipe:ro" archlinux:latest sh -c "
+            set -e
+            pacman -Sy --noconfirm --needed fakeroot >/dev/null
+            useradd -m maker
+            cp -r /recipe /home/maker/zeno && chown -R maker /home/maker/zeno
+            cd /home/maker/zeno
+            su maker -c 'makepkg --printsrcinfo' | diff - .SRCINFO
+            su maker -c makepkg >/dev/null
+            pacman -U --noconfirm zeno-bin-$version-1-x86_64.pkg.tar.zst >/dev/null
+            [ \"\$(zeno --version)\" = 'zeno $version' ]
+            [ \"\$(zeno run /usr/share/zeno/examples/hello.zeno)\" = 'Hello, Zeno!' ]
+            pacman -R --noconfirm zeno-bin >/dev/null
+        " || stop "the PKGBUILD did not make a package from the release, or .SRCINFO says something else"
+        say "  .SRCINFO says what the PKGBUILD says, and it makes zeno $version from the release"
+        ;;
+
+    *) stop "there is no kind of package \`$kind\`. The kinds are deb, snap, flatpak, pacman, brew, apt, tap and aur" ;;
 esac
 say "ok: $kind"

@@ -1,0 +1,252 @@
+# Tries the places a package manager finds Zeno in by itself, and sends
+# a released version to the ones that a login was given for.
+#
+# A release has a package for each manager among its files. This is
+# the other half: that `apt install zeno`, `yay -S zeno-bin`, `snap
+# install zeno`, `brew install` and `winget install` find Zeno without
+# a file being downloaded first. Each job first tries what can be tried
+# with no login:
+#
+#     apt       makes the signed lists that apt reads (tools/apt-repo.sh)
+#               and lets apt install from them
+#     AUR       builds the package from the PKGBUILD as somebody on
+#               Arch would, downloading from the release, and checks
+#               that .SRCINFO says the same
+#     snap      asks the Snap Store whether the name is taken
+#     Homebrew  the two lines somebody types, against this repository
+#     winget    checks the three files against Microsoft's schema, and
+#               that they name the setup program and its checksum
+#
+# With "send" ticked, a job then sends to its store, if the repository
+# has the secret that store needs, and says so and does nothing if it
+# has not:
+#
+#     APT_SIGNING_KEY               the lists are added to the release
+#     AUR_SSH_KEY                   PKGBUILD and .SRCINFO are pushed to the AUR
+#     SNAPCRAFT_STORE_CREDENTIALS   the three snaps are uploaded
+#
+# Homebrew needs nothing sent: the formula is in this repository. The
+# winget files go to Microsoft's list as a pull request from Partha's
+# own account, which no workflow here does.
+#
+# Started by hand from the Actions page ("Run workflow"), saying the
+# version, and by the release workflow as its last step. docs/stores.md
+# has the whole of it, and how each login is made.
+
+name: stores
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version
+        type: string
+        default: 0.2.0
+      send:
+        description: Send it to the stores that a login was given for
+        type: boolean
+        default: false
+      mac:
+        description: Try Homebrew on macOS too
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+  # `gh` reads and writes the releases of this repository with these.
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  apt:
+    name: apt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The .deb files of that release
+        run: |
+          case $VERSION in
+            *[!0-9.]* | "") echo "\`$VERSION\` is not a version such as 0.2.0"; exit 1 ;;
+          esac
+          gh release download "v$VERSION" --dir files --pattern 'zeno_*.deb' --pattern SHA256SUMS.txt
+          # They must be the files that were released.
+          (cd files && sha256sum --check --ignore-missing SHA256SUMS.txt)
+
+      # GitHub answers a download with another address to fetch from.
+      - name: apt's own download follows where GitHub sends it
+        run: |
+          /usr/lib/apt/apt-helper download-file \
+            "https://github.com/$GH_REPO/releases/latest/download/SHA256SUMS.txt" got.txt
+          [ -s got.txt ]
+
+      - name: Make the lists, sign them, and let apt install from them
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::notice::There is no secret APT_SIGNING_KEY. This is tried with a key made for this run only, and nothing can be added to the release."
+            keys=$(mktemp -d)
+            gpg --homedir "$keys" --batch --quiet --passphrase '' \
+              --quick-generate-key "Zeno, a key for this trial only" rsa3072 sign never
+            APT_SIGNING_KEY=$(gpg --homedir "$keys" --armor --export-secret-keys)
+            export APT_SIGNING_KEY
+            touch trial-key
+          fi
+          tools/apt-repo.sh files lists
+          tools/try-packages.sh apt "$VERSION" lists files
+
+      - name: Add the lists to the release
+        if: inputs.send
+        run: |
+          if [ -f trial-key ]; then
+            echo "::warning::The lists for apt were not added: there is no secret APT_SIGNING_KEY. docs/stores.md says how to make the key."
+            exit 0
+          fi
+          cd lists
+          gh release upload "v$VERSION" InRelease Packages Packages.gz zeno-apt-key.asc --clobber
+
+      # apt is told of the newest release, so only that one can be tried.
+      - name: apt installs from the release itself
+        if: inputs.send
+        run: |
+          if [ -f trial-key ]; then exit 0; fi
+          newest=$(gh release view --json tagName --jq .tagName)
+          if [ "$newest" != "v$VERSION" ]; then
+            echo "v$VERSION is not the newest release, which is where apt looks: not tried"
+            exit 0
+          fi
+          tools/try-packages.sh apt "$VERSION" lists "https://github.com/$GH_REPO/releases/latest/download/"
+
+  aur:
+    name: AUR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the AUR has under these names today
+        run: |
+          curl -fsS 'https://aur.archlinux.org/rpc/v5/info?arg[]=zeno-bin&arg[]=zeno&arg[]=zeno-git' > has.json || { echo "the AUR did not answer"; exit 0; }
+          python3 - <<'PY'
+          import json
+          has = json.load(open('has.json')).get('results', [])
+          if not has:
+              print('nothing: zeno-bin, zeno and zeno-git are free')
+          for p in has:
+              print(p['Name'], p.get('Version'), 'by', p.get('Maintainer'), '-', p.get('Description'))
+          PY
+
+      - name: The PKGBUILD makes the package from the release, and .SRCINFO says the same
+        run: tools/try-packages.sh aur "$VERSION" packaging/arch
+
+      - name: Send it to the AUR
+        if: inputs.send
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::warning::Not sent to the AUR: there is no secret AUR_SSH_KEY. docs/stores.md says how to make the key."
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          # A package of the AUR is a git repository of its own, with
+          # the one branch `master`. The first push makes it.
+          git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/zeno-bin.git aur
+          cp packaging/arch/PKGBUILD packaging/arch/.SRCINFO packaging/arch/LICENSE aur
+          cd aur
+          git config user.name "Partha"
+          git config user.email "123355647+partham20@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO LICENSE
+          if git diff --cached --quiet; then
+            echo "the AUR has Zeno $VERSION already"
+            exit 0
+          fi
+          git commit -q -m "Zeno $VERSION"
+          git push origin HEAD:master
+
+  snap:
+    name: snap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Whether the Snap Store has a snap named zeno
+        run: |
+          said=$(curl -s -o has.json -w '%{http_code}' -H 'Snap-Device-Series: 16' \
+            'https://api.snapcraft.io/v2/snaps/info/zeno?fields=publisher,summary') || true
+          case $said in
+            404) echo "no snap named zeno is published (a name can still be held by somebody who has published nothing)" ;;
+            200) echo "a snap named zeno is published:"; cat has.json; echo ;;
+            *) echo "the Snap Store answered $said" ;;
+          esac
+
+      - name: Send the snaps to the Snap Store
+        if: inputs.send
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [ -z "$SNAPCRAFT_STORE_CREDENTIALS" ]; then
+            echo "::warning::Not sent to the Snap Store: there is no secret SNAPCRAFT_STORE_CREDENTIALS. docs/stores.md says how to make the login."
+            exit 0
+          fi
+          gh release download "v$VERSION" --dir files --pattern 'zeno_*.snap' --pattern SHA256SUMS.txt
+          (cd files && sha256sum --check --ignore-missing SHA256SUMS.txt)
+          sudo snap install snapcraft --classic
+          # One upload for each processor. `stable` is where `snap
+          # install zeno` looks.
+          for snap in files/zeno_*.snap; do
+            snapcraft upload --release=stable "$snap"
+          done
+
+  brew:
+    name: Homebrew (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.mac && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The two lines somebody types, against this repository
+        run: |
+          # GitHub's Linux machines have Homebrew, but not on the path.
+          if ! command -v brew > /dev/null; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+          tools/try-packages.sh tap "$VERSION"
+
+  winget:
+    name: winget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The three files are in the form Microsoft's list takes
+        run: |
+          cd packaging/winget
+          grep -qx "PackageVersion: $VERSION" ZenoLang.Zeno.yaml || { echo "the winget files are not for $VERSION"; exit 1; }
+          form=$(sed -n 's/^ManifestVersion: //p' ZenoLang.Zeno.yaml)
+          from=https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests/v$form
+          pipx run check-jsonschema --schemafile "$from/manifest.version.$form.json" ZenoLang.Zeno.yaml
+          pipx run check-jsonschema --schemafile "$from/manifest.installer.$form.json" ZenoLang.Zeno.installer.yaml
+          pipx run check-jsonschema --schemafile "$from/manifest.defaultLocale.$form.json" ZenoLang.Zeno.locale.en-US.yaml
+
+      - name: They name the setup program of the release, and its checksum
+        run: |
+          setup=zeno-$VERSION-windows-setup.exe
+          gh release download "v$VERSION" --dir got --pattern "$setup"
+          checksum=$(sha256sum "got/$setup" | cut -d ' ' -f 1 | tr a-f A-F)
+          file=packaging/winget/ZenoLang.Zeno.installer.yaml
+          # Three times: one setup program for three processors.
+          [ "$(grep -c "InstallerSha256: $checksum" $file)" = 3 ] || { echo "the checksum in $file is not that of $setup"; exit 1; }
+          where=https://github.com/$GH_REPO/releases/download/v$VERSION/$setup
+          [ "$(grep -c "InstallerUrl: $where" $file)" = 3 ] || { echo "$file does not name $where"; exit 1; }
+          # Without a login, as winget downloads it.
+          GH_TOKEN= curl -fsSL -o again.exe "$where"
+          cmp again.exe "got/$setup"
+          echo "ok"
