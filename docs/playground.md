@@ -4,23 +4,35 @@
 zeno playground        # writes playground.html: open it in a browser
 ```
 
-`playground.html` is one file. On the left is a box to write a
-program in, on the right is what the program does, and Run (or
-Ctrl+Enter) runs it. Nothing is installed and nothing is sent
-anywhere: the program is checked and run in the browser, by the same
-Zeno that `zeno run` is.
+`playground.html` is one file. On the left is the program, on the
+right is what it does, and Run (or Ctrl+Enter, ⌘+Enter on a Mac) runs
+it. Nothing is installed and nothing is sent anywhere: the program is
+checked, formatted and run in the browser, by the same Zeno that
+`zeno run` is.
 
-It is the page to send to somebody who asks what Zeno looks like.
+It is the page to send to somebody who asks what Zeno looks like. It
+is on the website at zeno-lang.org/playground.
 
 ## What is in it
 
 | | |
 |---|---|
-| **Program** | the program. Tab indents by four spaces, as `zeno format` does |
-| **Page (HTML)** | the page the program is in, for a program that says `import web`. Left empty, the page is one that shows what the program prints |
-| **Example** | a few of the programs in `examples/`, to start from. Two of them are pages: the list of things to do, and the sheet to draw on |
-| **Run** | check the program and run it. A mistake the checker finds is shown where the output would be, with its line |
-| **Copy link** | a link that opens the playground with this program in it |
+| **main.zeno** | the program, in colour, with line numbers. Tab and Shift+Tab indent and outdent by four spaces, Enter keeps the indent and steps in after `{`, `}` steps out, Ctrl+/ turns lines into comments and back |
+| **page.html** | the page the program is in, for a program that says `import web`. Left empty, or for a program without `import web`, the page is one that shows what the program prints |
+| **Checking as you write** | the program is checked a moment after each change, as `zeno check` would. A line with a problem is marked, and the foot of the editor says how many there are |
+| **Problems** | each problem, with its message. Clicking one puts the cursor on its line |
+| **Examples** | fifteen programs from `examples/`, in four groups: Start here, The language, Firmware, Pages |
+| **Run** | run the program in a fresh frame. What it prints is shown, with the error that stopped it under the last line; the line of that error is marked too |
+| **Format** | lay the program out as `zeno format` does (Shift+Alt+F). Undo takes it back |
+| **Share** | copy a link that opens the playground with this program in it (also Ctrl+S) |
+| **Light or dark** | the same choice as on the website, which it shares |
+
+What was written is kept in the browser, and is there on the next
+visit. A shared link wins over what was kept.
+
+On a phone one half is shown at a time, with a switch between Code
+and Result, and Run shows the result. The halves can be dragged wider
+or narrower on a larger screen.
 
 The program is one file. A program in several files, and a package,
 need `zeno build --web` ([`web.md`](web.md)).
@@ -73,18 +85,36 @@ page around it (`parent.zenoModule`).
 
 ### A link holds the program
 
-Run writes the program into the address of the page, after the `#`:
+Share writes the program into the address of the page, after the `#`:
 the program and its page as JSON, in base64. Opening that address
 opens the playground with that program. The part after `#` is never
 sent to a server, so a link is the whole program and nothing keeps
 a copy.
 
+### A second Zeno checks and formats
+
+Checking as you write, and Format, need no frame and no page. The
+playground starts the same module once more, as its own helper, with
+a page that answers nothing, and calls two things `zeno.wasm` has for
+it (`src/web_host.rs`):
+
+- `zeno_check(text)`: load and check the program as `main.zeno`.
+  Each mistake comes back as an error, in the same words as on a
+  desk, and the playground reads the line out of `--> main.zeno:2:7`.
+- `zeno_format(text)`: the program as `zeno format` lays it out, or
+  its mistakes.
+
+Checking never runs the program, so it cannot loop, and it takes a
+few milliseconds. The colours are not Zeno's: they come from a short
+list of words in the page, because colouring has to keep up with
+every key, and a word that is coloured wrongly harms nothing.
+
 ### How it is written
 
 `zeno playground` is a few lines in `src/main.rs`
-(`playground_page`). The page is `src/playground.html`, with four
-places marked where it writes things in: `src/web.js`, `zeno.wasm`,
-the examples and the empty page. Each is written as JSON, with `<`
+(`playground_page`). The page is `src/playground.html`, with three
+places marked where it writes things in: `src/web.js`, `zeno.wasm`
+and the examples. Each is written as JSON, with `<`
 written as `\u003c`, for the reason a built page does it: a browser
 reads the end of a script wherever it finds one, even in the middle
 of a str.
@@ -107,12 +137,22 @@ line, an error after some output showed under the output, and the
 page was tried at the size of a phone (iPhone 13), where a thing was
 added to the list by tapping, and in the dark.
 
+And the redesign (20.4): each of the fifteen examples was opened from
+the menu and ran with no problem and no error; a program was typed
+key by key, and the indent after `{` came by itself; a line with a
+problem was marked while typing, and clicking the problem put the
+cursor on it; Format laid out a program and Undo took it back; a
+runtime error marked its line; a shared link and a reload each
+brought the program back; the page of the list of things to do was
+changed in its tab and ran; and the halves were dragged. On a phone
+(iPhone 13): the menu, Run showing the result, and boxes in 16px type.
+
 ## What it does not do
 
 - One file. No `import` of a file of your own.
-- No colours in the program text, and nothing is underlined as you
-  type. The box is a plain box. `zeno lsp` does that in an editor
+- No completion and no hover. `zeno lsp` does that in an editor
   ([`lsp.md`](lsp.md)).
+- Drawing on the sketch needs a mouse: a finger on a phone scrolls.
 - There is no Stop button. A program that never stops
   (`while true { }`) holds the page for 5 seconds, and is then
   stopped with the line it was on (20.1).
@@ -136,6 +176,7 @@ added to the list by tapping, and in the dark.
    without `quoted`? Try a program that prints `</script>`.
 5. Add an example to the list in `playground_page` (`src/main.rs`).
    Which test tells you that the page is still one script?
-6. The box has no colours. `src/lexer.rs` already knows which words
-   are keywords. How could the playground ask `zeno.wasm` for the
-   tokens of the program, and what would it draw them on?
+6. The colours come from a list of words in the page, not from
+   `src/lexer.rs`. Write a program that the page colours wrongly.
+   What would it take to ask `zeno.wasm` for the tokens instead,
+   and why might that be too slow to do on every key?

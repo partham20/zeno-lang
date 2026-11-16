@@ -235,3 +235,39 @@ pub extern "C" fn zeno_call_with(handler: u32, place: *mut u8, length: usize) ->
     }
     call(handler, Vec::new())
 }
+
+/// The playground's Format button: lay out a program as `zeno format`
+/// does. The text comes back through `zeno_host_print`. A program with
+/// a mistake is not formatted: the mistakes come back through
+/// `zeno_host_error`, and this gives 1.
+#[no_mangle]
+pub extern "C" fn zeno_format(place: *mut u8, length: usize) -> u32 {
+    let source = taken(place, length);
+    match crate::format::format(&source) {
+        Ok(formatted) => {
+            print(&formatted);
+            0
+        }
+        Err(errors) => {
+            let files = [modules::File { path: "main.zeno".to_string(), source }];
+            errors.iter().for_each(|error| stopped(&files, error));
+            1
+        }
+    }
+}
+
+/// The playground checks a program as it is written, without running
+/// it: each mistake comes back through `zeno_host_error`, and this
+/// gives how many there were. The program is one file, `main.zeno`.
+#[no_mangle]
+pub extern "C" fn zeno_check(place: *mut u8, length: usize) -> u32 {
+    let source = taken(place, length);
+    let loaded = modules::load("main.zeno", source, &|_| None);
+    let files = loaded.files;
+    let errors = match loaded.program {
+        Ok(program) => checker::checked(program, checker::Rules::default()).1,
+        Err(errors) => errors,
+    };
+    errors.iter().for_each(|error| stopped(&files, error));
+    errors.len() as u32
+}

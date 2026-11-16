@@ -9146,3 +9146,65 @@ test.
 - Two keys at once, where two sorts are written now.
 - `sorted`, which gives a new list and leaves the first. `slice(0)`
   and `sort` do it in two lines.
+
+### 20.3 A program without `import web` gets the page that shows what it prints
+
+In the playground, the page in `page.html` is used only when the
+program says `import web`. Any other program is shown in the page
+that shows what it prints, whatever `page.html` holds.
+
+**Why.** A program that does not import `web` cannot reach a page,
+so the page can only get in the way: after opening the list of
+things to do and writing a program of one's own over it, the old
+page stayed, and what the new program printed went nowhere. Asking
+the program is the one rule that is right both ways, and there is
+nothing to remember: the tab is still there for a program that
+wants it.
+
+### 20.4 The playground is an editor, and checks as you write
+
+The playground was a box and a frame. It is now an editor with
+colours and line numbers, indentation that follows the braces, a
+problem list that is kept up to date as the program is written,
+Format, Share, fifteen examples in four groups, halves that can be
+dragged, and a phone layout with one half at a time. Partha asked
+for "more features" and a "modern minimal and elegant" look
+(2026-11-16); this is what was chosen, and why.
+
+**Checking as you write, by Zeno itself.** `zeno.wasm` gained two
+calls, `zeno_check` and `zeno_format`, and the playground starts a
+second copy of the module to make them. Every message is the one
+`zeno check` would print, so the playground can never disagree with
+the compiler. A problem found while typing is worth more than one
+found by pressing Run, which is why the error line is marked in the
+gutter at once.
+
+**Colours from a list of words, not from the lexer.** Colouring runs
+on every key and has to keep up; a short pattern in the page does,
+and a word coloured wrongly does no harm. The checker, which must be
+right, is Zeno's own.
+
+**No editor library.** A text box with the coloured text drawn under
+it is a few hundred lines, keeps the page one file that works with
+nothing fetched, and leaves the browser's own typing, selection,
+spelling-off, Undo and phone keyboard alone. A full editor library
+would be several times the size of Zeno's own page for things a
+playground of one file does not need (completion, folding, many
+cursors).
+
+**Kept in the browser.** What was written is kept in the browser's
+storage and comes back on the next visit, because losing a program
+to a closed tab is the worst thing a playground can do. A shared
+link wins over it, because somebody who opens a link wants what is
+in the link.
+
+**One half at a time on a phone.** Two halves of a phone screen are
+each too small to write or read in. A switch between Code and Result,
+with Run going to Result, is how phone apps with two views work.
+
+**The look is the website's.** The same type (Hanken Grotesk and
+JetBrains Mono), the same colours (cobalt as the one colour, red
+only for problems), the same logo and the same light or dark choice,
+which the two share. Panels with a thin rule instead of shadows,
+icons drawn as single lines, and the labels of Format and Share
+dropped to icons on a phone.

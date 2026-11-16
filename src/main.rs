@@ -654,19 +654,33 @@ fn playground_page(wasm: &[u8]) -> String {
     // Text as JavaScript reads it. `<` is written another way for the
     // reason `with_program` gives.
     let quoted = |json: json::Json| json.write().replace('<', "\\u003c");
-    let example = |name: &str, program: &str, page: &str| {
+    // Each example has a group, a name, one line on what it shows, the
+    // program, and the page it is in ("" for one that only prints).
+    let example = |group: &str, name: &str, about: &str, program: &str, page: &str| {
         json::Json::object([
+            ("group", json::Json::text(group)),
             ("name", json::Json::text(name)),
+            ("about", json::Json::text(about)),
             ("program", json::Json::text(program)),
             ("page", json::Json::text(page)),
         ])
     };
     let examples = json::Json::List(vec![
-        example("Hello", include_str!("../examples/hello.zeno"), ""),
-        example("A tour of the language", include_str!("../examples/tour.zeno"), ""),
-        example("Primes", include_str!("../examples/primes.zeno"), ""),
-        example("A page: things to do", include_str!("../examples/todo.zeno"), include_str!("../examples/todo.html")),
-        example("A page: sketch with the mouse", include_str!("../examples/sketch.zeno"), include_str!("../examples/sketch.html")),
+        example("Start here", "Hello", "The whole program is one line", include_str!("../examples/hello.zeno"), ""),
+        example("Start here", "A tour of the language", "Most of Zeno on one page", include_str!("../examples/tour.zeno"), ""),
+        example("Start here", "Primes", "Loops, lists and numbers", include_str!("../examples/primes.zeno"), ""),
+        example("Start here", "Four ways to write it", "One job, typed, untyped, with a class, functional", include_str!("../examples/styles.zeno"), ""),
+        example("The language", "Shapes", "Classes, enums and match", include_str!("../examples/shapes.zeno"), ""),
+        example("The language", "Generics", "One ring buffer for many types", include_str!("../examples/generics.zeno"), ""),
+        example("The language", "Counting faults", "A dict of counts, sorted", include_str!("../examples/faults.zeno"), ""),
+        example("The language", "Handlers", "Functions as values, and errors", include_str!("../examples/handlers.zeno"), ""),
+        example("The language", "Commands", "Enum cases that carry values", include_str!("../examples/commands.zeno"), ""),
+        example("Firmware", "Packets", "Sized numbers and bit operators", include_str!("../examples/packet.zeno"), ""),
+        example("Firmware", "Sensor sentences", "Reading GPS-style lines and checksums", include_str!("../examples/sentence.zeno"), ""),
+        example("Firmware", "A scheduler", "Tasks that run every so many ticks", include_str!("../examples/scheduler.zeno"), ""),
+        example("Firmware", "Owned buffers", "Memory given back at a line you can point to", include_str!("../examples/buffer.zeno"), ""),
+        example("Pages", "Things to do", "A list you add to, in a page", include_str!("../examples/todo.zeno"), include_str!("../examples/todo.html")),
+        example("Pages", "Sketch", "Draw on a canvas with the mouse", include_str!("../examples/sketch.zeno"), include_str!("../examples/sketch.html")),
     ]);
     // Each marker is in the page once. The page is cut at them, so that
     // nothing written in is itself searched for a marker.
@@ -1085,9 +1099,11 @@ mod tests {
         for marker in ["__WEB_JS__", "__WASM__", "__EXAMPLES__"] {
             assert!(!page.contains(marker), "{marker} was left in the playground");
         }
-        // One script, closed once: nothing written into it ends it early,
-        // not even an example that has a page with a `<style>` of its own.
-        assert_eq!(page.matches("</script>").count(), 1);
+        // Two scripts, each closed once (the theme, read before anything
+        // is drawn, and the playground): nothing written into them ends
+        // one early, not even an example that has a page with a
+        // `<style>` of its own.
+        assert_eq!(page.matches("</script>").count(), 2);
         assert!(page.contains("import web"));
     }
 

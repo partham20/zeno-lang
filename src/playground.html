@@ -2,256 +2,873 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Zeno playground</title>
 <meta name="description" content="Write a Zeno program and run it in your browser, with nothing to install.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script>
+  // The theme chosen on zeno-lang.org, if one was, before anything is drawn.
+  try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <!--
   The Zeno playground: write a program, press Run, and see it run, all in
   this one page. `zeno playground` writes it (src/main.rs), putting in
-  Zeno itself (zeno.wasm, packed), src/web.js and a few of the examples.
+  Zeno itself (zeno.wasm, packed), src/web.js and some of the examples.
 
   Nothing is sent anywhere. The program is checked and run by the same
-  Zeno as `zeno run`, in the browser. Each run gets a fresh frame on the
-  right, which is the page the program is in: `import web` reaches it.
+  Zeno as `zeno run`, in the browser. Each run gets a fresh frame, which
+  is the page the program is in: `import web` reaches it. The same Zeno
+  also checks the program as it is written, and formats it.
   docs/playground.md walks through how it works.
 -->
 <style>
-  /* The colours of zeno-lang.org: navy-tinted greys, cobalt blue. */
+  /* The colours and type of zeno-lang.org (its tools/DESIGN.md). */
   :root {
-    --paper: #f6f7fb; --ink: #141a2e; --soft: #5b6380; --line: #dde1ec;
-    --panel: #ffffff; --accent: #2f5bea; --accent-ink: #ffffff;
+    --paper: #f7f8fa; --sheet: #ffffff; --sunk: #eef1f6; --ink: #0f1729; --slate: #566176;
+    --faint: #8790a3; --rule: #e3e7ef; --cobalt: #2f5bea; --cobalt-soft: #e8eefe; --on-cobalt: #fff;
+    --good: #14804a; --bad: #c9271a; --bad-soft: #fdecea; --line: #f3f5f9;
+    --tok-key: #2f5bea; --tok-type: #8a3ffc; --tok-str: #1b7f4b; --tok-num: #b4530a;
+    --tok-fn: #0f1729; --tok-com: #8790a3;
+    --sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --paper: #0a0a0a; --ink: #ececec; --soft: #9a9a9a; --line: #2a2a2a;
-      --panel: #141414; --accent: #7d9cff; --accent-ink: #0a0a0a;
+    :root:not([data-theme="light"]) {
+      --paper: #0a0a0a; --sheet: #141414; --sunk: #111111; --ink: #ededed; --slate: #a1a1a1;
+      --faint: #6b6b6b; --rule: #262626; --cobalt: #7d9cff; --cobalt-soft: #172036; --on-cobalt: #0a0a0a;
+      --good: #4fcf8a; --bad: #ff7a6b; --bad-soft: #2a1513; --line: #1a1a1a;
+      --tok-key: #8fadff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
+      --tok-fn: #ededed; --tok-com: #6b6b6b;
+      color-scheme: dark;
     }
   }
+  :root[data-theme="dark"] {
+    --paper: #0a0a0a; --sheet: #141414; --sunk: #111111; --ink: #ededed; --slate: #a1a1a1;
+    --faint: #6b6b6b; --rule: #262626; --cobalt: #7d9cff; --cobalt-soft: #172036; --on-cobalt: #0a0a0a;
+    --good: #4fcf8a; --bad: #ff7a6b; --bad-soft: #2a1513; --line: #1a1a1a;
+    --tok-key: #8fadff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
+    --tok-fn: #ededed; --tok-com: #6b6b6b;
+    color-scheme: dark;
+  }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    display: flex; flex-direction: column;
+    display: flex; flex-direction: column; overflow: hidden;
     background: var(--paper); color: var(--ink);
-    font: 16px/1.4 system-ui, sans-serif;
+    font: 15px/1.45 var(--sans); -webkit-font-smoothing: antialiased;
   }
-  header {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-    padding: 10px 16px; border-bottom: 1px solid var(--line);
-  }
-  header h1 { font-size: 18px; margin: 0 8px 0 0; }
-  header h1 a { color: inherit; text-decoration: none; }
-  header h1 span { color: var(--soft); font-weight: normal; }
-  header nav { display: flex; gap: 14px; margin-left: auto; font-size: 14px; }
-  header nav a { color: var(--soft); text-decoration: none; }
-  header nav a:hover { color: var(--accent); }
-  select, button {
-    font: inherit; color: var(--ink); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
-  }
+  button, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
-  #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-  #said { color: var(--soft); font-size: 14px; }
-  main { flex: 1; display: flex; min-height: 0; }
-  .side { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .side + .side { border-left: 1px solid var(--line); }
-  .tabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
-  .tabs button { border-bottom: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--soft); }
-  .tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); }
-  .tabs .label { padding: 5px 4px; color: var(--soft); font-size: 14px; }
-  textarea {
-    flex: 1; width: 100%; resize: none; border: 0; outline: 0; padding: 14px 16px;
-    background: var(--panel); color: var(--ink); tab-size: 4; white-space: pre; overflow: auto;
-    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  :focus-visible { outline: 2px solid var(--cobalt); outline-offset: 2px; }
+  svg.icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75;
+             stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ---- The bar at the top ---- */
+  .bar {
+    display: flex; align-items: center; gap: 8px;
+    height: 56px; padding: 0 16px; padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    border-bottom: 1px solid var(--rule); background: var(--paper);
   }
-  iframe { flex: 1; width: 100%; border: 0; background: white; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; margin-right: 8px; }
+  .brand svg { height: 18px; width: auto; }
+  .brand .dot { fill: var(--cobalt); }
+  .brand span { color: var(--slate); font-weight: 500; padding-left: 10px; border-left: 1px solid var(--rule); }
+  .spacer { flex: 1; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px;
+    border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--slate);
+    font-weight: 500; white-space: nowrap; transition: background .15s, color .15s, border-color .15s;
+  }
+  .btn:hover { background: var(--sunk); color: var(--ink); }
+  .btn.primary { background: var(--cobalt); color: var(--on-cobalt); padding: 0 14px 0 12px; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn kbd { font: 500 11px var(--mono); opacity: .72; margin-left: 2px; }
+  .btn.square { width: 34px; padding: 0; justify-content: center; }
+  #theme .sun { display: none; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) #theme .sun { display: block; } :root:not([data-theme="light"]) #theme .moon { display: none; } }
+  :root[data-theme="dark"] #theme .sun { display: block; }
+  :root[data-theme="dark"] #theme .moon { display: none; }
+
+  /* The menu of examples. */
+  .menu { position: relative; }
+  .menu > .btn { color: var(--ink); border-color: var(--rule); background: var(--sheet); }
+  .menu > .btn .chev { width: 14px; height: 14px; opacity: .6; }
+  .menu > .btn .name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  .list {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 300px; max-height: 70vh; overflow: auto;
+    padding: 6px; border: 1px solid var(--rule); border-radius: 12px; background: var(--sheet);
+    box-shadow: 0 12px 32px rgba(15, 23, 41, .12), 0 2px 6px rgba(15, 23, 41, .06);
+    opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .15s, transform .2s var(--ease);
+  }
+  .menu.open .list { opacity: 1; transform: none; pointer-events: auto; }
+  .list h3 { margin: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--faint); }
+  .list button {
+    display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 7px; background: none;
+  }
+  .list button:hover, .list button:focus-visible { background: var(--sunk); outline: none; }
+  .list button b { display: block; font-weight: 500; }
+  .list button small { display: block; color: var(--slate); font-size: 13px; }
+
+  /* ---- The two halves ---- */
+  main { flex: 1; display: flex; min-height: 0; padding: 12px; gap: 0; }
+  .pane {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; overflow: hidden;
+  }
+  #code { flex: 1 1 55%; }
+  #result { flex: 1 1 45%; }
+  .divider { flex: 0 0 12px; cursor: col-resize; position: relative; touch-action: none; }
+  .divider::after {
+    content: ""; position: absolute; left: 5px; top: 50%; width: 2px; height: 32px; margin-top: -16px;
+    border-radius: 2px; background: var(--rule); transition: background .15s;
+  }
+  .divider:hover::after, .divider.dragging::after { background: var(--cobalt); }
+
+  .tabs { display: flex; align-items: center; gap: 2px; height: 42px; padding: 0 8px; border-bottom: 1px solid var(--rule); }
+  .tab {
+    position: relative; height: 42px; padding: 0 10px; border: 0; background: none; color: var(--slate);
+    font-weight: 500; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .tab[aria-selected="true"] { color: var(--ink); }
+  .tab[aria-selected="true"]::after {
+    content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--cobalt);
+  }
+  .tab .file { font: 500 13px var(--mono); }
+  .count {
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; font-weight: 600;
+    display: inline-grid; place-items: center; background: var(--bad); color: #fff;
+  }
+  .count[hidden] { display: none; }
+  .tabs .status { margin-left: auto; padding-right: 6px; font-size: 13px; color: var(--faint); white-space: nowrap; }
+
+  /* ---- The editor: a text box over the same text, coloured ---- */
+  .editor { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; }
+  .gutter {
+    flex: none; padding: 14px 0; min-width: 48px; text-align: right; overflow: hidden;
+    font: 13.5px/1.6 var(--mono); color: var(--faint); background: var(--sheet); user-select: none;
+  }
+  .gutter div { padding: 0 12px 0 14px; position: relative; }
+  .gutter div.bad { color: var(--bad); }
+  .gutter div.bad::before {
+    content: ""; position: absolute; left: 5px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 3px; background: var(--bad);
+  }
+  .gutter div.here { color: var(--ink); }
+  .surface { position: relative; flex: 1; min-width: 0; }
+  .surface pre, .surface textarea {
+    position: absolute; inset: 0; margin: 0; padding: 14px 16px 14px 4px; border: 0;
+    font: 13.5px/1.6 var(--mono); tab-size: 4; white-space: pre; overflow-wrap: normal; letter-spacing: 0;
+    font-variant-ligatures: none;
+  }
+  .surface pre { pointer-events: none; overflow: hidden; color: var(--ink); }
+  .surface pre .ln { display: block; min-height: 1.6em; }
+  .surface pre .ln.bad { background: var(--bad-soft); box-shadow: inset 2px 0 var(--bad); }
+  .surface pre .ln.flash { animation: flash 1.2s var(--ease); }
+  @keyframes flash { from { background: var(--cobalt-soft); } to { background: transparent; } }
+  .surface textarea {
+    width: 100%; height: 100%; resize: none; outline: none; overflow: auto; background: transparent;
+    color: transparent; caret-color: var(--ink); -webkit-text-fill-color: transparent;
+  }
+  .surface textarea::selection { background: rgba(47, 91, 234, .22); -webkit-text-fill-color: transparent; }
+  .k { color: var(--tok-key); font-weight: 500; }
+  .t { color: var(--tok-type); }
+  .s { color: var(--tok-str); }
+  .s .i { color: var(--ink); }
+  .n { color: var(--tok-num); }
+  .f { color: var(--tok-fn); font-weight: 500; }
+  .c { color: var(--tok-com); font-style: italic; }
+  .foot {
+    display: flex; align-items: center; gap: 14px; height: 30px; padding: 0 14px; border-top: 1px solid var(--rule);
+    font-size: 12.5px; color: var(--faint); white-space: nowrap; overflow: hidden;
+  }
+  .foot .ok { color: var(--good); }
+  .foot .no { color: var(--bad); }
+  .foot button { border: 0; background: none; padding: 0; color: inherit; font: inherit; }
+  .foot button:hover { color: var(--ink); }
+  .foot .keys { margin-left: auto; }
+
+  /* ---- What the program does ---- */
+  .views { position: relative; flex: 1; min-height: 0; }
+  .view { position: absolute; inset: 0; }
+  .view[hidden] { display: none; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--sheet); }
+  .problems { overflow: auto; padding: 8px; }
+  .problems .none { padding: 24px 12px; color: var(--slate); text-align: center; }
+  .problem {
+    display: block; width: 100%; text-align: left; border: 0; background: none; border-radius: 8px; padding: 10px 12px;
+  }
+  .problem:hover { background: var(--sunk); }
+  .problem b { display: flex; gap: 8px; align-items: baseline; font-weight: 500; }
+  .problem b em { font: 500 12px var(--mono); font-style: normal; color: var(--bad); flex: none; }
+  .problem pre { margin: 6px 0 0; font: 12.5px/1.5 var(--mono); color: var(--slate); white-space: pre-wrap; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; z-index: 50; transform: translate(-50%, 12px); opacity: 0;
+    padding: 9px 14px; border-radius: 10px; background: var(--ink); color: var(--paper); font-weight: 500; font-size: 14px;
+    transition: opacity .2s, transform .3s var(--ease); pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---- A phone: one half at a time ---- */
+  .switch { display: none; }
   @media (max-width: 760px) {
-    header { gap: 8px 10px; padding: 8px 12px; }
-    header h1 { order: 0; }
-    header nav { order: 1; }
-    header > :not(h1):not(nav) { order: 2; }
-    #choose { flex: 1 1 140px; display: flex; min-width: 0; }
-    #choose span { display: none; }
-    #choose select { flex: 1; min-width: 0; }
-    main { flex-direction: column; }
-    .side { min-height: 40vh; }
-    .side + .side { border-left: 0; border-top: 1px solid var(--line); }
-    #said { display: none; }
+    .bar { height: 52px; padding: 0 10px; gap: 4px; }
+    .brand span, .btn .label, .btn kbd, .foot .keys, .spacer { display: none; }
+    #format, #share, #theme { width: 34px; padding: 0; justify-content: center; }
+    .brand { margin-right: 4px; }
+    .brand svg { height: 16px; }
+    .menu { flex: 1; min-width: 0; }
+    .menu > .btn { width: 100%; justify-content: space-between; }
+    .menu > .btn .name { max-width: none; flex: 1; text-align: left; }
+    .list { position: fixed; left: 10px; right: 10px; top: 58px; min-width: 0; }
+    .switch {
+      display: flex; margin: 10px 10px 0; padding: 3px; border-radius: 10px; background: var(--sunk);
+    }
+    .switch button {
+      flex: 1; height: 34px; border: 0; border-radius: 8px; background: none; color: var(--slate); font-weight: 500;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .switch button[aria-selected="true"] { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 3px rgba(15, 23, 41, .12); }
+    main { padding: 10px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    .divider { display: none; }
+    #code, #result { flex: 1 1 100%; }
+    body[data-show="result"] #code, body[data-show="code"] #result { display: none; }
     /* A phone zooms in on a box whose letters are smaller than 16px. */
-    textarea, select { font-size: 16px; }
+    .surface pre, .surface textarea, .gutter { font-size: 16px; }
+    .gutter { min-width: 40px; }
+    .gutter div { padding: 0 8px 0 12px; }
   }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
-<body>
-<header>
-  <h1><a href="https://zeno-lang.org/">Zeno</a> <span>playground</span></h1>
-  <label id="choose"><span>Example</span> <select id="examples" aria-label="Example"></select></label>
-  <button id="run" title="Ctrl+Enter">Run</button>
-  <button id="link" title="A link to this program, to send to somebody">Copy link</button>
-  <span id="said"></span>
-  <nav>
-    <a href="https://zeno-lang.org/learn/">Learn</a>
-    <a href="https://zeno-lang.org/book/">Book</a>
-    <a href="https://zeno-lang.org/docs/">Docs</a>
-  </nav>
+<body data-show="code">
+<header class="bar">
+  <a class="brand" href="https://zeno-lang.org/" aria-label="Zeno, home">
+    <svg viewBox="-8 -8 291 82" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="15" stroke-linejoin="miter" stroke-miterlimit="3"><polyline points="0,7.5 50,7.5 0,58.5 50,58.5"/><path d="M69.5 33 H120.5 A25.5 25.5 0 1 0 115.09 48.7"/><path d="M148.5 66 V0 M148.5 66 V27.5 A20 20 0 0 1 188.5 27.5 V66"/><path d="M242 7.5 A25.5 25.5 0 1 1 219.48 21.03"/></g><circle class="dot" cx="229.25" cy="10.92" r="7.5"/></svg>
+    <span>Playground</span>
+  </a>
+  <div class="menu" id="menu">
+    <button class="btn" id="menu-button" aria-haspopup="true" aria-expanded="false">
+      <span class="name" id="example-name">Examples</span>
+      <svg class="icon chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div class="list" id="examples" role="menu"></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn" id="format" aria-label="Format" title="Lay the program out as zeno format does (Shift+Alt+F)">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></svg><span class="label">Format</span>
+  </button>
+  <button class="btn" id="share" aria-label="Share" title="Copy a link that opens this program">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg><span class="label">Share</span>
+  </button>
+  <button class="btn square" id="theme" title="Light or dark" aria-label="Light or dark">
+    <svg class="icon moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="icon sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+  <button class="btn primary" id="run" title="Run (Ctrl+Enter)">
+    <svg class="icon" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>Run<kbd id="run-keys">Ctrl ↵</kbd>
+  </button>
 </header>
+
+<div class="switch" role="tablist" aria-label="Show">
+  <button role="tab" id="show-code" aria-selected="true">Code</button>
+  <button role="tab" id="show-result" aria-selected="false">Result <span class="count" id="run-count" hidden>!</span></button>
+</div>
+
 <main>
-  <div class="side">
+  <section class="pane" id="code" aria-label="The program">
     <div class="tabs" role="tablist">
-      <button id="tab-program" role="tab" aria-selected="true">Program</button>
-      <button id="tab-page" role="tab" aria-selected="false">Page (HTML)</button>
+      <button class="tab" role="tab" id="tab-program" aria-selected="true"><span class="file">main.zeno</span></button>
+      <button class="tab" role="tab" id="tab-page" aria-selected="false" title="The page the program is in, for a program that says import web"><span class="file">page.html</span></button>
     </div>
-    <textarea id="program" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="The program"></textarea>
-    <textarea id="page" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="The page, in HTML" hidden></textarea>
-  </div>
-  <div class="side">
-    <div class="tabs"><span class="label">What it does</span></div>
-    <iframe id="result" title="The program, running"></iframe>
-  </div>
+    <div class="editor">
+      <div class="gutter" id="gutter" aria-hidden="true"></div>
+      <div class="surface">
+        <pre id="colours" aria-hidden="true"></pre>
+        <textarea id="text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="The program"></textarea>
+      </div>
+    </div>
+    <div class="foot">
+      <button id="checked" title="Show the problems">Checking…</button>
+      <span id="where">Ln 1, Col 1</span>
+      <span class="keys">Ctrl ↵ run · Shift Alt F format · Ctrl / comment</span>
+    </div>
+  </section>
+  <div class="divider" id="divider" role="separator" aria-orientation="vertical" aria-label="Drag to resize"></div>
+  <section class="pane" id="result" aria-label="What it does">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-output" aria-selected="true">Output</button>
+      <button class="tab" role="tab" id="tab-problems" aria-selected="false">Problems <span class="count" id="count" hidden>0</span></button>
+      <span class="status" id="said">Loading Zeno…</span>
+    </div>
+    <div class="views">
+      <div class="view" id="view-output"><iframe id="frame" title="The program, running"></iframe></div>
+      <div class="view problems" id="view-problems" hidden></div>
+    </div>
+  </section>
 </main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
 <script>
 "use strict";
 // These three are written in by `zeno playground`.
 const WEB_JS = __WEB_JS__;             // src/web.js, which starts a program in a page
 const PACKED = "__WASM__";             // zeno.wasm, packed, in base64
-const EXAMPLES = __EXAMPLES__;         // [{name, program, page}]
+const EXAMPLES = __EXAMPLES__;         // [{group, name, about, program, page}]
+
+const $ = (id) => document.getElementById(id);
+const text = $("text"), colours = $("colours"), gutter = $("gutter");
+const frame = $("frame"), said = $("said");
+const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+if (mac) $("run-keys").textContent = "⌘ ↵";
 
 // The page of a program that has none: what it prints, and under it,
-// the error that stopped it, if one did. web.js fills both. The error
-// is here, under the last line printed, rather than at the foot of the
-// frame as on a page of one's own, so that it reads as the next line.
-const DEFAULT_PAGE = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
+// the error that stopped it, if one did. web.js fills both.
+function outputPage() {
+  const dark = getComputedStyle(document.documentElement).colorScheme === "dark";
+  const [bg, ink, bad, badBg] = dark ? ["#141414", "#ededed", "#ff7a6b", "#2a1513"] : ["#ffffff", "#0f1729", "#c9271a", "#fdecea"];
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light dark; }
-  body { margin: 0; padding: 14px 16px; background: #fff; color: #141a2e;
-         font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  body { margin: 0; padding: 14px 16px; background: ${bg}; color: ${ink};
+         font: 13.5px/1.6 "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #zeno-error { margin-top: 8px; padding: 10px 12px; border-left: 3px solid #c62828;
-                background: #fdecec; color: #8e1b1b; }
+  #zeno-error { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: ${badBg}; color: ${bad}; }
   #zeno-error:empty { display: none; }
-  @media (prefers-color-scheme: dark) {
-    body { background: #141414; color: #ececec; }
-    #zeno-error { background: #2a1414; color: #ff9c9c; border-color: #ff6b6b; }
-  }
-</style>
-</head>
-<body>
+</style></head><body>
 <pre id="zeno-output"></pre>
 <pre id="zeno-error"></pre>
-</body>
-</html>
-`;
+</body></html>`;
+}
 
-const program = document.getElementById("program");
-const page = document.getElementById("page");
-const result = document.getElementById("result");
-const said = document.getElementById("said");
-const examples = document.getElementById("examples");
-
-// web.js is run here too, only for `Zeno.unpacked`: the frame of each
-// run gets a copy of its own.
+// ------------------------------------------------------------- Zeno itself
+// web.js is run here too, for `Zeno.unpacked`: the frame of each run gets
+// a copy of its own. Zeno is unpacked and compiled once; the frames find
+// it as `parent.zenoModule`.
 new Function(WEB_JS)();
-
-// Zeno is unpacked and read in once. Each run starts it afresh from
-// this, which is quick. The frames find it here, as `parent.zenoModule`.
 window.zenoModule = Zeno.unpacked(PACKED).then((bytes) => WebAssembly.compile(bytes));
 
+// A Zeno of the playground's own, to check and format the program. It is
+// given a page that says nothing: it only ever checks and lays out text.
+let helper = null;
+let heard = { printed: "", errors: [] };
+async function zenoHelper() {
+  if (helper) return helper;
+  const module = await window.zenoModule;
+  let exports;
+  const read = (place, length) => new TextDecoder().decode(new Uint8Array(exports.memory.buffer, place, length));
+  const instance = await WebAssembly.instantiate(module, { zeno: {
+    zeno_host_print: (p, n) => { heard.printed += read(p, n); },
+    zeno_host_error: (p, n) => { heard.errors.push(read(p, n)); },
+    zeno_host_page: () => 0,
+    zeno_host_input: () => 0,
+    zeno_host_now: () => performance.now(),
+  } });
+  exports = instance.exports;
+  helper = (name, source) => {
+    heard = { printed: "", errors: [] };
+    const bytes = new TextEncoder().encode(source);
+    const place = exports.zeno_alloc(bytes.length);
+    new Uint8Array(exports.memory.buffer, place, bytes.length).set(bytes);
+    const result = exports[name](place, bytes.length);
+    return { result, ...heard };
+  };
+  return helper;
+}
+
+// "error: `y` is not defined\n --> main.zeno:2:7\n ..." as its parts.
+function parsed(error) {
+  const at = /-->\s*([^:\s]+):(\d+):(\d+)/.exec(error);
+  return {
+    message: error.split("\n")[0].replace(/^error:\s*/, ""),
+    line: at ? Number(at[2]) : 0,
+    col: at ? Number(at[3]) : 0,
+    text: error.trimEnd(),
+  };
+}
+
+// --------------------------------------------------------- The two files
+const files = { program: "", page: "" };
+let editing = "program";
+
+// ------------------------------------------------------------ Colouring
+const KEYWORDS = new Set(("let var const function return if else for in while unsafe private interface owned take " +
+  "strict break continue match case class enum try except raise raises assert as from import and or not is true false none").split(" "));
+const BUILTINS = new Set("print len range input str int float bool type min max sum abs round sorted reversed enumerate zip any all".split(" "));
+
+const TYPES = new Set("int float str bool u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 list dict".split(" "));
+
+function escaped(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Zeno, one line at a time: no token goes past the end of a line.
+const ZENO = /(#.*)|(f?"(?:\\.|[^"\\])*"?)|(\b0[xb][0-9a-fA-F_]+\b|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|([A-Za-z_]\w*)(\s*\()?/g;
+function zenoLine(line) {
+  let out = "", last = 0, m;
+  ZENO.lastIndex = 0;
+  while ((m = ZENO.exec(line))) {
+    out += escaped(line.slice(last, m.index));
+    last = ZENO.lastIndex;
+    if (m[1]) out += `<span class="c">${escaped(m[1])}</span>`;
+    else if (m[2]) {
+      // An f-string: what is between { } is code, and is shown as code.
+      let s = escaped(m[2]);
+      if (m[2][0] === "f") s = s.replace(/\{([^{}]*)\}/g, '<span class="i">{$1}</span>');
+      out += `<span class="s">${s}</span>`;
+    } else if (m[3]) out += `<span class="n">${m[3]}</span>`;
+    else {
+      const word = m[4], call = m[5] || "";
+      if (KEYWORDS.has(word)) out += `<span class="k">${word}</span>`;
+      else if (/^[A-Z]/.test(word) || TYPES.has(word)) out += `<span class="t">${word}</span>`;
+      else if (call || BUILTINS.has(word)) out += `<span class="f">${word}</span>`;
+      else out += word;
+      out += escaped(call);
+    }
+  }
+  return out + escaped(line.slice(last));
+}
+// HTML: tags, attributes, strings and comments, roughly, also a line at a time.
+const HTML = /(<!--.*?(?:-->|$))|(<\/?[A-Za-z][\w-]*)|("[^"]*"?|'[^']*'?)|(\b[\w-]+(?==))|(\/?>)/g;
+function htmlLine(line) {
+  let out = "", last = 0, m;
+  HTML.lastIndex = 0;
+  while ((m = HTML.exec(line))) {
+    out += escaped(line.slice(last, m.index));
+    last = HTML.lastIndex;
+    const cls = m[1] ? "c" : m[2] || m[5] ? "k" : m[3] ? "s" : "t";
+    out += `<span class="${cls}">${escaped(m[0])}</span>`;
+    if (m[0] === "") HTML.lastIndex++;
+  }
+  return out + escaped(line.slice(last));
+}
+
+// Lines with a problem: from checking as you write, and from the last run.
+let badLines = new Set();
+let runLines = new Set();
+function paint() {
+  const lines = text.value.split("\n");
+  const colour = editing === "program" ? zenoLine : htmlLine;
+  const marks = editing === "program" ? new Set([...badLines, ...runLines]) : new Set();
+  colours.innerHTML = lines.map((line, i) =>
+    `<span class="ln${marks.has(i + 1) ? " bad" : ""}">${colour(line) || " "}</span>`).join("");
+  const here = currentLine();
+  gutter.innerHTML = lines.map((_, i) =>
+    `<div class="${marks.has(i + 1) ? "bad" : ""}${i + 1 === here ? " here" : ""}">${i + 1}</div>`).join("");
+  scrolled();
+}
+function scrolled() {
+  colours.style.transform = `translate(${-text.scrollLeft}px, ${-text.scrollTop}px)`;
+  gutter.scrollTop = text.scrollTop;
+  // The coloured copy has to be as tall as the text, or the gutter cannot scroll as far.
+  gutter.style.paddingBottom = (14 + text.offsetHeight) + "px";
+}
+function currentLine() {
+  return text.value.slice(0, text.selectionStart).split("\n").length;
+}
+function showWhere() {
+  const before = text.value.slice(0, text.selectionStart);
+  const line = before.split("\n").length;
+  $("where").textContent = `Ln ${line}, Col ${before.length - before.lastIndexOf("\n")}`;
+  for (const div of gutter.children) div.classList.remove("here");
+  if (gutter.children[line - 1]) gutter.children[line - 1].classList.add("here");
+}
+
+// ------------------------------------------------------- Checking as you write
+let problems = [];
+let checkTimer = 0;
+function checkSoon() {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(check, 350);
+}
+async function check() {
+  const zeno = await zenoHelper();
+  const { errors } = zeno("zeno_check", files.program);
+  problems = errors.map(parsed);
+  badLines = new Set(problems.map((p) => p.line).filter(Boolean));
+  const count = problems.length;
+  $("count").hidden = count === 0;
+  $("count").textContent = count;
+  const checked = $("checked");
+  checked.className = count ? "no" : "ok";
+  checked.textContent = count ? `● ${count} problem${count === 1 ? "" : "s"}` : "✓ No problems";
+  const list = $("view-problems");
+  list.innerHTML = count ? "" : '<div class="none">No problems. Zeno checked the program as you wrote it.</div>';
+  for (const p of problems) {
+    const row = document.createElement("button");
+    row.className = "problem";
+    row.innerHTML = `<b><em>${p.line ? "Ln " + p.line : ""}</em><span></span></b><pre></pre>`;
+    row.querySelector("span").textContent = p.message;
+    row.querySelector("pre").textContent = p.text.split("\n").slice(1).join("\n");
+    row.addEventListener("click", () => goTo(p.line, p.col));
+    list.appendChild(row);
+  }
+  if (editing === "program") paint();
+}
+
+// Put the cursor on a line of the program, and show where it is.
+function goTo(line, col) {
+  if (!line) return;
+  if (editing !== "program") choose("program");
+  showHalf("code");
+  const lines = text.value.split("\n");
+  let at = 0;
+  for (let i = 0; i < line - 1 && i < lines.length; i++) at += lines[i].length + 1;
+  at += Math.max(0, (col || 1) - 1);
+  text.focus();
+  text.setSelectionRange(at, at);
+  const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+  text.scrollTop = Math.max(0, (line - 1) * lineHeight - text.clientHeight / 3);
+  scrolled();
+  showWhere();
+  const row = colours.children[line - 1];
+  if (row) { row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash"); }
+}
+
+// -------------------------------------------------------------- Running
 // `<` written this way is the same text to JSON and nothing to the
 // browser, which would read the closing tag of a script, written in a
 // program, as the end of ours.
 function quoted(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
-
+let ranAt = 0;
+let runFailed = false;
+window.zenoRunError = (error) => {
+  runFailed = true;
+  $("run-count").hidden = false;
+  said.textContent = "Stopped with an error";
+  const p = parsed(String(error));
+  if (p.line) { runLines.add(p.line); if (editing === "program") paint(); }
+};
+window.zenoRan = () => {
+  if (!runFailed) said.textContent = `Ran in ${Math.max(1, Math.round(performance.now() - ranAt))} ms`;
+};
+// A program is in the page that was written for it only if it uses one:
+// a program that does not say `import web` cannot reach a page, and gets
+// the page that shows what it prints (decisions 20.3).
+function usesPage(program) {
+  return /^\s*(import\s+web\b|from\s+web\s+import\b)/m.test(program);
+}
 function run() {
-  const files = { main: "main.zeno", files: { "main.zeno": program.value } };
-  const own = page.value.trim() === "" ? DEFAULT_PAGE : page.value;
+  files[editing] = text.value;
+  saveSoon(true);
+  runFailed = false;
+  runLines = new Set();
+  if (editing === "program") paint();
+  $("run-count").hidden = true;
+  said.textContent = "Running…";
+  showTab("output");
+  const program = { main: "main.zeno", files: { "main.zeno": files.program } };
+  const own = files.page.trim() === "" || !usesPage(files.program) ? outputPage() : files.page;
+  // The frame says when Zeno stopped with an error, which web.js writes
+  // to the console, and when the program's first run is over.
   const scripts =
+    "<script>(function(){var e=console.error;console.error=function(t){try{parent.zenoRunError(t)}catch(x){}" +
+    "return e.apply(console,arguments)}})();<\/script>\n" +
     "<script>\n" + WEB_JS + "<\/script>\n" +
-    "<script>Zeno.start(parent.zenoModule, " + quoted(files) + ");<\/script>\n";
+    "<script>Zeno.start(parent.zenoModule, " + quoted(program) + ").then(function(){parent.zenoRan()});<\/script>\n";
   const at = own.toLowerCase().lastIndexOf("</body>");
-  result.srcdoc = at < 0 ? own + scripts : own.slice(0, at) + scripts + own.slice(at);
-  said.textContent = "Ran at " + new Date().toLocaleTimeString();
-  // The address now says what was run, so that it can be sent on.
-  history.replaceState(null, "", "#" + packed({ program: program.value, page: page.value }));
+  ranAt = performance.now();
+  frame.srcdoc = at < 0 ? own + scripts : own.slice(0, at) + scripts + own.slice(at);
+  showHalf("result");
 }
 
+// ------------------------------------------------------------ Formatting
+async function format() {
+  if (editing !== "program") { toast("Format lays out Zeno, not the page"); return; }
+  const zeno = await zenoHelper();
+  const { result, printed } = zeno("zeno_format", files.program);
+  if (result !== 0) {
+    toast("Fix the problems first: a program with a mistake is not formatted");
+    showTab("problems");
+    showHalf("result");
+    return;
+  }
+  if (printed === files.program) { toast("Already formatted"); return; }
+  replaceAll(printed);
+  toast("Formatted");
+}
+
+// Change the whole text in a way that Undo can take back.
+function replaceAll(value) {
+  text.focus();
+  text.select();
+  if (!document.execCommand("insertText", false, value)) text.value = value;
+  text.setSelectionRange(0, 0);
+  edited();
+}
+
+// ----------------------------------------------------------- Editing keys
+function insert(value) {
+  if (!document.execCommand("insertText", false, value)) {
+    text.setRangeText(value, text.selectionStart, text.selectionEnd, "end");
+    edited();
+  }
+}
+// The lines the selection touches, changed by `change`, kept selected.
+function eachLine(change) {
+  const value = text.value;
+  const start = value.lastIndexOf("\n", text.selectionStart - 1) + 1;
+  let end = value.indexOf("\n", text.selectionEnd - (text.selectionEnd > text.selectionStart ? 1 : 0));
+  if (end < 0) end = value.length;
+  const before = value.slice(start, end);
+  const after = change(before.split("\n")).join("\n");
+  if (after === before) return;
+  text.setSelectionRange(start, end);
+  insert(after);
+  text.setSelectionRange(start, start + after.length);
+}
+text.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (e.key === "Enter" && mod) { e.preventDefault(); run(); return; }
+  if ((e.key === "F" || e.key === "f" || e.code === "KeyF") && e.shiftKey && e.altKey) { e.preventDefault(); format(); return; }
+  if (e.key === "s" && mod) { e.preventDefault(); share(); return; }
+  if (e.key === "/" && mod && editing === "program") {
+    e.preventDefault();
+    eachLine((lines) => {
+      const all = lines.filter((l) => l.trim()).every((l) => /^\s*#/.test(l));
+      return lines.map((l) => (!l.trim() ? l : all ? l.replace(/^(\s*)# ?/, "$1") : l.replace(/^(\s*)/, "$1# ")));
+    });
+    return;
+  }
+  if (e.key === "Tab" && !mod && !e.altKey) {
+    e.preventDefault();
+    const several = text.value.slice(text.selectionStart, text.selectionEnd).includes("\n");
+    if (e.shiftKey) eachLine((lines) => lines.map((l) => l.replace(/^ {1,4}/, "")));
+    else if (several) eachLine((lines) => lines.map((l) => (l ? "    " + l : l)));
+    else insert("    ");
+    return;
+  }
+  // A new line starts where the last one did, and one step in after `{`.
+  if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    const before = text.value.slice(0, text.selectionStart);
+    const line = before.slice(before.lastIndexOf("\n") + 1);
+    let indent = /^\s*/.exec(line)[0];
+    const opens = /[{([]\s*$/.test(line);
+    const closer = /^\s*[})\]]/.test(text.value.slice(text.selectionEnd));
+    if (opens && closer) { insert("\n" + indent + "    \n" + indent); const at = text.selectionStart - indent.length - 1; text.setSelectionRange(at, at); return; }
+    if (opens) indent += "    ";
+    insert("\n" + indent);
+    return;
+  }
+  // `}` on a line of spaces goes one step out.
+  if (e.key === "}" && editing === "program") {
+    const before = text.value.slice(0, text.selectionStart);
+    const line = before.slice(before.lastIndexOf("\n") + 1);
+    if (/^ {4,}$/.test(line) && text.selectionStart === text.selectionEnd) {
+      e.preventDefault();
+      text.setSelectionRange(text.selectionStart - 4, text.selectionStart);
+      insert("}");
+    }
+  }
+});
+
+function edited() {
+  files[editing] = text.value;
+  if (editing === "program") { runLines = new Set(); checkSoon(); }
+  paint();
+  showWhere();
+  saveSoon();
+}
+text.addEventListener("input", edited);
+text.addEventListener("scroll", scrolled);
+for (const kind of ["keyup", "click", "select"]) text.addEventListener(kind, showWhere);
+new ResizeObserver(scrolled).observe(text);
+
+// ------------------------------------------------------------ The two files
+function choose(which, keep = true) {
+  if (keep) files[editing] = text.value;
+  editing = which;
+  $("tab-program").setAttribute("aria-selected", String(which === "program"));
+  $("tab-page").setAttribute("aria-selected", String(which === "page"));
+  text.value = files[which];
+  text.setAttribute("aria-label", which === "program" ? "The program" : "The page, in HTML");
+  if (which === "page" && !files.page) text.placeholder = "Empty: the program gets a page that shows what it prints.\nWrite HTML here for a program that says import web.";
+  else text.placeholder = "";
+  text.scrollTop = 0;
+  text.setSelectionRange(0, 0);
+  paint();
+  showWhere();
+}
+$("tab-program").addEventListener("click", () => choose("program"));
+$("tab-page").addEventListener("click", () => choose("page"));
+
+function showTab(which) {
+  $("tab-output").setAttribute("aria-selected", String(which === "output"));
+  $("tab-problems").setAttribute("aria-selected", String(which === "problems"));
+  $("view-output").hidden = which !== "output";
+  $("view-problems").hidden = which !== "problems";
+}
+$("tab-output").addEventListener("click", () => showTab("output"));
+$("tab-problems").addEventListener("click", () => showTab("problems"));
+$("checked").addEventListener("click", () => { showTab("problems"); showHalf("result"); });
+
+// On a phone one half shows at a time.
+function showHalf(which) {
+  document.body.dataset.show = which;
+  $("show-code").setAttribute("aria-selected", String(which === "code"));
+  $("show-result").setAttribute("aria-selected", String(which === "result"));
+}
+$("show-code").addEventListener("click", () => showHalf("code"));
+$("show-result").addEventListener("click", () => showHalf("result"));
+
+// ------------------------------------------------------------- Examples
+let current = null;
+function load(example) {
+  current = example;
+  files.program = example.program;
+  files.page = example.page || "";
+  $("example-name").textContent = example.name;
+  choose("program", false);
+  check();
+  run();
+  showHalf("code");
+}
+(function () {
+  const list = $("examples");
+  let group = null;
+  EXAMPLES.forEach((example) => {
+    if (example.group !== group) {
+      group = example.group;
+      const h = document.createElement("h3");
+      h.textContent = group;
+      list.appendChild(h);
+    }
+    const item = document.createElement("button");
+    item.setAttribute("role", "menuitem");
+    item.innerHTML = "<b></b><small></small>";
+    item.querySelector("b").textContent = example.name;
+    item.querySelector("small").textContent = example.about;
+    item.addEventListener("click", () => { closeMenu(); load(example); history.replaceState(null, "", location.pathname); });
+    list.appendChild(item);
+  });
+})();
+function closeMenu() { $("menu").classList.remove("open"); $("menu-button").setAttribute("aria-expanded", "false"); }
+$("menu-button").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = $("menu").classList.toggle("open");
+  $("menu-button").setAttribute("aria-expanded", String(open));
+  if (open) $("examples").querySelector("button").focus();
+});
+document.addEventListener("click", (e) => { if (!$("menu").contains(e.target)) closeMenu(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && document.activeElement !== text) { e.preventDefault(); run(); }
+});
+$("examples").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  const items = [...$("examples").querySelectorAll("button")];
+  const at = items.indexOf(document.activeElement);
+  items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+});
+
+// ------------------------------------------------------- Sharing and keeping
 // A program in the address of the page: JSON, in base64 that an address
-// can hold.
+// can hold. What follows `#` is never sent anywhere.
 function packed(what) {
   const bytes = new TextEncoder().encode(JSON.stringify(what));
-  let text = "";
-  bytes.forEach((byte) => { text += String.fromCharCode(byte); });
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  let s = "";
+  bytes.forEach((b) => { s += String.fromCharCode(b); });
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-
-function unpackedAddress() {
+function fromAddress() {
   try {
-    const text = atob(location.hash.slice(1).replace(/-/g, "+").replace(/_/g, "/"));
-    const what = JSON.parse(new TextDecoder().decode(Uint8Array.from(text, (c) => c.charCodeAt(0))));
+    const s = atob(location.hash.slice(1).replace(/-/g, "+").replace(/_/g, "/"));
+    const what = JSON.parse(new TextDecoder().decode(Uint8Array.from(s, (c) => c.charCodeAt(0))));
     return typeof what.program === "string" ? what : null;
   } catch (unreadable) {
     return null;
   }
 }
-
-function show(example) {
-  program.value = example.program;
-  page.value = example.page || "";
+function share() {
+  files[editing] = text.value;
+  const link = location.href.split("#")[0] + "#" + packed({ program: files.program, page: files.page });
+  history.replaceState(null, "", link);
+  const done = () => toast("Link copied: it opens this program");
+  if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, () => toast("The link is in the address bar"));
+  else toast("The link is in the address bar");
 }
+$("share").addEventListener("click", share);
 
-EXAMPLES.forEach((example, place) => {
-  const option = document.createElement("option");
-  option.value = place;
-  option.textContent = example.name;
-  examples.appendChild(option);
-});
-examples.addEventListener("change", () => {
-  show(EXAMPLES[examples.value]);
-  run();
-});
-
-// The two things to write: the program, and the page it is in.
-function choose(tab) {
-  for (const [name, box] of [["program", program], ["page", page]]) {
-    box.hidden = name !== tab;
-    document.getElementById("tab-" + name).setAttribute("aria-selected", String(name === tab));
+// What was written is kept in this browser, for the next visit.
+let saveTimer = 0;
+function saveSoon(now) {
+  clearTimeout(saveTimer);
+  const save = () => { try { localStorage.setItem("zeno-playground", JSON.stringify(files)); } catch (e) {} };
+  if (now) save(); else saveTimer = setTimeout(save, 500);
+}
+function kept() {
+  try {
+    const what = JSON.parse(localStorage.getItem("zeno-playground"));
+    return what && typeof what.program === "string" && what.program.trim() ? what : null;
+  } catch (e) {
+    return null;
   }
-  (tab === "program" ? program : page).focus();
 }
-document.getElementById("tab-program").addEventListener("click", () => choose("program"));
-document.getElementById("tab-page").addEventListener("click", () => choose("page"));
 
-document.getElementById("run").addEventListener("click", run);
-document.getElementById("link").addEventListener("click", () => {
-  run();
-  const done = () => { said.textContent = "Link copied"; };
-  if (navigator.clipboard) navigator.clipboard.writeText(location.href).then(done, () => { said.textContent = "The link is in the address bar"; });
-  else said.textContent = "The link is in the address bar";
+let toastTimer = 0;
+function toast(message) {
+  const t = $("toast");
+  t.textContent = message;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// ------------------------------------------------------------ The rest
+$("run").addEventListener("click", run);
+$("format").addEventListener("click", format);
+$("theme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+  if (!files.page.trim()) run();
 });
 
-for (const box of [program, page]) {
-  box.addEventListener("keydown", (pressed) => {
-    // Ctrl+Enter (Cmd+Enter on a Mac) runs.
-    if (pressed.key === "Enter" && (pressed.ctrlKey || pressed.metaKey)) {
-      pressed.preventDefault();
-      run();
-    }
-    // Tab indents by four spaces, as `zeno format` does, and does not
-    // leave the box.
-    if (pressed.key === "Tab" && !pressed.shiftKey && !pressed.ctrlKey && !pressed.altKey) {
-      pressed.preventDefault();
-      box.setRangeText("    ", box.selectionStart, box.selectionEnd, "end");
-    }
+// Dragging the line between the halves.
+(function () {
+  const divider = $("divider"), code = $("code"), main = document.querySelector("main");
+  divider.addEventListener("pointerdown", (e) => {
+    divider.setPointerCapture(e.pointerId);
+    divider.classList.add("dragging");
+    frame.style.pointerEvents = "none";
   });
-}
+  divider.addEventListener("pointermove", (e) => {
+    if (!divider.classList.contains("dragging")) return;
+    const box = main.getBoundingClientRect();
+    const share = Math.min(0.8, Math.max(0.2, (e.clientX - box.left) / box.width));
+    code.style.flex = `0 0 calc(${share * 100}% - 6px)`;
+    scrolled();
+  });
+  const stop = () => { divider.classList.remove("dragging"); frame.style.pointerEvents = ""; };
+  divider.addEventListener("pointerup", stop);
+  divider.addEventListener("pointercancel", stop);
+})();
 
-show(unpackedAddress() || EXAMPLES[0]);
-run();
+const start = fromAddress() || kept();
+if (start) {
+  files.program = start.program;
+  files.page = start.page || "";
+  $("example-name").textContent = fromAddress() ? "Shared program" : "Your program";
+  choose("program", false);
+  check();
+  run();
+  showHalf("code");
+} else {
+  load(EXAMPLES[0]);
+}
+window.zenoModule.then(() => { if (said.textContent === "Loading Zeno…") said.textContent = ""; },
+  () => { said.textContent = "This browser cannot run Zeno"; });
 </script>
 </body>
 </html>
