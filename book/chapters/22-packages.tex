@@ -29,7 +29,7 @@ what can be written, and then one line:
 package weather
 \end{zeno}
 
-There are two kinds of line, and that is all the file can say:
+There are three kinds of line, and that is all the file can say:
 
 \begin{center}
 \begin{tabular}{lP{7.6cm}}
@@ -41,6 +41,9 @@ Line & Means \\
   folder, counted from this file's folder. Nothing is copied \\
 \verb|needs units from "address" at "v1.2.0"| & it needs the package in
   that git repository, at that tag, branch or commit \\
+\verb|memory owned| & how the program frees memory: \verb|owned| (one
+  owner for each value, no collector) or \verb|collector|, which is what
+  it gets with no line (\hyperref[ch-memory]{Memory}) \\
 \bottomrule
 \end{tabular}
 \end{center}

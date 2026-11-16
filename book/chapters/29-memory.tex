@@ -52,12 +52,14 @@ Zeno's collector is the oldest and simplest kind. It was invented for
 Lisp in 1960, and it is what MicroPython runs on microcontrollers.
 
 \begin{enumerate}
-\item Every block is written in a table as it is handed out.
+\item Every block is handed out from a \emph{page}: 64\,KB of memory
+  holding blocks of one size, which keeps a bit for each block to say
+  whether it is in use.
 \item \textbf{Mark.} Start from the variables, the \emph{roots}.
   Whatever a root points at is in use: mark it. Whatever a marked block
   points at is in use too. Carry on until nothing new turns up.
-\item \textbf{Sweep.} Go through the table. A block with no mark cannot
-  be reached: free it. Take the marks off the rest.
+\item \textbf{Sweep.} Go through the pages. A block in use with no
+  mark cannot be reached: free it. Take the marks off the rest.
 \end{enumerate}
 
 Two objects that point at each other, and at nothing in use, are freed
@@ -68,7 +70,14 @@ The roots are the variables at the top of the file, which the compiler
 lists, and everything on the C stack: the collector reads the stack
 from the function running now back to \verb|main|, a word at a time,
 and asks of each word whether it is the address of one of its blocks.
-When unsure, it keeps, so it can never free a block in use.
+When unsure, it keeps, so it can never free a block in use. The
+question is quick to answer: every page starts at an address that is a
+multiple of 64\,KB, and a hash table says which page covers each 64\,KB
+of memory, so one look and one division find the block a word points
+into. (Until version 0.3 the collector kept one table of every block,
+sorted it at each collection, and searched it for every word; on a
+program with millions of blocks, the pages made it five times faster.
+Decision 22.5.)
 
 \section{Seeing it work}
 
@@ -105,8 +114,8 @@ that second trigger is the one that matters.
   and the pause grows with the memory in use. A control loop that must
   answer within microseconds should not make blocks inside the loop.
   Numbers, bools and fixed text never do.
-\item \textbf{A few words for each block}: a header and its line in the
-  table.
+\item \textbf{A little memory for each block}: two bits in its page,
+  and the room left over when a block is rounded up to its page's size.
 \item \textbf{It leans on the C compiler.} Reading the stack word by
   word is not something the C standard describes. Every mainstream
   compiler and processor allows it, and the Boehm collector, Ruby and
@@ -133,15 +142,39 @@ Build & Memory \\
 \verb|zeno build| & shared values and a collector: this chapter \\
 \verb|owned| values & one owner, freed where its block ends, in any build:
   \hyperref[ch-ownership]{Ownership} \\
-\verb|--no-collector| & every list and object has one owner, memory comes
-  from a fixed pool, and there is no collector:
-  \hyperref[ch-no-collector]{Building with No Collector} \\
+\verb|memory owned| & every list and object has one owner, and there is
+  no collector: Rust's way. Said once, in \verb|zeno.package|, or with
+  \verb|zeno build --owned|. Memory grows as the program needs it \\
+\verb|--no-collector| & the same rules for a chip: memory comes from a
+  fixed pool. \hyperref[ch-no-collector]{Building with No Collector} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
+A program chooses with one line in its \verb|zeno.package|:
+
+\begin{verbatim}
+package server
+memory owned
+\end{verbatim}
+
+\noindent and \verb|zeno build|, \verb|zeno check| and \verb|zeno run|
+all follow it. \verb|memory collector| is what a program gets when
+nothing is said. It is a choice for the whole program because how
+memory is freed has to go with each value, and a value is used on many
+lines; a single value can still be \verb|owned| in a collector program.
+(Decision 22.1.)
+
+\verb|--release| goes with any of them: whole numbers wrap round on
+overflow, as the processor does, instead of stopping the program, and
+every other check stays. It is what Rust's release builds do. On the
+benchmarks in the repository's \verb|bench| folder, an owned release
+build of a program that makes millions of small objects runs as fast
+as the same program in C, and the collector build about two times
+slower. (Decision 22.3.)
+
 Memory a program asks for itself with \verb|allocate| is apart from all
-three: the collector never looks at it, and the program gives it back
+of these: the collector never looks at it, and the program gives it back
 with \verb|free| (\hyperref[ch-unsafe]{Unsafe Code}).
 
 \begin{summary}

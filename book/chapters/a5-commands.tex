@@ -73,6 +73,14 @@ Option & With & What it does \\
   \verb|malloc|: every list and object has one owner, and memory comes
   from a fixed pool (\hyperref[ch-no-collector]{Building with No
   Collector}). Turns \verb|--firmware| on \\
+\verb|--owned| & \verb|build|, \verb|check|, \verb|run| & one owner for
+  every list and object and no collector, as \verb|memory owned| in
+  \verb|zeno.package| says; memory grows as the program needs it
+  (\hyperref[ch-memory]{Memory}) \\
+\verb|--collector| & \verb|build|, \verb|check|, \verb|run| & the garbage
+  collector, whatever \verb|zeno.package| says \\
+\verb|--release| & \verb|build| & whole numbers wrap round on overflow
+  instead of stopping the program; every other check stays \\
 \verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
   to \verb|clang|. Goes with the three options around it \\
 \verb|--web| & \verb|build| & write a web page that runs the program:
