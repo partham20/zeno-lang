@@ -69,6 +69,55 @@ sh install.sh --uninstall
 
 \noindent takes all of it off again.
 
+\section{With a package manager}
+
+Each release also has Zeno in the forms that the usual package
+managers install: a \verb|.deb| for apt, a package for pacman, a snap,
+a flatpak, a formula for Homebrew, and the files winget reads. Each
+puts \verb|zeno| and \verb|zeno.wasm| where that system keeps
+programs, and each removes them again the usual way.
+
+Today each installs from its file, downloaded from the releases page
+(\verb|V| is the version, as below):
+
+\begin{zenofrag}[lang=shell]
+sudo apt install ./zeno_V_amd64.deb                     # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-bin-V-1-x86_64.pkg.tar.zst          # Arch
+sudo snap install --classic --dangerous zeno_V_amd64.snap
+flatpak install --user zeno-V-x86_64.flatpak
+\end{zenofrag}
+
+The \verb|.deb| comes for \verb|amd64|, \verb|arm64|, \verb|armhf| (any
+Raspberry Pi with a 32-bit system) and \verb|i386|, and apt installs a
+C compiler and git beside it, because the package recommends them.
+pacman only names them, and installs them when asked. The snap is
+\verb|classic|, so that \verb|zeno build| can reach the C compiler the
+system already has. A flatpak runs in a box of its own, with its own
+compiler and git inside, and its command is long, so give it a short
+name:
+
+\begin{zenofrag}[lang=shell]
+alias zeno='flatpak run org.zeno_lang.Zeno'
+\end{zenofrag}
+
+Homebrew, on macOS or Linux, reads a formula from the Zeno repository:
+
+\begin{zenofrag}[lang=shell]
+brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
+brew install partham20/zeno-lang/zeno
+\end{zenofrag}
+
+On Windows, winget runs the same setup program as above, with its
+boxes for the compiler and git left unticked, since somebody who uses
+winget installs those with winget too.
+
+Installing with one word, as in \verb|sudo apt install zeno| or
+\verb|winget install ZenoLang.Zeno|, needs each manager's own
+collection to list Zeno: the AUR, the Snap Store, Flathub, Microsoft's
+list for winget, and an apt repository of Zeno's own. Those are
+requests to the people who keep them, and are on their way. Zeno is
+free software under the MIT licence, which each of them asks about.
+
 \section{Downloading it by hand}
 
 The installers fetch one of ten archives, one for each kind of machine
