@@ -99,8 +99,8 @@ the tag is pushed, on the machine the earlier versions were timed on:
 
 ```sh
 cargo build --release
-python3 bench/record.py --version 0.3.0
-git add bench/results/versions/0.3.0.json
+python3 bench/record.py --version 0.4.0
+git add bench/results/versions/0.4.0.json
 ```
 
 [`bench/record.py`](../bench/record.py) times every program with every
