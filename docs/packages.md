@@ -1,370 +1,337 @@
-# Packages
+# Packages: Zeno for apt, pacman, snap, flatpak, Homebrew and winget
 
-[`modules.md`](modules.md) put a program into several files. This page
-lets a program use files that are not its own: a **package** is a
-folder of modules that lives somewhere else, beside the program or in
-somebody else's git repository.
+The installers of [`install.md`](install.md) are Zeno's own: a setup
+program and a script. But most systems already have a program whose
+job is to install programs, and people who use one would rather use
+it for everything. It knows what is installed, it updates it, and it
+takes it off cleanly.
 
-```sh
-cargo run -- run examples/thermostat/main.zeno
-```
+There are many of them. This stage makes Zeno something that six of
+them can install:
 
-```
-read  18.2  smoothed  18.2  heater On
-read  18.9  smoothed  18.5  heater On
-...
-read  23.1  smoothed  22.2  heater Off
-mean 20.44, heater on for 7 of 10 minutes
-```
+| Its program | On | What is made for it |
+|---|---|---|
+| **apt** | Debian, Ubuntu, Raspberry Pi OS | `zeno_0.2.0_amd64.deb`, and `arm64`, `armhf`, `i386` |
+| **pacman** | Arch, Manjaro | `zeno-bin-0.2.0-1-x86_64.pkg.tar.zst`, and a `PKGBUILD` |
+| **snap** | Ubuntu, and others | `zeno_0.2.0_amd64.snap`, and `arm64`, `armhf` |
+| **flatpak** | most Linux desktops | `zeno-0.2.0-x86_64.flatpak`, and `aarch64` |
+| **Homebrew** | macOS, and Linux | a formula, `Formula/zeno.rb` |
+| **winget** | Windows 10 and 11 | three small files, in `packaging/winget` |
 
-Two folders in `examples/` make this program:
+None of them holds a `zeno` of its own. Each is the `zeno` of a
+release's archive, laid out the way that system wants it. The
+decisions are 15.12 to 15.20 of [`decisions.md`](decisions.md).
 
-```
-examples/thermostat/         the program
-    zeno.package             its name, and what it needs
-    main.zeno                the file the program starts in
-    control.zeno             the module `control`, a file of the program
-examples/filters/            a package
-    zeno.package             its name
-    filters.zeno             the module `filters`
-    lowpass.zeno             the module `filters.lowpass`
-    main.zeno                a small program that tries the package
-```
+## Two halves, and which one this is
 
-The decisions are 8.1 to 8.11 in [`decisions.md`](decisions.md).
+Installing with a package manager has two halves.
 
-## The project file
+The first is **a package**: a file in that manager's own form. All six
+are made here, by one script, and five of them are tried on a real
+system before each release.
 
-A folder is a package when it has a file called `zeno.package` in it.
-This is the thermostat's:
+The second is **a place the manager looks in**: when somebody types
+`apt install zeno`, apt asks the places it knows about, and Zeno is in
+none of them. Each manager has such a place, each place has a door,
+and each door wants an account or a person's say-so. That half is at
+the end of this page, as a list.
 
-```
-# What this program is called, and the packages it needs.
-package thermostat
-
-needs filters in "../filters"
-```
-
-There are two kinds of line, and that is all the file can say:
-
-| Line | Means |
-|---|---|
-| `package thermostat` | the name of this package. The first line that is not a comment |
-| `needs filters in "../filters"` | it needs the package in that folder. The folder is counted from this file's folder. Nothing is copied |
-| `needs units from "address" at "v1.2.0"` | it needs the package in that git repository, at that tag, branch or commit. `zeno fetch` gets it |
-
-A program with no `zeno.package` is still a program: `examples/station`
-has none. The file is there from the day the program needs a package.
-
-## Importing from a package
-
-```zeno
-import filters              # filters.zeno in the package's folder
-import filters.lowpass      # lowpass.zeno in the package's folder
-import control              # control.zeno, a file of the thermostat
-
-let smooth = filters.lowpass.start(0.4, readings[0])
-print(filters.mean(readings))
-```
-
-The rule has one step more than the rule for modules:
-
-1. **If the first word of the import is a package this file's
-   `zeno.package` needs**, the rest is a file in that package's
-   folder. `import filters.lowpass` is `lowpass.zeno` there. `import
-   filters` with nothing after it is the file with the package's own
-   name, `filters.zeno`.
-2. **Otherwise** it is a file of the package the importing file is
-   in. For `main.zeno` that is the thermostat's own folder.
-
-Everything else is as it was. What is written at the import is
-written at the use. `from filters.lowpass import Lowpass` brings in
-one name. A type is `filters.lowpass.Lowpass`.
-
-**Inside the package the same rule holds, from the package's own
-side.** `lowpass.zeno` wants `clamp` from its neighbour, and writes:
-
-```zeno
-from filters import clamp       # filters.zeno, in this package's folder
-```
-
-It does not matter which program is using the package. A package sees
-its own files and the packages its own `zeno.package` needs, and
-nothing of the program that needs it. So a package can also be run on
-its own:
+Until then, each package installs from its file:
 
 ```sh
-cargo run -- run examples/filters/main.zeno
+sudo apt install ./zeno_0.2.0_amd64.deb
+sudo pacman -U zeno-bin-0.2.0-1-x86_64.pkg.tar.zst
+sudo snap install --classic --dangerous zeno_0.2.0_amd64.snap
+flatpak install --user zeno-0.2.0-x86_64.flatpak
 ```
 
-## Other people's packages: `zeno fetch`
-
-A package that somebody else keeps is named by where its git
-repository is, and by a version of it:
-
-```
-package logger
-
-needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
-```
-
-`at` is a tag, a branch or a commit. It is one exact thing: there are
-no ranges such as `^1.2` (decision 8.4). Then, in the program's
-folder:
-
-```
-$ zeno run main.zeno
-error: the package `units` has not been fetched: there is no file
-`packages/units/zeno.package`. Run `zeno fetch` in the folder of the program
- --> zeno.package:3:1
-
-$ zeno fetch
-Fetched units v1.2.0 (1c4e326) into packages/units
-Fetched prefix main (d4461d9) into packages/prefix
-Wrote zeno.lock
-
-$ zeno run main.zeno
-42.0
-```
-
-Three things to see:
-
-- **Running never fetches.** `zeno run`, `check` and `build` read
-  files and nothing else. Only `zeno fetch` uses the network, and it
-  does so with the `git` that is on the machine (8.9).
-- **`units` needed `prefix`, and that came too.** A fetched package
-  has its own `zeno.package`, and what it needs is fetched as well.
-  All of them go into one folder, `packages/`, beside the program's
-  `zeno.package`. There is one package of each name in a program
-  (8.7).
-- **`zeno.lock` was written.** It holds the commit each package was
-  at:
-
-  ```
-  prefix from "https://.../zeno-prefix" at "main" commit "d4461d9976d7..."
-  units from "https://.../zeno-units" at "v1.2.0" commit "1c4e3266dcc4..."
-  ```
-
-  `prefix` follows the branch `main`, and a branch moves. The next
-  `zeno fetch`, here or on another machine, still gets `d4461d9`,
-  because the lock says so. `zeno fetch --update` looks every `at` up
-  again and writes the lock afresh (8.10). Keep `zeno.lock` with the
-  program. The folder `packages/` can be made again from it at any
-  time.
-
-## What can go wrong, and what Zeno says
-
-```
-error: this does not say which version of `units` is needed. Add `at` and a tag,
-a branch or a commit of that repository, as in `needs units from "..." at "v1.0.0"`
-
-error: the package in `lib` is called `filters`, not `filter`. Write `needs filters ...`
-
-error: two packages called `b` are needed: the one in `a/b` and the one in `b`.
-A program has one package of each name. Make the `needs` lines agree
-
-error: the package `filters` has no module `lowpas`. `import filters.lowpas` reads
-the file `../filters/lowpas.zeno`, and there is no such file
-
-error: `import filters` has two readings here: the file `filters.zeno`, and the file
-`../filters/filters.zeno` of the package `filters` that `zeno.package` needs.
-Give the first another name
-```
-
-A mistake in a `zeno.package` is shown as a mistake in any file is:
-the file, the line, and the line itself with a mark under it.
-
-## How it works
-
-Two files do the work. `src/package.rs` reads `zeno.package` and
-`zeno.lock`, and is `zeno fetch`. `src/modules.rs`, the loader from
-the last stage, learned which file an import names when there are
-packages.
-
-### Reading `zeno.package`
-
-The file is split into words by Zeno's own lexer, the one that reads
-programs. That is why a comment starts with `#` and a string is
-written as in a program, and it is why this reader is short:
-
-```rust
-for line in tokens.split(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Eof)) {
-    ...
-    match words.as_slice() {
-        [_, TokenKind::Ident(package)] if word(0, "package") => { ... }
-        [_, TokenKind::Ident(need), rest @ ..] if word(0, "needs") => {
-            let source = match rest {
-                [TokenKind::In, TokenKind::Str { value, .. }] => Source::Folder(value.clone()),
-                [TokenKind::From, TokenKind::Str { value: url, .. }, _, TokenKind::Str { value: at, .. }]
-                    if word(4, "at") => Source::Git { url: url.clone(), at: at.clone() },
-                ...
-```
-
-A line is a list of tokens, and each kind of line is one pattern over
-that list. `in` and `from` are already keywords of Zeno, so they
-arrive as `TokenKind::In` and `TokenKind::From`. `package`, `needs`
-and `at` are ordinary words, matched by their text. What comes out is
-a `Manifest`: a name, and a list of `Need`.
-
-### Finding the packages
-
-`Loader` in `src/modules.rs` got a list of packages. The first is the
-program itself:
-
-```rust
-struct Package {
-    name: String,                    // empty for a program with no zeno.package
-    folder: PathBuf,
-    needs: HashMap<String, usize>,   // name -> which package in the list
-}
-```
-
-Before the first import is followed, `packages_needed` reads the
-program's `zeno.package`, and `need` follows each `needs` line to the
-`zeno.package` it points at, and so on down. A `needs ... in` folder
-is counted from the folder of the file that says it. A `needs ...
-from` package is always in `packages/<name>` of the *program*,
-whichever package asked for it. If a name is met a second time it
-must be the same folder, or the program would have two packages of
-one name.
-
-Each `zeno.package` that is read becomes one of the program's files,
-with a number like any other (see "One number says the file and the
-line" in `modules.md`). That is all it takes for a mistake in one to
-be shown with its file and line.
-
-### Which file an import names
-
-`find` is the two-step rule from above, in code:
-
-```rust
-let own = file(&self.packages[from].folder, &parts);
-let Some(&needed) = self.packages[from].needs.get(parts[0]) else {
-    return Some(Found { module: self.full(from, written), package: from, path: own });
-};
-...
-let inside = if parts.len() == 1 { &parts[..] } else { &parts[1..] };
-let path = file(&self.packages[needed].folder, inside);
-```
-
-`from` is the package the importing file is in. If the first word is
-not one of its needs, the import is a file of that same package.
-Otherwise the words after the first are a file of the needed package.
-
-### One name in the whole program
-
-Inside `filters`, the file writes `import lowpass`. In the thermostat,
-the same file is `import filters.lowpass`. The joined program needs
-one name for it, and `full` gives it: a module of the program keeps
-its name, and a module of another package gets the package's name in
-front.
-
-```
-lowpass.start           written in examples/filters/main.zeno ...
-filters.lowpass.start   ... and in examples/thermostat/main.zeno
-filters.lowpass.start   is what both are in the thermostat's joined program
-```
-
-So the renamer of the last stage now keeps two names for each
-imported module: the one the file wrote, which is what it looks for
-in the source, and the one the program uses, which is what it writes
-into the tree. See it with `join`:
+and Homebrew, which reads formulas from a repository, reads this one:
 
 ```sh
-cargo run -- join examples/thermostat/main.zeno
+brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
+brew install partham20/zeno-lang/zeno
 ```
 
-```
-function filters.clamp(value: float, low: float, high: float) -> float
-...
-class filters.lowpass.Lowpass
-...
-function filters.lowpass.start(weight: float, first: float) -> filters.lowpass.Lowpass
-    return filters.lowpass.Lowpass(filters.clamp(weight, 0.0, 1.0), first)
-```
+## apt: a .deb
 
-In `lowpass.zeno` that last line is `Lowpass(clamp(weight, 0.0, 1.0),
-first)`. After this point nothing knows there were packages: the type
-checker, the interpreter, the VM and both compilers got one ordinary
-program, as they did with modules.
-
-### `zeno fetch`
-
-`fetch` in `src/package.rs` walks the same `needs` lines, and for each
-one with `from` runs git:
+A `.deb` is an archive of files with the paths they are to have, and a
+folder, `DEBIAN`, with one file that says what the package is:
 
 ```
-git clone <address> packages/<name>         if it is not there yet
-git fetch --tags origin                     if it is
-git rev-parse refs/tags/<at>                is `at` a tag? else a branch? else a commit?
-git checkout --detach <commit>
+Package: zeno
+Version: 0.2.0
+Architecture: amd64
+Recommends: gcc | c-compiler, libc6-dev | libc-dev, git
+Suggests: clang
 ```
 
-If `zeno.lock` has a line for the same package, address and `at`, the
-commit in that line is used and `at` is not looked up. Then the
-fetched package's own `zeno.package` is read, its needs join the
-queue, and at the end the lock is written, sorted by name so that it
-is the same file whichever order things were fetched in.
+`dpkg-deb --build` turns the folder into the file. What is in it:
 
-The test for all this (`fetch_gets_what_is_needed_and_pins_it`) makes
-two small git repositories in a temporary folder and fetches from
-them by `file://` address, so it needs no network.
+```
+/usr/lib/zeno/zeno          the program
+/usr/lib/zeno/zeno.wasm     Zeno for a browser, beside it
+/usr/bin/zeno               a link to the program, where the PATH looks
+/usr/share/zeno/examples    and /editors
+/usr/share/doc/zeno         the README and the docs
+```
 
-## What is left out
+**`Recommends` is how apt installs whatever is needed.** apt installs
+what a package recommends along with it, unless it is told
+`--no-install-recommends`. So `apt install ./zeno_0.2.0_amd64.deb` on
+a machine with no compiler brings gcc and git too, which is what the
+setup program's two boxes do on Windows. `gcc | c-compiler` means gcc,
+or anything that calls itself a C compiler: a machine that has clang
+is left alone.
 
-- **No registry and no short names.** A package is a folder or a git
-  address (8.3).
-- **No version ranges.** `at` names one tag, branch or commit, and two
-  packages that need the same package must name the same one (8.4,
-  8.7).
-- **No `zeno add`.** The project file is two kinds of line, written
-  by hand (8.9). `zeno new` writes the first one, and shows the
-  others in a comment ([`new.md`](new.md)).
-- **A package is a whole repository.** One that sits in a subfolder
-  of a repository cannot be fetched yet.
-- **`packages/` is not tidied.** A package that is no longer needed
-  stays in the folder until you remove it. It is not read.
-- **An edit inside `packages/` is not noticed.** `zeno fetch` compares
-  commits, not files. To change a fetched package, make it a folder
-  package (`needs ... in`) while you work on it.
-- **Everything is still compiled together**, packages included.
+**The one for `armhf` holds the build for ARMv6.** Debian's `armhf` is
+ARMv7, and Raspberry Pi OS calls a Pi Zero, which is ARMv6, `armhf`
+too. The ARMv6 build runs on both, and the ARMv7 build would not start
+on the Pi Zero.
+
+## pacman: a PKGBUILD, and the package it makes
+
+Arch does not pass packages around as much as recipes for them. A
+`PKGBUILD` is a shell script that says where the files come from, what
+their checksums are, and, in a function called `package`, where each
+goes. `makepkg` runs it and makes the package, and `makepkg -si`
+installs it too.
+
+The package is called `zeno-bin`: on Arch, `-bin` says "this packs a
+program that was already built", and plain `zeno` is left for a
+package that would build it from source.
+
+pacman has nothing like `Recommends`. The compiler and git are named
+as `optdepends`, which pacman shows after installing and does not
+install. Nearly every Arch machine that builds anything has both.
+
+`makepkg` exists only on Arch, so `package.sh` runs Arch in a
+container to make the package for x86-64.
+
+## snap
+
+A snap is one file that holds a folder (it is a squashfs, a read-only
+disk in a file), with `meta/snap.yaml` in it to say what it is. `snap
+pack` makes the file from the folder.
+
+```yaml
+name: zeno
+confinement: classic
+apps:
+  zeno:
+    command: bin/zeno
+```
+
+**`classic`** is the line that matters. A snap is normally shut in: it
+sees its own files and little of the machine. A compiler cannot work
+like that. It has to read a program wherever somebody keeps it, and
+run the C compiler that is installed. `classic` says the snap is not
+shut in at all, and installing one says so too: `--classic`.
+
+`--dangerous` only means "this file did not come from the store, so
+nobody has signed it".
+
+## flatpak
+
+A flatpak is shut in as well, and has no `classic`. It runs in a box,
+on top of a **runtime**: a set of files that stands in for the system,
+the same on every Linux. So the question is what to do about the
+compiler, which is outside the box.
+
+The answer here is to pick a runtime that has one. There are two for
+each version: the Platform, which programs run on, and the Sdk, which
+they are built on. The Sdk has gcc and git. Zeno names the **Sdk** as
+its runtime, so `zeno build` and `zeno fetch` work inside the box with
+nothing else installed. The price is the download: the Sdk is several
+hundred megabytes, once.
+
+The box is given two things from outside: the home folder, where
+programs are kept, and the network, for `zeno fetch`.
+
+Its name is `org.zeno_lang.Zeno`. A flatpak is named after a web
+address its maker owns, turned round, and `zeno-lang.org` turned round
+is `org.zeno-lang`, with `_` because `-` is not allowed. It is run as
+
+```sh
+flatpak run org.zeno_lang.Zeno run hello.zeno
+```
+
+which is long, so: `alias zeno='flatpak run org.zeno_lang.Zeno'`.
+
+Of the six this is the poorest fit. Flatpak was made for programs with
+a window. It is here because it was asked for and because it works.
+
+## Homebrew: a formula
+
+A formula is a small Ruby file. For each kind of machine it says where
+the archive is and what its checksum must be, and then what to do with
+what is in it:
+
+```ruby
+def install
+  bin.install "zeno"
+  bin.install "zeno.wasm" if File.exist?("zeno.wasm")
+  doc.install "README.md", "docs"
+  pkgshare.install "examples", "editors"
+end
+```
+
+Homebrew reads formulas from a git repository, which it calls a
+**tap**. The formula is kept in this repository, in `Formula`, so this
+repository is the tap. That is why the first of the two lines above
+names it in full: a tap that is called `homebrew-something` can be
+named in short, and this one is not.
+
+On macOS the compiler and git come with Apple's command line tools,
+which Homebrew itself needs, so there is nothing to recommend.
+
+## winget
+
+winget does not have packages of its own. It runs a program's setup
+program without showing it, and what it needs to know is in three
+small files: which version this is, where the setup program is and its
+checksum, and what to show somebody who searches. The setup program is
+the one from [`install.md`](install.md). It is one file for three
+processors, so the files name it three times.
+
+One line in them is there for a reason:
+
+```yaml
+InstallerSwitches:
+  Custom: /MERGETASKS="!compiler,!git"
+```
+
+The setup program's two boxes install the compiler and Git **with
+winget**. Run by winget, without being shown, it would start a second
+winget inside the first, and nobody would have been asked. The line
+unticks the two boxes. Somebody who uses winget installs those two the
+same way: `winget install BrechtSanders.WinLibs.POSIX.UCRT.LLVM
+Git.Git`.
+
+## How they are made
+
+```
+tools/package.sh 0.2.0 files out
+```
+
+`files` is a folder with the files of a release. The script unpacks
+the archive for each processor, lays the files out, and calls the tool
+that makes that kind of package: `dpkg-deb`, `snap pack`, `flatpak
+build-export` and `build-bundle`, and `makepkg` in a container. The
+three recipes are text, and are written with `cat`. A kind whose tool
+is missing is left out, with a line that says so.
+
+Nothing is compiled. The script works on any release, including one
+that was made before the script was: that is how it was tried, on
+0.1.0.
+
+The recipes go into `out/recipes`, laid out as this repository is:
+
+```
+out/recipes/Formula/zeno.rb
+out/recipes/packaging/arch/PKGBUILD
+out/recipes/packaging/winget/ZenoLang.Zeno.yaml   and two more
+```
+
+They hold the checksums of a release's files, so they can only be
+written when those files exist. `tools/keep-recipes.sh` copies them
+into the repository and pushes, as the last step of a release.
+
+## How they are tried
+
+```
+tools/try-packages.sh deb 0.2.0 out
+```
+
+and the same with `snap`, `flatpak`, `pacman` and `brew`. Each
+installs the package the way somebody would, checks that `zeno
+--version` is the version, runs the first example, builds a page (from
+0.2.0), removes the package and checks that nothing is left. The
+flatpak is also made to compile a program, since its compiler is the
+one thing about it that is unusual.
+
+Homebrew downloads what its formula names, and before a release there
+is nothing there to download. So the formula is tried with the address
+of a folder in place of the address of the release, and nothing else
+changed.
+
+## In the release
+
+[`release.yml`](../.github/workflows/release.yml) has a job,
+`packages`, after the ten builds and the setup program. It makes the
+packages from what was just built and tries them, and a second job
+tries the formula on macOS. If either fails, there is no release.
+
+A release then has its archives, the two installers, and nine
+packages: four `.deb`, three `.snap`, two `.flatpak` and the pacman
+package. Then the recipes are pushed to `main`.
+
+[`packages.yml`](../.github/workflows/packages.yml) does the same for
+a version that is already released, started by hand.
+
+## The other half: where each manager looks
+
+For `apt install zeno` and the rest to work with one word, Zeno has to
+be in the place that manager looks in. Every one of them first needs
+**the repository to be public**: they all download from the release.
+After that:
+
+| For | What has to happen | Then it is |
+|---|---|---|
+| Homebrew | Nothing more. Better: a repository named `homebrew-zeno` to hold the formula | `brew install partham20/zeno/zeno` |
+| winget | The three files are sent to Microsoft's `winget-pkgs` repository as a pull request, which people there check | `winget install ZenoLang.Zeno` |
+| pacman | An account on the AUR, and the `PKGBUILD` pushed there | `yay -S zeno-bin` |
+| snap | An account on the Snap Store, the name `zeno` registered, and a request for `classic`, which people there decide | `sudo snap install zeno --classic` |
+| flatpak | A request to Flathub, which people there check | `flatpak install flathub org.zeno_lang.Zeno` |
+| apt | An apt repository: the `.deb` files and a signed list of them, kept somewhere such as zeno-lang.org | one line to add it, then `sudo apt install zeno` |
+
+Being in Debian's or Arch's own collection, or in Homebrew's main one,
+is a different matter: each takes programs that are already widely
+used, and Zeno is days old.
+
+winget, the Snap Store and Flathub each ask what licence a program has.
+Zeno has none yet (15.19).
+
+## What it does not do yet
+
+- **None of the six works with one word** (above).
+- **The winget files have not been run.** GitHub's Windows machines
+  have no winget. The other five are installed and removed before
+  each release.
+- **The packages for other processors are made and not run**: the
+  `.deb` for arm64, armhf and i386, the snap for arm64 and armhf, and
+  the flatpak for aarch64. The `zeno` inside each was run, by the
+  build that made it.
+- **No apt repository**, so apt does not update Zeno by itself.
+- **No package for pacman on ARM**, only the `PKGBUILD`, which makes
+  one there.
+- **No `.rpm`** for Fedora and openSUSE, no Nix, no Scoop or
+  Chocolatey. `install.sh` works on all the Linux ones.
 
 ## Things to try
 
-1. Run `cargo run -- join examples/thermostat/main.zeno`. Find a name
-   that starts with `filters.lowpass.`, then open
-   `examples/filters/lowpass.zeno` and see how the file itself
-   wrote it.
-2. Run `cargo run -- run examples/filters/main.zeno`, then `join` it.
-   The same `start` has another name now. Which, and why? (Read
-   `Loader::full`.)
-3. In `examples/thermostat/main.zeno`, change `import filters.lowpass`
-   to `import lowpass`. Read the message: which file did Zeno look
-   for, and in which folder?
-4. In `examples/thermostat/zeno.package`, change the folder to
-   `"../filter"`. Which file and line does the message point at? Put
-   it back.
-5. In the same file, call the package `filter` in the `needs` line
-   (and leave the folder right). Read the message.
-6. Add the line `import control` to the top of
-   `examples/filters/lowpass.zeno` and run the thermostat. The
-   thermostat has a `control.zeno`. Why is it not found? (Decision
-   8.6.) Take the line out again.
-7. Add a function `lowpass()` to `examples/filters/filters.zeno` and
-   run the thermostat. Read the message, then read decision 8.11.
-   Take it out again.
-8. Make a package of your own. In an empty folder make `zeno.package`
-   with `package greet` and a file `greet.zeno` with a function
-   `hello(name: str) -> str`. In a second folder beside it write a
-   program that needs it and prints `greet.hello("Zeno")`.
-9. Now fetch it. In the `greet` folder run `git init`, `git add .`,
-   `git commit -m first` and `git tag v1`. In the program's
-   `zeno.package` write
-   `needs greet from "file:///full/path/to/greet" at "v1"`, run
-   `zeno fetch`, and look at `packages/` and `zeno.lock`.
-10. Change `hello` in the `greet` folder, commit, and run `zeno fetch`
-    again. Nothing moves: why? Tag the new commit `v2`, change `at` to
-    `"v2"`, and fetch once more. What changed in `zeno.lock`?
-11. Build the thermostat with no collector:
-    `cargo run -- build --no-collector --memory examples/thermostat/main.zeno`
-    and run `./main`. How many blocks are left at the end?
+1. `dpkg-deb --info zeno_0.2.0_amd64.deb` and `dpkg-deb --contents`
+   of the same. Find each line of the first in `tools/package.sh`.
+2. Install the `.deb` with `--no-install-recommends` in a container
+   that has no compiler (`docker run -it debian`). What does `zeno
+   build` say? Now without that option.
+3. A snap is a squashfs: `unsquashfs -l zeno_0.2.0_amd64.snap` lists
+   what is in it. Find `meta/snap.yaml`.
+4. In `package.sh`, make the flatpak's runtime the Platform and not
+   the Sdk, and run `try-packages.sh flatpak`. Which check fails, and
+   what does it say? How much smaller is the download?
+5. Read the `PKGBUILD`. `package()` begins with `cd
+   "$srcdir"/zeno-$pkgver-linux-*/`. Why a `*`? Take the `/` off the
+   end and run `makepkg`: it says `cd: too many arguments`, which is
+   what it said the first time this was tried. What are the two
+   things the `*` matched?
+6. The formula has `on_macos` and `on_linux`, each with `on_arm` and
+   `on_intel`. Homebrew on Linux does not run on 32-bit ARM. What
+   does somebody on a Raspberry Pi with a 32-bit system see, and what
+   should they use?
+7. A big one: an apt repository is a folder with the `.deb` files, a
+   file `Packages` that lists them (`dpkg-scanpackages` writes it) and
+   a file `Release` with the checksum of that list, signed. Make one
+   in a folder, serve it with `python3 -m http.server`, and add it to
+   a container's `/etc/apt/sources.list.d`. What goes wrong without
+   the signature, and what is the option that gets past it? Why is
+   that option a bad idea on a real machine?

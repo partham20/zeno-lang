@@ -350,7 +350,10 @@ sha256sums_$arch=('$checksum')"
     cat <<'EOF'
 
 package() {
-    cd "$srcdir"/zeno-$pkgver-linux-*
+    # The folder that the archive unpacked into, whichever processor it
+    # is for. The `/` at the end leaves out the archive itself, which
+    # lies beside it and has a name that begins the same.
+    cd "$srcdir"/zeno-$pkgver-linux-*/
     install -Dm755 zeno "$pkgdir/usr/lib/zeno/zeno"
     # Zeno built for a browser, which `zeno build --web` looks for
     # beside `zeno`.
