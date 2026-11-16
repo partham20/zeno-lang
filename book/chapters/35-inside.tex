@@ -111,8 +111,14 @@ print(square(7))
 \end{zeno}
 
 Both engines share one file, \verb|ops.rs|, for what every operator
-does, so what \verb|*| means is written once. The VM is about twice as
-fast, and every test program runs on both and must print the same.
+does, so what \verb|*| means is written once, and every test program
+runs on both and must print the same. The VM is two to four times as
+fast. Since 0.3 it lays \emph{superinstructions} over the commonest
+runs of instructions: \verb|GetLocal i, GetLocal n, Binary <,|
+\verb|JumpIfFalse| at the top of a \verb|while| becomes one step that
+does all four and skips the other three, which stay in place so that
+no jump has to move. \verb|zeno bytecode| still shows the four, as the
+compiler wrote them.
 
 A web page (\hyperref[ch-web]{A Program in a Web Page}) is not a fifth
 engine. \verb|zeno.wasm| is the lexer, parser, checker and

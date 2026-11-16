@@ -1028,6 +1028,7 @@ impl Compiler {
             name: function.name,
             decl: function.decl,
             params: function.params,
+            fast: crate::bytecode::fuse(&function.code),
             code: function.code,
             spans: function.spans,
             notes: function.notes,

@@ -231,7 +231,24 @@ pub struct ClassDef {
 
 pub struct Instance {
     pub class: Rc<ClassDef>,
-    pub fields: RefCell<HashMap<String, Value>>,
+    /// The values of the fields, in the order the class lists them, so a
+    /// field is found by its place and not by hashing its name.
+    pub fields: RefCell<Vec<Value>>,
+}
+
+impl Instance {
+    /// The value of the field called `name`, if the class has one.
+    pub fn get(&self, name: &str) -> Option<Value> {
+        self.class.slot(name).map(|i| self.fields.borrow()[i].clone())
+    }
+}
+
+impl ClassDef {
+    /// Where the field called `name` is kept in each object of the class.
+    #[inline]
+    pub fn slot(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|field| field.name == name)
+    }
 }
 
 pub struct EnumDef {
@@ -597,7 +614,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
                 return false;
             }
             let (a, b) = (a.fields.borrow(), b.fields.borrow());
-            a.iter().all(|(name, value)| b.get(name).is_some_and(|other| equal(value, other)))
+            a.iter().zip(b.iter()).all(|(value, other)| equal(value, other))
         }
         (Case(a), Case(b)) => {
             Rc::ptr_eq(&a.def, &b.def)
@@ -662,7 +679,8 @@ impl fmt::Display for Value {
                     .class
                     .fields
                     .iter()
-                    .map(|field| format!("{}={}", field.name, fields[&field.name].repr()))
+                    .zip(fields.iter())
+                    .map(|(field, value)| format!("{}={}", field.name, value.repr()))
                     .collect();
                 // A class of an imported file prints by the name its
                 // file gave it: `Point`, not `shapes.Point`.

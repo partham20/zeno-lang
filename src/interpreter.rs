@@ -1023,7 +1023,7 @@ impl Interpreter {
                 let names: Vec<&str> = class.fields.iter().map(|f| f.name.as_str()).collect();
                 let slots = ops::bind(&class.name, &names, positional, named, span)?;
                 let scope = scope_of(&class.home);
-                let mut fields = HashMap::new();
+                let mut fields = Vec::with_capacity(class.fields.len());
                 for (field, slot) in class.fields.iter().zip(slots) {
                     let value = match (slot, &field.default) {
                         (Some(value), _) => value,
@@ -1035,7 +1035,7 @@ impl Interpreter {
                             )
                         }
                     };
-                    fields.insert(field.name.clone(), value);
+                    fields.push(value);
                 }
                 Ok(Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) })))
             }

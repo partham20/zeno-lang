@@ -1454,8 +1454,7 @@ fn to_json(value: &Value, out: &mut String, span: Span) -> Result<()> {
             out.push('{');
             let fields = instance.fields.borrow();
             let mut written = 0;
-            for field in &instance.class.fields {
-                let Some(value) = fields.get(&field.name) else { continue };
+            for (field, value) in instance.class.fields.iter().zip(fields.iter()) {
                 if written > 0 {
                     out.push(',');
                 }

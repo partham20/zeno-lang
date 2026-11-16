@@ -262,7 +262,7 @@ impl Vm {
 
         loop {
             let frame = self.frames.last_mut().expect("a function is running");
-            let op = frame.proto.code[frame.ip];
+            let op = frame.proto.fast[frame.ip];
             let span = frame.proto.spans[frame.ip];
             frame.ip += 1;
             let base = frame.base;
@@ -312,7 +312,11 @@ impl Vm {
                 Op::Binary(op) => {
                     let right = pop!();
                     let left = pop!();
-                    self.stack.push(ops::binary(op, left, right, span)?);
+                    let value = match fast_binary(op, &left, &right) {
+                        Some(value) => value,
+                        None => ops::binary(op, left, right, span)?,
+                    };
+                    self.stack.push(value);
                 }
                 Op::And(to) => {
                     // false and ... is false: the false stays as the answer.
@@ -436,9 +440,86 @@ impl Vm {
                 // ----------------------------------------------------- Jumps
                 Op::Jump(to) => frame.ip = to as usize,
                 Op::JumpIfFalse(to) => {
-                    if !ops::condition(pop!(), span)? {
+                    if !truth(pop!(), span)? {
                         frame.ip = to as usize;
                     }
+                }
+
+                // ----------------------------------------- Superinstructions
+                // Each stands for the instructions after it (bytecode::fuse),
+                // so an error takes the place of the one that would have
+                // raised it: the `Binary` is two or one further on.
+                Op::LocalLocal(a, b, op) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &self.stack[base + b as usize], at)?;
+                    self.stack.push(value);
+                    frame.ip += 2;
+                }
+                Op::LocalConst(a, c, op) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &frame.proto.constants[c as usize], at)?;
+                    self.stack.push(value);
+                    frame.ip += 2;
+                }
+                Op::LocalLocalSet(a, b, op, d) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &self.stack[base + b as usize], at)?;
+                    self.stack[base + d as usize] = value;
+                    frame.ip += 3;
+                }
+                Op::LocalConstSet(a, c, op, d) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &frame.proto.constants[c as usize], at)?;
+                    self.stack[base + d as usize] = value;
+                    frame.ip += 3;
+                }
+                Op::LocalLocalJump(a, b, op, to) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &self.stack[base + b as usize], at)?;
+                    let at = frame.proto.spans[frame.ip + 2];
+                    frame.ip = if truth(value, at)? { frame.ip + 3 } else { to as usize };
+                }
+                Op::LocalConstJump(a, c, op, to) => {
+                    let at = frame.proto.spans[frame.ip + 1];
+                    let value = binary_of(op, &self.stack[base + a as usize], &frame.proto.constants[c as usize], at)?;
+                    let at = frame.proto.spans[frame.ip + 2];
+                    frame.ip = if truth(value, at)? { frame.ip + 3 } else { to as usize };
+                }
+                Op::BinaryJump(op, to) => {
+                    let right = pop!();
+                    let left = pop!();
+                    let value = match fast_binary(op, &left, &right) {
+                        Some(value) => value,
+                        None => ops::binary(op, left, right, span)?,
+                    };
+                    let at = frame.proto.spans[frame.ip];
+                    frame.ip = if truth(value, at)? { frame.ip + 1 } else { to as usize };
+                }
+                Op::LocalField(a, n) => {
+                    let at = frame.proto.spans[frame.ip];
+                    frame.ip += 1;
+                    let value = match &self.stack[base + a as usize] {
+                        Value::Instance(instance) => instance.get(text(&frame.proto, n)),
+                        _ => None,
+                    };
+                    let value = match value {
+                        Some(value) => value,
+                        // Anything else goes the long way, as `GetField` would.
+                        None => {
+                            let object = self.stack[base + a as usize].clone();
+                            match object {
+                                Value::Element(..) => {
+                                    let name: Rc<str> = Rc::from(text(&frame.proto, n));
+                                    match builtins::on_page(self, &object, &name) {
+                                        Some(value) => value,
+                                        None => ops::field(object, &name, at)?,
+                                    }
+                                }
+                                _ => ops::field(object, text(&frame.proto, n), at)?,
+                            }
+                        }
+                    };
+                    self.stack.push(value);
                 }
 
                 // ----------------------------------------------------- Loops
@@ -591,7 +672,7 @@ impl Vm {
                     let Value::Class(class) = self.stack[base - 1].clone() else {
                         unreachable!("`Object` runs in the code that builds an object of a class");
                     };
-                    let fields = class.fields.iter().map(|field| field.name.clone()).zip(values).collect();
+                    let fields = values;
                     self.stack.push(Value::Instance(Rc::new(Instance { class, fields: RefCell::new(fields) })));
                 }
                 Op::Return => {
@@ -658,6 +739,24 @@ impl Vm {
                         return too_deep(&proto.name, span);
                     }
                     let frame = Frame::new(proto.clone(), captured.clone(), callee + 1, Vec::new(), span);
+                    self.frames.push(frame);
+                    return Ok(());
+                }
+            }
+        }
+
+        // A method of an object, given exactly its other parameters: the
+        // object goes in under the arguments as `self`, and the call is a
+        // new frame as above.
+        if let (Value::BoundMethod(instance, closure), true) = (&self.stack[callee], names.is_empty()) {
+            if let Home::Code(proto, captured) = &closure.home {
+                if proto.params.len() == count + 1 {
+                    if self.depth >= MAX_DEPTH {
+                        return too_deep(&proto.name, span);
+                    }
+                    let frame = Frame::new(proto.clone(), captured.clone(), callee + 1, Vec::new(), span);
+                    let object = Value::Instance(instance.clone());
+                    self.stack.insert(callee + 1, object);
                     self.frames.push(frame);
                     return Ok(());
                 }
@@ -738,6 +837,65 @@ impl Vm {
         }
         self.frames.push(Frame::new(proto, captured, base, missing, span));
         Ok(Called::Entered)
+    }
+}
+
+/// `left op right` without taking the values off the stack: the two
+/// commonest cases (two ints, two floats) here, every other in `ops`.
+#[inline(always)]
+fn binary_of(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Result<Value, Control> {
+    match fast_binary(op, left, right) {
+        Some(value) => Ok(value),
+        None => ops::binary(op, left.clone(), right.clone(), span),
+    }
+}
+
+/// The answer of `ops::binary` for two ints or two floats, when it is
+/// an answer and not an error, worked out without calling it. `None`
+/// sends everything else, and every error, the long way.
+#[inline(always)]
+fn fast_binary(op: BinaryOp, left: &Value, right: &Value) -> Option<Value> {
+    use BinaryOp::*;
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => Some(match op {
+            Add => Value::Int(a.checked_add(*b)?),
+            Sub => Value::Int(a.checked_sub(*b)?),
+            Mul => Value::Int(a.checked_mul(*b)?),
+            // The result takes the sign of the right side (see ops).
+            Mod if *b > 0 => {
+                let r = a % b;
+                Value::Int(if r < 0 { r + b } else { r })
+            }
+            Lt => Value::Bool(a < b),
+            LtEq => Value::Bool(a <= b),
+            Gt => Value::Bool(a > b),
+            GtEq => Value::Bool(a >= b),
+            Eq | Is => Value::Bool(a == b),
+            NotEq | IsNot => Value::Bool(a != b),
+            _ => return None,
+        }),
+        (Value::Float(a), Value::Float(b)) => Some(match op {
+            Add => Value::Float(a + b),
+            Sub => Value::Float(a - b),
+            Mul => Value::Float(a * b),
+            Div if *b != 0.0 => Value::Float(a / b),
+            // NaN compares false with everything, as in ops.
+            Lt => Value::Bool(a < b),
+            LtEq => Value::Bool(a <= b),
+            Gt => Value::Bool(a > b),
+            GtEq => Value::Bool(a >= b),
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+/// A condition's answer: `ops::condition` with the usual case first.
+#[inline(always)]
+fn truth(value: Value, span: Span) -> Result<bool, Control> {
+    match value {
+        Value::Bool(b) => Ok(b),
+        other => ops::condition(other, span),
     }
 }
 
@@ -826,6 +984,54 @@ mod tests {
     /// The message a failing program stops with.
     fn error(source: &str) -> String {
         run(source).1.expect("the program should have failed")
+    }
+
+    #[test]
+    fn superinstructions_do_what_the_instructions_under_them_do() {
+        // Each line is one of the runs `bytecode::fuse` puts a
+        // superinstruction over, with ints, floats, text and a mix, so the
+        // quick cases and the long way through `ops` are both taken.
+        let source = r#"
+class P {
+    x: float
+    name: str
+}
+var a = 7
+var b = 3
+var f = 2.5
+var s = "ab"
+let p = P(x = 1.5, name = "p")
+print(a + b, a - b, a * b, a % b, -a % b, a % -b, a // b, a / b)
+print(f + 1.0, f * f, f / 2.0, f - a, a < b, f >= 2.5, s + "c", s == "ab")
+var i = 0
+var total = 0
+while i < 10 {
+    total += i * i
+    i += 1
+}
+var x = 0.0
+while x < 1.0 { x += 0.25 }
+print(total, x, p.x, p.name, p.x * 2.0)
+if a % 2 == 1 { print("odd") }
+if f > 3.0 { print("big") } else { print("small") }
+"#;
+        assert_eq!(
+            output(source),
+            "10 4 21 1 2 -2 2 2.3333333333333335\n3.5 6.25 1.25 -4.5 false true abc true\n285 1.0 1.5 p 3.0\nodd\nsmall\n"
+        );
+    }
+
+    #[test]
+    fn an_error_in_a_superinstruction_is_where_the_instruction_was() {
+        // Both engines must stop on the same line with the same message;
+        // run_both compares the whole error, place and all.
+        error("var big = 9223372036854775807\nvar one = 1\nbig += one\n");
+        error("var big = 9223372036854775807\nbig += 1\n");
+        error("var a = 1\nvar b = 2\nif a + b {\n    print(a)\n}\n");
+        error("var a = 1\nwhile a + 1 {\n    a = 2\n}\n");
+        error("var a = 1\nvar s = \"x\"\nprint(a < s)\n");
+        error("var a = 1\nprint(a.size)\n");
+        error("var z = 0\nprint(5 % z)\n");
     }
 
     #[test]

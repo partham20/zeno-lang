@@ -521,8 +521,8 @@ pub fn set_item(object: Value, index: &Value, value: Value, span: Span) -> Resul
 pub fn field(object: Value, name: &str, span: Span) -> Result {
     match &object {
         Value::Instance(instance) => {
-            if let Some(value) = instance.fields.borrow().get(name) {
-                return Ok(value.clone());
+            if let Some(value) = instance.get(name) {
+                return Ok(value);
             }
             if let Some(method) = instance.class.methods.get(name) {
                 return Ok(Value::BoundMethod(instance.clone(), method.clone()));
@@ -576,8 +576,8 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
 pub fn set_field(object: Value, name: &str, value: Value, span: Span) -> Result<()> {
     match object {
         Value::Instance(instance) => {
-            match instance.fields.borrow_mut().get_mut(name) {
-                Some(slot) => *slot = value,
+            match instance.class.slot(name) {
+                Some(i) => instance.fields.borrow_mut()[i] = value,
                 None => return fatal(format!("`{}` has no field `{name}`", instance.class.name), span),
             }
             Ok(())

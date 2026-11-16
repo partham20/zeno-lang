@@ -203,6 +203,62 @@ pub enum Op {
     /// an error when compiling, so that the program runs up to the mistake
     /// exactly as the interpreter does.
     Fatal(u32),
+
+    // ------------------------------------------------- Superinstructions
+    // These are never written by the compiler and never printed. `fuse`
+    // makes them, for the VM only, out of the few instructions that come
+    // one after another most often. Each does the work of the instructions
+    // it stands for and then skips over them, so the code keeps its
+    // length and every jump still lands where it did (decisions 22.13).
+    /// `GetLocal a`, `GetLocal b`, `Binary op`.
+    LocalLocal(u16, u16, BinaryOp),
+    /// `GetLocal a`, `Const c`, `Binary op`.
+    LocalConst(u16, u16, BinaryOp),
+    /// `GetLocal a`, `GetLocal b`, `Binary op`, `SetLocal d`.
+    LocalLocalSet(u16, u16, BinaryOp, u16),
+    /// `GetLocal a`, `Const c`, `Binary op`, `SetLocal d`: `i += 1`.
+    LocalConstSet(u16, u16, BinaryOp, u16),
+    /// `GetLocal a`, `GetLocal b`, `Binary op`, `JumpIfFalse to`.
+    LocalLocalJump(u16, u16, BinaryOp, u32),
+    /// `GetLocal a`, `Const c`, `Binary op`, `JumpIfFalse to`.
+    LocalConstJump(u16, u16, BinaryOp, u32),
+    /// `Binary op`, `JumpIfFalse to`.
+    BinaryJump(BinaryOp, u32),
+    /// `GetLocal a`, `GetField n`: `b.x`.
+    LocalField(u16, u32),
+}
+
+/// The code the VM runs: `code` with superinstructions put over the
+/// first instruction of each run of instructions they stand for. The
+/// instructions under them stay, so a jump into the middle of a run
+/// still finds the instruction it jumped to.
+pub fn fuse(code: &[Op]) -> Vec<Op> {
+    use Op::*;
+    let small = |n: u32| u16::try_from(n).ok();
+    let at = |i: usize| code.get(i).copied();
+    (0..code.len())
+        .map(|i| match (at(i), at(i + 1), at(i + 2), at(i + 3)) {
+            (Some(GetLocal(a)), Some(GetLocal(b)), Some(Binary(op)), next) => match (small(a), small(b)) {
+                (Some(a), Some(b)) => match next {
+                    Some(JumpIfFalse(to)) => LocalLocalJump(a, b, op, to),
+                    Some(SetLocal(d)) if small(d).is_some() => LocalLocalSet(a, b, op, d as u16),
+                    _ => LocalLocal(a, b, op),
+                },
+                _ => code[i],
+            },
+            (Some(GetLocal(a)), Some(Const(c)), Some(Binary(op)), next) => match (small(a), small(c)) {
+                (Some(a), Some(c)) => match next {
+                    Some(JumpIfFalse(to)) => LocalConstJump(a, c, op, to),
+                    Some(SetLocal(d)) if small(d).is_some() => LocalConstSet(a, c, op, d as u16),
+                    _ => LocalConst(a, c, op),
+                },
+                _ => code[i],
+            },
+            (Some(Binary(op)), Some(JumpIfFalse(to)), _, _) => BinaryJump(op, to),
+            (Some(GetLocal(a)), Some(GetField(n)), _, _) if small(a).is_some() => LocalField(a as u16, n),
+            _ => code[i],
+        })
+        .collect()
 }
 
 /// One compiled function: its instructions and everything they refer to
@@ -222,6 +278,8 @@ pub struct Proto {
     pub params: Vec<String>,
 
     pub code: Vec<Op>,
+    /// `code` with superinstructions (`fuse`), which is what the VM runs.
+    pub fast: Vec<Op>,
     /// Where in the source each instruction came from, for error messages.
     pub spans: Vec<Span>,
     /// A word about some instructions, such as the name of the variable in

@@ -449,13 +449,14 @@ cannot:
 
 ## What it does not do
 
-- **It is not fast for a VM.** On this machine, in a release build,
-  `fib(27)` takes 0.26 s in the interpreter and 0.09 s in the VM, and a
-  loop of two million additions 0.70 s and 0.39 s. Three times and twice.
-  A tuned VM would be ten times quicker again. Values are the
-  interpreter's 32-byte `Value`, every `+` goes through the general
-  `ops::binary`, and a method call makes a small object for the method
-  first. Each was left alone because it keeps one meaning in one place.
+- **It is not fast for a VM.** Values are the interpreter's 32-byte
+  `Value`, and anything but two ints or two floats goes through the
+  general `ops::binary`. Since 0.3 it has the cheap speed-ups of the
+  next section, and is level with Python on plain arithmetic but two to
+  four times slower on objects, calls and text (bench/README.md). A
+  register machine with smaller values would be several times quicker
+  again; it was left alone because it would be a second meaning to keep
+  in step with the interpreter.
 - **It does not optimise.** `2 * 3` is compiled as two constants and a
   multiply. `Pop 1` twice in a row stays two instructions.
 - **The bytecode is not bytes.** An `Op` is a Rust enum, 12 bytes wide.
@@ -463,6 +464,31 @@ cannot:
 - **It is not the default.** `zeno run` without `--vm` still uses the
   interpreter, which is the simpler statement of what Zeno means
   (decision 5.10g).
+
+## Superinstructions and other shortcuts
+
+Three changes in 0.3 halved the time of most programs (decision 22.13):
+
+- **Superinstructions.** `bytecode::fuse` looks for runs of
+  instructions that come together all the time, such as `GetLocal a,
+  GetLocal b, Binary <, JumpIfFalse to` at the top of every `while`, and
+  puts one instruction over the first of them that does the work of all
+  and skips the rest. The rest stay where they were, so the code keeps
+  its length and a jump into the middle of a run still lands on the
+  instruction it wanted. `fuse` writes a second copy of the code
+  (`Proto.fast`) that only the VM reads: `zeno bytecode` shows what the
+  compiler wrote, not the shortcuts.
+- **Two ints, two floats.** `fast_binary` in vm.rs answers `+ - * %`
+  and the comparisons for two ints or two floats without calling
+  `ops::binary`. It answers only when the answer is a number or a
+  boolean; an overflow, a division by zero or anything else goes the
+  long way, so every message comes from one place.
+- **Fields by place.** An object keeps its fields in a list in the
+  order the class gives them, not in a table by name. Both engines
+  find a field by its place in the class. And a method call given all
+  its arguments puts the object under them as `self` and starts the
+  method, as a function call does, instead of making a bound method
+  first.
 
 ## Things to try
 
@@ -477,9 +503,10 @@ cannot:
    four instructions as `x = x + 1`. Check it with `zeno bytecode`.
    Then write `x += f()` where `f` changes `x`, and work out on paper
    what `x` is afterwards. Decision 10.25 says why `x` is read first.
-4. Add an instruction `AddInt(n)` for "add the small number n to the
-   top", and use it for `i + 1`. Time `fib(27)` before and after. Where
-   must it give up and call `ops::binary`?
+4. `fuse` knows eight runs. Count which pairs of instructions come
+   together most in `bench/nbody.zeno` (print them from `fuse`), add a
+   superinstruction for the commonest one that is not there yet, and
+   time `zeno run --vm bench/nbody.zeno` before and after.
 5. `items.append(x)` makes a `Value::Method` and then calls it. Add
    `CallMethod(name, count)`, which looks at the receiver and calls
    `builtins::call_method` or the class's method directly. `invoke` has

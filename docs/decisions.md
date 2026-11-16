@@ -9660,6 +9660,11 @@ which is faster still but needs to know exactly which words are
 pointers, and this collector does not (5.7). A bigger limit between
 collections, which trades memory for time without changing the work.
 
+### 22.11 Left for later
+
+- Generations on Windows, with `VirtualProtect` and a handler of its
+  own.
+
 ### 22.12 Each release keeps its benchmark times
 
 `bench/record.py --version X` times the benchmarks with every engine
@@ -9682,10 +9687,33 @@ year apart still line up.
 build that fails because the flag does not exist is not a slow build,
 and a "failed" in the history would read as a bug.
 
-### 22.11 Left for later
+### 22.13 The VM gets superinstructions, quick arithmetic and fields by place
 
-- Generations on Windows, with `VirtualProtect` and a handler of its
-  own.
+Three small changes to the VM, and one shared with the interpreter.
+`bytecode::fuse` puts superinstructions over the commonest runs of
+instructions (local and local or constant into an operator, then a
+`SetLocal` or a `JumpIfFalse`; a local's field). `fast_binary` answers
+two ints or two floats in the VM itself. An object keeps its fields in
+a list in class order (`Instance.fields: Vec<Value>`), found by
+`ClassDef::slot`. A method call given every argument becomes a frame
+straight away. At the small sizes `zeno run --vm` went from 15.5 to
+7.5 s on `loop` (Python: 11.3), 1.04 to 0.70 on `fib`, 18.0 to 9.3 on
+`trees`, 23.2 to 15.4 on `nbody`.
+
+**Why superinstructions are put over the code and not in place of
+it.** Fusing in place would shorten the code and move every jump
+target; the compiler would have to work out the jumps again. Laid over
+the first instruction of a run, with the rest left under it, nothing
+moves, a jump into the middle still works, and `zeno bytecode` still
+prints what the compiler wrote, which is what docs/vm.md teaches from.
+
+**Why the quick arithmetic gives up on every error.** An overflow, a
+division by zero or a mixed pair goes to `ops::binary`, which is where
+every message is written. One meaning stays in one place (5.10).
+
+**Rejected for 0.3.** A register machine and 16-byte values, which
+would be the next big step; Partha chose to finish 0.3 first and decide
+after seeing its benchmarks (2026-11-16).
 
 ### 20.6 The playground shows the C a program becomes
 
