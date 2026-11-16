@@ -6,28 +6,28 @@
 class Zeno < Formula
   desc "Small, readable, statically typed language for firmware"
   homepage "https://zeno-lang.org"
-  version "0.2.0"
+  version "0.3.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-macos-arm64.tar.gz"
-      sha256 "e5694d6fea274f92f9b346c30d6dac28278bb609d6a405ba77da9fac994ae669"
+      url "https://github.com/partham20/zeno-lang/releases/download/v0.3.0/zeno-0.3.0-macos-arm64.tar.gz"
+      sha256 "8372a39dcd19b0955986e5be18a153018eda638235553bdefe988efd59a3931a"
     end
     on_intel do
-      url "https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-macos-x86_64.tar.gz"
-      sha256 "3d11fcfb451b8f836b830063a360c9dac349420d94a83872042b9e8f56a32c04"
+      url "https://github.com/partham20/zeno-lang/releases/download/v0.3.0/zeno-0.3.0-macos-x86_64.tar.gz"
+      sha256 "bee1d9a2d8f09b4e7e75e3d954ba3be93c5495b64b24eda4445f456b01a35025"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-linux-arm64.tar.gz"
-      sha256 "d8f202e3735d57788a3c582e194c6d2de1b064570ef1c0c543bc5c397add22c1"
+      url "https://github.com/partham20/zeno-lang/releases/download/v0.3.0/zeno-0.3.0-linux-arm64.tar.gz"
+      sha256 "e2313a6238b2e8cc3b29429dbea895b1a2e01793aa0f492c6fbafc3f36edc8c9"
     end
     on_intel do
-      url "https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-linux-x86_64.tar.gz"
-      sha256 "42b8e96c177ea27873ded9c04120e963219bb405bbff5dbe644fb167e5e8e095"
+      url "https://github.com/partham20/zeno-lang/releases/download/v0.3.0/zeno-0.3.0-linux-x86_64.tar.gz"
+      sha256 "af69d47040527e7535d3579076c8e17d7122c88012f82f898704e9d7639939c9"
     end
   end
 
