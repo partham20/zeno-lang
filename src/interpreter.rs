@@ -41,6 +41,17 @@ const MAX_DEPTH: usize = 200;
 /// The interpreter calls itself for every nested node, so deep Zeno
 /// recursion needs a deep Rust stack. It runs on its own thread to get one.
 const STACK_SIZE: usize = 256 * 1024 * 1024;
+/// In a browser, how long one turn of a program (its first run, or one
+/// click, key or timer) may go on before it is stopped. A page does
+/// nothing else while Zeno runs: not draw, not scroll, not let anyone
+/// press a button to stop it. A loop that never ends would hold the
+/// page, and the playground with it, for good (decisions 19.1).
+#[cfg(target_arch = "wasm32")]
+const TURN_MS: f64 = 5000.0;
+/// The clock is asked once in this many loop rounds and calls: asking
+/// it crosses into JavaScript, and that costs more than a round.
+#[cfg(target_arch = "wasm32")]
+const TICKS_PER_LOOK: u32 = 1 << 16;
 
 /// Run a program. With `capture` the printed text is returned instead of
 /// going to the screen, which is how the tests check output. `outside`
@@ -52,7 +63,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
@@ -86,7 +97,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Optio
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 let env = Scope::child(&builtins::globals());
                 let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
                 let mut tested = Vec::new();
@@ -149,9 +160,12 @@ impl Session {
             board: Board::new(),
             page,
             outside: Outside::default(),
+            ticks: 0,
+            turn_began: 0.0,
         };
         let env = Scope::child(&builtins::globals());
         let mut session = Session { interpreter, env, program };
+        session.interpreter.begin_turn();
         let result = session.interpreter.run_statements(&session.program.statements, &session.env).map_err(ops::escaped);
         (session, result)
     }
@@ -167,6 +181,7 @@ impl Session {
         let function = handler.function;
         // An error may have left calls open the last time.
         self.interpreter.depth = 0;
+        self.interpreter.begin_turn();
         let span = Span { line: 1, col: 1 };
         self.interpreter.call(function, arguments, Vec::new(), span).map(|_| ()).map_err(ops::escaped)
     }
@@ -326,6 +341,11 @@ pub struct Interpreter {
     outside: Outside,
     /// How many function calls are currently in progress.
     depth: usize,
+    /// Loop rounds and calls since the clock was last looked at, and
+    /// when this turn began (only looked at in a browser: see `tick`).
+    ticks: u32,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    turn_began: f64,
 }
 
 /// What the built-ins ask of the interpreter (see `Machine` in value.rs).
@@ -379,6 +399,42 @@ fn scope_of(home: &Home) -> Env {
 }
 
 impl Interpreter {
+
+    /// A turn of the program begins: its first run, or a call from the
+    /// page. The time it may take is counted from here.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn begin_turn(&mut self) {
+        self.ticks = 0;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.turn_began = crate::web_host::now();
+        }
+    }
+
+    /// One more round of a loop, or one more call. In a browser, a turn
+    /// that has gone on for longer than `TURN_MS` is stopped, with the
+    /// line it was on. Anywhere else a program runs for as long as it
+    /// likes, as programs do, and this does nothing.
+    #[inline]
+    fn tick(&mut self, span: Span) -> Result<(), Control> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.ticks = self.ticks.wrapping_add(1);
+            if self.ticks % TICKS_PER_LOOK == 0 && crate::web_host::now() - self.turn_began > TURN_MS {
+                let seconds = TURN_MS / 1000.0;
+                return fatal(
+                    format!(
+                        "the program ran for {seconds} seconds without stopping, so it was stopped. \
+                         A page can do nothing else while it runs. Is a loop going on forever?"
+                    ),
+                    span,
+                );
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = span;
+        Ok(())
+    }
 
     fn declare(
         &self,
@@ -564,6 +620,7 @@ impl Interpreter {
             StmtKind::Unsafe(body) => self.exec_block(body, env),
             StmtKind::While { condition, body } => {
                 while self.condition(condition, env)? {
+                    self.tick(span)?;
                     match self.exec_block(body, env) {
                         Ok(()) | Err(Control::Continue(_)) => {}
                         Err(Control::Break(_)) => break,
@@ -584,6 +641,7 @@ impl Interpreter {
                     }
                 };
                 for (item, value) in rounds {
+                    self.tick(span)?;
                     // A fresh scope and a fresh loop variable for every round.
                     let scope = Scope::child(env);
                     scope.declare(variable, item, false);
@@ -1021,6 +1079,7 @@ impl Interpreter {
             self.declare(&scope, &param.name, value, false, span)?;
         }
 
+        self.tick(span)?;
         self.depth += 1;
         let result = self.run_statements(&decl.body, &scope);
         self.depth -= 1;

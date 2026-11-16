@@ -8967,3 +8967,65 @@ one.
 
 - Asking a timer whether it is still waiting.
 - Starting a stopped timer again. `web.every` makes a new one.
+
+## 20. The playground on zeno-lang.org
+
+The playground (16.12) goes on the website, at
+zeno-lang.org/playground, where anybody can open it. Two things had
+to change first.
+
+### 20.1 In a page, one turn of a program may run for 5 seconds
+
+A program's first run, and each call from the page (a click, a key,
+a timer, an answer from the network), is a turn. In a browser a turn
+that has gone on for 5 seconds is stopped, with an error at the line
+it was on: a loop, or the call it was making. On a desk nothing
+changes: a program runs for as long as it likes.
+
+**Why.** While Zeno runs, the page does nothing else. It does not
+draw, scroll or let a button be pressed, and the playground runs
+each program in a frame that shares its thread, so a loop that never
+ends held the whole playground, with nothing to press to stop it.
+That is the first thing somebody tries in a playground. A program
+that stops on its own, with its line and a question, is the answer
+`zeno run` would give if it could.
+
+**Why 5 seconds.** A page that does not answer for longer than that
+looks broken, and browsers start offering to close it at about
+that point. Every program in `examples/` takes a small part of a
+second in a page, so the limit is far from anything that is meant.
+
+**Why it is not an error the program can catch.** It is not about
+the program's data, and a `try` around the loop would only start the
+loop again. It is like going past the nesting of 200 calls (14.12).
+
+**How it costs nothing.** The interpreter counts loop rounds and
+calls, and asks the clock once in 65536 of them, because asking it
+crosses into JavaScript. Counting is one addition.
+
+**Rejected.** A Stop button that works at once: it needs Zeno in a
+Worker, where a program cannot reach the page (16.12). A count of
+steps instead of a clock: a step is fast on one machine and slow on
+another, and what matters to the person waiting is time. A frame
+from another origin, which some browsers run on another thread:
+not all do, phones least of all, and the program would no longer be
+able to share the Zeno the playground read in.
+
+### 20.2 The playground's own page for what a program prints
+
+A program with no page of its own (most programs) is shown in a page
+the playground writes: what it prints, in the playground's type,
+and under the last line, the error that stopped it. It follows the
+dark setting of the browser. `zeno build --web` keeps its plain page
+and its error at the foot (14).
+
+**Why.** In the plain page the error box is pinned to the bottom of
+the frame, which is right for a page somebody designed, where it
+must not be lost among the buttons. For a program that prints, the
+error belongs where the next line would have been, as in a terminal;
+at the foot of an empty frame it reads as a thing apart.
+
+**The rest is looks.** The colours of zeno-lang.org, links to Learn,
+the Book and the Docs, and on a phone the boxes are in 16px type,
+because a phone zooms into a box with smaller letters and does not
+zoom out again.

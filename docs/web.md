@@ -422,7 +422,7 @@ something calls while the program is in the middle of a function,
 `web.js` puts the call in a queue (`waiting`) and makes it when the
 function has returned.
 
-### Two things a page cannot do
+### Three things a page cannot do
 
 **`sleep`.** A browser has one thread for a page. A program that
 waits on it stops the page from drawing and the buttons from
@@ -436,6 +436,21 @@ stack, which is small. Chromium gave out between 400 and 1000 nested
 calls, by how much each one holds. A program stopped by the browser
 cannot be told which line did it, so Zeno counts, and stops at 200
 with its own message (14.12). On a desk the limit is 1000.
+
+**Run for ever.** While Zeno runs, the page does nothing else: it
+does not draw, scroll or let a button be pressed, so nothing on it
+could stop a loop that never ends. In a page, one turn of a program
+(its first run, or one click, key or timer) may go on for 5 seconds.
+Then it is stopped with the line it was on:
+
+```
+error: the program ran for 5 seconds without stopping, so it was stopped. A page can do nothing else while it runs. Is a loop going on forever?
+ --> main.zeno:2:1
+```
+
+The clock is looked at once in 65536 loop rounds and calls, so it
+costs nothing that can be measured. On a desk a program runs for as
+long as it likes (20.1).
 
 ## Building `zeno.wasm` yourself
 

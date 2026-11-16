@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zeno playground</title>
+<meta name="description" content="Write a Zeno program and run it in your browser, with nothing to install.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <!--
   The Zeno playground: write a program, press Run, and see it run, all in
   this one page. `zeno playground` writes it (src/main.rs), putting in
@@ -15,14 +17,15 @@
   docs/playground.md walks through how it works.
 -->
 <style>
+  /* The colours of zeno-lang.org: navy-tinted greys, cobalt blue. */
   :root {
-    --paper: #fbfaf7; --ink: #1d1d1b; --soft: #6b6a66; --line: #d9d6cf;
-    --panel: #ffffff; --accent: #0b6e4f; --accent-ink: #ffffff;
+    --paper: #f6f7fb; --ink: #141a2e; --soft: #5b6380; --line: #dde1ec;
+    --panel: #ffffff; --accent: #2f5bea; --accent-ink: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --paper: #161614; --ink: #ecebe6; --soft: #9a988f; --line: #33322e;
-      --panel: #1f1f1c; --accent: #3fb98b; --accent-ink: #0d1f18;
+      --paper: #0a0a0a; --ink: #ececec; --soft: #9a9a9a; --line: #2a2a2a;
+      --panel: #141414; --accent: #7d9cff; --accent-ink: #0a0a0a;
     }
   }
   * { box-sizing: border-box; }
@@ -37,14 +40,18 @@
     padding: 10px 16px; border-bottom: 1px solid var(--line);
   }
   header h1 { font-size: 18px; margin: 0 8px 0 0; }
+  header h1 a { color: inherit; text-decoration: none; }
   header h1 span { color: var(--soft); font-weight: normal; }
+  header nav { display: flex; gap: 14px; margin-left: auto; font-size: 14px; }
+  header nav a { color: var(--soft); text-decoration: none; }
+  header nav a:hover { color: var(--accent); }
   select, button {
     font: inherit; color: var(--ink); background: var(--panel);
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
   }
   button { cursor: pointer; }
   #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-  #said { color: var(--soft); font-size: 14px; margin-left: auto; }
+  #said { color: var(--soft); font-size: 14px; }
   main { flex: 1; display: flex; min-height: 0; }
   .side { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .side + .side { border-left: 1px solid var(--line); }
@@ -59,19 +66,34 @@
   }
   iframe { flex: 1; width: 100%; border: 0; background: white; }
   @media (max-width: 760px) {
+    header { gap: 8px 10px; padding: 8px 12px; }
+    header h1 { order: 0; }
+    header nav { order: 1; }
+    header > :not(h1):not(nav) { order: 2; }
+    #choose { flex: 1 1 140px; display: flex; min-width: 0; }
+    #choose span { display: none; }
+    #choose select { flex: 1; min-width: 0; }
     main { flex-direction: column; }
+    .side { min-height: 40vh; }
     .side + .side { border-left: 0; border-top: 1px solid var(--line); }
     #said { display: none; }
+    /* A phone zooms in on a box whose letters are smaller than 16px. */
+    textarea, select { font-size: 16px; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1>Zeno <span>playground</span></h1>
-  <label>Example <select id="examples"></select></label>
+  <h1><a href="https://zeno-lang.org/">Zeno</a> <span>playground</span></h1>
+  <label id="choose"><span>Example</span> <select id="examples" aria-label="Example"></select></label>
   <button id="run" title="Ctrl+Enter">Run</button>
   <button id="link" title="A link to this program, to send to somebody">Copy link</button>
   <span id="said"></span>
+  <nav>
+    <a href="https://zeno-lang.org/learn/">Learn</a>
+    <a href="https://zeno-lang.org/book/">Book</a>
+    <a href="https://zeno-lang.org/docs/">Docs</a>
+  </nav>
 </header>
 <main>
   <div class="side">
@@ -89,11 +111,40 @@
 </main>
 <script>
 "use strict";
-// These four are written in by `zeno playground`.
+// These three are written in by `zeno playground`.
 const WEB_JS = __WEB_JS__;             // src/web.js, which starts a program in a page
 const PACKED = "__WASM__";             // zeno.wasm, packed, in base64
 const EXAMPLES = __EXAMPLES__;         // [{name, program, page}]
-const DEFAULT_PAGE = __DEFAULT_PAGE__; // the page of a program that has none
+
+// The page of a program that has none: what it prints, and under it,
+// the error that stopped it, if one did. web.js fills both. The error
+// is here, under the last line printed, rather than at the foot of the
+// frame as on a page of one's own, so that it reads as the next line.
+const DEFAULT_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 14px 16px; background: #fff; color: #141a2e;
+         font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #zeno-error { margin-top: 8px; padding: 10px 12px; border-left: 3px solid #c62828;
+                background: #fdecec; color: #8e1b1b; }
+  #zeno-error:empty { display: none; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #141414; color: #ececec; }
+    #zeno-error { background: #2a1414; color: #ff9c9c; border-color: #ff6b6b; }
+  }
+</style>
+</head>
+<body>
+<pre id="zeno-output"></pre>
+<pre id="zeno-error"></pre>
+</body>
+</html>
+`;
 
 const program = document.getElementById("program");
 const page = document.getElementById("page");

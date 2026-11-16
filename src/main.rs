@@ -676,7 +676,6 @@ fn playground_page(wasm: &[u8]) -> String {
         ("__WEB_JS__", quoted(json::Json::text(include_str!("web.js")))),
         ("__WASM__", base64(&deflate::pack(wasm))),
         ("__EXAMPLES__", quoted(examples)),
-        ("__DEFAULT_PAGE__", quoted(json::Json::text(DEFAULT_PAGE.replace("NAME", "Zeno")))),
     ];
     for (marker, value) in parts {
         let (before, after) = rest.split_once(marker).expect("the playground has each marker");
@@ -1083,7 +1082,7 @@ mod tests {
     #[test]
     fn the_playground_is_one_page_with_everything_written_in() {
         let page = super::playground_page(b"not really zeno.wasm");
-        for marker in ["__WEB_JS__", "__WASM__", "__EXAMPLES__", "__DEFAULT_PAGE__"] {
+        for marker in ["__WEB_JS__", "__WASM__", "__EXAMPLES__"] {
             assert!(!page.contains(marker), "{marker} was left in the playground");
         }
         // One script, closed once: nothing written into it ends it early,

@@ -101,15 +101,21 @@ a mistake showed the checker's message; a program that prints
 worked inside the frame (a thing was added to the list); and the
 link was opened in a new page, which ran the same program.
 
+Again before it went on zeno-lang.org (20): a mouse drew ten lines
+on the sketch, `while true { }` was stopped after 5 seconds with its
+line, an error after some output showed under the output, and the
+page was tried at the size of a phone (iPhone 13), where a thing was
+added to the list by tapping, and in the dark.
+
 ## What it does not do
 
 - One file. No `import` of a file of your own.
 - No colours in the program text, and nothing is underlined as you
   type. The box is a plain box. `zeno lsp` does that in an editor
   ([`lsp.md`](lsp.md)).
-- A program that never stops (`while true { }`) stops the page, and
-  the browser offers to close it. The link in the address is from
-  the run before, so the program is not lost.
+- There is no Stop button. A program that never stops
+  (`while true { }`) holds the page for 5 seconds, and is then
+  stopped with the line it was on (20.1).
 - A long program makes a long link.
 
 ## Things to try
@@ -121,9 +127,10 @@ link was opened in a new page, which ran the same program.
 2. Choose "A page: things to do". Change the page (the second tab)
    so that the list is numbered. What did you change, and did the
    program need to know?
-3. Write `while true { }` and run it. What does the browser do? What
-   would the playground need for a Stop button that works? (Look up
-   what a Worker is, and ask what a program in one cannot reach.)
+3. Write `while true { }` and run it. It is stopped after 5 seconds:
+   find `tick` in `src/interpreter.rs`. What would the playground
+   need for a Stop button that works at once? (Look up what a Worker
+   is, and ask what a program in one cannot reach.)
 4. Find `run` in `src/playground.html`. It builds the frame's page
    as text. What would go wrong if the program were written into it
    without `quoted`? Try a program that prints `</script>`.
