@@ -289,7 +289,9 @@ is a different matter: each takes programs that are already widely
 used, and Zeno is days old.
 
 winget, the Snap Store and Flathub each ask what licence a program has.
-Zeno has none yet (15.19).
+It is MIT (15.19), and from 0.2.0 each package says so and carries the
+file. Debian keeps it at `/usr/share/doc/zeno/copyright` and Arch at
+`/usr/share/licenses/zeno-bin/LICENSE`.
 
 ## What it does not do yet
 

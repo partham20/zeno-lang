@@ -8342,16 +8342,33 @@ by hand after each release, is the kind of step that is forgotten.
 
 The commit is made in Partha's name, as every commit here is.
 
-### 15.19 No licence yet, and the recipes say so
+### 15.19 The MIT licence, from 0.2.0
 
-The `PKGBUILD` says `license=('custom')` and the winget file says
-`License: All rights reserved`, each with a comment that none has been
-chosen.
+Zeno is under the MIT licence. The file `LICENSE` is in the
+repository, and from 0.2.0 it is in every archive, in what the setup
+program installs, and in every package. The recipes and the packages
+name it.
 
-**Why.** Both forms demand the line. Zeno has no licence file, and
-with none, "all rights reserved" is what the law says. Writing "MIT"
-because it is the likely choice would be a claim nobody has made.
-Choosing one is Partha's, and the stores of 15.21 will each ask.
+**Why MIT.** Partha chose it, on 16 November 2026. It is the shortest
+of the common licences and the one most people have already read: use
+it, change it, pass it on, and keep the notice. That suits a language
+that was built to be learnt from. The stores of 15.21 each ask what
+licence a program has, which is why the question came up when it did.
+
+**Turned down.** *MIT or Apache-2.0, as Rust has*: Apache adds words
+about patents, which matter to a company and are two more pages to
+read. *GPL*: a compiler under it is fine, but the runtime that every
+compiled program carries (`runtime.c`) would then need an exception
+written for it, or every program built with `zeno build` would be
+bound by it. *None*: then nobody may lawfully do anything with Zeno,
+which is not what a language for learning wants.
+
+**0.1.0 is left as it was.** It was released the day before, with no
+licence in it, and a release is added to and never changed (15.11).
+So `tools/package.sh` asks the archive: one that has `LICENSE` in it
+gets packages that say MIT and carry the file, and one that has not
+gets packages that say no licence was chosen. Each says what was true
+of that release.
 
 ### 15.20 Run by winget, the setup program installs Zeno and nothing else
 

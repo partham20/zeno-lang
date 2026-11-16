@@ -12,6 +12,7 @@
 ;     files\x86\zeno.exe
 ;     files\arm64\zeno.exe
 ;     files\zeno.wasm           Zeno built for a browser (from 0.2.0)
+;     files\LICENSE             the licence (from 0.2.0)
 ;     files\README.md  files\docs  files\examples  files\editors
 ;
 ; What the setup program does, on the machine it is run on:
@@ -108,6 +109,10 @@ Source: "{#Files}\arm64\zeno.exe"; DestDir: "{app}"; Flags: ignoreversion; Check
 ; zeno.exe. A version before 0.2.0 has none.
 #if FileExists(AddBackslash(Files) + "zeno.wasm")
 Source: "{#Files}\zeno.wasm"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+; The licence, which goes wherever Zeno goes. 0.1.0 had none.
+#if FileExists(AddBackslash(Files) + "LICENSE")
+Source: "{#Files}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "{#Files}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Files}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs

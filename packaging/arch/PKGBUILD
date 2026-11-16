@@ -9,7 +9,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="The Zeno programming language: checks, runs, tests, formats and compiles Zeno programs"
 url="https://zeno-lang.org"
-# No licence has been chosen for Zeno yet.
+# No licence had been chosen for Zeno 0.1.0.
 license=('custom')
 provides=('zeno')
 conflicts=('zeno')
@@ -45,4 +45,8 @@ package() {
     ln -s ../lib/zeno/zeno "$pkgdir/usr/bin/zeno"
     cp -r examples editors "$pkgdir/usr/share/zeno/"
     cp -r README.md docs "$pkgdir/usr/share/doc/zeno/"
+    # Arch keeps the licence of a package here.
+    if [ -f LICENSE ]; then
+        install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
 }

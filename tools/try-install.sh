@@ -32,7 +32,7 @@ fail() { echo "try-install.sh: $*"; exit 1; }
 # A release, in a folder.
 mkdir -p "$work/release/$name" "$work/home"
 cp "$zeno" "$work/release/$name/zeno"
-cp -r README.md docs examples editors "$work/release/$name"
+cp -r LICENSE README.md docs examples editors "$work/release/$name"
 wasm=target/wasm32-unknown-unknown/release/zeno.wasm
 if [ -f "$wasm" ]; then cp "$wasm" "$work/release/$name"; fi
 (

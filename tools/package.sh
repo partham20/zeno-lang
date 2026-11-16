@@ -66,6 +66,15 @@ unpacked() {
     say "$work/$name"
 }
 
+# Zeno is under the MIT licence from 0.2.0, and an archive from then on
+# has the file LICENSE in it. A package of such a release says MIT and
+# carries the file. A package of 0.1.0 says that no licence was chosen,
+# which was so.
+licence=
+for kind in x86_64 arm64; do
+    if from=$(unpacked $kind) && [ -f "$from/LICENSE" ]; then licence=MIT; fi
+done
+
 # `laid_out <from> <root>` puts Zeno under <root> as a Linux system
 # keeps a program: the program and `zeno.wasm` (which `zeno build
 # --web` looks for beside it) in a folder of their own, a link to the
@@ -85,6 +94,8 @@ laid_out() {
     ln -s ../lib/zeno/zeno "$2/usr/bin/zeno"
     cp -r "$1/examples" "$1/editors" "$2/usr/share/zeno/"
     cp -r "$1/README.md" "$1/docs" "$2/usr/share/doc/zeno/"
+    # Debian keeps the licence of a package in a file of this name.
+    if [ -f "$1/LICENSE" ]; then cp "$1/LICENSE" "$2/usr/share/doc/zeno/copyright"; fi
 }
 
 # ------------------------------------------------------------------- apt
@@ -149,6 +160,7 @@ snap_of() {
     cp "$from/zeno" "$root/bin/zeno"
     if [ -f "$from/zeno.wasm" ]; then cp "$from/zeno.wasm" "$root/bin/zeno.wasm"; fi
     cp -r "$from/README.md" "$from/docs" "$from/examples" "$from/editors" "$root/"
+    if [ -f "$from/LICENSE" ]; then cp "$from/LICENSE" "$root/"; fi
     cat > "$root/meta/snap.yaml" <<EOF
 name: zeno
 version: '$version'
@@ -169,6 +181,7 @@ apps:
   zeno:
     command: bin/zeno
 EOF
+    if [ -n "$licence" ]; then say "license: $licence" >> "$root/meta/snap.yaml"; fi
     snap pack "$root" "$out" >/dev/null
     say "made zeno_${version}_$1.snap"
 }
@@ -199,6 +212,7 @@ flatpak_of() {
     if [ -f "$from/zeno.wasm" ]; then cp "$from/zeno.wasm" "$root/files/bin/zeno.wasm"; fi
     cp -r "$from/examples" "$from/editors" "$root/files/share/zeno/"
     cp -r "$from/README.md" "$from/docs" "$root/files/share/doc/zeno/"
+    if [ -f "$from/LICENSE" ]; then cp "$from/LICENSE" "$root/files/share/doc/zeno/"; fi
     cat > "$root/metadata" <<EOF
 [Application]
 name=org.zeno_lang.Zeno
@@ -256,6 +270,7 @@ class Zeno < Formula
   desc "Small, readable, statically typed language for firmware"
   homepage "$site"
   version "$version"
+$(if [ -n "$licence" ]; then say "  license \"$licence\""; else say "  # No licence had been chosen for Zeno $version."; fi)
 
   on_macos do
     on_arm do
@@ -323,8 +338,7 @@ pkgver=$version
 pkgrel=1
 pkgdesc="$summary: checks, runs, tests, formats and compiles Zeno programs"
 url="$site"
-# No licence has been chosen for Zeno yet.
-license=('custom')
+$(if [ -n "$licence" ]; then say "license=('$licence')"; else say "# No licence had been chosen for Zeno $version."; say "license=('custom')"; fi)
 provides=('zeno')
 conflicts=('zeno')
 optdepends=('gcc: for \`zeno build\`'
@@ -364,6 +378,10 @@ package() {
     ln -s ../lib/zeno/zeno "$pkgdir/usr/bin/zeno"
     cp -r examples editors "$pkgdir/usr/share/zeno/"
     cp -r README.md docs "$pkgdir/usr/share/doc/zeno/"
+    # Arch keeps the licence of a package here.
+    if [ -f LICENSE ]; then
+        install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
 }
 EOF
 } > "$recipes/packaging/arch/PKGBUILD"
@@ -452,8 +470,7 @@ Publisher: The Zeno language
 PublisherUrl: $site
 PackageName: Zeno
 PackageUrl: $site
-# No licence has been chosen for Zeno yet.
-License: All rights reserved
+$(if [ -n "$licence" ]; then say "License: $licence"; say "LicenseUrl: https://github.com/partham20/zeno-lang/blob/v$version/LICENSE"; else say "# No licence had been chosen for Zeno $version."; say "License: All rights reserved"; fi)
 ShortDescription: $summary
 Description: $about
 Moniker: zeno

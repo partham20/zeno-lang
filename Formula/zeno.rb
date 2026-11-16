@@ -7,6 +7,7 @@ class Zeno < Formula
   desc "Small, readable, statically typed language for firmware"
   homepage "https://zeno-lang.org"
   version "0.1.0"
+  # No licence had been chosen for Zeno 0.1.0.
 
   on_macos do
     on_arm do

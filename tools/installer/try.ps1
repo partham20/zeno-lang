@@ -31,11 +31,12 @@ if ($said -notmatch '^zeno \d+\.\d+\.\d+$') { throw "zeno --version said: $said"
 if (";$(UserPath);" -notlike "*;$app;*") { throw "the PATH does not have $app in it: $(UserPath)" }
 Write-Output "the PATH has $app"
 
-# A program in a web page came with 0.2.0. The setup program is also
-# made for 0.1.0, which has no `zeno.wasm` and no `zeno build --web`.
+# A program in a web page came with 0.2.0, and so did the licence. The
+# setup program is also made for 0.1.0, which has no `zeno.wasm`, no
+# `zeno build --web` and no `LICENSE`.
 $web = [version]($said -replace '^zeno ', '') -ge [version]'0.2.0'
 $things = 'README.md', 'docs\release.md', 'examples\hello.zeno', 'editors', 'unins000.exe'
-if ($web) { $things += 'zeno.wasm', 'docs\web.md' }
+if ($web) { $things += 'zeno.wasm', 'docs\web.md', 'LICENSE' }
 foreach ($thing in $things) {
     if (-not (Test-Path (Join-Path $app $thing))) { throw "the installed folder has no $thing" }
 }

@@ -62,6 +62,11 @@ case $kind in
         $as_root apt-get install -y "$deb" >/dev/null
         [ "$(command -v zeno)" = /usr/bin/zeno ] || stop "zeno is not at /usr/bin/zeno"
         runs /usr/share/zeno/examples zeno
+        # The licence goes with it, from 0.2.0, where Debian keeps one.
+        case $version in
+            0.1.*) ;;
+            *) [ -f /usr/share/doc/zeno/copyright ] || stop "the package has no licence in it" ;;
+        esac
         $as_root apt-get remove -y zeno >/dev/null
         if [ -e /usr/bin/zeno ] || [ -e /usr/lib/zeno ]; then stop "after removing it, Zeno is still there"; fi
         say "  removed: nothing is left"

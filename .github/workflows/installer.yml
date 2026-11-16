@@ -7,7 +7,8 @@
 # the release workflow makes holds all three.
 #
 # On macOS and Linux it builds `zeno` and has tools/install.sh install
-# it from a folder (tools/try-install.sh).
+# it from a folder (tools/try-install.sh). On Linux it also makes the
+# packages from that build and tries them (docs/packages.md).
 #
 # Started by hand from the Actions page ("Run workflow"), choosing the
 # machine. docs/install.md has more.
@@ -43,6 +44,27 @@ jobs:
         if: runner.os != 'Windows'
         run: tools/try-install.sh target/release/zeno
 
+      # The packages too, on Linux, where four of the six kinds are
+      # at home: a release of one archive is made in a folder, and
+      # tools/package.sh and tools/try-packages.sh are run on it.
+      - name: The packages install this build, and remove it
+        if: runner.os == 'Linux'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          name=zeno-$version-linux-x86_64
+          mkdir -p files/$name
+          cp target/release/zeno target/wasm32-unknown-unknown/release/zeno.wasm files/$name
+          cp -r LICENSE README.md docs examples editors files/$name
+          tar -czf files/$name.tar.gz -C files $name
+          rm -r files/$name
+          sudo apt-get update -q
+          sudo apt-get install -y -q flatpak
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          tools/package.sh "$version" files out
+          for kind in deb snap pacman flatpak; do
+            tools/try-packages.sh $kind "$version" out
+          done
+
       - name: The files that go into the setup program
         if: runner.os == 'Windows'
         run: |
@@ -51,7 +73,7 @@ jobs:
           mkdir -p files/x86_64
           cp target/release/zeno.exe files/x86_64
           cp target/wasm32-unknown-unknown/release/zeno.wasm files
-          cp -r README.md docs examples editors files
+          cp -r LICENSE README.md docs examples editors files
 
       - name: Build the setup program
         if: runner.os == 'Windows'

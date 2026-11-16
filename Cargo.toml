@@ -3,6 +3,7 @@ name = "zeno"
 version = "0.2.0"
 edition = "2021"
 description = "Zeno: a small, readable, statically typed language that compiles to C"
+license = "MIT"
 
 [[bin]]
 name = "zeno"

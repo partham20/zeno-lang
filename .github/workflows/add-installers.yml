@@ -60,10 +60,12 @@ jobs:
             mkdir files/$kind
             cp "unpacked/zeno-$VERSION-windows-$kind/zeno.exe" files/$kind
           done
-          # The rest is the same in all three. 0.1.0 has no `zeno.wasm`.
+          # The rest is the same in all three. 0.1.0 has no `zeno.wasm`
+          # and no `LICENSE`.
           cd "unpacked/zeno-$VERSION-windows-x86_64"
           cp -r README.md docs examples editors ../../files
           if [ -f zeno.wasm ]; then cp zeno.wasm ../../files; fi
+          if [ -f LICENSE ]; then cp LICENSE ../../files; fi
 
       - name: Build the setup program
         shell: cmd

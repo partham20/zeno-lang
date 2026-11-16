@@ -647,3 +647,10 @@ packaging/                    the PKGBUILD and the winget files, written at each
 .github/workflows/packages.yml  makes and tries the packages of a version already released
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```
+
+## Licence
+
+Zeno is under the MIT licence: anyone may use it, change it and pass it
+on, as long as the notice in [`LICENSE`](LICENSE) goes with it. Every
+archive, installer and package of a release carries that file, from
+0.2.0 on.
