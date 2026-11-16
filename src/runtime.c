@@ -471,7 +471,7 @@ static void zeno_page_has_room(zeno_page *page) {
  * On a chip (`--firmware`), or where `mprotect` is not to be had, every
  * collection is full, as it was before generations. */
 #ifndef ZENO_FIRMWARE
-#if !defined(ZENO_BOARD) && !defined(ZENO_ONE_GENERATION) && defined(__linux__)
+#if !defined(ZENO_BOARD) && !defined(ZENO_ONE_GENERATION) && (defined(__linux__) || defined(__APPLE__))
 #define ZENO_GENERATIONS 1
 #include <signal.h>
 #include <sys/mman.h>

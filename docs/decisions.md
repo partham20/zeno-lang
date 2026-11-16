@@ -9638,8 +9638,8 @@ the next collection is full. After each collection the full pages of
 blocks with pointers are made read-only with `mprotect`; the first write
 to one is caught by a signal handler, which opens the page and marks it
 as written. A small collection looks inside the old blocks of every page
-that is open. On a chip, and for now on macOS and Windows, every
-collection is full (22.11).
+that is open. On a chip, and for now on Windows, every collection is
+full (22.11).
 
 **Why.** The trees benchmark keeps a tree of two million nodes for the
 whole run, and every collection marked all of it again: 140 times. With
