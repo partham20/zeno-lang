@@ -48,12 +48,12 @@ Small sizes, interpreted, against Python 3.13:
 
 | Program | Python | `zeno run --vm` | `zeno run` |
 |---|---|---|---|
-| fib 32 | 0.221 | 0.98 | 2.84 |
-| loop 10⁸ | 11.0 | 14.9 | 30.8 |
-| sort 10⁶ | 1.98 | 4.63 | 13.0 |
-| strings 10⁶ | 0.41 | 1.82 | 2.91 |
-| trees 16 | 3.59 | 19.2 | 29.8 |
-| nbody 10⁶ | 4.07 | 23.2 | 52.3 |
+| fib 32 | 0.23 | 0.79 | 2.86 |
+| loop 10⁸ | 11.33 | 6.81 | 32.80 |
+| sort 10⁶ | 2.06 | 3.31 | 12.85 |
+| strings 10⁶ | 0.40 | 1.76 | 2.91 |
+| trees 16 | 3.95 | 10.01 | 22.01 |
+| nbody 10⁶ | 3.85 | 15.78 | 52.31 |
 
 ## What the numbers say
 
@@ -66,8 +66,10 @@ Small sizes, interpreted, against Python 3.13:
 - Since the collector has two generations (22.10), `trees` with it is
   7.7 s instead of 11.1 s, within 25 % of C. Ownership is still twice
   as fast there.
-- The interpreters are slower than Python. They exist for checking and for
-  the playground; `zeno build` is the fast path.
+- `zeno run --vm` is ahead of Python on `loop` since its superinstructions
+  (22.13), and two to four times slower on objects, calls and text. The
+  interpreters exist for checking and for the playground; `zeno build` is
+  the fast path.
 
 `python3 record.py --version X` keeps a record of one version in
 `results/versions/` (see docs/release.md).

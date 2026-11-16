@@ -1,0 +1,127 @@
+{
+  "version": "0.1.0",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.1.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "big": {
+    "sizes": {
+      "fib": 40,
+      "loop": 1000000000,
+      "sort": 10000000,
+      "strings": 10000000,
+      "trees": 20,
+      "nbody": 10000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "rust": "Rust (rustc -O)",
+      "zeno": "zeno build",
+      "zeno-llvm": "zeno build --llvm",
+      "zeno-nc": "zeno build --no-collector"
+    },
+    "times": {
+      "fib": {
+        "c": 0.163,
+        "rust": 0.257,
+        "zeno": 0.47,
+        "zeno-llvm": 0.448,
+        "zeno-nc": 0.451
+      },
+      "loop": {
+        "c": 0.919,
+        "rust": 0.939,
+        "zeno": 1.409,
+        "zeno-llvm": 1.122,
+        "zeno-nc": 1.394
+      },
+      "sort": {
+        "c": 1.094,
+        "rust": 1.224,
+        "zeno": 1.391,
+        "zeno-llvm": 2.075,
+        "zeno-nc": 1.366
+      },
+      "strings": {
+        "c": 0.972,
+        "rust": 0.761,
+        "zeno": 27.722,
+        "zeno-llvm": 27.677
+      },
+      "trees": {
+        "c": 5.954,
+        "rust": 7.289,
+        "zeno": 59.765,
+        "zeno-llvm": 56.713,
+        "zeno-nc": 4.564
+      },
+      "nbody": {
+        "c": 0.369,
+        "rust": 0.375,
+        "zeno": 1.363,
+        "zeno-llvm": 1.291,
+        "zeno-nc": 1.474
+      }
+    }
+  },
+  "small": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "python": "Python 3",
+      "vm": "zeno run --vm",
+      "run": "zeno run"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "python": 0.284,
+        "vm": 1.378,
+        "run": 3.706
+      },
+      "loop": {
+        "c": 0.089,
+        "python": 12.287,
+        "vm": 16.702,
+        "run": 31.778
+      },
+      "sort": {
+        "c": 0.093,
+        "python": 2.231,
+        "vm": 5.413,
+        "run": 13.39
+      },
+      "strings": {
+        "c": 0.092,
+        "python": 0.43,
+        "vm": 1.842,
+        "run": 3.194
+      },
+      "trees": {
+        "c": 0.214,
+        "python": 3.975,
+        "vm": 19.271,
+        "run": 31.206
+      },
+      "nbody": {
+        "c": 0.042,
+        "python": 3.907,
+        "vm": 25.997,
+        "run": 54.227
+      }
+    }
+  }
+}
