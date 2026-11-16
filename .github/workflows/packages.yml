@@ -1,0 +1,143 @@
+# Makes the packages of a version that is already released, for apt,
+# pacman, snap, flatpak, Homebrew and winget, and tries each one.
+#
+# The packages are made from the files of that release
+# (tools/package.sh) and nothing is built again. Each is then
+# installed the way somebody would install it, the `zeno` it installed
+# is run, and it is taken off again (tools/try-packages.sh): the .deb,
+# the snap and the flatpak on Ubuntu, the pacman package in Arch in a
+# container, and the Homebrew formula on macOS. The winget files are
+# only written: GitHub's Windows machines have no winget.
+#
+# Started by hand from the Actions page ("Run workflow"), saying the
+# version. The packages are kept with the run. With "add" ticked they
+# are also added to the release, and the three recipes (the formula,
+# the PKGBUILD and the winget files) to this repository if that
+# version is the newest. The release workflow does the same for a new
+# version. docs/packages.md has more.
+
+name: packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version to make packages for
+        type: string
+        default: 0.1.0
+      add:
+        description: Add them to that release, and the recipes to the repository
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+  # `gh` reads and writes the releases of this repository with these.
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  make:
+    name: make and try
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The files of that release
+        run: |
+          case $VERSION in
+            *[!0-9.]* | "") echo "\`$VERSION\` is not a version such as 0.1.0"; exit 1 ;;
+          esac
+          gh release download "v$VERSION" --dir files
+          # They must be the files that were released.
+          (cd files && sha256sum --check --quiet SHA256SUMS.txt)
+
+      - name: What makes a flatpak
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q flatpak
+          # Ubuntu does not let a program that is not root make a box
+          # of the kind a flatpak runs in, unless it is told to.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Make the packages
+        run: tools/package.sh "$VERSION" files out
+
+      - name: apt installs the .deb, and removes it
+        run: tools/try-packages.sh deb "$VERSION" out
+
+      - name: snap installs the .snap, and removes it
+        run: tools/try-packages.sh snap "$VERSION" out
+
+      - name: pacman installs its package, and removes it
+        run: tools/try-packages.sh pacman "$VERSION" out
+
+      - name: flatpak installs the .flatpak, and removes it
+        run: tools/try-packages.sh flatpak "$VERSION" out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: out
+          if-no-files-found: error
+
+  brew:
+    name: Homebrew
+    needs: make
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+
+      - name: Homebrew installs from the formula, and removes it
+        run: |
+          gh release download "v$VERSION" --dir files --pattern "zeno-$VERSION-macos-*.tar.gz"
+          tools/try-packages.sh brew "$VERSION" out files
+
+  add:
+    name: add them to the release
+    needs: [make, brew]
+    if: inputs.add
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+
+      - name: Add the packages, and their checksums
+        run: |
+          cd out
+          packages=$(ls zeno_* zeno-*)
+          gh release download "v$VERSION" --pattern SHA256SUMS.txt
+          # The list gains a line for each. The lines of the files that
+          # were there stay as they are. Run a second time, the new
+          # lines are replaced.
+          for package in $packages; do
+            grep -v " $package\$" SHA256SUMS.txt > sums || true
+            mv sums SHA256SUMS.txt
+          done
+          sha256sum $packages >> SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "v$VERSION" $packages SHA256SUMS.txt --clobber
+          # The notes say how to install with them.
+          notes=../docs/releases/$VERSION.md
+          if [ -f "$notes" ]; then gh release edit "v$VERSION" --notes-file "$notes"; fi
+
+      - name: Keep the recipes in the repository, if this is the newest version
+        run: |
+          newest=$(gh release view --json tagName --jq .tagName)
+          if [ "$newest" = "v$VERSION" ]; then
+            tools/keep-recipes.sh out/recipes "$VERSION"
+          else
+            echo "the newest release is $newest, so its recipes stay"
+          fi
