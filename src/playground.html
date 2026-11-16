@@ -25,12 +25,13 @@
   docs/playground.md walks through how it works.
 -->
 <style>
-  /* The colours and type of zeno-lang.org (its tools/DESIGN.md). */
+  /* The colours and type of zeno-lang.org (its tools/DESIGN.md): black and
+     grey, with Windows accent blue (#0078d4) as the one colour. */
   :root {
     --paper: #f7f8fa; --sheet: #ffffff; --sunk: #eef1f6; --ink: #0f1729; --slate: #566176;
-    --faint: #8790a3; --rule: #e3e7ef; --cobalt: #2f5bea; --cobalt-soft: #e8eefe; --on-cobalt: #fff;
+    --faint: #8790a3; --rule: #e3e7ef; --cobalt: #0078d4; --cobalt-text: #0078d4; --cobalt-soft: #e5f1fb; --on-cobalt: #fff;
     --good: #14804a; --bad: #c9271a; --bad-soft: #fdecea; --line: #f3f5f9;
-    --tok-key: #2f5bea; --tok-type: #8a3ffc; --tok-str: #1b7f4b; --tok-num: #b4530a;
+    --tok-key: #0078d4; --tok-type: #8a3ffc; --tok-str: #1b7f4b; --tok-num: #b4530a;
     --tok-fn: #0f1729; --tok-com: #8790a3;
     --sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -40,18 +41,18 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --paper: #0a0a0a; --sheet: #141414; --sunk: #111111; --ink: #ededed; --slate: #a1a1a1;
-      --faint: #6b6b6b; --rule: #262626; --cobalt: #7d9cff; --cobalt-soft: #172036; --on-cobalt: #0a0a0a;
+      --faint: #6b6b6b; --rule: #262626; --cobalt: #0078d4; --cobalt-text: #4ca3ff; --cobalt-soft: #101a24; --on-cobalt: #fff;
       --good: #4fcf8a; --bad: #ff7a6b; --bad-soft: #2a1513; --line: #1a1a1a;
-      --tok-key: #8fadff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
+      --tok-key: #6cb6ff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
       --tok-fn: #ededed; --tok-com: #6b6b6b;
       color-scheme: dark;
     }
   }
   :root[data-theme="dark"] {
     --paper: #0a0a0a; --sheet: #141414; --sunk: #111111; --ink: #ededed; --slate: #a1a1a1;
-    --faint: #6b6b6b; --rule: #262626; --cobalt: #7d9cff; --cobalt-soft: #172036; --on-cobalt: #0a0a0a;
+    --faint: #6b6b6b; --rule: #262626; --cobalt: #0078d4; --cobalt-text: #4ca3ff; --cobalt-soft: #101a24; --on-cobalt: #fff;
     --good: #4fcf8a; --bad: #ff7a6b; --bad-soft: #2a1513; --line: #1a1a1a;
-    --tok-key: #8fadff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
+    --tok-key: #6cb6ff; --tok-type: #c5a3ff; --tok-str: #7fd6a2; --tok-num: #ffb86b;
     --tok-fn: #ededed; --tok-com: #6b6b6b;
     color-scheme: dark;
   }
@@ -175,7 +176,7 @@
     width: 100%; height: 100%; resize: none; outline: none; overflow: auto; background: transparent;
     color: transparent; caret-color: var(--ink); -webkit-text-fill-color: transparent;
   }
-  .surface textarea::selection { background: rgba(47, 91, 234, .22); -webkit-text-fill-color: transparent; }
+  .surface textarea::selection { background: rgba(0, 120, 212, .25); -webkit-text-fill-color: transparent; }
   .k { color: var(--tok-key); font-weight: 500; }
   .t { color: var(--tok-type); }
   .s { color: var(--tok-str); }

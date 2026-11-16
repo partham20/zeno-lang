@@ -9327,7 +9327,7 @@ each too small to write or read in. A switch between Code and Result,
 with Run going to Result, is how phone apps with two views work.
 
 **The look is the website's.** The same type (Hanken Grotesk and
-JetBrains Mono), the same colours (cobalt as the one colour, red
+JetBrains Mono), the same colours (Windows accent blue, #0078d4, as the one colour since 2026-11-16, red
 only for problems), the same logo and the same light or dark choice,
 which the two share. Panels with a thin rule instead of shadows,
 icons drawn as single lines, and the labels of Format and Share
