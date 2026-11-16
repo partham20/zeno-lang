@@ -9664,13 +9664,13 @@ collections, which trades memory for time without changing the work.
 
 - Generations on Windows, with `VirtualProtect` and a handler of its
   own.
-- Generations on macOS. They were on at first, and in the 0.3.0
-  release rehearsal three compiled test programs hung on a Mac with
-  Apple silicon while Linux passed. The cause is not found yet; the
-  likeliest is a write fault the handler does not clear, so the same
-  write faults forever. Until it is found and a Mac test shows it gone,
-  macOS has every collection full, as Windows does: slower on programs
-  that keep many objects, never wrong.
+- Generations on macOS (done after 0.3.0). They were on at first, and
+  in the 0.3.0 release rehearsal three compiled test programs hung on a
+  Mac with Apple silicon while Linux passed, so 0.3.0 shipped with every
+  collection full on macOS. The cause was found after the release
+  (22.14): a `try` in an LLVM build left the signal mask junk. With a
+  matched pair the whole suite passes on a Mac with generations, and
+  they are on there again.
 
 ### 22.12 Each release keeps its benchmark times
 
