@@ -1,0 +1,62 @@
+# sort: a list of a million made-up numbers, sorted by a quicksort
+# written in the program (so that every language runs the same steps).
+
+import program
+
+# How big a run is: the first word after the program's name, or 1000000.
+function size() -> int raises ValueError {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return int(words[0])
+    }
+    return 1000000
+}
+
+function quicksort(xs: list[int], low: int, high: int) {
+    var lo = low
+    var hi = high
+    while lo < hi {
+        let pivot = xs[(lo + hi) // 2]
+        var i = lo
+        var j = hi
+        while i <= j {
+            while xs[i] < pivot {
+                i += 1
+            }
+            while xs[j] > pivot {
+                j -= 1
+            }
+            if i <= j {
+                let t = xs[i]
+                xs[i] = xs[j]
+                xs[j] = t
+                i += 1
+                j -= 1
+            }
+        }
+        # The smaller side by calling, the bigger by going round again.
+        if j - lo < hi - i {
+            quicksort(xs, lo, j)
+            lo = i
+        } else {
+            quicksort(xs, i, hi)
+            hi = j
+        }
+    }
+}
+
+let n = size()
+var xs: list[int] = []
+var seed = 42
+for k in range(n) {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    xs.append(seed)
+}
+quicksort(xs, 0, n - 1)
+var ok = true
+for k in range(1, n) {
+    if xs[k - 1] > xs[k] {
+        ok = false
+    }
+}
+print(ok, xs[0], xs[n // 2], xs[n - 1])

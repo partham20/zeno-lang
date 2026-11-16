@@ -1,0 +1,25 @@
+# strings: build a long text out of many small pieces, then look at it.
+
+import program
+
+# How big a run is: the first word after the program's name, or 1000000.
+function size() -> int raises ValueError {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return int(words[0])
+    }
+    return 1000000
+}
+
+var parts: list[str] = []
+for i in range(size()) {
+    parts.append(str(i))
+}
+let text = parts.join(",")
+var commas = 0
+for ch in text {
+    if ch == "," {
+        commas += 1
+    }
+}
+print(len(text), commas)

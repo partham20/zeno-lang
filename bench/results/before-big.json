@@ -1,0 +1,72 @@
+{
+  "size": "big",
+  "sizes": {
+    "fib": 40,
+    "loop": 1000000000,
+    "sort": 10000000,
+    "strings": 10000000,
+    "trees": 20,
+    "nbody": 10000000
+  },
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.3.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "engines": {
+    "c": "C (cc -O2)",
+    "rust": "Rust (rustc -O)",
+    "zeno": "zeno build",
+    "zeno-llvm": "zeno build --llvm",
+    "zeno-nc": "zeno build --no-collector"
+  },
+  "times": {
+    "fib": {
+      "c": 0.167,
+      "rust": 0.229,
+      "zeno": 0.46,
+      "zeno-llvm": 0.447,
+      "zeno-nc": 0.422
+    },
+    "loop": {
+      "c": 0.854,
+      "rust": 0.884,
+      "zeno": 1.249,
+      "zeno-llvm": 1.036,
+      "zeno-nc": 1.308
+    },
+    "sort": {
+      "c": 1.041,
+      "rust": 1.087,
+      "zeno": 1.292,
+      "zeno-llvm": 2.032,
+      "zeno-nc": 1.314
+    },
+    "strings": {
+      "c": 0.944,
+      "rust": 0.699,
+      "zeno": 24.538,
+      "zeno-llvm": 25.317,
+      "zeno-nc": "failed: error: a statement built more text than there is room for (ZENO_TEXT_ROOM is 16777216 bytes)"
+    },
+    "trees": {
+      "c": 5.887,
+      "rust": 6.843,
+      "zeno": 57.809,
+      "zeno-llvm": 57.466,
+      "zeno-nc": 4.612
+    },
+    "nbody": {
+      "c": 0.419,
+      "rust": 0.37,
+      "zeno": 1.325,
+      "zeno-llvm": 1.094,
+      "zeno-nc": 1.234
+    }
+  }
+}

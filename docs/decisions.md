@@ -9354,3 +9354,173 @@ number, and a program never has to know how large the canvas is
 shown. Before, the place also counted the border, one pixel off.
 Only a canvas is counted this way: for anything else there are no
 pixels of its own.
+
+## 22. Speed: choosing how memory is freed, `--release`, and a faster collector
+
+The first benchmarks (bench/README.md, 2026-11-16) put Zeno next to C,
+Rust and Python on six programs. Arithmetic and arrays came out 1.2 to
+1.5 times slower than C. Anything that made many blocks of memory came
+out 10 to 26 times slower, and the cause was the collector. A build
+with no collector was faster than C on the same program, but it was
+made for a chip and had a fixed pool of 32 KB. This chapter is what
+was done about it. The aim, in Partha's words, is that a Zeno program
+"has to run faster ... as fast as C and or Rust", while each project
+chooses how it frees memory.
+
+### 22.1 A program chooses how memory is freed: `memory owned` or `memory collector`
+
+```text
+package server
+memory owned
+```
+
+A line in `zeno.package` says how the program frees memory when it is
+built. `memory collector`, which is what a program gets when nothing is
+said, is the garbage collector, and lists and objects can be shared
+freely. `memory owned` is one owner for every list and object, freed on
+the line where its owner ends, with no collector in the program: the
+rules of `--no-collector` (5.15), which are Rust's. `zeno build --owned`
+and `zeno build --collector` say the same for one build, over the file.
+
+`zeno check` and `zeno run` of a program that says `memory owned` check
+it by the owned rules too, so that a program that runs also builds.
+
+**Why in `zeno.package`.** How memory is freed is a property of the
+whole program, not of one build of it: an owned program is written
+differently (it says `take`, it does not share a list between two
+objects), so the choice belongs with the program, where the next person
+finds it. The command line can still say otherwise for one build.
+
+**Why two words and not a third for C.** C's way, asking for memory and
+freeing it by hand, is already in the language: `unsafe { }` with
+`allocate` and `free` (5.18). It is a block, not a program, because it
+is the one way in which a mistake is not caught, and a mistake should be
+looked for in a few lines and not in the whole program.
+
+**Why not per line.** A value is made on one line and used on many,
+and how it is freed has to go with the value, not with a line: a list
+made "with the collector" on line 3 and freed "by its owner" on line 9
+is a list nobody can say the rules of. So the choice is made where it
+can be kept: for the program here, and for one value with `owned`
+(5.8), which works in a collector program too.
+
+**Alternatives.** A flag only (`--no-collector` as it was), which every
+build must remember. An attribute in the source file, which a program
+of several files would say several times, and could say differently.
+
+### 22.2 `memory owned` on a computer: the pool and the text room grow
+
+`--no-collector` is for a chip: one array of a fixed size for lists and
+objects, another for text, and the size is known when the program is
+built (5.9h, 5.9l). On a computer nobody knows in advance how much a
+program will need, so `memory owned` keeps the same blocks, sizes and
+lists of spare blocks, and when the piece of memory it is cutting from
+runs out it asks the system for another, twice as big as the last. The
+text room becomes a chain of rooms in the same way. `--firmware` with
+`memory owned`, and `--no-collector`, keep the fixed arrays.
+
+**Why doubling.** A program that needs a gigabyte asks the system
+about twenty times, and what is left at the end of a piece is at most
+half of it, and usually far less.
+
+**Why a chain of rooms and not one room that moves.** Text in the
+room is pointed at by the statement that is building it. A room that
+moved would leave those pointers behind. A chain never moves anything,
+and the compiled program does not change at all: it saves the top of
+the room and puts it back, and the top counts bytes across the chain.
+
+### 22.3 `--release`: whole numbers wrap round instead of being checked
+
+`zeno build --release` (and `--llvm --release`) compiles `+`, `-` and
+`*` of whole numbers to the processor's own instructions, which wrap
+round on overflow, in place of the checked ones that stop the program
+with an `OverflowError` (5.5c). Nothing else changes: `//` and `%` by
+zero, an index past the end, a key that is not there and `u8(300)`
+still stop the program, and `zeno run` checks everything as before.
+
+**Why.** It is what Rust does: a debug build checks, a release build
+wraps. The check costs a test and a jump on every step of a tight loop,
+and on the benchmarks it was most of what was left between Zeno and C
+on integer code. A program that has been tested can drop it.
+
+**Why not drop the index checks too.** An index past the end in C reads
+or writes memory that belongs to something else, and the program goes
+on, wrong, with no message. That is the mistake that safe languages
+exist to prevent; Rust keeps it in its release builds, and so does Zeno.
+A wrapped number is wrong too, but it is a number: nothing else in the
+program is broken by it.
+
+**The cost.** A release build of a program that overflows prints
+something else than `zeno run` does. That is the one place where the
+engines are allowed to disagree, and it is only with the word written.
+
+### 22.4 A loop walks a list in place when its body cannot change it
+
+`for item in items` walks the list as it was when the loop began
+(5.5c), so a compiled loop has always walked a copy, made for it. The
+copy is made on every loop: in bench/nbody.zeno, ten million copies of
+a list of five planets, a quarter of the run.
+
+Now the compilers look at the body first (`ast::walks_in_place`). If it
+never writes the name the list is reached from, calls nothing but the
+built-in functions that only look at their arguments, replaces no item
+of a list, and makes no function value, then nothing in it can change
+the list, the copy would be the list itself, and the loop walks the
+list where it is.
+
+**Why decide from the words and not from the types.** It is a rule a
+reader can check by eye, with nothing to get wrong. A body that does
+more (calls a function of the program, say) still gets its copy, and
+behaves exactly as before; nothing is ever walked in place that could
+change.
+
+### 22.5 The collector keeps its blocks in pages
+
+The collector of 5.7 wrote every block in one table, sorted the table
+at each collection, and found the block a word points at by halving
+the table. On a program that keeps two million blocks and makes
+hundreds of millions (bench/trees.zeno), the sorting and the searching
+were most of the run.
+
+Blocks now live in pages of 64 KB, each at an address that is a
+multiple of 64 KB, and a page holds blocks of one size (16 sizes, from
+16 bytes to 2 KB; bigger blocks get pages of their own). The page keeps
+a bit for each block in use and a bit for each block reached. A hash
+table says which page covers each 64 KB of memory, so "is this word one
+of my blocks?" is one look and a division, and freeing a block is
+finding its page from its own address. A block has no header any more.
+This is the arrangement of most collectors that, like Zeno's, look at
+memory with no help from the compiler (the Boehm collector is one).
+
+**Results.** bench/trees.zeno went from 57.8 to 12.0 seconds, and
+bench/strings.zeno from 24.5 to 3.4 (with 22.6). C takes 5.9 and 0.9.
+
+**What stayed.** It is still mark and sweep, conservative, and
+collects when the memory in use passes twice what survived the last
+collection (the first limit is now 4 MB, up from 1 MB, since blocks
+are cheaper to keep). Every test that ran the old collector before
+each allocation (`ZENO_COLLECT_ALWAYS`) runs the new one the same way.
+
+**Left for later.** A collector that looks at young blocks more often
+than old ones (a generational one) would make trees faster still: most
+of what is left is marking the same long-lived tree at every
+collection.
+
+### 22.6 Text of one ASCII character is made once
+
+`for ch in text`, `split("")` and the like hand out a text for each
+character. Each was a block of its own; now a text of one ASCII
+character is taken from a table of all 128 that is part of the
+program, and no block is made. With no collector nothing frees them,
+which is right, since only text in the pool is ever freed.
+
+### 22.7 Left for later
+
+- Choosing per file or per function, in one program. The checker
+  already applies the owned rules to a whole program; applying them to
+  some files and not others needs a rule for where the two meet (a
+  shared list lent to a function of an owned file, say), and that rule
+  is not written yet.
+- `for ch in text` still makes a list of the characters first. Walking
+  the text itself would save the list.
+- A generational collector (22.5).

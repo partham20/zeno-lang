@@ -1,0 +1,21 @@
+# fib: function calls. The same slow recursive fib in every language.
+
+import program
+
+# How big a run is: the first word after the program's name, or 32.
+function size() -> int raises ValueError {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return int(words[0])
+    }
+    return 32
+}
+
+function fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+print(fib(size()))

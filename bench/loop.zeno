@@ -1,0 +1,21 @@
+# loop: a tight loop of integer arithmetic.
+
+import program
+
+# How big a run is: the first word after the program's name, or 100000000.
+function size() -> int raises ValueError {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return int(words[0])
+    }
+    return 100000000
+}
+
+let n = size()
+var total = 0
+var i = 0
+while i < n {
+    total += (i * i) % 7
+    i += 1
+}
+print(total)

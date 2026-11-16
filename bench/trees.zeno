@@ -1,0 +1,46 @@
+# trees: make and drop many small binary trees (the binary-trees game).
+
+import program
+
+# How big a run is: the first word after the program's name, or 16.
+function size() -> int raises ValueError {
+    let words = program.arguments()
+    if len(words) > 0 {
+        return int(words[0])
+    }
+    return 16
+}
+
+class Node {
+    left: Node or none
+    right: Node or none
+}
+
+function make(depth: int) -> Node {
+    if depth == 0 {
+        return Node(none, none)
+    }
+    return Node(make(depth - 1), make(depth - 1))
+}
+
+function check(node: Node or none) -> int {
+    if node is none {
+        return 0
+    }
+    return 1 + check(node.left) + check(node.right)
+}
+
+let deepest = size()
+let long_lived = make(deepest)
+var depth = 4
+while depth <= deepest {
+    let iterations = 1 << (deepest - depth + 4)
+    var total = 0
+    for k in range(iterations) {
+        let tree = make(depth)
+        total += check(tree)
+    }
+    print(iterations, "trees of depth", depth, "check", total)
+    depth += 2
+}
+print("long lived tree of depth", deepest, "check", check(long_lived))
