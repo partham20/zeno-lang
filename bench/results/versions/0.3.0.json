@@ -1,0 +1,141 @@
+{
+  "version": "0.3.0",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.3.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "big": {
+    "sizes": {
+      "fib": 40,
+      "loop": 1000000000,
+      "sort": 10000000,
+      "strings": 10000000,
+      "trees": 20,
+      "nbody": 10000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "rust": "Rust (rustc -O)",
+      "zeno": "zeno build",
+      "zeno-llvm": "zeno build --llvm",
+      "zeno-nc": "zeno build --no-collector",
+      "zeno-release": "zeno build --release",
+      "zeno-owned": "zeno build --release --owned"
+    },
+    "times": {
+      "fib": {
+        "c": 0.169,
+        "rust": 0.254,
+        "zeno": 0.478,
+        "zeno-llvm": 0.59,
+        "zeno-nc": 0.491,
+        "zeno-release": 0.156,
+        "zeno-owned": 0.17
+      },
+      "loop": {
+        "c": 0.952,
+        "rust": 0.958,
+        "zeno": 1.407,
+        "zeno-llvm": 1.184,
+        "zeno-nc": 1.416,
+        "zeno-release": 1.012,
+        "zeno-owned": 1.058
+      },
+      "sort": {
+        "c": 1.141,
+        "rust": 1.278,
+        "zeno": 1.473,
+        "zeno-llvm": 2.374,
+        "zeno-nc": 1.471,
+        "zeno-release": 1.601,
+        "zeno-owned": 1.421
+      },
+      "strings": {
+        "c": 0.954,
+        "rust": 0.757,
+        "zeno": 1.309,
+        "zeno-llvm": 1.513,
+        "zeno-release": 1.439,
+        "zeno-owned": 1.483
+      },
+      "trees": {
+        "c": 7.578,
+        "rust": 8.235,
+        "zeno": 8.255,
+        "zeno-llvm": 8.745,
+        "zeno-nc": 4.907,
+        "zeno-release": 7.707,
+        "zeno-owned": 4.516
+      },
+      "nbody": {
+        "c": 0.491,
+        "rust": 0.378,
+        "zeno": 0.577,
+        "zeno-llvm": 0.726,
+        "zeno-nc": 0.534,
+        "zeno-release": 0.544,
+        "zeno-owned": 0.528
+      }
+    }
+  },
+  "small": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "python": "Python 3",
+      "vm": "zeno run --vm",
+      "run": "zeno run"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "python": 0.272,
+        "vm": 0.839,
+        "run": 3.232
+      },
+      "loop": {
+        "c": 0.091,
+        "python": 12.17,
+        "vm": 7.865,
+        "run": 33.323
+      },
+      "sort": {
+        "c": 0.098,
+        "python": 2.49,
+        "vm": 4.047,
+        "run": 14.322
+      },
+      "strings": {
+        "c": 0.1,
+        "python": 0.439,
+        "vm": 2.878,
+        "run": 4.783
+      },
+      "trees": {
+        "c": 0.258,
+        "python": 4.23,
+        "vm": 9.924,
+        "run": 23.303
+      },
+      "nbody": {
+        "c": 0.049,
+        "python": 3.95,
+        "vm": 17.096,
+        "run": 53.122
+      }
+    }
+  }
+}
