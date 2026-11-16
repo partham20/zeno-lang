@@ -213,6 +213,61 @@ print(outer())
 A function written with no name, \verb|let inner = function() { ... }|,
 does compile. \hyperref[app-limits]{Appendix G} has the full list.
 
+\section{In another language}
+
+\verb|zeno build --target| writes the program in another language: a
+file you can read, keep, and run with that language's own tools. The
+languages are \verb|js| (JavaScript, for Node), \verb|html| (a page
+that runs the program), \verb|py| (Python), \verb|go|, \verb|java|,
+\verb|cs| (C\#), \verb|cpp| (C++), \verb|rust|, and \verb|wasm|
+(WebAssembly, built through Rust).
+
+\begin{zeno}[file=area.zeno, cmd=zeno build --target js {file} ;; node area.js ;; zeno build --target py {file} ;; python3 area.py]
+import math
+
+function area(r: float) -> float {
+    return math.pi * r * r
+}
+print(area(2.0))
+\end{zeno}
+
+The file is written by fixed rules, so the same program always gives
+the same file, letter for letter. Each language gets a runtime of its
+own, at the top of the file, which does what \verb|zeno run| does, step
+for step: an \verb|int| still overflows in JavaScript, whose numbers
+never do, and in Python, whose whole numbers never stop growing.
+
+\begin{zeno}[file=area.zeno, show=no, cmd=zeno build --target py {file} > /dev/null ;; grep -A6 "^def main" area.py]
+import math
+
+function area(r: float) -> float {
+    return math.pi * r * r
+}
+print(area(2.0))
+\end{zeno}
+
+\verb|Z.mul(a, b, 4)| multiplies as Zeno multiplies, and stops with
+Zeno's message for line 4 if the answer does not fit. \verb|math| is
+\verb|math_| because \verb|math| is a name the languages' own libraries
+use.
+
+As with \verb|zeno build| itself, a tool holds every target to
+\verb|zeno run|: \verb|tools/targets.py| runs every example and every
+sample of this book in every language and compares what each prints,
+and it runs once a week on the newest version of each language.
+
+A program that uses the board, \verb|unsafe| or manual memory is
+refused: those belong to a program compiled to machine code. The page
+cannot use the keyboard or files, or \verb|sleep|.
+
+\begin{why}
+A program you have written in Zeno can then live where another language
+lives: on a web page, in a Python project, on a Java server. And it is a
+way to learn: the same program, written by fixed rules in nine
+languages, shows what each language needs said that Zeno does not.
+(Decisions 24.1 to 24.19; \verb|docs/targets.md| has every target.)
+\end{why}
+
 \begin{summary}
 \verb|zeno build| writes C, compiles it with the machine's compiler,
 and keeps both. The compiled program prints what \verb|zeno run|
@@ -220,6 +275,7 @@ prints, errors included, and is many times faster. A build is always
 strict. \verb|--llvm| goes through LLVM; \verb|--memory|,
 \verb|--firmware| and \verb|--no-collector| are for the board. For
 another processor, the C goes to that processor's compiler.
+\verb|--target| writes the program in another language instead.
 \end{summary}
 
 \begin{tryit}
@@ -232,5 +288,8 @@ another processor, the C goes to that processor's compiler.
   the same as \verb|zeno run|'s?
 \item Build with \verb|--llvm|, open the \verb|.ll| file, and find
   \verb|is_prime|.
+\item Build the area example with \verb|--target go| and
+  \verb|--target java|. Find \verb|area| in each, and compare the two
+  with the Python.
 \end{enumerate}
 \end{tryit}

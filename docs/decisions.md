@@ -10334,3 +10334,49 @@ and a collector can come later without changing the printer.
 to the variables around it would point at nothing once the function
 that made it returned, and a Zeno function can outlive the one that
 made it.
+
+### 24.18 Rust: failures as results, `try` as a closure
+
+Rust has no exceptions. Every step of runtime.rs that can fail gives a
+`z::R`, the value or the failure (an error on its way to a `try`, or a
+mistake that stops the program), and the program passes a failure on
+with `?`. A `try` body is a closure called at once; the code after it
+looks at how it ended. A `break`, `continue` or `return` in the body
+cannot reach outside the closure, so the body ends with which one it
+was and the code after it does it, as in Go (24.13). A variable an inner
+function uses lives in a `z::Cell`, and each function gets its own copy
+of the cells it uses where it is made: the lowering lists them for each
+function (`captures`).
+
+**Why results and not panics.** A panic can be caught, but it is meant
+for bugs: it prints to the screen unless told not to, and it is slow to
+catch. A result costs nothing until something fails, and `?` keeps the
+written program as short as the others.
+
+**Why the same printing.** Zeno is written in Rust, so the Rust runtime
+shows floats with `{:?}`, fixed decimals with `{:.2}`, and text with
+the same quoting, exactly as `zeno run` does. It is the one target that
+cannot differ in the last digit.
+
+### 24.19 WebAssembly: through Rust, with WASI
+
+`--target wasm` writes the program in Rust, has `rustc` build it for
+`wasm32-wasip1`, and keeps the `.wasm` file. WASI is the system
+interface that WebAssembly hosts outside a browser give a program: the
+keyboard, the screen, the command line and files. The file runs in
+wasmtime, wasmer, or Node (`tools/run-wasi.js`). WebAssembly has no
+threads, so there the program runs on its one thread, built with a
+32 MB stack, which holds 1000 nested calls.
+
+**Why through Rust.** Rust builds WebAssembly well and has done so for
+years, and the Rust target already prints what `zeno run` prints; a
+WebAssembly printer of its own would be a second compiler to keep in
+step. This is also the one target where `zeno build` runs a compiler
+itself, because a `.wasm` file is not text a person would keep: what
+they want is the file that runs.
+
+**Why WASI and not the browser.** The page target (24.10) is already
+the browser's. `zeno build --web` puts Zeno itself in a page as
+WebAssembly. What was missing was a program that runs anywhere a
+WebAssembly host does, the same file on every computer, and that is
+WASI.

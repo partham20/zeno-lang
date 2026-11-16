@@ -29,9 +29,15 @@ Wrote hello.html. Open it in a browser
 | `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
 | `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
 | `cpp` | `hello.cpp` | `g++ -std=c++17 -O2 hello.cpp -o hello && ./hello` |
+| `rust` | `hello.rs` | `rustc -O --edition 2021 hello.rs && ./hello` |
+| `wasm` | `hello.wasm`, built by `rustc` | `wasmtime hello.wasm`, or any WebAssembly host with WASI |
 
-More languages follow (Rust, and WebAssembly); this page grows with
-each.
+`--target wasm` is the one that builds as well as writes: it writes the
+program in Rust, has `rustc` build that for WebAssembly, and keeps the
+`.wasm` file. It needs Rust and its WebAssembly target
+(`rustup target add wasm32-wasip1`). The file runs in wasmtime, wasmer,
+or Node (`node tools/run-wasi.js hello.wasm`), with the keyboard, the
+command line and the files of the folder it runs in.
 
 The file is written by fixed rules, the same every time: the same
 program gives the same file, letter for letter. No guessing and no AI
@@ -82,6 +88,8 @@ go: 319 of 319 programs print what `zeno run` prints (21 left out: they use the 
 java: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 cs: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 cpp: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+rust: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+wasm: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 html: 311 of 311 programs print what `zeno run` prints (29 left out: ...)
 ```
 
@@ -99,13 +107,14 @@ Three steps, in three files.
    into statements, in the order Zeno would do them.
 2. **The runtime** (`src/runtime.js`, `src/runtime.py`,
    `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`,
-   `src/runtime.cpp`): what every Zeno
+   `src/runtime.cpp`, `src/runtime.rs`): what every Zeno
    value is in that language, and what each operator and built-in does
    with it, written to do what `ops.rs` and `builtins.rs` do for
    `zeno run`, step for step and message for message. It goes at the
    top of the file, so the file needs nothing else.
 3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_go.rs`,
-   `src/emit_java.rs`, `src/emit_cs.rs`, `src/emit_cpp.rs`): the lowered
+   `src/emit_java.rs`, `src/emit_cs.rs`, `src/emit_cpp.rs`,
+   `src/emit_rust.rs`): the lowered
    program in that
    language's words.
 
@@ -275,6 +284,12 @@ Go (decision 24.14). C++, like Python, C# and Rust, uses the C
 library's `sin` and `exp`, so its floats print the very digits
 `zeno run` prints.
 
+Rust has no exceptions, so every step that can fail gives a result and
+the program passes a failure on with `?`; a `try` body is a closure
+whose failure the code after it looks at, as in Go. Zeno is itself
+written in Rust, so the Rust runtime prints and reads floats, and
+quotes text, with the very code `zeno run` uses.
+
 ## Known limits
 
 - **The last digit of `sin`, `exp`, `pow` and the like.** `zeno run`
@@ -294,14 +309,14 @@ The written program is as correct as `zeno run` first, and as fast as
 that allows. Seconds, on the benchmarks in `bench/`, against `zeno run
 --vm`:
 
-| | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) |
-|---|---|---|---|---|---|---|
-| fib | 0.78 | 0.12 | 2.3 | 0.31 | 0.19 | 0.90 |
-| sort | 3.7 | 1.2 | 18.1 | 2.1 | 1.2 | 4.2 |
-| strings | 1.8 | 0.6 | 1.6 | 0.9 | 0.8 | 1.8 |
-| trees | 10.6 | 2.2 | 28.3 | 4.2 | 1.4 | 6.6 |
+| | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) | `cpp` (g++ 13) | `rust` (1.97) | `wasm` (in Node) |
+|---|---|---|---|---|---|---|---|---|---|
+| fib | 0.78 | 0.12 | 2.3 | 0.31 | 0.19 | 0.90 | 0.19 | 0.40 | 0.59 |
+| sort | 3.7 | 1.2 | 18.1 | 2.1 | 1.2 | 4.2 | 1.3 | 1.8 | 2.6 |
+| strings | 1.8 | 0.6 | 1.6 | 0.9 | 0.8 | 1.8 | 1.8 | 1.3 | 1.2 |
+| trees | 10.6 | 2.2 | 28.3 | 4.2 | 1.4 | 6.6 | 4.6 | 4.5 | 4.2 |
 
-(Go and Java timed as built programs, `go build` and `javac` first; C#
+(Go, Java, C++ and Rust timed as built programs, built first; C#
 as `dotnet run` on its second run, which reuses the build, about half
 a second of each figure being `dotnet` starting.)
 

@@ -44,7 +44,10 @@ TARGETS = {
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},
     # Compiled beside the file it wrote, then run.
+    # Built by `zeno build` itself, with rustc; Node's WASI host runs it.
+    "wasm": {"needs": ["rustc", "node"], "run": ["node", "--no-warnings", str(REPO / "tools/run-wasi.js"), "{file}"]},
     "cpp": {"needs": ["g++"], "run": ["sh", "-c", "g++ -std=c++17 -O2 -o \"$0.bin\" \"$0\" && exec \"$0.bin\" \"$@\"", "{file}"]},
+    "rust": {"needs": ["rustc"], "run": ["sh", "-c", "rustc -O --edition 2021 -o \"$0.bin\" \"$0\" && exec \"$0.bin\" \"$@\"", "{file}"]},
     # A page has no keyboard, no command line and no files to write, and it
     # cannot stand still: a program that is typed at, given words, writes a
     # file or sleeps is left out. tools/run-page.js needs Playwright.
@@ -182,7 +185,7 @@ def main():
                 # A program that `zeno run` refuses is refused here too.
                 return "pass"
             return "the build failed:\n" + errors.strip()
-        file = re.search(r"Wrote (\S+?)\.? ", built + " ")
+        file = re.search(r"(?:Wrote|Built) (\S+?)\.? ", built + " ")
         file = file.group(1) if file else ""
         command = [part.replace("{file}", str(out_dir / file)).replace("{dir}", str(out_dir))
                    for part in spec["run"]]

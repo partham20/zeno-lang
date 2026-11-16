@@ -26,6 +26,7 @@ mod emit_cs;
 mod emit_java;
 mod emit_js;
 mod emit_py;
+mod emit_rust;
 mod emit_llvm;
 mod error;
 mod format;
@@ -142,8 +143,9 @@ fn usage() {
     println!("                           (docs/web.md)");
     println!("  --target <language>      with build: write the program in another");
     println!("                           language, by fixed rules: js, html (a page");
-    println!("                           that runs it), py, go, java, cs, cpp. It");
-    println!("                           prints what `zeno run` prints (docs/targets.md)");
+    println!("                           that runs it), py, go, java, cs, cpp, rust,");
+    println!("                           wasm (WebAssembly, built with rustc).");
+    println!("                           It prints what `zeno run` prints (docs/targets.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -804,7 +806,7 @@ fn own_page(path: &str) -> Option<String> {
 /// The languages `--target` can write a program in: the name after
 /// `--target`, the file it writes, and how to run that file.
 const TARGETS: &[(&str, &str, &str)] =
-    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}")];
+    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}"), ("rust", "rs", "rustc -O --edition 2021 {file} && ./{name}"), ("wasm", "wasm", "wasmtime {file}")];
 
 /// `zeno build --target js <file>`: write the program in another
 /// language (lower.rs, and emit_js.rs and the others).
@@ -858,6 +860,8 @@ fn build_target(path: &str, target: &str) -> Option<()> {
         "java" => emit_java::emit(&tree, source),
         "cs" => emit_cs::emit(&tree, source),
         "cpp" => emit_cpp::emit(&tree, source),
+        "rust" => emit_rust::emit(&tree, source),
+        "wasm" => return build_wasm(&emit_rust::emit(&tree, source), name, &file, how),
         _ => emit_js::emit(&tree, source),
     };
     if let Err(err) = fs::write(&file, text) {
@@ -870,6 +874,39 @@ fn build_target(path: &str, target: &str) -> Option<()> {
         println!("Wrote {file}. Run it with `{}`", how.replace("{file}", &file).replace("{name}", name));
     }
     Some(())
+}
+
+/// `zeno build --target wasm`: the program written in Rust, then built by
+/// `rustc` for WebAssembly with WASI, the system interface every
+/// WebAssembly host outside a browser has (wasmtime, wasmer, Node). The
+/// Rust is written in a folder of its own and left out; what is kept is
+/// the `.wasm` file (decision 24.19).
+fn build_wasm(rust: &str, name: &str, file: &str, how: &str) -> Option<()> {
+    let folder = env::temp_dir().join(format!("zeno-wasm-{}-{name}", std::process::id()));
+    let source = folder.join(format!("{name}.rs"));
+    if fs::create_dir_all(&folder).and_then(|_| fs::write(&source, rust)).is_err() {
+        eprintln!("zeno: cannot write the Rust for `{file}` in {}", folder.display());
+        return None;
+    }
+    let built = Command::new("rustc")
+        .args(["-O", "--edition", "2021", "--target", "wasm32-wasip1", "-C", "link-arg=-zstack-size=33554432", "-o", file])
+        .arg(&source)
+        .status();
+    let _ = fs::remove_dir_all(&folder);
+    match built {
+        Ok(status) if status.success() => {
+            println!("Built {file}. Run it with `{}`, or any WebAssembly host with WASI", how.replace("{file}", file));
+            Some(())
+        }
+        Ok(_) => {
+            eprintln!("zeno: rustc could not build `{file}`. It needs Rust's WebAssembly target: rustup target add wasm32-wasip1");
+            None
+        }
+        Err(_) => {
+            eprintln!("zeno: `--target wasm` needs rustc, from https://rustup.rs, with: rustup target add wasm32-wasip1");
+            None
+        }
+    }
 }
 
 /// `zeno build --web <file>`: write one page that runs the program in a
