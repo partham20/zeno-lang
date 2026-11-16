@@ -427,7 +427,7 @@ fi
 # what to show somebody who searches for it. The setup program is one
 # file for three processors, so it is named three times.
 #
-# The files are in the form Microsoft's list takes today, 1.12.0, and
+# The files are in the form Microsoft's list takes today, 1.28.0, and
 # each begins by naming the schema it is checked against. `ProductCode`
 # is the name Windows keeps the installed Zeno under (the setup
 # program's own id, with the `_is1` that Inno Setup adds), by which
@@ -437,7 +437,7 @@ setup=zeno-$version-windows-setup.exe
 if checksum=$(sum "$setup"); then
     id=ZenoLang.Zeno
     checksum=$(say "$checksum" | tr a-f A-F)
-    schema=1.12.0
+    schema=1.28.0
     cat > "$recipes/packaging/winget/$id.yaml" <<EOF
 # Written by tools/package.sh when a version is released.
 # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.$schema.schema.json

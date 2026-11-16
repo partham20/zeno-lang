@@ -8494,7 +8494,7 @@ stop a release.
 
 ### 15.27 winget: today's form, and a pull request by hand
 
-**Decision.** The three files are in the form 1.12.0, name the schema
+**Decision.** The three files are in the form 1.28.0, name the schema
 they are checked against, and have `ProductCode`: the id of the setup
 program with the `_is1` that Inno Setup adds, which is the name
 Windows keeps the installed Zeno under. Sending them to Microsoft's

@@ -172,7 +172,7 @@ the setup program, scan it, install it without showing it, and a
 person approves.
 
 The files are in [`packaging/winget`](../packaging/winget), in the form
-the list takes today (1.12.0). They are checked against Microsoft's own
+the list takes today (1.28.0). They are checked against Microsoft's own
 schema, and that they name the setup program of the release and its
 checksum. They have still never been run by a winget: GitHub's Windows
 machines have none.
