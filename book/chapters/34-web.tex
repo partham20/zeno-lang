@@ -86,9 +86,10 @@ Function & What it does \\
 \verb|web.create(tag, text)| & a new element with that text in it, not
   on the page until it is appended to one that is \\
 \verb|web.after(time, f)| & call \verb|f| once, that much later. The
-  time has a unit: \verb|web.after(500 ms, tick)| \\
-\verb|web.every(time, f)| & call \verb|f| that often, for as long as
-  the page is open \\
+  time has a unit: \verb|web.after(500 ms, tick)|. Gives a \verb|Timer| \\
+\verb|web.every(time, f)| & call \verb|f| that often, until the timer is
+  stopped or the page is closed. Gives a \verb|Timer| \\
+\verb|timer.stop()| & call off what the timer was waiting to do \\
 \verb|web.on_key(f)| & call \verb|f| with the name of each key that is
   pressed: \verb|"a"|, \verb|"Enter"|, \verb|"ArrowLeft"| \\
 \verb|web.save(name, text)| & keep text under a name, for the next time
@@ -271,22 +272,50 @@ program. In a browser:
 \section{Time and the network}
 
 \verb|web.after| calls a function once, later, and \verb|web.every|
-calls it again and again. Both want a time with a unit:
+calls it again and again. Both want a time with a unit, and both give
+a \verb|Timer|, whose \verb|stop()| calls off what it was waiting to
+do. A clock that can be paused keeps its timer while it runs, and
+\verb|none| while it does not:
 
-\begin{zeno}[file=clock.zeno, dir=clock]
+\begin{zeno}[file=clock.zeno, dir=clock, cmd=zeno test {file}]
 import web
 
 let clock = web.element("#clock")
 var seconds = 0
+var timer: Timer or none = none
 
 function tick() {
     seconds += 1
     clock.text = f"open for {seconds} s"
 }
 
-web.every(1 s, tick)
+function start() {
+    if timer is none {
+        timer = web.every(1 s, tick)
+    }
+}
+
+function pause() {
+    if timer is not none {
+        timer.stop()
+        timer = none
+    }
+}
+
+web.element("#start").on("click", start)
+web.element("#pause").on("click", pause)
+start()
 clock.text = "just opened"
+
+test "pause stops the clock" {
+    pause()
+    assert timer is none
+}
 \end{zeno}
+
+\verb|start| asks first, so pressing Start twice does not start two
+timers. Stopping a timer that has stopped, or that has made its one
+call, does nothing.
 
 \verb|web.fetch| asks a web server for what is at an address. The
 answer comes later, so it takes a function, which is called with the
