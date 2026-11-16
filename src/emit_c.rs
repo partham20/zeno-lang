@@ -6524,6 +6524,60 @@ print(told(q))
     }
 
     #[test]
+    fn one_file_of_a_program_can_say_memory_owned() {
+        // The file of trees frees each object where its owner ends; the
+        // first file keeps the collector for its own values.
+        let source = r##"import shapes
+class Box {
+    items: list[int]
+}
+var total = 0
+for i in range(20) {
+    let tree = shapes.make(4)
+    total += shapes.count(tree)
+}
+let b = Box([1, 2])
+b.items.append(3)
+print(total)
+print(len(b.items))
+==> shapes.zeno
+memory owned
+
+class Node {
+    left: Node or none
+    right: Node or none
+}
+
+function make(depth: int) -> Node {
+    if depth == 0 {
+        return Node(none, none)
+    }
+    return Node(make(depth - 1), make(depth - 1))
+}
+
+function count(node: Node or none) -> int {
+    if node is none {
+        return 0
+    }
+    return 1 + count(node.left) + count(node.right)
+}
+"##;
+        let program = crate::modules::testing::built(source);
+        assert_eq!(program.memory, None);
+        assert_eq!(program.modules[0].memory, Some(crate::ast::Memory::Owned));
+        let c = compile(source).expect("it compiles");
+        assert!(c.contains("static void zeno_drop_shapes_Node("), "the owned file's objects are freed");
+        assert!(!c.contains("zeno_drop_Box("), "the first file's are the collector's");
+        same_as_interpreter("memory-per-file", source);
+        // In a program built with no collector, a file may not ask for one.
+        let clash = source.replacen("import shapes", "memory collector\nimport shapes", 1);
+        let program = crate::modules::testing::built(&clash);
+        let rules = crate::checker::Rules { strict: false, one_owner: true, firmware: false };
+        let errors = crate::checker::check_by(&program, rules).0;
+        assert!(errors.iter().any(|error| error.message.starts_with("this file says `memory collector`") && error.span.line == 1), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn a_loop_over_text_walks_the_text_and_makes_no_list() {
         let source = r##"function first_wide(text: str) -> str {
     for ch in text {

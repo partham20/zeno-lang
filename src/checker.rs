@@ -527,6 +527,19 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     checker.known_origins = origins;
     checker.run(program);
     let mut errors = checker.errors;
+    // A file that asks for the collector, in a program built with none.
+    if one_owner {
+        let files = std::iter::once(program.memory).chain(program.modules.iter().map(|module| module.memory));
+        for (file, memory) in files.enumerate() {
+            if memory == Some(crate::ast::Memory::Collector) {
+                errors.push(Error::new(
+                    "this file says `memory collector`, and the program is built with no collector. \
+                     Take the line out, or build the program with `--collector`",
+                    Span { line: file * crate::token::LINES_A_FILE + 1, col: 1 },
+                ));
+            }
+        }
+    }
     // Line numbers count on from one file to the next (see `Span`), so
     // this puts the mistakes of each file together, the first file's first.
     errors.sort_by_key(|error| (error.span.line, error.span.col));

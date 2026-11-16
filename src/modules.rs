@@ -350,6 +350,7 @@ impl Loader<'_> {
         // an accident of spelling: see `Renamer::plain`.
         let first = units[0].as_ref().expect("the first file was read");
         let strict = first.program.strict;
+        let memory = first.program.memory;
         let private = first.program.private.clone();
         let first_file: HashMap<String, bool> =
             declarations(&first.program).into_iter().map(|(name, _, is_case)| (name, is_case)).collect();
@@ -384,9 +385,10 @@ impl Loader<'_> {
             .map(|(unit, file)| ModuleFile {
                 path: file.path.clone(),
                 strict: unit.as_ref().is_some_and(|unit| unit.program.strict),
+                memory: unit.as_ref().and_then(|unit| unit.program.memory),
             })
             .collect();
-        Ok(Program { strict, statements, private, modules })
+        Ok(Program { strict, statements, private, modules, memory })
     }
 }
 

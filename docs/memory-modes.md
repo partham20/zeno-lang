@@ -16,6 +16,10 @@ They mix, at the sizes where mixing has a clear meaning:
   collector`. This is the one most programs set.
 - **One build**, on the command line: `--owned` or `--collector`, over
   what the file says.
+- **One file**, with the line `memory owned` at its top: every class the
+  file declares is owned, as if written `owned class`, and its objects
+  are freed where their owner ends even in a program with a collector.
+  When every file of a program says it, the program is owned.
 - **One value**, in a collector program: `owned class Packet` or `owned
   list[int]` (docs/ownership.md). That value has one owner and is freed
   where its owner ends, and everything else is the collector's.
@@ -49,6 +53,45 @@ Now, in that folder:
   unless it says `take`, `pop()` takes an item out of a list, and so on.
 - `zeno build --collector main.zeno` builds it with the collector after
   all, for one build.
+
+## One file that says `memory owned`
+
+A program can keep the collector for most of its code and free the
+objects of one file exactly. Put the line at the top of that file:
+
+```zeno
+memory owned
+
+class Node {
+    left: Node or none
+    right: Node or none
+}
+
+function make(depth: int) -> Node {
+    if depth == 0 {
+        return Node(none, none)
+    }
+    return Node(make(depth - 1), make(depth - 1))
+}
+```
+
+and import it from a file that says nothing:
+
+```zeno
+import shapes
+
+let tree = shapes.make(10)
+print(tree.left is none)
+```
+
+`zeno build --memory main.zeno` shows the objects of `Node` freed
+"without the collector", and nothing else changes. Where the two ways
+meet, the rules are those of owned values in a collector program
+(docs/ownership.md): a function that only looks can be given any
+object, and an object with one owner cannot be kept in a shared list.
+A list that should have one owner says so where it is made: `owned
+list[int]`. Decision 22.9 has the reasons, and why it is the file and
+not the function.
 
 ## For a chip
 
@@ -105,3 +148,6 @@ times slower than C.
 3. Put `memory owned` in a `zeno.package` beside a program that shares
    a list between two variables. What does `zeno run` say now?
 4. Time `bench/trees.zeno` built the three ways in the table above.
+5. Move `Node`, `make` and `check` of `bench/trees.zeno` into a file
+   of their own that says `memory owned`, import it, and build with
+   `--memory`. How many collections are left?

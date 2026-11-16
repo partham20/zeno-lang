@@ -12,6 +12,11 @@ pub fn print(program: &Program) -> String {
     if program.strict {
         out.push_str("strict\n");
     }
+    match program.memory {
+        Some(Memory::Owned) => out.push_str("memory owned\n"),
+        Some(Memory::Collector) => out.push_str("memory collector\n"),
+        None => {}
+    }
     for statement in &program.statements {
         let name = match &statement.kind {
             StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => Some(name),

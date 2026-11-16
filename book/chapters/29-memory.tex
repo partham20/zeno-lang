@@ -165,13 +165,24 @@ memory is freed has to go with each value, and a value is used on many
 lines; a single value can still be \verb|owned| in a collector program.
 (Decision 22.1.)
 
+One file of a program can choose too. A file that begins with the line
+\verb|memory owned| makes every class it declares an owned class, as if
+each were written \verb|owned class|: its objects have one owner and are
+freed where that owner ends, even in a program with a collector, while
+the rest of the program shares its values as before. Where the two
+meet, the rules are those of owned values in a collector program: a
+function that only looks can be given any object, and an object with
+one owner cannot be kept in a shared list. When every file says
+\verb|memory owned|, the whole program is owned and built with no
+collector. (Decision 22.9.)
+
 \verb|--release| goes with any of them: whole numbers wrap round on
 overflow, as the processor does, instead of stopping the program, and
 every other check stays. It is what Rust's release builds do. On the
 benchmarks in the repository's \verb|bench| folder, an owned release
 build of a program that makes millions of small objects runs as fast
-as the same program in C, and the collector build about two times
-slower. (Decision 22.3.)
+as the same program in C, or faster, and the collector build about two
+times slower. (Decision 22.3.)
 
 Memory a program asks for itself with \verb|allocate| is apart from all
 of these: the collector never looks at it, and the program gives it back

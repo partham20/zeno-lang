@@ -9407,6 +9407,7 @@ can be kept: for the program here, and for one value with `owned`
 **Alternatives.** A flag only (`--no-collector` as it was), which every
 build must remember. An attribute in the source file, which a program
 of several files would say several times, and could say differently.
+(22.9 later gave a file a line of its own, for the classes it declares.)
 
 ### 22.2 `memory owned` on a computer: the pool and the text room grow
 
@@ -9565,11 +9566,59 @@ that is written anywhere in the function, through any object, is read
 each time; so is every field in a function that calls one of the
 program's own functions or a method.
 
-### 22.9 Left for later
+### 22.9 One file can say `memory owned`
 
-- Choosing per file or per function, in one program. The checker
-  already applies the owned rules to a whole program; applying them to
-  some files and not others needs a rule for where the two meet (a
-  shared list lent to a function of an owned file, say), and that rule
-  is not written yet.
+```text
+memory owned
+
+class Node {
+    left: Node or none
+    right: Node or none
+}
+```
+
+**Decision.** A file may begin with the line `memory owned` (or `memory
+collector`), alone or beside `strict`, in either order. In a file that
+says `memory owned`, every class is an owned class, as if it were
+written `owned class` (5.8): each object has one owner and is freed on
+the line its owner ends, also in a program that has a collector. When
+every file of a program says `memory owned` and its `zeno.package` says
+nothing, the whole program is owned: it is built with no collector, as
+22.1. A file that says `memory collector` in a program built with no
+collector is a mistake, and the message says so.
+
+**Why the file, and why its classes.** Partha asked for the choice to be
+finer than the program: "very modular", "more power to the user". The
+file is the finest place that has a clear meaning, for the reason 22.1
+gives against one line: how a value is freed has to go with the value,
+and a value's kind is declared in one file. A class declared in a
+`memory owned` file is owned wherever its objects go, and the rule for
+where the two ways meet is the one owned values already have in a
+collector program (5.8): a parameter that looks can be given any
+object, a value with one owner cannot be kept in a shared place. So
+nothing new has to be learned at the boundary, and nothing about the
+boundary is left unsaid. The trees benchmark with its file saying
+`memory owned` runs in 4.5 seconds in a collector program, against 11
+with the collector and 4.1 with no collector at all.
+
+**Why not lists too.** A list is made by a line, not declared, and is
+passed between files more than any other value; making every list of a
+file owned would mean that half of a program's lists follow one set of
+rules and half the other, with the line between them invisible. A list
+that should have one owner says so where it is made: `owned list[int]`.
+In a program where every file says `memory owned`, every list is owned
+anyway (22.1).
+
+**Why not per function.** A function's values are made from the
+classes of its file, and go back to its callers; a function that freed
+by different rules from the file around it would be a second boundary
+inside one file, for a gain the file already gives. Per value (`owned`)
+and per block (`unsafe { }`) are the finer choices.
+
+**Alternatives.** `owned` written in front of every class (it still
+can be, one at a time). A list of files in `zeno.package`: far from the
+code it is about, and wrong as soon as a file is renamed.
+
+### 22.10 Left for later
+
 - A generational collector (22.5).

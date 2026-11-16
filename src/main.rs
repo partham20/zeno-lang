@@ -449,6 +449,17 @@ fn package_memory(path: &str) -> Option<package::Memory> {
     package::parse(&source, 0).ok()?.memory
 }
 
+/// What the files of the program say, when its `zeno.package` says
+/// nothing: `memory owned` if every file of it says `memory owned` at its
+/// top (decision 22.9). A program some of whose files say it is built
+/// with the collector, and only those files' classes are owned.
+fn files_memory(path: &str) -> Option<package::Memory> {
+    let source = fs::read_to_string(path).ok()?;
+    let program = modules::load(path, source, &|path| fs::read_to_string(path).ok()).program.ok()?;
+    let mut files = std::iter::once(program.memory).chain(program.modules.iter().map(|module| module.memory));
+    files.all(|memory| memory == Some(ast::Memory::Owned)).then_some(package::Memory::Owned)
+}
+
 /// Which kind of build the options and the program's `memory` ask for.
 ///
 /// `--no-collector` is a build for a chip: no collector, and a pool and a
@@ -941,7 +952,7 @@ fn main() -> ExitCode {
     let memory = |path: &str| match (owned, collector) {
         (true, _) => Some(package::Memory::Owned),
         (_, true) => Some(package::Memory::Collector),
-        _ => package_memory(path),
+        _ => package_memory(path).or_else(|| files_memory(path)),
     };
     let built = |path: &str| how_built(no_collector, firmware, release, memory(path));
 
@@ -1178,6 +1189,14 @@ mod tests {
         assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), None);
         let root = folder("no-package", &[("main.zeno", "print(1)\n")]);
         assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), None);
+        assert_eq!(files_memory(&root.join("main.zeno").to_string_lossy()), None);
+        // With no `memory` line in the package, the files say: owned when
+        // every one of them says `memory owned`.
+        let main = "memory owned\nimport parts\nprint(parts.n)\n";
+        let root = folder("all-owned", &[("main.zeno", main), ("parts.zeno", "memory owned\nlet n = 1\n")]);
+        assert_eq!(files_memory(&root.join("main.zeno").to_string_lossy()), Some(Owned));
+        let root = folder("one-owned", &[("main.zeno", main), ("parts.zeno", "let n = 1\n")]);
+        assert_eq!(files_memory(&root.join("main.zeno").to_string_lossy()), None);
     }
 
     #[test]

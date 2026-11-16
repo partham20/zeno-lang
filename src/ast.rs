@@ -29,6 +29,17 @@ pub struct Program {
     /// imports, and the files those import. `modules.rs` fills this in,
     /// and puts their statements in front of this file's.
     pub modules: Vec<ModuleFile>,
+    /// What a line `memory owned` or `memory collector` at the top of the
+    /// file says, if it has one (decision 22.9).
+    pub memory: Option<Memory>,
+}
+
+/// How a file asks for its memory to be freed: `memory owned` or `memory
+/// collector` at its top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Memory {
+    Collector,
+    Owned,
 }
 
 impl Program {
@@ -80,6 +91,8 @@ pub struct ModuleFile {
     pub path: String,
     /// True when this file begins with the line `strict`.
     pub strict: bool,
+    /// What its line `memory ...` says, if it has one.
+    pub memory: Option<Memory>,
 }
 
 /// The name a class, an enum or a case is printed by.

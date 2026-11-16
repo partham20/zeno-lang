@@ -27,9 +27,28 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
 
     // A first line that says just `strict` puts the whole file in strict
     // mode. The word is reserved, and this is its only place.
-    let strict = parser.check(TokenKind::Strict) && matches!(parser.peek_at(1), TokenKind::Newline | TokenKind::Eof);
-    if strict {
-        parser.advance();
+    //
+    // A line `memory owned` (or `memory collector`) says how the file's
+    // memory is freed (decision 22.9). The two lines can come in either
+    // order, each at most once, before anything else.
+    let mut strict = false;
+    let mut memory = None;
+    loop {
+        let alone = |at: usize| matches!(parser.peek_at(at), TokenKind::Newline | TokenKind::Eof);
+        if !strict && parser.check(TokenKind::Strict) && alone(1) {
+            strict = true;
+            parser.advance();
+        } else if memory.is_none() && matches!(parser.peek(), TokenKind::Ident(word) if word == "memory") && alone(2) {
+            memory = match parser.peek_at(1) {
+                TokenKind::Owned => Some(Memory::Owned),
+                TokenKind::Ident(word) if word == "collector" => Some(Memory::Collector),
+                _ => break,
+            };
+            parser.advance();
+            parser.advance();
+        } else {
+            break;
+        }
         parser.skip_newlines();
     }
 
@@ -37,7 +56,16 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
         statements.push(parser.statement()?);
         parser.end_of_statement()?;
     }
-    Ok(Program { strict, statements, private: parser.private, modules: Vec::new() })
+    // In a file that says `memory owned`, every class is an owned class,
+    // as if each were written `owned class`.
+    if memory == Some(Memory::Owned) {
+        for statement in &mut statements {
+            if let StmtKind::Class(class) = &mut statement.kind {
+                class.owned = true;
+            }
+        }
+    }
+    Ok(Program { strict, statements, private: parser.private, modules: Vec::new(), memory })
 }
 
 struct Parser {
@@ -1625,6 +1653,24 @@ mod tests {
             tree("let a: function() = f\nlet b: function(str, list[int]) -> bool or none = g"),
             "let a: function() = f\nlet b: function(str, list[int]) -> bool or none = g\n"
         );
+    }
+
+    #[test]
+    fn a_file_can_say_how_its_memory_is_freed() {
+        let owned = parse_source("memory owned\nclass P {\n    x: int\n}").unwrap();
+        assert_eq!(owned.memory, Some(Memory::Owned));
+        // Its classes are owned classes.
+        assert!(matches!(&owned.statements[0].kind, StmtKind::Class(class) if class.owned));
+        let both = parse_source("# notes\nstrict\n\nmemory collector\nlet x = 1").unwrap();
+        assert!(both.strict);
+        assert_eq!(both.memory, Some(Memory::Collector));
+        assert_eq!(parse_source("memory owned\nstrict\n").unwrap().memory, Some(Memory::Owned));
+        let plain = parse_source("let memory = 1\nprint(memory)").unwrap();
+        assert_eq!(plain.memory, None);
+        assert!(matches!(&parse_source("class P {\n    x: int\n}").unwrap().statements[0].kind, StmtKind::Class(class) if !class.owned));
+        // Only at the top, before anything else.
+        assert!(parse_source("let x = 1\nmemory owned").is_err());
+        assert_eq!(tree("memory owned\nlet x = 1"), "memory owned\nlet x = 1\n");
     }
 
     #[test]
