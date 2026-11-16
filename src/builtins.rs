@@ -475,6 +475,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::Pin(_) => PIN_METHODS.contains(&name),
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
+        Value::Timer(_) => name == "stop",
         _ => false,
     }
 }
@@ -828,6 +829,16 @@ pub fn call_method(
             }
         }
         Value::Element(id, _) => element_method(machine, *id, name, args, span),
+        // `ticking.stop()`: the call that waits is called off. Stopping
+        // what has stopped, or what has been called already, is nothing.
+        Value::Timer(id) => match name {
+            "stop" => {
+                arity("stop", &args, 0, 0, span)?;
+                machine.page().stop(*id);
+                Ok(Value::None)
+            }
+            _ => fatal(format!("a Timer has no method `{name}`"), span),
+        },
         // A register of the simulated board holds what was last written
         // to it, and the board prints a line when that changes.
         Value::Register(address, width) => match name {
@@ -1464,8 +1475,7 @@ fn timer(machine: &mut dyn Machine, name: &str, mut args: Vec<Value>, span: Span
     if !can_be_called(&handler) {
         return wrong_type(name, "a function to call", &handler, span);
     }
-    machine.page().after(milliseconds, handler, name == "every");
-    Ok(Value::None)
+    Ok(Value::Timer(machine.page().after(milliseconds, handler, name == "every")))
 }
 
 /// `web.save("name", "Partha")`: keep text under a name. It is there

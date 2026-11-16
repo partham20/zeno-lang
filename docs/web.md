@@ -72,8 +72,9 @@ programs are written and run with nothing installed.
 | `web.element("#count")` | the first element that answers to the selector. A `ValueError` if the page has none |
 | `web.elements("li")` | every element that answers to it, as a list. The list may be empty |
 | `web.create("li", "Buy milk")` | a new element with that text in it. It is not on the page until it is appended to one that is |
-| `web.after(500 ms, tick)` | call `tick` once, that much later. The time must have a unit |
-| `web.every(1 s, tick)` | call `tick` that often, for as long as the page is open |
+| `web.after(500 ms, tick)` | call `tick` once, that much later. The time must have a unit. It gives a `Timer` |
+| `web.every(1 s, tick)` | call `tick` that often, for as long as the page is open. It gives a `Timer` |
+| `timer.stop()` | call off what the timer was waiting to do. Stopping one that has stopped, or has made its one call, is nothing |
 | `web.on_key(pressed)` | call `pressed` with the name of each key that is pressed: `"a"`, `"Enter"`, `"ArrowLeft"` |
 | `web.save("name", "Partha")` | keep text under a name. It is there the next time the page is opened in the same browser |
 | `web.load("name")` | the text kept under the name, or `none` |
@@ -541,3 +542,8 @@ refused a style and a drawing that cannot be.
    program was checked before the page was built. What could
    `zeno.wasm` leave out, and what would have to travel in place of
    the program's text?
+13. Write a stopwatch: a page with Start and Stop, and `web.every(100
+    ms, ...)` that adds a tenth of a second to what is shown. Stop
+    calls `stop()` on the `Timer`. What happens if Start is pressed
+    twice, and how does the program make sure only one timer is
+    running?

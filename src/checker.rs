@@ -559,6 +559,8 @@ enum Ty {
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
     Event,
+    /// A call that waits: what `web.after` and `web.every` give.
+    Timer,
     /// A whole number with a size: `u8`, `i32`. See src/ints.rs.
     Sized(Width),
     /// A raw pointer to numbers of one size: `pointer[u8]`. Reading
@@ -748,6 +750,7 @@ enum Key {
     Pin,
     Element,
     Event,
+    Timer,
     /// A sized whole number, by its name: `u8`.
     Sized(&'static str),
     /// A pointer, by the name of what it points at.
@@ -983,6 +986,7 @@ impl fmt::Display for Ty {
             Ty::Pin => write!(f, "Pin"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
+            Ty::Timer => write!(f, "Timer"),
             Ty::Pointer(pointee) => write!(f, "pointer[{}]", pointee.name()),
             Ty::Register(width) => write!(f, "Register[{}]", width.name),
             Ty::Sized(width) => write!(f, "{}", width.name),
@@ -1103,6 +1107,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Pin, Ty::Pin)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
+        | (Ty::Timer, Ty::Timer)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
@@ -2134,6 +2139,7 @@ impl Checker {
             Ty::Pin => Key::Pin,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
+            Ty::Timer => Key::Timer,
             Ty::Sized(width) => Key::Sized(width.name),
             Ty::Pointer(pointee) => Key::Pointer(pointee.name()),
             Ty::Register(width) => Key::Register(width.name),
@@ -2182,6 +2188,7 @@ impl Checker {
             Key::Pin => Ty::Pin,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
+            Key::Timer => Ty::Timer,
             Key::Sized(name) => ints::width(name).map_or(Ty::Int, Ty::Sized),
             Key::Pointer(name) => Pointee::named(name).map_or(Ty::Invalid, Ty::Pointer),
             Key::Register(name) => ints::width(name).map_or(Ty::Invalid, Ty::Register),
@@ -2556,6 +2563,7 @@ impl Checker {
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
+                        _ if name == "Timer" => Ty::Timer,
                         _ if name == "Register" => {
                             return self.error("`Register` needs the size of the register, as in `Register[u32]`", span)
                         }
@@ -5480,6 +5488,9 @@ impl Checker {
             Ty::Register(_) if name == "address" => Ty::Int,
             // `led.number`: which pin this is.
             Ty::Pin if name == "number" => Ty::Int,
+            // `ticking.stop()`: the one thing a timer does.
+            Ty::Timer if name == "stop" => Ty::BuiltinMethod(Box::new(Ty::Timer), Rc::from(name)),
+            Ty::Timer => self.error(format!("a Timer has no `{name}`. It has `stop()`, which calls off what is waiting"), span),
             Ty::Element if crate::builtins::ELEMENT_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(Ty::Element), Rc::from(name))
             }
@@ -6049,7 +6060,7 @@ impl Checker {
                     }
                     self.calls_back(short, &arguments[1], Vec::new());
                 }
-                Ty::None
+                Ty::Timer
             }
             "web.save" | "web.load" | "web.forget" => {
                 let short = &name["web.".len()..];
@@ -6114,6 +6125,10 @@ impl Checker {
             }
             // `button.on("click", pressed)`: the page calls `pressed`
             // with nothing.
+            (Ty::Timer, "stop") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::None
+            }
             (Ty::Element, "on") => {
                 if self.arity(name, arguments, 2, 2, span) {
                     self.expect(&arguments[0].ty, &Ty::Str, "the name of the event", arguments[0].span);
@@ -10178,7 +10193,8 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "count.on(\"click\", function(event: Event) {\n let where: float = event.x + event.y\n \
              let what: str = event.kind + event.key\n let which: Element = event.target\n print(where, what, which)\n})\n\
              function seen(event: Event) { print(event) }\ncount.on(\"input\", seen)\ncount.fire(\"input\")\n\
-             web.every(1 s, function() { count.show() })\n\
+             let ticking: Timer = web.every(1 s, function() { count.show() })\nticking.stop()\n\
+             web.after(1 s, function() { count.show() }).stop()\n\
              web.fetch(\"/a\", function(status: int, body: str) { print(status, body) })\n\
              web.post(\"/a\", \"b\", function(status: int, body: str) { print(status, body) })\n\
              web.save(\"a\", \"b\")\nlet kept: str or none = web.load(\"a\")\nweb.forget(\"a\")\n\
@@ -10200,6 +10216,11 @@ function total(xs: owned list[int]) -> int { return len(xs) }
              `function(status: int, body: str) { ... }`"
         );
         assert_eq!(error(&with("web.every(1, function() { count.hide() })")), "`every` needs a time with a unit, such as `500 ms`, but this is int");
+        assert_eq!(
+            error(&with("web.every(1 s, function() { count.hide() }).pause()")),
+            "a Timer has no `pause`. It has `stop()`, which calls off what is waiting"
+        );
+        assert_eq!(error(&with("web.every(1 s, function() { count.hide() }).stop(1)")), "`stop` takes 0 arguments, but 1 was given");
         assert_eq!(error(&with("let kept: str = web.load(\"a\")")), "`kept` should be str, but this is str or none. Check it with `is not none` first");
         assert_eq!(
             error(&with("count.draw_rect(0, 0, \"wide\", 2, \"red\")")),

@@ -26,6 +26,8 @@
 
   // The program knows an element by a number. This is which is which.
   const elements = [];
+  // The timers that are waiting, by the number of their function.
+  const timers = {};
   const numbers = new Map();
 
   function numberOf(element) {
@@ -233,8 +235,13 @@
         call(handler, { event: told(happened, event, element) });
       });
     },
-    after: (milliseconds, handler) => { setTimeout(() => call(handler), milliseconds); },
-    every: (milliseconds, handler) => { setInterval(() => call(handler), milliseconds); },
+    // A timer is known by the number of its function, which is its
+    // own: `stop` is given that number.
+    after: (milliseconds, handler) => { timers[handler] = setTimeout(() => call(handler), milliseconds); },
+    every: (milliseconds, handler) => { timers[handler] = setInterval(() => call(handler), milliseconds); },
+    // The browser keeps one row of numbers for both kinds, so one
+    // call stops either. One that has stopped, or been called, is left.
+    stop: (handler) => { clearTimeout(timers[handler]); },
     on_key: (handler) => {
       document.addEventListener("keydown", (pressed) => call(handler, { key: pressed.key }));
     },

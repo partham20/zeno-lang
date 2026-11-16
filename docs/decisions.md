@@ -8543,6 +8543,7 @@ however long the function takes).
 (`let timer = web.every(...)`, `timer.stop()`), which is a new
 type. A function that has nothing to do can return at once, and
 that has been enough. It is the first thing to add when it is not.
+(It was: chapter 19.)
 
 ### 16.7 What is kept between visits: `save`, `load`, `forget`
 
@@ -8699,8 +8700,9 @@ program in a Worker cannot reach the page).
 ### 16.13 Left for later
 
 - JSON read into values, which `fetch` wants (done since: chapter 18).
-- A timer that can be stopped, and an event with the keys held
-  down and the button of the mouse (16.6, 16.2).
+- A timer that can be stopped (done since: chapter 19), and an
+  event with the keys held down and the button of the mouse (16.6,
+  16.2).
 - Images and curves on a canvas.
 - The address bar: a page with several views that the back button
   walks through.
@@ -8898,3 +8900,70 @@ member left out, `data.get("note")` is `none` either way, and
   compiled programs.
 - The place of a mistake in the text.
 - JSON laid out over several lines.
+
+## 19. A timer that can be stopped
+
+16.6 gave `web.every` and said why what it starts could not be
+stopped: stopping needs a value to stop. This chapter is that value.
+
+### 19.1 `web.after` and `web.every` give a `Timer`, and it has `stop()`
+
+```zeno
+let ticking = web.every(1 s, tick)
+stop_button.on("click", function() { ticking.stop() })
+```
+
+**Why.** A stopwatch, a poll that ends when the answer has come, a
+message that should not appear because the user has moved on. With
+no way to stop, each is written as a `var running` that the
+function reads first, and a timer that goes on calling for as long
+as the page is open to be told no.
+
+**Why a value with a method, and not `web.stop(number)`.** A number
+is something a program can add to, print and get wrong, and
+`web.stop(3)` says nothing a reader can check. `ticking.stop()`
+reads as what it does, and the checker knows a `Timer` from an
+`int`. It is the shape `Element` has already: a value the page
+knows, with methods.
+
+**Why one type for both.** What is stopped is a call that waits,
+whether it waits once or again and again. Two types would be two
+names for one method.
+
+**The alternatives.** The function could return `false` to say
+"no more": it is short, and it makes every function given to
+`every` return something, and the stop can then only come from
+inside. A `stop` word inside the function has the same limit.
+
+### 19.2 Stopping what has stopped is nothing
+
+`stop()` on a timer that was stopped before, or on an `after` that
+has made its call, does nothing and is not an error.
+
+**Why.** "Make sure this is not running" is what the program means,
+and it is true afterwards either way. An error would make every
+caller keep a `var stopped` beside the timer, which is the
+bookkeeping the timer was added to take away. A browser treats its
+own timers the same way.
+
+### 19.3 A program that does not keep the timer is as it was
+
+`web.after(500 ms, tick)` on a line by itself still means what it
+did. What it gives is dropped, as the answer of `list.pop()` on a
+line by itself is.
+
+**Why.** Most timers are never stopped, and every program written
+for 0.2 before this has such lines.
+
+### 19.4 On a desk
+
+Under `zeno run` and `zeno test` the page calls nothing (14.6), so
+`stop()` has nothing to call off, and prints nothing: a line is
+printed for a change that could be seen (14.7), and this is not
+one. A `Timer` prints as `Timer`, and two are equal when they are
+one.
+
+### 19.5 Left for later
+
+- Asking a timer whether it is still waiting.
+- Starting a stopped timer again. `web.every` makes a new one.

@@ -588,6 +588,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     place each manager looks in, which needs the repository public
     and an account for each.
     See [`docs/packages.md`](docs/packages.md))
+29. A timer that can be stopped (done, in 0.2: `web.after` and
+    `web.every` give a `Timer`, and `timer.stop()` calls off what
+    it was waiting to do.
+    See chapter 19 of [`docs/decisions.md`](docs/decisions.md))
 
 ## Layout
 

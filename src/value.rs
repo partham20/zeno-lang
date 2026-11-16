@@ -44,6 +44,9 @@ pub enum Value {
     /// What happened on the page, handed to a function given to `on`
     /// that asks for it: `function(event: Event) { ... }`.
     Event(Rc<Event>),
+    /// What `web.after` and `web.every` give: the call that is waiting,
+    /// by the number the page knows it by. `timer.stop()` calls it off.
+    Timer(u32),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -525,6 +528,7 @@ impl Value {
             Value::Pin(_) => "a pin".to_string(),
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
+            Value::Timer(_) => "a Timer".to_string(),
             Value::Pointer(..) => "a pointer".to_string(),
             Value::Register(..) => "a register".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
@@ -565,6 +569,8 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
         (Event(a), Event(b)) => Rc::ptr_eq(a, b),
+        // Two timers are equal when they are one call that waits.
+        (Timer(a), Timer(b)) => a == b,
         // Two pointers are equal when they point at the same item.
         (Pointer(a, at_a), Pointer(b, at_b)) => Rc::ptr_eq(a, b) && at_a == at_b,
         (Register(a, size_a), Register(b, size_b)) => a == b && size_a == size_b,
@@ -638,6 +644,7 @@ impl fmt::Display for Value {
             Value::Pin(number) => write!(f, "Pin({number})"),
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),
+            Value::Timer(_) => write!(f, "Timer"),
             // Where a pointer points is different on every run, so it is
             // not shown.
             Value::Pointer(memory, _) => write!(f, "<pointer[{}]>", memory.pointee.name()),

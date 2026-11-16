@@ -628,10 +628,20 @@ impl Page {
     }
 
     /// `web.after(500 ms, tick)`, and `web.every(1 s, tick)` with `again`.
-    pub fn after(&mut self, milliseconds: f64, handler: Value, again: bool) {
+    /// What comes back is the number the timer is known by.
+    pub fn after(&mut self, milliseconds: f64, handler: Value, again: bool) -> u32 {
         let kept = self.keep(handler, false);
         if self.real {
             ask(vec![text(if again { "every" } else { "after" }), Json::Number(milliseconds), number(kept)]);
+        }
+        kept
+    }
+
+    /// `timer.stop()`: the page is told not to call any more. The
+    /// simulated page calls nothing, so it has nothing to call off.
+    pub fn stop(&mut self, timer: u32) {
+        if self.real {
+            ask(vec![text("stop"), number(timer)]);
         }
     }
 

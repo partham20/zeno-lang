@@ -2117,6 +2117,15 @@ mod tests {
     }
 
     #[test]
+    fn a_timer_can_be_stopped() {
+        let source = "import web\nlet ticking = web.every(1 s, function() { print(\"tick\") })\n\
+                      let once: Timer = web.after(500 ms, function() { print(\"late\") })\n\
+                      print(ticking, ticking == ticking, ticking == once)\n\
+                      ticking.stop()\nticking.stop()\nonce.stop()\nprint(\"stopped\")";
+        assert_eq!(output(source), "Timer true false\nstopped\n");
+    }
+
+    #[test]
     fn a_page_that_was_written_has_the_elements_it_has() {
         let page = "<body><h1 id=title class=\"big\">Hello</h1>\n<form id=add><input id=what value=\"milk\"><textarea id=note>a note</textarea></form>\n\
                     <ul id=list>\n  <li>one<li class=done>two</ul>\n<p id=left style=\"color: red; width: 10px\" hidden></p>\n<canvas id=board></canvas></body>";
