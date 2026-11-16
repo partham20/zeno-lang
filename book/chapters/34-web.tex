@@ -44,10 +44,10 @@ function to call each time it is pressed, and \verb|count.text = ...|
 changes what a paragraph shows.
 
 The program was run here by \verb|zeno run|, which has no browser. It
-runs the program on a \emph{simulated page}, which prints a line for
-each change that somebody looking at the page would see. Nobody
-presses a button on a simulated page, so it shows only what the
-program did as it started. To see it in a browser, build it:
+runs the program on a \emph{simulated page}, built from
+\verb|count.html|, which prints a line for each change that somebody
+looking at the page would see. Nobody presses a button on a simulated
+page, so it shows only what the program did as it started. To see it in a browser, build it:
 
 \begin{zeno}[file=count.zeno, dir=count, show=no, cmd=zeno build --web {file}]
 import web
@@ -72,13 +72,13 @@ be mailed, or put on any web server as it is.
 
 \section{The web module}
 
-\verb|import web| brings in five functions:
+\verb|import web| brings in these functions:
 
-\begin{center}
-\begin{tabular}{lP{8.4cm}}
+\begin{longtable}{lP{8.2cm}}
 \toprule
 Function & What it does \\
 \midrule
+\endhead
 \verb|web.element(selector)| & the first element that answers to the
   selector. Stops the program if the page has none \\
 \verb|web.elements(selector)| & every element that answers to it, as a
@@ -87,11 +87,20 @@ Function & What it does \\
   on the page until it is appended to one that is \\
 \verb|web.after(time, f)| & call \verb|f| once, that much later. The
   time has a unit: \verb|web.after(500 ms, tick)| \\
+\verb|web.every(time, f)| & call \verb|f| that often, for as long as
+  the page is open \\
 \verb|web.on_key(f)| & call \verb|f| with the name of each key that is
   pressed: \verb|"a"|, \verb|"Enter"|, \verb|"ArrowLeft"| \\
+\verb|web.save(name, text)| & keep text under a name, for the next time
+  the page is opened in this browser \\
+\verb|web.load(name)| & the text kept under the name, or \verb|none| \\
+\verb|web.forget(name)| & keep nothing under the name any more \\
+\verb|web.fetch(address, f)| & ask the network for what is at the
+  address, and call \verb|f(status, body)| when the answer comes \\
+\verb|web.post(address, text, f)| & send text to the address, and call
+  \verb|f(status, body)| with what comes back \\
 \bottomrule
-\end{tabular}
-\end{center}
+\end{longtable}
 
 A \emph{selector} is what CSS calls one. \verb|#count| is the element
 with that \verb|id|, \verb|.done| every element of that class,
@@ -99,20 +108,21 @@ with that \verb|id|, \verb|.done| every element of that class,
 inside the list.
 
 What these give is an \verb|Element|, a type like any other: a
-function can ask for one and a list can hold them. It has two fields
-and eleven methods:
+function can ask for one and a list can hold them.
 
-\begin{center}
-\begin{tabular}{lP{8.4cm}}
+\begin{longtable}{lP{7.4cm}}
 \toprule
 On an element & What it does \\
 \midrule
+\endhead
 \verb|e.text| & the text in it; give it a new value to change what the
   page shows \\
 \verb|e.value| & what has been typed into it, for a box \\
 \verb|e.on(event, f)| & call \verb|f| whenever that happens to it:
-  \verb|"click"|, \verb|"input"|, \verb|"submit"|, or any event a
-  browser has \\
+  \verb|"click"|, \verb|"input"|, \verb|"submit"|, \verb|"mousemove"|,
+  or any event a browser has \\
+\verb|e.fire(event)| & call, now, what \verb|on| was given for that
+  event; how a test presses a button \\
 \verb|e.append(child)| & \verb|child| becomes the last thing inside it \\
 \verb|e.remove()| & it leaves the page \\
 \verb|e.clear()| & everything inside it leaves the page \\
@@ -122,13 +132,36 @@ On an element & What it does \\
 \verb|e.show()|, \verb|e.hide()| & whether it is shown at all \\
 \verb|e.get(name)|, \verb|e.set(name, v)| & an attribute, such as
   \verb|href|. \verb|get| gives \verb|none| for one it does not have \\
+\verb|e.set_style(name, v)| & the style of this one element, named as
+  CSS names it: \verb|e.set_style("color", "red")| \\
+\verb|e.get_style(name)| & a style that was set, or \verb|none| \\
+\bottomrule
+\end{longtable}
+
+And on a \verb|<canvas>|, an element made to be drawn on, five more:
+
+\begin{center}
+\begin{tabular}{lP{5.6cm}}
+\toprule
+On a canvas & Draws \\
+\midrule
+\verb|e.draw_rect(x, y, width, height, colour)| & a filled rectangle \\
+\verb|e.draw_circle(x, y, radius, colour)| & a filled circle, its middle at \verb|x|, \verb|y| \\
+\verb|e.draw_line(x1, y1, x2, y2, colour)| & a line \\
+\verb|e.draw_text(x, y, text, colour)| & text, its top left corner at \verb|x|, \verb|y| \\
+\verb|e.erase()| & nothing: the canvas is empty again \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-How a thing looks is the page's business, written in CSS. A program
-changes the look by giving an element a class, and the CSS says what
-that class looks like.
+Places are in pixels from the top left corner, and a
+colour is any colour CSS knows: \verb|"crimson"|, \verb|"#2f5bea"|.
+
+Most of how a page looks belongs in its CSS. A program changes the
+look of many things at once by giving them a class, and the CSS says
+what the class looks like; \verb|set_style| is for the one element
+whose look depends on something only the program knows, such as the
+colour somebody chose.
 
 \begin{zeno}
 import web
@@ -136,17 +169,40 @@ import web
 let note = web.element("#note")
 let link = web.element("#help")
 note.add_class("warning")
-note.hide()
+note.set_style("color", "crimson")
 link.set("href", "/help")
-print(link.get("href"), link.get("title"))
+print(link.get("href"), link.get("title"), note.get_style("color"))
 \end{zeno}
 
-\section{A function the page calls takes nothing}
+\section{What happened: the Event}
 
-A function given to \verb|on| or \verb|after| is called by the page,
-later, with nothing. There is no event object to unpack. The function
-already knows which element it is for, because it was written where
-that element was in reach:
+A function given to \verb|on| is called by the page, later. Most need
+to know nothing about what happened, because they already know which
+element they are for: they were written where that element was in
+reach. So \verb|function() { ... }| is enough, as in \verb|count.zeno|.
+
+A function that needs more asks for it, by taking one parameter of the
+type \verb|Event|:
+
+\begin{longtable}{lP{8.4cm}}
+\toprule
+Field & What it is \\
+\midrule
+\endhead
+\verb|event.kind| & the name of the event, such as \verb|"click"| \\
+\verb|event.target| & the element it happened to. For a click on an
+  \verb|<li>| inside the \verb|<ul>| that \verb|on| was given to, the
+  \verb|<li>| \\
+\verb|event.x|, \verb|event.y| & where the mouse was, in pixels from
+  the top left corner of the element; 0 for an event of no mouse \\
+\verb|event.key| & the key, for \verb|"keydown"| and \verb|"keyup"|;
+  \verb|""| for any other event \\
+\bottomrule
+\end{longtable}
+
+An \verb|Event| says what happened, so its fields are read and never
+given a new value. Any other parameter is refused, with both forms
+that are allowed:
 
 \begin{zeno}[fails=yes]
 import web
@@ -157,16 +213,14 @@ button.on("click", function(event: int) {
 })
 \end{zeno}
 
-The one thing an event carries that a program cannot find out another
-way is which key was pressed, so \verb|web.on_key| is the one function
-that hands something over: the key's name, as a \verb|str|.
-
 \begin{why}
 An event object in a browser has dozens of fields, and nearly every
 handler reads none of them. A function that takes nothing has one way
-to be written, and needs no type that a beginner must look up. The
+to be written, and needs no type that a beginner must look up; the
 element is in reach by the closure, as \hyperref[ch-function-values]{Functions
-as Values} showed. (Decision 14.5.)
+as Values} showed. The few that need the mouse or the target ask for
+an \verb|Event|, which has only the fields a program cannot find out
+another way. (Decisions 14.5 and 16.1.)
 \end{why}
 
 \section{A list of things to do}
@@ -193,27 +247,125 @@ after typing two more things and clicking one:
 {\setlength{\fboxsep}{0pt}\fbox{\includegraphics[width=0.7\textwidth]{images/todo.png}}}
 \end{center}
 
-\section{Testing a page}
+\section{Drawing, and what is kept}
 
-The simulated page is not only for running. Because no button is ever
-pressed on it, the tests press them, by calling the functions the page
-would call. The two tests at the end of \verb|todo.zeno| do exactly
-that: one adds a thing, and one sends the form with only spaces in the
-box. \verb|zeno test| runs them with no browser:
+The second example is a sheet to draw on with the mouse. The page has
+four buttons that are colours, a button that wipes the sheet, and a
+canvas. It shows what the list of things to do does not: a function
+that asks for the \verb|Event| to learn where the mouse is, drawing,
+the style of one element, and a colour that is kept for the next
+visit with \verb|web.save| and \verb|web.load|:
 
-\begin{zeno}[src=examples/todo.zeno, file=todo.zeno, dir=todo, show=no, cmd=zeno test {file}]
+\begin{zeno}[src=examples/sketch.zeno, file=sketch.zeno, dir=sketch, run=no]
 \end{zeno}
 
-So what a page does can be tested in the same run as every other test,
-by the same engines, as \hyperref[ch-testing]{Testing} showed.
+Each colour button says in the page itself which colour it is, with an
+attribute such as \verb|data-colour="crimson"|, and the program
+reads it with \verb|get|. So a fifth colour is a line of HTML, and no change to the
+program. In a browser:
 
-There are two things the simulated page cannot tell you. It has no
-HTML to look in, so it has every element that is asked for: a
-misspelled \verb|web.element("#cuont")| works on a desk and stops the
-program in the browser, with a message naming the selector. And it
-reads only plain selectors: a tag, \verb|.class| and \verb|#id|,
-together (\verb|li.done|) and one inside another (\verb|#list li|).
-For any other it stops, rather than pretend the page has nothing:
+\begin{center}
+{\setlength{\fboxsep}{0pt}\fbox{\includegraphics[width=0.7\textwidth]{images/sketch.png}}}
+\end{center}
+
+\section{Time and the network}
+
+\verb|web.after| calls a function once, later, and \verb|web.every|
+calls it again and again. Both want a time with a unit:
+
+\begin{zeno}[file=clock.zeno, dir=clock]
+import web
+
+let clock = web.element("#clock")
+var seconds = 0
+
+function tick() {
+    seconds += 1
+    clock.text = f"open for {seconds} s"
+}
+
+web.every(1 s, tick)
+clock.text = "just opened"
+\end{zeno}
+
+\verb|web.fetch| asks a web server for what is at an address. The
+answer comes later, so it takes a function, which is called with the
+status, such as 200 for found or 404 for not, and the text of the
+answer. An address that cannot be reached at all answers with status
+0. The text is often JSON, which \verb|json.parse| reads
+(\hyperref[ch-reading-writing]{Reading and Writing}):
+
+\begin{zeno}[file=prices.zeno, dir=prices, cmd=zeno test {file}]
+import web
+import json
+
+let list = web.element("#prices")
+
+function show(status: int, body: str) {
+    if status != 200 {
+        list.text = f"could not get the prices ({status})"
+        return
+    }
+    for name, price in json.parse(body)["prices"] {
+        list.append(web.create("li", f"{name}: {price}"))
+    }
+}
+
+web.fetch("prices.json", show)
+
+test "a 404 says so" {
+    show(404, "")
+    assert list.text == "could not get the prices (404)"
+}
+
+test "prices are listed" {
+    show(200, "{\"prices\": {\"tea\": 2, \"milk\": 1}}")
+    assert len(web.elements("#prices li")) == 2
+}
+\end{zeno}
+
+\verb|web.post(address, json.write(order), done)| sends the other way.
+A page can fetch only what the browser allows it to: a page opened from
+the disk can fetch almost nothing, and a page on a web server can fetch
+from another server only if that server permits it. The program is
+then told status 0, and the browser's console says why.
+
+\section{Testing a page}
+
+The simulated page is not only for running. No button is ever pressed
+on it, no time passes and no network answers, so it calls none of the
+functions it was given; the tests do that. A test can call the
+function itself, as the tests of \verb|prices.zeno| call \verb|show|
+with an answer of their own. Or it can say \verb|fire|, which calls
+whatever \verb|on| was given for that event, in the order it was given:
+
+\begin{zeno}[src=examples/sketch.zeno, file=sketch.zeno, dir=sketch, show=no, cmd=zeno test {file}]
+\end{zeno}
+
+An \verb|Event| that \verb|fire| makes has the element as its
+\verb|target|, and 0 for \verb|x| and \verb|y|. \verb|fire| does the
+same in a browser: it calls the program's own functions at once, and
+sends the browser no event. So what a page does can be tested in the
+same run as every other test, by the same engines, with no browser, as
+\hyperref[ch-testing]{Testing} showed.
+
+When the HTML of the page is beside the program, as \verb|todo.html|
+is beside \verb|todo.zeno|, the simulated page is built from it: its
+ids, classes, attributes and text, and which element is inside which.
+So a name spelled wrong is found on a desk, with the same words as in
+the browser:
+
+\begin{zeno}[file=notes.zeno, dir=todo, show=no, cmd=sed "s/#list/#lsit/" todo.zeno > typo.zeno ;; cp todo.html typo.html ;; zeno run typo.zeno, fails=yes]
+\end{zeno}
+
+A program with no page beside it gets a simulated page that has every
+element it asks for, because there is nothing to hold it to. And the
+simulated page knows no CSS: it cannot say that
+\verb|set_style("colour", "red")| names no style, which the browser
+says when the page is opened. It also reads only plain selectors: a
+tag, \verb|.class| and \verb|#id|, together (\verb|li.done|) and one
+inside another (\verb|#list li|). For any other it stops, rather than
+pretend the page has nothing:
 
 \begin{zeno}[fails=yes]
 import web
@@ -248,6 +400,37 @@ line and column. After that the page calls nothing more, because a
 program that went wrong halfway through a function has variables that
 are half changed.
 
+\section{The playground}
+
+\verb|zeno playground| writes one more page, \verb|playground.html|,
+in which Zeno programs are written and run with nothing installed:
+
+\begin{zeno}[file=empty.zeno, dir=playground, show=no, cmd=zeno playground]
+\end{zeno}
+
+On the left is a box for the program, and a second tab for the HTML of
+its page; on the right is what the program does. \emph{Run}, or
+Ctrl+Enter, checks the program and runs it, in the browser, by the
+same Zeno that \verb|zeno run| is. A mistake the checker finds is
+shown where the output would be. A list of examples starts you off,
+among them the list of things to do and the sheet to draw on. And
+\emph{Copy link} gives an address that opens the playground with this
+program in it: the program travels in the part of the address after
+the \verb|#|, which a browser never sends to a server, so nothing keeps
+a copy. It is the page to send to somebody who asks what Zeno looks
+like.
+
+\begin{center}
+{\setlength{\fboxsep}{0pt}\fbox{\includegraphics[width=0.92\textwidth]{images/playground.png}}}
+\end{center}
+
+Each run gets a new page. A program in a page never ends, since its
+functions are called whenever a button is pressed, so the playground
+does not try to stop one: it shows each run in a frame, a page inside
+the page, and throws the whole frame away for the next. The program is
+one file; a program in several files, or one that needs a package,
+needs \verb|zeno build --web|.
+
 \section{How it works}
 
 A browser runs two kinds of program: JavaScript, and
@@ -260,19 +443,24 @@ program means the same in a page as under \verb|zeno run|: the same
 checker checks it, and the same interpreter runs it.
 
 A built page holds three things: the program as you wrote it,
-\verb|zeno.wasm| written out as text, and a short piece of JavaScript
-that starts the one with the other. WebAssembly can only do arithmetic
-and call functions, and only numbers cross between it and the page.
-So text crosses as a place in memory and a length, an element as a
-number that the JavaScript looks up in a table, and every request to
-the page, such as "set the text of element 4", as one line of JSON
-through a single function. However many things the \verb|web| module
-learns to do, the line between Zeno and the browser stays five
-functions wide.
+\verb|zeno.wasm|, and three hundred lines of JavaScript that start the
+one with the other. \verb|zeno.wasm| is built for size, and packed the
+way a \verb|.zip| file is packed, by a packer written for Zeno, then
+written out as text; a built page is about 0.4 megabytes, and the
+browser unpacks it by itself. WebAssembly can only do arithmetic and
+call functions, and only numbers cross between it and the page. So
+text crosses as a place in memory and a length, an element as a number
+that the JavaScript looks up in a table, and every request to the page,
+such as "set the text of element 4", as one line of JSON through a
+single function. Events and the answers of the network come back the
+same way. Styles, drawing, saving and the network were all added
+without the line between Zeno and the browser growing past five
+functions.
 
-\verb|zeno build --web| finds \verb|zeno.wasm| where the variable
-\verb|ZENO_WASM| says, or else beside \verb|zeno| itself, which is
-where a release puts it (\hyperref[ch-getting-zeno]{Getting Zeno}).
+\verb|zeno build --web| and \verb|zeno playground| find
+\verb|zeno.wasm| where the variable \verb|ZENO_WASM| says, or else
+beside \verb|zeno| itself, which is where the installers and the
+archives put it (\hyperref[ch-getting-zeno]{Getting Zeno}).
 
 \section{What a page cannot do}
 
@@ -280,7 +468,7 @@ where a release puts it (\hyperref[ch-getting-zeno]{Getting Zeno}).
 \item[Wait.] A browser has one thread for a page, and a program that
   sleeps on it stops the page drawing and the buttons working. In a
   page, \verb|time.sleep| is an error that says to use
-  \verb|web.after(500 ms, ...)|, which lets the page go on in between.
+  \verb|web.after|, which lets the page go on in between.
 \item[Go very deep.] The interpreter calls itself for each nested call
   of the program, on the browser's stack, which is small. Zeno counts,
   and stops at 200 nested calls in a page, with its own message, where
@@ -290,14 +478,15 @@ where a release puts it (\hyperref[ch-getting-zeno]{Getting Zeno}).
   are refused with \verb|--web|. A page runs the interpreter.
 \end{description}
 
-And some things the \verb|web| module does not have yet: the style of
-one element (use a class), where the mouse is, drawing, the network,
-and anything kept between visits. Every built page carries the whole
-of \verb|zeno.wasm|, about one and a half megabytes as text, and runs
-at the speed of \verb|zeno run|: plenty for a page that waits for
-clicks, and not enough for a game that draws sixty times a second. The
-program is in the page as it was written, comments and all, for anyone
-who opens the page to read.
+And some things the \verb|web| module does not have yet: images drawn
+on a canvas, curves, touch with more than one finger, and an address
+bar of its own (a page with several views shows and hides them). A
+page runs at the speed of \verb|zeno run|: plenty for a page that waits
+for clicks, and for a sketch, and not enough for a game that draws a
+thousand things sixty times a second. The program is in the page as it
+was written, comments and all, for anyone who opens the page to read.
+Only Chromium has been tried, and the page needs a browser from 2023
+or later.
 
 \begin{why}
 A page could have been made by compiling Zeno to JavaScript, or
@@ -313,29 +502,35 @@ change for it. (Decision 14.1.)
 
 \begin{summary}
 \verb|import web| finds elements with \verb|web.element| and
-\verb|web.elements|, makes them with \verb|web.create|, and calls a
-function later with \verb|web.after| or on a key with
-\verb|web.on_key|. An \verb|Element| has \verb|text| and \verb|value|,
-and methods to listen, append, remove, and change classes and
-attributes. A function the page calls takes nothing.
-\verb|zeno build --web| joins \verb|name.html| and \verb|name.zeno|
-into one \verb|name.web.html|. Under \verb|zeno run| and
-\verb|zeno test| the page is simulated, so a page can be tested
-without a browser.
+\verb|web.elements|, makes them with \verb|web.create|, calls a
+function later with \verb|web.after| and \verb|web.every| or on a key
+with \verb|web.on_key|, keeps text between visits with \verb|save| and
+\verb|load|, and reaches the network with \verb|fetch| and \verb|post|.
+An \verb|Element| has \verb|text| and \verb|value|, and methods to
+listen, fire, append, remove, change classes, styles and attributes,
+and draw. A function the page calls takes nothing, or an
+\verb|Event|. \verb|zeno build --web| joins \verb|name.html| and
+\verb|name.zeno| into one \verb|name.web.html|, and
+\verb|zeno playground| writes a page to try programs in. Under
+\verb|zeno run| and \verb|zeno test| the page is simulated, from the
+HTML when it is there, so a page can be tested without a browser.
 \end{summary}
 
 \begin{tryit}
 \begin{enumerate}
 \item Build \verb|count.zeno| and open it. Then add a second button
-  that sets the count back to zero.
-\item Spell \verb|#list| wrong in \verb|todo.zeno|. What does
-  \verb|zeno run| say, and what does the page say?
+  that sets the count back to zero, and a test that uses \verb|fire|.
 \item Add a button to \verb|todo.html| that removes every thing that is
   done. You need \verb|web.elements(".done")|. Write the test first.
-\item Make a clock: a paragraph that shows how many seconds the page
-  has been open, with a function that sets the text and then asks
-  \verb|web.after(1 s, ...)| to call itself again.
-\item Use \verb|web.on_key| to move a mark left and right along a line
-  of text with the arrow keys.
+\item Rewrite \verb|todo.zeno| with one function for the whole list,
+  given to \verb|list.on("click", ...)|, that asks for the \verb|Event|
+  and uses \verb|event.target|. Which version is easier to test?
+\item Make \verb|sketch.zeno| draw dots with \verb|draw_circle| on a
+  click, and lines only while the button is held.
+\item Keep the list of things to do between visits: \verb|json.write|
+  a list of the texts into \verb|web.save|, and read it back with
+  \verb|web.load| and \verb|json.parse| when the page opens.
+\item Open \verb|zeno playground|, write a program, copy its link, and
+  open the link in a new window.
 \end{enumerate}
 \end{tryit}

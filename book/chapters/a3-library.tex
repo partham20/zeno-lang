@@ -18,7 +18,7 @@ Function & Gives \\
 \verb|int(x)|, \verb|float(x)|, \verb|str(x)| & the value as another type; \verb|int| and \verb|float| of text may raise \verb|ValueError| \\
 \verb|char(n)| & the character with Unicode number \verb|n| \\
 \verb|abs(x)| & \verb|x| without its sign (\hyperref[ch-math]{24}) \\
-\verb|min(...)|, \verb|max(...)| & the smallest or largest, of numbers or of a list \\
+\verb|min(...)|, \verb|max(...)| & the smallest or largest, of numbers or of a list; quantities in one unit too \\
 \verb|sum(xs)| & a list of numbers added up \\
 \verb|u8(n)| and \verb|u16|, \verb|u32|, \verb|i8|, \verb|i16|, \verb|i32| & \verb|n| as a sized number, or \verb|OverflowError| (\hyperref[ch-sized-numbers]{18}) \\
 \verb|u8.wrap(n)| and the others & the low bits of \verb|n|, never failing \\
@@ -122,6 +122,10 @@ Name & Is \\
 \midrule
 \multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{23})} \\
 \verb|arguments()| & the words after the file \\
+\midrule
+\multicolumn{2}{l}{\texttt{import json} (\hyperref[ch-reading-writing]{23})} \\
+\verb|parse(text)| & the value JSON text describes; \verb|ValueError| if it is not JSON \\
+\verb|write(value)| & a value, or an object field by field, as JSON on one line \\
 \midrule
 \multicolumn{2}{l}{\texttt{import web} (\hyperref[ch-web]{34})} \\
 \verb|element(selector)| & the first element that answers to it \\

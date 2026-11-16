@@ -213,9 +213,26 @@ let power = (volts / 1 V) * (amps / 1 A) * 1 W
 print(power)
 \end{zeno}
 
-There are no units of a program's own either, and \verb|sum|,
-\verb|min| and \verb|max| take plain numbers. Both are on the list in
+There are no units of a program's own either; that is on the list in
 \hyperref[app-limits]{Appendix G}.
+
+\verb|min| and \verb|max| take quantities, as long as all of them are
+in one unit, because the answer is one of the values as it was given.
+\verb|sum| takes plain numbers only; add quantities with \verb|+|:
+
+\begin{zeno}
+let readings = [3.1 V, 2.9 V, 3.4 V]
+print(min(readings), max(readings))
+var total = 0.0 V
+for r in readings {
+    total += r
+}
+print(total)
+\end{zeno}
+
+\begin{zeno}[fails=yes]
+print(min(1 V, 200 mV))
+\end{zeno}
 
 \begin{summary}
 A number followed by a unit from Zeno's list is a quantity. Quantities

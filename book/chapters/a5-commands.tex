@@ -21,7 +21,8 @@ Command & What it does \\
   it \\
 \verb|zeno test| & run the \verb|test "name" { }| blocks of a file, of
   every file in a folder, or of this folder when nothing is named
-  (\hyperref[ch-testing]{Testing}) \\
+  (\hyperref[ch-testing]{Testing}). \verb|--only words| runs only the
+  tests with those words in their names \\
 \verb|zeno format f.zeno| & lay files out the one way Zeno lays them
   out; several files, or a folder, can be named
   (\hyperref[ch-tools]{The Tools}) \\
@@ -40,6 +41,9 @@ Command & What it does \\
   file it imports are joined into \\
 \verb|zeno bytecode f.zeno| & show the bytecode that \verb|zeno run --vm|
   runs \\
+\verb|zeno playground| & write \verb|playground.html|, a page in which
+  Zeno programs are written and run in a browser, with nothing installed
+  (\hyperref[ch-web]{A Program in a Web Page}) \\
 \verb|zeno lsp| & the language server. An editor starts it, to show
   mistakes as you type; you do not run it yourself \\
 \verb|zeno --version| & print the version \\

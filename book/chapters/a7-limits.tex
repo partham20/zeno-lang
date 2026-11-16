@@ -108,24 +108,28 @@ The numbers are the decisions, for anyone who wants the argument.
 \section{The web}
 
 \begin{description}
-\item[Only what the module has.] No style of one element (use a
-  class), no place of the mouse, no drawing, no network, and nothing
-  kept between visits (14.14).
+\item[Only what the module has.] No images drawn on a canvas, no
+  curves, no touch with more than one finger, and no address bar of
+  its own (16.13).
 \item[An interpreter in a page.] Every page carries \verb|zeno.wasm|
   and runs at the speed of \verb|zeno run|. A page compiled through C
   or LLVM, small and fast, is left for later (14.1).
-\item[A simulated page reads plain selectors only,] and has every
-  element it is asked for (14.6).
+\item[A simulated page reads plain selectors only,] and knows no CSS
+  (16.9).
+\item[The playground] runs one file, and has no colours in its box and
+  no Stop button (16.12).
+\item[JSON] is read into dicts and lists, not straight into a class,
+  and is not in compiled programs (18.5).
 \end{description}
 
 \section{Tools}
 
 \begin{description}
-\item[Hover on a field.] The language server shows the type of a name,
-  but not yet of a field (9.11).
-\item[Choosing tests.] \verb|zeno test| runs every test in the files it
-  is given, and cannot run one by name or test a compiled program.
-  \verb|assert| takes no message, and is only for tests (10.21).
+\item[Going to a field.] The language server shows the type of a
+  field, but cannot yet jump to where it was declared (17.4).
+\item[Tests of a compiled program.] \verb|zeno test| runs tests under
+  the interpreter only. \verb|assert| takes no message, and is only
+  for tests (10.21).
 \end{description}
 
 \section{Not limits}

@@ -4,22 +4,76 @@ Zeno is one program, called \verb|zeno|. It checks your programs, runs
 them, compiles them, tests them, lays them out, and talks to your
 editor. This chapter puts it on your machine.
 
-There are two ways to get it: download a \verb|zeno| that is already
-built, or build it yourself from its source. The first takes a minute
-and needs nothing installed. The second needs Rust, and gives you the
-compiler's source to read beside \hyperref[ch-inside]{Inside Zeno}.
+There are three ways to get it: an installer, which does everything
+for you; an archive that you unpack and put in place yourself; or
+building it from its source. The first two take a minute and need
+nothing installed. The third needs Rust, and gives you the compiler's
+source to read beside \hyperref[ch-inside]{Inside Zeno}.
 
-\section{Downloading it}
+\section{The installers}
 
-Every release of Zeno is built for ten kinds of machine, and put on
-the releases page of the repository:
+\subsection{On Windows}
+
+Download \verb|zeno-V-windows-setup.exe| from the releases page of
+the repository, where \verb|V| is the version, run it, and press
+\emph{Next}:
 
 \begin{center}
 \url{https://github.com/partham20/zeno-lang/releases}
 \end{center}
 
-Pick the file for your machine. The number after \verb|zeno-| is the
-version; here it is written \verb|V|.
+It is the same file for every Windows machine: it holds the
+\verb|zeno.exe| for x86-64, 32-bit x86 and ARM, and installs the one
+this machine needs, into \verb|%LOCALAPPDATA%\Programs\Zeno|. Nothing
+asks for an administrator's password. The box that adds Zeno to the
+\verb|PATH| is ticked, so \verb|zeno| works in any terminal opened
+afterwards. If the machine has no C compiler or no git, two more boxes
+offer to install them with \verb|winget|, the package manager that
+comes with Windows 10 and 11.
+
+The first time it runs, Windows says \emph{Windows protected your PC}.
+It says that of every program whose maker has not bought a certificate
+to sign it with. \emph{More info}, then \emph{Run anyway}, lets it
+start. The Start menu then has a Zeno folder with a \emph{Zeno
+Prompt}, the examples, the docs, and \emph{Uninstall Zeno}; Zeno can
+also be removed from the list of installed apps in Windows' settings.
+
+\subsection{On macOS and Linux}
+
+One line in a terminal:
+
+\begin{zenofrag}[lang=shell]
+curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+\end{zenofrag}
+
+\verb|curl| downloads a shell script of about three hundred lines, half
+of them comments, and \verb|sh| runs it. It works out which machine
+this is, downloads the archive for it, checks the archive against the
+release's list of checksums before unpacking anything, and puts
+\verb|zeno| in \verb|~/.zeno|. It adds one line to your shell's
+startup file to put that folder on the \verb|PATH|, and offers to
+install a C compiler and git if they are missing. Open a new terminal
+afterwards, and \verb|zeno| is there:
+
+\begin{zenofrag}[lang=shell]
+$ zeno --version
+\end{zenofrag}
+
+The script is meant to be read before it is trusted. To read it
+first, download it with \verb|curl -fsSL -o install.sh| and the same
+address, and then run \verb|sh install.sh|. Later,
+
+\begin{zenofrag}[lang=shell]
+sh install.sh --uninstall
+\end{zenofrag}
+
+\noindent takes all of it off again.
+
+\section{Downloading it by hand}
+
+The installers fetch one of ten archives, one for each kind of machine
+a release is built for. To do by hand what they do, pick the file for
+your machine from the same releases page:
 
 \begin{center}
 \begin{tabular}{P{6.6cm}l}
@@ -124,11 +178,13 @@ language server need nothing more. Three commands hand work to
 programs of other people:
 
 \begin{itemize}
-\item \verb|zeno build| writes C and gives it to a C compiler: \verb|cc|,
-  or the one the variable \verb|CC| names. On Linux, install
-  \verb|gcc| or \verb|clang| from the system's packages; on macOS,
-  \verb|xcode-select --install|; on Windows, MinGW's \verb|gcc|, with
-  \verb|set CC=gcc| (\hyperref[ch-compiling]{Compiling}).
+\item \verb|zeno build| writes C and gives it to a C compiler: the first of
+  \verb|cc|, \verb|gcc| and \verb|clang| that it finds, or the one the
+  variable \verb|CC| names. On Linux, install \verb|gcc| or
+  \verb|clang| from the system's packages; on macOS,
+  \verb|xcode-select --install|; on Windows, the installer offers one
+  (\hyperref[ch-compiling]{Compiling}). Zeno 0.1.0 looks for \verb|cc|
+  only, so on Windows it wants \verb|set CC=gcc| first.
 \item \verb|zeno build --llvm| needs \verb|clang|.
 \item \verb|zeno fetch| needs \verb|git|, to get packages that live in
   other people's repositories (\hyperref[ch-packages]{Packages}).

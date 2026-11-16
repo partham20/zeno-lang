@@ -28,6 +28,24 @@ words what it checks, and a block. It stands at the top of a file,
 beside what it tests. \verb|zeno test| runs the file as
 \verb|zeno run| would, and then each test, in the order written.
 
+To run only some of the tests, give \verb|--only| some of the words of
+their names. The file still runs first, since the tests may use what
+it made:
+
+\begin{zeno}[file=temperature.zeno, dir=first, show=no, cmd=zeno test --only boils {file}]
+function to_fahrenheit(celsius: float) -> float {
+    return celsius * 1.8 + 32.0
+}
+
+test "water freezes at 32" {
+    assert to_fahrenheit(0.0) == 32.0
+}
+
+test "water boils at 212" {
+    assert to_fahrenheit(100.0) == 212.0
+}
+\end{zeno}
+
 \verb|zeno run| goes past the tests, and \verb|zeno build| leaves them
 out altogether, so a board pays nothing for them. But they are checked
 with the program by \verb|zeno check| and \verb|zeno run|, so a test
@@ -185,9 +203,8 @@ why \verb|pin 5 on| appears among the results.
 In version 0.1 there is no message after an \verb|assert| (the test's
 name and the values shown already say most of it), no \verb|assert|
 outside a test, no code run before and after each test (a function
-that builds what the tests need does that), no choosing tests by name
-on the command line, and no running of tests in a compiled program.
-(Decision 10.21.)
+that builds what the tests need does that), and no running of tests
+in a compiled program. (Decisions 10.21 and 17.5.)
 
 \begin{summary}
 \verb|test "what it checks" { ... }| stands at the top of a file.

@@ -3,7 +3,7 @@
 A program is more useful when it can take something in and leave
 something behind: lines typed at a keyboard or sent down a serial
 line, words on the command line, files on a disk. This chapter covers
-all three. \verb|print| has been with us since the first page.
+all three, and JSON, the text that programs hand each other. \verb|print| has been with us since the first page.
 
 \begin{center}
 \begin{tabular}{lll}
@@ -229,13 +229,82 @@ if len(values) > 0 {
 }
 \end{zeno}
 
+\section{JSON}
+
+Programs hand each other text in one format more than any other:
+\emph{JSON}. A server answers in it, and a program keeps its settings
+in it. The \verb|json| module reads it and writes it, with two
+functions: \verb|json.parse(text)| gives the value the text
+describes, and \verb|json.write(value)| gives a value as JSON, on one
+line.
+
+\begin{zeno}[file=settings.zeno, dir=json]
+import json
+
+let text = "{\"name\": \"pump 2\", \"limit\": 80, \"alarms\": [\"high\", \"dry\"]}"
+let settings = json.parse(text)
+let name: str = settings["name"]
+let limit: int = settings["limit"]
+print(name, limit + 5)
+for alarm in settings["alarms"] {
+    print(alarm.upper())
+}
+\end{zeno}
+
+Each kind of JSON value becomes a value Zeno has: an object a dict, an
+array a list, text a \verb|str|, \verb|true| and \verb|false| a
+\verb|bool|, and \verb|null| \verb|none|. A number with nothing after
+its point is an \verb|int|, even written \verb|12.0|, because many
+programs write a whole number either way and mean nothing by it;
+write \verb|float(x)| where a \verb|float| is wanted whatever came.
+A member that is \verb|null| is left out of the dict, since a dict
+holds no \verb|none|: \verb|settings.get("note")| is then
+\verb|none|, as for a member that was never written.
+
+The checker cannot know what a text that arrives later will hold, so
+what \verb|json.parse| gives has no type it knows. Everything can be
+asked of it, and a mistake is found when the line runs. Say the type
+where a value leaves the JSON, as \verb|let limit: int| does above,
+and the rest of the program is checked as usual. For the same reason
+\verb|json.parse| is refused in strict mode and in a build: JSON is for
+\verb|zeno run| and for a web page.
+
+\verb|json.write| takes the same values, and objects, which it writes
+field by field in the order the class declares them. That is how a
+program writes JSON with text in one member and a number in the next:
+a class says which, and the checker holds every object to it.
+
+\begin{zeno}[file=order.zeno, dir=json]
+import json
+
+class Line {
+    item: str
+    count: int
+}
+
+class Order {
+    who: str
+    lines: list[Line]
+    note: str or none
+}
+
+print(json.write(Order("Ada", [Line("tea", 2), Line("milk", 1)], none)))
+print(json.write(["volts": 3.3, "amps": 0.5]))
+\end{zeno}
+
+A quantity is refused, because JSON has no units and a reader could
+not tell that \verb|3.3| was volts: write the number, and put the unit
+in the name, as above. Text that is not JSON raises a
+\verb|ValueError|.
+
 \begin{summary}
 \verb|print| writes a line. \verb|input()| reads one, and gives
 \verb|none| when there are no more. \verb|program.arguments()| gives
 the words after the file. \verb|files.read|, \verb|write|,
 \verb|append|, \verb|exists| and \verb|remove| work on whole files of
 text, and every one but \verb|exists| may raise a \verb|FileError|,
-which can always be caught.
+which can always be caught. \verb|json.parse| and \verb|json.write|
+read and write JSON.
 \end{summary}
 
 \begin{tryit}
@@ -249,5 +318,7 @@ which can always be caught.
   back, and prints it. What should the first run do?
 \item Try to read a picture with \verb|files.read| and read the
   message.
+\item Keep the counter as JSON instead, \verb|{"runs": 3}|, with
+  \verb|json.parse| and \verb|json.write|.
 \end{enumerate}
 \end{tryit}
