@@ -9765,3 +9765,84 @@ desk, and Copy copies the whole file, which builds as it is.
 **Why by the compiler itself.** `zeno.wasm` already holds the C
 emitter (`main.rs` is compiled for the browser too), so the C in the
 page is exactly the C `zeno build` writes, and cannot drift from it.
+
+## 23. 0.4: a build as fast as C and Rust
+
+Partha asked (2026-11-16) for Zeno to match C and Rust one to one on the
+benchmarks, with a new option to build that way, so that the builds
+there are keep every check they have.
+
+### 23.1 `zeno build --fast`
+
+`--fast` is `--release` (overflow wraps round) and leaves out the checks
+a correct program never fails: a list index out of range, a float
+divided by zero, the square root of a number below zero. The C compiler
+gets `-O3 -fno-math-errno`, and so does clang for `--llvm`. The C file
+starts with `#define ZENO_UNCHECKED 1`; the runtime's checks sit behind
+`#ifndef ZENO_UNCHECKED`. In LLVM IR an item is found with a
+`getelementptr`, `/` of floats is `fdiv` and `math.sqrt` is
+`llvm.sqrt.f64`, with nothing in front.
+
+**Why a new option and not a faster `--release`.** Partha asked for the
+existing builds to stay as they are. `--release` drops one check, which
+can only change what an overflowing program prints. `--fast` drops
+checks whose failure means reading memory that is not the list's, which
+is a different promise; it gets its own word, and the help says "as
+unforgiving as C".
+
+**Why the word `fast`.** It says what it is for, which is how people look
+for it. `--unchecked` says what it does and was the other choice; the
+help text and docs/memory-modes.md say exactly which checks go, in a
+table, so nothing is hidden.
+
+**Why a whole number divided by zero is still caught.** In C it is not a
+wrong answer but a signal that kills the program, or undefined behaviour
+an optimiser may build on. The check is one compare, usually against a
+constant the C compiler folds away.
+
+**Why `-fno-math-errno`.** C's `sqrt` must set `errno` for a number below
+zero, so the compiler calls the library instead of using the one
+instruction. No Zeno program can read `errno`. On nbody the flag alone
+took a fifth off.
+
+**Rejected.** `-march=native`: the program would not run on an older
+processor of the same family, and a build is often copied to another
+machine. `restrict` on parameters that are objects: two parameters may
+be the same object in a correct Zeno program (`pull(b, b)`), and
+`restrict` would make that program print a wrong answer, which is a
+different thing from leaving out a check that only a wrong program
+fails. It is also what keeps nbody behind Rust, whose borrow rules prove
+the two bodies apart (23.4).
+
+### 23.2 Numbers become text without `snprintf`
+
+`str(n)` and every `{n}` in an f-string write the digits from the right,
+two at a time from a table of the hundred pairs, in every build. On the
+strings benchmark, `snprintf` (which reads its format string every
+time) was more than a third of the run.
+
+### 23.3 A big list grows with `realloc`
+
+In an owned build on a computer (a pool that grows), the items of a list
+of 64 KB or more come from the system with `calloc`, not from the pool,
+and grow with `realloc`, as a C program's growing array does. `realloc`
+of a big block usually moves no bytes: the system maps the same pages
+at a new address. Before, each doubling took a new pool block, cleared
+it, copied the items over and gave the old one back. The block carries
+its size in front and a head whose step is `ZENO_FROM_SYSTEM`, so
+`zeno_free` knows where it goes back. Kept text is no longer cleared
+before it is copied in (`zeno_alloc_raw`), and `join` finds the end of
+each piece while copying it.
+
+**Why only big lists, and only with a pool that grows.** A small list
+from the pool is cheaper than a call to the system. A build for a chip
+has no system to ask: its pool is all the memory there is.
+
+### 23.4 Where Rust is still ahead
+
+On nbody Rust takes 0.36 s where Zeno `--fast` and C take about 0.46.
+Rust knows that `bi` and `c` in its inner loop are different bodies, so
+it keeps `bi`'s speeds in registers for the whole loop; C and Zeno must
+write them back after every step, in case the two are one. Getting that
+in Zeno needs the language to know that two values lent at once are
+different (as `owned` values already are), which is left for later.

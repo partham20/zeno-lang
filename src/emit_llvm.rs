@@ -856,6 +856,9 @@ struct Emitter<'a> {
     types: &'a Types,
     /// `--release`: whole-number `+`, `-` and `*` wrap round, unchecked.
     release: bool,
+    /// `--fast`: no index check on a list, and `/` and `math.sqrt` of
+    /// floats are LLVM's own instructions (decision 23.1).
+    fast: bool,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
@@ -1284,7 +1287,8 @@ pub fn emit_with(
 ) -> Result<String, Error> {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     let mut emitter = Emitter {
-        release: options.release,
+        release: options.release || options.fast,
+        fast: options.fast,
         in_place: false,
         text_stays: false,
         once: None,
@@ -1555,6 +1559,18 @@ impl Emitter<'_> {
 
     /// Call something from `DECLARED` or `WRITTEN` and return its result.
     fn call(&mut self, returns: &str, name: &'static str, args: impl AsRef<str>) -> String {
+        // `--fast`: a float `/` is `fdiv` and `math.sqrt` is LLVM's square
+        // root, with no check in front. The arguments are `double a,
+        // double b, i32 line, i32 col`; a value never holds ", ".
+        if self.fast && (name == "zeno.div" || name == "zeno.sqrt") {
+            let parts: Vec<&str> = args.as_ref().split(", ").collect();
+            if name == "zeno.div" {
+                let right = parts[1].trim_start_matches("double ");
+                return self.set(format!("fdiv {}, {right}", parts[0]));
+            }
+            self.uses("llvm.sqrt.f64");
+            return self.set(format!("call double @llvm.sqrt.f64({})", parts[0]));
+        }
         self.uses(name);
         self.set(format!("call {returns} @{name}({})", args.as_ref()))
     }
@@ -2479,8 +2495,7 @@ impl Emitter<'_> {
                 let slot = self.to_slot(&new, span)?;
                 // The runtime checks the index and gives back the address
                 // of that item's slot.
-                let args = format!("ptr {}, i64 {}, {}", object.code, index.code, at(span));
-                let place = self.call("ptr", "zeno_list_at", args);
+                let place = self.list_place(&object.code, &index.code, span);
                 if owns {
                     // The item that was there is freed, as a field's old
                     // value is, and the new one takes its place.
@@ -3048,6 +3063,17 @@ impl Emitter<'_> {
         // array of slots, where the others stepped into a struct.
         let slot = self.slot_of(items, &trip);
         (count, slot)
+    }
+
+    /// The address of item `index` of the list at `list`. The runtime
+    /// checks the index; with `--fast` it is worked out here, unchecked.
+    fn list_place(&mut self, list: &str, index: &str, span: Span) -> String {
+        if self.fast {
+            let array_at = self.field_at("%zeno_list", list, 2);
+            let array = self.set(format!("load ptr, ptr {array_at}"));
+            return self.set(format!("getelementptr i64, ptr {array}, i64 {index}"));
+        }
+        self.call("ptr", "zeno_list_at", format!("ptr {list}, i64 {index}, {}", at(span)))
     }
 
     /// The slot at position `at` of the list at `items`.
@@ -4076,7 +4102,7 @@ impl Emitter<'_> {
                     // The runtime checks the index and gives back the
                     // address of that item's slot.
                     Kind::List(item) => {
-                        let place = self.call("ptr", "zeno_list_at", args);
+                        let place = self.list_place(&list.code, &position.code, span);
                         let slot = self.set(format!("load i64, ptr {place}"));
                         let val = self.from_slot(item, &slot, span)?;
                         self.lend(val)
@@ -6864,12 +6890,27 @@ pub(crate) mod tests {
         let source = "var n = 9223372036854775807\nn += 1\nprint(n)\nprint(n - 1)\nprint(-n)\nlet k = 4611686018427387904\nprint(k * 4)";
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_with_types(&program, true);
-        let options = emit_c::Options { release: true, grows: false };
+        let options = emit_c::Options { release: true, grows: false, fast: false };
         let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, options).expect("it builds");
         assert!(!ir.contains("with.overflow"), "{ir}");
         let Some((printed, errors, finished)) = build_and_run_as("release", &ir, Build::Ordinary, &[]) else { return };
         assert!(finished, "{errors}");
         assert_eq!(printed, "-9223372036854775808\n9223372036854775807\n-9223372036854775808\n0\n");
+    }
+
+    #[test]
+    fn with_fast_an_item_and_a_float_division_are_plain_instructions() {
+        let source = "import math\nlet xs = [1.5, 2.5, 4.0]\nlet i = 2\nlet z = 0.0\nprint(xs[i] / 2.0, xs[0] / z, math.sqrt(xs[2]), math.sqrt(-1.0))";
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_with_types(&program, true);
+        let options = emit_c::Options { release: true, grows: false, fast: true };
+        let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, options).expect("it builds");
+        assert!(!ir.contains("zeno_list_at") && !ir.contains("@zeno.div") && !ir.contains("@zeno.sqrt"), "{ir}");
+        assert!(ir.contains("fdiv double") && ir.contains("@llvm.sqrt.f64("), "{ir}");
+        let flags = ["-DZENO_UNCHECKED", "-O3"];
+        let Some((printed, errors, finished)) = build_and_run_as("fast", &ir, Build::Ordinary, &flags) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, "2.0 inf 2.0 NaN\n");
     }
 
     /// The heart of these tests, as for the C backend: the compiled

@@ -66,6 +66,8 @@ def engines(zeno):
         "zeno-owned-checked": ("zeno build --owned", ".zeno", zeno_build("--owned"), False),
         "zeno-release": ("zeno build --release", ".zeno", zeno_build("--release"), False),
         "zeno-owned": ("zeno build --release --owned", ".zeno", zeno_build("--release", "--owned"), False),
+        "zeno-fast": ("zeno build --fast --owned", ".zeno", zeno_build("--fast", "--owned"), False),
+        "zeno-fast-gc": ("zeno build --fast", ".zeno", zeno_build("--fast"), False),
         "vm": ("zeno run --vm", ".zeno", lambda src, out: [zeno, "run", "--vm", src], True),
         "run": ("zeno run", ".zeno", lambda src, out: [zeno, "run", src], True),
         "python": ("Python 3", ".py", lambda src, out: [sys.executable, src], True),

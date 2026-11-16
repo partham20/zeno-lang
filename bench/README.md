@@ -24,7 +24,8 @@ python3 run.py --json results/mine.json         # keep the numbers
 ```
 
 `--engines` picks from `c rust zeno zeno-llvm zeno-nc zeno-release zeno-owned
-zeno-owned-checked vm run python`. Each time is the best of three runs (one
+zeno-owned-checked zeno-fast zeno-fast-gc vm run python` (`zeno-fast` is
+`--fast --owned`, `zeno-fast-gc` is `--fast` with the collector). Each time is the best of three runs (one
 run for the slow interpreters). C is built with `cc -O2`, Rust with `rustc -O`.
 
 ## Results (2026-11-16, 4-core Xeon 2.1 GHz, seconds)

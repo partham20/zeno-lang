@@ -912,8 +912,9 @@ static char *zeno_pool_cut(size_t whole) {
     return at;
 }
 
-/* Memory for a list, an object or an error. It starts as all zeros. */
-static char *zeno_alloc(size_t size) {
+/* Memory for a list, an object, an error or kept text, as it was left.
+ * zeno_alloc, below, clears it. */
+static char *zeno_alloc_raw(size_t size) {
     if (size == 0) size = 1;
     uint32_t step = 0;
     size_t room = 16;
@@ -931,7 +932,6 @@ static char *zeno_alloc(size_t size) {
     }
     block->head.asked = (uint32_t)size;
     char *memory = (char *)block + sizeof(zeno_head);
-    memset(memory, 0, room);
 #ifdef ZENO_MEMORY_REPORT
     zeno_blocks_made++;
     zeno_blocks_held++;
@@ -957,8 +957,9 @@ static void zeno_pool_full(void) {
     exit(1);
 }
 
-/* Memory for a list, an object or an error. It starts as all zeros. */
-static char *zeno_alloc(size_t size) {
+/* Memory for a list, an object, an error or kept text, as it was left.
+ * zeno_alloc, below, clears it. */
+static char *zeno_alloc_raw(size_t size) {
     if (size == 0) size = 1;
     uint32_t step = 0;
     size_t room = 16;
@@ -979,7 +980,6 @@ static char *zeno_alloc(size_t size) {
     }
     block->head.asked = (uint32_t)size;
     char *memory = (char *)block + sizeof(zeno_head);
-    memset(memory, 0, room);
 #ifdef ZENO_MEMORY_REPORT
     zeno_blocks_made++;
     zeno_blocks_held++;
@@ -990,6 +990,33 @@ static char *zeno_alloc(size_t size) {
     return memory;
 }
 
+#endif /* ZENO_HEAP */
+
+/* Memory for a list, an object or an error. It starts as all zeros. */
+static char *zeno_alloc(size_t size) {
+    char *memory = zeno_alloc_raw(size);
+    memset(memory, 0, (size_t)16 << ((zeno_head *)memory - 1)->step); /* the whole block */
+    return memory;
+}
+
+#ifdef ZENO_HEAP
+/* The rows of a big list come from the system, not the pool, so that
+ * `realloc` can grow them where they lie, or move them without copying,
+ * as C's own growing arrays do (decision 23.3). In front of the rows is
+ * their size, then a head like a pool block's, whose step says where
+ * they came from. */
+#define ZENO_FROM_SYSTEM UINT32_MAX
+#define ZENO_BIG_ROWS ((size_t)1 << 16)
+
+static void zeno_rows_free(zeno_spare *block) {
+    size_t *start = (size_t *)block - 1;
+#ifdef ZENO_MEMORY_REPORT
+    zeno_in_use -= start[0];
+    zeno_blocks_held--;
+#endif
+    block->head.asked = 0;
+    free(start);
+}
 #endif /* ZENO_HEAP */
 
 /* Give a block back. `memory` is what zeno_alloc returned, or NULL, which
@@ -1004,6 +1031,12 @@ static void zeno_free(void *memory) {
         fprintf(stderr, "error: a block of memory was given back twice\n");
         exit(1);
     }
+#ifdef ZENO_HEAP
+    if (block->head.step == ZENO_FROM_SYSTEM) {
+        zeno_rows_free(block);
+        return;
+    }
+#endif /* ZENO_HEAP */
 #ifdef ZENO_MEMORY_REPORT
     zeno_in_use -= block->head.asked;
     zeno_blocks_held--;
@@ -1152,7 +1185,7 @@ static bool zeno_in_room(const char *text) {
 static const char *zeno_text_keep(const char *text) {
     if (text == NULL || !(zeno_in_pool(text) || zeno_in_room(text))) return text;
     size_t size = strlen(text) + 1;
-    char *kept = zeno_alloc(size);
+    char *kept = zeno_alloc_raw(size); /* every byte is written next */
     memcpy(kept, text, size);
     return kept;
 }
@@ -1226,12 +1259,68 @@ static void zeno_memory_report(void) {
 }
 #endif
 
+#ifdef ZENO_HEAP
+/* The items of a small list come from the pool like anything else, and
+ * those of a big one from the system (see zeno_rows_free). */
+static void zeno_rows_made(size_t size, size_t was) {
+#ifdef ZENO_MEMORY_REPORT
+    zeno_blocks_made++;
+    zeno_bytes_made += size;
+    zeno_in_use += size - was;
+    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
+#else
+    (void)size;
+    (void)was;
+#endif
+}
+
+static char *zeno_alloc_rows(size_t size) {
+    if (size < ZENO_BIG_ROWS) return zeno_alloc(size);
+    size_t *start = calloc(1, 2 * sizeof(size_t) + size);
+    if (start == NULL) zeno_pool_full();
+    start[0] = size;
+    zeno_head *head = (zeno_head *)(start + 2) - 1;
+    head->step = ZENO_FROM_SYSTEM;
+    head->asked = 1;
+#ifdef ZENO_MEMORY_REPORT
+    zeno_blocks_held++;
+#endif
+    zeno_rows_made(size, 0);
+    return (char *)(start + 2);
+}
+
+/* Rows that came from the system, grown with `realloc`. */
+static char *zeno_rows_regrow(char *rows, size_t size) {
+    if (rows == NULL || size < ZENO_BIG_ROWS || ((zeno_head *)rows - 1)->step != ZENO_FROM_SYSTEM) return NULL;
+    size_t *start = (size_t *)rows - 2;
+    size_t was = start[0];
+    start = realloc(start, 2 * sizeof(size_t) + size);
+    if (start == NULL) zeno_pool_full();
+    start[0] = size;
+    zeno_rows_made(size, was);
+    return (char *)(start + 2);
+}
+#else /* ZENO_HEAP */
 /* The items of a list come from the pool like anything else. */
 static char *zeno_alloc_rows(size_t size) {
     return zeno_alloc(size);
 }
+#endif /* ZENO_HEAP */
 
 #endif /* ZENO_NO_COLLECTOR */
+
+/* The items of a list, given room for `size` bytes, of which the first
+ * `used` are kept. */
+static char *zeno_rows_grow(char *rows, size_t used, size_t size) {
+#ifdef ZENO_HEAP
+    char *grown = zeno_rows_regrow(rows, size);
+    if (grown != NULL) return grown;
+#endif /* ZENO_HEAP */
+    char *moved = zeno_alloc_rows(size);
+    if (used > 0) memcpy(moved, rows, used);
+    zeno_free(rows);
+    return moved;
+}
 
 /* ------------------------------------------------------------------- Errors
  *
@@ -1492,8 +1581,19 @@ static int64_t zeno_range_count(int64_t start, int64_t stop, int64_t step, int l
 
 /* ------------------------------------------------------------------- Floats */
 
+/* `ZENO_UNCHECKED` is `zeno build --fast` (decision 23.1): the checks a
+ * correct program never fails are left out, as C and Rust leave them out.
+ * A float divided by zero is then infinity, the square root of a number
+ * below zero is NaN, and a list read out of range reads whatever memory
+ * is there. A whole number divided by zero is still caught: C would stop
+ * the program with a signal, or worse. */
 static double zeno_div(double a, double b, int line, int col) {
+#ifndef ZENO_UNCHECKED
     if (b == 0.0) zeno_by_zero(line, col);
+#else
+    (void)line;
+    (void)col;
+#endif
     return a / b;
 }
 
@@ -1595,10 +1695,32 @@ static int64_t zeno_len(const char *text) {
     return count;
 }
 
+/* Digits written from the right, two at a time from a table: snprintf
+ * reads a format first, and on a program that turns millions of numbers
+ * into text that was most of its time (decision 23.2). */
+static const char zeno_digit_pairs[] =
+    "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+    "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+
 static const char *zeno_str_int(int64_t n) {
-    char buffer[32];
-    int length = snprintf(buffer, sizeof buffer, "%" PRId64, n);
-    return zeno_copy(buffer, (size_t)length);
+    char buffer[24];
+    char *end = buffer + sizeof buffer, *p = end;
+    uint64_t u = n < 0 ? 0 - (uint64_t)n : (uint64_t)n;
+    while (u >= 100) {
+        unsigned pair = (unsigned)(u % 100) * 2;
+        u /= 100;
+        *--p = zeno_digit_pairs[pair + 1];
+        *--p = zeno_digit_pairs[pair];
+    }
+    if (u >= 10) {
+        *--p = zeno_digit_pairs[u * 2 + 1];
+        *--p = zeno_digit_pairs[u * 2];
+    } else {
+        *--p = (char)('0' + u);
+    }
+    if (n < 0) *--p = '-';
+    return zeno_copy(p, (size_t)(end - p));
 }
 
 static const char *zeno_str_bool(bool b) {
@@ -1796,9 +1918,14 @@ static int64_t zeno_wrap(int64_t n, int bits, bool is_signed) {
 }
 
 static double zeno_sqrt(double x, int line, int col) {
+#ifndef ZENO_UNCHECKED
     if (x < 0.0) {
         zeno_fail("ValueError", zeno_join(2, "cannot take the square root of ", zeno_str_float(x)), line, col);
     }
+#else
+    (void)line;
+    (void)col;
+#endif
     return sqrt(x);
 }
 
@@ -2152,10 +2279,8 @@ static void zeno_list_append(zeno_list *list, zeno_slot item) {
         /* Full: move to a place twice the size. Only the list itself ever
          * points at its `items`, so the old place can go back at once. */
         int64_t room = list->room == 0 ? 4 : list->room * 2;
-        zeno_slot *items = (zeno_slot *)zeno_alloc_rows((size_t)room * sizeof(zeno_slot));
-        if (list->len > 0) memcpy(items, list->items, (size_t)list->len * sizeof(zeno_slot));
-        zeno_free(list->items);
-        list->items = items;
+        list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len * sizeof(zeno_slot),
+                                                  (size_t)room * sizeof(zeno_slot));
         list->room = room;
     }
     list->items[list->len++] = item;
@@ -2226,12 +2351,17 @@ static zeno_list *zeno_list_concat(zeno_list *a, zeno_list *b) {
 /* Every use of `list[i]` goes through here, so a position that is not in
  * the list is an IndexError and never a read of someone else's memory. */
 static zeno_slot *zeno_list_at(zeno_list *list, int64_t i, int line, int col) {
+#ifndef ZENO_UNCHECKED
     if (i < 0 || i >= list->len) {
         zeno_fail("IndexError",
                   zeno_join(4, "index ", zeno_str_int(i), " is out of range for a list of length ",
                             zeno_str_int(list->len)),
                   line, col);
     }
+#else
+    (void)line;
+    (void)col;
+#endif
     return &list->items[i];
 }
 
@@ -2490,14 +2620,14 @@ static const char *zeno_list_join(zeno_list *list, const char *separator) {
     for (int64_t i = 0; i < list->len; i++) length += strlen(list->items[i].s) + (i > 0 ? gap : 0);
     char *joined = zeno_alloc_text(length + 1);
     char *end = joined;
+    /* Each item is copied a byte at a time up to its end, which finds the
+     * end and copies in one pass: most items are a few bytes long. */
     for (int64_t i = 0; i < list->len; i++) {
         if (i > 0) {
             memcpy(end, separator, gap);
             end += gap;
         }
-        size_t size = strlen(list->items[i].s);
-        memcpy(end, list->items[i].s, size);
-        end += size;
+        for (const char *p = list->items[i].s; *p != '\0'; p++) *end++ = *p;
     }
     *end = '\0';
     return joined;

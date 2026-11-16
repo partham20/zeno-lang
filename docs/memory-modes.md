@@ -120,6 +120,35 @@ end, `//` by zero, `u8(300)`), and `zeno run` checks everything as it
 always did. It is what Rust's release builds do, for the same reason:
 the check costs a little on every step of a tight loop. Decision 22.3.
 
+## `--fast`
+
+```sh
+zeno build --fast --owned main.zeno
+```
+
+`--fast` is `--release`, and it leaves out the other checks that a
+correct program never fails, as C and Rust leave them out:
+
+| | other builds | `--fast` |
+|---|---|---|
+| `xs[i]` with `i` out of range | `IndexError` | reads (or writes) whatever memory is there |
+| `x / 0.0` | `ZeroDivisionError` | infinity, or NaN for `0.0 / 0.0` |
+| `math.sqrt(-1.0)` | `ValueError` | NaN |
+| `n // 0`, `n % 0` of whole numbers | `ZeroDivisionError` | `ZeroDivisionError` still |
+| overflow of `+ - *` | `OverflowError` | wraps round (as `--release`) |
+
+The C compiler is asked for `-O3` and told that no line reads `errno`
+after a function of maths (`-fno-math-errno`), so `sqrt` is one
+instruction. The C says `#define ZENO_UNCHECKED 1` on its first line,
+so the file builds the same way by hand. It goes with `--llvm`, where
+an item is read with a `getelementptr` and `/` is `fdiv`, and with any
+way of freeing memory. `zeno run` checks everything, as always.
+
+Build it the ordinary way while a program is being written and tested,
+and with `--fast` when its tests pass and the last bit of speed
+matters. A wrong index in a `--fast` build is a wrong answer or a crash
+far from the line that caused it, exactly as in C. Decision 23.1.
+
 ## What it buys
 
 On the benchmarks in `bench/` (`python3 bench/run.py --size big`; the
@@ -136,7 +165,9 @@ times slower than C.
   a kind of build, and `package_memory`.
 - `src/runtime.c`: the pool that grows and the chain of text rooms,
   marked `ZENO_HEAP`; the collector, under "Where blocks live".
-- `src/emit_c.rs`, `src/emit_llvm.rs`: `Options { release, grows }`.
+- `src/emit_c.rs`, `src/emit_llvm.rs`: `Options { release, grows, fast }`.
+  The checks `--fast` leaves out are behind `#ifndef ZENO_UNCHECKED` in
+  runtime.c; `optimise` in main.rs picks the C compiler's flags.
 - `src/ast.rs`: `walks_in_place`, which lets a loop skip its copy.
 
 ## Things to try
@@ -148,6 +179,9 @@ times slower than C.
 3. Put `memory owned` in a `zeno.package` beside a program that shares
    a list between two variables. What does `zeno run` say now?
 4. Time `bench/trees.zeno` built the three ways in the table above.
+5. Build `let xs = [1, 2, 3]` / `print(xs[5])` with `--release` and with
+   `--fast`, and run both. Then look for `ZENO_UNCHECKED` in the two `.c`
+   files.
 5. Move `Node`, `make` and `check` of `bench/trees.zeno` into a file
    of their own that says `memory owned`, import it, and build with
    `--memory`. How many collections are left?

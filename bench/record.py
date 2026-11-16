@@ -17,7 +17,7 @@ recorded as a failure. docs/release.md says when to run this.
 import argparse, json, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BIG = "c,rust,zeno,zeno-llvm,zeno-nc,zeno-release,zeno-owned"
+BIG = "c,rust,zeno,zeno-llvm,zeno-nc,zeno-release,zeno-owned,zeno-fast,zeno-fast-gc"
 SMALL = "c,python,vm,run"
 
 def run(zeno, size, engines, timeout):

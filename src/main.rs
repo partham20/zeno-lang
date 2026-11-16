@@ -120,6 +120,11 @@ fn usage() {
     println!("  --release                with build: `+`, `-` and `*` of whole numbers");
     println!("                           wrap round instead of being checked for");
     println!("                           overflow. Every other check stays");
+    println!("  --fast                   with build: everything --release leaves out,");
+    println!("                           and the checks a correct program never fails:");
+    println!("                           a list index out of range, a float divided by");
+    println!("                           zero, the square root of a number below zero.");
+    println!("                           As fast as C, and as unforgiving");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");
@@ -470,6 +475,7 @@ fn how_built(
     no_collector: bool,
     firmware: bool,
     release: bool,
+    fast: bool,
     memory: Option<package::Memory>,
 ) -> (emit_c::Build, emit_c::Options) {
     let (kind, grows) = match (no_collector, memory, firmware) {
@@ -478,7 +484,7 @@ fn how_built(
         (false, _, true) => (emit_c::Build::Firmware, false),
         (false, _, false) => (emit_c::Build::Ordinary, false),
     };
-    (kind, emit_c::Options { release, grows })
+    (kind, emit_c::Options { release: release || fast, grows, fast })
 }
 
 /// `zeno build <file>`: compile the program to C, then hand the C to the
@@ -534,7 +540,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
             // ends, how much memory it used and how often the collector ran.
             command.arg("-DZENO_MEMORY_REPORT");
         }
-        match command.args(["-O2", "-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
+        match command.args(optimise(options)).args(["-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
             Ok(status) if status.success() => {
                 println!("Built {name}. Run it with {}", how_to_run(name));
                 return Some(());
@@ -549,8 +555,20 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
     }
     let tried: Vec<String> = compilers.clone();
     eprintln!("zeno: no C compiler found (tried {}), so only the C was written.", modules::listed(&tried));
-    eprintln!("      Install one, or set CC, then run: cc -O2 -o {program_file} {c_file} {}", emit_c::LIBRARIES.join(" "));
+    eprintln!(
+        "      Install one, or set CC, then run: cc {} -o {program_file} {c_file} {}",
+        optimise(options).join(" "),
+        emit_c::LIBRARIES.join(" ")
+    );
     None
+}
+
+/// How hard the C compiler (or clang, for IR) is asked to work. `--fast`
+/// asks for `-O3`, and says that no line reads `errno` after a function
+/// of maths, so `sqrt` can be the one instruction the processor has
+/// (decision 23.1).
+fn optimise(options: emit_c::Options) -> &'static [&'static str] {
+    if options.fast { &["-O3", "-fno-math-errno"] } else { &["-O2"] }
 }
 
 /// What to type to run the program a build made, in the folder it is in.
@@ -585,7 +603,11 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
     };
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
     let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
-    for (file, text) in [(&ir_file, ir), (&runtime_file, emit_llvm::runtime_for(kind, options.grows))] {
+    let mut runtime = emit_llvm::runtime_for(kind, options.grows);
+    if options.fast {
+        runtime.insert_str(0, "#define ZENO_UNCHECKED 1\n");
+    }
+    for (file, text) in [(&ir_file, ir), (&runtime_file, runtime)] {
         if let Err(err) = fs::write(file, text) {
             eprintln!("zeno: cannot write `{file}`: {err}");
             return None;
@@ -599,7 +621,8 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
     // The IR does not say which processor it is for, so that the same
     // file builds anywhere. clang fills in its own and would mention
     // doing so; `-Wno-override-module` says there is no need.
-    let mut flags = vec!["-O2", "-Wno-override-module"];
+    let mut flags = optimise(options).to_vec();
+    flags.push("-Wno-override-module");
     if memory_report {
         // Turns on the lines of the runtime that count memory and print
         // the report. The IR asks for the report to be printed at the end.
@@ -940,6 +963,10 @@ fn main() -> ExitCode {
     // `--release` builds without overflow checks.
     let release = args.iter().any(|arg| arg == "--release");
     args.retain(|arg| arg != "--release");
+    // `--fast` is `--release` with the other checks a correct program
+    // never fails left out too, and the C compiler asked to try harder.
+    let fast = args.iter().any(|arg| arg == "--fast");
+    args.retain(|arg| arg != "--fast");
     if owned && collector {
         eprintln!("zeno: `--owned` and `--collector` are two ways to free memory. Choose one");
         return ExitCode::FAILURE;
@@ -954,7 +981,7 @@ fn main() -> ExitCode {
         (_, true) => Some(package::Memory::Collector),
         _ => package_memory(path).or_else(|| files_memory(path)),
     };
-    let built = |path: &str| how_built(no_collector, firmware, release, memory(path));
+    let built = |path: &str| how_built(no_collector, firmware, release, fast, memory(path));
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -1122,9 +1149,9 @@ fn main() -> ExitCode {
             };
             // A page is not compiled, so the options that say how to
             // compile have nothing to say about it.
-            if web && (llvm || memory_report || firmware || no_collector || owned || release) {
+            if web && (llvm || memory_report || firmware || no_collector || owned || release || fast) {
                 eprintln!("zeno: `build --web` writes a page, which the browser runs as `zeno run` would.");
-                eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release` and `--memory`");
+                eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast` and `--memory`");
                 eprintln!("      are for a compiled program");
                 return ExitCode::FAILURE;
             }
@@ -1168,7 +1195,7 @@ mod tests {
         use emit_c::Build::*;
         use package::Memory::*;
         let built = |no_collector, firmware, memory| {
-            let (kind, options) = how_built(no_collector, firmware, false, memory);
+            let (kind, options) = how_built(no_collector, firmware, false, false, memory);
             (kind, options.grows)
         };
         // Nothing said: the collector.
@@ -1181,7 +1208,9 @@ mod tests {
         assert_eq!(built(false, true, Some(Owned)), (NoCollector, false));
         assert_eq!(built(true, false, None), (NoCollector, false));
         assert_eq!(built(true, false, Some(Owned)), (NoCollector, false));
-        assert!(how_built(false, false, true, None).1.release);
+        assert!(how_built(false, false, true, false, None).1.release);
+        let fast = how_built(false, false, false, true, None).1;
+        assert!(fast.fast && fast.release);
 
         let root = folder("memory", &[("zeno.package", "package app\nmemory owned\n"), ("main.zeno", "print(1)\n")]);
         assert_eq!(package_memory(&root.join("main.zeno").to_string_lossy()), Some(Owned));

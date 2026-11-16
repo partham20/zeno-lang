@@ -146,6 +146,12 @@ pub struct Options {
     /// needs (`memory owned`), instead of being fixed arrays for a chip
     /// (`--no-collector`).
     pub grows: bool,
+    /// `--fast`: `--release`, and the checks a correct program never
+    /// fails are left out too: list indexes, a float divided by zero, the
+    /// square root of a number below zero (decision 23.1). The C says so
+    /// in its first line, `#define ZENO_UNCHECKED 1`, so the file builds
+    /// the same by hand.
+    pub fast: bool,
 }
 
 /// `emit`, with the options of `Options`.
@@ -153,7 +159,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     let firmware = build != Build::Ordinary;
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
-        release: options.release,
+        release: options.release || options.fast,
         in_place: false,
         text_stays: false,
         once: None,
@@ -310,6 +316,9 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
     let mut c = runtime_for(firmware, collector, options.grows && !collector);
+    if options.fast {
+        c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
+    }
     for section in [&emitter.typedefs, &emitter.structs, &emitter.globals, &emitter.prototypes, &emitter.definitions] {
         if !section.is_empty() {
             c.push('\n');
@@ -6430,7 +6439,7 @@ pub(crate) mod tests {
         let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit_with(&program, &types, "test.zeno", Build::Ordinary, Options { release: true, grows: false })
+        emit_with(&program, &types, "test.zeno", Build::Ordinary, Options { release: true, grows: false, fast: false })
             .expect("it builds")
     }
 
@@ -6458,6 +6467,77 @@ pub(crate) mod tests {
             let Some((_, errors, finished)) = build_and_run(name, &compile_release(source), &["-O2"]) else { return };
             assert!(!finished && errors.contains(error), "{errors}");
         }
+    }
+
+    /// The same program built with `--fast`.
+    fn compile_fast(source: &str, grows: bool) -> String {
+        let program = crate::modules::testing::built(source);
+        let build = if grows { Build::NoCollector } else { Build::Ordinary };
+        let (errors, types) = crate::checker::check_by(&program, build.rules());
+        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        emit_with(&program, &types, "test.zeno", build, Options { release: true, grows, fast: true }).expect("it builds")
+    }
+
+    #[test]
+    fn a_fast_build_prints_what_zeno_run_prints_for_a_correct_program() {
+        // A correct program cannot tell `--fast` from any other build.
+        // With a collector, and owned with a growing pool, where a list
+        // big enough to take its items from the system is grown in place.
+        let source = r#"var xs: list[int] = []
+var seed = 7
+for k in range(20000) {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    xs.append(seed % 1000)
+}
+var total = 0
+for i in range(len(xs)) {
+    total += xs[i] * (i % 3)
+}
+xs[0] = -5
+var parts: list[str] = []
+for i in range(-12, 12) {
+    parts.append(str(i * 987654321))
+}
+print(total, xs[0], xs[19999], parts.join(","))
+print(str(9223372036854775807), str(-9223372036854775807 - 1), str(0), str(-7))
+"#;
+        let expected = interpreted(source);
+        for (name, grows) in [("fast", false), ("fast-owned", true)] {
+            let c = compile_fast(source, grows);
+            assert!(c.starts_with("#define ZENO_UNCHECKED 1\n"), "{}", &c[..80]);
+            let flags = ["-O3", "-fno-math-errno", "-DZENO_MEMORY_REPORT"];
+            let Some((printed, errors, finished)) = build_and_run(name, &c, &flags) else { return };
+            assert!(finished, "{errors}");
+            assert_eq!(printed, expected);
+            // Owned, every block is given back, the grown rows too.
+            assert!(!grows || errors.contains(", 0 blocks left at the end"), "{errors}");
+        }
+    }
+
+    #[test]
+    fn a_fast_build_leaves_out_the_checks_a_correct_program_never_fails() {
+        // A float divided by zero is infinity and the square root of a
+        // number below zero is NaN, as in C and Rust. A whole number
+        // divided by zero is still caught.
+        let source = "import math\nlet z = 0.0\nprint(1.0 / z, math.sqrt(-4.0))\nlet n = 0\nprint(1 // n)";
+        let Some((printed, errors, finished)) = build_and_run("fast-unchecked", &compile_fast(source, false), &["-O3"]) else {
+            return;
+        };
+        assert_eq!(printed, "inf NaN\n");
+        assert!(!finished && errors.contains("ZeroDivisionError"), "{errors}");
+        // Without `--fast`, every one of them is still an error.
+        let release = compile_release("let xs = [1, 2]\nlet i = 2\nprint(xs[i])");
+        assert!(!release.contains("ZENO_UNCHECKED 1"));
+    }
+
+    #[test]
+    fn a_fast_build_reads_an_item_with_no_index_check() {
+        let c = compile_fast("let xs = [1, 2, 3]\nlet i = 1\nprint(xs[i])", false);
+        // The runtime's check is behind `#ifndef ZENO_UNCHECKED`, and the
+        // first line of the file defines it.
+        assert!(c.contains("#ifndef ZENO_UNCHECKED\n    if (i < 0 || i >= list->len) {"), "the check is there to leave out");
+        let Some((printed, _, _)) = build_and_run("fast-index", &c, &["-O3"]) else { return };
+        assert_eq!(printed, "2\n");
     }
 
     #[test]
@@ -8311,7 +8391,7 @@ function main() -> int raises Refused {
     fn grown_as_interpreter(name: &str, source: &str, printed: &str, report: &str) {
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
-        let options = Options { release: false, grows: true };
+        let options = Options { release: false, grows: true, fast: false };
         let c = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
         assert!(c.contains("zeno_pool_cut") && !c.contains("zeno_pool.bytes"), "the pool does not grow");
         let flags = ["-O1", "-DZENO_MEMORY_REPORT", "-DZENO_POOL=64", "-DZENO_TEXT_ROOM=64"];
