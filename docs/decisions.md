@@ -9514,13 +9514,37 @@ character is taken from a table of all 128 that is part of the
 program, and no block is made. With no collector nothing frees them,
 which is right, since only text in the pool is ever freed.
 
-### 22.7 Left for later
+### 22.7 `for ch in text` walks the text and makes no list
+
+**Decision.** A loop over text with one name walks the text where it is,
+one character at a time. The loop variable is a character of ASCII from
+the table of 22.6, or, for any other character, a copy of it. With a
+collector the copy is the collector's. With no collector the loop holds
+the last such copy and frees it when it makes the next one, or when the
+loop ends or is left; whatever keeps the character has its own copy
+already (a list, a variable outside the loop). With no collector the
+text must stay where it is while it is walked, so this is done when the
+loop is over a variable the body never names, or over a literal. Every
+other loop over text, and every loop with two names (`for i, ch in
+text`), walks a list of the characters, as before.
+
+**Why.** The list was the whole cost: ten million characters made a list
+of ten million slots, grown by doubling, then freed. The strings
+benchmark went from 3.5 to 1.1 seconds (C takes 0.9). A character as a
+str of its own keeps the language as it was: `ch` is still a str, and
+`ch == ","` still means what it meant.
+
+**Rejected.** A separate `char` type: faster still, but a second kind of
+text for a beginner to learn, and every `ch` in every program would
+change. Asking the body not to name the text even with a collector:
+there the text cannot go away while the loop holds it, so it is not
+needed.
+
+### 22.8 Left for later
 
 - Choosing per file or per function, in one program. The checker
   already applies the owned rules to a whole program; applying them to
   some files and not others needs a rule for where the two meet (a
   shared list lent to a function of an owned file, say), and that rule
   is not written yet.
-- `for ch in text` still makes a list of the characters first. Walking
-  the text itself would save the list.
 - A generational collector (22.5).

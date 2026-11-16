@@ -242,6 +242,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_program_start", "declare void @zeno_program_start(i32 signext, ptr)"),
     ("zeno_program_arguments", "declare ptr @zeno_program_arguments()"),
     ("zeno_chars", "declare ptr @zeno_chars(ptr)"),
+    ("zeno_char_size", "declare i64 @zeno_char_size(ptr)"),
+    ("zeno_char_here", "declare ptr @zeno_char_here(ptr, ptr)"),
     ("zeno_list_new", "declare ptr @zeno_list_new(i64)"),
     ("zeno_list_of", "declare ptr @zeno_list_of(i32 signext, ...)"),
     ("zeno_list_append", "declare void @zeno_list_append(ptr, i64)"),
@@ -724,6 +726,9 @@ struct Count {
     /// For a loop over the pairs of a dict: the list of its values, which
     /// is walked beside the list of its keys.
     values: Option<(String, Kind)>,
+    /// For a loop that walks text, with no collector: the slot holding
+    /// the last character that was not ASCII, freed when the loop is over.
+    held: Option<String>,
 }
 
 /// The function being written.
@@ -833,6 +838,9 @@ struct Emitter<'a> {
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
+    /// For a `for` loop over a variable holding text: the body never
+    /// names the variable, so the text stays put while the loop walks it.
+    text_stays: bool,
     /// Which values have one owner, and so what freeing a list frees.
     /// The C backend's, so that both agree.
     drops: emit_c::Drops,
@@ -1253,6 +1261,7 @@ pub fn emit_with(
     let mut emitter = Emitter {
         release: options.release,
         in_place: false,
+        text_stays: false,
         types,
         drops: emit_c::Drops::of(program, types, collector),
         firmware,
@@ -2182,8 +2191,10 @@ impl Emitter<'_> {
                 // A body that cannot change the list walks it in place.
                 let built_in = |name: &str| self.lookup(name).is_none() && !self.functions.contains_key(name);
                 self.in_place = crate::ast::walks_in_place(iterable, body, &built_in);
+                self.text_stays = matches!(&iterable.kind, ExprKind::Name(name) if !crate::ast::mentions(body, name));
                 let count = self.open_loop(variable, second.as_deref(), iterable, Some(begin));
                 self.in_place = false;
+                self.text_stays = false;
                 let count = count?;
                 self.code.loops.push(Loop {
                     next: count.next.clone(),
@@ -2965,6 +2976,7 @@ impl Emitter<'_> {
             done: format!("done{n}"),
             walked: None,
             values: None,
+            held: None,
         };
         self.place(&count.test);
         let trip = self.load("i64", &count.counter);
@@ -3099,7 +3111,7 @@ impl Emitter<'_> {
             // the loop began, so a body that adds to the list or removes
             // from it cannot confuse the loop. That is what `zeno run`
             // does too.
-            None => {
+            None => 'list: {
                 self.walked = Some(iterable as *const Expr as usize);
                 let list = self.expr(iterable);
                 self.walked = None;
@@ -3128,6 +3140,36 @@ impl Emitter<'_> {
                     }
                     _ => list,
                 };
+                // `for ch in text` walks the text where it is, and builds
+                // no list of its characters (see the C backend's
+                // `open_text_loop`). The counter is how many bytes in the
+                // walk is; each trip moves it on by its character's size.
+                let stays = match &iterable.kind {
+                    ExprKind::Name(_) => self.text_stays,
+                    ExprKind::Str(_) => true,
+                    _ => false,
+                };
+                if list.kind == Kind::Str && second.is_none() && (self.collector || stays) {
+                    self.text_given_back(begin);
+                    let n = self.number();
+                    let held = self.slot(named('%', "held.", &format!("{variable}.{n}")), "ptr");
+                    self.store("ptr", "null", &held);
+                    let (mut count, trip) = self.count_open(variable, "0");
+                    let at = self.set(format!("getelementptr i8, ptr {}, i64 {trip}", list.code));
+                    let byte = self.set(format!("load i8, ptr {at}"));
+                    let more = self.set(format!("icmp ne i8 {byte}, 0"));
+                    self.count_body(&count, &more);
+                    // `count_close` adds one more.
+                    let size = self.call("i64", "zeno_char_size", format!("ptr {at}"));
+                    let after = self.set(format!("add i64 {trip}, {size}"));
+                    let last = self.set(format!("sub i64 {after}, 1"));
+                    self.store("i64", &last, &count.counter);
+                    let ch = self.call("ptr", "zeno_char_here", format!("ptr {at}, ptr {held}"));
+                    if !self.collector {
+                        count.held = Some(held);
+                    }
+                    break 'list (count, Val::new(ch, Kind::Str).fixed(), None);
+                }
                 // A list made right here is nobody else's, so it needs no
                 // copy: one written out, or what `split`, `map`, `filter`
                 // or `+` gave, or an owned list that a function gave back.
@@ -3194,6 +3236,13 @@ impl Emitter<'_> {
                 scope.insert(variable.to_string(), seen(value));
             }
         }
+        // The last character that was not ASCII is the loop's: leaving
+        // the loop early frees it.
+        if let Some(held) = &count.held {
+            self.code.holds += 1;
+            let variable = Variable { place: Place::Slot(held.clone()), kind: Kind::Str, open: false, owner: true };
+            scope.insert(format!("held {}", self.code.holds), variable);
+        }
         self.scopes.push(scope);
         if let Some((list, kind)) = &values {
             self.hold(kind.clone(), list);
@@ -3229,6 +3278,10 @@ impl Emitter<'_> {
         }
         if let Some((values, kind)) = &count.values {
             self.free(kind, values, Span { line: 0, col: 0 }).expect("a list can be freed");
+        }
+        if let Some(held) = &count.held {
+            let last = self.load("ptr", held);
+            self.free(&Kind::Str, &last, Span { line: 0, col: 0 }).expect("text can be freed");
         }
     }
 

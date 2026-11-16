@@ -579,6 +579,17 @@ pub fn walks_in_place(iterable: &Expr, body: &[Stmt], built_in: &dyn Fn(&str) ->
     }
 }
 
+/// Whether any statement of `body` names the variable `name`: reads it,
+/// changes it, gives it away or captures it. A loop over text uses this
+/// to know that the text stays where it is while the loop walks it.
+///
+/// It reads the printed form of the tree, where a use of a variable shows
+/// as `Name("text")`, so it misses nothing a new kind of expression adds.
+/// A field called `text` prints differently and does not count.
+pub fn mentions(body: &[Stmt], name: &str) -> bool {
+    format!("{body:?}").contains(&format!("Name({name:?})"))
+}
+
 /// The built-in functions that only look at what they are given.
 const LOOKING: &[&str] = &["print", "len", "str", "int", "float", "bool", "abs", "min", "max", "round", "chr", "ord"];
 

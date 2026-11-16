@@ -155,6 +155,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     let mut emitter = Emitter {
         release: options.release,
         in_place: false,
+        text_stays: false,
         drops: Drops::of(program, types, collector),
         drops_written: 0,
         firmware,
@@ -770,6 +771,9 @@ struct Emitter<'a> {
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
+    /// For a `for` loop over a variable holding text: the body never names
+    /// the variable, so the text stays where it is while the loop walks it.
+    text_stays: bool,
     /// How each kind of value is freed. See `Drops`.
     drops: Drops,
     /// How many of the functions `drops` has asked for are written.
@@ -2325,8 +2329,10 @@ impl Emitter<'_> {
                 // A body that cannot change the list walks it in place.
                 let built_in = |name: &str| self.lookup_depth(name).is_none() && !self.functions.contains_key(name);
                 self.in_place = crate::ast::walks_in_place(iterable, body, &built_in);
+                self.text_stays = matches!(&iterable.kind, ExprKind::Name(name) if !crate::ast::mentions(body, name));
                 let walked = self.open_loop(variable, second.as_deref(), iterable);
                 self.in_place = false;
+                self.text_stays = false;
                 let walked = walked?;
                 if let Some(release) = self.text_end(begin) {
                     // Text built to find what to loop over. The loop has
@@ -3355,6 +3361,20 @@ impl Emitter<'_> {
             }
             _ => list,
         };
+        // `for ch in text` walks the text where it is, one character at a
+        // time, and builds no list of them. With no collector that needs
+        // the text to stay where it is until the loop is over: a variable
+        // the body leaves alone, or a literal.
+        if list.kind == Kind::Str && second.is_none() {
+            let stays = match &iterable.kind {
+                ExprKind::Name(_) => self.text_stays,
+                ExprKind::Str(_) => true,
+                _ => false,
+            };
+            if self.collector || stays {
+                return self.open_text_loop(variable, list, span);
+            }
+        }
         // A list made right here is nobody else's, so it needs no copy:
         // one written out, or what `split`, `map`, `filter` or `+` gave,
         // or an owned list that a function gave back.
@@ -3441,6 +3461,33 @@ impl Emitter<'_> {
             drops.push(self.drops.code_for_copy(value, list));
         }
         Ok((!drops.is_empty()).then(|| drops.join("\n")))
+    }
+
+    /// `for ch in text`, walking the text itself:
+    ///
+    ///     const char *t1 = z_text;
+    ///     const char *t3 = NULL;
+    ///     for (const char *t2 = t1; *t2 != '\0'; t2 += zeno_char_size(t2)) {
+    ///         const char *z_ch = zeno_char_here(t2, &t3);
+    ///
+    /// `t3` holds the last character that was not ASCII, with no
+    /// collector, and is freed when the loop is over or left.
+    fn open_text_loop(&mut self, variable: &str, text: Val, span: Span) -> Result<Option<String>, Error> {
+        let text = self.temp(text, span)?;
+        let at = self.new_temp();
+        let held = self.new_temp();
+        self.line(format!("const char *{held} = NULL;"));
+        self.scopes.push(HashMap::new());
+        let drop = (!self.collector).then(|| {
+            self.hold(Kind::Str, &held);
+            self.drops.code(&Kind::Str, &held)
+        });
+        let c_name = self.declare(variable, Kind::Str);
+        self.line(format!("for (const char *{at} = {}; *{at} != '\\0'; {at} += zeno_char_size({at})) {{", text.code));
+        self.indent += 1;
+        self.line(format!("{}{c_name} = zeno_char_here({at}, &{held});", c_type(&Kind::Str, span)?));
+        self.indent -= 1;
+        Ok(drop)
     }
 
     // ---------------------------------------------------------- Expressions
@@ -6364,6 +6411,60 @@ pub(crate) mod tests {
             let Some((_, errors, finished)) = build_and_run(name, &compile_release(source), &["-O2"]) else { return };
             assert!(!finished && errors.contains(error), "{errors}");
         }
+    }
+
+    #[test]
+    fn a_loop_over_text_walks_the_text_and_makes_no_list() {
+        let source = r##"function first_wide(text: str) -> str {
+    for ch in text {
+        if ch == "ö" {
+            return ch
+        }
+    }
+    return "-"
+}
+let text = "héllo, wörld ✓"
+var n = 0
+for ch in text {
+    if ch == "w" {
+        break
+    }
+    if ch == "é" {
+        continue
+    }
+    n += 1
+}
+print(n)
+print(first_wide(text))
+var keep: list[str] = []
+for ch in text {
+    keep.append(ch)
+}
+print(keep[1])
+print(keep[13])
+var last = ""
+for ch in "añb" {
+    last = ch
+}
+print(last)
+for i, ch in "ab" {
+    print(i)
+}
+for ch in text + "!" {
+    keep.append(ch)
+}
+print(len(keep))
+"##;
+        // With a collector every loop over text walks it.
+        let c = compile(source).expect("it compiles");
+        assert_eq!(c.matches("zeno_chars(").count(), 2, "only the one with two names, and the definition");
+        same_as_interpreter("text-walk", source);
+        // With no collector the text must stay put while it is walked:
+        // a variable the body leaves alone, or a literal. `text + "!"` is
+        // built in the text room, and walks a list as before.
+        let c = compile_no_collector(source).expect("it compiles");
+        assert_eq!(c.matches("zeno_chars(").count(), 3, "two names, a built text, and the definition");
+        no_collector_as_interpreter("text-walk", source);
     }
 
     #[test]

@@ -2338,6 +2338,24 @@ static const char *zeno_char_at(const char *text, int64_t i, int line, int col) 
               line, col);
 }
 
+/* `for ch in text`, walked where the text is: the character that starts
+ * at `p`, as a str. An ASCII one is in `zeno_ascii`, made once. Any other
+ * is copied into a block. With a collector the block is left to it. With
+ * no collector the loop holds the last such block in `*held` and frees it
+ * when it makes the next one, or when the loop is over: whatever keeps
+ * the character keeps a copy of its own. */
+static const char *zeno_char_here(const char *p, const char **held) {
+    if ((unsigned char)*p < 128) return zeno_ascii[(unsigned char)*p];
+#ifdef ZENO_NO_COLLECTOR
+    zeno_text_drop(*held);
+    *held = zeno_piece(p, zeno_char_size(p));
+    return *held;
+#else /* ZENO_NO_COLLECTOR */
+    (void)held;
+    return zeno_piece(p, zeno_char_size(p));
+#endif /* ZENO_NO_COLLECTOR */
+}
+
 /* `for c in text`: the characters of `text`, each as a str. */
 static zeno_list *zeno_chars(const char *text) {
     zeno_list *chars = zeno_list_new(0);
