@@ -100,7 +100,8 @@ static const char *zeno_kind_shown(const char *kind) {
  * Zeno does that with a garbage collector of the simplest kind, called
  * mark and sweep:
  *
- *   1. Every piece of memory handed out (a "block") is written in a table.
+ *   1. Every piece of memory handed out (a "block") is kept in a page that
+ *      knows which of its blocks are in use.
  *   2. Now and then the collector stops the program and MARKS every block
  *      the program can still reach. It starts from the "roots", which are
  *      the variables: the C stack and the top-level variables. Whatever a
@@ -112,6 +113,7 @@ static const char *zeno_kind_shown(const char *kind) {
  * The compiler does not tell the collector where the pointers are. The
  * collector looks at every word of the stack and of each block and asks
  * "is this the address of one of my blocks?". If it is, the block is kept.
+ * (How it answers that quickly is under "Where blocks live", below.)
  * This is called a conservative collector. A number that happens to look
  * like an address keeps a block alive for no reason, which wastes a little
  * memory and breaks nothing.
@@ -119,37 +121,75 @@ static const char *zeno_kind_shown(const char *kind) {
 
 #ifndef ZENO_NO_COLLECTOR
 
+#ifdef _WIN32
+#include <malloc.h> /* _aligned_malloc */
+#endif
+
 static void zeno_out_of_memory(void) {
     fflush(stdout);
     fprintf(stderr, "error: out of memory\n");
     exit(1);
 }
 
-/* What sits in front of every block. The first field does two jobs, at
- * different times. Between collections it is the block's `place` in the
- * table, so that zeno_free can take the block out without searching. During
- * a collection it is `next_waiting`. A collection sorts the table anyway,
- * and writes every place afresh as it finishes. */
-typedef struct zeno_block {
-    union {
-        struct zeno_block *next_waiting;    /* see zeno_waiting below */
-        size_t place;                       /* zeno_blocks[place] is this block */
-    } link;
-    size_t size : sizeof(size_t) * 8 - 2;   /* bytes handed to the program */
-    size_t marked : 1;                      /* reached, during a collection */
-    size_t plain : 1;                       /* holds text or one number: no pointers inside */
-} zeno_block;
+/* Where blocks live: pages.
+ *
+ * Memory is asked of the system 64 KB at a time, at an address that is a
+ * multiple of 64 KB: a page. A page holds blocks of one size only, and
+ * says at its start which size, which of its blocks are in use, and which
+ * the collector has reached. A block bigger than 2 KB gets a run of pages
+ * of its own, a "big block".
+ *
+ * Three things follow, and they are why this is fast:
+ *
+ *   - Handing out a block is taking the first spare one of a page that
+ *     has the right size: a few instructions, with no table to grow.
+ *   - Asking "is this word the address of one of my blocks?" is one look
+ *     in a hash table of pages (`zeno_units`), by the word's top bits,
+ *     then a division. No sorting, no searching.
+ *   - A block has no header of its own. Its page keeps one bit to say it
+ *     is in use and one to say it was reached, so small blocks cost
+ *     nothing extra.
+ *
+ * This is the way most collectors that look at memory without help from
+ * the compiler are built (the Boehm collector, used by many languages,
+ * is one). docs/collector.md walks through it. */
+#define ZENO_PAGE_BITS 16
+#define ZENO_PAGE ((size_t)1 << ZENO_PAGE_BITS)
+#define ZENO_CLASSES 16
+#define ZENO_BIGGEST_SMALL 2048
+static const uint32_t zeno_class_size[ZENO_CLASSES] = {16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 384, 512, 768, 1024, 1536, 2048};
 
-/* The table of every block there is. */
-static zeno_block **zeno_blocks = NULL;
-static size_t zeno_block_count = 0;
-static size_t zeno_block_room = 0;
+typedef struct zeno_page {
+    struct zeno_page *prev, *next; /* the list of every page */
+    struct zeno_page *next_room;   /* the list of pages of this size and kind with a spare block */
+    char *data;                    /* the first block */
+    void *spare;                   /* blocks given back, chained through their first word */
+    size_t big;                    /* a big block: the bytes in it. 0 for a page of small blocks */
+    size_t units;                  /* how many 64 KB units it covers */
+    uint32_t size;                 /* the size of each block */
+    uint32_t count;                /* how many blocks fit */
+    uint32_t cut;                  /* how many have ever been handed out; the rest were never touched */
+    uint32_t used;                 /* how many are in use now */
+    uint8_t kind;                  /* its size class, and +ZENO_CLASSES for plain */
+    bool plain;                    /* its blocks hold text or numbers, never a pointer */
+    bool listed;                   /* it is on its list of pages with room */
+    uint64_t in_use[64];           /* one bit for each block */
+    uint64_t reached[64];
+} zeno_page;
 
-/* How much memory the program holds, and how much it may hold before the
- * collector runs next. After each run the limit is set to twice what
- * survived, so a program that needs a lot is not collected all the time. */
+/* Room for the header, and blocks start lined up for any C type. */
+#define ZENO_PAGE_HEAD ((sizeof(zeno_page) + 15) / 16 * 16)
+
+static zeno_page *zeno_pages = NULL;                  /* every page */
+static zeno_page *zeno_room[2 * ZENO_CLASSES];         /* pages with a spare block, by kind */
+static uint8_t zeno_class_of[ZENO_BIGGEST_SMALL / 16 + 1]; /* size / 16, rounded up, to its class */
+
+/* How much memory the program holds (the sizes of the blocks in use),
+ * and how much it may hold before the collector runs next. After each
+ * run the limit is set to twice what survived, so a program that needs a
+ * lot is not collected all the time. */
 #ifndef ZENO_FIRST_COLLECTION
-#define ZENO_FIRST_COLLECTION (1024 * 1024)
+#define ZENO_FIRST_COLLECTION (4 * 1024 * 1024)
 #endif
 static size_t zeno_in_use = 0;
 static size_t zeno_collect_at = ZENO_FIRST_COLLECTION;
@@ -173,41 +213,160 @@ static void *zeno_stack_base = NULL;
  * knows what they are. */
 static void zeno_roots(void);
 
-/* Blocks that are marked but whose insides have not been looked at yet,
- * chained through `next_waiting`. The chain ends at this marker instead
- * of NULL. Keeping the list inside the blocks means the collector needs
- * no memory of its own, at the one moment when there may be none. */
-static zeno_block zeno_end_of_waiting;
-static zeno_block *zeno_waiting = &zeno_end_of_waiting;
-
-/* The lowest and highest addresses any block covers. Most words on the
+/* The lowest and highest addresses any page covers. Most words on the
  * stack are not addresses at all, and these two turn them away quickly. */
-static uintptr_t zeno_lowest = 0;
+static uintptr_t zeno_lowest = UINTPTR_MAX;
 static uintptr_t zeno_highest = 0;
 
+/* ---- The table of pages: which page covers each 64 KB unit of memory.
+ * Open addressing: a unit's place is worked out from its number, and if
+ * that place is taken, the next free one is used. */
+static uintptr_t *zeno_unit_keys = NULL; /* unit number, or 0 for an empty place */
+static zeno_page **zeno_unit_pages = NULL;
+static size_t zeno_unit_room = 0, zeno_unit_count = 0;
+static int zeno_unit_bits = 0;
+
+static size_t zeno_unit_place(uintptr_t key) {
+    return (size_t)(((uint64_t)key * UINT64_C(11400714819323198485)) >> (64 - zeno_unit_bits));
+}
+
+static zeno_page *zeno_unit_find(uintptr_t key) {
+    if (zeno_unit_room == 0) return NULL;
+    for (size_t at = zeno_unit_place(key);; at = (at + 1) & (zeno_unit_room - 1)) {
+        if (zeno_unit_keys[at] == key) return zeno_unit_pages[at];
+        if (zeno_unit_keys[at] == 0) return NULL;
+    }
+}
+
+static void zeno_unit_put(uintptr_t key, zeno_page *page);
+
+/* Keep the table at most half full, so that a look rarely goes on past
+ * the place it starts at. */
+static void zeno_unit_grow(void) {
+    uintptr_t *keys = zeno_unit_keys;
+    zeno_page **pages = zeno_unit_pages;
+    size_t room = zeno_unit_room;
+    zeno_unit_bits = room == 0 ? 10 : zeno_unit_bits + 1;
+    zeno_unit_room = (size_t)1 << zeno_unit_bits;
+    zeno_unit_keys = calloc(zeno_unit_room, sizeof(uintptr_t));
+    zeno_unit_pages = calloc(zeno_unit_room, sizeof(zeno_page *));
+    if (zeno_unit_keys == NULL || zeno_unit_pages == NULL) zeno_out_of_memory();
+    zeno_unit_count = 0;
+    for (size_t i = 0; i < room; i++) {
+        if (keys[i] != 0) zeno_unit_put(keys[i], pages[i]);
+    }
+    free(keys);
+    free(pages);
+}
+
+static void zeno_unit_put(uintptr_t key, zeno_page *page) {
+    if (2 * (zeno_unit_count + 1) > zeno_unit_room) zeno_unit_grow();
+    size_t at = zeno_unit_place(key);
+    while (zeno_unit_keys[at] != 0) at = (at + 1) & (zeno_unit_room - 1);
+    zeno_unit_keys[at] = key;
+    zeno_unit_pages[at] = page;
+    zeno_unit_count++;
+}
+
+/* Take a unit out. The entries after it that were pushed along by it are
+ * moved back, so that no look stops early at the hole. */
+static void zeno_unit_take(uintptr_t key) {
+    size_t at = zeno_unit_place(key);
+    while (zeno_unit_keys[at] != key) at = (at + 1) & (zeno_unit_room - 1);
+    zeno_unit_keys[at] = 0;
+    zeno_unit_count--;
+    for (size_t next = (at + 1) & (zeno_unit_room - 1); zeno_unit_keys[next] != 0; next = (next + 1) & (zeno_unit_room - 1)) {
+        uintptr_t moved = zeno_unit_keys[next];
+        size_t home = zeno_unit_place(moved);
+        /* Can the entry at `next` sit at `at`? Only if its home is not
+         * between `at` (exclusive) and `next` (inclusive), going round. */
+        bool between = at <= next ? (home > at && home <= next) : (home > at || home <= next);
+        if (!between) {
+            zeno_unit_keys[at] = moved;
+            zeno_unit_pages[at] = zeno_unit_pages[next];
+            zeno_unit_keys[next] = 0;
+            at = next;
+        }
+    }
+}
+
+/* ---- Pages from the system, and back. */
+static zeno_page *zeno_page_new(size_t units) {
+    size_t bytes = units * ZENO_PAGE;
+    void *memory;
+#ifdef _WIN32
+    memory = _aligned_malloc(bytes, ZENO_PAGE);
+#else
+    if (posix_memalign(&memory, ZENO_PAGE, bytes) != 0) memory = NULL;
+#endif
+    if (memory == NULL) return NULL;
+    zeno_page *page = memory;
+    memset(page, 0, sizeof(zeno_page));
+    page->units = units;
+    page->data = (char *)page + ZENO_PAGE_HEAD;
+    page->next = zeno_pages;
+    if (zeno_pages != NULL) zeno_pages->prev = page;
+    zeno_pages = page;
+    uintptr_t first = (uintptr_t)page >> ZENO_PAGE_BITS;
+    for (size_t u = 0; u < units; u++) zeno_unit_put(first + u, page);
+    if ((uintptr_t)page < zeno_lowest) zeno_lowest = (uintptr_t)page;
+    if ((uintptr_t)page + bytes > zeno_highest) zeno_highest = (uintptr_t)page + bytes;
+    return page;
+}
+
+static void zeno_page_free(zeno_page *page) {
+    uintptr_t first = (uintptr_t)page >> ZENO_PAGE_BITS;
+    for (size_t u = 0; u < page->units; u++) zeno_unit_take(first + u);
+    if (page->prev != NULL) page->prev->next = page->next;
+    else zeno_pages = page->next;
+    if (page->next != NULL) page->next->prev = page->prev;
+#ifdef _WIN32
+    _aligned_free(page);
+#else
+    free(page);
+#endif
+}
+
+/* ---- Marking. A stack of blocks that were reached but whose insides
+ * have not been looked at yet. */
+typedef struct {
+    const char *start;
+    size_t size;
+} zeno_to_look;
+static zeno_to_look *zeno_marking = NULL;
+static size_t zeno_marking_count = 0, zeno_marking_room = 0;
+
+static void zeno_reach(zeno_page *page, size_t i) {
+    uint64_t bit = (uint64_t)1 << (i & 63);
+    if (!(page->in_use[i >> 6] & bit) || (page->reached[i >> 6] & bit)) return;
+    page->reached[i >> 6] |= bit;
+    if (page->plain) return;
+    if (zeno_marking_count == zeno_marking_room) {
+        zeno_marking_room = zeno_marking_room == 0 ? 1024 : zeno_marking_room * 2;
+        zeno_marking = realloc(zeno_marking, zeno_marking_room * sizeof(zeno_to_look));
+        if (zeno_marking == NULL) zeno_out_of_memory();
+    }
+    size_t size = page->big != 0 ? page->big : page->size;
+    zeno_marking[zeno_marking_count++] = (zeno_to_look){page->data + i * page->size, size};
+}
+
 /* `word` was found in a variable or inside a block. If it points at, or
- * into, a block, mark that block. */
+ * into, a block, mark that block. Pointing just past the end of a block
+ * counts as pointing into it: C code is allowed to hold such a pointer,
+ * and a loop over a list may hold only that. Every page leaves a few
+ * bytes free at its end, so that address is always in the same page. */
 static void zeno_mark(uintptr_t word) {
-    if (word < zeno_lowest || word > zeno_highest) return;
-    /* The table is sorted by address. Find the last block that starts at
-     * or before `word`, by halving the range each time. */
-    size_t low = 0, high = zeno_block_count;
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        if ((uintptr_t)(zeno_blocks[middle] + 1) <= word) low = middle + 1;
-        else high = middle;
+    if (word < zeno_lowest || word >= zeno_highest) return;
+    zeno_page *page = zeno_unit_find(word >> ZENO_PAGE_BITS);
+    if (page == NULL || word < (uintptr_t)page->data) return;
+    size_t offset = (size_t)(word - (uintptr_t)page->data);
+    if (page->big != 0) {
+        if (offset <= page->big) zeno_reach(page, 0);
+        return;
     }
-    if (low == 0) return;
-    zeno_block *block = zeno_blocks[low - 1];
-    /* `<=` and not `<`: C code is allowed to hold a pointer to just past
-     * the end of an array, and a loop over a list may hold only that. */
-    if (word > (uintptr_t)(block + 1) + block->size) return;
-    if (block->marked) return;
-    block->marked = 1;
-    if (!block->plain) {
-        block->link.next_waiting = zeno_waiting;
-        zeno_waiting = block;
-    }
+    size_t i = offset / page->size;
+    if (offset % page->size == 0 && i > 0) zeno_reach(page, i - 1);
+    if (i < page->cut) zeno_reach(page, i);
 }
 
 /* Treat every word from `start` on as something that might be a pointer.
@@ -241,18 +400,19 @@ static void zeno_mark_stack(void) {
     zeno_mark_words((const void *)low, high - low + sizeof(void *));
 }
 
-static int zeno_by_address(const void *a, const void *b) {
-    uintptr_t x = (uintptr_t)*(zeno_block *const *)a, y = (uintptr_t)*(zeno_block *const *)b;
-    return x < y ? -1 : x > y;
+/* Put a page on the list of pages with room for its size, if it has room
+ * and is not on it already. */
+static void zeno_page_has_room(zeno_page *page) {
+    if (page->listed || page->big != 0) return;
+    if (page->spare == NULL && page->cut == page->count) return;
+    page->listed = true;
+    page->next_room = zeno_room[page->kind];
+    zeno_room[page->kind] = page;
 }
 
 static void zeno_collect(void) {
-    if (zeno_block_count == 0 || zeno_stack_base == NULL) return;
+    if (zeno_pages == NULL || zeno_stack_base == NULL) return;
     zeno_collections++;
-    qsort(zeno_blocks, zeno_block_count, sizeof(zeno_block *), zeno_by_address);
-    zeno_block *last = zeno_blocks[zeno_block_count - 1];
-    zeno_lowest = (uintptr_t)(zeno_blocks[0] + 1);
-    zeno_highest = (uintptr_t)(last + 1) + last->size;
 
     /* Mark. A pointer may be nowhere in memory at this moment, only in one
      * of the processor's registers. This copies the registers onto the
@@ -263,27 +423,75 @@ static void zeno_collect(void) {
     zeno_roots();
     /* Then follow the pointers inside each marked block, which marks more
      * blocks, until none are waiting. */
-    while (zeno_waiting != &zeno_end_of_waiting) {
-        zeno_block *block = zeno_waiting;
-        zeno_waiting = block->link.next_waiting;
-        zeno_mark_words(block + 1, block->size);
+    while (zeno_marking_count > 0) {
+        zeno_to_look next = zeno_marking[--zeno_marking_count];
+        zeno_mark_words(next.start, next.size);
     }
 
-    /* Sweep: free what was not reached, and close the gaps in the table. */
-    size_t kept = 0;
-    for (size_t i = 0; i < zeno_block_count; i++) {
-        zeno_block *block = zeno_blocks[i];
-        if (block->marked) {
-            block->marked = 0;
-            block->link.place = kept;
-            zeno_blocks[kept++] = block;
-        } else {
-            zeno_in_use -= block->size;
-            free(block);
+    /* Sweep: every block in use that was not reached goes on its page's
+     * list of spare blocks. A page left with nothing in use goes back to
+     * the system. Then the lists of pages with room are made afresh. */
+    for (int k = 0; k < 2 * ZENO_CLASSES; k++) zeno_room[k] = NULL;
+    zeno_page *page = zeno_pages;
+    while (page != NULL) {
+        zeno_page *next = page->next;
+        page->listed = false;
+        if (page->big != 0) {
+            if (page->reached[0] & 1) {
+                page->reached[0] = 0;
+            } else {
+                zeno_in_use -= page->big;
+                zeno_page_free(page);
+            }
+            page = next;
+            continue;
         }
+        for (uint32_t w = 0; w * 64 < page->cut; w++) {
+            uint64_t dead = page->in_use[w] & ~page->reached[w];
+            page->in_use[w] &= page->reached[w];
+            page->reached[w] = 0;
+            while (dead != 0) {
+                int b = __builtin_ctzll(dead);
+                dead &= dead - 1;
+                void **block = (void **)(page->data + ((size_t)w * 64 + (size_t)b) * page->size);
+                *block = page->spare;
+                page->spare = block;
+                page->used--;
+                zeno_in_use -= page->size;
+            }
+        }
+        if (page->used == 0) zeno_page_free(page);
+        else zeno_page_has_room(page);
+        page = next;
     }
-    zeno_block_count = kept;
     zeno_collect_at = zeno_in_use * 2 > ZENO_FIRST_COLLECTION ? zeno_in_use * 2 : ZENO_FIRST_COLLECTION;
+}
+
+static void zeno_counted(size_t size) {
+    zeno_blocks_made++;
+    zeno_bytes_made += size;
+    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
+}
+
+/* A block bigger than any size class: a run of pages of its own. There
+ * is always at least one byte to spare at its end (see zeno_mark). */
+static char *zeno_new_big(size_t size, bool plain) {
+    size_t units = (ZENO_PAGE_HEAD + size + 1 + ZENO_PAGE - 1) / ZENO_PAGE;
+    zeno_page *page = zeno_page_new(units);
+    if (page == NULL) {
+        zeno_collect();
+        page = zeno_page_new(units);
+        if (page == NULL) zeno_out_of_memory();
+    }
+    page->big = size;
+    page->size = 0;
+    page->count = page->cut = page->used = 1;
+    page->plain = plain;
+    page->in_use[0] = 1;
+    zeno_in_use += size;
+    zeno_counted(size);
+    if (!plain) memset(page->data, 0, size);
+    return page->data;
 }
 
 static char *zeno_new_block(size_t size, bool plain) {
@@ -292,34 +500,56 @@ static char *zeno_new_block(size_t size, bool plain) {
 #else
     if (zeno_in_use + size > zeno_collect_at) zeno_collect();
 #endif
-    if (zeno_block_count == zeno_block_room) {
-        size_t room = zeno_block_room == 0 ? 256 : zeno_block_room * 2;
-        zeno_block **table = realloc(zeno_blocks, room * sizeof(zeno_block *));
-        if (table == NULL) zeno_out_of_memory();
-        zeno_blocks = table;
-        zeno_block_room = room;
+    if (size == 0) size = 1;
+    if (size > ZENO_BIGGEST_SMALL) return zeno_new_big(size, plain);
+    static bool classes_known = false;
+    if (!classes_known) {
+        for (size_t s = 0, k = 0; s <= ZENO_BIGGEST_SMALL / 16; s++) {
+            while (zeno_class_size[k] < s * 16) k++;
+            zeno_class_of[s] = (uint8_t)k;
+        }
+        classes_known = true;
     }
+    int cls = zeno_class_of[(size + 15) / 16];
+    int kind = cls + (plain ? ZENO_CLASSES : 0);
+    zeno_page *page = zeno_room[kind];
+    while (page != NULL && page->spare == NULL && page->cut == page->count) {
+        page->listed = false; /* full: off the list until something in it is freed */
+        page = zeno_room[kind] = page->next_room;
+    }
+    if (page == NULL) {
+        page = zeno_page_new(1);
+        if (page == NULL) {
+            zeno_collect();
+            page = zeno_page_new(1);
+            if (page == NULL) zeno_out_of_memory();
+        }
+        page->size = zeno_class_size[cls];
+        /* One byte less than fits, so that the end of the last block is
+         * still inside the page. */
+        page->count = (uint32_t)((ZENO_PAGE - ZENO_PAGE_HEAD - 1) / page->size);
+        page->kind = (uint8_t)kind;
+        page->plain = plain;
+        zeno_page_has_room(page);
+    }
+    char *block;
+    size_t i;
+    if (page->spare != NULL) {
+        block = page->spare;
+        page->spare = *(void **)block;
+        i = (size_t)(block - page->data) / page->size;
+    } else {
+        i = page->cut++;
+        block = page->data + i * page->size;
+    }
+    page->in_use[i >> 6] |= (uint64_t)1 << (i & 63);
+    page->used++;
+    zeno_in_use += page->size;
+    zeno_counted(size);
     /* A block that can hold pointers starts as all zeros, so that what an
      * earlier owner left behind is not taken for a pointer. */
-    size_t whole = sizeof(zeno_block) + size;
-    zeno_block *block = plain ? malloc(whole) : calloc(1, whole);
-    if (block == NULL) {
-        /* The machine has no more, whatever the limit says. Collect, and
-         * ask once more. */
-        zeno_collect();
-        block = plain ? malloc(whole) : calloc(1, whole);
-        if (block == NULL) zeno_out_of_memory();
-    }
-    block->link.place = zeno_block_count;
-    block->size = size;
-    block->marked = 0;
-    block->plain = plain;
-    zeno_blocks[zeno_block_count++] = block;
-    zeno_blocks_made++;
-    zeno_bytes_made += size;
-    zeno_in_use += size;
-    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
-    return (char *)(block + 1);
+    if (!plain) memset(block, 0, page->size);
+    return block;
 }
 
 /* Memory for a list, an object or a function value: things with pointers
@@ -338,20 +568,27 @@ static char *zeno_alloc_text(size_t size) {
  * docs/ownership.md): the checker has made sure nothing else can still use
  * it. `memory` is what zeno_alloc returned, or NULL, which does nothing.
  *
- * The block leaves the table by letting the last entry take its place, so
- * this costs the same however many blocks there are. If a block is never
- * freed this way (an error jumped past the end of its owner's block, say),
- * nothing is lost: it is still in the table, and the collector frees it
- * when it finds nothing pointing at it, like any other block. */
+ * Its page is found from its address alone: the block starts in the first
+ * 64 KB of its page, so cutting the address down to a multiple of 64 KB
+ * gives the page. If a block is never freed this way (an error jumped
+ * past the end of its owner's block, say), nothing is lost: the collector
+ * frees it when it finds nothing pointing at it, like any other block. */
 static void zeno_free(void *memory) {
     if (memory == NULL) return;
-    zeno_block *block = (zeno_block *)memory - 1;
-    zeno_block *last = zeno_blocks[--zeno_block_count];
-    last->link.place = block->link.place;
-    zeno_blocks[block->link.place] = last;
-    zeno_in_use -= block->size;
+    zeno_page *page = (zeno_page *)((uintptr_t)memory & ~(uintptr_t)(ZENO_PAGE - 1));
     zeno_blocks_freed_at_once++;
-    free(block);
+    if (page->big != 0) {
+        zeno_in_use -= page->big;
+        zeno_page_free(page);
+        return;
+    }
+    size_t i = (size_t)((char *)memory - page->data) / page->size;
+    page->in_use[i >> 6] &= ~((uint64_t)1 << (i & 63));
+    *(void **)memory = page->spare;
+    page->spare = memory;
+    page->used--;
+    zeno_in_use -= page->size;
+    zeno_page_has_room(page);
 }
 
 /* What a program built with `zeno build --memory` prints as it ends. */
@@ -425,13 +662,21 @@ static size_t zeno_most_text = 0;
  * In front of each block are eight bytes that say which size it is and
  * how much of it was asked for. */
 #ifndef ZENO_POOL
+#ifdef ZENO_HEAP
+#define ZENO_POOL (1024 * 1024) /* the first piece; each next one is twice as big */
+#else /* ZENO_HEAP */
 #define ZENO_POOL 32768
+#endif /* ZENO_HEAP */
 #endif
 
 /* How many sizes there are. The largest holds 16 << 23 bytes, which is
  * more than a pool is likely to be. */
 #ifndef ZENO_POOL_STEPS
+#ifdef ZENO_HEAP
+#define ZENO_POOL_STEPS 40
+#else /* ZENO_HEAP */
 #define ZENO_POOL_STEPS 24
+#endif /* ZENO_HEAP */
 #endif
 
 typedef struct {
@@ -446,6 +691,77 @@ typedef struct zeno_spare {
     struct zeno_spare *next;
 } zeno_spare;
 
+#ifdef ZENO_HEAP
+/* A program built for a computer rather than a chip (`memory owned` in
+ * `zeno.package`, or `zeno build --owned`) cannot know in advance how much
+ * it will need. Its pool grows: when the piece it is cutting from runs
+ * out, it asks the system for another, twice as big as the last, so a
+ * program that needs a lot asks only a few dozen times in all. Blocks,
+ * sizes and spare lists work exactly as in the fixed pool. */
+#define ZENO_PIECES 48
+static struct { char *bytes; size_t size; } zeno_pieces[ZENO_PIECES];
+static int zeno_piece_count = 0;
+static size_t zeno_pool_top = 0;      /* how much of the newest piece is cut */
+static size_t zeno_pool_taken = 0;    /* bytes asked of the system, in all */
+static zeno_spare *zeno_pool_spare[ZENO_POOL_STEPS];
+
+static void zeno_pool_full(void) {
+    fflush(stdout);
+    fprintf(stderr, "error: out of memory\n");
+    exit(1);
+}
+
+/* Room for `whole` more bytes, from the newest piece or a new one. What
+ * was left at the end of the old piece is not used again: at most half
+ * of a piece, and usually far less. */
+static char *zeno_pool_cut(size_t whole) {
+    if (zeno_piece_count == 0 || whole > zeno_pieces[zeno_piece_count - 1].size - zeno_pool_top) {
+        if (zeno_piece_count == ZENO_PIECES) zeno_pool_full();
+        size_t size = zeno_piece_count == 0 ? (size_t)ZENO_POOL : zeno_pieces[zeno_piece_count - 1].size * 2;
+        while (size < whole) size *= 2;
+        char *bytes = malloc(size);
+        if (bytes == NULL) zeno_pool_full();
+        zeno_pieces[zeno_piece_count].bytes = bytes;
+        zeno_pieces[zeno_piece_count].size = size;
+        zeno_piece_count++;
+        zeno_pool_top = 0;
+        zeno_pool_taken += size;
+    }
+    char *at = zeno_pieces[zeno_piece_count - 1].bytes + zeno_pool_top;
+    zeno_pool_top += whole;
+    return at;
+}
+
+/* Memory for a list, an object or an error. It starts as all zeros. */
+static char *zeno_alloc(size_t size) {
+    if (size == 0) size = 1;
+    uint32_t step = 0;
+    size_t room = 16;
+    while (room < size) {
+        room *= 2;
+        step++;
+        if (step == ZENO_POOL_STEPS) zeno_pool_full();
+    }
+    zeno_spare *block = zeno_pool_spare[step];
+    if (block != NULL) {
+        zeno_pool_spare[step] = block->next;
+    } else {
+        block = (zeno_spare *)zeno_pool_cut(sizeof(zeno_head) + room);
+        block->head.step = step;
+    }
+    block->head.asked = (uint32_t)size;
+    char *memory = (char *)block + sizeof(zeno_head);
+    memset(memory, 0, room);
+#ifdef ZENO_MEMORY_REPORT
+    zeno_blocks_made++;
+    zeno_blocks_held++;
+    zeno_bytes_made += size;
+    zeno_in_use += size;
+    if (zeno_in_use > zeno_most_in_use) zeno_most_in_use = zeno_in_use;
+#endif
+    return memory;
+}
+#else /* ZENO_HEAP */
 /* The array. The second member is never used: it is there so that the C
  * compiler lines the array up for an int or a float. */
 static union {
@@ -494,6 +810,8 @@ static char *zeno_alloc(size_t size) {
     return memory;
 }
 
+#endif /* ZENO_HEAP */
+
 /* Give a block back. `memory` is what zeno_alloc returned, or NULL, which
  * does nothing. The compiler writes one of these for each block, at the
  * line where its owner ends. If a block ever came here twice, the list of
@@ -526,6 +844,63 @@ static void zeno_free(void *memory) {
  * A function called in the middle does the same with its own statements,
  * above this one's text, so the room is used like a stack. Its size is the
  * most text that may be in the making at one moment. */
+#ifdef ZENO_HEAP
+/* With a growing pool the text room grows too. It is a chain of rooms,
+ * each twice as big as the one before, and `zeno_text_top` counts bytes
+ * as if they stood end to end: room 0 holds 0 up to its size, room 1 the
+ * next bytes, and so on. The compiled program only ever saves the top and
+ * puts it back, so it cannot tell one room from many. A text never spans
+ * two rooms: one that does not fit at the end of a room starts the next. */
+#ifndef ZENO_TEXT_ROOM
+#define ZENO_TEXT_ROOM (64 * 1024) /* the first room */
+#endif
+#define ZENO_ROOMS 40
+static struct { char *bytes; size_t start, size; } zeno_rooms[ZENO_ROOMS];
+static int zeno_room_count = 0;
+static size_t zeno_text_top = 0;
+
+/* The room `top` is in, or the one it is the end of. */
+static int zeno_room_of(size_t top) {
+    for (int k = 0; k < zeno_room_count; k++) {
+        if (top < zeno_rooms[k].start + zeno_rooms[k].size) return k;
+    }
+    return zeno_room_count - 1;
+}
+
+static char *zeno_alloc_text(size_t size) {
+    int k = zeno_room_count == 0 ? -1 : zeno_room_of(zeno_text_top);
+    while (k < 0 || zeno_text_top + size > zeno_rooms[k].start + zeno_rooms[k].size) {
+        k++;
+        if (k == zeno_room_count) {
+            if (k == ZENO_ROOMS) zeno_pool_full();
+            size_t room = k == 0 ? (size_t)ZENO_TEXT_ROOM : zeno_rooms[k - 1].size * 2;
+            while (room < size) room *= 2;
+            zeno_rooms[k].bytes = malloc(room);
+            if (zeno_rooms[k].bytes == NULL) zeno_pool_full();
+            zeno_rooms[k].start = k == 0 ? 0 : zeno_rooms[k - 1].start + zeno_rooms[k - 1].size;
+            zeno_rooms[k].size = room;
+            zeno_room_count++;
+        }
+        zeno_text_top = zeno_rooms[k].start;
+    }
+    char *text = zeno_rooms[k].bytes + (zeno_text_top - zeno_rooms[k].start);
+    zeno_text_top += size;
+#ifdef ZENO_MEMORY_REPORT
+    if (zeno_text_top > zeno_most_text) zeno_most_text = zeno_text_top;
+#endif
+    return text;
+}
+
+/* Where in the chain `text` is, counted as `zeno_text_top` counts. */
+static size_t zeno_text_place(const char *text) {
+    for (int k = 0; k < zeno_room_count; k++) {
+        if ((uintptr_t)text - (uintptr_t)zeno_rooms[k].bytes < (uintptr_t)zeno_rooms[k].size) {
+            return zeno_rooms[k].start + (size_t)(text - zeno_rooms[k].bytes);
+        }
+    }
+    return 0;
+}
+#else /* ZENO_HEAP */
 #ifndef ZENO_TEXT_ROOM
 #define ZENO_TEXT_ROOM 1024
 #endif
@@ -547,6 +922,12 @@ static char *zeno_alloc_text(size_t size) {
     return text;
 }
 
+/* Where in the room `text` is, counted as `zeno_text_top` counts. */
+static size_t zeno_text_place(const char *text) {
+    return (size_t)(text - zeno_text_room);
+}
+#endif /* ZENO_HEAP */
+
 /* Text that is kept.
  *
  * Text can be in three places, and its address says which:
@@ -561,6 +942,21 @@ static char *zeno_alloc_text(size_t size) {
  * So a str is never given away and never shared. Whatever keeps text has
  * its own copy, and text is never changed once made, so nobody can tell
  * a copy from the original. docs/text.md goes through it. */
+#ifdef ZENO_HEAP
+static bool zeno_in_pool(const char *text) {
+    for (int k = zeno_piece_count - 1; k >= 0; k--) {
+        if ((uintptr_t)text - (uintptr_t)zeno_pieces[k].bytes < (uintptr_t)zeno_pieces[k].size) return true;
+    }
+    return false;
+}
+
+static bool zeno_in_room(const char *text) {
+    for (int k = zeno_room_count - 1; k >= 0; k--) {
+        if ((uintptr_t)text - (uintptr_t)zeno_rooms[k].bytes < (uintptr_t)zeno_rooms[k].size) return true;
+    }
+    return false;
+}
+#else /* ZENO_HEAP */
 static bool zeno_in_pool(const char *text) {
     return (uintptr_t)text - (uintptr_t)zeno_pool.bytes < (uintptr_t)ZENO_POOL;
 }
@@ -568,6 +964,7 @@ static bool zeno_in_pool(const char *text) {
 static bool zeno_in_room(const char *text) {
     return (uintptr_t)text - (uintptr_t)zeno_text_room < (uintptr_t)ZENO_TEXT_ROOM;
 }
+#endif /* ZENO_HEAP */
 
 /* `text` is about to be kept in a variable, a field or a list. Text
  * written in the program can be kept as it is. Anything else will not
@@ -615,7 +1012,7 @@ static const char *zeno_text_take(const char *text) {
  * (written in the program, or the caller's own, lower in the room) is
  * given back as it is. */
 static const char *zeno_text_return(size_t mark, const char *text) {
-    bool above = text != NULL && zeno_in_room(text) && (size_t)(text - zeno_text_room) >= mark;
+    bool above = text != NULL && zeno_in_room(text) && zeno_text_place(text) >= mark;
     if (text == NULL || !(above || zeno_in_pool(text))) {
         zeno_text_top = mark;
         return text;
@@ -636,9 +1033,16 @@ static void zeno_memory_report(void) {
     fprintf(stderr, "memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, no collector, %zu block%s left at the end\n",
             zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
             zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_blocks_held, zeno_blocks_held == 1 ? "" : "s");
+#ifdef ZENO_HEAP
+    fprintf(stderr, "pool: %zu byte%s taken from the system, in %d piece%s\n", zeno_pool_taken, zeno_pool_taken == 1 ? "" : "s",
+            zeno_piece_count, zeno_piece_count == 1 ? "" : "s");
+    fprintf(stderr, "text: at most %zu byte%s in use at once, in %d room%s\n", zeno_most_text,
+            zeno_most_text == 1 ? "" : "s", zeno_room_count, zeno_room_count == 1 ? "" : "s");
+#else /* ZENO_HEAP */
     fprintf(stderr, "pool: %zu byte%s taken, in a pool of %d\n", zeno_pool_top, zeno_pool_top == 1 ? "" : "s", (int)ZENO_POOL);
     fprintf(stderr, "text: at most %zu byte%s in use at once, in a room of %d\n", zeno_most_text,
             zeno_most_text == 1 ? "" : "s", (int)ZENO_TEXT_ROOM);
+#endif /* ZENO_HEAP */
 }
 #endif
 
@@ -949,7 +1353,22 @@ static const char *zeno_copy(const char *text, size_t length) {
  * is text like any other. With none, a list keeps its own copies of its
  * items (docs/text.md), so the piece is made in the pool to begin with
  * and never passes through the text room. */
+/* Every text of one ASCII character, made once. `for ch in text` and
+ * `text.split("")` hand these out instead of making a block for each
+ * character: a block costs a trip to the allocator (and, with a collector,
+ * a place in its table), where this costs nothing. They are written into
+ * the program like a literal, so with no collector nothing frees them,
+ * which is right: only text in the pool is ever given back. */
+static const char zeno_ascii[128][2] = {
+#define ZENO_A(n) {(char)(n), 0}, {(char)(n + 1), 0}, {(char)(n + 2), 0}, {(char)(n + 3), 0}
+#define ZENO_B(n) ZENO_A(n), ZENO_A(n + 4), ZENO_A(n + 8), ZENO_A(n + 12)
+    ZENO_B(0), ZENO_B(16), ZENO_B(32), ZENO_B(48), ZENO_B(64), ZENO_B(80), ZENO_B(96), ZENO_B(112)
+#undef ZENO_B
+#undef ZENO_A
+};
+
 static const char *zeno_piece(const char *text, size_t length) {
+    if (length == 1 && (unsigned char)text[0] < 128 && text[0] != '\0') return zeno_ascii[(unsigned char)text[0]];
 #ifdef ZENO_NO_COLLECTOR
     char *piece = zeno_alloc(length + 1); /* wiped, so it ends in a zero */
     memcpy(piece, text, length);
@@ -1651,9 +2070,19 @@ static zeno_slot zeno_list_pop(zeno_list *list, int line, int col) {
  * in the room. */
 static const char *zeno_text_settle(size_t start, const char *text) {
     size_t size = strlen(text) + 1;
+#ifdef ZENO_HEAP
+    /* The text may be in a later room than `start`, and may not fit in
+     * start's room. zeno_alloc_text finds where it goes. The two places
+     * can only overlap within one room, where memmove copes. */
+    zeno_text_top = start;
+    char *settled = zeno_alloc_text(size);
+    memmove(settled, text, size);
+    return settled;
+#else /* ZENO_HEAP */
     memmove(zeno_text_room + start, text, size);
     zeno_text_top = start + size;
     return zeno_text_room + start;
+#endif /* ZENO_HEAP */
 }
 #endif /* ZENO_NO_COLLECTOR */
 
@@ -2416,6 +2845,18 @@ static bool zeno_files_remove(const char *path, int line, int col) {
 static void zeno_line_add(char **line, size_t *used, size_t *room, char c) {
     char *top = zeno_alloc_text(1);
     if (*line == NULL) *line = top;
+#ifdef ZENO_HEAP
+    /* A text room that grows is a chain of rooms. If this byte had to
+     * start the next room, the line so far moves there, to stay in one
+     * piece. (What it leaves behind is given back with the statement.) */
+    if (top != *line + *used) {
+        zeno_text_top = zeno_text_place(top);
+        char *moved = zeno_alloc_text(*used + 1);
+        memcpy(moved, *line, *used);
+        *line = moved;
+        top = moved + *used;
+    }
+#endif /* ZENO_HEAP */
     *top = c;
     (*used)++;
     (void)room;
