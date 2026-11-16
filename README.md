@@ -121,6 +121,35 @@ in `~/.zeno`, puts it on the PATH, and offers to install a C compiler
 and git if there is none. [`docs/install.md`](docs/install.md) says
 what both do, line by line, and how to take Zeno off again.
 
+**With a package manager.** Each release has a package for apt,
+pacman, snap and flatpak, installed from the file:
+
+```sh
+sudo apt install ./zeno_0.2.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-bin-0.2.0-1-x86_64.pkg.tar.zst              # Arch
+sudo snap install --classic --dangerous zeno_0.2.0_amd64.snap
+flatpak install --user zeno-0.2.0-x86_64.flatpak
+```
+
+The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
+a 32-bit system) and `i386`, the snap for `arm64` and `armhf`, and the
+flatpak for `aarch64`. apt installs a C compiler and git along with
+Zeno if the machine has none.
+
+Homebrew, on macOS and Linux:
+
+```sh
+brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
+brew install partham20/zeno-lang/zeno
+```
+
+For winget there are three files in
+[packaging/winget](packaging/winget),
+which are what Microsoft's collection of packages takes.
+[docs/packages.md](docs/packages.md)
+says what each package is, and what is still to be done before
+`apt install zeno` and the rest work with one word.
+
 **By hand.** Each release also has a `zeno` that is already built, as
 an archive, for ten kinds of machine:
 
@@ -552,6 +581,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     which gives the text of a value. A page reads what a server
     answers with it, and a program its settings.
     See [`docs/json.md`](docs/json.md))
+28. Packages (done, in 0.2: each release has a `.deb` for apt, a
+    package for pacman, a snap and a flatpak, and recipes for Homebrew
+    and winget, all made from the release's own files and each
+    installed, run and removed before a release. What is left is the
+    place each manager looks in, which needs the repository public
+    and an account for each.
+    See [`docs/packages.md`](docs/packages.md))
 
 ## Layout
 
@@ -595,9 +631,15 @@ tools/release-check.sh        runs a built `zeno` before it is released
 tools/install.sh              installs Zeno on macOS and Linux
 tools/try-install.sh          tries install.sh, with no release to download
 tools/installer/              the setup program for Windows (Inno Setup)
+tools/package.sh              makes the packages: .deb, snap, flatpak, pacman, Homebrew, winget
+tools/try-packages.sh         installs each package, runs it, and removes it
+tools/keep-recipes.sh         puts the recipes of a release into the repository
+Formula/                      the Homebrew formula, written at each release
+packaging/                    the PKGBUILD and the winget files, written at each release
 .github/workflows/release.yml builds and releases `zeno` when a tag is pushed
 .github/workflows/trial.yml   tries Zeno on one kind of machine, and releases nothing
 .github/workflows/installer.yml  tries the installers on one kind of machine
 .github/workflows/add-installers.yml  makes the installers for a version already released
+.github/workflows/packages.yml  makes and tries the packages of a version already released
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```

@@ -259,9 +259,8 @@ So each release has its own `install.sh`, at
   machines have no winget, and already have a compiler and Git, so
   there the two boxes are not shown. Everything else in the setup
   program is run before each release.
-- **No package for a package manager**: no Homebrew formula, `.deb`,
-  `.rpm`, or winget or Scoop entry. Each wants a place to be published
-  and kept up to date.
+- **Packages for package managers** (apt, pacman, snap, flatpak,
+  Homebrew, winget) came next, and are in [`packages.md`](packages.md).
 - **No `.pkg` for macOS.** An unsigned one is refused by macOS more
   firmly than the script is.
 - **The repository is private** while this is written, and a private

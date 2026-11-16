@@ -8199,7 +8199,8 @@ change both files. It protects against everything less than that.
 
 ### 15.10 Left for later
 
-- Signing (15.6), and packages for package managers (15.1).
+- Signing (15.6).
+- Packages for package managers came next: 15.12.
 - The winget step of the setup program is not run by any test:
   GitHub's Windows machines have no winget.
 - `zeno` does not update itself. The installer, run again, does.
@@ -8229,6 +8230,153 @@ The installers are today's, so they had to allow for what 0.1.0 lacks:
 no `zeno.wasm`, and a `zeno build` that knows only `cc` (15.5). The
 setup program leaves the first out and says the second in the box that
 offers a compiler.
+
+### 15.12 Packages for six package managers, made from the files of a release
+
+`tools/package.sh` makes a package of Zeno for apt (a `.deb`), pacman,
+snap and flatpak, and writes the recipe that Homebrew and winget read.
+Each holds the `zeno` of a release's archive. Nothing is built for a
+package.
+
+**Why.** People who use a package manager want to use it for
+everything: it knows what is installed, updates it and removes it
+cleanly. And each of these is the usual way to install a program on
+some system that Zeno runs on. Making them from the released files,
+as the installers are (15.11), means one `zeno` for each processor and
+not seven that should be the same. It also means the script can be
+tried on a release that exists, which is how it was tried.
+
+**Turned down.** *Building in each manager's own way* (a Debian source
+package, `cargo build` in the PKGBUILD and the formula, snapcraft, a
+flatpak manifest): each would compile Zeno again, in a way that
+nothing else here checks, and four of the six would need Rust on the
+machine that installs. *Only the two or three most used*: all six were
+asked for, and after the first, each was an afternoon and not a week.
+
+`docs/packages.md` walks through it.
+
+### 15.13 The `.deb` recommends a C compiler and git
+
+Its `Recommends` line is `gcc | c-compiler, libc6-dev | libc-dev,
+git`, and `clang` is in `Suggests`.
+
+**Why.** apt installs what a package recommends unless it is told not
+to, and that is 15.4 in apt's own words: what Zeno hands work to is
+offered, and somebody who does not want it says so. `Depends` would
+force a compiler on a machine that only runs `zeno run`. `gcc |
+c-compiler` leaves a machine that has clang alone.
+
+pacman has only `optdepends`, which it shows and does not install.
+Nearly every Arch machine that builds anything has both programs.
+
+### 15.14 The `.deb` for `armhf` holds the build for ARMv6
+
+**Why.** Debian's `armhf` is ARMv7, and Raspberry Pi OS gives the same
+name to a Pi 1 and a Pi Zero, which are ARMv6. A package cannot ask
+which. The ARMv6 build runs on both. The ARMv7 build would stop on a
+Pi Zero with "Illegal instruction", which says nothing to anybody.
+What is lost is a little speed on ARMv7, in an interpreter that was
+never the fast way to run a program.
+
+The snap for `armhf` holds the ARMv7 build: Ubuntu, where snaps are at
+home, has no ARMv6.
+
+### 15.15 Where a package puts Zeno
+
+`/usr/lib/zeno/zeno` and `zeno.wasm` beside it, a link at
+`/usr/bin/zeno`, the examples and the editor setup in
+`/usr/share/zeno`, the README and the docs in `/usr/share/doc/zeno`.
+
+**Why.** `zeno build --web` looks for `zeno.wasm` beside the program
+(`docs/web.md`), and `/usr/bin` is for programs only. A link keeps both rules:
+Linux tells a program where it really is, so Zeno finds its
+neighbour. The examples are apart from the docs because small systems,
+containers above all, are often set up to leave `/usr/share/doc` out,
+and the first thing anybody is told to do is run an example. The first
+trial of the `.deb`, in a container, found exactly that.
+
+### 15.16 The snap is `classic`
+
+**Why.** A snap is otherwise shut in, and a compiler cannot work shut
+in. It reads a program from wherever it is kept, and runs the C
+compiler of the machine. The strict kind can be given the home folder
+and nothing more. `classic` has a price, which is that the Snap Store
+gives it only on request (15.21).
+
+### 15.17 The flatpak runs on the Sdk
+
+Its runtime is `org.freedesktop.Sdk`, and it is given the home folder
+and the network.
+
+**Why.** A flatpak has no `classic`: it cannot see the machine's
+compiler at all. So either `zeno build` does not work in it, or the
+compiler is in the box. The Sdk is the runtime that programs are built
+on, and it has gcc and git. With it, everything Zeno does works in the
+box with nothing else to install, which is the whole point of the
+installers (15.4).
+
+**Turned down.** *The Platform runtime*, which is a third of the size:
+then `zeno build` says there is no C compiler, to somebody who can see
+one on their machine. *Running the machine's compiler from inside the
+box* (`flatpak-spawn --host`): it needs the box opened so far that it
+is not a box.
+
+Flatpak is made for programs with a window, and is the poorest fit of
+the six. It is here because it was asked for and because it works.
+
+### 15.18 The recipes are kept in this repository, and written after a release
+
+`Formula/zeno.rb`, `packaging/arch/PKGBUILD` and `packaging/winget`
+are written by `tools/package.sh` and pushed to `main` by the last
+step of a release (`tools/keep-recipes.sh`).
+
+**Why here.** Homebrew reads a formula from a git repository and from
+nowhere else. Keeping it in this one means there is nothing more to
+make: `brew tap` is told the address. A repository of its own, named
+`homebrew-zeno`, would make the command shorter, and is one of the
+steps left for later.
+
+**Why after.** A recipe holds the checksums of the files it downloads,
+so it cannot be written before they exist. The alternative, writing it
+by hand after each release, is the kind of step that is forgotten.
+
+The commit is made in Partha's name, as every commit here is.
+
+### 15.19 No licence yet, and the recipes say so
+
+The `PKGBUILD` says `license=('custom')` and the winget file says
+`License: All rights reserved`, each with a comment that none has been
+chosen.
+
+**Why.** Both forms demand the line. Zeno has no licence file, and
+with none, "all rights reserved" is what the law says. Writing "MIT"
+because it is the likely choice would be a claim nobody has made.
+Choosing one is Partha's, and the stores of 15.21 will each ask.
+
+### 15.20 Run by winget, the setup program installs Zeno and nothing else
+
+The winget files pass `/MERGETASKS="!compiler,!git"`.
+
+**Why.** The setup program's two boxes install a compiler and Git by
+running winget (15.4). winget runs the setup program without showing
+it, so the boxes would be ticked with nobody asked, and a second
+winget would start inside the first. Somebody who installs with winget
+installs those two with winget.
+
+### 15.21 What packages do not do yet
+
+- **None is in the place its manager looks in.** That needs the
+  repository to be public, and then for each an account or somebody's
+  say-so: a pull request to Microsoft's `winget-pkgs`, an account on
+  the AUR, an account on the Snap Store with the name `zeno` and leave
+  to be `classic`, a request to Flathub, and for apt a repository of
+  `.deb` files with a signed list. Each of those is done in Partha's
+  name, so each is his to do. `docs/packages.md` lists them.
+- The winget files are written and not run: GitHub's Windows machines
+  have no winget.
+- The packages for processors other than x86-64 are made and not
+  installed by a test.
+- No `.rpm`, Nix, Scoop or Chocolatey.
 
 ## 16. A page that does more
 

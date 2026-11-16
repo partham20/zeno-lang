@@ -20,7 +20,7 @@ them can install:
 
 None of them holds a `zeno` of its own. Each is the `zeno` of a
 release's archive, laid out the way that system wants it. The
-decisions are 15.12 to 15.20 of [`decisions.md`](decisions.md).
+decisions are 15.12 to 15.21 of [`decisions.md`](decisions.md).
 
 ## Two halves, and which one this is
 

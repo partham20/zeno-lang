@@ -239,9 +239,82 @@ jobs:
           path: zeno-*-windows-setup.exe
           if-no-files-found: error
 
+  # The packages for apt, pacman, snap and flatpak, and the recipes for
+  # Homebrew and winget, made from what was just built
+  # (tools/package.sh). Each is installed as somebody would install it,
+  # run and removed (tools/try-packages.sh). docs/packages.md.
+  packages:
+    name: packages
+    needs: [build, installer]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+
+      - name: What makes a flatpak
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q flatpak
+          # Ubuntu does not let a program that is not root make a box
+          # of the kind a flatpak runs in, unless it is told to.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Make the packages
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          tools/package.sh "$version" files out
+
+      - name: apt installs the .deb, and removes it
+        run: tools/try-packages.sh deb "$VERSION" out
+
+      - name: snap installs the .snap, and removes it
+        run: tools/try-packages.sh snap "$VERSION" out
+
+      - name: pacman installs its package, and removes it
+        run: tools/try-packages.sh pacman "$VERSION" out
+
+      - name: flatpak installs the .flatpak, and removes it
+        run: tools/try-packages.sh flatpak "$VERSION" out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: out
+          if-no-files-found: error
+
+  # Homebrew is on macOS. Its formula is tried with the archives of
+  # this run in place of the release, which does not exist yet.
+  brew:
+    name: Homebrew
+    needs: packages
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: files
+          merge-multiple: true
+
+      - name: Homebrew installs from the formula, and removes it
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tools/try-packages.sh brew "$version" out files
+
   release:
     name: release
-    needs: [build, installer]
+    needs: [build, installer, packages, brew]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
     steps:
@@ -262,16 +335,27 @@ jobs:
           # so that one line downloads it and runs it.
           cp tools/install.sh packed
           cd packed
+          # The archives, the setup program and the packages. A .deb
+          # and a .snap are named `zeno_`, as their systems name them.
+          files=$(ls -d zeno-* zeno_* install.sh)
           # One line for each file, to check a download against with
           # `sha256sum --check`.
-          sha256sum zeno-* install.sh > SHA256SUMS.txt
+          sha256sum $files > SHA256SUMS.txt
           notes=../docs/releases/$version.md
           if gh release view "$tag" > /dev/null 2>&1; then
             # The release was drafted on the website, which made the tag.
-            gh release upload "$tag" --clobber zeno-* install.sh SHA256SUMS.txt
+            gh release upload "$tag" --clobber $files SHA256SUMS.txt
             gh release edit "$tag" --title "Zeno $version" --notes-file "$notes"
           else
             # `--target` makes the tag here when no tag was pushed.
             gh release create "$tag" --target "$GITHUB_SHA" --title "Zeno $version" \
-              --notes-file "$notes" zeno-* install.sh SHA256SUMS.txt
+              --notes-file "$notes" $files SHA256SUMS.txt
           fi
+
+      # The Homebrew formula, the PKGBUILD and the winget files name
+      # the files of this release and their checksums. They are kept
+      # in the repository, on `main`, where Homebrew reads the formula.
+      - name: Keep the recipes in the repository
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tools/keep-recipes.sh packed/recipes "$version"
