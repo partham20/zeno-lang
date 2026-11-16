@@ -9622,3 +9622,27 @@ code it is about, and wrong as soon as a file is renamed.
 ### 22.10 Left for later
 
 - A generational collector (22.5).
+
+### 20.6 The playground shows the C a program becomes
+
+The playground has a C tab: the program as `zeno build` writes it,
+by the same compiler, with a choice of the three builds and the
+runtime hidden unless asked for. Partha asked for it (2026-11-16).
+
+**Why.** Zeno compiles to C, and the C is the plainest answer to
+"what does this line cost?". A class is a C struct, `match` is a
+chain of `if`s on a tag, a firmware build passes errors as values
+instead of jumping. Seeing that next to the program, changing as the
+program changes, teaches it faster than any page of docs. The three
+builds are side by side because the difference between them is the
+point of Zeno on a chip.
+
+**Why the runtime is hidden.** It is the same 2,700 or so lines for
+every program, and the program's own C comes after it. Shown, it
+pushes the part worth reading off the screen. The line numbers keep
+counting from the true top of the file, so they match `hello.c` on a
+desk, and Copy copies the whole file, which builds as it is.
+
+**Why by the compiler itself.** `zeno.wasm` already holds the C
+emitter (`main.rs` is compiled for the browser too), so the C in the
+page is exactly the C `zeno build` writes, and cannot drift from it.

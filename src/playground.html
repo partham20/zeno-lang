@@ -208,6 +208,28 @@
   .problem b em { font: 500 12px var(--mono); font-style: normal; color: var(--bad); flex: none; }
   .problem pre { margin: 6px 0 0; font: 12.5px/1.5 var(--mono); color: var(--slate); white-space: pre-wrap; }
 
+  /* The C tab: the program as `zeno build` writes it. */
+  .c-view { display: flex; flex-direction: column; }
+  .c-tools {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-bottom: 1px solid var(--rule);
+    font-size: 13px; color: var(--slate);
+  }
+  .segments { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--sunk); }
+  .segments button {
+    height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--slate); font-size: 13px; font-weight: 500;
+  }
+  .segments button[aria-pressed="true"] { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 2px rgba(15, 23, 41, .12); }
+  .c-tools label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .c-tools input { accent-color: var(--cobalt); margin: 0; }
+  .c-tools .btn { height: 28px; padding: 0 10px; margin-left: auto; font-size: 13px; }
+  .c-code { flex: 1; min-height: 0; overflow: auto; display: flex; background: var(--sheet); }
+  .c-code .gutter { padding: 12px 0; overflow: visible; }
+  .c-code pre { margin: 0; padding: 12px 16px 12px 4px; font: 12.5px/1.6 var(--mono); color: var(--ink); white-space: pre; }
+  .c-code .gutter { font-size: 12.5px; }
+  .c-note { padding: 18px 16px; color: var(--slate); font-size: 14px; }
+  .c-note pre { margin: 10px 0 0; font: 12.5px/1.5 var(--mono); color: var(--bad); white-space: pre-wrap; }
+  .p { color: var(--tok-type); }
+
   .toast {
     position: fixed; left: 50%; bottom: 24px; z-index: 50; transform: translate(-50%, 12px); opacity: 0;
     padding: 9px 14px; border-radius: 10px; background: var(--ink); color: var(--paper); font-weight: 500; font-size: 14px;
@@ -305,11 +327,24 @@
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" id="tab-output" aria-selected="true">Output</button>
       <button class="tab" role="tab" id="tab-problems" aria-selected="false">Problems <span class="count" id="count" hidden>0</span></button>
+      <button class="tab" role="tab" id="tab-c" aria-selected="false" title="The program as zeno build writes it in C">C</button>
       <span class="status" id="said">Loading Zeno…</span>
     </div>
     <div class="views">
       <div class="view" id="view-output"><iframe id="frame" title="The program, running"></iframe></div>
       <div class="view problems" id="view-problems" hidden></div>
+      <div class="view c-view" id="view-c" hidden>
+        <div class="c-tools">
+          <div class="segments" role="group" aria-label="Which build">
+            <button id="build-0" aria-pressed="true" title="zeno build: a program for a computer">build</button>
+            <button id="build-1" aria-pressed="false" title="zeno build --firmware: errors as values, no setjmp">--firmware</button>
+            <button id="build-2" aria-pressed="false" title="zeno build --no-collector: no collector, every value has one owner">--no-collector</button>
+          </div>
+          <label><input type="checkbox" id="with-runtime"> Runtime</label>
+          <button class="btn" id="copy-c">Copy</button>
+        </div>
+        <div class="c-code" id="c-code"></div>
+      </div>
     </div>
   </section>
 </main>
@@ -371,12 +406,12 @@ async function zenoHelper() {
     zeno_host_now: () => performance.now(),
   } });
   exports = instance.exports;
-  helper = (name, source) => {
+  helper = (name, source, ...more) => {
     heard = { printed: "", errors: [] };
     const bytes = new TextEncoder().encode(source);
     const place = exports.zeno_alloc(bytes.length);
     new Uint8Array(exports.memory.buffer, place, bytes.length).set(bytes);
-    const result = exports[name](place, bytes.length);
+    const result = exports[name](place, bytes.length, ...more) >>> 0;
     return { result, ...heard };
   };
   return helper;
@@ -673,7 +708,7 @@ text.addEventListener("keydown", (e) => {
 
 function edited() {
   files[editing] = text.value;
-  if (editing === "program") { runLines = new Set(); checkSoon(); }
+  if (editing === "program") { runLines = new Set(); checkSoon(); compileSoon(); }
   paint();
   showWhere();
   saveSoon();
@@ -701,14 +736,104 @@ function choose(which, keep = true) {
 $("tab-program").addEventListener("click", () => choose("program"));
 $("tab-page").addEventListener("click", () => choose("page"));
 
+let showing = "output";
 function showTab(which) {
-  $("tab-output").setAttribute("aria-selected", String(which === "output"));
-  $("tab-problems").setAttribute("aria-selected", String(which === "problems"));
-  $("view-output").hidden = which !== "output";
-  $("view-problems").hidden = which !== "problems";
+  showing = which;
+  for (const name of ["output", "problems", "c"]) {
+    $("tab-" + name).setAttribute("aria-selected", String(which === name));
+    $("view-" + name).hidden = which !== name;
+  }
+  if (which === "c") compileSoon(0);
 }
 $("tab-output").addEventListener("click", () => showTab("output"));
 $("tab-problems").addEventListener("click", () => showTab("problems"));
+$("tab-c").addEventListener("click", () => showTab("c"));
+
+// ------------------------------------------------------------- The C tab
+// The program as `zeno build` writes it, by the same compiler, made again
+// a moment after each change while the tab is open. The runtime, which is
+// the same for every program, is left out unless asked for.
+const C_KEYWORDS = new Set(("auto break case char const continue default do double else enum extern float for goto if " +
+  "inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void " +
+  "volatile while bool true false NULL").split(" "));
+const C = /(\/\/.*|\/\*.*?(?:\*\/|$))|("(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?)|(^\s*#\s*\w+)|(\b0[xX][0-9a-fA-F]+[uUlL]*\b|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[uUlLfF]*\b)|([A-Za-z_]\w*)(\s*\()?/g;
+function cLine(line, inComment) {
+  // A comment that goes on over several lines is coloured as one.
+  let out = "", rest = line;
+  if (inComment.on) {
+    const end = line.indexOf("*/");
+    if (end < 0) return `<span class="c">${escaped(line)}</span>`;
+    out = `<span class="c">${escaped(line.slice(0, end + 2))}</span>`;
+    rest = line.slice(end + 2);
+    inComment.on = false;
+  }
+  let last = 0, m;
+  C.lastIndex = 0;
+  while ((m = C.exec(rest))) {
+    out += escaped(rest.slice(last, m.index));
+    last = C.lastIndex;
+    if (m[1]) { out += `<span class="c">${escaped(m[1])}</span>`; if (m[1].startsWith("/*") && !m[1].endsWith("*/")) inComment.on = true; }
+    else if (m[2]) out += `<span class="s">${escaped(m[2])}</span>`;
+    else if (m[3]) out += `<span class="p">${escaped(m[3])}</span>`;
+    else if (m[4]) out += `<span class="n">${m[4]}</span>`;
+    else {
+      const word = m[5], call = m[6] || "";
+      if (C_KEYWORDS.has(word)) out += `<span class="k">${word}</span>`;
+      else if (/_t$|^Zeno[A-Z]|^[A-Z]\w*[a-z]/.test(word)) out += `<span class="t">${word}</span>`;
+      else if (call) out += `<span class="f">${word}</span>`;
+      else out += word;
+      out += escaped(call);
+    }
+    if (m[0] === "") C.lastIndex++;
+  }
+  return out + escaped(rest.slice(last));
+}
+
+let build = 0;
+let lastC = { key: "", text: "", runtime: 0, errors: [] };
+let compileTimer = 0;
+function compileSoon(wait = 500) {
+  if (showing !== "c") return;
+  clearTimeout(compileTimer);
+  compileTimer = setTimeout(compileC, wait);
+}
+async function compileC() {
+  const zeno = await zenoHelper();
+  const key = build + "\n" + files.program;
+  if (lastC.key !== key) {
+    const { result, printed, errors } = zeno("zeno_c", files.program, build);
+    lastC = { key, text: printed, runtime: result === 4294967295 ? -1 : result, errors };
+  }
+  const box = $("c-code");
+  if (lastC.runtime < 0) {
+    const flags = ["", " --firmware", " --no-collector"][build];
+    box.innerHTML = `<div class="c-note"><code>zeno build${flags}</code> cannot compile this program to C. It says:<pre></pre></div>`;
+    box.querySelector("pre").textContent = lastC.errors.map((e) => e.trimEnd()).join("\n\n");
+    return;
+  }
+  const lines = lastC.text.replace(/\n$/, "").split("\n");
+  const withRuntime = $("with-runtime").checked;
+  const first = withRuntime ? 0 : lastC.runtime;
+  const shown = lines.slice(first);
+  const state = { on: false };
+  const coloured = shown.map((line) => cLine(line, state) || " ");
+  box.innerHTML = `<div class="gutter">${shown.map((_, i) => `<div>${first + i + 1}</div>`).join("")}</div><pre>${coloured.join("\n")}</pre>`;
+  $("with-runtime").parentElement.title = `The runtime: ${lastC.runtime} lines that every program starts with`;
+  $("with-runtime").nextSibling.textContent = ` Runtime (${lastC.runtime} lines)`;
+}
+for (const n of [0, 1, 2]) {
+  $("build-" + n).addEventListener("click", () => {
+    build = n;
+    for (const m of [0, 1, 2]) $("build-" + m).setAttribute("aria-pressed", String(m === n));
+    compileC();
+  });
+}
+$("with-runtime").addEventListener("change", compileC);
+$("copy-c").addEventListener("click", () => {
+  if (lastC.runtime < 0) { toast("There is no C to copy: the program has problems"); return; }
+  const copied = () => toast("The whole C file is copied, runtime and all");
+  if (navigator.clipboard) navigator.clipboard.writeText(lastC.text).then(copied, () => toast("The browser would not copy"));
+});
 $("checked").addEventListener("click", () => { showTab("problems"); showHalf("result"); });
 
 // On a phone one half shows at a time.
@@ -727,9 +852,11 @@ function load(example) {
   files.program = example.program;
   files.page = example.page || "";
   $("example-name").textContent = example.name;
+  const was = showing;
   choose("program", false);
   check();
   run();
+  if (was === "c") showTab("c");
   showHalf("code");
 }
 (function () {

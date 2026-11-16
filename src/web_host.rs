@@ -271,3 +271,46 @@ pub extern "C" fn zeno_check(place: *mut u8, length: usize) -> u32 {
     errors.iter().for_each(|error| stopped(&files, error));
     errors.len() as u32
 }
+
+/// The playground's C tab: the program as `zeno build` writes it in C.
+/// `build` is 0 for `zeno build`, 1 for `--firmware` and 2 for
+/// `--no-collector`. The C comes back through `zeno_host_print`, and this
+/// gives how many of its first lines are the runtime, which is the same
+/// for every program. A program that cannot be built gives `u32::MAX`,
+/// and its mistakes come back through `zeno_host_error`, as `zeno build`
+/// would show them.
+#[no_mangle]
+pub extern "C" fn zeno_c(place: *mut u8, length: usize, build: u32) -> u32 {
+    use crate::emit_c::{self, Build};
+    let source = taken(place, length);
+    let kind = match build {
+        1 => Build::Firmware,
+        2 => Build::NoCollector,
+        _ => Build::Ordinary,
+    };
+    let loaded = modules::load("main.zeno", source, &|_| None);
+    let files = loaded.files;
+    let program = match loaded.program {
+        Ok(program) => program,
+        Err(errors) => {
+            errors.iter().for_each(|error| stopped(&files, error));
+            return u32::MAX;
+        }
+    };
+    let (program, errors, types) = checker::checked(program.without_tests(), kind.rules());
+    if !errors.is_empty() {
+        errors.iter().for_each(|error| stopped(&files, error));
+        return u32::MAX;
+    }
+    match emit_c::emit(&program, &types, "main.zeno", kind) {
+        Ok(c) => {
+            print(&c);
+            let runtime = emit_c::runtime_for(kind != Build::Ordinary, kind != Build::NoCollector, false);
+            runtime.lines().count() as u32
+        }
+        Err(error) => {
+            stopped(&files, &error);
+            u32::MAX
+        }
+    }
+}

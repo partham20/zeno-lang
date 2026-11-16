@@ -23,6 +23,7 @@ is on the website at zeno-lang.org/playground.
 | **Problems** | each problem, with its message. Clicking one puts the cursor on its line |
 | **Examples** | fifteen programs from `examples/`, in four groups: Start here, The language, Firmware, Pages |
 | **Run** | run the program in a fresh frame. What it prints is shown, with the error that stopped it under the last line; the line of that error is marked too |
+| **C** | the program as `zeno build` writes it in C, made again as you write. Choose the build (`zeno build`, `--firmware`, `--no-collector`) to see how each one changes the C. The runtime, the 2,700 or so lines every program starts with, is hidden unless asked for; Copy takes the whole file, which a C compiler builds as it is |
 | **Format** | lay the program out as `zeno format` does (Shift+Alt+F). Undo takes it back |
 | **Share** | copy a link that opens the playground with this program in it (also Ctrl+S) |
 | **Light or dark** | the same choice as on the website, which it shares |
@@ -103,6 +104,10 @@ it (`src/web_host.rs`):
   desk, and the playground reads the line out of `--> main.zeno:2:7`.
 - `zeno_format(text)`: the program as `zeno format` lays it out, or
   its mistakes.
+- `zeno_c(text, build)`: the program in C, as `zeno build` writes it
+  (0), with `--firmware` (1) or with `--no-collector` (2), and how
+  many of its first lines are the runtime. A program that cannot be
+  built gives its mistakes instead, as `zeno build` would.
 
 Checking never runs the program, so it cannot loop, and it takes a
 few milliseconds. The colours are not Zeno's: they come from a short
