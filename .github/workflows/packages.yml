@@ -84,6 +84,8 @@ jobs:
         with:
           name: packages
           path: out
+          # `.SRCINFO` begins with a dot, and is left out without this.
+          include-hidden-files: true
           if-no-files-found: error
 
   brew:
