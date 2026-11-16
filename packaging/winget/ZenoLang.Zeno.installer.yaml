@@ -1,0 +1,28 @@
+# Written by tools/package.sh when a version is released.
+PackageIdentifier: ZenoLang.Zeno
+PackageVersion: 0.1.0
+InstallerType: inno
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+# Run without being shown, the setup program must not start a winget of
+# its own to install a compiler and Git: winget is already running.
+InstallerSwitches:
+  Custom: /MERGETASKS="!compiler,!git"
+Commands:
+  - zeno
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-windows-setup.exe
+    InstallerSha256: F36F998ED7C4081B6857F60E66C11B3A5CF7B837B550704A1507D1225FFDB5B2
+  - Architecture: x86
+    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-windows-setup.exe
+    InstallerSha256: F36F998ED7C4081B6857F60E66C11B3A5CF7B837B550704A1507D1225FFDB5B2
+  - Architecture: arm64
+    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-windows-setup.exe
+    InstallerSha256: F36F998ED7C4081B6857F60E66C11B3A5CF7B837B550704A1507D1225FFDB5B2
+ManifestType: installer
+ManifestVersion: 1.6.0

@@ -1,0 +1,20 @@
+# Written by tools/package.sh when a version is released.
+PackageIdentifier: ZenoLang.Zeno
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: The Zeno language
+PublisherUrl: https://zeno-lang.org
+PackageName: Zeno
+PackageUrl: https://zeno-lang.org
+# No licence has been chosen for Zeno yet.
+License: All rights reserved
+ShortDescription: The Zeno programming language
+Description: A small, readable, statically typed language for firmware and for everything around it. One `zeno` checks a program, runs it, tests it, formats it, and compiles it to C or to LLVM IR.
+Moniker: zeno
+Tags:
+  - compiler
+  - firmware
+  - language
+  - programming-language
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

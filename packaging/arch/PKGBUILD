@@ -1,0 +1,48 @@
+# Zeno, for pacman. This file is written by tools/package.sh when a
+# version is released: change that, not this.
+#
+#     makepkg -si
+#
+# Maintainer: Partha <123355647+partham20@users.noreply.github.com>
+pkgname=zeno-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="The Zeno programming language: checks, runs, tests, formats and compiles Zeno programs"
+url="https://zeno-lang.org"
+# No licence has been chosen for Zeno yet.
+license=('custom')
+provides=('zeno')
+conflicts=('zeno')
+optdepends=('gcc: for `zeno build`'
+            'clang: for `zeno build --llvm`'
+            'git: for `zeno fetch`')
+# The program is already built, and is not to be changed.
+options=('!strip' '!debug')
+arch=('x86_64' 'aarch64' 'armv7h' 'armv6h' 'i686')
+source_x86_64=("https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-linux-x86_64.tar.gz")
+sha256sums_x86_64=('b3442b311d0357cb4ac50e554d3b751b781d3620720f42308451219cc75563ff')
+source_aarch64=("https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-linux-arm64.tar.gz")
+sha256sums_aarch64=('535ff05612746d6d9f7b49aedfe48f3d8f32df9d9e1cfdf58b536257ee3bdf66')
+source_armv7h=("https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-linux-armv7.tar.gz")
+sha256sums_armv7h=('e694551af21922fa726209b8d23d616c54d095413770c08ed4d38384d6e89c78')
+source_armv6h=("https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-linux-armv6.tar.gz")
+sha256sums_armv6h=('8d315f3e0698b6318d8ac818c0e9558c431a3e8eaa47822d979ce9220a9e5518')
+source_i686=("https://github.com/partham20/zeno-lang/releases/download/v0.1.0/zeno-0.1.0-linux-x86.tar.gz")
+sha256sums_i686=('aabf09f5282fe135440e0e4bb4fdfb30fa65ca59ea55b3bbbb5100ddcf00f28c')
+
+package() {
+    # The folder that the archive unpacked into, whichever processor it
+    # is for. The `/` at the end leaves out the archive itself, which
+    # lies beside it and has a name that begins the same.
+    cd "$srcdir"/zeno-$pkgver-linux-*/
+    install -Dm755 zeno "$pkgdir/usr/lib/zeno/zeno"
+    # Zeno built for a browser, which `zeno build --web` looks for
+    # beside `zeno`.
+    if [ -f zeno.wasm ]; then
+        install -Dm644 zeno.wasm "$pkgdir/usr/lib/zeno/zeno.wasm"
+    fi
+    install -d "$pkgdir/usr/bin" "$pkgdir/usr/share/zeno" "$pkgdir/usr/share/doc/zeno"
+    ln -s ../lib/zeno/zeno "$pkgdir/usr/bin/zeno"
+    cp -r examples editors "$pkgdir/usr/share/zeno/"
+    cp -r README.md docs "$pkgdir/usr/share/doc/zeno/"
+}
