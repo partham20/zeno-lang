@@ -1,14 +1,16 @@
 # Looks into one question on one machine, and is changed for each
 # question. It releases nothing.
 #
-# The question now: with the collector's two generations on macOS, the
-# tests of the examples built through LLVM hang: a compiled program
-# spins for ever at one instruction in zeno_page_new. The same example
-# built through C ends as it should there, the signal is not blocked,
-# the handler runs and the page opens. So this runs those two tests
-# under a clock with a runtime that has the two generations on macOS
-# and writes what it does into a file, and looks at a hung program
-# with lldb: the instruction, the registers, the memory.
+# The question now: with the collector's two generations on macOS, a
+# program built through LLVM spins for ever at a store into a page the
+# collector made read-only, and the signal that should open the page
+# never comes. A `try` in such a program calls `_setjmp`, which does not
+# keep the signals that are held back, and `raise` in the runtime calls
+# `longjmp`, which on macOS puts back the ones the place says were held:
+# whatever was in that memory. So after one caught error the signal may
+# be held back for good. This shows that with a few lines of C, and then
+# runs the whole test suite under a clock with the two generations on
+# macOS and `_longjmp` in the runtime, which pairs with `_setjmp`.
 
 name: probe
 
@@ -29,7 +31,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: A runtime that has two generations on macOS, and says what it does
+      - name: What _setjmp and longjmp do to the signals that are held back
+        run: |
+          mkdir pair && cd pair
+          cat > pair.c <<'C'
+          #include <setjmp.h>
+          #include <signal.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          static void say(const char *when) {
+              sigset_t held;
+              sigprocmask(0, NULL, &held);
+              printf("%s: SIGBUS held back %d, SIGSEGV %d, SIGINT %d\n", when,
+                     sigismember(&held, SIGBUS), sigismember(&held, SIGSEGV), sigismember(&held, SIGINT));
+          }
+
+          int main(void) {
+              jmp_buf place;
+              /* A place on the stack holds whatever was there before. */
+              memset(&place, 0xff, sizeof place);
+              say("at the start");
+              if (_setjmp(place) == 0) longjmp(place, 1);
+              say("after _setjmp and longjmp");
+              sigset_t none;
+              sigemptyset(&none);
+              sigprocmask(SIG_SETMASK, &none, NULL);
+              memset(&place, 0xff, sizeof place);
+              if (_setjmp(place) == 0) _longjmp(place, 1);
+              say("after _setjmp and _longjmp");
+              return 0;
+          }
+          C
+          cc -o pair pair.c
+          ./pair
+
+      - name: A runtime with two generations on macOS, and _longjmp
+        if: always()
         run: |
           python3 - <<'PY'
           path = 'src/runtime.c'
@@ -42,38 +80,19 @@ jobs:
 
           put('!defined(ZENO_ONE_GENERATION) && defined(__linux__)',
               '!defined(ZENO_ONE_GENERATION) && (defined(__linux__) || defined(__APPLE__))')
-          put('#include <sys/mman.h>\n',
-              '#include <sys/mman.h>\n#include <unistd.h>\n'
-              'static int probe_faults = 0, probe_opens = 0, probe_shuts = 0;\n'
-              '#include <fcntl.h>\n'
-              '#define PROBE(...) do { char b[300]; int n = snprintf(b, sizeof b, "probe %d ", (int)getpid()); n += snprintf(b + n, sizeof b - (size_t)n, __VA_ARGS__); int f = open("/tmp/zeno-probe.txt", O_WRONLY | O_CREAT | O_APPEND, 0644); if (f >= 0) { if (write(f, b, (size_t)n) < 0) {} close(f); } } while (0)\n')
-          put('    mprotect(page, page->units * ZENO_PAGE, PROT_READ | PROT_WRITE);\n',
-              '    int probe_r = mprotect(page, page->units * ZENO_PAGE, PROT_READ | PROT_WRITE);\n'
-              '    if (probe_r != 0 || probe_opens++ < 12) PROBE("open %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n')
-          put('    if (mprotect(page, page->units * ZENO_PAGE, PROT_READ) != 0) page->guarded = false;\n',
-              '    int probe_r = mprotect(page, page->units * ZENO_PAGE, PROT_READ);\n'
-              '    if (probe_r != 0 || probe_shuts++ < 12) PROBE("shut %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n'
-              '    if (probe_r != 0) page->guarded = false;\n')
-          put('    if (page != NULL && page->guarded) {\n        zeno_unguard(page);\n        return;\n    }\n',
-              '    if (probe_faults++ < 20 || probe_faults % 100000 == 0) PROBE("fault %d: signal %d at %p, lowest %p highest %p, page %p guarded %d\\n", probe_faults, sig, (void *)at, (void *)zeno_lowest, (void *)zeno_highest, (void *)page, page != NULL ? (int)page->guarded : -1);\n'
-              '    if (page != NULL && page->guarded) {\n        zeno_unguard(page);\n        return;\n    }\n')
-          put('    sigaction(SIGSEGV, &act, &zeno_old_segv);\n    sigaction(SIGBUS, &act, &zeno_old_bus);\n',
-              '    sigset_t probe_m;\n    int probe_r = sigprocmask(0, NULL, &probe_m);\n'
-              '    int probe_a = sigaction(SIGSEGV, &act, &zeno_old_segv);\n    int probe_b = sigaction(SIGBUS, &act, &zeno_old_bus);\n'
-              '    PROBE("watch: sigprocmask %d, SIGBUS blocked %d, SIGSEGV blocked %d, sigaction %d %d, handlers before: segv %p bus %p\\n", probe_r, sigismember(&probe_m, SIGBUS), sigismember(&probe_m, SIGSEGV), probe_a, probe_b, (void *)zeno_old_segv.sa_handler, (void *)zeno_old_bus.sa_handler);\n')
+          put('    longjmp(handler->place, 1);\n',
+              '#ifdef _WIN32\n    longjmp(handler->place, 1);\n#else\n    _longjmp(handler->place, 1);\n#endif\n')
           open(path, 'w').write(s)
           PY
-          git diff --stat
+          git diff
 
       - name: Build the tests with it
+        if: always()
         run: cargo test --no-run 2>&1 | tail -n 3
 
-      - name: The examples through LLVM, under a clock
-        run: tools/probe-tests.sh 240 llvm the_examples_it_can_compile_match
-
-      - name: The examples through C, under a clock
+      - name: The whole test suite, under a clock
         if: always()
-        run: tools/probe-tests.sh 300 c the_examples_compile_and_match
+        run: tools/probe-tests.sh 600 mended
 
       - uses: actions/upload-artifact@v4
         if: always()
