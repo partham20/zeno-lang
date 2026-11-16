@@ -240,8 +240,8 @@ compiled code has to remember to say that it wrote a pointer.
 
 Pages of text are never guarded: they hold no pointers, and a file read
 into one by the system must not find it read-only. On a chip
-(`--firmware`), and on systems without `mprotect` (Windows, for now),
-every collection is full. `-DZENO_ONE_GENERATION` asks for that anywhere.
+(`--firmware`), and for now on macOS and Windows, every collection is
+full: generations are used on Linux only (decision 22.11). `-DZENO_ONE_GENERATION` asks for that anywhere.
 
 ## When it runs
 

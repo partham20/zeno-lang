@@ -9638,8 +9638,8 @@ the next collection is full. After each collection the full pages of
 blocks with pointers are made read-only with `mprotect`; the first write
 to one is caught by a signal handler, which opens the page and marks it
 as written. A small collection looks inside the old blocks of every page
-that is open. On a chip, and where there is no `mprotect` (Windows, for
-now), every collection is full.
+that is open. On a chip, and for now on macOS and Windows, every
+collection is full (22.11).
 
 **Why.** The trees benchmark keeps a tree of two million nodes for the
 whole run, and every collection marked all of it again: 140 times. With
@@ -9664,6 +9664,13 @@ collections, which trades memory for time without changing the work.
 
 - Generations on Windows, with `VirtualProtect` and a handler of its
   own.
+- Generations on macOS. They were on at first, and in the 0.3.0
+  release rehearsal three compiled test programs hung on a Mac with
+  Apple silicon while Linux passed. The cause is not found yet; the
+  likeliest is a write fault the handler does not clear, so the same
+  write faults forever. Until it is found and a Mac test shows it gone,
+  macOS has every collection full, as Windows does: slower on programs
+  that keep many objects, never wrong.
 
 ### 22.12 Each release keeps its benchmark times
 
