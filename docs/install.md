@@ -263,9 +263,10 @@ So each release has its own `install.sh`, at
   Homebrew, winget) came next, and are in [`packages.md`](packages.md).
 - **No `.pkg` for macOS.** An unsigned one is refused by macOS more
   firmly than the script is.
-- **The repository is private** while this is written, and a private
-  release cannot be downloaded by a script. The line above works from
-  the day the repository is public.
+- **A machine that cannot reach GitHub** cannot use the line. Put
+  `install.sh`, `SHA256SUMS.txt` and the archive for the machine in
+  one folder, by whatever way there is, and run `ZENO_FROM=. sh
+  install.sh` there.
 - **`zeno` does not update itself.** Running the installer again
   installs the newest version over the old one.
 

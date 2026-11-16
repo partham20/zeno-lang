@@ -271,9 +271,9 @@ a version that is already released, started by hand.
 ## The other half: where each manager looks
 
 For `apt install zeno` and the rest to work with one word, Zeno has to
-be in the place that manager looks in. Every one of them first needs
-**the repository to be public**: they all download from the release.
-After that:
+be in the place that manager looks in. Every one of them downloads
+from the release, so the repository had to be public first, and it is
+since 16 November 2026. What is left for each:
 
 | For | What has to happen | Then it is |
 |---|---|---|

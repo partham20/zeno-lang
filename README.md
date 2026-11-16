@@ -585,8 +585,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     package for pacman, a snap and a flatpak, and recipes for Homebrew
     and winget, all made from the release's own files and each
     installed, run and removed before a release. What is left is the
-    place each manager looks in, which needs the repository public
-    and an account for each.
+    place each manager looks in, which needs an account for each.
     See [`docs/packages.md`](docs/packages.md))
 29. A timer that can be stopped (done, in 0.2: `web.after` and
     `web.every` give a `Timer`, and `timer.stop()` calls off what

@@ -8382,9 +8382,9 @@ installs those two with winget.
 
 ### 15.21 What packages do not do yet
 
-- **None is in the place its manager looks in.** That needs the
-  repository to be public, and then for each an account or somebody's
-  say-so: a pull request to Microsoft's `winget-pkgs`, an account on
+- **None is in the place its manager looks in.** The repository is
+  public since 16 November 2026, which all of them needed first. What
+  each still needs is an account or somebody's say-so: a pull request to Microsoft's `winget-pkgs`, an account on
   the AUR, an account on the Snap Store with the name `zeno` and leave
   to be `classic`, a request to Flathub, and for apt a repository of
   `.deb` files with a signed list. Each of those is done in Partha's
