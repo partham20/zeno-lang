@@ -23,6 +23,20 @@
 #include <math.h>
 #ifndef ZENO_FIRMWARE
 #include <setjmp.h>
+/* A `try` jumps with `_setjmp` and `_longjmp`, which leave the signal mask
+ * alone, outside Windows. The LLVM build calls `_setjmp` (IR cannot call a
+ * macro), and on macOS plain `longjmp` sets the mask from the jmp_buf,
+ * where `_setjmp` stored none: after a caught error the program could be
+ * left with the write-fault signal held back, and hang on the next write
+ * to a guarded page (decision 22.14). One pair everywhere avoids that, and
+ * saves a system call per `try` on macOS. */
+#ifdef _WIN32
+#define zeno_setjmp(place) setjmp(place)
+#define zeno_longjmp(place) longjmp(place, 1)
+#else
+#define zeno_setjmp(place) _setjmp(place)
+#define zeno_longjmp(place) _longjmp(place, 1)
+#endif
 #endif /* ZENO_FIRMWARE */
 #include <stdarg.h>
 #include <stdbool.h>
@@ -1327,7 +1341,7 @@ __attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, in
     if (zeno_trying == NULL) zeno_uncaught();
     zeno_try *handler = zeno_trying;
     zeno_trying = handler->outer; /* that `try` is over, whatever happens next */
-    longjmp(handler->place, 1);
+    zeno_longjmp(handler->place);
 }
 
 /* No `except` of this `try` wanted the error: pass it outward unchanged. */

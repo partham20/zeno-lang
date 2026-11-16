@@ -317,7 +317,7 @@ try {
 zeno_try t1;                        // a place to come back to
 t1.outer = zeno_trying;
 zeno_trying = &t1;                  // from here on, errors come to t1
-if (setjmp(t1.place) == 0) {
+if (zeno_setjmp(t1.place) == 0) {
     z_port = z_parse_port(z_text);
     zeno_print(1, zeno_str_int(z_port));
     zeno_trying = t1.outer;         // finished with no error
@@ -332,7 +332,8 @@ if (setjmp(t1.place) == 0) {
 `setjmp` is a C library function that remembers "here": where the program
 is, and what is in the processor's registers. It returns 0. Later,
 `longjmp` puts all of that back, and the program finds itself returning
-from that same `setjmp` a second time, now with 1.
+from that same `setjmp` a second time, now with 1. (`zeno_setjmp` is `_setjmp`, the form that leaves the
+signal mask alone, everywhere but Windows; decision 22.14.)
 
 So a `try` remembers a place, and tells the runtime about it by putting it
 at the front of a chain (`zeno_trying`). `raise`, or any error the runtime

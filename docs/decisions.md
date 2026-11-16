@@ -9722,6 +9722,26 @@ every message is written. One meaning stays in one place (5.10).
 would be the next big step; Partha chose to finish 0.3 first and decide
 after seeing its benchmarks (2026-11-16).
 
+### 22.14 A `try` jumps with `_setjmp` and `_longjmp`
+
+Outside Windows, the runtime's `zeno_raise` jumps with `_longjmp`, and
+the C build's `try` calls `_setjmp` (the macros `zeno_setjmp` and
+`zeno_longjmp` in runtime.c). Windows keeps `setjmp` and `longjmp`.
+
+**Why.** The LLVM build has always called `_setjmp`, since IR cannot
+call the macro `setjmp`. The runtime answered with plain `longjmp`. On
+macOS `longjmp` also sets the signal mask from the jmp_buf, and
+`_setjmp` stores none there, so after a caught error the mask was
+whatever bytes were in that place. The 0.3.0 release rehearsal found
+it: in an LLVM build that caught an error, the write-fault signal of
+the collector's generations (22.10) was held back, and the next write
+to a guarded page stopped the program for good. glibc's `_setjmp` marks
+the mask as not saved, so Linux never showed it. The release thread
+traced it on a Mac (lldb on the hung program, decisions 22.11). A
+matched pair is correct on every system, and `_setjmp` saves a system
+call for each `try` on macOS. Zeno never changes the signal mask, so
+there is nothing for a jump to put back.
+
 ### 20.6 The playground shows the C a program becomes
 
 The playground has a C tab: the program as `zeno build` writes it,

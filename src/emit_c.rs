@@ -2560,7 +2560,7 @@ impl Emitter<'_> {
     /// zeno_try t1;                      // a place to come back to
     /// t1.outer = zeno_trying;
     /// zeno_trying = &t1;                // from here on, errors come to t1
-    /// if (setjmp(t1.place) == 0) {
+    /// if (zeno_setjmp(t1.place) == 0) {
     ///     ...the body...
     ///     zeno_trying = t1.outer;       // finished with no error
     /// } else if (zeno_caught("ValueError")) {
@@ -2581,7 +2581,7 @@ impl Emitter<'_> {
         self.line(format!("zeno_try {place};"));
         self.line(format!("{place}.outer = zeno_trying;"));
         self.line(format!("zeno_trying = &{place};"));
-        self.line(format!("if (setjmp({place}.place) == 0) {{"));
+        self.line(format!("if (zeno_setjmp({place}.place) == 0) {{"));
         self.tries.push(place.clone());
         self.try_scopes.push(self.scopes.len());
         let result = self.block(body);
