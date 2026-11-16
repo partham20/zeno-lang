@@ -1,0 +1,86 @@
+{
+  "size": "big",
+  "sizes": {
+    "fib": 40,
+    "loop": 1000000000,
+    "sort": 10000000,
+    "strings": 10000000,
+    "trees": 20,
+    "nbody": 10000000
+  },
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.3.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "engines": {
+    "c": "C (cc -O2)",
+    "rust": "Rust (rustc -O)",
+    "zeno": "zeno build",
+    "zeno-llvm": "zeno build --llvm",
+    "zeno-release": "zeno build --release",
+    "zeno-owned": "zeno build --release --owned",
+    "zeno-owned-checked": "zeno build --owned"
+  },
+  "times": {
+    "fib": {
+      "c": 0.157,
+      "rust": 0.246,
+      "zeno": 0.482,
+      "zeno-llvm": 0.443,
+      "zeno-release": 0.122,
+      "zeno-owned": 0.145,
+      "zeno-owned-checked": 0.479
+    },
+    "loop": {
+      "c": 0.847,
+      "rust": 0.879,
+      "zeno": 1.388,
+      "zeno-llvm": 1.157,
+      "zeno-release": 0.957,
+      "zeno-owned": 0.959,
+      "zeno-owned-checked": 1.332
+    },
+    "sort": {
+      "c": 0.998,
+      "rust": 1.158,
+      "zeno": 1.379,
+      "zeno-llvm": 1.927,
+      "zeno-release": 1.171,
+      "zeno-owned": 1.389,
+      "zeno-owned-checked": 1.353
+    },
+    "strings": {
+      "c": 0.921,
+      "rust": 0.729,
+      "zeno": 3.446,
+      "zeno-llvm": 3.652,
+      "zeno-release": 3.547,
+      "zeno-owned": 3.812,
+      "zeno-owned-checked": 3.848
+    },
+    "trees": {
+      "c": 6.269,
+      "rust": 6.975,
+      "zeno": 12.051,
+      "zeno-llvm": 11.8,
+      "zeno-release": 12.13,
+      "zeno-owned": 4.325,
+      "zeno-owned-checked": 4.793
+    },
+    "nbody": {
+      "c": 0.431,
+      "rust": 0.373,
+      "zeno": 1.12,
+      "zeno-llvm": 0.72,
+      "zeno-release": 1.198,
+      "zeno-owned": 0.928,
+      "zeno-owned-checked": 0.879
+    }
+  }
+}

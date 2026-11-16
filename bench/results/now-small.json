@@ -1,0 +1,86 @@
+{
+  "size": "small",
+  "sizes": {
+    "fib": 32,
+    "loop": 100000000,
+    "sort": 1000000,
+    "strings": 1000000,
+    "trees": 16,
+    "nbody": 1000000
+  },
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v470-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.3.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-16"
+  },
+  "engines": {
+    "c": "C (cc -O2)",
+    "rust": "Rust (rustc -O)",
+    "zeno": "zeno build",
+    "zeno-owned": "zeno build --release --owned",
+    "vm": "zeno run --vm",
+    "run": "zeno run",
+    "python": "Python 3"
+  },
+  "times": {
+    "fib": {
+      "c": 0.005,
+      "rust": 0.007,
+      "zeno": 0.012,
+      "zeno-owned": 0.005,
+      "vm": 1.06,
+      "run": 2.891,
+      "python": 0.244
+    },
+    "loop": {
+      "c": 0.092,
+      "rust": 0.071,
+      "zeno": 0.142,
+      "zeno-owned": 0.098,
+      "vm": 15.479,
+      "run": 32.256,
+      "python": 11.546
+    },
+    "sort": {
+      "c": 0.097,
+      "rust": 0.084,
+      "zeno": 0.117,
+      "zeno-owned": 0.121,
+      "vm": 4.697,
+      "run": 13.482,
+      "python": 2.254
+    },
+    "strings": {
+      "c": 0.092,
+      "rust": 0.064,
+      "zeno": 0.243,
+      "zeno-owned": 0.269,
+      "vm": 1.928,
+      "run": 2.864,
+      "python": 0.422
+    },
+    "trees": {
+      "c": 0.222,
+      "rust": 0.282,
+      "zeno": 0.517,
+      "zeno-owned": 0.177,
+      "vm": 20.849,
+      "run": 30.224,
+      "python": 3.807
+    },
+    "nbody": {
+      "c": 0.038,
+      "rust": 0.037,
+      "zeno": 0.126,
+      "zeno-owned": 0.076,
+      "vm": 23.488,
+      "run": 51.356,
+      "python": 3.491
+    }
+  }
+}
