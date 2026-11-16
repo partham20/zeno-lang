@@ -4,6 +4,7 @@
     python3 tools/targets.py                 # every target, every program
     python3 tools/targets.py js py           # only these targets
     python3 tools/targets.py js --only ch12  # only programs whose name has ch12
+    python3 tools/targets.py --jobs 1        # one program at a time (one per processor otherwise)
     python3 tools/targets.py --list          # the programs, and nothing run
 
 The programs are every example in examples/, the programs in
@@ -26,6 +27,7 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import tempfile
 from pathlib import Path
@@ -37,10 +39,13 @@ ZENO = Path(os.environ.get("ZENO", REPO / "target/release/zeno"))
 # built. {name} is the program's name, {file} the file `zeno build` wrote.
 TARGETS = {
     "js": {"needs": ["node"], "run": ["node", "{file}"]},
+    "py": {"needs": ["python3"], "run": ["python3", "{file}"]},
+    "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
+    "java": {"needs": ["java"], "run": ["java", "{file}"]},
+    "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},
     # A page has no keyboard, no command line and no files to write, and it
     # cannot stand still: a program that is typed at, given words, writes a
     # file or sleeps is left out. tools/run-page.js needs Playwright.
-    "py": {"needs": ["python3"], "run": ["python3", "{file}"]},
     "html": {"needs": ["node"], "run": ["node", str(REPO / "tools/run-page.js"), "{file}"], "page": True},
 }
 
@@ -136,6 +141,8 @@ def main():
     if "--only" in sys.argv:
         only = sys.argv[sys.argv.index("--only") + 1]
         wanted = [w for w in wanted if w != only]
+    if "--jobs" in sys.argv:
+        wanted = [w for w in wanted if w != sys.argv[sys.argv.index("--jobs") + 1]]
     targets = [name for name in TARGETS if not wanted or name in wanted]
     if not ZENO.exists():
         subprocess.run(["cargo", "build", "--release", "-q"], cwd=REPO, check=True)
@@ -146,11 +153,43 @@ def main():
             print(program.name, program.folder / program.file)
         return 0
 
+    # Programs are tried a few at a time: one per processor, unless
+    # `--jobs N` says otherwise. Results are printed in the same order.
+    jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else (os.cpu_count() or 1)
+    pool = ThreadPoolExecutor(max_workers=jobs)
+
     # What `zeno run` prints is what every target must print.
-    expected = {}
-    for program in found:
+    def run_zeno(program):
         status, out, _ = run([str(ZENO), "run", program.file] + program.args, program.folder, program.stdin)
-        expected[program.name] = (status == 0, out)
+        return status == 0, out
+
+    expected = dict(zip((p.name for p in found), pool.map(run_zeno, found)))
+
+    def try_program(target, spec, program):
+        """"pass", "left out", or the reason it failed."""
+        if spec.get("page") and (program.stdin or program.args or PAGE_CANNOT.search(program.source())):
+            return "left out"
+        out_dir = scratch / "out" / target / program.name.replace("/", "_").replace("#", "_")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        status, built, errors = run([str(ZENO), "build", "--target", target, str(program.folder / program.file)], out_dir)
+        if status != 0:
+            if "a program built for another language cannot use" in errors or "manual memory" in errors:
+                return "left out"
+            ok, _ = expected[program.name]
+            if not ok and "error" in errors:
+                # A program that `zeno run` refuses is refused here too.
+                return "pass"
+            return "the build failed:\n" + errors.strip()
+        file = re.search(r"Wrote (\S+?)\.? ", built + " ")
+        file = file.group(1) if file else ""
+        command = [part.replace("{file}", str(out_dir / file)).replace("{dir}", str(out_dir))
+                   for part in spec["run"]]
+        status, out, errors = run(command + program.args, program.folder, program.stdin)
+        ok, want = expected[program.name]
+        if (status == 0) == ok and out == want:
+            return "pass"
+        why = f"zeno run {'succeeded' if ok else 'failed'}, the {target} program {'succeeded' if status == 0 else 'failed'}"
+        return f"{why}\n--- zeno run printed\n{want}--- {target} printed\n{out}--- {target} said\n{errors}"
 
     failed_any = False
     for target in targets:
@@ -160,35 +199,14 @@ def main():
             print(f"{target}: left out, because {', '.join(missing)} is not installed")
             continue
         passed, left_out, failures = 0, [], []
-        for program in found:
-            if spec.get("page") and (program.stdin or program.args or PAGE_CANNOT.search(program.source())):
-                left_out.append(program.name)
-                continue
-            out_dir = scratch / "out" / target / program.name.replace("/", "_").replace("#", "_")
-            out_dir.mkdir(parents=True, exist_ok=True)
-            status, built, errors = run([str(ZENO), "build", "--target", target, str(program.folder / program.file)], out_dir)
-            if status != 0:
-                if "a program built for another language cannot use" in errors or "manual memory" in errors:
-                    left_out.append(program.name)
-                    continue
-                ok, _ = expected[program.name]
-                if not ok and "error" in errors:
-                    # A program that `zeno run` refuses is refused here too.
-                    passed += 1
-                    continue
-                failures.append((program, "the build failed:\n" + errors.strip()))
-                continue
-            file = re.search(r"Wrote (\S+?)\.? ", built + " ")
-            file = file.group(1) if file else ""
-            command = [part.replace("{file}", str(out_dir / file)).replace("{dir}", str(out_dir))
-                       for part in spec["run"]]
-            status, out, errors = run(command + program.args, program.folder, program.stdin)
-            ok, want = expected[program.name]
-            if (status == 0) == ok and out == want:
+        results = pool.map(lambda program: try_program(target, spec, program), found)
+        for program, result in zip(found, results):
+            if result == "pass":
                 passed += 1
+            elif result == "left out":
+                left_out.append(program.name)
             else:
-                why = f"zeno run {'succeeded' if ok else 'failed'}, the {target} program {'succeeded' if status == 0 else 'failed'}"
-                failures.append((program, f"{why}\n--- zeno run printed\n{want}--- {target} printed\n{out}--- {target} said\n{errors}"))
+                failures.append((program, result))
         total = passed + len(failures)
         print(f"{target}: {passed} of {total} programs print what `zeno run` prints"
               + (f" ({len(left_out)} left out: they use the board, a page, manual memory"

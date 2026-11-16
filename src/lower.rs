@@ -248,8 +248,10 @@ pub enum Cond {
 #[derive(Clone, Copy, Default)]
 pub struct Options {
     /// The target works out the arguments of a call in an order of its
-    /// own choosing (C++). Then every argument that is not a plain name
-    /// or a constant is worked out first, into a variable, in Zeno's order.
+    /// own choosing (C++), or reads a variable at a time of its own
+    /// choosing (Go). Then every argument before the last one that does
+    /// anything, other than a constant, is worked out first, into a
+    /// variable, in Zeno's order.
     pub unordered_arguments: bool,
 }
 
@@ -446,6 +448,11 @@ fn compares(op: BinaryOp) -> bool {
 
 /// A value that can be worked out at any moment with the same result and
 /// no effect, so it need not be kept in a variable to keep Zeno's order.
+/// A value that is the same whenever it is worked out.
+fn constant(expr: &Expr) -> bool {
+    trivial(expr) && !matches!(expr, Expr::Var(_))
+}
+
 fn trivial(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -474,7 +481,9 @@ impl Lowerer {
     fn ident(&mut self, wanted: &str) -> String {
         let mut base: String =
             wanted.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
-        if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
+        // `_` alone is Go's, Java's, C#'s and Rust's: a name that is
+        // nothing but `_` becomes `v_`.
+        if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) || base.chars().all(|c| c == '_') {
             base = format!("v{base}");
         }
         // A name of a runtime begins with `z_`, `Z` or `__`; a name of
@@ -1110,12 +1119,19 @@ impl Lowerer {
             }
             done.push(value);
         }
-        if self.options.unordered_arguments && done.iter().filter(|value| !trivial(value)).count() > 1 {
-            let last = done.len() - 1;
-            for (place, earlier) in done.iter_mut().enumerate() {
-                if place != last {
-                    let value = std::mem::replace(earlier, Expr::None);
-                    *earlier = self.spill(value, out);
+        // In Go and C++ a variable may be read after a call written to its
+        // right, which may change it: everything before the last argument
+        // that does anything, other than a constant, is worked out first.
+        if self.options.unordered_arguments {
+            if let Some(last) = done.iter().rposition(|value| !trivial(value)) {
+                for earlier in done[..last].iter_mut() {
+                    if !constant(earlier) {
+                        let value = std::mem::replace(earlier, Expr::None);
+                        // A variable too: its value now, not after the call.
+                        let t = self.temp(VarKind::Value);
+                        out.push(self.set(t, value));
+                        *earlier = self.read(t);
+                    }
                 }
             }
         }

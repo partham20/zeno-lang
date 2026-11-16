@@ -20,6 +20,9 @@ mod checker;
 mod deflate;
 mod emit_bytecode;
 mod emit_c;
+mod emit_go;
+mod emit_cs;
+mod emit_java;
 mod emit_js;
 mod emit_py;
 mod emit_llvm;
@@ -138,8 +141,8 @@ fn usage() {
     println!("                           (docs/web.md)");
     println!("  --target <language>      with build: write the program in another");
     println!("                           language, by fixed rules: js, html (a page");
-    println!("                           that runs it), py. It prints what `zeno run`");
-    println!("                           prints (docs/targets.md)");
+    println!("                           that runs it), py, go, java, cs. It prints");
+    println!("                           what `zeno run` prints (docs/targets.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -800,7 +803,7 @@ fn own_page(path: &str) -> Option<String> {
 /// The languages `--target` can write a program in: the name after
 /// `--target`, the file it writes, and how to run that file.
 const TARGETS: &[(&str, &str, &str)] =
-    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}")];
+    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}")];
 
 /// `zeno build --target js <file>`: write the program in another
 /// language (lower.rs, and emit_js.rs and the others).
@@ -825,7 +828,8 @@ fn build_target(path: &str, target: &str) -> Option<()> {
         return None;
     }
     let names: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
-    let tree = match lower::lower(&program, names, lower::Options::default()) {
+    let options = lower::Options { unordered_arguments: matches!(target, "go" | "cpp") };
+    let tree = match lower::lower(&program, names, options) {
         Ok(tree) => tree,
         Err(error) => {
             report(&files, &error);
@@ -849,6 +853,9 @@ fn build_target(path: &str, target: &str) -> Option<()> {
             emit_js::page(&tree, &page)
         }
         "py" => emit_py::emit(&tree, source),
+        "go" => emit_go::emit(&tree, source),
+        "java" => emit_java::emit(&tree, source),
+        "cs" => emit_cs::emit(&tree, source),
         _ => emit_js::emit(&tree, source),
     };
     if let Err(err) = fs::write(&file, text) {

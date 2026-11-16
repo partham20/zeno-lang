@@ -255,8 +255,8 @@ collector in the program) and `--memory`.
 
 `zeno build --target <language>` writes the program in another language,
 by fixed rules, as a file that runs with that language's own tools:
-`js` (Node), `html` (a page that runs it) and `py` (Python), with more
-to come ([`docs/targets.md`](docs/targets.md)). The written program
+`js` (Node), `html` (a page that runs it), `py` (Python), `go`,
+`java` and `cs` (C#), with more to come ([`docs/targets.md`](docs/targets.md)). The written program
 prints what `zeno run` prints, overflows and errors included, and
 `tools/targets.py` checks that for every example and book sample.
 

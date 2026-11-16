@@ -13,6 +13,9 @@ Hello, Zeno!
 $ zeno build --target py examples/hello.zeno
 Wrote hello.py. Run it with `python3 hello.py`
 
+$ zeno build --target go examples/hello.zeno
+Wrote hello.go. Run it with `go run hello.go`
+
 $ zeno build --target html examples/hello.zeno
 Wrote hello.html. Open it in a browser
 ```
@@ -22,9 +25,12 @@ Wrote hello.html. Open it in a browser
 | `js` | `hello.js` | `node hello.js` |
 | `html` | `hello.html`, a page that runs the program | a browser |
 | `py` | `hello.py` | `python3 hello.py` |
+| `go` | `hello.go` | `go run hello.go` |
+| `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
+| `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
 
-More languages follow (Go, Java, C#, C++, Rust, and WebAssembly); this
-page grows with each.
+More languages follow (C++, Rust, and WebAssembly); this page grows
+with each.
 
 The file is written by fixed rules, the same every time: the same
 program gives the same file, letter for letter. No guessing and no AI
@@ -71,6 +77,9 @@ target, runs it, and compares:
 $ python3 tools/targets.py
 js: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 py: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+go: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+java: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+cs: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 html: 311 of 311 programs print what `zeno run` prints (29 left out: ...)
 ```
 
@@ -86,13 +95,15 @@ Three steps, in three files.
    everything Zeno writes as one expression but other languages need
    statements for (`[x * x for x in xs if x > 0]`, `0 <= t < 10`) made
    into statements, in the order Zeno would do them.
-2. **The runtime** (`src/runtime.js`, `src/runtime.py`): what every Zeno
+2. **The runtime** (`src/runtime.js`, `src/runtime.py`,
+   `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`): what every Zeno
    value is in that language, and what each operator and built-in does
    with it, written to do what `ops.rs` and `builtins.rs` do for
    `zeno run`, step for step and message for message. It goes at the
    top of the file, so the file needs nothing else.
-3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`): the lowered
-   program in that language's words.
+3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_go.rs`,
+   `src/emit_java.rs`, `src/emit_cs.rs`): the lowered program in that
+   language's words.
 
 Here is a function, and what the JavaScript and the Python say:
 
@@ -136,6 +147,49 @@ use.
 used before the line it is written on. A function is a real
 function of the language, with its Zeno name and parameters kept on it
 so that `area(r: 2.0)` can be lined up.
+
+In Go, Java and C# every value is the language's "anything" (`any`,
+`Object`, `object`), and the program is at the bottom of the file, after
+the runtime in Go and at the top in Java and C#. The Go:
+
+```go
+func main() {
+	Zstart([]string{"area.zeno"}, func() ZV {
+		var area, math_ ZV
+		_, _ = area, math_
+		area = Zfn("area", []string{"r"}, []bool{false}, func(z_args []ZV) ZV {
+			r := z_args[0]
+			_ = r
+			return Zmul(Zmul(Zbuiltin("math.pi", 0), r, 4), r, 4)
+		})
+		math_ = Zmodule("math")
+		_ = Zb_print([]ZV{Zdirect(area, 6, float64(2.0))}, 6)
+		return nil
+	})
+}
+```
+
+and the C#:
+
+```csharp
+Z.start(new string[] {"area.zeno"}, args, () => {
+    object area = null, math_ = null;
+    area = Z.fn("area", new string[] {"r"}, new bool[] {false}, (object[] z_args1) => {
+        object r = z_args1[0];
+        return Z.mul(Z.mul(Z.builtin("math.pi", 0), r, 4), r, 4);
+        return null;
+    });
+    math_ = Z.module("math");
+    Z.b_print(new object[] {Z.direct(area, 6, new object[] {2.0})}, 6);
+    return null;
+});
+```
+
+The `_ = r` lines are there because Go refuses a variable that is never
+read. The `return null;` after a `return` is there because a Zeno
+function that ends without one gives `none`; C# only warns about it, and
+the file turns that warning off. Java needs `if (true) return ...;` for
+the same line, since it refuses it (decision 24.13).
 
 ### Names
 
@@ -208,24 +262,44 @@ file and a faster program, but no `import web` yet.
 
 Zeno refuses such a program with a message that names the line.
 
+## Known limits
+
+- **The last digit of `sin`, `exp`, `pow` and the like.** `zeno run`
+  asks the computer's C library for these. Python, C# (and C++ and Rust)
+  use the same library and print the same digits. Node, Java and Go
+  carry their own, which can give a different 17th digit, the last one
+  a float prints, for some inputs. Go uses a copy of JavaScript's `sin`,
+  `cos` and `tan`, and Java uses `Math` rather than `StrictMath`, which
+  makes it rare; none of the 319 programs shows it (decision 24.16).
+- **Nesting.** Every target stops at 1000 nested calls with Zeno's
+  message, as `zeno run` does. Go, Java and C# count; JavaScript and
+  Python stop where their own limit is, with a message close to Zeno's.
+
 ## Speed
 
 The written program is as correct as `zeno run` first, and as fast as
 that allows. Seconds, on the benchmarks in `bench/`, against `zeno run
 --vm`:
 
-| | `zeno run --vm` | `--target js` (Node 22) | `--target py` (Python 3.13) |
-|---|---|---|---|
-| fib | 0.81 | 0.12 | 2.3 |
-| sort | 3.8 | 1.2 | 18.1 |
-| strings | 2.0 | 0.6 | 1.6 |
-| trees | 10.7 | 2.2 | 28.3 |
+| | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) |
+|---|---|---|---|---|---|---|
+| fib | 0.78 | 0.12 | 2.3 | 0.31 | 0.19 | 0.90 |
+| sort | 3.7 | 1.2 | 18.1 | 2.1 | 1.2 | 4.2 |
+| strings | 1.8 | 0.6 | 1.6 | 0.9 | 0.8 | 1.8 |
+| trees | 10.6 | 2.2 | 28.3 | 4.2 | 1.4 | 6.6 |
 
-JavaScript is three to seven times faster than the VM, because Node
-compiles it to machine code as it runs. Python is slower: every `+` is
-a call of `Z.add`, which checks what Zeno checks. Where the checker
-knows both sides are ints and the sum cannot overflow, a plain `+`
-would do; that is the next step for speed (`docs/gaps.md`).
+(Go and Java timed as built programs, `go build` and `javac` first; C#
+as `dotnet run` on its second run, which reuses the build, about half
+a second of each figure being `dotnet` starting.)
+
+JavaScript and Java are three to eight times faster than the VM,
+because Node and the JVM compile the program to machine code as it runs
+and learn which kinds of value each `Z.add` really sees. Go is two to
+three times faster: it is compiled before it runs, but every value is
+an `any` and every `+` a call that looks at both sides. Python is
+slower: every `+` is a call of `Z.add`, which checks what Zeno checks.
+Where the checker knows both sides are ints, a plain `+` (with the
+overflow check) would do; that is the next step for speed.
 
 ## Things to try
 
@@ -249,3 +323,13 @@ would do; that is the next step for speed (`docs/gaps.md`).
 6. The page refuses `sleep`. What would it take to allow it? (A page
    runs one thing at a time; look at how `web.after` works in
    `docs/web.md`.)
+7. Build `examples/hello.zeno` for `go`, `java` and `cs`, and find the
+   line of the program in each. Count the lines above and below it:
+   which language needs the most words to say the same thing?
+8. Take out one of the `_ = x` lines in a Go file and run it with
+   `go run`. What does Go say? Then take the `if (true)` off a
+   `return` in the Java file, and the `#pragma` line off the C# file,
+   and compare what each language thinks of a line after `return`.
+9. Write `function f(n: int) -> int { return f(n + 1) }` and call it.
+   Build it for `go`, `java` and `cs`. Do they all stop with the same
+   message as `zeno run`? Find `1000` in `src/runtime.go`.

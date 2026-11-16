@@ -10226,3 +10226,90 @@ Java, C#, C++ and Rust, the statically typed ones; then WebAssembly.
 most with JavaScript, so it was the cheapest way to find what in the
 lowering was really JavaScript's; it found nothing, which is the
 evidence that the lowering is not tied to one language.
+
+### 24.12 Go, Java and C#: every value is the language's "anything"
+
+In Go every Zeno value is an `any`, in Java and C# an `Object`: a
+whole number is a 64-bit `int64`/`long`, a float a `float64`/`double`,
+and a list, dict, object or function a class of the runtime. Each
+operator is a call of the runtime that looks at what it was given, as in
+JavaScript and Python.
+
+**Why not the language's own types.** The checker often knows that a
+variable is an `int`, and could write `int64`. But a Zeno program also
+has values whose type is only known as the program runs (`json.parse`,
+a list of mixed things, an `Optional`), and both kinds have to meet in
+the same call. One kind of value everywhere keeps the printer small and
+the three runtimes the same as the other two. Typed code where the type
+is known is the step for speed after this one (24.2).
+
+### 24.13 What each of the three languages needed
+
+- **Go** refuses a variable that is never read, so every variable is
+  also given to `_` once (`_ = total`). Go has no `try`: Zeno's `try`
+  is a call of `Ztry` with two functions, the body and the handler,
+  which answer with a number for what happens next (go on, `break`,
+  `continue` or `return`), and the code after the call does it.
+- **Java** lets a lambda use only a variable that never changes, so a
+  variable an inner function uses is kept in a `Z.Cell`, as in Python
+  (24.7). Java refuses a statement it can prove is never reached, so
+  `return x` is written `if (true) return x;`. And Java reads `\u000a`
+  in a string as a new line in the source, so a character below a space
+  is written as an octal escape.
+- **C#** needs neither: a lambda can change a variable outside it, and
+  a statement never reached is only a warning, which the file turns
+  off. It refuses a name in an inner block that one outside has, which
+  the lowering's unique names (24.4) already rule out.
+
+**Why the lowering stays the same.** All three are things a printer can
+do by itself. The one change the lowering needed is 24.14.
+
+### 24.14 The order arguments are worked out in
+
+Zeno works out a call's arguments from left to right. JavaScript,
+Python, Java and C# do too; Go and C++ do not promise it. For those two
+the lowering copies every argument before the last one that calls
+something into a variable of its own, first, in Zeno's order: so in
+`show(count, next())` the `count` that is shown is the one before
+`next()` ran, as in Zeno, even if `next` changes it.
+
+**Why copy plain variables too.** Go reads a variable whenever it
+likes, so a plain `count` beside a call is not safe either; the first
+version left plain variables alone, and `examples/labels.zeno` printed
+the wrong count in Go.
+
+### 24.15 Nesting: 1000 calls, in every target
+
+`zeno run` stops a program whose calls nest more than 1000 deep, with a
+message that asks if the function calls itself forever. The Go, Java
+and C# runtimes count calls the same way and stop with the same
+message, and they run the program on a thread with a big stack so that
+1000 calls always fit.
+
+**Why.** A program that recurses forever should end the same way in
+every language, with Zeno's message, not with a Go "goroutine stack
+exceeds" or a Java `StackOverflowError`.
+
+### 24.16 The last digit of `sin`, `exp` and `pow`
+
+`zeno run` takes `math.sin`, `math.exp`, `math.pow` and the other
+functions of floats from the C library of the computer. Python, C#, C++
+and Rust use the same library, so they print the same digits. Others
+have their own: JavaScript's (in Node) and Java's `StrictMath` give a
+different last digit for about one input in ten, and Go's own `pow` for
+about one in three. To keep the difference as small as can be:
+
+- Go uses its own `sqrt`, `exp` and `log` (which agree with the C
+  library on the programs here) and, for `sin`, `cos` and `tan`, a copy
+  of the functions JavaScript uses, written in Go in runtime.go.
+- Java uses `Math`, not `StrictMath`: `Math` is allowed to use the
+  computer's own, which agree far more often.
+
+Where the last digit can still differ, it is listed as a known limit
+(in `docs/targets.md`): the answer is right to the 16th digit, but
+the 17th, which a float's printing shows, may be one off.
+
+**Why not exact everywhere now.** Making every runtime give the
+correctly rounded answer means writing those functions in each language
+with extra precision, a project of its own. None of the 319 programs
+shows a difference; the fix waits until a program needs it.
