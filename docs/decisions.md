@@ -4582,7 +4582,8 @@ list its object holds (5.19k).
 Only a list of ints, floats, sized numbers or text can be sorted.
 Anything else is refused: "`sort` puts numbers or text in order,
 smallest first, and this is list[bool]. There is no one order for
-those items, so write the loop that puts them in yours".
+those items, so write the loop that puts them in yours". (Since chapter 21 it
+says to give `sort` a function, which is that chapter.)
 
 **Why only those.** They are what `<` compares, and each has one order
 that nobody has to be told. Tasks could be ordered by name or by
@@ -9046,3 +9047,102 @@ at the foot of an empty frame it reads as a thing apart.
 the Book and the Docs, and on a phone the boxes are in 16px type,
 because a phone zooms into a box with smaller letters and does not
 zoom out again.
+
+## 21. `sort` with a function
+
+`sort` put numbers and text in order and refused everything else,
+and told the reader to "write the loop that puts them in yours"
+(6.6). That loop is a sorting algorithm, which is the thing a
+library is for. This chapter is `sort` for every list.
+
+### 21.1 The function gives a key, and is not asked to compare
+
+```zeno
+people.sort(function(person: Person) -> int { return person.age })
+```
+
+The function takes one item and returns what it is ordered by: an
+int, a float, a sized number or text. Smallest key first.
+
+**Why.** There are two shapes in the big languages. C, JavaScript
+and Java ask for a function of two items that says which comes
+first. Python and Rust's `sort_by_key` ask for a key. The first
+can say anything, and can also be wrong in ways nobody sees: one
+that answers "before" both ways round, or is not the same from one
+call to the next, gives an order that depends on how the sorting
+was written, and in C it can read past the end of the list. A key
+cannot be wrong like that. Whatever the function returns, numbers
+and text have one order.
+
+It is also what people mean. "By age" is a key. `a.age < b.age`
+is the same thought written twice, with a chance to write `a` both
+times.
+
+**The cost.** An order that is not "by something" needs a key
+built for it, and biggest first is a minus (or two sorts for
+text). A function of two items is refused with the reason, since
+it is what someone coming from JavaScript will write first.
+
+**The alternative** of taking both shapes, by how many parameters
+the function has, is two things under one name. It was not taken.
+
+### 21.2 The same name: `sort()` and `sort(by)`
+
+**Why.** It is the same act, on the same list, in place. A second
+name (`sort_by`) would be a second thing to learn for it, and
+`sort()` is then `sort` by the item itself. `pop()` and `pop(at)`
+are one name the same way.
+
+### 21.3 Items with the same key stay as they were
+
+**Why.** It is what a person expects of "sort the table by this
+column", and it is what makes two sorts add up: by name, then by
+age, is by age and by name within an age. Without it the order of
+equal items is whatever the algorithm did, which is nothing the
+program said.
+
+**How, with heapsort.** Heapsort does not keep equal items in
+order. The library has it because it needs no second list and no
+deep stack (library.md), and a compiled program must print what
+`zeno run` prints (5.5d), so both sides have the same steps. So
+each item's place is kept beside its key, and two keys that are
+neither before the other are settled by place. No two items are
+equal any more, and any correct way of sorting gives one answer.
+
+**The cost.** Two lists while it sorts, of keys and of places.
+`sort()` with no function still needs none.
+
+**`sort()` with no function is left as it is.** Two equal ints
+cannot be told apart, so nobody can see their order. The one case
+that can be seen, `0.0` and `-0.0`, is the same in every engine and
+is written down (library.md).
+
+### 21.4 The function is called once for each item, first
+
+All the keys are worked out, and then the list is put in order.
+
+**Why.** n calls, where asking during the sorting would be about
+n log n and would call the function with the list half sorted. A
+function that prints, or counts, does it once for each item, in
+the order the list was in.
+
+**If the function changes the list.** It may, as one given to
+`map` may. If the list then has more or fewer items than there are
+keys, `sort` raises a `ValueError` and the list is as the function
+left it. There is no right place for an item with no key.
+
+**Found on the way.** A function given to `map`, `filter` or
+`reduce` that changed the list it was walking crashed `zeno run`
+(the built programs were right). The interpreter held the list
+while it called the function. It lets go first now, and there is a
+test.
+
+### 21.5 Left for later
+
+- A key that is a quantity: `readings.sort(function(r) { return
+  r.temperature })` where that is `20 C`. `sort()` does not take
+  quantities either (17.3 is about `sum`, and the same care is
+  needed).
+- Two keys at once, where two sorts are written now.
+- `sorted`, which gives a new list and leaves the first. `slice(0)`
+  and `sort` do it in two lines.

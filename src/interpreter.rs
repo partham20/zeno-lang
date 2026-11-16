@@ -1189,6 +1189,20 @@ mod tests {
         );
         assert_eq!(output("print([\"b\", \"a\"].join(\", \"), [].join(\"-\") == \"\", [\"x\"].join(\"-\"))"), "b, a true x\n");
         // Ints and floats sort together, as `<` compares them.
+        // With a function: by what it gives, and the same stay as they were.
+        assert_eq!(
+            output("let words = [\"pear\", \"fig\", \"kiwi\", \"apple\", \"plum\"]\nwords.sort(len)\nprint(words)\nlet xs = [3, -7, 1]\nxs.sort(abs)\nprint(xs)"),
+            "[\"fig\", \"pear\", \"kiwi\", \"plum\", \"apple\"]\n[1, 3, -7]\n"
+        );
+        assert_eq!(
+            error("let xs = [2, 1]\nxs.sort(function(n) { return [n] })"),
+            "the function given to `sort` must return a number or text to order by, but it returned a list"
+        );
+        // A function given to `map` may change the list it is walking.
+        assert_eq!(
+            output("var xs = [1, 2]\nprint(xs.map(function(n: int) -> int {\n xs.append(n)\n return n * 2\n}), xs)"),
+            "[2, 4] [1, 2, 1, 2]\n"
+        );
         assert_eq!(output("function order(xs) {\n xs.sort()\n return xs\n}\nprint(order([2, 1.5, -3]), order([\"b\", \"B\", \"a\"]))"), "[-3, 1.5, 2] [\"B\", \"a\", \"b\"]\n");
         assert_eq!(error("print(\"abc\".slice(2, 9))"), "uncaught IndexError: slice 2 to 9 is out of range for a str of length 3");
         assert_eq!(error("print(\"abc\".slice(2, 1))"), "uncaught IndexError: slice 2 to 1 is out of range for a str of length 3");

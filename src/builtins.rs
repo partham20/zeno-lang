@@ -559,6 +559,65 @@ fn sort(items: &mut [Value], span: Span) -> Result<()> {
     Ok(())
 }
 
+/// What `sort` says when the function it was given changed how many
+/// items the list has. runtime.c says the same.
+pub const SORT_CHANGED: &str = "the function given to `sort` changed how many items the list has";
+
+/// Put `items` in the order of `keys`, smallest key first: `sort` with
+/// a function, which gave one key for each item. Items with keys that
+/// are neither before the other stay in the order they were in, which
+/// is what `places` is for: where each item was.
+///
+/// The same heapsort as `sort` above, and as `zeno_list_sort_by` in
+/// runtime.c, step for step.
+fn sort_by(items: &mut [Value], keys: &mut [Value], span: Span) -> Result<()> {
+    let mut places: Vec<usize> = (0..items.len()).collect();
+    let less = |a: &Value, b: &Value| -> Result<bool> {
+        match ops::binary(BinaryOp::Lt, a.clone(), b.clone(), span)? {
+            Value::Bool(less) => Ok(less),
+            _ => Ok(false),
+        }
+    };
+    let before = |keys: &[Value], places: &[usize], a: usize, b: usize| -> Result<bool> {
+        if less(&keys[a], &keys[b])? {
+            return Ok(true);
+        }
+        if less(&keys[b], &keys[a])? {
+            return Ok(false);
+        }
+        Ok(places[a] < places[b])
+    };
+    let sift = |items: &mut [Value], keys: &mut [Value], places: &mut [usize], mut root: usize, end: usize| -> Result<()> {
+        loop {
+            let mut child = 2 * root + 1;
+            if child >= end {
+                return Ok(());
+            }
+            if child + 1 < end && before(keys, places, child, child + 1)? {
+                child += 1;
+            }
+            if !before(keys, places, root, child)? {
+                return Ok(());
+            }
+            items.swap(root, child);
+            keys.swap(root, child);
+            places.swap(root, child);
+            root = child;
+        }
+    };
+    let len = items.len();
+    for root in (0..len / 2).rev() {
+        sift(items, keys, &mut places, root, len)?;
+    }
+    for end in (1..len).rev() {
+        items.swap(0, end);
+        keys.swap(0, end);
+        places.swap(0, end);
+        sift(items, keys, &mut places, 0, end)?;
+    }
+    Ok(())
+}
+
 pub fn call_method(
     machine: &mut dyn Machine,
     receiver: &Value,
@@ -721,8 +780,37 @@ pub fn call_method(
                 items.borrow_mut().clear();
                 Ok(Value::None)
             }
+            // `people.sort(age_of)`: the function gives a key for each
+            // item, and the items go in the order of their keys.
+            "sort" if args.len() == 1 => {
+                let function = args.remove(0);
+                let mut keys = Vec::new();
+                // The list is let go of before the function is called, which
+                // may change it.
+                let walked = items.borrow().clone();
+                for item in walked {
+                    let key = machine.call(function.clone(), vec![item], Vec::new(), span)?;
+                    if !matches!(key, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+                        return fatal(
+                            format!(
+                                "the function given to `sort` must return a number or text to order by, but it returned {}",
+                                key.type_name()
+                            ),
+                            span,
+                        );
+                    }
+                    keys.push(key);
+                }
+                let mut sorted = items.borrow().clone();
+                if sorted.len() != keys.len() {
+                    return raise("ValueError", SORT_CHANGED, span);
+                }
+                sort_by(&mut sorted, &mut keys, span)?;
+                *items.borrow_mut() = sorted;
+                Ok(Value::None)
+            }
             "sort" => {
-                arity(name, &args, 0, 0, span)?;
+                arity(name, &args, 0, 1, span)?;
                 // Sorted on the side, so that a `<` which fails leaves
                 // the list as it was.
                 let mut sorted = items.borrow().clone();
@@ -773,7 +861,10 @@ pub fn call_method(
                 arity(name, &args, 1, 1, span)?;
                 let function = args.remove(0);
                 let mut mapped = Vec::new();
-                for item in items.borrow().clone() {
+                // The list is let go of before the function is called, which
+                // may change it.
+                let walked = items.borrow().clone();
+                for item in walked {
                     mapped.push(machine.call(function.clone(), vec![item], Vec::new(), span)?);
                 }
                 Ok(Value::list(mapped))
@@ -782,7 +873,10 @@ pub fn call_method(
                 arity(name, &args, 1, 1, span)?;
                 let function = args.remove(0);
                 let mut kept = Vec::new();
-                for item in items.borrow().clone() {
+                // The list is let go of before the function is called, which
+                // may change it.
+                let walked = items.borrow().clone();
+                for item in walked {
                     match machine.call(function.clone(), vec![item.clone()], Vec::new(), span)? {
                         Value::Bool(true) => kept.push(item),
                         Value::Bool(false) => {}
@@ -805,7 +899,10 @@ pub fn call_method(
                 arity(name, &args, 2, 2, span)?;
                 let function = args.remove(0);
                 let mut total = args.remove(0);
-                for item in items.borrow().clone() {
+                // The list is let go of before the function is called, which
+                // may change it.
+                let walked = items.borrow().clone();
+                for item in walked {
                     total = machine.call(function.clone(), vec![total, item], Vec::new(), span)?;
                 }
                 Ok(total)

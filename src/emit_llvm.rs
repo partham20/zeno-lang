@@ -266,6 +266,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_reverse", "declare void @zeno_list_reverse(ptr)"),
     ("zeno_list_clear", "declare void @zeno_list_clear(ptr)"),
     ("zeno_list_sort", "declare void @zeno_list_sort(ptr, i32 signext)"),
+    ("zeno_list_sort_by", "declare void @zeno_list_sort_by(ptr, ptr, i32 signext, i32 signext, i32 signext)"),
     ("zeno_list_slice", "declare ptr @zeno_list_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
     ("zeno_list_join", "declare ptr @zeno_list_join(ptr, ptr)"),
     // Dicts. A key or a value travels as a slot of 64 bits, as an item
@@ -5388,6 +5389,9 @@ impl Emitter<'_> {
             }
             Kind::List(item) => match (name, args) {
                 ("map" | "filter" | "reduce", _) => self.over_list(name, &receiver, &item, args, span),
+                // With a function, `sort` is a walk that asks for the
+                // key of each item, and then the sorting.
+                ("sort", [_]) => self.over_list(name, &receiver, &item, args, span),
                 ("append", [arg]) if arg.name.is_none() => {
                     let value = self.expr(&arg.value)?;
                     self.stays(&value, span)?;
@@ -6213,8 +6217,19 @@ impl Emitter<'_> {
         // reach, so it is walked as it is.
         let own = list.passing;
         let items = if own { list.code.clone() } else { self.call("ptr", copy, format!("ptr {}", list.code)) };
+        // How the runtime reads a key that `sort` orders by: 0 a whole
+        // number, 1 a float, 2 text.
+        let by = match (name, &kind.returns) {
+            ("sort", Kind::Int) => 0,
+            ("sort", Kind::Float) => 1,
+            ("sort", Kind::Str) => 2,
+            ("sort", _) => {
+                return Err(cannot("`sort` with a function that returns anything but a number or text", span))
+            }
+            _ => 0,
+        };
         let out = match name {
-            "map" => {
+            "map" | "sort" => {
                 let len = self.set(format!("load i64, ptr {items}"));
                 self.call("ptr", "zeno_list_new", format!("i64 {len}"))
             }
@@ -6228,7 +6243,7 @@ impl Emitter<'_> {
         // With no collector the text each call of `map` gives back is in
         // the text room. The new list takes a copy of its own, and the
         // room is given back before the next call.
-        let mark = match name == "map" && !self.collector && is_text(&kind.returns) {
+        let mark = match matches!(name, "map" | "sort") && !self.collector && is_text(&kind.returns) {
             true => {
                 self.code.marks += 1;
                 let mark = format!("%mark.{}", self.code.marks);
@@ -6240,7 +6255,7 @@ impl Emitter<'_> {
         let (count, slot) = self.walk_open(name, &items);
         let each = self.from_slot(item, &slot, span)?;
         let result = match (name, &total) {
-            ("map", _) => {
+            ("map" | "sort", _) => {
                 let mut made = self.invoke(&function, &kind, vec![each], span)?;
                 if mark.is_some() {
                     made.code = self.call("ptr", "zeno_text_keep", format!("ptr {}", made.code));
@@ -6250,7 +6265,7 @@ impl Emitter<'_> {
                 if let Some(mark) = &mark {
                     self.text_back(mark);
                 }
-                Val::new(out, Kind::List(Box::new(kind.returns.clone()))).made()
+                Val::new(out.clone(), Kind::List(Box::new(kind.returns.clone()))).made()
             }
             ("filter", _) => {
                 let wanted = self.invoke(&function, &kind, vec![each.clone()], span)?;
@@ -6267,7 +6282,7 @@ impl Emitter<'_> {
                     false => slot,
                 };
                 self.run("zeno_list_append", format!("ptr {out}, i64 {taken}"));
-                Val::new(out, Kind::List(Box::new(item.clone()))).made()
+                Val::new(out.clone(), Kind::List(Box::new(item.clone()))).made()
             }
             (_, Some((total, ty))) => {
                 let so_far = Val::new(self.load(ty, total), kind.returns.clone());
@@ -6278,6 +6293,18 @@ impl Emitter<'_> {
             _ => return Err(wrong()),
         };
         self.count_close(&count);
+        // `people.sort(age_of)`: `out` has the key of each item. The
+        // runtime puts the items in the order of their keys, and the
+        // keys are done with.
+        let result = match name {
+            "sort" => {
+                let sorted = if own { &items } else { &list.code };
+                self.run("zeno_list_sort_by", format!("ptr {sorted}, ptr {out}, i32 {by}, {}", at(span)));
+                self.run(if mark.is_some() { "zeno_list_drop_text" } else { "zeno_list_drop" }, format!("ptr {out}"));
+                Val::nothing()
+            }
+            _ => result,
+        };
         if !own {
             // The copy that was walked was nobody else's.
             // Its items, if they have one owner each, are still the

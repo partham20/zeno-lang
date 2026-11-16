@@ -591,6 +591,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `web.every` give a `Timer`, and `timer.stop()` calls off what
     it was waiting to do.
     See chapter 19 of [`docs/decisions.md`](docs/decisions.md))
+30. `sort` with a function (done, in 0.3: `people.sort(age_of)` puts
+    a list of anything in the order of what the function gives for
+    each item, and items with the same stay as they were. In every
+    engine.
+    See [`docs/library.md`](docs/library.md) and chapter 21 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 ## Layout
 

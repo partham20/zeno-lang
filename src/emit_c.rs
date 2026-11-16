@@ -4213,6 +4213,10 @@ impl Emitter<'_> {
             vals[1] = self.temp(vals[1].clone(), span)?;
         }
         let function = vals[1].code.clone();
+        // `sort` reads the list twice: to walk it and to put it in order.
+        if name == "sort" && !vals[0].passing && !is_c_place(&vals[0].code) {
+            vals[0] = self.temp(vals[0].clone(), span)?;
+        }
 
         // `reduce` starts from its second argument.
         let total = match vals.get(2) {
@@ -4241,7 +4245,40 @@ impl Emitter<'_> {
         let slot = format!("{items}->items[{position}]");
         let each = Val::plain(from_slot(item, &slot, span)?, item.clone());
 
+        // What `sort` does when every key is known.
+        let mut after = Vec::new();
         let (before, inside, mut result) = match name {
+            // `people.sort(age_of)`: a list of keys is made as `map`
+            // makes a list, the runtime puts the items in the order of
+            // their keys, and the keys are done with.
+            "sort" => {
+                let by = match &kind.returns {
+                    Kind::Int => 0,
+                    Kind::Float => 1,
+                    Kind::Str => 2,
+                    _ => return Err(cannot("`sort` with a function that returns anything but a number or text", span)),
+                };
+                let out = self.new_temp();
+                let arg = self.coerce(each, &kind.params[0], span)?.code;
+                let call = invoke(&function, &kind, &[arg], span)?;
+                let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
+                let mut inside = Vec::new();
+                let sorted = if own { items.clone() } else { vals[0].code.clone() };
+                after.push(format!("zeno_list_sort_by({sorted}, {out}, {by}, {});", at(span)));
+                if !self.collector && is_text(&kind.returns) {
+                    self.marks += 1;
+                    let mark = format!("m{}", self.marks);
+                    before.push(format!("size_t {mark} = zeno_text_top;"));
+                    let kept = format!("zeno_text_keep({call})");
+                    inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &kept, span)?));
+                    inside.push(format!("zeno_text_top = {mark};"));
+                    after.push(format!("zeno_list_drop_text({out});"));
+                } else {
+                    inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &call, span)?));
+                    after.push(format!("zeno_list_drop({out});"));
+                }
+                (before, inside, Val::plain(String::new(), Kind::None))
+            }
             "map" => {
                 let out = self.new_temp();
                 let arg = self.coerce(each, &kind.params[0], span)?.code;
@@ -4303,6 +4340,9 @@ impl Emitter<'_> {
         }
         self.indent -= 1;
         self.line("}");
+        for line in after {
+            self.line(line);
+        }
         if !own {
             // The copy that was walked was nobody else's.
             self.line(self.drops.code_for_copy(item, &items));
@@ -4991,6 +5031,9 @@ impl Emitter<'_> {
                 let parts: Vec<&Val> = vals.iter().collect();
                 match (name, vals.as_slice()) {
                     ("map" | "filter" | "reduce", _) => self.over_list(name, vals, &item, span),
+                    // With a function, `sort` is a walk that asks for
+                    // the key of each item, and then the sorting.
+                    ("sort", [_, _]) => self.over_list(name, vals, &item, span),
                     ("append", [list, value]) => {
                         self.stays(value, span)?;
                         self.fits_a_slot(&item, span)?;
@@ -10425,6 +10468,60 @@ print(readings.find(30))
         no_collector_as_interpreter("library", LIBRARY);
         // A program that uses them for a job: lines from a sensor.
         no_collector_as_interpreter("sentence", include_str!("../examples/sentence.zeno"));
+    }
+
+    const SORT_BY: &str = r##"class Person {
+    name: str
+    age: int
+}
+let people = [Person("Ada", 36), Person("Bo", 20), Person("Cy", 36), Person("Di", 5)]
+people.sort(function(p: Person) -> int { return p.age })
+for p in people { print(p.name, p.age) }
+people.sort(function(p: Person) -> str { return p.name })
+for p in people { print(p.name) }
+let words = ["pear", "fig", "banana", "kiwi", "apple"]
+words.sort(function(w: str) -> int { return len(w) })
+words.sort(function(w: str) -> str { return w.slice(1) })
+print(words)
+words.sort(function(w: str) -> int { return len(w) })
+print(words)
+let numbers = [3, -7, 1, -2]
+numbers.sort(function(n: int) -> int { return abs(n) })
+print(numbers)
+numbers.sort(function(n: int) -> float { return -1.0 * n })
+print(numbers)
+function make() -> list[int] { return [5, 3, 4] }
+let made = make()
+made.sort(function(n: int) -> int { return 0 - n })
+print(made)
+let empty: list[int] = []
+empty.sort(function(n: int) -> int { return n })
+print(empty)
+let floats = [2.5, -1.0, 2.5, 0.0]
+floats.sort(function(x: float) -> float { return x * x })
+print(floats)
+"##;
+
+    #[test]
+    fn sort_with_a_function_is_the_same_in_every_build() {
+        // The items go in the order of what the function gives for
+        // each, and those with the same stay as they were. Through C
+        // and LLVM, and with no collector the keys leave 0 blocks.
+        no_collector_as_interpreter("sort-by", SORT_BY);
+        // A function that changes the list while it is being sorted.
+        let changed = r##"var items = [3, 1, 2]
+try {
+    items.sort(function(n: int) -> int {
+        items.append(n)
+        return n
+    })
+} except ValueError as e {
+    print("caught:", e.message)
+}
+print(len(items))
+"##;
+        same_as_interpreter("sort-changed", changed);
+        crate::emit_llvm::tests::same_as_interpreter("sort-changed", changed);
     }
 
     #[test]

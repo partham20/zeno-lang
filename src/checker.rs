@@ -4566,7 +4566,7 @@ impl Checker {
             ),
             // `map`, `filter` and `reduce` call the function they are
             // given and do not keep it.
-            Ty::BuiltinMethod(_, name) if matches!(&**name, "map" | "filter" | "reduce") => Some(vec![Slot {
+            Ty::BuiltinMethod(_, name) if matches!(&**name, "map" | "filter" | "reduce" | "sort") => Some(vec![Slot {
                 name: String::new(),
                 ty: Ty::Borrowed(Box::new(Ty::Dynamic)),
                 has_default: false,
@@ -6326,13 +6326,43 @@ impl Checker {
             }
             // `sort` puts the smallest first, with `<`. So the items must
             // be something `<` has an answer for.
+            // `people.sort(age_of)`: the function gives what each item
+            // is ordered by, and that must be something `<` has an
+            // answer for.
+            (Ty::List(item), "sort") if arguments.len() == 1 => {
+                // A function of two items, as other languages sort by.
+                let takes = match arguments[0].ty.clone().looked_at() {
+                    Ty::Function(function) => Some(function.decl.params.len()),
+                    Ty::Callable(callable) => Some(callable.params.len()),
+                    _ => None,
+                };
+                if takes == Some(2) {
+                    return self.error(
+                        "the function given to `sort` takes one item and returns what it is ordered by, \
+                         a number or text. It is not asked which of two items comes first",
+                        arguments[0].span,
+                    );
+                }
+                let key = apply(self, &arguments[0], vec![each(item)]);
+                if !matches!(key, Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Str | Ty::Invalid) && !key.is_loose() {
+                    return self.error(
+                        format!(
+                            "the function given to `sort` says what each item is ordered by, a number or text, \
+                             and this one returns {key}"
+                        ),
+                        arguments[0].span,
+                    );
+                }
+                Ty::None
+            }
             (Ty::List(item), "sort") => {
-                self.arity(name, arguments, 0, 0, span);
+                self.arity(name, arguments, 0, 1, span);
                 if !matches!(**item, Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
                     return self.error(
                         format!(
                             "`sort` puts numbers or text in order, smallest first, and this is {receiver}. \
-                             There is no one order for those items, so write the loop that puts them in yours"
+                             There is no one order for those items, so give `sort` a function that says \
+                             what each is ordered by, as in `people.sort(age_of)`"
                         ),
                         span,
                     );
@@ -9618,8 +9648,21 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(
             error("let flags = [true, false]\nflags.sort()"),
             "`sort` puts numbers or text in order, smallest first, and this is list[bool]. There is no one order \
-             for those items, so write the loop that puts them in yours"
+             for those items, so give `sort` a function that says what each is ordered by, as in `people.sort(age_of)`"
         );
+        // With a function, the items go in the order of what it gives.
+        ok("let flags = [true, false]\nflags.sort(function(flag: bool) -> int { return 1 })\n\
+            let words = [\"b\", \"a\"]\nwords.sort(len)\nwords.sort(function(word) { return word })");
+        assert_eq!(
+            error("let xs = [1, 2]\nxs.sort(function(n: int) -> bool { return n > 1 })"),
+            "the function given to `sort` says what each item is ordered by, a number or text, and this one returns bool"
+        );
+        assert_eq!(
+            error("let xs = [1, 2]\nxs.sort(function(a: int, b: int) -> bool { return a < b })"),
+            "the function given to `sort` takes one item and returns what it is ordered by, a number or text. \
+             It is not asked which of two items comes first"
+        );
+        assert_eq!(error("let xs = [1, 2]\nxs.sort(1, 2)"), "`sort` takes 0 to 1 arguments, but 2 were given");
         assert_eq!(
             error("print([1, 2].join(\", \"))"),
             "`join` puts text together, and this is list[int]. Make each item text first, with `str( )`"

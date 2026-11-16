@@ -57,6 +57,7 @@ Lists:
 | `xs.pop(2)` | takes out the item at position 2, and gives it |
 | `xs.reverse()` | turns the list round, where it is |
 | `xs.sort()` | smallest first, where it is. Numbers or text |
+| `xs.sort(by)` | in the order of what the function `by` gives for each item, smallest first. Any items |
 | `xs.clear()` | empties the list |
 | `xs.find(x)` | the position of the first item equal to `x`, or `none` |
 | `xs.slice(1, 3)` | a new list with the items at 1 and 2 |
@@ -219,6 +220,60 @@ because a compiled program must print what `zeno run` prints (decision
 values nobody can tell. For `0.0` and `-0.0` they can: the two are
 equal, and print differently. With the same steps on both sides, every
 engine gives `[-1.0, -0.0, 0.0, 0.5, 2.5]` for the list in the test.
+
+## `sort` with a function
+
+A list of objects has no order of its own. A program says which one
+it wants by giving `sort` a function that takes one item and returns
+what the item is ordered by, a number or text:
+
+```zeno
+class Person {
+    name: str
+    age: int
+}
+
+let people = [Person("Ada", 36), Person("Bo", 20), Person("Cy", 36)]
+people.sort(function(person: Person) -> int { return person.age })
+for person in people {
+    print(person.name, person.age)
+}
+```
+
+```
+Bo 20
+Ada 36
+Cy 36
+```
+
+Three things about it.
+
+**The function is called once for each item**, before anything is
+moved. What it returned is the item's *key*.
+
+**Items with the same key stay as they were.** Ada was before Cy, both
+are 36, and Ada is still before Cy. So sorting by name and then by
+age gives people in order of age, and by name within an age.
+
+**Biggest first is the key with a minus**: `return 0 - person.age`.
+
+The function is not asked which of two items comes first, as `sort`
+is in C or JavaScript. One that takes two items is refused, with the
+reason (decision 21.1).
+
+How it is built: the keys go into a list of their own, as `map` would
+make it. Then the same heapsort runs on the keys, and every swap of
+two keys swaps the two items too. Heapsort alone would not keep equal
+items in their order, so there is a third list, of where each item
+was, and two equal keys are settled by it. In C that is
+`zeno_before_by`, `zeno_sift_by` and `zeno_list_sort_by` in
+`runtime.c`, and in Rust `sort_by` in `builtins.rs`. The two lists
+are gone when `sort` is done: with `--no-collector --memory`, 0
+blocks are left.
+
+If the function changes how many items the list has, `sort` raises a
+`ValueError`: there is a key for each item that was there, and no
+right place for one that was not.
 
 ## `join`, `code` and `char`
 
@@ -388,8 +443,9 @@ every build and compares.
 
 ## What it does not do
 
-- `sort` takes no function, so a list of objects cannot be sorted by a
-  field yet (decision 6.6, a limit of version 0.1).
+- `sort` with a function orders by a number or text. A key that is
+  a quantity (`20 C`), or two keys at once, is not there yet
+  (decision 21.5).
 - `slice` of a list of objects is refused where each has one owner.
 - Text methods still know only plain letters for `upper` and `lower`
   (decision 3.14).
@@ -447,3 +503,10 @@ every build and compares.
 7. `char(0)` is refused. Take the test out of `zeno_char` and out of
    `char_of`, and print `"a" + char(0) + "b"` with `zeno run` and with a
    built program. What does each print?
+8. Sort a list of words by length, biggest first, and words of one
+   length by the alphabet. (Two sorts, and the order they are done in
+   matters. Why?)
+9. `people.sort(function(a: Person, b: Person) -> bool { return a.age
+   < b.age })` is refused. Read the message. Then say what `sort`
+   should do with a function that answers `true` both ways round,
+   which is the question decision 21.1 did not want to have.

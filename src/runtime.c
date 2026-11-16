@@ -1791,6 +1791,56 @@ static void zeno_list_sort(zeno_list *list, int kind) {
     }
 }
 
+/* `people.sort(age_of)`: `keys` has what the function gave for each
+ * item, and the items go in the order of their keys, smallest first.
+ * Two items with keys that are neither before the other stay in the
+ * order they were in: `places` is where each item was, and it settles
+ * those. The same heapsort as above, with three lists that move
+ * together, and the same as `sort_by` in src/builtins.rs. */
+static bool zeno_before_by(zeno_slot *keys, zeno_slot *places, int64_t a, int64_t b, int kind) {
+    if (zeno_before(keys[a], keys[b], kind)) return true;
+    if (zeno_before(keys[b], keys[a], kind)) return false;
+    return places[a].i < places[b].i;
+}
+
+static void zeno_swap_by(zeno_slot *items, zeno_slot *keys, zeno_slot *places, int64_t a, int64_t b) {
+    zeno_slot item = items[a], key = keys[a], place = places[a];
+    items[a] = items[b];
+    keys[a] = keys[b];
+    places[a] = places[b];
+    items[b] = item;
+    keys[b] = key;
+    places[b] = place;
+}
+
+static void zeno_sift_by(zeno_slot *items, zeno_slot *keys, zeno_slot *places, int64_t root, int64_t end, int kind) {
+    for (;;) {
+        int64_t child = 2 * root + 1;
+        if (child >= end) return;
+        if (child + 1 < end && zeno_before_by(keys, places, child, child + 1, kind)) child++;
+        if (!zeno_before_by(keys, places, root, child, kind)) return;
+        zeno_swap_by(items, keys, places, root, child);
+        root = child;
+    }
+}
+
+static void zeno_list_sort_by(zeno_list *list, zeno_list *keys, int kind, int line, int col) {
+    if (keys->len != list->len) {
+        zeno_fail("ValueError", "the function given to `sort` changed how many items the list has", line, col);
+    }
+    zeno_list *places = zeno_list_new(list->len);
+    for (int64_t i = 0; i < list->len; i++) places->items[i].i = i;
+    places->len = list->len;
+    for (int64_t root = list->len / 2 - 1; root >= 0; root--) {
+        zeno_sift_by(list->items, keys->items, places->items, root, list->len, kind);
+    }
+    for (int64_t end = list->len - 1; end > 0; end--) {
+        zeno_swap_by(list->items, keys->items, places->items, 0, end);
+        zeno_sift_by(list->items, keys->items, places->items, 0, end, kind);
+    }
+    zeno_list_drop(places);
+}
+
 /* `slice(from)` and `slice(from, to)` take the items (or characters)
  * from position `from` up to `to`, which is not taken itself, as in
  * `range`. With `to_end` there was no `to`, and the slice goes on to the
