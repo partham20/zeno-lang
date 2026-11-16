@@ -32,5 +32,17 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # Zeno for a browser (docs/web.md). The stack is where the interpreter
 # keeps its place in a program, one step for every nested call, and the
 # usual megabyte is not enough for 200 of them.
+#
+# The other four make `zeno.wasm` smaller, since every built page
+# carries it: built for size where that costs no speed (`s`), as one
+# piece and not sixteen, and with what nothing calls left out across
+# the whole of it (`lto`). It came to 780 KB from 1.1 MB, and ran a
+# loop and a recursion as fast as before (docs/web.md, decision 16.10).
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "link-arg=-zstack-size=8388608"]
+rustflags = [
+    "-C", "link-arg=-zstack-size=8388608",
+    "-C", "opt-level=s",
+    "-C", "codegen-units=1",
+    "-C", "lto=fat",
+    "-C", "embed-bitcode=yes",
+]

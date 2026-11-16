@@ -78,6 +78,7 @@ Samples, none of them final:
 - [`examples/ring`](examples/ring/main.zeno): a module that keeps its insides to itself. A queue of a fixed size whose slots and count are `private`, so that only `ring.zeno` can change them. The module has its tests at the end of its file: `zeno test examples/ring` runs them.
 - [`examples/ports.zeno`](examples/ports.zeno): an `interface`. A UART and a log in memory are both a `Port`, and the code that sends a report takes either.
 - [`examples/todo.zeno`](examples/todo.zeno): a page in a browser. A list of things to do, with [`todo.html`](examples/todo.html) as the page and `import web` to reach it. `zeno build --web` makes the two into one file that a browser opens.
+- [`examples/sketch.zeno`](examples/sketch.zeno): a sheet to draw on with the mouse, with [`sketch.html`](examples/sketch.html) as the page. A function asks for the `Event` to learn where the mouse is, draws on a `<canvas>`, sets the style of one element, and keeps the chosen colour for the next visit. Its tests press the mouse with `fire`.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
@@ -265,6 +266,8 @@ cargo run -- run examples/blink.zeno            # blink the LED of the simulated
 cargo run -- run examples/todo.zeno             # a program for a web page, on a simulated page
 cargo build --release --target wasm32-unknown-unknown   # Zeno itself, built for a browser (once)
 cargo run -- build --web examples/todo.zeno     # todo.web.html: the page and the program in one file. Open it in a browser
+cargo run -- test examples/sketch.zeno          # a page that draws: its tests press the mouse on the simulated page
+cargo run -- playground                         # playground.html: write Zeno programs and run them in a browser, with nothing installed
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
@@ -316,7 +319,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
-  [`docs/web.md`](docs/web.md), [`docs/install.md`](docs/install.md),
+  [`docs/web.md`](docs/web.md), [`docs/playground.md`](docs/playground.md),
+  [`docs/install.md`](docs/install.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
 ## Roadmap
@@ -527,6 +531,17 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     the PATH, offers the C compiler and git that `zeno build` and
     `zeno fetch` hand work to, and can take it all off again.
     See [`docs/install.md`](docs/install.md))
+25. A page that does more (done, in 0.2: a function given to `on` may
+    ask for the `Event`, which says where the mouse was and what was
+    clicked. The style of one element, drawing on a canvas, a timer
+    that repeats, text kept between visits, and `fetch` and `post`
+    for the network. `fire` presses a button in a test. `zeno run`
+    reads the page that was written, so an id spelt wrong is found on
+    a desk. A built page is 0.4 MB where it was 1.5 MB. And `zeno
+    playground` writes a page in which programs are written and run
+    with nothing installed.
+    See [`docs/web.md`](docs/web.md) and
+    [`docs/playground.md`](docs/playground.md))
 
 ## Layout
 
@@ -555,6 +570,9 @@ src/board.rs        the simulated board that `zeno run` uses
 src/page.rs         the page of the `web` module: the browser's, or a simulated one
 src/web_host.rs     where `main` would be, when Zeno is built for a browser
 src/web.js          starts a program in a page, and does what it asks of the page
+src/html.rs         reads a page of HTML, so that the simulated page has its elements
+src/deflate.rs      packs `zeno.wasm` into a built page, the way a `.zip` is packed
+src/playground.html the playground, before `zeno playground` writes Zeno into it
 src/ints.rs         the sized whole numbers: what a `u8` holds
 src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`

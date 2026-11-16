@@ -557,6 +557,8 @@ enum Ty {
     Pin,
     /// An element of the page, from the `web` module.
     Element,
+    /// What happened on the page: what a function given to `on` may ask for.
+    Event,
     /// A whole number with a size: `u8`, `i32`. See src/ints.rs.
     Sized(Width),
     /// A raw pointer to numbers of one size: `pointer[u8]`. Reading
@@ -745,6 +747,7 @@ enum Key {
     Bool,
     Pin,
     Element,
+    Event,
     /// A sized whole number, by its name: `u8`.
     Sized(&'static str),
     /// A pointer, by the name of what it points at.
@@ -979,6 +982,7 @@ impl fmt::Display for Ty {
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
             Ty::Element => write!(f, "Element"),
+            Ty::Event => write!(f, "Event"),
             Ty::Pointer(pointee) => write!(f, "pointer[{}]", pointee.name()),
             Ty::Register(width) => write!(f, "Register[{}]", width.name),
             Ty::Sized(width) => write!(f, "{}", width.name),
@@ -1087,6 +1091,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Bool, Ty::Bool)
         | (Ty::Pin, Ty::Pin)
         | (Ty::Element, Ty::Element)
+        | (Ty::Event, Ty::Event)
         | (Ty::None, Ty::None) => true,
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
@@ -1586,6 +1591,12 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("web", "create") => Ty::Builtin("web.create"),
         ("web", "after") => Ty::Builtin("web.after"),
         ("web", "on_key") => Ty::Builtin("web.on_key"),
+        ("web", "every") => Ty::Builtin("web.every"),
+        ("web", "save") => Ty::Builtin("web.save"),
+        ("web", "load") => Ty::Builtin("web.load"),
+        ("web", "forget") => Ty::Builtin("web.forget"),
+        ("web", "fetch") => Ty::Builtin("web.fetch"),
+        ("web", "post") => Ty::Builtin("web.post"),
         ("board", "led") => Ty::Pin,
         ("board", "pin") => Ty::Builtin("pin"),
         ("board", "register") => Ty::Builtin("register"),
@@ -2100,6 +2111,7 @@ impl Checker {
             Ty::Bool => Key::Bool,
             Ty::Pin => Key::Pin,
             Ty::Element => Key::Element,
+            Ty::Event => Key::Event,
             Ty::Sized(width) => Key::Sized(width.name),
             Ty::Pointer(pointee) => Key::Pointer(pointee.name()),
             Ty::Register(width) => Key::Register(width.name),
@@ -2147,6 +2159,7 @@ impl Checker {
             Key::Bool => Ty::Bool,
             Key::Pin => Ty::Pin,
             Key::Element => Ty::Element,
+            Key::Event => Ty::Event,
             Key::Sized(name) => ints::width(name).map_or(Ty::Int, Ty::Sized),
             Key::Pointer(name) => Pointee::named(name).map_or(Ty::Invalid, Ty::Pointer),
             Key::Register(name) => ints::width(name).map_or(Ty::Invalid, Ty::Register),
@@ -2520,6 +2533,7 @@ impl Checker {
                         _ if name == "Pin" => Ty::Pin,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
+                        _ if name == "Event" => Ty::Event,
                         _ if name == "Register" => {
                             return self.error("`Register` needs the size of the register, as in `Register[u32]`", span)
                         }
@@ -3441,6 +3455,10 @@ impl Checker {
                 Ty::Element if crate::builtins::ELEMENT_FIELDS.contains(&name.as_str()) => return (Ty::Str, Ty::Str, None),
                 Ty::Element => self.error(
                     format!("an Element has no `{name}` to give a new value. It has `text` and `value`"),
+                    span,
+                ),
+                Ty::Event => self.error(
+                    format!("an Event says what happened, so `{name}` cannot be given a new value"),
                     span,
                 ),
                 ty if ty.is_loose() => ty,
@@ -5447,6 +5465,18 @@ impl Checker {
                 ),
                 span,
             ),
+            Ty::Event => match name {
+                "kind" | "key" => Ty::Str,
+                "target" => Ty::Element,
+                "x" | "y" => Ty::Float,
+                _ => self.error(
+                    format!(
+                        "an Event has no field `{name}`. It has `{}`",
+                        crate::value::EVENT_FIELDS.join("`, `")
+                    ),
+                    span,
+                ),
+            },
             Ty::Optional(_) => self.error(
                 format!(
                     "this is {object}. {}",
@@ -5480,11 +5510,30 @@ impl Checker {
     fn calls_back(&mut self, by: &str, function: &Argument, types: Vec<Ty>) {
         let with = match types.as_slice() {
             [] => "with nothing, so it takes no parameters: `function() { ... }`",
+            [Ty::Event] => {
+                "with nothing, or with what happened if it asks: `function() { ... }` or `function(event: Event) { ... }`"
+            }
+            [Ty::Int, Ty::Str] => {
+                "with the status and the text of the answer, so it takes an int and a str: \
+                 `function(status: int, body: str) { ... }`"
+            }
             _ => "with the key that was pressed, so it takes one str: `function(key: str) { ... }`",
         };
         let found = self.errors.len();
-        let arguments = types.into_iter().map(|ty| Argument { name: None, ty, span: function.span, written: None }).collect();
-        self.call(&function.ty.clone().looked_at(), arguments, function.span);
+        let callee = function.ty.clone().looked_at();
+        let arguments = |types: Vec<Ty>| -> Vec<Argument> {
+            types.into_iter().map(|ty| Argument { name: None, ty, span: function.span, written: None }).collect()
+        };
+        // `on` hands the event to a function that asks for it, and
+        // nothing to one that does not.
+        if matches!(types.as_slice(), [Ty::Event]) {
+            self.call(&callee, Vec::new(), function.span);
+            if self.errors.len() == found {
+                return;
+            }
+            self.errors.truncate(found);
+        }
+        self.call(&callee, arguments(types), function.span);
         if self.errors.len() > found {
             self.errors.truncate(found);
             let message = match function.ty.clone().looked_at() {
@@ -5930,16 +5979,38 @@ impl Checker {
                 }
                 Ty::Element
             }
-            "web.after" => {
+            "web.after" | "web.every" => {
+                let short = &name["web.".len()..];
                 let time = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "ms").is_some());
-                if self.arity("after", arguments, 2, 2, span) {
+                if self.arity(short, arguments, 2, 2, span) {
                     if !time && !first.is_loose() {
                         self.error(
-                            format!("`after` needs a time with a unit, such as `500 ms`, but this is {first}"),
+                            format!("`{short}` needs a time with a unit, such as `500 ms`, but this is {first}"),
                             arguments[0].span,
                         );
                     }
-                    self.calls_back("after", &arguments[1], Vec::new());
+                    self.calls_back(short, &arguments[1], Vec::new());
+                }
+                Ty::None
+            }
+            "web.save" | "web.load" | "web.forget" => {
+                let short = &name["web.".len()..];
+                let count = if short == "save" { 2 } else { 1 };
+                self.arity(short, arguments, count, count, span);
+                for argument in arguments {
+                    self.expect(&argument.ty, &Ty::Str, &format!("an argument of `web.{short}`"), argument.span);
+                }
+                // Nothing may have been saved under the name.
+                if short == "load" { Ty::Optional(Box::new(Ty::Str)) } else { Ty::None }
+            }
+            "web.fetch" | "web.post" => {
+                let short = &name["web.".len()..];
+                let texts = if short == "fetch" { 1 } else { 2 };
+                if self.arity(short, arguments, texts + 1, texts + 1, span) {
+                    for argument in &arguments[..texts] {
+                        self.expect(&argument.ty, &Ty::Str, &format!("an argument of `web.{short}`"), argument.span);
+                    }
+                    self.calls_back(short, &arguments[texts], vec![Ty::Int, Ty::Str]);
                 }
                 Ty::None
             }
@@ -5988,7 +6059,47 @@ impl Checker {
             (Ty::Element, "on") => {
                 if self.arity(name, arguments, 2, 2, span) {
                     self.expect(&arguments[0].ty, &Ty::Str, "the name of the event", arguments[0].span);
-                    self.calls_back("on", &arguments[1], Vec::new());
+                    self.calls_back("on", &arguments[1], vec![Ty::Event]);
+                }
+                Ty::None
+            }
+            (Ty::Element, "fire") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                Ty::None
+            }
+            (Ty::Element, "get_style") => {
+                self.arity(name, arguments, 1, 1, span);
+                strs(self);
+                Ty::Optional(Box::new(Ty::Str))
+            }
+            (Ty::Element, "set_style") => {
+                self.arity(name, arguments, 2, 2, span);
+                strs(self);
+                Ty::None
+            }
+            // Places and sizes, then the text for `draw_text`, then the
+            // colour. `erase` takes nothing.
+            (Ty::Element, "draw_rect" | "draw_circle" | "draw_line" | "draw_text" | "erase") => {
+                let (numbers, words) = match name {
+                    "draw_rect" | "draw_line" => (4, 1),
+                    "draw_circle" => (3, 1),
+                    "draw_text" => (2, 2),
+                    _ => (0, 0),
+                };
+                if self.arity(name, arguments, numbers + words, numbers + words, span) {
+                    for argument in &arguments[..numbers] {
+                        if !matches!(argument.ty, Ty::Int | Ty::Float) && !argument.ty.is_loose() {
+                            self.error(
+                                format!("a place or a size given to `{name}` is a number, but this is {}", argument.ty),
+                                argument.span,
+                            );
+                        }
+                    }
+                    for argument in &arguments[numbers..] {
+                        let what = if words == 2 && argument.span == arguments[numbers].span { "the text" } else { "the colour" };
+                        self.expect(&argument.ty, &Ty::Str, &format!("{what} given to `{name}`"), argument.span);
+                    }
                 }
                 Ty::None
             }
@@ -9946,8 +10057,9 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error(&with("web.shout()")), "module `web` has no `shout`");
         assert_eq!(
             error(&with("count.shout()")),
-            "an Element has no field or method `shout`. It has `text` and `value`, and the methods `on`, `append`, \
-             `remove`, `clear`, `get`, `set`, `add_class`, `remove_class`, `has_class`, `show`, `hide`"
+            "an Element has no field or method `shout`. It has `text` and `value`, and the methods `on`, `fire`, `append`, \
+             `remove`, `clear`, `get`, `set`, `add_class`, `remove_class`, `has_class`, `show`, `hide`, `get_style`, \
+             `set_style`, `draw_rect`, `draw_circle`, `draw_line`, `draw_text`, `erase`"
         );
         assert_eq!(error(&with("count.html = \"x\"")), "an Element has no `html` to give a new value. It has `text` and `value`");
         assert_eq!(
@@ -9962,7 +10074,44 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         let with = |line: &str| format!("{page}{line}");
         ok(&with("web.on_key(key)\nweb.on_key(print)\ncount.on(\"click\", function() { count.hide() })"));
         let nothing = "will call this function with nothing, so it takes no parameters: `function() { ... }`";
-        assert_eq!(error(&with("count.on(\"click\", function(x: int) { print(x) })")), format!("`on` {nothing}"));
+        let or_event = "`on` will call this function with nothing, or with what happened if it asks: \
+                        `function() { ... }` or `function(event: Event) { ... }`";
+        assert_eq!(error(&with("count.on(\"click\", function(x: int) { print(x) })")), or_event);
+        assert_eq!(error(&with("count.on(\"click\", function(a: Event, b: Event) { print(a) })")), or_event);
+        ok(&with(
+            "count.on(\"click\", function(event: Event) {\n let where: float = event.x + event.y\n \
+             let what: str = event.kind + event.key\n let which: Element = event.target\n print(where, what, which)\n})\n\
+             function seen(event: Event) { print(event) }\ncount.on(\"input\", seen)\ncount.fire(\"input\")\n\
+             web.every(1 s, function() { count.show() })\n\
+             web.fetch(\"/a\", function(status: int, body: str) { print(status, body) })\n\
+             web.post(\"/a\", \"b\", function(status: int, body: str) { print(status, body) })\n\
+             web.save(\"a\", \"b\")\nlet kept: str or none = web.load(\"a\")\nweb.forget(\"a\")\n\
+             count.set_style(\"color\", \"red\")\nlet colour: str or none = count.get_style(\"color\")\n\
+             count.draw_rect(0, 0, 10.5, 2, \"red\")\ncount.draw_circle(5, 5, 2, \"red\")\ncount.draw_line(0, 0, 1, 1, \"red\")\n\
+             count.draw_text(0, 0, \"hi\", \"red\")\ncount.erase()",
+        ));
+        assert_eq!(
+            error(&with("count.on(\"click\", function(event: Event) { event.x = 1.0 })")),
+            "an Event says what happened, so `x` cannot be given a new value"
+        );
+        assert_eq!(
+            error(&with("count.on(\"click\", function(event: Event) { print(event.button) })")),
+            "an Event has no field `button`. It has `kind`, `target`, `x`, `y`, `key`"
+        );
+        assert_eq!(
+            error(&with("web.fetch(\"/a\", function(body: str) { print(body) })")),
+            "`fetch` will call this function with the status and the text of the answer, so it takes an int and a str: \
+             `function(status: int, body: str) { ... }`"
+        );
+        assert_eq!(error(&with("web.every(1, function() { count.hide() })")), "`every` needs a time with a unit, such as `500 ms`, but this is int");
+        assert_eq!(error(&with("let kept: str = web.load(\"a\")")), "`kept` should be str, but this is str or none. Check it with `is not none` first");
+        assert_eq!(
+            error(&with("count.draw_rect(0, 0, \"wide\", 2, \"red\")")),
+            "a place or a size given to `draw_rect` is a number, but this is str"
+        );
+        assert_eq!(error(&with("count.draw_text(0, 0, \"hi\", 5)")), "the colour given to `draw_text` should be str, but this is int");
+        assert_eq!(error(&with("count.draw_text(0, 0, 5, \"red\")")), "the text given to `draw_text` should be str, but this is int");
+        assert_eq!(error(&with("count.erase(1)")), "`erase` takes 0 arguments, but 1 was given");
         assert_eq!(error(&with("web.after(1 s, key)")), format!("`after` {nothing}"));
         let a_key = "`on_key` will call this function with the key that was pressed, so it takes one str: `function(key: str) { ... }`";
         assert_eq!(error(&with("web.on_key(function() { print(1) })")), a_key);

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch</title>
+<style>
+  body { font: 18px/1.5 system-ui, sans-serif; max-width: 30em; margin: 2em auto; padding: 0 1em; }
+  canvas { border: 1px solid #999; cursor: crosshair; font: 16px system-ui, sans-serif; touch-action: none; }
+  button { font: inherit; padding: 0.2em 0.8em; }
+  .colour { width: 2em; height: 2em; padding: 0; border: 3px solid white; outline: 1px solid #999; }
+  .colour.chosen { border-color: black; }
+  #lines { color: #666; }
+</style>
+</head>
+<body>
+<h1>Sketch</h1>
+<p>
+  <button class="colour" data-colour="black" title="black"></button>
+  <button class="colour" data-colour="crimson" title="red"></button>
+  <button class="colour" data-colour="royalblue" title="blue"></button>
+  <button class="colour" data-colour="seagreen" title="green"></button>
+  <button id="wipe">Wipe</button>
+</p>
+<canvas id="paper" width="480" height="320"></canvas>
+<p id="lines"></p>
+</body>
+</html>

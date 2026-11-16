@@ -17,11 +17,13 @@ mod board;
 mod builtins;
 mod bytecode;
 mod checker;
+mod deflate;
 mod emit_bytecode;
 mod emit_c;
 mod emit_llvm;
 mod error;
 mod format;
+mod html;
 mod interpreter;
 mod json;
 mod ints;
@@ -69,6 +71,9 @@ fn usage() {
     println!("                            folder stands for the files in it");
     println!("  zeno lsp                  the language server: an editor starts this to");
     println!("                            show mistakes as you type (docs/lsp.md)");
+    println!("  zeno playground           write `playground.html`: a page to write Zeno");
+    println!("                            programs in and run them, in a browser, with");
+    println!("                            nothing installed (docs/playground.md)");
     println!("  zeno new <name>           make a folder with a new program in it: a");
     println!("                            `main.zeno`, a module with a test, and a");
     println!("                            `zeno.package`");
@@ -321,7 +326,7 @@ fn test(path: &str, strict: bool, asked: bool) -> Option<Tally> {
         return None;
     }
     value::print_line(path);
-    let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()));
+    let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()).with_page(own_page(path)));
     let tested = match tested {
         Ok(tested) => tested,
         Err(error) => {
@@ -403,7 +408,7 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>) -> Option<
     let (files, program) = check(path, checker::Rules { strict, one_owner: false, firmware: false })?;
     // The words after the file are the program's (`program.arguments()`),
     // and what it reads with `input()` is the keyboard.
-    let outside = value::Outside::started_with(arguments);
+    let outside = value::Outside::started_with(arguments).with_page(own_page(path));
     let (_, result) = match on_vm {
         true => vm::run_with(&program, false, outside),
         false => interpreter::run_with(&program, false, outside),
@@ -624,6 +629,71 @@ fn zeno_wasm() -> Option<Vec<u8>> {
     None
 }
 
+/// `zeno playground`: write `playground.html`, one page in which
+/// anybody can write a Zeno program and run it, with nothing installed.
+///
+/// The page is `src/playground.html` with four things written into it:
+/// `zeno.wasm` (packed, as in a built page), `src/web.js`, the page a
+/// program gets when it has none of its own, and a few of the examples
+/// to start from. docs/playground.md walks through it.
+fn playground() -> Option<()> {
+    let wasm = zeno_wasm()?;
+    let html_file = "playground.html";
+    if let Err(err) = fs::write(html_file, playground_page(&wasm)) {
+        eprintln!("zeno: cannot write `{html_file}`: {err}");
+        return None;
+    }
+    println!("Wrote {html_file}. Open it in a browser, or put it on a web server");
+    Some(())
+}
+
+/// The playground, with Zeno and the examples in it.
+fn playground_page(wasm: &[u8]) -> String {
+    // Text as JavaScript reads it. `<` is written another way for the
+    // reason `with_program` gives.
+    let quoted = |json: json::Json| json.write().replace('<', "\\u003c");
+    let example = |name: &str, program: &str, page: &str| {
+        json::Json::object([
+            ("name", json::Json::text(name)),
+            ("program", json::Json::text(program)),
+            ("page", json::Json::text(page)),
+        ])
+    };
+    let examples = json::Json::List(vec![
+        example("Hello", include_str!("../examples/hello.zeno"), ""),
+        example("A tour of the language", include_str!("../examples/tour.zeno"), ""),
+        example("Primes", include_str!("../examples/primes.zeno"), ""),
+        example("A page: things to do", include_str!("../examples/todo.zeno"), include_str!("../examples/todo.html")),
+        example("A page: sketch with the mouse", include_str!("../examples/sketch.zeno"), include_str!("../examples/sketch.html")),
+    ]);
+    // Each marker is in the page once. The page is cut at them, so that
+    // nothing written in is itself searched for a marker.
+    let mut page = String::new();
+    let mut rest = include_str!("playground.html");
+    let parts = [
+        ("__WEB_JS__", quoted(json::Json::text(include_str!("web.js")))),
+        ("__WASM__", base64(&deflate::pack(wasm))),
+        ("__EXAMPLES__", quoted(examples)),
+        ("__DEFAULT_PAGE__", quoted(json::Json::text(DEFAULT_PAGE.replace("NAME", "Zeno")))),
+    ];
+    for (marker, value) in parts {
+        let (before, after) = rest.split_once(marker).expect("the playground has each marker");
+        page += before;
+        page += &value;
+        rest = after;
+    }
+    page + rest
+}
+
+/// The page that was written for a program: `todo.html` beside
+/// `todo.zeno`, if there is one. `zeno build --web` builds on it, and
+/// `zeno run` and `zeno test` give it to the simulated page, so that
+/// asking for an element the page does not have is an error on a desk
+/// as it is in a browser.
+fn own_page(path: &str) -> Option<String> {
+    fs::read_to_string(Path::new(path).with_extension("html")).ok()
+}
+
 /// `zeno build --web <file>`: write one page that runs the program in a
 /// browser.
 ///
@@ -700,10 +770,11 @@ fn with_program(page: &str, program: &str, wasm: &[u8]) -> String {
     // a str of the program. `<` written as `<` is the same str to
     // JSON, and nothing to the browser.
     let program = program.replace('<', "\\u003c");
+    // `zeno.wasm` is packed, and then written as text (decision 16.11).
     let scripts = format!(
-        "<script>\n{}</script>\n<script>Zeno.start(Zeno.bytes(\"{}\"), {program});</script>\n",
+        "<script>\n{}</script>\n<script>Zeno.start(Zeno.unpacked(\"{}\"), {program});</script>\n",
         include_str!("web.js"),
-        base64(wasm),
+        base64(&deflate::pack(wasm)),
     );
     // The scripts go last in the body, so that the page is all there
     // when the program starts. A page with no `</body>` gets them at
@@ -825,6 +896,10 @@ fn main() -> ExitCode {
             }
         }
         Some("lsp") => lsp::run(),
+        Some("playground") => match playground() {
+            Some(()) => ExitCode::SUCCESS,
+            None => ExitCode::FAILURE,
+        },
         Some("format") => {
             let check = args.iter().any(|arg| arg == "--check");
             args.retain(|arg| arg != "--check");
@@ -992,6 +1067,18 @@ mod tests {
     }
 
     #[test]
+    fn the_playground_is_one_page_with_everything_written_in() {
+        let page = super::playground_page(b"not really zeno.wasm");
+        for marker in ["__WEB_JS__", "__WASM__", "__EXAMPLES__", "__DEFAULT_PAGE__"] {
+            assert!(!page.contains(marker), "{marker} was left in the playground");
+        }
+        // One script, closed once: nothing written into it ends it early,
+        // not even an example that has a page with a `<style>` of its own.
+        assert_eq!(page.matches("</script>").count(), 1);
+        assert!(page.contains("import web"));
+    }
+
+    #[test]
     fn a_page_carries_the_files_of_its_program_named_from_its_folder() {
         let root = folder(
             "web-files",
@@ -1035,8 +1122,10 @@ mod tests {
         assert_eq!(before, "<html><BODY>\n<h1 id=\"count\"></h1>\n");
         assert!(after.ends_with("</script>\n</BODY></html>\n"), "{after}");
         // The program cannot end the script it is written in.
-        let start = r#"<script>Zeno.start(Zeno.bytes("WmVubw=="), {"main":"a.zeno","files":{"a.zeno":"print(\"LESS/script>LESSb>\")"}});</script>"#
-            .replace("LESS", "\\u003c");
+        let packed = base64(&deflate::pack(b"Zeno"));
+        let start = r#"<script>Zeno.start(Zeno.unpacked("PACKED"), {"main":"a.zeno","files":{"a.zeno":"print(\"LESS/script>LESSb>\")"}});</script>"#
+            .replace("LESS", "\\u003c")
+            .replace("PACKED", &packed);
         assert!(built.contains(&start), "{}", &built[built.len() - 300..]);
         assert_eq!(built.matches("</script>").count(), 2);
 

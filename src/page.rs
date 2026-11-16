@@ -17,7 +17,10 @@
 //!
 //! That is enough to run a program's tests on a desk, and to hold both
 //! engines to the same output. The simulated page has no file of HTML
-//! behind it, so it has every element a program asks for:
+//! behind it unless `zeno run` found one beside the program
+//! (`todo.html` for `todo.zeno`, read by `html.rs`). With one, it has
+//! the elements that file has, and asking for another is the error it
+//! is in a browser. With none, it has every element a program asks for:
 //! `web.element("#count")` makes `#count` the first time it is asked.
 //!
 //! An element is a number here, as a pin is. On the real page the
@@ -37,6 +40,8 @@ struct Element {
     value: String,
     attributes: Vec<(String, String)>,
     classes: Vec<String>,
+    /// What `set_style` gave it: `("color", "red")`.
+    styles: Vec<(String, String)>,
     hidden: bool,
     /// Is it on the page? One that was asked for is. One that was made
     /// is once it has been put into an element that is.
@@ -45,13 +50,50 @@ struct Element {
     children: Vec<u32>,
 }
 
+impl Element {
+    /// An element with this name and nothing else.
+    fn named(name: String, tag: Option<String>, on_page: bool) -> Element {
+        Element {
+            name,
+            tag,
+            text: String::new(),
+            value: String::new(),
+            attributes: Vec::new(),
+            classes: Vec::new(),
+            styles: Vec::new(),
+            hidden: false,
+            on_page,
+            parent: None,
+            children: Vec::new(),
+        }
+    }
+}
+
+/// A function the page was given to call, and whether it asked for the
+/// `Event`: `function(event: Event) { ... }` does, `function() { ... }`
+/// does not.
+#[derive(Clone)]
+pub struct Handler {
+    pub function: Value,
+    pub takes_event: bool,
+}
+
 /// The page, real or simulated, and the functions it may call.
 pub struct Page {
     real: bool,
+    /// The simulated page was read from a file of HTML, so it has the
+    /// elements that file has and no others.
+    written: bool,
     elements: Vec<Element>,
-    /// The functions given to `on`, `after` and `on_key`. The page
-    /// names one by its place in this list when the time comes.
-    handlers: Vec<Value>,
+    /// The functions given to `on`, `after`, `every`, `on_key`, `fetch`
+    /// and `post`. The page names one by its place in this list when
+    /// the time comes.
+    handlers: Vec<Handler>,
+    /// Which function was given to `on` for which event of which
+    /// element, in the order given. `fire` calls them.
+    listeners: Vec<(u32, String, u32)>,
+    /// What `web.save` kept, on the simulated page.
+    saved: Vec<(String, String)>,
 }
 
 /// Ask the real page. Only a program in a browser has one.
@@ -81,15 +123,57 @@ fn as_id(reply: &Json) -> Option<u32> {
 }
 
 impl Page {
-    /// The page under `zeno run`.
-    pub fn simulated() -> Page {
-        Page { real: false, elements: Vec::new(), handlers: Vec::new() }
+    fn new(real: bool) -> Page {
+        Page { real, written: false, elements: Vec::new(), handlers: Vec::new(), listeners: Vec::new(), saved: Vec::new() }
+    }
+
+    /// The page under `zeno run`. `html` is the page that was written
+    /// for the program, if there is one beside it.
+    pub fn simulated(html: Option<&str>) -> Page {
+        let mut page = Page::new(false);
+        if let Some(html) = html {
+            page.written = true;
+            for node in &crate::html::read(html).children {
+                page.read_in(node, None);
+            }
+        }
+        page
     }
 
     /// The page in a browser.
     #[cfg(target_arch = "wasm32")]
     pub fn real() -> Page {
-        Page { real: true, elements: Vec::new(), handlers: Vec::new() }
+        Page::new(true)
+    }
+
+    /// Take an element of the written page, and all it holds, onto the
+    /// simulated one.
+    fn read_in(&mut self, node: &crate::html::Node, parent: Option<u32>) {
+        let name = match node.attribute("id") {
+            Some(id) => format!("#{id}"),
+            None => format!("<{}>", node.tag),
+        };
+        let mut element = Element::named(name, Some(node.tag.clone()), true);
+        // Text that is only the spaces a page is laid out with is none.
+        if !node.text.trim().is_empty() {
+            element.text = node.text.clone();
+        }
+        element.classes = node.attribute("class").unwrap_or("").split_whitespace().map(str::to_string).collect();
+        element.hidden = node.attribute("hidden").is_some();
+        // What a box holds when the page opens.
+        element.value = match node.tag.as_str() {
+            "textarea" => std::mem::take(&mut element.text),
+            _ => node.attribute("value").unwrap_or("").to_string(),
+        };
+        element.attributes = node.attributes.clone();
+        element.parent = parent;
+        let id = self.add(element);
+        if let Some(parent) = parent {
+            self.at_mut(parent).children.push(id);
+        }
+        for child in &node.children {
+            self.read_in(child, Some(id));
+        }
     }
 
     fn at(&self, id: u32) -> &Element {
@@ -157,27 +241,24 @@ impl Page {
     }
 
     /// `web.element("#count")`: the first element that answers to the
-    /// selector. `None` when the real page has none. The simulated page
-    /// makes one.
+    /// selector. `None` when the page has none. A simulated page that
+    /// was not read from a file makes one.
     pub fn element(&mut self, selector: &str) -> Option<u32> {
         if self.real {
             return as_id(&ask(vec![text("element"), text(selector)]));
         }
         let found = (0..self.elements.len() as u32).find(|id| self.at(*id).on_page && self.matches(*id, selector));
-        Some(found.unwrap_or_else(|| {
-            self.add(Element {
-                name: selector.to_string(),
-                tag: None,
-                text: String::new(),
-                value: String::new(),
-                attributes: Vec::new(),
-                classes: Vec::new(),
-                hidden: false,
-                on_page: true,
-                parent: None,
-                children: Vec::new(),
-            })
-        }))
+        if self.written {
+            return found;
+        }
+        Some(found.unwrap_or_else(|| self.add(Element::named(selector.to_string(), None, true))))
+    }
+
+    /// Can the simulated page read this selector? It reads a tag,
+    /// `.class` and `#id`, together and one inside another.
+    pub fn reads(&self, selector: &str) -> bool {
+        let plain = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '#' | ' ');
+        self.real || selector.chars().all(plain)
     }
 
     /// `web.elements("li")`: every element that answers to the selector,
@@ -193,8 +274,7 @@ impl Page {
         // A browser reads far more than this page does (`li:first-child`,
         // `a[href]`, `ul > li`). To give an empty list for those would be
         // to say the page has none, which nobody here knows.
-        let plain = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '#' | ' ');
-        if !selector.chars().all(plain) {
+        if !self.reads(selector) {
             return Err(format!(
                 "the simulated page cannot read `{selector}`. It reads a tag, `.class` and `#id`, together (`li.done`) \
                  and one inside another (`#list li`). A browser reads the rest, so the page that is built can use it"
@@ -208,18 +288,9 @@ impl Page {
         if self.real {
             return as_id(&ask(vec![text("create"), text(tag), text(inside)])).unwrap_or(0);
         }
-        self.add(Element {
-            name: format!("<{tag}>"),
-            tag: Some(tag.to_string()),
-            text: inside.to_string(),
-            value: String::new(),
-            attributes: Vec::new(),
-            classes: Vec::new(),
-            hidden: false,
-            on_page: false,
-            parent: None,
-            children: Vec::new(),
-        })
+        let mut element = Element::named(format!("<{tag}>"), Some(tag.to_string()), false);
+        element.text = inside.to_string();
+        self.add(element)
     }
 
     /// `element.text` or `element.value`.
@@ -339,6 +410,17 @@ impl Page {
         self.shows(id, if hidden { "hidden" } else { "shown" }.to_string())
     }
 
+    /// How the element is shown in a line: `#count`, or `<li>`.
+    pub fn name(&self, id: u32) -> String {
+        if self.real {
+            return match ask(vec![text("name"), number(id)]) {
+                Json::Text(name) => name,
+                _ => String::new(),
+            };
+        }
+        self.at(id).name.clone()
+    }
+
     /// The element, and everything in it, is on the page or off it.
     fn placed(&mut self, id: u32, on_page: bool) {
         self.at_mut(id).on_page = on_page;
@@ -415,40 +497,160 @@ impl Page {
         if was_empty { None } else { self.shows(id, "cleared".to_string()) }
     }
 
+    /// `element.get_style("color")`: what `set_style` gave it, or what
+    /// the page wrote in its `style`. `None` if neither did.
+    pub fn style(&self, id: u32, name: &str) -> Option<String> {
+        if self.real {
+            return match ask(vec![text("get_style"), number(id), text(name)]) {
+                Json::Text(value) => Some(value),
+                _ => None,
+            };
+        }
+        let element = self.at(id);
+        if let Some((_, value)) = element.styles.iter().find(|(have, _)| have == name) {
+            return Some(value.clone());
+        }
+        // `style="color: red; width: 10px"` as the page wrote it.
+        let written = element.attributes.iter().find(|(have, _)| have == "style").map(|(_, style)| style.as_str())?;
+        written.split(';').filter_map(|one| one.split_once(':')).find(|(have, _)| have.trim() == name).map(|(_, value)| value.trim().to_string())
+    }
+
+    /// `element.set_style("color", "red")`. `Err` if the browser has no
+    /// style of that name.
+    pub fn set_style(&mut self, id: u32, name: &str, value: &str) -> Result<Option<String>, ()> {
+        if self.real {
+            return match ask(vec![text("set_style"), number(id), text(name), text(value)]) {
+                Json::Bool(false) => Err(()),
+                _ => Ok(None),
+            };
+        }
+        if self.style(id, name).as_deref() == Some(value) {
+            return Ok(None);
+        }
+        let styles = &mut self.at_mut(id).styles;
+        match styles.iter_mut().find(|(have, _)| have == name) {
+            Some((_, old)) => *old = value.to_string(),
+            None => styles.push((name.to_string(), value.to_string())),
+        }
+        Ok(self.shows(id, format!("style {name}: {value}")))
+    }
+
+    /// `board.draw_rect(10, 10, 50, 20, "red")` and the other four: draw
+    /// on a `<canvas>`. `what` is `rect`, `circle`, `line`, `text` or
+    /// `erase`, `numbers` the places and sizes, `words` the text and the
+    /// colour. `Err` if the element is not a canvas.
+    pub fn draw(&mut self, id: u32, what: &str, numbers: &[f64], words: &[&str]) -> Result<Option<String>, ()> {
+        if self.real {
+            let numbers = Json::List(numbers.iter().map(|n| Json::Number(*n)).collect());
+            let words = Json::List(words.iter().map(|word| text(word)).collect());
+            return match ask(vec![text("draw"), number(id), text(what), numbers, words]) {
+                Json::Bool(false) => Err(()),
+                _ => Ok(None),
+            };
+        }
+        // An element the simulated page made up may be anything. One
+        // whose tag it knows must be a canvas.
+        if self.at(id).tag.as_deref().is_some_and(|tag| tag != "canvas") {
+            return Err(());
+        }
+        let mut line = if what == "erase" { what.to_string() } else { format!("draw_{what}") };
+        for n in numbers {
+            // 10 and not 10.0: a place on a canvas is mostly a whole number.
+            line += &if n.fract() == 0.0 { format!(" {}", *n as i64) } else { format!(" {n}") };
+        }
+        for word in words {
+            line += &format!(" {word}");
+        }
+        Ok(self.shows(id, line))
+    }
+
+    /// `web.save("name", "Partha")`: keep text under a name, for the
+    /// next visit to the page.
+    pub fn save(&mut self, name: &str, value: &str) {
+        if self.real {
+            ask(vec![text("save"), text(name), text(value)]);
+            return;
+        }
+        match self.saved.iter_mut().find(|(have, _)| have == name) {
+            Some((_, old)) => *old = value.to_string(),
+            None => self.saved.push((name.to_string(), value.to_string())),
+        }
+    }
+
+    /// `web.load("name")`: what was saved under the name, if anything was.
+    pub fn load(&self, name: &str) -> Option<String> {
+        if self.real {
+            return match ask(vec![text("load"), text(name)]) {
+                Json::Text(value) => Some(value),
+                _ => None,
+            };
+        }
+        self.saved.iter().find(|(have, _)| have == name).map(|(_, value)| value.clone())
+    }
+
+    /// `web.forget("name")`: nothing is saved under the name any more.
+    pub fn forget(&mut self, name: &str) {
+        if self.real {
+            ask(vec![text("forget"), text(name)]);
+            return;
+        }
+        self.saved.retain(|(have, _)| have != name);
+    }
+
     /// Keep a function for the page to call later, and say which it is.
-    fn keep(&mut self, handler: Value) -> u32 {
-        self.handlers.push(handler);
+    fn keep(&mut self, function: Value, takes_event: bool) -> u32 {
+        self.handlers.push(Handler { function, takes_event });
         self.handlers.len() as u32 - 1
     }
 
     /// The function the page is calling.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn handler(&self, number: u32) -> Option<Value> {
+    pub fn handler(&self, number: u32) -> Option<Handler> {
         self.handlers.get(number as usize).cloned()
     }
 
     /// `element.on("click", pressed)`. The simulated page keeps the
-    /// function and never calls it: nobody is there to click.
-    pub fn on(&mut self, id: u32, event: &str, handler: Value) {
-        let kept = self.keep(handler);
+    /// function and calls it only when the program says `fire`: nobody
+    /// is there to click.
+    pub fn on(&mut self, id: u32, event: &str, handler: Value, takes_event: bool) {
+        let kept = self.keep(handler, takes_event);
+        self.listeners.push((id, event.to_string(), kept));
         if self.real {
             ask(vec![text("on"), number(id), text(event), number(kept)]);
         }
     }
 
-    /// `web.after(500 ms, tick)`.
-    pub fn after(&mut self, milliseconds: f64, handler: Value) {
-        let kept = self.keep(handler);
+    /// The functions that `on` was given for this event of this
+    /// element, in the order given: what `fire` calls.
+    pub fn listeners(&self, id: u32, event: &str) -> Vec<Handler> {
+        let heard = self.listeners.iter().filter(|(element, kind, _)| *element == id && kind == event);
+        heard.map(|(_, _, kept)| self.handlers[*kept as usize].clone()).collect()
+    }
+
+    /// `web.after(500 ms, tick)`, and `web.every(1 s, tick)` with `again`.
+    pub fn after(&mut self, milliseconds: f64, handler: Value, again: bool) {
+        let kept = self.keep(handler, false);
         if self.real {
-            ask(vec![text("after"), Json::Number(milliseconds), number(kept)]);
+            ask(vec![text(if again { "every" } else { "after" }), Json::Number(milliseconds), number(kept)]);
         }
     }
 
     /// `web.on_key(pressed)`.
     pub fn on_key(&mut self, handler: Value) {
-        let kept = self.keep(handler);
+        let kept = self.keep(handler, false);
         if self.real {
             ask(vec![text("on_key"), number(kept)]);
+        }
+    }
+
+    /// `web.fetch(address, done)` and `web.post(address, body, done)`:
+    /// ask the network, and call `done` with the answer when it comes.
+    /// The simulated page has no network and calls nothing.
+    pub fn fetch(&mut self, address: &str, body: Option<&str>, handler: Value) {
+        let kept = self.keep(handler, false);
+        if self.real {
+            let body = body.map_or(Json::Null, text);
+            ask(vec![text("fetch"), text(address), body, number(kept)]);
         }
     }
 }

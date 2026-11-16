@@ -1,0 +1,125 @@
+# A sheet to draw on with the mouse, in a page.
+#
+# The page is `sketch.html`, beside this file: four buttons that are
+# colours, a button that wipes the sheet, and a `<canvas>`, which is an
+# element a program can draw on.
+#
+#     zeno build --web examples/sketch.zeno    writes sketch.web.html: open it
+#     zeno run examples/sketch.zeno            runs it here, on a simulated page
+#     zeno test examples/sketch.zeno           runs its tests
+#
+# It shows what `todo.zeno` does not: a function that asks for the
+# `Event` to learn where the mouse is, drawing, the style of one
+# element, and something that is kept from one visit to the next.
+import web
+
+let paper = web.element("#paper")
+let lines = web.element("#lines")
+
+# The colour that is drawn in. The one chosen on the last visit, if
+# there was a visit.
+var colour = "black"
+let kept = web.load("sketch colour")
+if kept is not none {
+    colour = kept
+}
+
+# Is the button of the mouse down, and where the mouse was last.
+var drawing = false
+var last_x = 0.0
+var last_y = 0.0
+var drawn = 0
+
+function show_drawn() {
+    lines.text = f"{drawn} lines drawn"
+    lines.set_style("color", colour)
+}
+
+# Each colour button says which colour it is in the page itself, as
+# `data-colour`. The one that is chosen gets a black edge, which is a
+# class, and the look of the class is CSS.
+function choose(wanted: str) {
+    colour = wanted
+    web.save("sketch colour", colour)
+    for button in web.elements(".colour") {
+        if button.get("data-colour") == colour {
+            button.add_class("chosen")
+        } else {
+            button.remove_class("chosen")
+        }
+    }
+    show_drawn()
+}
+
+for button in web.elements(".colour") {
+    let its = button.get("data-colour")
+    if its is not none {
+        button.set_style("background-color", its)
+        button.on("click", function() { choose(its) })
+    }
+}
+
+# The mouse went down on the sheet: a line starts here.
+function pen_down(event: Event) {
+    drawing = true
+    last_x = event.x
+    last_y = event.y
+}
+
+# The mouse moved. With the button down, that is a line from where it
+# was to where it is.
+function pen_moved(event: Event) {
+    if drawing {
+        paper.draw_line(last_x, last_y, event.x, event.y, colour)
+        last_x = event.x
+        last_y = event.y
+        drawn += 1
+        show_drawn()
+    }
+}
+
+function pen_up() {
+    drawing = false
+}
+
+function wipe() {
+    paper.erase()
+    drawn = 0
+    show_drawn()
+    paper.draw_text(10, 10, "Draw here", "silver")
+}
+
+paper.on("mousedown", pen_down)
+paper.on("mousemove", pen_moved)
+paper.on("mouseup", pen_up)
+paper.on("mouseleave", pen_up)
+web.element("#wipe").on("click", wipe)
+
+choose(colour)
+wipe()
+
+test "the mouse draws only while its button is down" {
+    let before = drawn
+    paper.fire("mousemove")
+    assert drawn == before
+    paper.fire("mousedown")
+    paper.fire("mousemove")
+    paper.fire("mousemove")
+    assert drawn == before + 2
+    paper.fire("mouseup")
+    paper.fire("mousemove")
+    assert drawn == before + 2
+}
+
+test "a colour that is chosen is kept" {
+    choose("crimson")
+    assert web.load("sketch colour") == "crimson"
+    assert lines.get_style("color") == "crimson"
+}
+
+test "wiping starts the count again" {
+    paper.fire("mousedown")
+    paper.fire("mousemove")
+    web.element("#wipe").fire("click")
+    assert drawn == 0
+}

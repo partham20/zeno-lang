@@ -420,8 +420,10 @@ const LIST_METHODS: &[&str] = &[
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
-pub const ELEMENT_METHODS: &[&str] =
-    &["on", "append", "remove", "clear", "get", "set", "add_class", "remove_class", "has_class", "show", "hide"];
+pub const ELEMENT_METHODS: &[&str] = &[
+    "on", "fire", "append", "remove", "clear", "get", "set", "add_class", "remove_class", "has_class", "show", "hide",
+    "get_style", "set_style", "draw_rect", "draw_circle", "draw_line", "draw_text", "erase",
+];
 /// What an element has that is read and given a new value like a field
 /// of an object: `title.text = "Hello"`.
 pub const ELEMENT_FIELDS: &[&str] = &["text", "value"];
@@ -866,7 +868,13 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("elements", Value::Builtin(Builtin { name: "elements", call: web_elements })),
                 ("create", Value::Builtin(Builtin { name: "create", call: web_create })),
                 ("after", Value::Builtin(Builtin { name: "after", call: web_after })),
+                ("every", Value::Builtin(Builtin { name: "every", call: web_every })),
                 ("on_key", Value::Builtin(Builtin { name: "on_key", call: web_on_key })),
+                ("save", Value::Builtin(Builtin { name: "save", call: web_save })),
+                ("load", Value::Builtin(Builtin { name: "load", call: web_load })),
+                ("forget", Value::Builtin(Builtin { name: "forget", call: web_forget })),
+                ("fetch", Value::Builtin(Builtin { name: "fetch", call: web_fetch })),
+                ("post", Value::Builtin(Builtin { name: "post", call: web_post })),
             ],
         ),
         "board" => (
@@ -1248,21 +1256,107 @@ fn web_create(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result
 }
 
 /// `web.after(500 ms, tick)`: call the function once, that much later.
-fn web_after(machine: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
-    arity("after", &args, 2, 2, span)?;
+fn web_after(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    timer(machine, "after", args, span)
+}
+
+/// `web.every(1 s, tick)`: call the function that often, for as long as
+/// the page is open.
+fn web_every(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    timer(machine, "every", args, span)
+}
+
+/// `after` and `every`: a time with a unit, and a function to call.
+fn timer(machine: &mut dyn Machine, name: &str, mut args: Vec<Value>, span: Span) -> Result {
+    arity(name, &args, 2, 2, span)?;
     let milliseconds = match &args[0] {
         Value::Quantity(x, unit) => match crate::units::convert(unit, "ms") {
             Some(scale) => scale.apply(*x),
-            None => return fatal(format!("`after` needs a time, such as `500 ms`, not a quantity in {unit}"), span),
+            None => return fatal(format!("`{name}` needs a time, such as `500 ms`, not a quantity in {unit}"), span),
         },
-        other => return wrong_type("after", "a time with a unit, such as `500 ms`", other, span),
+        other => return wrong_type(name, "a time with a unit, such as `500 ms`", other, span),
     };
+    // A page that calls a function every 0 ms does nothing else.
+    if name == "every" && milliseconds < 1.0 {
+        return raise("ValueError", "`every` needs a time of at least 1 ms", span);
+    }
     let handler = args.remove(1);
     if !can_be_called(&handler) {
-        return wrong_type("after", "a function to call", &handler, span);
+        return wrong_type(name, "a function to call", &handler, span);
     }
-    machine.page().after(milliseconds, handler);
+    machine.page().after(milliseconds, handler, name == "every");
     Ok(Value::None)
+}
+
+/// `web.save("name", "Partha")`: keep text under a name. It is there
+/// the next time the page is opened in the same browser.
+fn web_save(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("save", &args, 2, 2, span)?;
+    let (name, value) = (text("save", &args[0], span)?, text("save", &args[1], span)?);
+    machine.page().save(name, value);
+    Ok(Value::None)
+}
+
+/// `web.load("name")`: the text saved under the name, or `none`.
+fn web_load(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("load", &args, 1, 1, span)?;
+    let name = text("load", &args[0], span)?;
+    Ok(machine.page().load(name).map_or(Value::None, Value::str))
+}
+
+/// `web.forget("name")`: nothing is saved under the name any more.
+fn web_forget(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("forget", &args, 1, 1, span)?;
+    let name = text("forget", &args[0], span)?;
+    machine.page().forget(name);
+    Ok(Value::None)
+}
+
+/// `web.fetch("/prices.txt", done)`: ask the network for what is at
+/// that address, and call `done(status, body)` when the answer comes.
+fn web_fetch(machine: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    arity("fetch", &args, 2, 2, span)?;
+    let handler = args.remove(1);
+    let address = text("fetch", &args[0], span)?;
+    if !can_be_called(&handler) {
+        return wrong_type("fetch", "a function to call", &handler, span);
+    }
+    machine.page().fetch(address, None, handler);
+    Ok(Value::None)
+}
+
+/// `web.post("/orders", body, done)`: send `body` to that address, and
+/// call `done(status, body)` with what comes back.
+fn web_post(machine: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    arity("post", &args, 3, 3, span)?;
+    let handler = args.remove(2);
+    let (address, body) = (text("post", &args[0], span)?, text("post", &args[1], span)?);
+    if !can_be_called(&handler) {
+        return wrong_type("post", "a function to call", &handler, span);
+    }
+    machine.page().fetch(address, Some(body), handler);
+    Ok(Value::None)
+}
+
+/// Does this function ask for the `Event`? One that takes a parameter
+/// does: `function(event: Event) { ... }`. The checker has seen to it
+/// that it takes nothing else.
+fn takes_event(handler: &Value) -> bool {
+    match handler {
+        Value::Function(closure) => !closure.decl.params.is_empty(),
+        // The first parameter of a method is `self`.
+        Value::BoundMethod(_, closure) => closure.decl.params.len() > 1,
+        _ => false,
+    }
+}
+
+/// A number given to one of the `draw_` methods: an int or a float.
+fn place(method: &str, arg: &Value, span: Span) -> Result<f64> {
+    match arg {
+        Value::Int(n) => Ok(*n as f64),
+        Value::Float(x) => Ok(*x),
+        other => wrong_type(method, "a number", other, span),
+    }
 }
 
 /// `web.on_key(pressed)`: call the function with the name of each key
@@ -1312,8 +1406,65 @@ fn element_method(machine: &mut dyn Machine, id: u32, name: &str, mut args: Vec<
             if !can_be_called(&handler) {
                 return wrong_type(name, "a function to call", &handler, span);
             }
-            machine.page().on(id, event, handler);
+            let takes_event = takes_event(&handler);
+            machine.page().on(id, event, handler, takes_event);
             Ok(Value::None)
+        }
+        // `button.fire("click")`: call what `on` was given for that
+        // event, now, in the order given. It is how a test presses a
+        // button (decision 16.3).
+        "fire" => {
+            arity(name, &args, 1, 1, span)?;
+            let kind = text(name, &args[0], span)?;
+            let target = Value::Element(id, Rc::from(machine.page().name(id)));
+            let event = Value::Event(Rc::new(crate::value::Event {
+                kind: Rc::from(kind),
+                target,
+                x: 0.0,
+                y: 0.0,
+                key: Rc::from(""),
+            }));
+            for handler in machine.page().listeners(id, kind) {
+                let arguments = if handler.takes_event { vec![event.clone()] } else { Vec::new() };
+                machine.call(handler.function, arguments, Vec::new(), span)?;
+            }
+            Ok(Value::None)
+        }
+        "get_style" => {
+            arity(name, &args, 1, 1, span)?;
+            let style = text(name, &args[0], span)?;
+            Ok(machine.page().style(id, style).map_or(Value::None, Value::str))
+        }
+        "set_style" => {
+            arity(name, &args, 2, 2, span)?;
+            let (style, value) = (text(name, &args[0], span)?, text(name, &args[1], span)?);
+            match machine.page().set_style(id, style, value) {
+                Ok(line) => shown(machine, line),
+                Err(()) => raise(
+                    "ValueError",
+                    format!("there is no style called `{style}`. A style is named as CSS names it: `color`, `background-color`, `font-size`"),
+                    span,
+                ),
+            }
+        }
+        "draw_rect" | "draw_circle" | "draw_line" | "draw_text" | "erase" => {
+            // How many numbers each takes, and whether text follows them.
+            let (what, numbers, has_text) = match name {
+                "draw_rect" => ("rect", 4, false),
+                "draw_circle" => ("circle", 3, false),
+                "draw_line" => ("line", 4, false),
+                "draw_text" => ("text", 2, true),
+                _ => ("erase", 0, false),
+            };
+            // The colour comes last, for all but `erase`.
+            let words = if what == "erase" { 0 } else { 1 + has_text as usize };
+            arity(name, &args, numbers + words, numbers + words, span)?;
+            let places = args[..numbers].iter().map(|arg| place(name, arg, span)).collect::<Result<Vec<f64>>>()?;
+            let words = args[numbers..].iter().map(|arg| text(name, arg, span)).collect::<Result<Vec<&str>>>()?;
+            match machine.page().draw(id, what, &places, &words) {
+                Ok(line) => shown(machine, line),
+                Err(()) => raise("ValueError", format!("`{name}` draws on a `<canvas>`, and this element is not one"), span),
+            }
         }
         "append" => {
             arity(name, &args, 1, 1, span)?;

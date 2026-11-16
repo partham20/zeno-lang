@@ -18,8 +18,9 @@
 //! - `zeno_start(place, length)`: check and run a program. The text
 //!   is JSON: `{"main": "counter.zeno", "files": {"counter.zeno": "..."}}`.
 //! - `zeno_call(handler)`, `zeno_call_with(handler, place, length)`:
-//!   call a function the program gave to `on`, `after` or `on_key`,
-//!   the second with one str (the key that was pressed).
+//!   call a function the program gave to `on`, `after`, `every`,
+//!   `on_key`, `fetch` or `post`, the second with what the call hands
+//!   over, as JSON: the key, the event, or the answer of the network.
 //!
 //! What it asks of the page (`extern "C"`):
 //!
@@ -40,6 +41,7 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::checker;
 use crate::error::Error;
@@ -197,8 +199,39 @@ pub extern "C" fn zeno_call(handler: u32) -> u32 {
     call(handler, Vec::new())
 }
 
-/// The page calls a function with one str: the key that was pressed.
+/// The page calls a function and hands something over, written as
+/// JSON. One of three things:
+///
+/// - `{"key": "Enter"}`: the key that was pressed, for `on_key`.
+/// - `{"event": {"kind": "click", "target": 4, "name": "<li>", "x": 10,
+///   "y": 3, "key": ""}}`: what happened, for `on`. It reaches the
+///   function only if the function asks for an `Event`.
+/// - `{"reply": [200, "..."]}`: the answer of the network, for `fetch`
+///   and `post`.
 #[no_mangle]
 pub extern "C" fn zeno_call_with(handler: u32, place: *mut u8, length: usize) -> u32 {
-    call(handler, vec![Value::str(taken(place, length))])
+    let carried = Json::parse(&taken(place, length)).unwrap_or(Json::Null);
+    let text = |json: Option<&Json>| Value::str(json.and_then(Json::as_str).unwrap_or_default().to_string());
+    let number = |json: Option<&Json>| match json {
+        Some(Json::Number(n)) => *n,
+        _ => 0.0,
+    };
+    if let Some(key) = carried.get("key") {
+        return call(handler, vec![text(Some(key))]);
+    }
+    if let Some(event) = carried.get("event") {
+        let name = event.get("name").and_then(Json::as_str).unwrap_or_default();
+        let event = crate::value::Event {
+            kind: Rc::from(event.get("kind").and_then(Json::as_str).unwrap_or_default()),
+            target: Value::Element(number(event.get("target")) as u32, Rc::from(name)),
+            x: number(event.get("x")),
+            y: number(event.get("y")),
+            key: Rc::from(event.get("key").and_then(Json::as_str).unwrap_or_default()),
+        };
+        return call(handler, vec![Value::Event(Rc::new(event))]);
+    }
+    if let Some(Json::List(reply)) = carried.get("reply") {
+        return call(handler, vec![Value::Int(number(reply.first()) as i64), text(reply.get(1))]);
+    }
+    call(handler, Vec::new())
 }

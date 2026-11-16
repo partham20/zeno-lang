@@ -86,9 +86,16 @@ if [ -f "$wasm" ]; then
         ZENO_WASM=$wasm run build --web "$examples/todo.zeno" >/dev/null
         # The page that was written by hand, the program, and Zeno itself.
         grep -q '<form id="add">' todo.web.html
-        grep -q 'Zeno.start(Zeno.bytes("AGFzbQ' todo.web.html
+        grep -q 'Zeno.start(Zeno.unpacked("' todo.web.html
         grep -q '"main":"todo.zeno"' todo.web.html
     ) || { echo "\`zeno build --web\` did not write the page of examples/todo.zeno"; exit 1; }
     echo "\`zeno build --web\` writes a page with the program and Zeno in it"
+    (
+        cd "$work"
+        ZENO_WASM=$wasm run playground >/dev/null
+        grep -q 'window.zenoModule' playground.html
+        ! grep -q '__WASM__' playground.html
+    ) || { echo "\`zeno playground\` did not write the playground"; exit 1; }
+    echo "\`zeno playground\` writes the playground with Zeno in it"
 fi
 echo "ok"

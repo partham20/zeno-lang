@@ -41,6 +41,9 @@ pub enum Value {
     /// knows it by, and how the program got it (`#count`, or `<li>` for
     /// one it made), which is how `print` shows it.
     Element(u32, Rc<str>),
+    /// What happened on the page, handed to a function given to `on`
+    /// that asks for it: `function(event: Event) { ... }`.
+    Event(Rc<Event>),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -66,6 +69,41 @@ pub enum Value {
     Error(Rc<ErrorValue>),
 
     Module(Rc<Module>),
+}
+
+/// An event of the page: what kind it was, the element it happened to,
+/// where the mouse was and which key was pressed. Its fields can be
+/// read and never written (decision 16.2).
+pub struct Event {
+    /// `"click"`, `"input"`, `"keydown"`: the name `on` was given.
+    pub kind: Rc<str>,
+    /// The element it happened to. For a click on an `<li>` inside the
+    /// `<ul>` that `on` was given to, this is the `<li>`.
+    pub target: Value,
+    /// Where the mouse was, in pixels from the top left corner of the
+    /// element that `on` was given to. 0 for an event of no mouse.
+    pub x: f64,
+    pub y: f64,
+    /// The key that was pressed, for `keydown` and `keyup`. `""` for any
+    /// other event.
+    pub key: Rc<str>,
+}
+
+/// The fields of an `Event`, in the order the checker and `print` show them.
+pub const EVENT_FIELDS: &[&str] = &["kind", "target", "x", "y", "key"];
+
+impl Event {
+    /// The field of this name, if an event has one.
+    pub fn field(&self, name: &str) -> Option<Value> {
+        Some(match name {
+            "kind" => Value::Str(self.kind.clone()),
+            "target" => self.target.clone(),
+            "x" => Value::Float(self.x),
+            "y" => Value::Float(self.y),
+            "key" => Value::Str(self.key.clone()),
+            _ => return None,
+        })
+    }
 }
 
 /// What a dict holds: each key with its value, in the order the keys
@@ -274,12 +312,22 @@ pub struct Outside {
     read: usize,
     /// The words after the file on the command line.
     pub arguments: Vec<String>,
+    /// The page that was written for the program: the text of
+    /// `todo.html` for `todo.zeno`, if there is one. The simulated page
+    /// then has the elements it has (`page.rs`).
+    pub page: Option<String>,
 }
 
 impl Outside {
     /// A program at the real keyboard, started with these words.
     pub fn started_with(arguments: Vec<String>) -> Outside {
-        Outside { typed: None, read: 0, arguments }
+        Outside { typed: None, read: 0, arguments, page: None }
+    }
+
+    /// The same, with the page that was written for the program.
+    pub fn with_page(mut self, page: Option<String>) -> Outside {
+        self.page = page;
+        self
     }
 
     /// A program that is given `typed` in place of a keyboard.
@@ -289,6 +337,7 @@ impl Outside {
             typed: Some(typed.to_string()),
             read: 0,
             arguments: arguments.iter().map(|word| word.to_string()).collect(),
+            page: None,
         }
     }
 
@@ -349,6 +398,13 @@ pub mod testing {
     /// each started with `arguments`.
     pub fn with_outside(typed: &str, arguments: &[&str], test: impl FnOnce()) {
         OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing(typed, arguments));
+        test();
+        OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing("", &[]));
+    }
+
+    /// Run `test` with this page written for every program it runs.
+    pub fn on_page(html: &str, test: impl FnOnce()) {
+        OUTSIDE.with(|outside| outside.borrow_mut().page = Some(html.to_string()));
         test();
         OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing("", &[]));
     }
@@ -468,6 +524,7 @@ impl Value {
             Value::Dict(_) => "a dict".to_string(),
             Value::Pin(_) => "a pin".to_string(),
             Value::Element(..) => "an element".to_string(),
+            Value::Event(_) => "an Event".to_string(),
             Value::Pointer(..) => "a pointer".to_string(),
             Value::Register(..) => "a register".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
@@ -506,6 +563,8 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Pin(a), Pin(b)) => a == b,
         // Two elements are equal when they are one element of the page.
         (Element(a, _), Element(b, _)) => a == b,
+        // An event is equal only to itself.
+        (Event(a), Event(b)) => Rc::ptr_eq(a, b),
         // Two pointers are equal when they point at the same item.
         (Pointer(a, at_a), Pointer(b, at_b)) => Rc::ptr_eq(a, b) && at_a == at_b,
         (Register(a, size_a), Register(b, size_b)) => a == b && size_a == size_b,
@@ -578,6 +637,7 @@ impl fmt::Display for Value {
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
             Value::Element(_, name) => write!(f, "Element({name})"),
+            Value::Event(event) => write!(f, "Event({})", event.kind),
             // Where a pointer points is different on every run, so it is
             // not shown.
             Value::Pointer(memory, _) => write!(f, "<pointer[{}]>", memory.pointee.name()),

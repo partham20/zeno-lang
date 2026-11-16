@@ -58,7 +58,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 let mut vm = Vm {
                     output: capture.then(String::new),
                     board: Board::new(),
-                    page: crate::page::Page::simulated(),
+                    page: crate::page::Page::simulated(outside.page.as_deref()),
                     outside,
                     // Under every frame's stretch of the stack is the thing
                     // that was called. The program was called by nobody.

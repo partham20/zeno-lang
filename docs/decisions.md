@@ -8202,3 +8202,332 @@ change both files. It protects against everything less than that.
 - The winget step of the setup program is not run by any test:
   GitHub's Windows machines have no winget.
 - `zeno` does not update itself. The installer, run again, does.
+
+## 16. A page that does more
+
+Chapter 14 made the least that is a page. Its last section (14.14)
+listed what a real front end would miss: where the mouse is, the
+style of one element, drawing, the network, something kept between
+visits, a simulated page that knows the page, and a smaller file.
+This chapter is those, and a playground.
+[`web.md`](web.md) and [`playground.md`](playground.md) are the
+walkthroughs.
+
+### 16.1 A function given to `on` may ask for the `Event`
+
+`button.on("click", function() { ... })` is called with nothing, as
+before. `paper.on("click", function(event: Event) { ... })` is
+called with what happened. The checker allows those two shapes and
+says so if it is given a third.
+
+**Why.** 14.5 held that a function knows its element already, and
+that stays true for most of a page. It is not true of where the
+mouse was, and not of which item of a list was clicked when one
+function is given to the whole list. Those can be known no other
+way, so there has to be a way to be told.
+
+Letting the function ask keeps 14.5 for everybody who needs
+nothing: no program that ran under 14.5 changes, and the first
+example anyone reads still has `function()`.
+
+**Why by the number of parameters.** The function's first line
+already says what it wants. A second method (`on_event`) would be
+two names for one thing, and a flag would say twice what the
+parameter says once.
+
+**Turned down.** `web.mouse()`, a question the function can ask: it
+answers for "now", and a function called a moment after the click,
+from the queue (14, `waiting`), would be told where the mouse went
+since. Two parameters `(x, y)`: right for the mouse and wrong for
+every other event, and no room for the target.
+
+### 16.2 An `Event` has five fields, and they are read only
+
+`kind`, `target`, `x`, `y`, `key`. `x` and `y` are floats, in pixels
+from the top left corner of the element that `on` was given to. For
+an event with no mouse they are 0, and `key` is `""` for an event
+with no key.
+
+**Why these five.** Each is something a program cannot find out any
+other way, and each was needed by an example: the sketch needs `x`
+and `y`, one function for a whole list needs `target`, a function
+given to two events needs `kind`, and `key` is what `on_key` hands
+over, for an element that wants its own keys.
+
+**Why from the element's corner.** A program draws on the element
+it listens to, and a canvas counts from its own corner. From the
+corner of the window, every program would first have to take away
+where the element is, which it has no way to ask.
+
+**Why 0 and `""` and not `none`.** 14.5 turned down an event object
+because most of its fields mean nothing for most events. `none`
+would make every use of `event.x` begin with a test that a click
+never fails. A program that asks for `x` of a `"submit"` has made a
+mistake that 0 shows as well as anything.
+
+**Why read only.** It says what happened. Changing it would change
+nothing on the page, and a field that can be written and does
+nothing is a trap.
+
+**Left out for now.** Which button of the mouse, Shift and Ctrl,
+the wheel, touches. Each is a field, three files away.
+
+### 16.3 `fire` calls the program's functions, at once
+
+`button.fire("click")` calls every function that `on` was given for
+`"click"` on that element, in the order given, before it returns.
+One that asks for the `Event` gets one with the element as `target`
+and 0 for `x` and `y`. It does the same in a browser and on the
+simulated page.
+
+**Why.** 14.6 left a test one way to press a button: call the
+function by name. A function written in place
+(`item.on("click", function() { ... })`) has no name, so the most
+natural way to write a page could not be tested. `fire` is the
+press.
+
+**Why it does not send the browser an event.** In a browser an
+event that is sent is handled later, after the function that sent
+it has returned (the queue, 14). On a desk it would have to be
+handled at once, because there is no later. A test that passes on a
+desk and means something else in the browser is worse than no test.
+So `fire` is the same everywhere: it is a call. It does not tick a
+checkbox or send a form, and docs/web.md says so.
+
+**Turned down.** `button.click()`: one method for each event, and
+the browser has hundreds.
+
+### 16.4 The style of one element: `set_style` and `get_style`
+
+`e.set_style("color", "red")`, with the name CSS uses.
+`e.get_style("color")` gives what was set on the element itself, or
+`none`.
+
+**Why at all.** 14 said "use a class", and that is still the right
+answer for a look that is known when the page is written. It cannot
+do a look that is worked out: a bar as wide as a reading, a colour
+the person chose.
+
+**Why CSS's names.** `background-color`, and not `backgroundColor`
+or `background_color`. The page beside the program is written in
+CSS, and one thing should have one name in both files.
+
+**Why a wrong name is an error.** A browser ignores a style it does
+not know, and the program goes on with nothing changed and nothing
+said. Zeno stops with a `ValueError`. (The simulated page does not
+know CSS and cannot do this. It is found when the page is opened.)
+
+**Why `get_style` is only what was set.** What an element finally
+looks like comes from every rule of the page, in units the browser
+chooses (`rgb(255, 0, 0)` for `red`). Handing that back would be a
+second, bigger thing with the same name.
+
+### 16.5 Drawing is five methods of an element
+
+`draw_rect`, `draw_circle`, `draw_line`, `draw_text`, `erase`.
+Places and sizes are numbers (int or float), in pixels from the top
+left corner. The colour is last, and is whatever CSS calls a
+colour. On an element that is not a `<canvas>` they raise a
+`ValueError`.
+
+**Why so few.** A browser's canvas has a pen with a state: a
+colour, a width, a path that is begun and ended. Every call depends
+on the calls before it, which is exactly what makes drawing code
+hard to read and to test. Here each call says everything it needs
+and leaves nothing behind, so a line printed by the simulated page
+(`#paper draw_rect 10 10 50 20 red`) is the whole of what happened.
+
+**Why the colour is last and not left out.** A default colour is a
+state by another name: the reader has to know what it is.
+
+**Why `draw_text` counts from the top left.** A browser counts text
+from its baseline, so text drawn at `0, 0` is off the top of the
+canvas. Every other shape here starts at its corner.
+
+**Why methods of `Element`, and no `Canvas` type.** A canvas is an
+element: it has a class, can be hidden, hears clicks. A second type
+would need a way to get from one to the other, for no gain but a
+check the page cannot make anyway (the checker does not read the
+page).
+
+**Left out for now.** Curves, images, line width, drawing that is
+not filled. Games that redraw everything sixty times a second are
+too slow for an interpreter in any case (14.1).
+
+### 16.6 `web.every`, beside `web.after`
+
+`web.every(1 s, tick)` calls `tick` that often until the page is
+closed. Less than 1 ms is a `ValueError`.
+
+**Why.** A clock, a poll, anything that moves. With `after` alone
+it is written as a function that asks for itself again, and every
+program that does it gets it slightly wrong (the time drifts by
+however long the function takes).
+
+**Why it cannot be stopped.** Stopping needs a value to stop
+(`let timer = web.every(...)`, `timer.stop()`), which is a new
+type. A function that has nothing to do can return at once, and
+that has been enough. It is the first thing to add when it is not.
+
+### 16.7 What is kept between visits: `save`, `load`, `forget`
+
+`web.save("name", text)`, `web.load("name")` (a str, or `none`),
+`web.forget("name")`. Names and values are text.
+
+**Why text only.** The browser keeps text. A number is `str(n)` on
+the way in and `int(text)` on the way out, where the program can
+see it and where a wrong value raises the error it should.
+
+**Why `load` gives `none`.** Nothing kept is the ordinary case, on
+every first visit, and the checker then makes the program say what
+happens.
+
+**Why a browser that refuses keeps nothing, silently.** A private
+window may refuse. The program already has to work on a first
+visit, when nothing is kept, so "nothing is ever kept" is a case it
+handles already.
+
+**On a desk** what is saved is kept until the run ends, so a test
+can save and load. It is not written to the disk: a test should not
+depend on the run before it.
+
+### 16.8 The network: `fetch` and `post`, with a function for the answer
+
+`web.fetch(address, done)` and `web.post(address, text, done)`.
+`done` is called later with two things: the status (an int: 200,
+404) and the body (a str). An address that could not be reached at
+all gives status 0 and `""`.
+
+**Why a function for the answer.** The answer comes later, and a
+page must not wait (14.11 is the same rule for `sleep`). Zeno has
+one way to say "later": hand over a function, as `on` and `after`
+do. A second way (a value that stands for an answer to come) is a
+feature of a language, with rules of its own, and this is one
+module.
+
+**Why two parameters and no `Reply` type.** There are two things to
+know. A type with two fields is longer at every use and adds a name
+to learn.
+
+**Why status 0 and no error.** An error raised later, inside
+nothing the program called, has nowhere to be caught. And "could
+not be reached" has to be handled beside 404 and 500 anyway, in the
+same `if`.
+
+**Why the body is text.** There is no JSON in the library yet.
+When there is, it reads a str.
+
+**On a desk** nothing is fetched and `done` is not called, as a
+timer is not (14.6). A test calls `done` itself with the answer it
+wants to try, which is the test worth writing: what the page does
+with a 404.
+
+### 16.9 The simulated page reads the page that was written
+
+If `todo.html` is beside `todo.zeno`, `zeno run` and `zeno test`
+read it, and the simulated page has those elements and no others.
+With no such file it has every element that is asked for, as in
+14.6.
+
+**Why.** 14.6 said that the simulated page "cannot say whether the
+page has the elements the program asks for", and a misspelt id is
+the commonest mistake there is in a page. It was found only in a
+browser, by hand.
+
+**Why by the file's name.** It is the file `zeno build --web`
+already takes as the page (14.8), so the page that is tested is the
+page that is built, and there is nothing to configure.
+
+**Why not in the checker.** The checker could look up
+`web.element("#list")` when the selector is written out. It would
+then need the page, which the language server and `zeno check` do
+not have in hand, and it would still miss a selector that is built
+(`"#row" + str(n)`). On the first run, the same message comes with
+the same line.
+
+**Why a reader of our own (`src/html.rs`).** Zeno has no
+dependencies (5.1). The reader is 200 lines, because it reads pages
+that are written right and does not mend the others as a browser
+must. Text that is only the spaces a page is laid out with counts
+as none.
+
+### 16.10 `zeno.wasm` is built for size, where that costs no speed
+
+`.cargo/config.toml` builds it with `opt-level=s`, one code
+generation unit and whole-program `lto`. 1.1 MB became 800 KB.
+
+**Why `s` and not `z`.** Measured, on a loop of 300,000 steps and a
+recursion: as built before, 173 ms; `s` with the rest, 167 ms; `z`,
+262 ms, for 650 KB. A page that is 150 KB smaller and half again as
+slow is a bad trade once the page is packed (16.11), when the
+difference is 40 KB.
+
+**Why in `.cargo/config.toml`.** It holds for this one target, and
+`cargo build --release --target wasm32-unknown-unknown` stays the
+command, in the docs and in the release workflow. `zeno` for a desk
+is built as before.
+
+### 16.11 `zeno.wasm` is packed in the page, by a packer of our own
+
+A built page holds `zeno.wasm` as DEFLATE in base64, and the
+browser unpacks it with `DecompressionStream("deflate-raw")`.
+`src/deflate.rs` is the packer. A built page went from 1.5 MB to
+0.4 MB.
+
+**Why pack.** Base64 makes bytes a third longer, and `zeno.wasm` is
+most of every page. A web server can pack a page as it sends it,
+but 14.7 promised one file that works from the disk and from a
+mail, where no server is.
+
+**Why DEFLATE.** It is the one format every browser unpacks by
+itself, so nothing is added to the page to undo it. A better
+format would need its unpacker in every page, in JavaScript.
+
+**Why write it.** No dependencies (5.1), and a release must not need
+`gzip` on the machine that builds a page, least of all on Windows.
+It is 300 lines, and it comes within two parts in a hundred of
+`gzip -9` on `zeno.wasm` (292 KB against 288 KB) in a tenth of a
+second. The test unpacks what it packs with Python's zlib, where
+there is a Python.
+
+**The cost.** The page needs a browser from 2023 or later. An older
+one is told so, in the box where errors go.
+
+### 16.12 A playground, written by `zeno playground`
+
+`zeno playground` writes `playground.html`: a box for a program, a
+box for its page, Run, a few examples, and a link that holds the
+program. Each run is a new frame.
+
+**Why.** "What does Zeno look like?" should have an answer that is
+a link. Everything else needs an install first.
+
+**Why a command, and not a file in the repository.** The page holds
+`zeno.wasm`, which is built, and the examples, which change. A file
+that is checked in is out of date the day after. The command writes
+it from the Zeno that is running, so it cannot disagree with it.
+
+**Why a new frame for each run.** A program in a page does not end
+(14). Its timers and the functions it gave away are the browser's
+to hold, and there is no list of them to go through. Throwing the
+frame's page away is the one thing that is certain to stop it all,
+and it is what the browser does best.
+
+**Why the program is in the link, after `#`.** Sharing then needs
+no server and no account, and what follows `#` is never sent
+anywhere. The price is a long link for a long program.
+
+**Left out.** Colours in the program text, several files, a Stop
+button for a program that never returns (it needs a Worker, and a
+program in a Worker cannot reach the page).
+
+### 16.13 Left for later
+
+- JSON read into values, which `fetch` wants.
+- A timer that can be stopped, and an event with the keys held
+  down and the button of the mouse (16.6, 16.2).
+- Images and curves on a canvas.
+- The address bar: a page with several views that the back button
+  walks through.
+- Other browsers. Only Chromium has run any of this.
+- A compiled page, small and fast (14.1). It is still the big one.

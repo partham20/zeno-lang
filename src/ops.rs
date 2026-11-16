@@ -540,6 +540,10 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
             Some(index) => Ok(case_value(def, index)),
             None => fatal(format!("enum `{}` has no case `{name}`", def.name), span),
         },
+        Value::Event(event) => match event.field(name) {
+            Some(value) => Ok(value),
+            None => fatal(format!("an Event has no field `{name}`. It has `{}`", crate::value::EVENT_FIELDS.join("`, `")), span),
+        },
         Value::Module(module) => match module.members.get(name) {
             Some(member) => Ok(member.clone()),
             None => fatal(format!("module `{}` has no `{name}`", module.name), span),

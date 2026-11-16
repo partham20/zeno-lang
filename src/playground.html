@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zeno playground</title>
+<!--
+  The Zeno playground: write a program, press Run, and see it run, all in
+  this one page. `zeno playground` writes it (src/main.rs), putting in
+  Zeno itself (zeno.wasm, packed), src/web.js and a few of the examples.
+
+  Nothing is sent anywhere. The program is checked and run by the same
+  Zeno as `zeno run`, in the browser. Each run gets a fresh frame on the
+  right, which is the page the program is in: `import web` reaches it.
+  docs/playground.md walks through how it works.
+-->
+<style>
+  :root {
+    --paper: #fbfaf7; --ink: #1d1d1b; --soft: #6b6a66; --line: #d9d6cf;
+    --panel: #ffffff; --accent: #0b6e4f; --accent-ink: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #161614; --ink: #ecebe6; --soft: #9a988f; --line: #33322e;
+      --panel: #1f1f1c; --accent: #3fb98b; --accent-ink: #0d1f18;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--paper); color: var(--ink);
+    font: 16px/1.4 system-ui, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 18px; margin: 0 8px 0 0; }
+  header h1 span { color: var(--soft); font-weight: normal; }
+  select, button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
+  }
+  button { cursor: pointer; }
+  #run { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  #said { color: var(--soft); font-size: 14px; margin-left: auto; }
+  main { flex: 1; display: flex; min-height: 0; }
+  .side { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .side + .side { border-left: 1px solid var(--line); }
+  .tabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+  .tabs button { border-bottom: none; border-radius: 6px 6px 0 0; background: transparent; color: var(--soft); }
+  .tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); }
+  .tabs .label { padding: 5px 4px; color: var(--soft); font-size: 14px; }
+  textarea {
+    flex: 1; width: 100%; resize: none; border: 0; outline: 0; padding: 14px 16px;
+    background: var(--panel); color: var(--ink); tab-size: 4; white-space: pre; overflow: auto;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  iframe { flex: 1; width: 100%; border: 0; background: white; }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    .side + .side { border-left: 0; border-top: 1px solid var(--line); }
+    #said { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Zeno <span>playground</span></h1>
+  <label>Example <select id="examples"></select></label>
+  <button id="run" title="Ctrl+Enter">Run</button>
+  <button id="link" title="A link to this program, to send to somebody">Copy link</button>
+  <span id="said"></span>
+</header>
+<main>
+  <div class="side">
+    <div class="tabs" role="tablist">
+      <button id="tab-program" role="tab" aria-selected="true">Program</button>
+      <button id="tab-page" role="tab" aria-selected="false">Page (HTML)</button>
+    </div>
+    <textarea id="program" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="The program"></textarea>
+    <textarea id="page" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="The page, in HTML" hidden></textarea>
+  </div>
+  <div class="side">
+    <div class="tabs"><span class="label">What it does</span></div>
+    <iframe id="result" title="The program, running"></iframe>
+  </div>
+</main>
+<script>
+"use strict";
+// These four are written in by `zeno playground`.
+const WEB_JS = __WEB_JS__;             // src/web.js, which starts a program in a page
+const PACKED = "__WASM__";             // zeno.wasm, packed, in base64
+const EXAMPLES = __EXAMPLES__;         // [{name, program, page}]
+const DEFAULT_PAGE = __DEFAULT_PAGE__; // the page of a program that has none
+
+const program = document.getElementById("program");
+const page = document.getElementById("page");
+const result = document.getElementById("result");
+const said = document.getElementById("said");
+const examples = document.getElementById("examples");
+
+// web.js is run here too, only for `Zeno.unpacked`: the frame of each
+// run gets a copy of its own.
+new Function(WEB_JS)();
+
+// Zeno is unpacked and read in once. Each run starts it afresh from
+// this, which is quick. The frames find it here, as `parent.zenoModule`.
+window.zenoModule = Zeno.unpacked(PACKED).then((bytes) => WebAssembly.compile(bytes));
+
+// `<` written this way is the same text to JSON and nothing to the
+// browser, which would read the closing tag of a script, written in a
+// program, as the end of ours.
+function quoted(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function run() {
+  const files = { main: "main.zeno", files: { "main.zeno": program.value } };
+  const own = page.value.trim() === "" ? DEFAULT_PAGE : page.value;
+  const scripts =
+    "<script>\n" + WEB_JS + "<\/script>\n" +
+    "<script>Zeno.start(parent.zenoModule, " + quoted(files) + ");<\/script>\n";
+  const at = own.toLowerCase().lastIndexOf("</body>");
+  result.srcdoc = at < 0 ? own + scripts : own.slice(0, at) + scripts + own.slice(at);
+  said.textContent = "Ran at " + new Date().toLocaleTimeString();
+  // The address now says what was run, so that it can be sent on.
+  history.replaceState(null, "", "#" + packed({ program: program.value, page: page.value }));
+}
+
+// A program in the address of the page: JSON, in base64 that an address
+// can hold.
+function packed(what) {
+  const bytes = new TextEncoder().encode(JSON.stringify(what));
+  let text = "";
+  bytes.forEach((byte) => { text += String.fromCharCode(byte); });
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function unpackedAddress() {
+  try {
+    const text = atob(location.hash.slice(1).replace(/-/g, "+").replace(/_/g, "/"));
+    const what = JSON.parse(new TextDecoder().decode(Uint8Array.from(text, (c) => c.charCodeAt(0))));
+    return typeof what.program === "string" ? what : null;
+  } catch (unreadable) {
+    return null;
+  }
+}
+
+function show(example) {
+  program.value = example.program;
+  page.value = example.page || "";
+}
+
+EXAMPLES.forEach((example, place) => {
+  const option = document.createElement("option");
+  option.value = place;
+  option.textContent = example.name;
+  examples.appendChild(option);
+});
+examples.addEventListener("change", () => {
+  show(EXAMPLES[examples.value]);
+  run();
+});
+
+// The two things to write: the program, and the page it is in.
+function choose(tab) {
+  for (const [name, box] of [["program", program], ["page", page]]) {
+    box.hidden = name !== tab;
+    document.getElementById("tab-" + name).setAttribute("aria-selected", String(name === tab));
+  }
+  (tab === "program" ? program : page).focus();
+}
+document.getElementById("tab-program").addEventListener("click", () => choose("program"));
+document.getElementById("tab-page").addEventListener("click", () => choose("page"));
+
+document.getElementById("run").addEventListener("click", run);
+document.getElementById("link").addEventListener("click", () => {
+  run();
+  const done = () => { said.textContent = "Link copied"; };
+  if (navigator.clipboard) navigator.clipboard.writeText(location.href).then(done, () => { said.textContent = "The link is in the address bar"; });
+  else said.textContent = "The link is in the address bar";
+});
+
+for (const box of [program, page]) {
+  box.addEventListener("keydown", (pressed) => {
+    // Ctrl+Enter (Cmd+Enter on a Mac) runs.
+    if (pressed.key === "Enter" && (pressed.ctrlKey || pressed.metaKey)) {
+      pressed.preventDefault();
+      run();
+    }
+    // Tab indents by four spaces, as `zeno format` does, and does not
+    // leave the box.
+    if (pressed.key === "Tab" && !pressed.shiftKey && !pressed.ctrlKey && !pressed.altKey) {
+      pressed.preventDefault();
+      box.setRangeText("    ", box.selectionStart, box.selectionEnd, "end");
+    }
+  });
+}
+
+show(unpackedAddress() || EXAMPLES[0]);
+run();
+</script>
+</body>
+</html>

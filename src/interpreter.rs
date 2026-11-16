@@ -52,7 +52,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let result = interpreter
@@ -84,7 +84,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside) -> (String,
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(), outside };
+                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside };
                 let env = Scope::child(&builtins::globals());
                 let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
                 let mut tested = Vec::new();
@@ -152,9 +152,12 @@ impl Session {
     /// The page calls one of the functions it was given: the one that
     /// `on`, `after` or `on_key` kept under this number.
     pub fn call(&mut self, handler: u32, arguments: Vec<Value>) -> Result<(), Error> {
-        let Some(function) = self.interpreter.page.handler(handler) else {
+        let Some(handler) = self.interpreter.page.handler(handler) else {
             return Ok(());
         };
+        // The event goes to a function that asked for it.
+        let arguments = arguments.into_iter().filter(|argument| handler.takes_event || !matches!(argument, Value::Event(_))).collect();
+        let function = handler.function;
         // An error may have left calls open the last time.
         self.interpreter.depth = 0;
         let span = Span { line: 1, col: 1 };
@@ -2029,7 +2032,7 @@ mod tests {
                       web.after(1 s, function() { print([1][presses]) })\n\
                       print(\"ready\")";
         let program = crate::modules::testing::program(source);
-        let (mut session, result) = super::Session::start(program, crate::page::Page::simulated(), true);
+        let (mut session, result) = super::Session::start(program, crate::page::Page::simulated(None), true);
         assert!(result.is_ok());
         assert_eq!(session.printed(), "ready\n");
         // The first function it gave to the page was `pressed`.
@@ -2047,6 +2050,110 @@ mod tests {
         // A number the page was never given calls nothing.
         session.call(9, Vec::new()).expect("nothing to call");
         assert_eq!(session.printed(), "");
+    }
+
+    #[test]
+    fn fire_calls_what_on_was_given() {
+        // How a test presses a button: at once, in the order given, and
+        // with the event for a function that asks for it.
+        let source = "import web\nlet button = web.element(\"#press\")\nvar presses = 0\n\
+                      button.on(\"click\", function() { presses += 1 })\n\
+                      button.on(\"click\", function(event: Event) {\n print(event, event.kind, event.target, event.x, event.y, event.key == \"\")\n print(event.target == button)\n})\n\
+                      button.on(\"input\", function() { print(\"typed\") })\n\
+                      button.fire(\"click\")\nbutton.fire(\"click\")\nbutton.fire(\"keydown\")\nprint(presses)\n\
+                      class Counter {\n n: int\n function heard(self, event: Event) { self.n += 1 }\n function plain(self) { self.n += 10 }\n}\n\
+                      let counter = Counter(0)\nbutton.on(\"wheel\", counter.heard)\nbutton.on(\"wheel\", counter.plain)\nbutton.fire(\"wheel\")\nprint(counter.n)";
+        assert_eq!(
+            output(source),
+            "Event(click) click Element(#press) 0.0 0.0 true\ntrue\nEvent(click) click Element(#press) 0.0 0.0 true\ntrue\n2\n11\n"
+        );
+        assert_eq!(
+            error("import web\nweb.element(\"#a\").on(\"click\", function() { print([1][2]) })\nweb.element(\"#a\").fire(\"click\")"),
+            "uncaught IndexError: index 2 is out of range for a list of length 1"
+        );
+    }
+
+    #[test]
+    fn styles_and_what_is_saved_and_what_is_drawn() {
+        let source = "import web\nlet box = web.element(\"#box\")\n\
+                      print(box.get_style(\"color\"))\nbox.set_style(\"color\", \"red\")\nbox.set_style(\"color\", \"red\")\n\
+                      box.set_style(\"color\", \"blue\")\nprint(box.get_style(\"color\"))\n\
+                      print(web.load(\"name\"))\nweb.save(\"name\", \"Partha\")\nweb.save(\"name\", \"Zeno\")\nprint(web.load(\"name\"))\n\
+                      web.forget(\"name\")\nweb.forget(\"name\")\nprint(web.load(\"name\"))\n\
+                      box.draw_rect(10, 10, 50.5, 20, \"red\")\nbox.draw_circle(5, 5, 2, \"#00f\")\nbox.draw_line(0, 0, 9, 9, \"black\")\n\
+                      box.draw_text(1, 2, \"two words\", \"green\")\nbox.erase()\n\
+                      web.every(1 s, function() { print(\"never on a desk\") })\n\
+                      web.fetch(\"/prices\", function(status: int, body: str) { print(status) })";
+        assert_eq!(
+            output(source),
+            "none\n#box style color: red\n#box style color: blue\nblue\nnone\nZeno\nnone\n\
+             #box draw_rect 10 10 50.5 20 red\n#box draw_circle 5 5 2 #00f\n#box draw_line 0 0 9 9 black\n\
+             #box draw_text 1 2 two words green\n#box erase\n"
+        );
+        assert_eq!(
+            error("import web\nweb.create(\"p\", \"x\").draw_rect(0, 0, 1, 1, \"red\")"),
+            "uncaught ValueError: `draw_rect` draws on a `<canvas>`, and this element is not one"
+        );
+        assert_eq!(error("import web\nweb.every(0 ms, function() { print(1) })"), "uncaught ValueError: `every` needs a time of at least 1 ms");
+    }
+
+    #[test]
+    fn a_page_that_was_written_has_the_elements_it_has() {
+        let page = "<body><h1 id=title class=\"big\">Hello</h1>\n<form id=add><input id=what value=\"milk\"><textarea id=note>a note</textarea></form>\n\
+                    <ul id=list>\n  <li>one<li class=done>two</ul>\n<p id=left style=\"color: red; width: 10px\" hidden></p>\n<canvas id=board></canvas></body>";
+        crate::value::testing::on_page(page, || {
+            let source = "import web\nlet title = web.element(\"#title\")\n\
+                          print(title.text, title.has_class(\"big\"), title.get(\"class\"), web.element(\"h1\") == title)\n\
+                          print(web.element(\"#what\").value, web.element(\"#note\").value, len(web.elements(\"li\")), len(web.elements(\"#list li.done\")))\n\
+                          let list = web.element(\"#list\")\nprint(list.text)\nlist.append(web.create(\"li\", \"three\"))\n\
+                          let left = web.element(\"#left\")\nprint(left.get_style(\"width\"), left.get_style(\"height\"))\nleft.show()\nleft.text = \"2 left\"\n\
+                          web.element(\"#board\").draw_rect(0, 0, 1, 1, \"red\")\n\
+                          print(len(web.elements(\"em\")))\nlist.clear()\nprint(len(web.elements(\"li\")))";
+            assert_eq!(
+                output(source),
+                "Hello true big true\nmilk a note 2 1\nonetwo\n#list + <li> three\n10px none\n#left shown\n#left text: 2 left\n\
+                 #board draw_rect 0 0 1 1 red\n0\n#list cleared\n0\n"
+            );
+            // The reason the page is read: a name spelt wrong is found on a desk.
+            assert_eq!(
+                error("import web\nlet count = web.element(\"#cuont\")"),
+                "uncaught ValueError: the page has no element that answers to `#cuont`. `web.elements` gives a list, which may be empty"
+            );
+            assert_eq!(
+                error("import web\nweb.element(\"#title\").draw_rect(0, 0, 1, 1, \"red\")"),
+                "uncaught ValueError: `draw_rect` draws on a `<canvas>`, and this element is not one"
+            );
+        });
+        // The to-do list says the same with its page as without.
+        let without = output(include_str!("../examples/todo.zeno"));
+        crate::value::testing::on_page(include_str!("../examples/todo.html"), || {
+            assert_eq!(output(include_str!("../examples/todo.zeno")), without);
+        });
+    }
+
+    #[test]
+    fn the_page_hands_over_the_event_and_the_answer() {
+        let source = "import web\nlet board = web.element(\"#board\")\n\
+                      board.on(\"click\", function() { print(\"pressed\") })\n\
+                      board.on(\"click\", function(event: Event) { print(event.kind, event.x, event.y, event.target) })\n\
+                      web.fetch(\"/prices\", function(status: int, body: str) { print(status, body) })";
+        let program = crate::modules::testing::program(source);
+        let (mut session, result) = super::Session::start(program, crate::page::Page::simulated(None), true);
+        assert!(result.is_ok());
+        let event = || {
+            super::Value::Event(std::rc::Rc::new(crate::value::Event {
+                kind: std::rc::Rc::from("click"),
+                target: super::Value::Element(0, std::rc::Rc::from("<b>")),
+                x: 12.0,
+                y: 3.5,
+                key: std::rc::Rc::from(""),
+            }))
+        };
+        // A function that did not ask for the event is not given it.
+        session.call(0, vec![event()]).expect("a click");
+        session.call(1, vec![event()]).expect("a click");
+        session.call(2, vec![super::Value::Int(404), super::Value::str("not here")]).expect("an answer");
+        assert_eq!(session.printed(), "pressed\nclick 12.0 3.5 Element(<b>)\n404 not here\n");
     }
 
     // ----- The examples -----
