@@ -6524,6 +6524,86 @@ print(told(q))
     }
 
     #[test]
+    fn an_old_object_given_a_young_one_keeps_it() {
+        // Old objects (in a long list, and one kept at the top) are given
+        // new objects again and again while garbage is made around them.
+        // A small collection must still find the new ones (decision 22.10).
+        same_as_interpreter("old-and-young", r##"class Cell {
+    value: int
+    next: Cell or none
+}
+let keep = Cell(0, none)
+var cells: list[Cell] = []
+for i in range(300) {
+    cells.append(Cell(i, none))
+}
+for round in range(4) {
+    for i in range(len(cells)) {
+        var junk = Cell(-1, none)
+        junk = Cell(-2, junk)
+        cells[i].next = Cell(i * round, none)
+        if i % 7 == 0 {
+            cells[i] = Cell(i + round, Cell(round, none))
+        }
+    }
+    keep.next = Cell(round, keep.next)
+}
+var total = 0
+for c in cells {
+    total += c.value
+    let after = c.next
+    if after is not none {
+        total += after.value
+    }
+}
+var n = 0
+var at = keep.next
+while at is not none {
+    n += at.value
+    at = at.next
+}
+print(total, n)
+"##);
+    }
+
+    #[test]
+    fn trees_of_garbage_beside_a_kept_tree_stay_small() {
+        // Each new tree's nodes sit next to the old trees' in memory. A
+        // pointer to a node must not keep the node before it alive, or
+        // every old tree is kept (decision 22.10).
+        let source = r##"class Node {
+    left: Node or none
+    right: Node or none
+}
+function make(depth: int) -> Node {
+    if depth == 0 {
+        return Node(none, none)
+    }
+    return Node(make(depth - 1), make(depth - 1))
+}
+function count(node: Node or none) -> int {
+    if node is none {
+        return 0
+    }
+    return 1 + count(node.left) + count(node.right)
+}
+let kept = make(13)
+var total = 0
+for i in range(400) {
+    total += count(make(11))
+}
+print(total, count(kept))
+"##;
+        let Some((printed, [made, most, collections])) = memory_of("garbage-trees", source) else {
+            return;
+        };
+        assert_eq!(printed, interpreted(source));
+        assert!(made > 20_000_000, "the program made {made} bytes");
+        assert!(collections > 2, "the collector ran {collections} times");
+        assert!(most < 12_000_000, "at most {most} bytes were in use at once, of {made} made");
+    }
+
+    #[test]
     fn one_file_of_a_program_can_say_memory_owned() {
         // The file of trees frees each object where its owner ends; the
         // first file keeps the collector for its own values.

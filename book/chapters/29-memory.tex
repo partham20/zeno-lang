@@ -59,7 +59,7 @@ Lisp in 1960, and it is what MicroPython runs on microcontrollers.
   Whatever a root points at is in use: mark it. Whatever a marked block
   points at is in use too. Carry on until nothing new turns up.
 \item \textbf{Sweep.} Go through the pages. A block in use with no
-  mark cannot be reached: free it. Take the marks off the rest.
+  mark cannot be reached: free it.
 \end{enumerate}
 
 Two objects that point at each other, and at nothing in use, are freed
@@ -78,6 +78,37 @@ into. (Until version 0.3 the collector kept one table of every block,
 sorted it at each collection, and searched it for every word; on a
 program with millions of blocks, the pages made it five times faster.
 Decision 22.5.)
+
+A word that points just past the end of a block is also the start of
+the next one. Only the rows that hold a list's items, which a loop may
+walk off the end of, count such a word for the block before; they have
+pages of their own for that reason. When every block counted it, each
+block kept its neighbour alive, and the neighbour its own: a benchmark
+that needed 130\,MB held 2.3\,GB. (Decision 22.10.)
+
+\section{Young and old}
+
+Most blocks are garbage soon after they are made, and a block that has
+lived through one collection usually lives through many. So most
+collections are small: they look only at the blocks made since the
+last one, the \emph{young}, and take every block that lived through a
+collection, the \emph{old}, to be still in use. A block is old when its
+mark is still there from the collection it lived through; a small
+collection stops at it instead of looking inside it again. Once the
+old have grown to twice what the last full collection kept, the next
+collection is full and looks at everything.
+
+There is one danger: an old block given a pointer to a young one since
+the last collection. Nobody would look inside the old block, and the
+young one would be freed while in use. So after each collection, every
+full page of blocks that can hold pointers is made read-only with the
+system's \verb|mprotect|. The first write to such a page stops the
+program for a moment; a handler opens the page again and notes that it
+was written, and the next small collection looks inside its old blocks.
+The processor keeps watch, so no line of the compiled program has to.
+On a program that keeps a tree of two million nodes for its whole run,
+this took the time from 11 seconds to 7. On a chip, and on Windows for
+now, every collection is full. (Decision 22.10.)
 
 \section{Seeing it work}
 
@@ -98,7 +129,7 @@ that has just grown, and the copy that a \verb|for| loop walks.
 
 \section{When it runs}
 
-Collecting takes time, in proportion to what is still in use, so it is
+Collecting takes time, in proportion to what it looks at, so it is
 not done on every allocation. The runtime counts the bytes in use and
 collects when they pass a limit; after each collection the limit
 becomes twice what survived. A program that keeps little is collected
@@ -110,8 +141,9 @@ that second trigger is the one that matters.
 \section{What it costs}
 
 \begin{itemize}
-\item \textbf{Pauses.} While the collector runs, the program does not,
-  and the pause grows with the memory in use. A control loop that must
+\item \textbf{Pauses.} While the collector runs, the program does not.
+  A small collection's pause grows with what was made since the last
+  one, a full one's with all the memory in use. A control loop that must
   answer within microseconds should not make blocks inside the loop.
   Numbers, bools and fixed text never do.
 \item \textbf{A little memory for each block}: two bits in its page,

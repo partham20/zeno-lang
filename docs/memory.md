@@ -82,13 +82,13 @@ is safe to free.
 The collector here is the oldest and simplest kind. It was invented for
 Lisp in 1960 and is still what MicroPython runs on microcontrollers.
 
-1. **Every block is written in a table** as it is handed out
-   (`zeno_new_block`).
+1. **Every block is kept in a page** as it is handed out
+   (`zeno_new_block`): see "Where blocks live", below.
 2. **Mark.** Start from the variables, which are called the *roots*.
    Whatever a root points at is in use: mark it. Whatever a marked block
    points at is in use too: mark that. Carry on until nothing new turns up.
-3. **Sweep.** Go through the table. A block with no mark cannot be reached:
-   free it. Take the marks off the rest, ready for next time.
+3. **Sweep.** Go through the pages. A block with no mark cannot be
+   reached: free it.
 
 ```
 roots            blocks
@@ -160,13 +160,27 @@ One more hiding place: a pointer may be in a processor register and nowhere
 in memory. `__builtin_unwind_init()` at the top of `zeno_collect` makes the
 C compiler copy the registers onto the stack first.
 
+## Where blocks live
+
+Memory is asked of the system 64 KB at a time, at an address that is a
+multiple of 64 KB: a **page**. A page holds blocks of one size only (16,
+32, 48 ... up to 2048 bytes), and keeps at its start two bits for each
+block: one says it is in use, one that the collector reached it. A block
+bigger than 2 KB gets a run of pages of its own. Blocks have no header,
+so a 16-byte object costs 16 bytes.
+
+Pages come in three sorts, which never share a page: blocks that may hold
+pointers (objects, lists, function values), **plain** blocks that cannot
+(text and numbers, which the collector never reads), and the **rows** of
+items of lists (see below).
+
 ## "Is this word a pointer?"
 
-`zeno_mark` answers it. The table is sorted by address at the start of each
-collection, so the answer is a binary search: find the last block that
-starts at or before the word, then see whether the word falls inside it.
-Most words are turned away sooner, by two comparisons against the lowest
-and highest addresses any block has.
+`zeno_mark` answers it. Most words are turned away by two comparisons,
+against the lowest and highest addresses any page covers. For the rest,
+the word's top bits name a 64 KB unit of memory, and a hash table
+(`zeno_unit_find`) says which page covers that unit, if any. Then one
+division gives the block, and the page's bit says whether it is in use.
 
 The same question is asked of the words *inside* a marked block, which is
 how the collector gets from a list to its items and from an object to its
@@ -178,9 +192,14 @@ be wrong in one direction only. An integer that happens to equal the
 address of a block keeps that block alive for nothing. It can never free
 something in use, as long as every pointer is somewhere it looks.
 
-Blocks of text are marked as *plain*: they cannot hold a pointer, so the
-collector does not read them. That is quicker, and a piece of text is the
-likeliest thing to contain bytes that look like an address by accident.
+A word that points *into* a block keeps the block, as much as one that
+points at its start: C code walks through a block with a pointer. One
+that points just past the end counts too, but only in a page of rows: a
+loop over a list may be left holding a pointer past its last item and
+nothing else. Anywhere else the same word is the start of the next block,
+and counting it for the one before would keep every neighbour of every
+block alive. (That was a bug, found by the benchmarks: the trees program
+held 2.3 GB at once where it needed 130 MB. Decision 22.10.)
 
 ## Following pointers without recursion
 
@@ -190,47 +209,70 @@ next, that is 300,000 calls deep, and the collector crashes the program it
 is serving.
 
 Instead, a block that has been marked but not yet looked into is put on a
-waiting list, and one loop takes blocks off it until it is empty. The
-waiting list is threaded through the blocks themselves (`next_waiting`, a
-field in front of every block), so the collector needs no memory of its own
-at the one moment when there may be none to have.
+stack of its own (`zeno_marking`), and one loop takes blocks off it until
+it is empty.
 
-Between collections that field has nothing to do, so it holds something
-else: the block's position in the table (`place`). The two share one word,
-`link`. Knowing the position is what lets `zeno_free` take a single block
-out of the table without searching for it.
+## Generations
+
+Most blocks are garbage soon after they are made, and a block that has
+lived through one collection usually lives through many. So most
+collections are **small**: they look only at the blocks made since the
+last one, the *young*, and take every block that lived through a
+collection, the *old*, to be still in use. Once the old have grown to
+twice what lived through the last full collection, the next one is
+**full** again and looks at everything.
+
+A block is old when its "reached" bit is still set from the collection it
+lived through: a small collection leaves those bits as they are, and
+stops at an old block instead of looking inside it again. On the trees
+benchmark, whose long-lived tree has two million nodes, that cut the time
+from 11 to 7 seconds.
+
+The danger is an old block that has since been given a pointer to a young
+one: nobody would look inside it, and the young block would be freed
+while still in use. So after each collection every full page of blocks
+with pointers is made read-only, with the system's `mprotect`. The first
+write to it stops the program for a moment; a handler for the signal
+makes the page writable again and notes that it is no longer *guarded*.
+A small collection looks inside the old blocks of every page that is not
+guarded, so nothing is missed. The processor keeps watch, and no line of
+compiled code has to remember to say that it wrote a pointer.
+
+Pages of text are never guarded: they hold no pointers, and a file read
+into one by the system must not find it read-only. On a chip
+(`--firmware`), and on systems without `mprotect` (Windows, for now),
+every collection is full. `-DZENO_ONE_GENERATION` asks for that anywhere.
 
 ## When it runs
 
-Collecting takes time, in proportion to what is in use. So it is not done
-on every allocation. The runtime counts the bytes in use, and collects when
-they pass a limit. After each collection the limit becomes twice what
-survived. A program that keeps little is collected often and cheaply. A
-program that keeps a great deal is left alone for longer.
+Collecting takes time, in proportion to what it looks at. So it is not
+done on every allocation. The runtime counts the bytes in use, and
+collects when they pass a limit. After each collection the limit becomes
+twice what survived.
 
-The first limit is one megabyte (`ZENO_FIRST_COLLECTION`). There is a
-second trigger: if `malloc` itself says there is no more, the collector
-runs and the request is tried again. On a board with 64 KB of memory that
-second trigger is the one that matters.
+The first limit is four megabytes (`ZENO_FIRST_COLLECTION`). There is a
+second trigger: if the system has no more pages to give, the collector
+runs and the request is tried again.
 
 ## What it costs
 
-- **Pauses.** While the collector runs, the program does not. The pause
-  grows with the amount of memory in use, not with the amount of garbage.
-  A control loop that must answer within microseconds should not make
-  blocks inside the loop. Numbers, bools and fixed text never do.
-- **A few words per block**: the header in front of it and its line in the
-  table.
+- **Pauses.** While the collector runs, the program does not. A small
+  collection's pause grows with what was made since the last one; a full
+  one's with everything in use. A control loop that must answer within
+  microseconds should not make blocks inside the loop. Numbers, bools and
+  fixed text never do.
+- **Two bits per block**, and a page header per 64 KB.
 - **It leans on the C compiler.** Reading the stack like this is not
   something the C standard describes. It works on every mainstream compiler
   and processor, and the Boehm collector, Ruby and MicroPython have relied
   on it for decades, but it is a habit, not a guarantee.
 - **Now and then it keeps too much.** A stale value in a stack slot that no
   longer means anything can hold one block, and all that block leads to.
+  An old block that has become garbage waits for the next full collection.
 
 [`docs/decisions.md`](decisions.md), 5.7, says why this was chosen over
 counting references and over Rust-style ownership, and what would make
-the choice change.
+the choice change; 22.5 and 22.10 why it is built as it is now.
 
 `--memory` works with `zeno build --llvm` as well, and prints the same
 line.
@@ -243,7 +285,9 @@ much later, somewhere unrelated.
 
 So every test in `emit_c.rs` that compares a compiled program with the
 interpreter is now built with `-DZENO_COLLECT_ALWAYS`, which runs the
-collector before **every single allocation**. A block that is wrongly freed
+collector before **every single allocation** (63 small collections for
+each full one, since small ones are where a missed pointer would hide).
+A block that is wrongly freed
 is freed at the first chance, and the program prints something different
 from `zeno run`. Three more tests aim at the collector itself: one checks
 that a loop of garbage stays within a small amount of memory, one that a

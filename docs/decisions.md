@@ -9619,9 +9619,51 @@ and per block (`unsafe { }`) are the finer choices.
 can be, one at a time). A list of files in `zeno.package`: far from the
 code it is about, and wrong as soon as a file is renamed.
 
-### 22.10 Left for later
+### 22.10 Two generations, watched with `mprotect`; and a leak found
 
-- A generational collector (22.5).
+**The leak.** A word that pointed just past the end of a block counted
+as pointing into it (22.5), so that a loop holding only the end of a
+list's items would keep them. But in a page of blocks laid end to end,
+that word is also the start of the next block, so every block reached
+kept the one before it alive, and that one the one before it. The trees
+benchmark held 2.3 GB at once where it needed 130 MB. Now the rows of
+items of lists have pages of their own, and only there does a word just
+past a block count for it.
+
+**Decision.** The collector has two generations. A block that lived
+through a collection is old; most collections are small, look only at
+the young, and stop at an old block without looking inside it. Once the
+old have grown to twice what lived through the last full collection,
+the next collection is full. After each collection the full pages of
+blocks with pointers are made read-only with `mprotect`; the first write
+to one is caught by a signal handler, which opens the page and marks it
+as written. A small collection looks inside the old blocks of every page
+that is open. On a chip, and where there is no `mprotect` (Windows, for
+now), every collection is full.
+
+**Why.** The trees benchmark keeps a tree of two million nodes for the
+whole run, and every collection marked all of it again: 140 times. With
+generations it is marked a few times, and the run went from 11 to 7
+seconds (C takes 6.2).
+
+**Why `mprotect`, not a write barrier in the compiled code.** The usual
+way is for every store of a pointer to say so, in code the compiler adds.
+Here pointers are stored by compiled C, by compiled LLVM IR and by a few
+hundred places in the runtime; one place missed is a block freed while
+in use, found much later and far away. The processor's own protection of
+pages misses nothing, costs nothing on a page nobody writes, and needs no
+change to either compiler. Pages of text are never guarded, so a file
+read into memory by the system cannot meet a read-only page.
+
+**Rejected.** Moving young blocks to another place (a copying nursery),
+which is faster still but needs to know exactly which words are
+pointers, and this collector does not (5.7). A bigger limit between
+collections, which trades memory for time without changing the work.
+
+### 22.11 Left for later
+
+- Generations on Windows, with `VirtualProtect` and a handler of its
+  own.
 
 ### 20.6 The playground shows the C a program becomes
 
