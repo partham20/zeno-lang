@@ -1,14 +1,14 @@
 # Looks into one question on one machine, and is changed for each
 # question. It releases nothing.
 #
-# The question now: with the collector's two generations on macOS, a
-# compiled program that collects at every step spins for ever at one
-# store in zeno_page_new. That store is into a page the collector made
-# read-only, and the system's signal should open the page. So: is the
-# signal blocked, does the handler run, and does opening the page work?
-# This puts the two generations back for macOS in a copy of the
-# runtime, makes it say those three things, builds examples/buffer.zeno
-# with it, and runs the program under a clock.
+# The question now: with the collector's two generations on macOS, the
+# tests of the examples built through LLVM hang: a compiled program
+# spins for ever at one instruction in zeno_page_new. The same example
+# built through C ends as it should there, the signal is not blocked,
+# the handler runs and the page opens. So this runs those two tests
+# under a clock with a runtime that has the two generations on macOS
+# and writes what it does into a file, and looks at a hung program
+# with lldb: the instruction, the registers, the memory.
 
 name: probe
 
@@ -25,7 +25,7 @@ jobs:
   look:
     name: ${{ inputs.machine }}
     runs-on: ${{ inputs.machine }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -45,110 +45,39 @@ jobs:
           put('#include <sys/mman.h>\n',
               '#include <sys/mman.h>\n#include <unistd.h>\n'
               'static int probe_faults = 0, probe_opens = 0, probe_shuts = 0;\n'
-              '#define PROBE(...) do { char b[240]; int n = snprintf(b, sizeof b, __VA_ARGS__); if (n > 0 && write(2, b, (size_t)n) < 0) {} } while (0)\n')
+              '#include <fcntl.h>\n'
+              '#define PROBE(...) do { char b[300]; int n = snprintf(b, sizeof b, "probe %d ", (int)getpid()); n += snprintf(b + n, sizeof b - (size_t)n, __VA_ARGS__); int f = open("/tmp/zeno-probe.txt", O_WRONLY | O_CREAT | O_APPEND, 0644); if (f >= 0) { if (write(f, b, (size_t)n) < 0) {} close(f); } } while (0)\n')
           put('    mprotect(page, page->units * ZENO_PAGE, PROT_READ | PROT_WRITE);\n',
               '    int probe_r = mprotect(page, page->units * ZENO_PAGE, PROT_READ | PROT_WRITE);\n'
-              '    if (probe_r != 0 || probe_opens++ < 12) PROBE("probe open %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n')
+              '    if (probe_r != 0 || probe_opens++ < 12) PROBE("open %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n')
           put('    if (mprotect(page, page->units * ZENO_PAGE, PROT_READ) != 0) page->guarded = false;\n',
               '    int probe_r = mprotect(page, page->units * ZENO_PAGE, PROT_READ);\n'
-              '    if (probe_r != 0 || probe_shuts++ < 12) PROBE("probe shut %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n'
+              '    if (probe_r != 0 || probe_shuts++ < 12) PROBE("shut %p units %zu: mprotect %d errno %d\\n", (void *)page, (size_t)page->units, probe_r, probe_r != 0 ? errno : 0);\n'
               '    if (probe_r != 0) page->guarded = false;\n')
           put('    if (page != NULL && page->guarded) {\n        zeno_unguard(page);\n        return;\n    }\n',
-              '    if (probe_faults++ < 20) PROBE("probe fault %d: signal %d at %p, lowest %p highest %p, page %p guarded %d\\n", probe_faults, sig, (void *)at, (void *)zeno_lowest, (void *)zeno_highest, (void *)page, page != NULL ? (int)page->guarded : -1);\n'
+              '    if (probe_faults++ < 20 || probe_faults % 100000 == 0) PROBE("fault %d: signal %d at %p, lowest %p highest %p, page %p guarded %d\\n", probe_faults, sig, (void *)at, (void *)zeno_lowest, (void *)zeno_highest, (void *)page, page != NULL ? (int)page->guarded : -1);\n'
               '    if (page != NULL && page->guarded) {\n        zeno_unguard(page);\n        return;\n    }\n')
           put('    sigaction(SIGSEGV, &act, &zeno_old_segv);\n    sigaction(SIGBUS, &act, &zeno_old_bus);\n',
               '    sigset_t probe_m;\n    int probe_r = sigprocmask(0, NULL, &probe_m);\n'
               '    int probe_a = sigaction(SIGSEGV, &act, &zeno_old_segv);\n    int probe_b = sigaction(SIGBUS, &act, &zeno_old_bus);\n'
-              '    PROBE("probe watch: sigprocmask %d, SIGBUS blocked %d, SIGSEGV blocked %d, sigaction %d %d, handlers before: segv %p bus %p\\n", probe_r, sigismember(&probe_m, SIGBUS), sigismember(&probe_m, SIGSEGV), probe_a, probe_b, (void *)zeno_old_segv.sa_handler, (void *)zeno_old_bus.sa_handler);\n')
+              '    PROBE("watch: sigprocmask %d, SIGBUS blocked %d, SIGSEGV blocked %d, sigaction %d %d, handlers before: segv %p bus %p\\n", probe_r, sigismember(&probe_m, SIGBUS), sigismember(&probe_m, SIGSEGV), probe_a, probe_b, (void *)zeno_old_segv.sa_handler, (void *)zeno_old_bus.sa_handler);\n')
           open(path, 'w').write(s)
           PY
           git diff --stat
 
-      - name: Build Zeno with it
-        run: cargo build --release 2>&1 | tail -n 2
+      - name: Build the tests with it
+        run: cargo test --no-run 2>&1 | tail -n 3
 
-      - name: examples/buffer.zeno, collecting at every step, under a clock
-        run: |
-          zeno=$PWD/target/release/zeno
-          mkdir look && cd look
-          $zeno build ../examples/buffer.zeno > /dev/null
-          ls
-          cc -g -DZENO_COLLECT_ALWAYS -o plain buffer.c -lm
-          cc -O2 -g -DZENO_COLLECT_ALWAYS -o fast buffer.c -lm
-          cc -O2 -g -o seldom buffer.c -lm
+      - name: The examples through LLVM, under a clock
+        run: tools/probe-tests.sh 240 llvm the_examples_it_can_compile_match
 
-          # `under <seconds> <program...>`: runs it, and if it is still
-          # running after that long, says where it is and stops it.
-          under() {
-            limit=$1; shift
-            echo
-            echo "======== $*"
-            "$@" > said.txt 2> probe.txt < /dev/null &
-            pid=$!
-            waited=0
-            while kill -0 $pid 2> /dev/null && [ $waited -lt $limit ]; do sleep 1; waited=$((waited + 1)); done
-            if kill -0 $pid 2> /dev/null; then
-              echo "STILL RUNNING after $limit seconds"
-              if command -v sample > /dev/null; then
-                sample $pid 2 2>&1 | sed -n '/Call graph/,/Binary Images/p' | cut -c1-200
-              else
-                gdb -p $pid -batch -ex bt 2>&1 | tail -25
-              fi
-              kill -9 $pid
-            else
-              status=0; wait $pid || status=$?
-              echo "ended with $status after about $waited seconds"
-            fi
-            echo "-- what it printed, the end of it"
-            tail -n 3 said.txt | cut -c1-200
-            echo "-- what the runtime said: $(wc -l < probe.txt) lines, the first 70"
-            sed -n 1,70p probe.txt | cut -c1-240
-            echo "-- by kind"
-            cut -d ' ' -f 1,2 probe.txt | sort | uniq -c
-          }
-
-          under 20 ./seldom
-          under 20 ./plain
-          under 20 ./fast
-
-          if command -v lldb > /dev/null; then
-            echo
-            echo "======== zeno_page_new in ./fast, with its lines"
-            lldb -b -o 'disassemble -m -n zeno_page_new' ./fast 2>&1 | sed -n 1,140p | cut -c1-180
-          fi
-
-      - name: The same as the tests start it, from a program in Rust
+      - name: The examples through C, under a clock
         if: always()
-        run: |
-          cd look
-          cat > start.rs <<'RS'
-          use std::io::Write;
-          use std::process::{Command, Stdio};
-          fn main() {
-              let mut child = Command::new("./fast")
-                  .stdin(Stdio::piped())
-                  .stdout(Stdio::piped())
-                  .stderr(Stdio::inherit())
-                  .spawn()
-                  .expect("it starts");
-              let _ = child.stdin.take().expect("a pipe").write_all(b"");
-              let out = child.wait_with_output().expect("it ends");
-              println!("ended: {:?}, printed {} bytes", out.status, out.stdout.len());
-          }
-          RS
-          rustc -O -o start start.rs
-          ./start 2> probe.txt &
-          pid=$!
-          waited=0
-          while kill -0 $pid 2> /dev/null && [ $waited -lt 20 ]; do sleep 1; waited=$((waited + 1)); done
-          if kill -0 $pid 2> /dev/null; then
-            echo "STILL RUNNING after 20 seconds"
-            pkill -9 -x fast
-            kill -9 $pid
-          else
-            wait $pid || true
-          fi
-          echo "-- what the runtime said: $(wc -l < probe.txt) lines, the first 40"
-          sed -n 1,40p probe.txt | cut -c1-240
-          echo "-- by kind"
-          cut -d ' ' -f 1,2 probe.txt | sort | uniq -c
+        run: tools/probe-tests.sh 300 c the_examples_compile_and_match
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ inputs.machine }}
+          path: found
+          if-no-files-found: ignore
