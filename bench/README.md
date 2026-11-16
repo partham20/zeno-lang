@@ -32,18 +32,18 @@ run for the slow interpreters). C is built with `cc -O2`, Rust with `rustc -O`.
 
 Big sizes, compiled:
 
-| Program | C | Rust | Zeno before | `zeno build` | `--release` | `--release --owned` |
+| Program | C | Rust | `zeno build` | `--release` | `--release --owned` | `--fast --owned` |
 |---|---|---|---|---|---|---|
-| fib 40 | 0.156 | 0.249 | 0.460 | 0.480 | 0.121 | 0.138 |
-| loop 10⁹ | 0.920 | 0.880 | 1.249 | 1.258 | 1.010 | 0.947 |
-| sort 10⁷ | 1.09 | 1.14 | 1.29 | 1.43 | 1.44 | 1.35 |
-| strings 10⁷ | 0.919 | 0.704 | 24.5 | 1.157 | 1.337 | 1.285 |
-| trees 20 | 6.14 | 7.49 | 57.8 | 7.70 | 6.66 | **3.98** |
-| nbody 10⁷ | 0.488 | 0.368 | 1.325 | 0.511 | 0.479 | 0.515 |
+| fib 40 | 0.146 | 0.273 | 0.483 | 0.138 | 0.119 | **0.129** |
+| loop 10⁹ | 0.841 | 0.870 | 1.350 | 0.948 | 0.995 | **0.987** |
+| sort 10⁷ | 1.067 | 1.117 | 1.360 | 1.470 | 1.088 | **1.106** |
+| strings 10⁷ | 0.899 | 0.725 | 0.847 | 0.799 | 0.745 | **0.704** |
+| trees 20 | 6.294 | 7.076 | 7.468 | 6.732 | 3.816 | **3.735** |
+| nbody 10⁷ | 0.413 | 0.366 | 0.495 | 0.503 | 0.484 | **0.496** |
 
-("Zeno before" is `zeno build` before this round of work;
-`results/before-big.json`. Times move by about 10 % from run to run on
-this machine, so a difference smaller than that is noise.)
+(Times move by 10 to 15 % from run to run on this machine, so a
+difference smaller than that is noise. The first `zeno build` times,
+before any of the speed work, are in `results/before-big.json`.)
 
 Small sizes, interpreted, against Python 3.13:
 
@@ -57,6 +57,13 @@ Small sizes, interpreted, against Python 3.13:
 | nbody 10⁶ | 3.85 | 15.78 | 52.31 |
 
 ## What the numbers say
+
+- `zeno build --fast --owned` (0.4, decision 23.1) is level with C or
+  ahead of it on fib, sort, strings and trees, and with Rust on all of
+  them. Two gaps are left. On loop, Zeno's `%` rounds toward minus
+  infinity (it pairs with `//`), which costs a few instructions that C's
+  and Rust's `%` do not pay. On nbody, Rust knows the two bodies of its
+  inner loop are different and keeps one in registers (23.4).
 
 - Compiled Zeno is now within about 25 % of C on every program, and
   faster than C on `fib` and `trees` with `--release --owned`, and on
