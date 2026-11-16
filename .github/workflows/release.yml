@@ -31,6 +31,8 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     strategy:
       # One machine that fails does not stop the others, so that one run
       # says everything that is wrong.
@@ -199,6 +201,8 @@ jobs:
     name: windows-setup
     needs: build
     runs-on: windows-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -247,6 +251,8 @@ jobs:
     name: packages
     needs: [build, installer]
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -293,6 +299,8 @@ jobs:
     name: Homebrew
     needs: packages
     runs-on: macos-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -317,6 +325,8 @@ jobs:
     needs: [build, installer, packages, brew]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     permissions:
       contents: write
       # To start the workflow `stores` as the last step.

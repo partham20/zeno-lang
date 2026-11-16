@@ -64,6 +64,8 @@ jobs:
   apt:
     name: apt
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -130,6 +132,8 @@ jobs:
   aur:
     name: AUR
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -179,6 +183,8 @@ jobs:
   snap:
     name: snap
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - name: Whether the Snap Store has a snap named zeno
         run: |
@@ -215,6 +221,8 @@ jobs:
       matrix:
         os: ${{ fromJSON(inputs.mac && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -229,6 +237,8 @@ jobs:
   winget:
     name: winget
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

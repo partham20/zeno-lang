@@ -28,6 +28,8 @@ jobs:
   installer:
     name: ${{ inputs.machine }}
     runs-on: ${{ inputs.machine }}
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash

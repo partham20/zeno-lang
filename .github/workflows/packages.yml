@@ -43,6 +43,8 @@ jobs:
   make:
     name: make and try
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +90,8 @@ jobs:
     name: Homebrew
     needs: make
     runs-on: macos-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +110,8 @@ jobs:
     needs: [make, brew]
     if: inputs.add
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

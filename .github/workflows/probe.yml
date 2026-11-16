@@ -1,0 +1,71 @@
+# Looks into one question on one machine, and is changed for each
+# question. It releases nothing.
+#
+# The question now: the rehearsal of 0.3.0 hung in the test suite on
+# macOS on Apple silicon, in programs that `zeno build` had compiled.
+# This builds a program that makes many objects, with the collector's
+# two generations and with one, runs each under a clock, and if one is
+# still running when the clock ends, says where it is.
+
+name: probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: The machine to look on
+        type: choice
+        options: [macos-latest, ubuntu-latest]
+        default: macos-latest
+
+jobs:
+  look:
+    name: ${{ inputs.machine }}
+    runs-on: ${{ inputs.machine }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Zeno
+        run: cargo build --release
+
+      - name: A program that makes many objects, with two generations and with one
+        run: |
+          zeno=$PWD/target/release/zeno
+          mkdir look && cd look
+          $zeno build ../bench/trees.zeno > /dev/null
+          ls
+          cc -O2 -o two trees.c -lm
+          cc -O2 -DZENO_ONE_GENERATION -o one trees.c -lm
+          cc -O0 -g -o two-slow trees.c -lm
+
+          # `under <seconds> <program...>`: runs it, and if it is still
+          # running after that long, says where it is and stops it.
+          under() {
+            limit=$1; shift
+            "$@" > said.txt 2>&1 &
+            pid=$!
+            waited=0
+            while kill -0 $pid 2> /dev/null && [ $waited -lt $limit ]; do sleep 1; waited=$((waited + 1)); done
+            if kill -0 $pid 2> /dev/null; then
+              echo "STILL RUNNING after $limit seconds: $*"
+              if command -v sample > /dev/null; then
+                sample $pid 2 2>&1 | sed -n 1,70p
+              else
+                gdb -p $pid -batch -ex bt 2>&1 | tail -25
+              fi
+              kill -9 $pid
+              return 0
+            fi
+            status=0; wait $pid || status=$?
+            echo "ended with $status after about $waited seconds: $*"
+            tail -n 4 said.txt
+          }
+
+          under 90 ./one 18
+          under 90 ./two 18
+          under 90 ./two-slow 16
+          under 60 ./two 12
+          # The same through `zeno build` itself, with its report.
+          $zeno build --memory ../examples/memory.zeno > /dev/null
+          under 60 ./memory

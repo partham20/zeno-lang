@@ -39,6 +39,8 @@ jobs:
   setup:
     name: windows-setup
     runs-on: windows-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -87,6 +89,8 @@ jobs:
   line:
     name: install.sh
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -124,6 +128,8 @@ jobs:
     needs: [setup, line]
     if: inputs.add
     runs-on: ubuntu-latest
+    # A step that never ends must not run for six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
