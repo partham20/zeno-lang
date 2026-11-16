@@ -74,6 +74,13 @@ on GitHub's machines, which does the rest:
 If any of the ten fails, there is no release: a release with a hole in
 the table is worse than one a day later.
 
+Since 0.2 the same run also makes the two installers
+([`install.md`](install.md)) and the packages
+([`packages.md`](packages.md)), tries each, and puts them on the
+release with the ten. When the repository has a key for it, it adds
+the signed list that apt reads, and its last step starts the workflow
+that sends the new version to the stores ([`stores.md`](stores.md)).
+
 The same workflow can be started by hand, from the Actions page of the
 repository ("Run workflow"). Then it does steps 2 to 5 and releases
 nothing. That is the way to find out whether `main` could be released,

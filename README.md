@@ -147,8 +147,11 @@ For winget there are three files in
 [packaging/winget](packaging/winget),
 which are what Microsoft's collection of packages takes.
 [docs/packages.md](docs/packages.md)
-says what each package is, and what is still to be done before
-`apt install zeno` and the rest work with one word.
+says what each package is, and
+[docs/stores.md](docs/stores.md)
+what is still to be done before `apt install zeno` and the rest work
+with no file: for apt a signed list in the release itself, for pacman
+the AUR, for snap the Snap Store, and for winget a pull request.
 
 **By hand.** Each release also has a `zeno` that is already built, as
 an archive, for ten kinds of machine:
@@ -585,8 +588,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     package for pacman, a snap and a flatpak, and recipes for Homebrew
     and winget, all made from the release's own files and each
     installed, run and removed before a release. What is left is the
-    place each manager looks in, which needs an account for each.
-    See [`docs/packages.md`](docs/packages.md))
+    place each manager looks in. Homebrew works, and for apt, the AUR,
+    winget and the Snap Store everything is ready up to the account
+    each needs.
+    See [`docs/packages.md`](docs/packages.md) and
+    [`docs/stores.md`](docs/stores.md))
 29. A timer that can be stopped (done, in 0.2: `web.after` and
     `web.every` give a `Timer`, and `timer.stop()` calls off what
     it was waiting to do.

@@ -20,7 +20,8 @@ them can install:
 
 None of them holds a `zeno` of its own. Each is the `zeno` of a
 release's archive, laid out the way that system wants it. The
-decisions are 15.12 to 15.21 of [`decisions.md`](decisions.md).
+decisions are 15.12 to 15.21 of [`decisions.md`](decisions.md). Where
+each manager looks for Zeno by itself is in [`stores.md`](stores.md).
 
 ## Two halves, and which one this is
 
@@ -96,9 +97,11 @@ their checksums are, and, in a function called `package`, where each
 goes. `makepkg` runs it and makes the package, and `makepkg -si`
 installs it too.
 
-The package is called `zeno-bin`: on Arch, `-bin` says "this packs a
-program that was already built", and plain `zeno` is left for a
-package that would build it from source.
+The package is called `zeno-lang-bin`: on Arch, `-bin` says "this
+packs a program that was already built". It is not `zeno-bin`, because
+the AUR has a `zeno` already, which is another program (15.24). In the
+releases 0.1.0 and 0.2.0 the file is still named `zeno-bin`, as it was
+made, and the new package takes the place of that one.
 
 pacman has nothing like `Recommends`. The compiler and git are named
 as `optdepends`, which pacman shows after installing and does not
@@ -270,40 +273,40 @@ a version that is already released, started by hand.
 
 ## The other half: where each manager looks
 
-For `apt install zeno` and the rest to work with one word, Zeno has to
-be in the place that manager looks in. Every one of them downloads
-from the release, so the repository had to be public first, and it is
-since 16 November 2026. What is left for each:
+For `apt install zeno` and the rest to work with no file, Zeno has to
+be in the place that manager looks in. That is a stage of its own, in
+[`stores.md`](stores.md). In short:
 
-| For | What has to happen | Then it is |
+| For | State | Then it is |
 |---|---|---|
-| Homebrew | Nothing more. Better: a repository named `homebrew-zeno` to hold the formula | `brew install partham20/zeno/zeno` |
-| winget | The three files are sent to Microsoft's `winget-pkgs` repository as a pull request, which people there check | `winget install ZenoLang.Zeno` |
-| pacman | An account on the AUR, and the `PKGBUILD` pushed there | `yay -S zeno-bin` |
-| snap | An account on the Snap Store, the name `zeno` registered, and a request for `classic`, which people there decide | `sudo snap install zeno --classic` |
-| flatpak | A request to Flathub, which people there check | `flatpak install flathub org.zeno_lang.Zeno` |
-| apt | An apt repository: the `.deb` files and a signed list of them, kept somewhere such as zeno-lang.org | one line to add it, then `sudo apt install zeno` |
+| Homebrew | works now | `brew install partham20/zeno-lang/zeno` |
+| apt | a signed list of the `.deb` files, in the release itself. Made and tried, and waits for a key to sign with | one line to add it, then `sudo apt install zeno` |
+| pacman | the `PKGBUILD` and its `.SRCINFO` are ready for the AUR, and wait for an account | `yay -S zeno-lang-bin` |
+| winget | the three files are ready for Microsoft's `winget-pkgs`, and wait for a pull request | `winget install ZenoLang.Zeno` |
+| snap | the upload is ready, and waits for an account and for leave to be `classic` | `sudo snap install zeno --classic` |
+| flatpak | Flathub does not take programs that are run in a terminal | the file from the release |
 
 Being in Debian's or Arch's own collection, or in Homebrew's main one,
 is a different matter: each takes programs that are already widely
 used, and Zeno is days old.
 
-winget, the Snap Store and Flathub each ask what licence a program has.
-It is MIT (15.19), and from 0.2.0 each package says so and carries the
-file. Debian keeps it at `/usr/share/doc/zeno/copyright` and Arch at
-`/usr/share/licenses/zeno-bin/LICENSE`.
+winget and the Snap Store each ask what licence a program has. It is
+MIT (15.19), and from 0.2.0 each package says so and carries the file.
+Debian keeps it at `/usr/share/doc/zeno/copyright` and Arch at
+`/usr/share/licenses/`, in a folder named as the package is.
 
 ## What it does not do yet
 
-- **None of the six works with one word** (above).
+- **Only Homebrew works with no file.** For the others the files are
+  ready and an account, a key or a pull request is missing
+  ([`stores.md`](stores.md)).
 - **The winget files have not been run.** GitHub's Windows machines
-  have no winget. The other five are installed and removed before
-  each release.
+  have no winget. They are checked against Microsoft's schema. The
+  other five are installed and removed before each release.
 - **The packages for other processors are made and not run**: the
   `.deb` for arm64, armhf and i386, the snap for arm64 and armhf, and
   the flatpak for aarch64. The `zeno` inside each was run, by the
   build that made it.
-- **No apt repository**, so apt does not update Zeno by itself.
 - **No package for pacman on ARM**, only the `PKGBUILD`, which makes
   one there.
 - **No `.rpm`** for Fedora and openSUSE, no Nix, no Scoop or

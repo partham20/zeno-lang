@@ -317,6 +317,10 @@ jobs:
     needs: [build, installer, packages, brew]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # To start the workflow `stores` as the last step.
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -328,6 +332,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           tag=v$version
@@ -341,6 +346,14 @@ jobs:
           # One line for each file, to check a download against with
           # `sha256sum --check`.
           sha256sum $files > SHA256SUMS.txt
+          # What apt reads to find the .deb files here: a list of them,
+          # signed (tools/apt-repo.sh). apt is told of the newest
+          # release, so once one release has these, each must. They
+          # are made when the repository has the key to sign with.
+          if [ -n "$APT_SIGNING_KEY" ]; then
+            ../tools/apt-repo.sh . .
+            files="$files InRelease Packages Packages.gz zeno-apt-key.asc"
+          fi
           notes=../docs/releases/$version.md
           if gh release view "$tag" > /dev/null 2>&1; then
             # The release was drafted on the website, which made the tag.
@@ -359,3 +372,17 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           tools/keep-recipes.sh packed/recipes "$version"
+
+      # The AUR and the Snap Store get the new version from the
+      # workflow `stores`, which sends to each store that a login was
+      # given for and leaves the others alone. It reads the recipes
+      # that the step above has just put on `main`. If it cannot be
+      # started the release is made all the same, and it can be
+      # started by hand.
+      - name: Send it to the stores
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          gh workflow run stores.yml --ref main -f version="$version" -f send=true ||
+            echo "::warning::The workflow \`stores\` could not be started. Start it from the Actions page, with the version $version and \"send\" ticked."

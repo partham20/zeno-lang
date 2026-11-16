@@ -106,8 +106,14 @@ jobs:
             echo "::warning::The lists for apt were not added: there is no secret APT_SIGNING_KEY. docs/stores.md says how to make the key."
             exit 0
           fi
+          # A release that has its lists keeps them: the release
+          # workflow makes them with everything else.
+          if gh release view "v$VERSION" --json assets --jq '.assets[].name' | grep -qx InRelease; then
+            echo "v$VERSION has its lists for apt already"
+            exit 0
+          fi
           cd lists
-          gh release upload "v$VERSION" InRelease Packages Packages.gz zeno-apt-key.asc --clobber
+          gh release upload "v$VERSION" InRelease Packages Packages.gz zeno-apt-key.asc
 
       # apt is told of the newest release, so only that one can be tried.
       - name: apt installs from the release itself
@@ -138,8 +144,6 @@ jobs:
           for p in has:
               print(p['Name'], p.get('Version'), 'by', p.get('Maintainer'), '-', p.get('Description'), '-', p.get('URL'))
           PY
-          # The AUR's `zeno` is another program. What it installs:
-          curl -fsS 'https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=zeno' || true
 
       - name: The PKGBUILD makes the package from the release, and .SRCINFO says the same
         run: tools/try-packages.sh aur "$VERSION" packaging/arch
