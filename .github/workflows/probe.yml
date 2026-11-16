@@ -1,16 +1,11 @@
 # Looks into one question on one machine, and is changed for each
 # question. It releases nothing.
 #
-# The question now: with the collector's two generations on macOS, a
-# program built through LLVM spins for ever at a store into a page the
-# collector made read-only, and the signal that should open the page
-# never comes. A `try` in such a program calls `_setjmp`, which does not
-# keep the signals that are held back, and `raise` in the runtime calls
-# `longjmp`, which on macOS puts back the ones the place says were held:
-# whatever was in that memory. So after one caught error the signal may
-# be held back for good. This shows that with a few lines of C, and then
-# runs the whole test suite under a clock with the two generations on
-# macOS and `_longjmp` in the runtime, which pairs with `_setjmp`.
+# The question now: a `try` and `raise` now jump with a matched pair,
+# `_setjmp` and `_longjmp`, so a caught error no longer leaves signals
+# held back on macOS. Does the whole test suite pass there with the
+# collector's two generations put back for macOS? This puts them back
+# in a copy of the runtime and runs the suite under a clock.
 
 name: probe
 
@@ -31,43 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: What _setjmp and longjmp do to the signals that are held back
-        run: |
-          mkdir pair && cd pair
-          cat > pair.c <<'C'
-          #include <setjmp.h>
-          #include <signal.h>
-          #include <stdio.h>
-          #include <string.h>
-
-          static void say(const char *when) {
-              sigset_t held;
-              sigprocmask(0, NULL, &held);
-              printf("%s: SIGBUS held back %d, SIGSEGV %d, SIGINT %d\n", when,
-                     sigismember(&held, SIGBUS), sigismember(&held, SIGSEGV), sigismember(&held, SIGINT));
-          }
-
-          int main(void) {
-              jmp_buf place;
-              /* A place on the stack holds whatever was there before. */
-              memset(&place, 0xff, sizeof place);
-              say("at the start");
-              if (_setjmp(place) == 0) longjmp(place, 1);
-              say("after _setjmp and longjmp");
-              sigset_t none;
-              sigemptyset(&none);
-              sigprocmask(SIG_SETMASK, &none, NULL);
-              memset(&place, 0xff, sizeof place);
-              if (_setjmp(place) == 0) _longjmp(place, 1);
-              say("after _setjmp and _longjmp");
-              return 0;
-          }
-          C
-          cc -o pair pair.c
-          ./pair
-
-      - name: A runtime with two generations on macOS, and _longjmp
-        if: always()
+      - name: A runtime with two generations on macOS
         run: |
           python3 - <<'PY'
           path = 'src/runtime.c'
@@ -80,19 +39,15 @@ jobs:
 
           put('!defined(ZENO_ONE_GENERATION) && defined(__linux__)',
               '!defined(ZENO_ONE_GENERATION) && (defined(__linux__) || defined(__APPLE__))')
-          put('    longjmp(handler->place, 1);\n',
-              '#ifdef _WIN32\n    longjmp(handler->place, 1);\n#else\n    _longjmp(handler->place, 1);\n#endif\n')
           open(path, 'w').write(s)
           PY
           git diff
 
       - name: Build the tests with it
-        if: always()
         run: cargo test --no-run 2>&1 | tail -n 3
 
       - name: The whole test suite, under a clock
-        if: always()
-        run: tools/probe-tests.sh 600 mended
+        run: tools/probe-tests.sh 600 two-generations
 
       - uses: actions/upload-artifact@v4
         if: always()
