@@ -9208,3 +9208,25 @@ only for problems), the same logo and the same light or dark choice,
 which the two share. Panels with a thin rule instead of shadows,
 icons drawn as single lines, and the labels of Format and Share
 dropped to icons on a phone.
+
+### 20.5 Drawing with a finger: pointer events, and a canvas counted in its own pixels
+
+The sketch listens for `"pointerdown"`, `"pointermove"` and
+`"pointerup"` instead of the mouse's events, and on a `<canvas>`
+`event.x` and `event.y` are counted inside its border, in the
+canvas's own pixels, however large the page shows it.
+
+**Why pointer events.** A browser sends them for a mouse, a finger
+and a pen alike, with the same place in them, so one program draws
+on a desk and on a phone. Nothing in Zeno had to change for that:
+`on` already takes any event of the browser (14). The canvas says
+`touch-action: none`, so a finger draws instead of scrolling.
+
+**Why the canvas's own pixels.** On a phone the canvas is shown
+narrower than it is (`max-width: 100%`), and a place counted in the
+page's pixels would draw a line away from the finger. `draw_line`
+takes the canvas's pixels, so the event gives the same kind of
+number, and a program never has to know how large the canvas is
+shown. Before, the place also counted the border, one pixel off.
+Only a canvas is counted this way: for anything else there are no
+pixels of its own.

@@ -680,7 +680,7 @@ fn playground_page(wasm: &[u8]) -> String {
         example("Firmware", "A scheduler", "Tasks that run every so many ticks", include_str!("../examples/scheduler.zeno"), ""),
         example("Firmware", "Owned buffers", "Memory given back at a line you can point to", include_str!("../examples/buffer.zeno"), ""),
         example("Pages", "Things to do", "A list you add to, in a page", include_str!("../examples/todo.zeno"), include_str!("../examples/todo.html")),
-        example("Pages", "Sketch", "Draw on a canvas with the mouse", include_str!("../examples/sketch.zeno"), include_str!("../examples/sketch.html")),
+        example("Pages", "Sketch", "Draw with the mouse or a finger", include_str!("../examples/sketch.zeno"), include_str!("../examples/sketch.html")),
     ]);
     // Each marker is in the page once. The page is cut at them, so that
     // nothing written in is itself searched for a marker.

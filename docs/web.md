@@ -92,7 +92,7 @@ And what an element can do:
 |---|---|
 | `e.text` | the text in it. Give it a new value to change what the page shows |
 | `e.value` | what has been typed into it, for a box that can be typed into |
-| `e.on("click", pressed)` | call `pressed` whenever that happens to it: `"click"`, `"input"`, `"submit"`, any event of the browser |
+| `e.on("click", pressed)` | call `pressed` whenever that happens to it: `"click"`, `"input"`, `"submit"`, any event of the browser. For drawing, `"pointerdown"`, `"pointermove"` and `"pointerup"` come from a mouse, a finger and a pen alike |
 | `e.fire("click")` | call, now, what `on` was given for that event. It is how a test presses a button |
 | `e.append(child)` | `child` becomes the last thing inside it |
 | `e.remove()` | it leaves the page |
@@ -153,7 +153,7 @@ paper.on("click", function(event: Event) {
 |---|---|
 | `event.kind` | the name of the event: `"click"` |
 | `event.target` | the element it happened to. For a click on an `<li>` inside the `<ul>` that `on` was given to, the `<li>` |
-| `event.x`, `event.y` | where the mouse was, in pixels from the top left corner of the element `on` was given to. 0 for an event of no mouse |
+| `event.x`, `event.y` | where the mouse (or finger, or pen) was, in pixels from the top left corner of the element `on` was given to; on a `<canvas>`, in the canvas's own pixels, inside its border, however large the page shows it. 0 for an event of no mouse |
 | `event.key` | the key, for `"keydown"` and `"keyup"`. `""` for any other event |
 
 An `Event` says what happened, so its fields are read and never given
@@ -232,10 +232,10 @@ test "an empty box adds nothing" {
 }
 
 test "the mouse draws only while its button is down" {
-    paper.fire("mousemove")
+    paper.fire("pointermove")
     assert drawn == 0
-    paper.fire("mousedown")
-    paper.fire("mousemove")
+    paper.fire("pointerdown")
+    paper.fire("pointermove")
     assert drawn == 1
 }
 ```

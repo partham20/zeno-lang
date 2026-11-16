@@ -152,7 +152,6 @@ changed in its tab and ran; and the halves were dragged. On a phone
 - One file. No `import` of a file of your own.
 - No completion and no hover. `zeno lsp` does that in an editor
   ([`lsp.md`](lsp.md)).
-- Drawing on the sketch needs a mouse: a finger on a phone scrolls.
 - There is no Stop button. A program that never stops
   (`while true { }`) holds the page for 5 seconds, and is then
   stopped with the line it was on (20.1).

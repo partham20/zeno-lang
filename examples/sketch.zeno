@@ -1,4 +1,4 @@
-# A sheet to draw on with the mouse, in a page.
+# A sheet to draw on with the mouse, a finger or a pen, in a page.
 #
 # The page is `sketch.html`, beside this file: four buttons that are
 # colours, a button that wipes the sheet, and a `<canvas>`, which is an
@@ -89,10 +89,12 @@ function wipe() {
     paper.draw_text(10, 10, "Draw here", "silver")
 }
 
-paper.on("mousedown", pen_down)
-paper.on("mousemove", pen_moved)
-paper.on("mouseup", pen_up)
-paper.on("mouseleave", pen_up)
+# "pointer" events come from a mouse, a finger and a pen alike, so the
+# same four lines draw on a desk and on a phone.
+paper.on("pointerdown", pen_down)
+paper.on("pointermove", pen_moved)
+paper.on("pointerup", pen_up)
+paper.on("pointerleave", pen_up)
 web.element("#wipe").on("click", wipe)
 
 choose(colour)
@@ -100,14 +102,14 @@ wipe()
 
 test "the mouse draws only while its button is down" {
     let before = drawn
-    paper.fire("mousemove")
+    paper.fire("pointermove")
     assert drawn == before
-    paper.fire("mousedown")
-    paper.fire("mousemove")
-    paper.fire("mousemove")
+    paper.fire("pointerdown")
+    paper.fire("pointermove")
+    paper.fire("pointermove")
     assert drawn == before + 2
-    paper.fire("mouseup")
-    paper.fire("mousemove")
+    paper.fire("pointerup")
+    paper.fire("pointermove")
     assert drawn == before + 2
 }
 
@@ -118,8 +120,8 @@ test "a colour that is chosen is kept" {
 }
 
 test "wiping starts the count again" {
-    paper.fire("mousedown")
-    paper.fire("mousemove")
+    paper.fire("pointerdown")
+    paper.fire("pointermove")
     web.element("#wipe").fire("click")
     assert drawn == 0
 }

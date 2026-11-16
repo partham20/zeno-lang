@@ -120,8 +120,8 @@ On an element & What it does \\
   page shows \\
 \verb|e.value| & what has been typed into it, for a box \\
 \verb|e.on(event, f)| & call \verb|f| whenever that happens to it:
-  \verb|"click"|, \verb|"input"|, \verb|"submit"|, \verb|"mousemove"|,
-  or any event a browser has \\
+  \verb|"click"|, \verb|"input"|, \verb|"submit"|, \verb|"pointermove"|
+  (a mouse, a finger or a pen), or any event a browser has \\
 \verb|e.fire(event)| & call, now, what \verb|on| was given for that
   event; how a test presses a button \\
 \verb|e.append(child)| & \verb|child| becomes the last thing inside it \\
@@ -194,8 +194,9 @@ Field & What it is \\
 \verb|event.target| & the element it happened to. For a click on an
   \verb|<li>| inside the \verb|<ul>| that \verb|on| was given to, the
   \verb|<li>| \\
-\verb|event.x|, \verb|event.y| & where the mouse was, in pixels from
-  the top left corner of the element; 0 for an event of no mouse \\
+\verb|event.x|, \verb|event.y| & where the mouse (or finger) was, in
+  pixels from the top left corner of the element, and on a canvas in its
+  own pixels; 0 for an event of no mouse \\
 \verb|event.key| & the key, for \verb|"keydown"| and \verb|"keyup"|;
   \verb|""| for any other event \\
 \bottomrule
@@ -250,7 +251,7 @@ after typing two more things and clicking one:
 
 \section{Drawing, and what is kept}
 
-The second example is a sheet to draw on with the mouse. The page has
+The second example is a sheet to draw on with the mouse or a finger. The page has
 four buttons that are colours, a button that wipes the sheet, and a
 canvas. It shows what the list of things to do does not: a function
 that asks for the \verb|Event| to learn where the mouse is, drawing,
