@@ -33,6 +33,13 @@ if [ "$said" != "zeno $version" ]; then
 fi
 echo "$said"
 
+# The installer for macOS and Linux has the version written in it.
+installs=$(sed -n 's/^version=\([0-9].*\)/\1/p' tools/install.sh | head -1)
+if [ "$installs" != "$version" ]; then
+    echo "tools/install.sh installs version \`$installs\`, and Cargo.toml says $version"
+    exit 1
+fi
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

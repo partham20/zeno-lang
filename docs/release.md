@@ -147,7 +147,7 @@ clang. `zeno fetch` needs git. The release does not bring them,
 because they are different on every machine and most machines that
 build programs have them.
 
-On Windows the C compiler is MinGW's gcc, named with `set CC=gcc`,
+On Windows the C compiler is MinGW's gcc, which `zeno build` finds by itself (15.5),
 and `zeno build --llvm` uses the clang that comes with Visual Studio.
 The program is `hello.exe`, run with `.\hello`.
 

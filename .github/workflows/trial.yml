@@ -47,8 +47,7 @@ jobs:
         continue-on-error: true
         run: |
           zeno=$PWD/target/release/zeno
-          # Windows has no `cc`. Its C compiler here is gcc.
-          if [ "$RUNNER_OS" = Windows ]; then export CC=gcc; fi
+          # Windows has no `cc`. `zeno build` finds its gcc by itself.
           mkdir through-c
           cd through-c
           status=0

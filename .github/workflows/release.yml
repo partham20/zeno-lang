@@ -99,13 +99,18 @@ jobs:
         if: matrix.with != 'none'
         run: tools/release-check.sh target/${{ matrix.target }}/release/zeno "${{ matrix.with }}"
 
+      # The installer for macOS and Linux, tried where the build runs on
+      # the machine's own processor (docs/install.md).
+      - name: install.sh installs this build, and takes it off again
+        if: matrix.tests && runner.os != 'Windows'
+        run: tools/try-install.sh target/${{ matrix.target }}/release/zeno
+
       - name: A program compiled through C prints what `zeno run` prints
         if: matrix.compiled
         continue-on-error: ${{ matrix.compiled == 'try' }}
         run: |
           zeno=$PWD/target/${{ matrix.target }}/release/zeno
-          # Windows has no `cc`. Its C compiler here is gcc.
-          if [ "$RUNNER_OS" = Windows ]; then export CC=gcc; fi
+          # Windows has no `cc`. `zeno build` finds its gcc by itself.
           mkdir through-c
           cd through-c
           # What goes wrong is also put on the summary page of the run,
@@ -186,9 +191,57 @@ jobs:
           fi
           exit $status
 
+  # The setup program for Windows: one .exe that holds the three Windows
+  # builds and installs the one for the machine it is run on
+  # (tools/installer/zeno.iss, docs/install.md). It is made from the
+  # builds above, installed here, run, and uninstalled.
+  installer:
+    name: windows-setup
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: got
+          merge-multiple: true
+
+      - name: The files that go into it
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir files
+          for kind in x86_64 x86 arm64; do
+            7z x -y "got/zeno-$version-windows-$kind.zip" -ounpacked > /dev/null
+            mkdir files/$kind
+            cp "unpacked/zeno-$version-windows-$kind/zeno.exe" files/$kind
+          done
+          # The rest is the same in all three.
+          cd "unpacked/zeno-$version-windows-x86_64"
+          cp -r zeno.wasm README.md docs examples editors ../../files
+
+      - name: Build the setup program
+        shell: cmd
+        run: tools\installer\build.cmd %VERSION% files
+
+      - name: Install with it, run Zeno, and uninstall
+        shell: pwsh
+        run: tools\installer\try.ps1 "zeno-$($env:VERSION)-windows-setup.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: zeno-*-windows-setup.exe
+          if-no-files-found: error
+
   release:
     name: release
-    needs: build
+    needs: [build, installer]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-latest
     steps:
@@ -205,17 +258,20 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           tag=v$version
+          # The installer for macOS and Linux is a file of the release,
+          # so that one line downloads it and runs it.
+          cp tools/install.sh packed
           cd packed
           # One line for each file, to check a download against with
           # `sha256sum --check`.
-          sha256sum zeno-* > SHA256SUMS.txt
+          sha256sum zeno-* install.sh > SHA256SUMS.txt
           notes=../docs/releases/$version.md
           if gh release view "$tag" > /dev/null 2>&1; then
             # The release was drafted on the website, which made the tag.
-            gh release upload "$tag" --clobber zeno-* SHA256SUMS.txt
+            gh release upload "$tag" --clobber zeno-* install.sh SHA256SUMS.txt
             gh release edit "$tag" --title "Zeno $version" --notes-file "$notes"
           else
             # `--target` makes the tag here when no tag was pushed.
             gh release create "$tag" --target "$GITHUB_SHA" --title "Zeno $version" \
-              --notes-file "$notes" zeno-* SHA256SUMS.txt
+              --notes-file "$notes" zeno-* install.sh SHA256SUMS.txt
           fi

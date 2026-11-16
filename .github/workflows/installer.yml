@@ -1,0 +1,72 @@
+# Tries the installers on one kind of machine, and releases nothing.
+#
+# On Windows it builds `zeno`, makes the setup program from it
+# (tools/installer/zeno.iss), installs with it, runs what was installed
+# and uninstalls. The setup program is kept with the run for a week, to
+# download and try by hand. It holds only the build for x86-64: the one
+# the release workflow makes holds all three.
+#
+# On macOS and Linux it builds `zeno` and has tools/install.sh install
+# it from a folder (tools/try-install.sh).
+#
+# Started by hand from the Actions page ("Run workflow"), choosing the
+# machine. docs/install.md has more.
+
+name: installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: The machine to try it on
+        type: choice
+        options: [windows-latest, macos-latest, ubuntu-latest]
+        default: windows-latest
+
+jobs:
+  installer:
+    name: ${{ inputs.machine }}
+    runs-on: ${{ inputs.machine }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cargo build --release
+          rustup target add wasm32-unknown-unknown
+          cargo build --release --target wasm32-unknown-unknown
+
+      - name: install.sh installs this build, and takes it off again
+        if: runner.os != 'Windows'
+        run: tools/try-install.sh target/release/zeno
+
+      - name: The files that go into the setup program
+        if: runner.os == 'Windows'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p files/x86_64
+          cp target/release/zeno.exe files/x86_64
+          cp target/wasm32-unknown-unknown/release/zeno.wasm files
+          cp -r README.md docs examples editors files
+
+      - name: Build the setup program
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: tools\installer\build.cmd %VERSION% files
+
+      - name: Install with it, run Zeno, and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: tools\installer\try.ps1 "zeno-$($env:VERSION)-windows-setup.exe"
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-setup
+          path: zeno-*-windows-setup.exe
+          if-no-files-found: error
+          retention-days: 7

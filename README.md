@@ -102,9 +102,26 @@ piece of the compiler:
 
 ## Install
 
-Each release has a `zeno` that is already built, for ten kinds of
-machine, on the
-[releases page](https://github.com/partham20/zeno-lang/releases):
+**Windows.** Download `zeno-0.2.0-windows-setup.exe` from the
+[releases page](https://github.com/partham20/zeno-lang/releases) and
+run it. It installs Zeno for you, puts it on the PATH, and offers to
+install a C compiler and Git if the machine has none. Windows warns
+about it the first time, because it is not signed: "More info", then
+"Run anyway".
+
+**macOS and Linux.** One line in a terminal:
+
+```sh
+curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+```
+
+It finds the `zeno` for your machine, checks the download, installs it
+in `~/.zeno`, puts it on the PATH, and offers to install a C compiler
+and git if there is none. [`docs/install.md`](docs/install.md) says
+what both do, line by line, and how to take Zeno off again.
+
+**By hand.** Each release also has a `zeno` that is already built, as
+an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
@@ -135,9 +152,9 @@ Apple has not signed it: `xattr -d com.apple.quarantine zeno` lets it
 run.
 
 `zeno build` hands the C it writes to a C compiler, so it needs one:
-`cc`, or the one `CC` names (on Windows, MinGW's gcc with `set
-CC=gcc`). `zeno build --llvm` needs clang. `zeno fetch` needs git.
-Everything else needs nothing.
+`cc`, `gcc` or `clang`, whichever it finds first, or the one `CC`
+names. `zeno build --llvm` needs clang. `zeno fetch` needs git.
+Everything else needs nothing. The installers offer to install these.
 
 Or build it from this source, which needs only
 [Rust](https://rustup.rs): `cargo build --release` puts `zeno` in
@@ -152,8 +169,10 @@ one goes out, is in [`docs/release.md`](docs/release.md).
 for 0.1: everything on the roadmap below is done, and every decision
 that was once marked provisional has been read again and settled
 ([`docs/version-0.1.md`](docs/version-0.1.md), which also lists what
-0.1 leaves out). Version 0.2 adds one thing, a program in a web page
-([`docs/web.md`](docs/web.md)), and changes nothing that ran before.
+0.1 leaves out). Version 0.2 adds a program in a web page
+([`docs/web.md`](docs/web.md)) and installers
+([`docs/install.md`](docs/install.md)), and changes nothing that ran
+before.
 
 Zeno checks and runs programs, and compiles nearly all of the language to C:
 numbers, strings, functions, control flow, classes, lists, enums and `match`,
@@ -297,7 +316,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
-  [`docs/web.md`](docs/web.md),
+  [`docs/web.md`](docs/web.md), [`docs/install.md`](docs/install.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
 ## Roadmap
@@ -503,6 +522,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     test` the page is a simulated one, so what a page does is tested
     on a desk.
     See [`docs/web.md`](docs/web.md))
+24. Installers (done, in 0.2: a setup program for Windows and one
+    line for macOS and Linux. Each picks the right `zeno`, puts it on
+    the PATH, offers the C compiler and git that `zeno build` and
+    `zeno fetch` hand work to, and can take it all off again.
+    See [`docs/install.md`](docs/install.md))
 
 ## Layout
 
@@ -540,7 +564,11 @@ src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs
 tools/release-check.sh        runs a built `zeno` before it is released
+tools/install.sh              installs Zeno on macOS and Linux
+tools/try-install.sh          tries install.sh, with no release to download
+tools/installer/              the setup program for Windows (Inno Setup)
 .github/workflows/release.yml builds and releases `zeno` when a tag is pushed
 .github/workflows/trial.yml   tries Zeno on one kind of machine, and releases nothing
+.github/workflows/installer.yml  tries the installers on one kind of machine
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```

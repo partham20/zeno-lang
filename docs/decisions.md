@@ -8063,3 +8063,142 @@ third number is for a mend, and nothing here mends anything.
 **Why not 1.0.** Nothing that ran under 0.1 changes, so nothing was
 learnt about whether the language holds up. 1.0 should mean that
 programs written by somebody else have been through it.
+
+---
+
+## 15. Installing
+
+A release is ten archives (chapter 12). This chapter is about not
+having to know which one is yours. [`install.md`](install.md) is the
+walkthrough.
+
+### 15.1 Two installers: a setup program on Windows, a line elsewhere
+
+Windows gets `zeno-X.Y.Z-windows-setup.exe`. macOS and Linux get a
+script, `install.sh`, that one line downloads and runs.
+
+**Why two.** Each is what its system's users already do. On Windows a
+program arrives as a setup `.exe` with Next buttons, and a line to
+paste into a terminal is foreign. On macOS and Linux the people who
+would install a compiler have a terminal open, and the line is how
+Rust, Homebrew and Deno arrive.
+
+**Turned down.**
+- *A setup program for macOS too* (`.pkg`). macOS refuses an unsigned
+  one more firmly than it refuses a script, and signing wants a paid
+  Apple account.
+- *A script for Windows too* (PowerShell). The setup program does more
+  (an uninstaller in Windows' own list, a Start menu entry), and two
+  ways to install on one system is one too many.
+- *Packages* for Homebrew, apt, winget and the rest. They are the best
+  answer in the end, and each has a place where it must be published
+  and kept current. Not yet (15.7).
+
+### 15.2 For one user, with no administrator
+
+The setup program installs into `%LOCALAPPDATA%\Programs\Zeno`, the
+script into `~/.zeno`, and each changes that user's PATH only.
+
+**Why.** Nothing about Zeno needs the whole machine, and a password
+prompt is a reason to stop. It also means a student on a machine that
+is not theirs can install it.
+
+**Turned down.** `C:\Program Files` and `/usr/local/bin`: an
+administrator for no gain. A choice between the two on a page of the
+setup program: a question most people cannot answer.
+
+### 15.3 The PATH is added, and the box is ticked
+
+Both installers put Zeno's folder on the PATH. In the setup program it
+is a box, already ticked. The script just does it, and says which file
+it changed.
+
+**Why.** A `zeno` that the terminal cannot find is not installed in
+any sense a beginner means. Python's installer leaves its box
+unticked, and the result is the best-known first error in Python.
+
+The script adds one line to one startup file, the one for the shell
+in `SHELL`, and ends the line with a comment that names the
+installer. That comment is how it knows not to add the line twice and
+how `--uninstall` finds it again.
+
+### 15.4 The tools Zeno hands work to are offered, never assumed
+
+If there is no C compiler, or no git, the installer says which command
+needs it and offers to install it: with winget on Windows, with the
+system's package manager on Linux, with Apple's command line tools on
+macOS. On Windows the box is ticked, and can be unticked. In the
+script it is a question, and with nobody to ask (no terminal), the
+answer is no and the command is printed.
+
+**Why offer.** Partha asked for an installer "which installs whatever
+needed", and without a C compiler `zeno build`, which is what Zeno is
+for, does not work.
+
+**Why not just install.** A compiler is hundreds of megabytes, and
+on Linux it is installed as root. Doing that unasked, from a script
+piped out of curl, is the thing people are right to fear about such
+scripts. And everything but `build` and `fetch` works without.
+
+**Why not carry a compiler inside the installer.** A small one exists
+(TinyCC), and Zeno's C has not been tried with it. gcc is too large to
+carry and has to be kept current. The system's package manager
+already does both.
+
+### 15.5 `zeno build` looks for `cc`, then `gcc`, then `clang`
+
+With no `CC`, the first of the three that is installed compiles the C.
+
+**Why.** Windows has no `cc`, so every Windows user had to learn `set
+CC=gcc` before the first build. An installer that installs gcc and
+then needs a setting to use it has not finished its job. The order
+puts the system's own choice first.
+
+### 15.6 Not signed
+
+Neither the setup program nor `zeno` is signed. Windows shows a
+warning the first time, and the walkthrough says what it is.
+
+**Why.** A certificate for Windows costs a few hundred dollars a
+year, and Apple's needs a paid developer account. The goal of Zeno is
+to learn by building it. If strangers start to install it, this is
+the first thing to change.
+
+### 15.7 One setup program for three processors
+
+The setup program holds the x86-64, the x86 and the ARM64 `zeno.exe`
+and installs the one for the machine.
+
+**Why.** Three setup programs would bring back the question the
+installer exists to remove. The cost is a file a few megabytes
+larger.
+
+### 15.8 The script carries its version, and the release checks it
+
+`install.sh` has `version=0.2.0` written in it, and is a file of the
+release of that version. `tools/release-check.sh` refuses a release in
+which that line and `Cargo.toml` differ.
+
+**Why.** The script has to know which files to ask for, and their
+names have the version in them. Asking GitHub which release is the
+newest needs a second request and a way to read its answer, in a
+script that should need nothing but `curl` and `tar`. A plain line
+that a check keeps true is less to go wrong.
+
+### 15.9 The download is checked before it is unpacked
+
+The script compares the archive's SHA-256 with the line for it in
+`SHA256SUMS.txt`, and stops if they differ or if there is no way to
+compute one.
+
+**Why.** A download that was cut short unpacks into a `zeno` that
+fails in some way nobody can explain. The check does not protect
+against somebody who can change the release itself, since they would
+change both files. It protects against everything less than that.
+
+### 15.10 Left for later
+
+- Signing (15.6), and packages for package managers (15.1).
+- The winget step of the setup program is not run by any test:
+  GitHub's Windows machines have no winget.
+- `zeno` does not update itself. The installer, run again, does.

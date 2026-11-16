@@ -453,31 +453,40 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build) -> Option<()> {
     }
     println!("Wrote {c_file}");
 
-    // `CC` is the usual way to say which C compiler to use; `cc` is the
-    // usual name for whichever one is installed.
-    let compiler = env::var("CC").unwrap_or_else(|_| "cc".to_string());
-    let mut command = Command::new(&compiler);
-    if memory_report {
-        // Turns on a few lines in the runtime that say, as the program
-        // ends, how much memory it used and how often the collector ran.
-        command.arg("-DZENO_MEMORY_REPORT");
-    }
+    // `CC` is the usual way to say which C compiler to use. With no
+    // `CC`, the first of these that is installed is used: `cc` is the
+    // usual name for whichever one a system has, `gcc` is what MinGW
+    // calls itself on Windows, which has no `cc`, and `clang` is the
+    // one that comes with Visual Studio.
+    let compilers = match env::var("CC") {
+        Ok(named) => vec![named],
+        Err(_) => vec!["cc".to_string(), "gcc".to_string(), "clang".to_string()],
+    };
     let program_file = emit_c::program_file(name);
-    match command.args(["-O2", "-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
-        Ok(status) if status.success() => {
-            println!("Built {name}. Run it with {}", how_to_run(name));
-            Some(())
+    for compiler in &compilers {
+        let mut command = Command::new(compiler);
+        if memory_report {
+            // Turns on a few lines in the runtime that say, as the program
+            // ends, how much memory it used and how often the collector ran.
+            command.arg("-DZENO_MEMORY_REPORT");
         }
-        Ok(_) => {
-            eprintln!("zeno: `{compiler}` could not compile `{c_file}`. That is a bug in Zeno, not in your program");
-            None
-        }
-        Err(_) => {
-            eprintln!("zeno: no C compiler found (tried `{compiler}`), so only the C was written.");
-            eprintln!("      Install one, or set CC, then run: cc -O2 -o {program_file} {c_file} {}", emit_c::LIBRARIES.join(" "));
-            None
+        match command.args(["-O2", "-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
+            Ok(status) if status.success() => {
+                println!("Built {name}. Run it with {}", how_to_run(name));
+                return Some(());
+            }
+            Ok(_) => {
+                eprintln!("zeno: `{compiler}` could not compile `{c_file}`. That is a bug in Zeno, not in your program");
+                return None;
+            }
+            // There is no such program. The next name is tried.
+            Err(_) => {}
         }
     }
+    let tried: Vec<String> = compilers.clone();
+    eprintln!("zeno: no C compiler found (tried {}), so only the C was written.", modules::listed(&tried));
+    eprintln!("      Install one, or set CC, then run: cc -O2 -o {program_file} {c_file} {}", emit_c::LIBRARIES.join(" "));
+    None
 }
 
 /// What to type to run the program a build made, in the folder it is in.
