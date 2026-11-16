@@ -2,10 +2,13 @@
 # question. It releases nothing.
 #
 # The question now: the rehearsal of 0.3.0 hung in the test suite on
-# macOS on Apple silicon, in programs that `zeno build` had compiled.
-# This builds a program that makes many objects, with the collector's
-# two generations and with one, runs each under a clock, and if one is
-# still running when the clock ends, says where it is.
+# macOS on Apple silicon, in programs that the tests had compiled. A
+# first look showed that a program that makes many objects ends as it
+# should there, with the collector's two generations and with one. So
+# this runs the test suite itself under a clock, and if it is still
+# running when the clock ends, says which tests are, and where each
+# compiled program is. It does it twice: as the source is, and with the
+# two generations put back on macOS.
 
 name: probe
 
@@ -22,50 +25,27 @@ jobs:
   look:
     name: ${{ inputs.machine }}
     runs-on: ${{ inputs.machine }}
-    timeout-minutes: 12
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Zeno
-        run: cargo build --release
+      - name: Build the tests
+        run: cargo test --no-run 2>&1 | tail -n 3
 
-      - name: A program that makes many objects, with two generations and with one
+      - name: The test suite under a clock, as the source is
+        run: tools/probe-tests.sh 480 as-it-is
+
+      - name: The same with two generations on macOS
+        if: always()
         run: |
-          zeno=$PWD/target/release/zeno
-          mkdir look && cd look
-          $zeno build ../bench/trees.zeno > /dev/null
-          ls
-          cc -O2 -o two trees.c -lm
-          cc -O2 -DZENO_ONE_GENERATION -o one trees.c -lm
-          cc -O0 -g -o two-slow trees.c -lm
+          sed -i.bak 's/!defined(ZENO_ONE_GENERATION) && defined(__linux__)/!defined(ZENO_ONE_GENERATION) \&\& (defined(__linux__) || defined(__APPLE__))/' src/runtime.c
+          grep -n 'ZENO_ONE_GENERATION) &&' src/runtime.c
+          cargo test --no-run 2>&1 | tail -n 3
+          tools/probe-tests.sh 480 two-generations
 
-          # `under <seconds> <program...>`: runs it, and if it is still
-          # running after that long, says where it is and stops it.
-          under() {
-            limit=$1; shift
-            "$@" > said.txt 2>&1 &
-            pid=$!
-            waited=0
-            while kill -0 $pid 2> /dev/null && [ $waited -lt $limit ]; do sleep 1; waited=$((waited + 1)); done
-            if kill -0 $pid 2> /dev/null; then
-              echo "STILL RUNNING after $limit seconds: $*"
-              if command -v sample > /dev/null; then
-                sample $pid 2 2>&1 | sed -n 1,70p
-              else
-                gdb -p $pid -batch -ex bt 2>&1 | tail -25
-              fi
-              kill -9 $pid
-              return 0
-            fi
-            status=0; wait $pid || status=$?
-            echo "ended with $status after about $waited seconds: $*"
-            tail -n 4 said.txt
-          }
-
-          under 90 ./one 18
-          under 90 ./two 18
-          under 90 ./two-slow 16
-          under 60 ./two 12
-          # The same through `zeno build` itself, with its report.
-          $zeno build --memory ../examples/memory.zeno > /dev/null
-          under 60 ./memory
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ inputs.machine }}
+          path: found
+          if-no-files-found: ignore
