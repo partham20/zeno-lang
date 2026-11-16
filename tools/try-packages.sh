@@ -133,7 +133,7 @@ case $kind in
         ;;
 
     pacman)
-        package=zeno-bin-$version-1-x86_64.pkg.tar.zst
+        package=zeno-lang-bin-$version-1-x86_64.pkg.tar.zst
         [ -f "$out/$package" ] || stop "there is no $out/$package"
         # In Arch, in a container. It is root there, so no sudo.
         case $version in 0.1.*) web=no ;; *) web=yes ;; esac
@@ -145,7 +145,7 @@ case $kind in
             if [ $web = yes ]; then
                 cd /tmp && zeno build --web /usr/share/zeno/examples/todo.zeno >/dev/null && [ -f todo.web.html ]
             fi
-            pacman -R --noconfirm zeno-bin >/dev/null
+            pacman -R --noconfirm zeno-lang-bin >/dev/null
             [ ! -e /usr/bin/zeno ] && [ ! -e /usr/lib/zeno ]
         " || stop "the package for pacman did not install, run and come off again"
         say "  it is zeno $version, it runs a program, and it comes off again"
@@ -232,16 +232,16 @@ case $kind in
         # place of the PKGBUILD, so it must say the same.
         docker run --rm -v "$out:/recipe:ro" archlinux:latest sh -c "
             set -e
-            pacman -Sy --noconfirm --needed fakeroot >/dev/null
+            pacman -Sy --noconfirm --needed fakeroot diffutils >/dev/null
             useradd -m maker
             cp -r /recipe /home/maker/zeno && chown -R maker /home/maker/zeno
             cd /home/maker/zeno
             su maker -c 'makepkg --printsrcinfo' | diff - .SRCINFO
             su maker -c makepkg >/dev/null
-            pacman -U --noconfirm zeno-bin-$version-1-x86_64.pkg.tar.zst >/dev/null
+            pacman -U --noconfirm zeno-lang-bin-$version-1-x86_64.pkg.tar.zst >/dev/null
             [ \"\$(zeno --version)\" = 'zeno $version' ]
             [ \"\$(zeno run /usr/share/zeno/examples/hello.zeno)\" = 'Hello, Zeno!' ]
-            pacman -R --noconfirm zeno-bin >/dev/null
+            pacman -R --noconfirm zeno-lang-bin >/dev/null
         " || stop "the PKGBUILD did not make a package from the release, or .SRCINFO says something else"
         say "  .SRCINFO says what the PKGBUILD says, and it makes zeno $version from the release"
         ;;

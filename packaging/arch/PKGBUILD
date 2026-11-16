@@ -4,14 +4,14 @@
 #     makepkg -si
 #
 # Maintainer: Partha <123355647+partham20@users.noreply.github.com>
-pkgname=zeno-bin
+pkgname=zeno-lang-bin
 pkgver=0.2.0
 pkgrel=1
 pkgdesc="The Zeno programming language: checks, runs, tests, formats and compiles Zeno programs"
 url="https://zeno-lang.org"
 license=('MIT')
-provides=('zeno')
-conflicts=('zeno')
+# What this package was called up to Zeno 0.2.0.
+conflicts=('zeno-bin')
 optdepends=('gcc: for `zeno build`'
             'clang: for `zeno build --llvm`'
             'git: for `zeno fetch`')

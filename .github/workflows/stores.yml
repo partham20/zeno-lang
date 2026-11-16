@@ -2,7 +2,7 @@
 # a released version to the ones that a login was given for.
 #
 # A release has a package for each manager among its files. This is
-# the other half: that `apt install zeno`, `yay -S zeno-bin`, `snap
+# the other half: that `apt install zeno`, `yay -S zeno-lang-bin`, `snap
 # install zeno`, `brew install` and `winget install` find Zeno without
 # a file being downloaded first. Each job first tries what can be tried
 # with no login:
@@ -129,15 +129,17 @@ jobs:
 
       - name: What the AUR has under these names today
         run: |
-          curl -fsS 'https://aur.archlinux.org/rpc/v5/info?arg[]=zeno-bin&arg[]=zeno&arg[]=zeno-git' > has.json || { echo "the AUR did not answer"; exit 0; }
+          curl -fsS 'https://aur.archlinux.org/rpc/v5/info?arg[]=zeno-lang-bin&arg[]=zeno-lang&arg[]=zeno-bin&arg[]=zeno' > has.json || { echo "the AUR did not answer"; exit 0; }
           python3 - <<'PY'
           import json
           has = json.load(open('has.json')).get('results', [])
           if not has:
-              print('nothing: zeno-bin, zeno and zeno-git are free')
+              print('nothing under zeno-lang-bin, zeno-lang, zeno-bin or zeno')
           for p in has:
-              print(p['Name'], p.get('Version'), 'by', p.get('Maintainer'), '-', p.get('Description'))
+              print(p['Name'], p.get('Version'), 'by', p.get('Maintainer'), '-', p.get('Description'), '-', p.get('URL'))
           PY
+          # The AUR's `zeno` is another program. What it installs:
+          curl -fsS 'https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=zeno' || true
 
       - name: The PKGBUILD makes the package from the release, and .SRCINFO says the same
         run: tools/try-packages.sh aur "$VERSION" packaging/arch
@@ -157,7 +159,7 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
           # A package of the AUR is a git repository of its own, with
           # the one branch `master`. The first push makes it.
-          git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/zeno-bin.git aur
+          git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/zeno-lang-bin.git aur
           cp packaging/arch/PKGBUILD packaging/arch/.SRCINFO packaging/arch/LICENSE aur
           cd aur
           git config user.name "Partha"

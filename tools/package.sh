@@ -14,7 +14,7 @@
 #     zeno_0.2.0_amd64.deb  _arm64  _armhf  _i386      apt install ./that
 #     zeno_0.2.0_amd64.snap  _arm64  _armhf            snap install --classic --dangerous that
 #     zeno-0.2.0-x86_64.flatpak  -aarch64              flatpak install that
-#     zeno-bin-0.2.0-1-x86_64.pkg.tar.zst              pacman -U that
+#     zeno-lang-bin-0.2.0-1-x86_64.pkg.tar.zst         pacman -U that
 #
 # and into `out/recipes` the three that are text, which say where the
 # files of the release are and what their checksums must be:
@@ -323,8 +323,11 @@ say "wrote recipes/Formula/zeno.rb"
 # where the files come from, their checksums, and a function,
 # `package`, that lays them out. The name ends in `-bin` because it
 # packs a program that is already built, which is what such a package
-# is called on Arch. pacman has nothing like apt's `Recommends`, so
-# the compiler and git are named as optional and are not installed.
+# is called on Arch. It begins `zeno-lang` because the AUR, where the
+# PKGBUILD goes, has a `zeno` already, which is another program. Up to
+# Zeno 0.2.0 the package was `zeno-bin`, and it takes the place of
+# that one. pacman has nothing like apt's `Recommends`, so the
+# compiler and git are named as optional and are not installed.
 
 {
     cat <<EOF
@@ -334,14 +337,14 @@ say "wrote recipes/Formula/zeno.rb"
 #     makepkg -si
 #
 # Maintainer: $maintainer
-pkgname=zeno-bin
+pkgname=zeno-lang-bin
 pkgver=$version
 pkgrel=1
 pkgdesc="$summary: checks, runs, tests, formats and compiles Zeno programs"
 url="$site"
 $(if [ -n "$licence" ]; then say "license=('$licence')"; else say "# No licence had been chosen for Zeno $version."; say "license=('custom')"; fi)
-provides=('zeno')
-conflicts=('zeno')
+# What this package was called up to Zeno 0.2.0.
+conflicts=('zeno-bin')
 optdepends=('gcc: for \`zeno build\`'
             'clang: for \`zeno build --llvm\`'
             'git: for \`zeno fetch\`')
@@ -406,7 +409,7 @@ if have docker && docker info >/dev/null 2>&1 && [ -f "$files/zeno-$version-linu
         cp /home/maker/zeno/*.pkg.tar.zst /home/maker/zeno/.SRCINFO /made
     '
     cp "$work/arch"/*.pkg.tar.zst "$out"
-    say "made zeno-bin-$version-1-x86_64.pkg.tar.zst"
+    say "made zeno-lang-bin-$version-1-x86_64.pkg.tar.zst"
     # The AUR does not run a PKGBUILD to find out what a package is: it
     # reads `.SRCINFO`, which is the same said as plain lines, and which
     # `makepkg` writes. It goes wherever the PKGBUILD goes.

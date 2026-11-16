@@ -1,4 +1,4 @@
-pkgbase = zeno-bin
+pkgbase = zeno-lang-bin
 	pkgdesc = The Zeno programming language: checks, runs, tests, formats and compiles Zeno programs
 	pkgver = 0.2.0
 	pkgrel = 1
@@ -12,8 +12,7 @@ pkgbase = zeno-bin
 	optdepends = gcc: for `zeno build`
 	optdepends = clang: for `zeno build --llvm`
 	optdepends = git: for `zeno fetch`
-	provides = zeno
-	conflicts = zeno
+	conflicts = zeno-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-linux-x86_64.tar.gz
@@ -27,4 +26,4 @@ pkgbase = zeno-bin
 	source_i686 = https://github.com/partham20/zeno-lang/releases/download/v0.2.0/zeno-0.2.0-linux-x86.tar.gz
 	sha256sums_i686 = cdf7f718c041e66d596a2e8ada4d29ac64d9abc0cdae523ff878567881dcbd13
 
-pkgname = zeno-bin
+pkgname = zeno-lang-bin
