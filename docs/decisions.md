@@ -9996,3 +9996,66 @@ in thousands that grows.
 separate file, so every runtime function is a call there. Writing
 append in IR, as `zeno.mod` is, is the way, and it waits until
 something measures the need.
+
+### 23.9 The assumption of 23.6 stays, and what it would cost to drop it
+
+Partha asked (2026-11-16) whether the trade of 23.6 can be overcome:
+C's speed, and a defined result when a whole number overflows. It
+cannot, and this is the measuring behind that answer. He chose to keep
+23.6 as it is.
+
+**Why it cannot be had for nothing.** C's loop is fast because the
+compiler uses a fact it cannot check: `i * i` does not overflow, so it
+is not below zero. A build that keeps a defined result when the fact
+is false must either test the fact or not use it. Testing costs
+instructions and not using it costs instructions; there is no third
+way to be right when it is false.
+
+**What each way costs** (the loop benchmark, millions of instructions,
+`--fast --owned` with only the overflow rule changed):
+
+| What an overflow does | gcc | clang |
+|---|---|---|
+| C itself | 300.3 | 220.3 |
+| assumed not to happen (23.6) | 300.3 | 220.3 |
+| wraps round | 340.3 | 330.3 |
+| stops the program (`-fsanitize=signed-integer-overflow`, trapping) | 420.3 | 400.3 |
+| `-ftrapv` | 740.3 | |
+| `OverflowError` (`zeno build`) | 460.3 | |
+
+Five ways of writing `% 7` with no jump, so that a wrapped number
+needs no mending afterwards, were tried under the wrap: 400 to 440
+million, all worse than the jump of 23.5.
+
+**What wrapping would cost on all six** (instructions against C, gcc):
+fib 0.98, loop 1.13, sort 1.13, strings 0.57, trees 0.41, nbody 1.03.
+A model of the processor (llvm-mca) puts loop's 13% at 4% of the time
+on the machine the benchmarks run on and 12% on an older one. With
+clang, which is the C compiler on a Mac, loop is 50% more.
+
+**Found on the way.** Under the wrap, sort comes back from 82.8 to 74.9
+million (C 73.3) if the unchecked `zeno_list_at` tells the C compiler
+that the index is in range (`__builtin_unreachable()` when it is not),
+which `--fast` promises already. With 23.6 it changes nothing, so it is
+not in; it is the first thing to do if `--fast` ever wraps.
+
+**Why 23.6 stays.**
+
+- `--fast` already trusts every index of every list, which is the
+  greater promise: a wrong index reads or writes memory that is not
+  the list's. Taking back the lesser promise would not make the build
+  a safe one.
+- An `int` is 64 bits. A count that goes up a thousand million times a
+  second overflows after 292 years. An overflow that can happen in
+  testing is caught, with its line, by `zeno run` and by every build
+  that is not `--fast` or `--release`.
+- There is a build for speed with a defined result already:
+  `--release`. Zig (`ReleaseFast` beside `ReleaseSafe`) and Swift
+  (`-Ounchecked` beside `-O`) divide their builds the same way, for
+  the same reason.
+
+**Rejected.** `--fast` wrapping, with a second option to assume: to
+match C would then take two words, and the word `fast` would mean
+"nearly". Checking only the multiplications whose result goes into a
+`%`: one rule for one benchmark.
+
