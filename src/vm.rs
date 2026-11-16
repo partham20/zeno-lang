@@ -1214,7 +1214,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {

@@ -1402,7 +1402,7 @@ mod tests {
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");
@@ -2173,6 +2173,53 @@ mod tests {
         session.call(1, vec![event()]).expect("a click");
         session.call(2, vec![super::Value::Int(404), super::Value::str("not here")]).expect("an answer");
         assert_eq!(session.printed(), "pressed\nclick 12.0 3.5 Element(<b>)\n404 not here\n");
+    }
+
+    // ----- JSON (docs/json.md) -----
+
+    #[test]
+    fn json_is_read_into_values_and_written_from_them() {
+        let source = "import json\n\
+                      let data = json.parse(\"{\\\"name\\\": \\\"Ada\\\", \\\"age\\\": 36, \\\"tags\\\": [\\\"a\\\", \\\"b\\\"], \\\"score\\\": 9.5, \\\"gone\\\": null, \\\"ok\\\": true, \\\"in\\\": {\\\"n\\\": 2.0}}\")\n\
+                      print(data)\n\
+                      let name: str = data[\"name\"]\nlet age: int = data[\"age\"]\n\
+                      print(name, age + 1, data[\"score\"] * 2, data.get(\"gone\"), \"gone\" in data, data[\"in\"][\"n\"])\n\
+                      for tag in data[\"tags\"] {\n    print(tag.upper())\n}\n\
+                      print(json.write(data))\n\
+                      print(json.parse(\"[1, null, \\\"x\\\", -2.5e3, 1e300]\"), json.parse(\"null\"), json.parse(\" 12 \"), json.parse(\"\\\"t\\\\u00e9\\\"\"))\n\
+                      class Line {\n    item: str\n    count: int\n}\n\
+                      class Order {\n    who: str\n    lines: list[Line]\n    note: str or none\n    total: float\n}\n\
+                      let order = Order(\"Ada \\\"A\\\"\\n\", [Line(\"tea\", 2), Line(\"milk\", 1)], none, 7.0)\n\
+                      let sent = json.write(order)\nprint(sent)\nprint(json.parse(sent)[\"lines\"][1][\"item\"])\n\
+                      print(json.write([\"a\": [1, 2], \"b\": [3]]), json.write([1, 2.5, none, true]), json.write(\"x\"), json.write([7: \"seven\"]))";
+        assert_eq!(
+            output(source),
+            "[\"name\": \"Ada\", \"age\": 36, \"tags\": [\"a\", \"b\"], \"score\": 9.5, \"ok\": true, \"in\": [\"n\": 2]]\n\
+             Ada 37 19.0 none false 2\nA\nB\n\
+             {\"name\":\"Ada\",\"age\":36,\"tags\":[\"a\",\"b\"],\"score\":9.5,\"ok\":true,\"in\":{\"n\":2}}\n\
+             [1, none, \"x\", -2500, 1e300] none 12 t\u{e9}\n\
+             {\"who\":\"Ada \\\"A\\\"\\n\",\"lines\":[{\"item\":\"tea\",\"count\":2},{\"item\":\"milk\",\"count\":1}],\"note\":null,\"total\":7.0}\nmilk\n\
+             {\"a\":[1,2],\"b\":[3]} [1,2.5,null,true] \"x\" {\"7\":\"seven\"}\n"
+        );
+        assert_eq!(error("import json\njson.parse(\"{oops\")"), "uncaught ValueError: this text is not JSON: `{oops`");
+        assert_eq!(
+            error("import json\njson.parse(\"  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12\")"),
+            "uncaught ValueError: this text is not JSON: `[1, 2, 3, 4, 5, 6, 7, 8, 9, 10...`"
+        );
+        assert_eq!(
+            error("import json\njson.write([1 V])"),
+            "uncaught ValueError: JSON has no units, and this is a quantity in V. Write its number, and put the unit in the name: `[\"V\": ...]`"
+        );
+        assert_eq!(
+            error("import json\njson.write(print)"),
+            "uncaught ValueError: JSON has objects, lists, text, numbers, bools and none, and this is a function"
+        );
+        assert_eq!(error("import json\njson.write(1.0 / 0.0)"), "uncaught ZeroDivisionError: division by zero");
+        // An error that is caught, as any other.
+        assert_eq!(
+            output("import json\ntry {\n    print(json.parse(\"nope\"))\n} except ValueError as mistake {\n    print(mistake.message)\n}"),
+            "this text is not JSON: `nope`\n"
+        );
     }
 
     // ----- The examples -----

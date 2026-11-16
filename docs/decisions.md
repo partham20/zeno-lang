@@ -8550,7 +8550,7 @@ program in a Worker cannot reach the page).
 
 ### 16.13 Left for later
 
-- JSON read into values, which `fetch` wants.
+- JSON read into values, which `fetch` wants (done since: chapter 18).
 - A timer that can be stopped, and an event with the keys held
   down and the button of the mouse (16.6, 16.2).
 - Images and curves on a canvas.
@@ -8659,3 +8659,94 @@ for other languages (3.14 is the same choice for `upper`).
 **Why the program still runs whole.** Tests use what the file
 declares and what its top level did (10.19). Running less would
 make a test pass alone and fail in company, or the other way.
+
+## 18. JSON
+
+A page that can ask the network (16.8) gets text back, and nearly
+always the text is JSON. 16.13 left reading it for later, and this
+is that. [`json.md`](json.md) is the walkthrough.
+
+### 18.1 `json.parse` gives a value whose type is known when the program runs
+
+`json.parse(text)` gives dicts, lists, text, numbers, bools and
+`none`, as the text has them. The checker treats the result as it
+treats a variable with no type written: anything may be asked of
+it, and a mistake is found when the line runs. Strict mode and
+`zeno build` refuse it, with the message they have for any value of
+unknown type.
+
+**Why.** What the text holds is not known until it arrives. A
+language has two honest answers to that. One is a type for "some
+JSON" with a way to ask what each part is. The other is a value
+whose type is found out at run time. Zeno has the second already:
+it is what a type left out means (0.2), and every program a
+beginner writes uses it. Using it here adds nothing to learn.
+
+**The cost.** JSON is out of firmware builds. A board does not
+parse JSON from a server, and the day one must, the answer is
+reading into a class (18.5), which has types.
+
+**Turned down.** A `Json` enum with a case for each kind
+(`Text(str)`, `Number(float)`, `List(...)`): right for a language
+with only static types, and four lines of `match` to read one
+price.
+
+### 18.2 `json.write` writes an object field by field
+
+`json.write(order)` writes `{"who": ..., "lines": [...]}`: each
+field by its name, in the order the class declares them. It also
+takes what `parse` gives. A dict's keys are written as text.
+
+**Why objects.** A JSON object nearly always has values of several
+types under its names: a name, a count, a list. A dict written in a
+Zeno program cannot, because its values have one type (6.31,
+10.11), and that rule is right for dicts. The thing in Zeno that
+has named parts of different types is an object. So a program says
+what it sends by declaring a class, and the checker holds every
+value to it before anything is sent.
+
+**Why an int key becomes text.** JSON's keys are text. The other
+choice is to refuse, and then a dict that counts by number cannot
+be written at all without being rebuilt by hand.
+
+**Why a quantity is refused.** `3.3 V` would be written `3.3`, and
+whoever reads it has to guess the unit. Dropping a unit silently is
+what quantities exist to stop (1.15). The message says to write the
+number and put the unit in the name.
+
+### 18.3 A number with nothing after the point is an int
+
+`12` and `12.0` both give an int. `12.5` gives a float.
+
+**Why.** JSON has one kind of number, and what writes it often
+does not keep the difference: a price of two is `2` from one server
+and `2.0` from another, and `2` from JavaScript always. If the
+`.0` decided the type, the same program would get an int on Monday
+and a float on Tuesday from the same server. Deciding by the value
+is at least the same every day. A program that wants a float says
+`float(...)`, which takes either.
+
+**The cost.** `json.write(json.parse("2.0"))` is `2`.
+
+### 18.4 A member that is `null` is left out of the dict
+
+`{"note": null}` gives a dict with no `note`.
+
+**Why.** A dict holds no `none` (10.11): `get` gives `none` for a
+key that is not there, and one way to say "nothing here" is the
+rule. JSON has two (the member is missing, or it is `null`), and
+programs that write JSON use them for the same thing. With the
+member left out, `data.get("note")` is `none` either way, and
+`data["note"]` is a `KeyError` either way.
+
+**The cost.** A text that is read and written again loses its
+`null` members. In a list, where position matters, `null` stays as
+`none`.
+
+### 18.5 Left for later
+
+- Reading into a class: `json.read(text, Order)`, with each field
+  checked as it is read. It would give JSON to strict mode and to
+  compiled programs.
+- The place of a mistake in the text.
+- JSON laid out over several lines.

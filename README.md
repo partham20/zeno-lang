@@ -320,7 +320,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
   [`docs/web.md`](docs/web.md), [`docs/playground.md`](docs/playground.md),
-  [`docs/install.md`](docs/install.md),
+  [`docs/json.md`](docs/json.md), [`docs/install.md`](docs/install.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
 
 ## Roadmap
@@ -547,6 +547,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     is said at `x`. An editor says the type of a field. `zeno test
     --only "text"` chooses tests by name.
     See chapter 17 of [`docs/decisions.md`](docs/decisions.md))
+27. JSON (done, in 0.2: `import json` has `json.parse(text)`, which
+    gives the value the text describes, and `json.write(value)`,
+    which gives the text of a value. A page reads what a server
+    answers with it, and a program its settings.
+    See [`docs/json.md`](docs/json.md))
 
 ## Layout
 
@@ -560,7 +565,7 @@ src/printer.rs      syntax tree -> text, for `zeno parse`
 src/modules.rs      the files of a program -> one syntax tree
 src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch` and `zeno new`
 src/format.rs       `zeno format`: one layout for every file
-src/json.rs         reads and writes JSON, for the language server
+src/json.rs         reads and writes JSON, for the language server and the `json` module
 src/lsp.rs          `zeno lsp`: the language server an editor starts
 editors/            colours and setup for VS Code, Vim, Neovim and Helix
 src/checker.rs      finds type mistakes before the program runs

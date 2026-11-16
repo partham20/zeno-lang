@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "web")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web")
 }
 
 /// Every built-in name and what it stands for.
@@ -900,6 +900,13 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             "program",
             vec![("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments }))],
         ),
+        "json" => (
+            "json",
+            vec![
+                ("parse", Value::Builtin(Builtin { name: "parse", call: json_parse })),
+                ("write", Value::Builtin(Builtin { name: "write", call: json_write })),
+            ],
+        ),
         "web" => (
             "web",
             vec![
@@ -1234,6 +1241,140 @@ fn drive(machine: &mut dyn Machine, pin: i64, level: bool) -> Result {
 // through `machine.page()`. Under `zeno run` that is a simulated page,
 // which answers with the line to print for a change that could be seen
 // (`page.rs`). In a browser it is the real page, and nothing is printed.
+
+// ------------------------------------------------------------------- JSON
+
+/// `json.parse(text)`: the value that JSON text describes (decision 18.1).
+///
+/// ```text
+/// {"name": "Ada", "age": 36}   a dict
+/// [1, 2, 3]                    a list
+/// "text"                       a str
+/// 12     12.5                  an int, a float
+/// true   false                 a bool
+/// null                         none
+/// ```
+///
+/// A member of an object that is `null` is left out of the dict, since
+/// a dict holds no `none` and gives `none` for a key that is not there
+/// (10.11).
+fn json_parse(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("parse", &args, 1, 1, span)?;
+    let written = text("parse", &args[0], span)?;
+    match crate::json::Json::parse(written) {
+        Some(json) => Ok(from_json(&json)),
+        None => {
+            // Enough of the text to know it by, and no more.
+            let start: String = written.trim_start().chars().take(30).collect();
+            let more = if written.trim_start().chars().count() > 30 { "..." } else { "" };
+            raise("ValueError", format!("this text is not JSON: `{start}{more}`"), span)
+        }
+    }
+}
+
+fn from_json(json: &crate::json::Json) -> Value {
+    use crate::json::Json;
+    match json {
+        Json::Null => Value::None,
+        Json::Bool(value) => Value::Bool(*value),
+        // JSON has one kind of number. One with nothing after the point,
+        // and small enough to be exact, is an int.
+        Json::Number(number) if number.fract() == 0.0 && number.abs() < 9.0e15 => Value::Int(*number as i64),
+        Json::Number(number) => Value::Float(*number),
+        Json::Text(text) => Value::str(text),
+        Json::List(items) => Value::list(items.iter().map(from_json).collect()),
+        Json::Object(members) => {
+            let mut dict = crate::value::Dict::default();
+            for (name, value) in members.iter().filter(|(_, value)| *value != Json::Null) {
+                dict.set(crate::value::Key::Str(Rc::from(name.as_str())), from_json(value));
+            }
+            Value::dict(dict)
+        }
+    }
+}
+
+/// `json.write(value)`: the value as JSON text, on one line. It takes
+/// what `json.parse` gives (dicts, lists, text, numbers, bools and
+/// `none`) and objects, which are written field by field. Anything
+/// else has no JSON to be, and is a `ValueError`.
+fn json_write(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("write", &args, 1, 1, span)?;
+    let mut out = String::new();
+    to_json(&args[0], &mut out, span)?;
+    Ok(Value::str(out))
+}
+
+fn to_json(value: &Value, out: &mut String, span: Span) -> Result<()> {
+    match value {
+        Value::None => out.push_str("null"),
+        Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Value::Int(n) => out.push_str(&n.to_string()),
+        Value::Float(x) if x.is_finite() => out.push_str(&Value::Float(*x).to_string()),
+        Value::Float(x) => return raise("ValueError", format!("JSON has no way to write {x}"), span),
+        Value::Str(text) => crate::json::write_text(text, out),
+        Value::List(items) => {
+            out.push('[');
+            for (nth, item) in items.borrow().iter().enumerate() {
+                if nth > 0 {
+                    out.push(',');
+                }
+                to_json(item, out, span)?;
+            }
+            out.push(']');
+        }
+        Value::Dict(dict) => {
+            out.push('{');
+            for (nth, (key, value)) in dict.borrow().entries().iter().enumerate() {
+                if nth > 0 {
+                    out.push(',');
+                }
+                // A key of JSON is text. A whole number is written as one.
+                match key {
+                    Value::Str(text) => crate::json::write_text(text, out),
+                    other => crate::json::write_text(&other.to_string(), out),
+                }
+                out.push(':');
+                to_json(value, out, span)?;
+            }
+            out.push('}');
+        }
+        // An object is written as JSON calls an object: each field by
+        // its name, in the order the class declares them. It is how
+        // values of several types go under one roof, which a dict does
+        // not allow (18.2).
+        Value::Instance(instance) => {
+            out.push('{');
+            let fields = instance.fields.borrow();
+            let mut written = 0;
+            for field in &instance.class.fields {
+                let Some(value) = fields.get(&field.name) else { continue };
+                if written > 0 {
+                    out.push(',');
+                }
+                written += 1;
+                crate::json::write_text(&field.name, out);
+                out.push(':');
+                to_json(value, out, span)?;
+            }
+            out.push('}');
+        }
+        Value::Quantity(_, unit) => {
+            return raise(
+                "ValueError",
+                format!("JSON has no units, and this is a quantity in {unit}. Write its number, and put the unit in the name: `[\"{unit}\": ...]`"),
+                span,
+            )
+        }
+        other => {
+            return raise(
+                "ValueError",
+                format!("JSON has objects, lists, text, numbers, bools and none, and this is {}", other.type_name()),
+                span,
+            )
+        }
+    }
+    Ok(())
+}
 
 /// Print what the simulated page shows for a change, if anything.
 fn shown(machine: &mut dyn Machine, line: Option<String>) -> Result {

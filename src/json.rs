@@ -120,7 +120,7 @@ impl Json {
 
 /// A text in quotes, with what JSON cannot hold as it is written `\n`,
 /// `\"` and so on.
-fn write_text(text: &str, out: &mut String) {
+pub fn write_text(text: &str, out: &mut String) {
     out.push('"');
     for c in text.chars() {
         match c {

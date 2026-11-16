@@ -477,9 +477,10 @@ refused a style and a drawing that cannot be.
 ## What it does not do yet
 
 - **Only what is in the tables.** No images drawn on a canvas, no
-  curves, no touch with more than one finger, no JSON read into
-  values (the text of an answer is a str), no address bar (a page
-  with several views shows and hides them).
+  curves, no touch with more than one finger, no address bar (a
+  page with several views shows and hides them). The text of an
+  answer is a str, and `json.parse` makes values of it
+  ([`json.md`](json.md)).
 - **It is an interpreter in a page.** Every built page carries
   `zeno.wasm` (0.4 MB of the page). A program runs at the speed of
   `zeno run`, which is plenty for a page that waits for clicks and

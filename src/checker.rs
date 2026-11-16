@@ -1597,6 +1597,8 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "exists") => Ty::Builtin("files.exists"),
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
+        ("json", "parse") => Ty::Builtin("json.parse"),
+        ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
         ("web", "elements") => Ty::Builtin("web.elements"),
         ("web", "create") => Ty::Builtin("web.create"),
@@ -3277,6 +3279,7 @@ impl Checker {
                     "board" => "board",
                     "files" => "files",
                     "program" => "program",
+                    "json" => "json",
                     "web" => "web",
                     _ => {
                         self.error(
@@ -5874,6 +5877,18 @@ impl Checker {
                 }
                 Ty::Optional(Box::new(Ty::Str))
             }
+            // `json.parse(text)`: what it gives is known when the program
+            // runs, which is what a type left out means (18.1).
+            "json.parse" => {
+                if self.arity("parse", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the text given to `json.parse`", arguments[0].span);
+                }
+                Ty::Dynamic
+            }
+            "json.write" => {
+                self.arity("write", arguments, 1, 1, span);
+                Ty::Str
+            }
             // `program.arguments()`: the words the program was started
             // with, as a new list.
             "program.arguments" => {
@@ -7905,7 +7920,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program` and `web`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
@@ -10130,6 +10145,22 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(
             error(&with("web.after(500, function() { print(1) })")),
             "`after` needs a time with a unit, such as `500 ms`, but this is int"
+        );
+    }
+
+    #[test]
+    fn json_gives_a_value_whose_type_is_known_when_the_program_runs() {
+        ok("import json\nlet data = json.parse(\"{}\")\nlet name: str = data[\"name\"]\nlet text: str = json.write(data)\nprint(name, text)");
+        ok("from json import parse, write\nprint(write(parse(\"1\")))");
+        assert_eq!(error("import json\njson.parse(5)"), "the text given to `json.parse` should be str, but this is int");
+        assert_eq!(error("import json\nlet n: int = json.write(5)"), "`n` should be int, but this is str");
+        assert_eq!(error("import json\njson.write()"), "`write` takes 1 argument, but 0 were given");
+        assert_eq!(error("import json\njson.read(\"1\")"), "module `json` has no `read`");
+        // Strict mode wants every type before the program runs, and
+        // what JSON holds is not known then.
+        assert_eq!(
+            check("import json\nlet data = json.parse(\"1\")", true)[0],
+            "strict mode: the type of this cannot be worked out before the program runs"
         );
     }
 
