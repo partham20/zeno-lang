@@ -43,6 +43,8 @@ TARGETS = {
     "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},
+    # Compiled beside the file it wrote, then run.
+    "cpp": {"needs": ["g++"], "run": ["sh", "-c", "g++ -std=c++17 -O2 -o \"$0.bin\" \"$0\" && exec \"$0.bin\" \"$@\"", "{file}"]},
     # A page has no keyboard, no command line and no files to write, and it
     # cannot stand still: a program that is typed at, given words, writes a
     # file or sleeps is left out. tools/run-page.js needs Playwright.

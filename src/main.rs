@@ -21,6 +21,7 @@ mod deflate;
 mod emit_bytecode;
 mod emit_c;
 mod emit_go;
+mod emit_cpp;
 mod emit_cs;
 mod emit_java;
 mod emit_js;
@@ -141,8 +142,8 @@ fn usage() {
     println!("                           (docs/web.md)");
     println!("  --target <language>      with build: write the program in another");
     println!("                           language, by fixed rules: js, html (a page");
-    println!("                           that runs it), py, go, java, cs. It prints");
-    println!("                           what `zeno run` prints (docs/targets.md)");
+    println!("                           that runs it), py, go, java, cs, cpp. It");
+    println!("                           prints what `zeno run` prints (docs/targets.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
     println!("                           garbage collector ran");
@@ -803,7 +804,7 @@ fn own_page(path: &str) -> Option<String> {
 /// The languages `--target` can write a program in: the name after
 /// `--target`, the file it writes, and how to run that file.
 const TARGETS: &[(&str, &str, &str)] =
-    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}")];
+    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}")];
 
 /// `zeno build --target js <file>`: write the program in another
 /// language (lower.rs, and emit_js.rs and the others).
@@ -856,6 +857,7 @@ fn build_target(path: &str, target: &str) -> Option<()> {
         "go" => emit_go::emit(&tree, source),
         "java" => emit_java::emit(&tree, source),
         "cs" => emit_cs::emit(&tree, source),
+        "cpp" => emit_cpp::emit(&tree, source),
         _ => emit_js::emit(&tree, source),
     };
     if let Err(err) = fs::write(&file, text) {
@@ -865,7 +867,7 @@ fn build_target(path: &str, target: &str) -> Option<()> {
     if target == "html" {
         println!("Wrote {file}. Open it in a browser");
     } else {
-        println!("Wrote {file}. Run it with `{}`", how.replace("{file}", &file));
+        println!("Wrote {file}. Run it with `{}`", how.replace("{file}", &file).replace("{name}", name));
     }
     Some(())
 }

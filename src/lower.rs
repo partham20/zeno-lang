@@ -345,7 +345,9 @@ const RESERVED: &[&str] = &[
     "explicit", "export", "friend", "inline", "mutable", "noexcept", "nullptr", "register", "reinterpret_cast",
     "requires", "signed", "static_assert", "static_cast", "template", "thread_local", "typedef", "typeid",
     "typename", "union", "unsigned", "wchar_t", "and_eq", "bitand", "bitor", "compl", "not_eq", "or_eq",
-    "xor", "xor_eq", "std", "NULL", "EOF", "errno", "stdin", "stdout", "stderr", "exit", "printf",
+    "xor", "xor_eq", "std", "NULL", "EOF", "errno", "stdin", "stdout", "stderr", "exit", "printf", "V", "NAN",
+    "INFINITY", "M_PI", "M_E", "argc", "argv", "assert", "unix", "linux", "int64_t", "size_t", "INT64_MAX",
+    "INT64_MIN", "EXIT_SUCCESS", "EXIT_FAILURE", "BUFSIZ", "RAND_MAX", "SEEK_SET", "SEEK_CUR", "SEEK_END",
     // Rust
     "crate", "dyn", "extern", "fn", "impl", "loop", "match", "mod", "move", "mut", "pub", "Self", "trait",
     "unsafe", "use", "where", "abstract", "become", "box", "final", "macro", "override", "priv", "typeof",

@@ -10313,3 +10313,24 @@ the 17th, which a float's printing shows, may be one off.
 correctly rounded answer means writing those functions in each language
 with extra precision, a project of its own. None of the 319 programs
 shows a difference; the fix waits until a program needs it.
+
+### 24.17 C++: a small value, shared pointers, cells
+
+In C++ a Zeno value is a `Z::V`: a tag, a union for an int, a float or
+a bool, and a `shared_ptr` for anything else (a str, a list, an object).
+A value is freed when the last pointer to it goes. A variable an inner
+function uses lives in a `Z::Cell` (a shared box), because a lambda
+written `[=]` copies what it uses. Arguments are put in variables first
+(24.14). The file builds with any C++17 compiler and needs nothing
+beside it.
+
+**Why shared pointers and not a collector.** They free almost
+everything at the moment it is no longer used, with nothing to add to
+the file. What they miss is a cycle, such as a list that holds itself;
+a program that makes many of those would grow. None of the 319 does,
+and a collector can come later without changing the printer.
+
+**Why `[=]` and cells rather than `[&]`.** A lambda that kept references
+to the variables around it would point at nothing once the function
+that made it returned, and a Zeno function can outlive the one that
+made it.

@@ -28,9 +28,10 @@ Wrote hello.html. Open it in a browser
 | `go` | `hello.go` | `go run hello.go` |
 | `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
 | `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
+| `cpp` | `hello.cpp` | `g++ -std=c++17 -O2 hello.cpp -o hello && ./hello` |
 
-More languages follow (C++, Rust, and WebAssembly); this page grows
-with each.
+More languages follow (Rust, and WebAssembly); this page grows with
+each.
 
 The file is written by fixed rules, the same every time: the same
 program gives the same file, letter for letter. No guessing and no AI
@@ -80,6 +81,7 @@ py: 319 of 319 programs print what `zeno run` prints (21 left out: they use the 
 go: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 java: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 cs: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+cpp: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 html: 311 of 311 programs print what `zeno run` prints (29 left out: ...)
 ```
 
@@ -96,13 +98,15 @@ Three steps, in three files.
    statements for (`[x * x for x in xs if x > 0]`, `0 <= t < 10`) made
    into statements, in the order Zeno would do them.
 2. **The runtime** (`src/runtime.js`, `src/runtime.py`,
-   `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`): what every Zeno
+   `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`,
+   `src/runtime.cpp`): what every Zeno
    value is in that language, and what each operator and built-in does
    with it, written to do what `ops.rs` and `builtins.rs` do for
    `zeno run`, step for step and message for message. It goes at the
    top of the file, so the file needs nothing else.
 3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_go.rs`,
-   `src/emit_java.rs`, `src/emit_cs.rs`): the lowered program in that
+   `src/emit_java.rs`, `src/emit_cs.rs`, `src/emit_cpp.rs`): the lowered
+   program in that
    language's words.
 
 Here is a function, and what the JavaScript and the Python say:
@@ -261,6 +265,15 @@ file and a faster program, but no `import web` yet.
   compiled to machine code.
 
 Zeno refuses such a program with a message that names the line.
+
+In C++ every value is a `V`, a small struct holding an int, float or
+bool itself and anything else by a shared pointer. A variable an inner
+function uses is kept in a `Z::Cell`, as in Java, since a C++ lambda
+copies what it uses. C++ does not say in which order it works out a
+call's arguments, so the lowering puts them in variables first, as for
+Go (decision 24.14). C++, like Python, C# and Rust, uses the C
+library's `sin` and `exp`, so its floats print the very digits
+`zeno run` prints.
 
 ## Known limits
 
