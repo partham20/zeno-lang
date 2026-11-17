@@ -1,0 +1,174 @@
+# The order things are worked out in, and what a function sees of the variables around it.
+var log: list[str] = []
+function say(name: str, value: int) -> int {
+    log.append(name)
+    return value
+}
+function flush() {
+    print(log.join(" "))
+    log.clear()
+}
+function three(a: int, b: int, c: int = say("default-c", 3)) -> int { return a * 100 + b * 10 + c }
+print(three(say("a", 1), say("b", 2), say("c", 3)), three(b=say("b", 2), a=say("a", 1)), three(say("a", 1), c=say("c", 3), b=say("b", 2)))
+flush()
+print(say("l", 1) + say("m", 2) * say("r", 3), say("x", 2) ** say("y", 3) ** say("z", 2), -say("n", 1) - say("o", 1), [say("i0", 0), say("i1", 1)][say("ix", 1)])
+flush()
+print([say("a", 1), say("b", 2)], ["k": say("v1", 1), "j": say("v2", 2)], f"{say('f1', 1)}{say('f2', 2):3}", [say("e", n) for n in range(say("src", 2)) if say("cond", n) >= 0])
+flush()
+print(say("a", 1) < say("b", 2) < say("c", 3), say("a", 1) < say("b", 0) < say("c", 3), say("a", 5) > say("b", 4) >= say("c", 4) != say("d", 0), say("p", 1) == say("q", 1) and say("r", 0) == 1 or say("s", 1) == 1)
+flush()
+print(say("a", 0) == 1 and say("b", 1) == 1, say("a", 1) == 1 or say("b", 1) == 1, not (say("a", 1) == 1) or say("b", 2) == 2, say("a", 1) in [say("b", 1)], say("m", 3) not in [say("n", 1), say("o", 2)])
+flush()
+var cells = [0, 0, 0]
+cells[say("index", 1)] = say("value", 7)
+flush()
+class Box {
+    v: int = say("field-default", 5)
+    w: int = 0
+}
+function box(b: Box) -> Box {
+    log.append("box")
+    return b
+}
+let bx = Box()
+box(bx).v = say("value", 9)
+bx.v += say("more", 1)
+flush()
+print(bx, Box(say("v", 1), say("w", 2)), Box(w=say("w", 2), v=say("v", 1)), Box(w=say("only-w", 4)))
+flush()
+var dd = ["k": 1]
+dd[f"{say('key', 0)}k".slice(1)] = say("dv", 5)
+dd["k"] += say("plus", 1)
+print(dd)
+flush()
+print(max(say("m1", 1), say("m2", 2)), say("obj", 5) + len([say("in", 1)]), str(say("s", 3)) + str(say("t", 4)), [say("p", 1)].map(function(n: int) -> int { return say("mapped", n) }))
+flush()
+# A variable read before a call that changes it keeps the value it had.
+var x = 1
+function bump() -> int {
+    x = x * 10
+    return 1
+}
+x += bump()
+print(x)
+x = 1
+print(x + bump(), x)
+x = 1
+print(bump() + x, x)
+x = 1
+print([x, bump(), x], x)
+x = 1
+print(three(x, bump(), x), x < bump() + 5, f"{x}{bump()}{x}", ["a": x, "b": bump(), "c": x], x - bump() - x)
+x = 1
+let xs = [5, 6, 7]
+print(xs[x] + bump(), xs[bump()] + x)
+x = 1
+function pair(a: int, b: int) -> list[int] { return [a, b] }
+print(pair(x, bump()), pair(bump(), x), max(x, bump()), min(bump(), x), x)
+var holder = [1]
+function swap_holder() -> int {
+    holder = [100]
+    return 2
+}
+holder[0] = swap_holder()
+print(holder)
+holder = [1]
+holder[0] += 0
+print(holder, holder[0] + swap_holder(), holder[0])
+var who = Box(1, 1)
+function swap_who() -> int {
+    who = Box(50, 50)
+    return 3
+}
+who.v = swap_who()
+print(who)
+who = Box(1, 1)
+who.v += swap_who()
+print(who)
+# Closures: each round of a loop has its own variables; a var is shared.
+var fs: list[function() -> int] = []
+for i in range(3) {
+    let doubled = i * 2
+    var local = 0
+    fs.append(function() -> int {
+        local += 1
+        return i * 100 + doubled * 10 + local
+    })
+}
+print([f() for f in fs], [f() for f in fs])
+var n = 0
+var gs: list[function() -> int] = []
+while n < 3 {
+    let seen = n
+    gs.append(function() -> int { return seen * 10 + n })
+    n += 1
+}
+print([g() for g in gs])
+var hs: list[function() -> str] = []
+for k, v in ["a": 1, "b": 2] { hs.append(function() -> str { return f"{k}{v}" }) }
+for i2, ch in "xy" { hs.append(function() -> str { return f"{i2}{ch}" }) }
+print([h() for h in hs], [function() -> int { return q } for q in range(3)].map(function(f: function() -> int) -> int { return f() }))
+function make_counter(start: int) -> list[function() -> int] {
+    var count = start
+    function up() -> int {
+        count += 1
+        return count
+    }
+    function down() -> int {
+        count -= 1
+        return count
+    }
+    return [up, down, function() -> int { return count }]
+}
+let c1 = make_counter(10)
+let c2 = make_counter(100)
+print(c1[0](), c1[0](), c1[1](), c2[0](), c1[2](), c2[2]())
+function outer() -> function() -> function() -> int {
+    var depth = 1
+    return function() -> function() -> int {
+        depth += 1
+        let mine = depth
+        return function() -> int {
+            depth += 10
+            return depth * 100 + mine
+        }
+    }
+}
+let o = outer()
+let i1 = o()
+let i3 = o()
+print(i1(), i3(), i1())
+let late_value = 41
+function later() -> int { return late_value + 1 }
+print(later(), is_even(10), is_odd(7))
+function is_even(k: int) -> bool {
+    if k == 0 { return true }
+    return is_odd(k - 1)
+}
+function is_odd(k: int) -> bool {
+    if k == 0 { return false }
+    return is_even(k - 1)
+}
+function shadow(x: int) -> int {
+    let y = x + 1
+    if y > 0 {
+        let y = y * 2
+        for x in range(2) {
+            let y = y + x
+            log.append(str(y))
+        }
+        return y
+    }
+    return y
+}
+print(shadow(3), x)
+flush()
+let print_it = print
+let total_2 = 5
+var total = 1
+if total > 0 {
+    var total = 2
+    total += total_2
+    print_it(total)
+}
+print(total, total_2)

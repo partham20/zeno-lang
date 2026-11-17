@@ -1,0 +1,163 @@
+# Errors: what is caught, what is not, and what a `try` does to the loop and the function around it.
+class Timeout {
+    after: int
+    note: str = "slow"
+}
+class Deep {
+    why: list[int]
+}
+function risky(n: int) -> int raises ValueError, Timeout, Deep, IndexError, KeyError, ZeroDivisionError, OverflowError, FileError, Error {
+    if n == 1 { raise ValueError("one") }
+    if n == 2 { raise Timeout(5) }
+    if n == 3 { raise Deep([1, 2]) }
+    if n == 4 { return [1][n] }
+    if n == 5 { return ["a": 1]["b"] }
+    if n == 6 { return n // (n - 6) }
+    if n == 7 { return 9223372036854775807 + n }
+    if n == 8 { raise FileError("made up") }
+    if n == 9 { raise Error("plain") }
+    if n == 10 { raise ValueError() }
+    if n == 11 { raise OverflowError("") }
+    return n
+}
+for n in range(13) {
+    try {
+        print("fine", risky(n))
+    } except ValueError as e {
+        print("value", e.message, e.kind, e, [e], f"{e}|{e:>8}|", str(e) == e.message)
+    } except Timeout as t {
+        print("timeout", t.after, t.note, t, [t])
+    } except Deep {
+        print("deep")
+    } except IndexError as e {
+        print("index", e.kind, e)
+    } except Error as e {
+        print("any", e.kind, e.message, e)
+    }
+}
+for n in [2, 3] {
+    try { risky(n) } except Error as e { print(e.kind, e.message, e, [e], e == e) }
+    try { risky(n) } except { print("bare caught", n) }
+}
+# break, continue and return from inside a try, and from inside its handler.
+function find_first(items: list[int], bad: int) -> int {
+    for item in items {
+        try {
+            if item == bad { raise ValueError("bad") }
+            if item > 2 { return item * 100 }
+            if item == 0 { continue }
+            if item == 2 { break }
+            print("body end", item)
+        } except ValueError {
+            print("handler", item)
+            if item == 1 { continue }
+            return -1
+        }
+        print("after try", item)
+    }
+    return -2
+}
+print(find_first([0, 1, 5], 9), find_first([0, 1, 2, 5], 9), find_first([0, 1, 5], 1), find_first([5], 5), find_first([], 0))
+function nested(n: int) -> str {
+    var trail = ""
+    for i in range(3) {
+        var j = 0
+        while j < 3 {
+            j += 1
+            try {
+                try {
+                    if n == 0 and j == 2 { break }
+                    if n == 1 and j == 2 { continue }
+                    if n == 2 and j == 2 { raise ValueError("in") }
+                    if n == 3 and j == 2 { return trail + "R" }
+                    trail = trail + str(j)
+                } except KeyError {
+                    trail = trail + "K"
+                }
+            } except ValueError as e {
+                trail = trail + "V"
+                if i == 1 { break }
+            }
+        }
+        trail = trail + "|"
+    }
+    return trail
+}
+print(nested(0), nested(1), nested(2), nested(3), nested(4))
+# An error raised in a handler, and one raised again.
+function relay(n: int) raises ValueError, IndexError, Error {
+    try {
+        risky(n)
+    } except ValueError as e {
+        raise IndexError("was " + e.message)
+    } except Timeout as t {
+        raise ValueError(f"timeout {t.after}")
+    } except Error as e {
+        raise e
+    }
+}
+for n in [1, 2, 3, 4, 6] {
+    try { relay(n) } except Error as e { print(e.kind, e.message) }
+}
+function rethrow_object() raises Timeout {
+    try { raise Timeout(9, "first") } except Timeout as t {
+        t.after += 1
+        raise t
+    }
+}
+try { rethrow_object() } except Timeout as t { print(t) }
+# What a failed step leaves behind.
+var steps: list[int] = []
+function note(n: int) -> int {
+    steps.append(n)
+    return n
+}
+var acc = 5
+try { acc = note(1) + risky(1) + note(2) } except ValueError { print(acc, steps) }
+try { steps[note(7)] = note(8) } except IndexError as e { print(e.message, steps) }
+var grown = [1]
+try { grown.append(risky(4)) } except IndexError { print(grown) }
+try { print(note(3), risky(1), note(4)) } except ValueError { print(steps) }
+let made = [risky(0), 2]
+try { print([note(5), risky(2), note(6)]) } except Timeout { print(steps, made) }
+var d = ["a": 1]
+try { d["b"] = risky(5) } except KeyError as e { print(d, e.message) }
+try { d["a"] += risky(6) } except ZeroDivisionError as e { print(d, e) }
+# Errors as values.
+let err = ValueError("kept")
+let same = ValueError("kept")
+let other = IndexError("kept")
+print(err, err.kind, err.message, err == same, [err, other], ValueError, str(err), len(err.message))
+let errs: list[Error] = [ValueError("a"), IndexError("b"), Error("c")]
+for item in errs {
+    try { raise item } except ValueError as e { print("V", e) } except Error as e { print("E", e.kind, e) }
+}
+function fail_with(kind: str) raises Error {
+    if kind == "v" { raise ValueError("v!") }
+    raise Error("e!")
+}
+try { fail_with("v") } except Error as e { print(e.kind == "ValueError", e.kind) }
+try {
+    try { fail_with("x") } except ValueError { print("not here") }
+} except Error as e { print("outer", e.kind) }
+# A method that raises, a default that raises, an error inside map and sort and a comprehension.
+class Account {
+    balance: int
+    function withdraw(self, n: int) -> int raises ValueError {
+        if n > self.balance { raise ValueError(f"only {self.balance}") }
+        self.balance -= n
+        return self.balance
+    }
+}
+let acct = Account(10)
+try { print(acct.withdraw(4), acct.withdraw(7)) } except ValueError as e { print(e, acct) }
+try { print([1, 2, 0].map(function(n: int) -> int { return 10 // n })) } except ZeroDivisionError as e { print("map", e) }
+try { print([10 // n for n in [5, 0, 1]]) } except ZeroDivisionError as e { print("comp", e) }
+var tosort = [3, 1, 2]
+try { tosort.sort(function(n: int) -> int { return 6 // (n - 2) }) } except ZeroDivisionError as e { print("sort", e, tosort) }
+try { print([1, 2].reduce(function(t: int, n: int) -> int { return t // (n - 2) }, 9)) } except ZeroDivisionError as e { print("reduce", e) }
+try { print([1, 2].filter(function(n: int) -> bool { return [true][n] })) } except IndexError as e { print("filter", e) }
+try { print(int("x"), 1) } except ValueError as e { print(e) }
+try { print(u8(risky(0) + 256)) } except OverflowError as e { print(e) }
+print("done")
+raise Timeout(3, "the end")

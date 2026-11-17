@@ -352,7 +352,11 @@ const RESERVED: &[&str] = &[
     "crate", "dyn", "extern", "fn", "impl", "loop", "match", "mod", "move", "mut", "pub", "Self", "trait",
     "unsafe", "use", "where", "abstract", "become", "box", "final", "macro", "override", "priv", "typeof",
     "unsized", "virtual", "yield", "try", "Some", "Ok", "Err", "Box", "Rc", "Vec", "Option", "Result", "Cell",
-    "RefCell", "z",
+    "RefCell", "z", "gen",
+    // Found by the review: the `args` of Java's `main` and of a C#
+    // program, and words the lists above had missed.
+    "args", "delegate", "clear", "comparable", "println", "int8_t", "int16_t", "int32_t", "uint8_t", "uint16_t",
+    "uint32_t", "uint64_t", "alloca", "offsetof",
 ];
 
 #[derive(Default)]
@@ -581,6 +585,18 @@ impl Lowerer {
     /// Keep a value in a temporary variable, unless it is trivial already.
     fn spill(&mut self, value: Expr, out: &mut Vec<Stmt>) -> Expr {
         if trivial(&value) {
+            return value;
+        }
+        let t = self.temp(VarKind::Value);
+        out.push(self.set(t, value));
+        self.read(t)
+    }
+
+    /// Keep a value in a temporary variable unless it is a constant. A
+    /// variable is kept too: what is worked out next may give it a new
+    /// value, and Zeno has read it by then.
+    fn hold(&mut self, value: Expr, out: &mut Vec<Stmt>) -> Expr {
+        if constant(&value) {
             return value;
         }
         let t = self.temp(VarKind::Value);
@@ -938,7 +954,14 @@ impl Lowerer {
                     // `x += 1` reads `x`, then works out the value.
                     Some(op) => {
                         let old = self.read(id);
-                        let value = self.ordered(&[value], out, |args| args)?;
+                        let mut pre = Vec::new();
+                        let value = self.ordered(&[value], &mut pre, |args| args)?;
+                        // The value may be worked out by statements, or
+                        // (in Go and C++) before the variable is read:
+                        // then what the variable holds now is kept first.
+                        let late = !pre.is_empty() || (self.options.unordered_arguments && !value.iter().all(trivial));
+                        let old = if late { self.hold(old, out) } else { old };
+                        out.extend(pre);
                         let mut args = vec![old];
                         args.extend(value);
                         Expr::Rt { name: operator(op), args, line: at }
@@ -960,8 +983,11 @@ impl Lowerer {
                     }
                     None => self.expr(value, out)?,
                 };
-                let new = self.spill(new, out);
-                let object = self.expr(object, out)?;
+                // The value is worked out before the object it goes into.
+                let mut pre = Vec::new();
+                let object = self.expr(object, &mut pre)?;
+                let new = if pre.is_empty() && trivial(&object) { self.spill(new, out) } else { self.hold(new, out) };
+                out.extend(pre);
                 out.push(Stmt::SetField { object, name: name.clone(), value: new, line: at });
             }
             ExprKind::Index { object, index } => {
@@ -974,8 +1000,11 @@ impl Lowerer {
                     }
                     None => self.expr(value, out)?,
                 };
-                let new = self.spill(new, out);
-                let parts = self.ordered(&[object, index], out, |args| args)?;
+                // The value is worked out before the list and the place in it.
+                let mut pre = Vec::new();
+                let parts = self.ordered(&[object, index], &mut pre, |args| args)?;
+                let new = if pre.is_empty() && parts.iter().all(trivial) { self.spill(new, out) } else { self.hold(new, out) };
+                out.extend(pre);
                 let mut parts = parts.into_iter();
                 let (object, index) = (parts.next().unwrap_or(Expr::None), parts.next().unwrap_or(Expr::None));
                 out.push(Stmt::SetIndex { object, index, value: new, line: at });
@@ -1113,9 +1142,12 @@ impl Lowerer {
             let mut pre = Vec::new();
             let value = self.expr(expr, &mut pre)?;
             if !pre.is_empty() {
+                // The statements of this one run before the call they
+                // are all given to: the earlier ones are worked out
+                // before them, a variable among them read.
                 for earlier in done.iter_mut() {
                     let value = std::mem::replace(earlier, Expr::None);
-                    *earlier = self.spill(value, out);
+                    *earlier = self.hold(value, out);
                 }
                 out.extend(pre);
             }
@@ -1319,6 +1351,16 @@ impl Lowerer {
                 if let Known::Function(params) = self.info[id].known.clone() {
                     if let Some(slots) = line_up(&params, plain.len(), &names) {
                         let values = self.ordered(&values, out, |values| values)?;
+                        // Named arguments may be written in another order
+                        // than the parameters. They are worked out in the
+                        // order written, so each is kept before they are
+                        // put in the order of the parameters.
+                        let written: Vec<usize> = slots.iter().flatten().copied().collect();
+                        let values: Vec<Expr> = if written.windows(2).all(|pair| pair[0] < pair[1]) {
+                            values
+                        } else {
+                            values.into_iter().map(|value| self.hold(value, out)).collect()
+                        };
                         let mut values: Vec<Option<Expr>> = values.into_iter().map(Some).collect();
                         let args = slots.into_iter().map(|slot| slot.and_then(|at| values[at].take()).unwrap_or(Expr::Missing)).collect();
                         self.uses(id, false);
@@ -1391,13 +1433,17 @@ impl Lowerer {
                 // `a < b < c`: each operand once, and none after the
                 // first link that is false.
                 let first = self.expr(first, out)?;
-                let mut left = self.spill(first, out);
                 let result = self.temp(VarKind::Value);
                 let mut links = rest.iter();
                 let Some((op, operand)) = links.next() else {
                     return Ok(Cond::True);
                 };
-                let right = self.expr(operand, out)?;
+                let mut pre = Vec::new();
+                let right = self.expr(operand, &mut pre)?;
+                // The left side is worked out first. If it is a variable
+                // and the right side does anything, it is read first.
+                let mut left = if pre.is_empty() && trivial(&right) { self.spill(first, out) } else { self.hold(first, out) };
+                out.extend(pre);
                 let right = self.spill(right, out);
                 let test = Cond::Test { name: operator(*op), args: vec![left, self.copy(&right)], line: at };
                 out.push(self.set(result, Expr::FromCond(Box::new(test))));
@@ -1420,7 +1466,10 @@ impl Lowerer {
         };
         let held = Cond::Truth(self.read(result), at);
         let then = self.in_block(|this, stmts| {
-            let right = this.expr(operand, stmts)?;
+            let mut pre = Vec::new();
+            let right = this.expr(operand, &mut pre)?;
+            let left = if pre.is_empty() && trivial(&right) { left } else { this.hold(left, stmts) };
+            stmts.extend(pre);
             let right = this.spill(right, stmts);
             let test = Cond::Test { name: operator(*op), args: vec![left, this.copy(&right)], line: at };
             stmts.push(this.set(result, Expr::FromCond(Box::new(test))));

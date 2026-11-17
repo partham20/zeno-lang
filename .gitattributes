@@ -4,3 +4,8 @@
 
 # Typed at a corner program as it is, carriage returns and all.
 tools/targets/*.stdin -text
+
+# Files a corner program reads, kept byte for byte: one is not UTF-8,
+# one holds a zero byte.
+tools/targets/*.bytes -text
+tools/targets/*.nul -text

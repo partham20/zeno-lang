@@ -26,10 +26,19 @@
 # closures would see one variable for every round of a loop, and Zeno
 # gives each round its own.
 
+import sys as _sys
+
+# Python looks for a module in the folder of the program before its own
+# library, so a program called `struct.py` or `re.py` would be taken for
+# Python's module of that name. The runtime uses only Python's own.
+if __name__ == "__main__" and _sys.path and not getattr(_sys.flags, "safe_path", False):
+    del _sys.path[0]
+
 import math as _math
 import os as _os
+import re as _re
 import struct as _struct
-import sys as _sys
+import threading as _threading
 import time as _time
 
 
@@ -550,6 +559,15 @@ def div(a, b, line):
     return x / y
 
 
+def _floor(q):
+    """A float rounded down, as a float: -0.0 stays -0.0, and what is not
+    a number or has no end stays what it is."""
+    if q != q or q in (_math.inf, -_math.inf):
+        return q
+    whole = float(_math.floor(q))
+    return _math.copysign(whole, q) if whole == 0.0 else whole
+
+
 def floordiv(a, b, line):
     if type(a) is int and type(b) is int:
         if b == 0:
@@ -560,8 +578,7 @@ def floordiv(a, b, line):
         _mismatch("//", a, b, line)
     if y == 0:
         _by_zero(line)
-    q = x / y
-    return _math.floor(q) * 1.0 if q == q and q not in (_math.inf, -_math.inf) else q
+    return _floor(x / y)
 
 
 def mod(a, b, line):
@@ -574,10 +591,7 @@ def mod(a, b, line):
         _mismatch("%", a, b, line)
     if y == 0:
         _by_zero(line)
-    q = x / y
-    if q != q or q in (_math.inf, -_math.inf):
-        return x - y * q
-    return x - y * _math.floor(q)
+    return x - y * _floor(x / y)
 
 
 def pow_(a, b, line):
@@ -935,13 +949,41 @@ def _bind(what, names, positional, named_names, named, line):
     return slots
 
 
+# How many calls are nested now. `zeno run` stops at 1000, so a program
+# stops at the same call here.
+_depth = 0
+
+
+def _enter(function, line):
+    global _depth
+    if _depth >= 1000:
+        fatal("more than 1000 calls are nested. Is `" + (function.zname or "function") + "` calling itself forever?", line)
+    _depth += 1
+
+
+def direct(function, line, *args):
+    """A call of a function of the program known where it is written,
+    with its arguments lined up already."""
+    global _depth
+    _enter(function, line)
+    try:
+        return function(*args)
+    finally:
+        _depth -= 1
+
+
 def _call_function(function, positional, named_names, named, line):
+    global _depth
     name = function.zname or "function"
-    slots = _bind(name, function.zparams, positional, named_names, named, line)
-    for i, slot in enumerate(slots):
-        if slot is MISSING and not function.zdefaults[i]:
-            fatal("`" + name + "` needs a value for `" + function.zparams[i] + "`", line)
-    return function(*slots)
+    _enter(function, line)
+    try:
+        slots = _bind(name, function.zparams, positional, named_names, named, line)
+        for i, slot in enumerate(slots):
+            if slot is MISSING and not function.zdefaults[i]:
+                fatal("`" + name + "` needs a value for `" + function.zparams[i] + "`", line)
+        return function(*slots)
+    finally:
+        _depth -= 1
 
 
 def _no_named(what, named_names, line):
@@ -1134,8 +1176,6 @@ def _pick(name, args, line, better):
     return best
 
 
-import re as _re
-
 _FLOAT_RE = _re.compile(r"^[+-]?(\d+\.?\d*([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?|inf|infinity|nan)$", _re.IGNORECASE | _re.ASCII)
 
 
@@ -1254,12 +1294,13 @@ def _call_method_of(receiver, name, args, line):
             return s.split(sep)
         if name == "lines":
             _arity(name, args, 0, 0, line)
-            if s == "":
-                return []
+            # A "\r" goes with the "\n" just after it, and with nothing else.
             parts = s.split("\n")
-            if parts[-1] == "":
-                parts.pop()
-            return [p[:-1] if p.endswith("\r") else p for p in parts]
+            last = parts.pop()
+            lines = [p[:-1] if p.endswith("\r") else p for p in parts]
+            if last != "":
+                lines.append(last)
+            return lines
         if name == "replace":
             _arity(name, args, 2, 2, line)
             old, new = _text(name, args[0], line), _text(name, args[1], line)
@@ -1487,7 +1528,7 @@ def _json_parse(s):
                     code = four_hex()
                     if 0xD800 <= code < 0xDC00 and word("\\u"):
                         low = four_hex()
-                        if low < 0xDC00:
+                        if not 0xDC00 <= low <= 0xDFFF:
                             raise _NotJson()
                         code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
                     if 0xD800 <= code <= 0xDFFF or code > 0x10FFFF:
@@ -1921,7 +1962,7 @@ def _b_json_parse(args, line):
     s = _text("parse", args[0], line)
     v = _json_parse(s)
     if v is MISSING:
-        start = s.lstrip()
+        start = s.lstrip(" \t\n\r")
         _raise("ValueError", "this text is not JSON: `" + start[:30] + ("..." if len(start) > 30 else "") + "`", line)
     return v
 
@@ -2094,11 +2135,9 @@ def start(files, main):
 
     # Deep recursion needs a deep stack: the program runs on a thread
     # with one of its own.
-    import threading
-
     _sys.setrecursionlimit(1000000)
-    threading.stack_size(512 * 1024 * 1024)
-    thread = threading.Thread(target=run)
+    _threading.stack_size(512 * 1024 * 1024)
+    thread = _threading.Thread(target=run)
     thread.start()
     thread.join()
     _sys.stdout.flush()

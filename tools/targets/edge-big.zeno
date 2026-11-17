@@ -1,0 +1,64 @@
+# A long chain of objects, a deep list and a wide one: made, shown in part, and let go.
+class Node {
+    value: int
+    next: Node or none = none
+}
+var head: Node or none = none
+for i in range(200000) {
+    head = Node(i, head)
+}
+var count = 0
+var at = head
+while at is not none {
+    count += 1
+    at = at.next
+}
+print(count)
+head = none
+print("chain let go")
+enum Chain {
+    Link(value: int, rest: Chain)
+    End
+}
+var links = End
+for i in range(200000) {
+    links = Link(i, links)
+}
+var length = 0
+var link = links
+var going = true
+while going {
+    match link {
+        case Link(_, rest) {
+            length += 1
+            link = rest
+        }
+        case End {
+            going = false
+        }
+    }
+}
+print(length)
+links = End
+link = End
+print("links let go")
+var nested: list[any] = []
+for i in range(300) {
+    nested = [nested]
+}
+print(len(str(nested)), nested == nested)
+var wide: list[int] = []
+for i in range(300000) {
+    wide.append(i)
+}
+print(len(wide), sum(wide), wide[299999], len(str(wide)))
+var text = ""
+for i in range(20000) {
+    text = text + "ab"
+}
+print(len(text), text.slice(39990))
+let d: dict[int, int] = [:]
+for i in range(100000) {
+    d[i] = i * 2
+}
+print(len(d), d[99999], sum(d.values()))

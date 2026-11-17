@@ -34,6 +34,20 @@ pub fn emit(program: &Program, source: &str) -> String {
     let _ = writeln!(out);
     out.push_str(RUNTIME);
     let files: Vec<String> = program.files.iter().map(|file| text(file)).collect();
+    // A name in capitals may be a macro of a C header on some system
+    // (`ERANGE`, `SIGINT`, `OVERFLOW`). The runtime above is done with
+    // them, so from here on such a name is the program's own.
+    let mut capitals: Vec<&str> = program
+        .vars
+        .iter()
+        .map(|var| var.ident.as_str())
+        .filter(|name| name.len() > 1 && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .collect();
+    capitals.sort_unstable();
+    capitals.dedup();
+    for name in capitals {
+        let _ = writeln!(out, "#undef {name}");
+    }
     out.push_str("\n// The program.\nint main(int argc, char** argv) {\n");
     let _ = writeln!(out, "    return Z::start({{{}}}, argc, argv, []() -> V {{", files.join(", "));
     let mut printer = Printer { program, out: String::new(), depth: 2, temps: 0 };
@@ -55,8 +69,14 @@ struct Printer<'a> {
 /// A C++ string literal, as a `std::string`, which may hold a 0 byte. A
 /// character below a space is an octal escape (C++ refuses `\u` for
 /// those), always three digits so that a digit after it is not taken in.
+/// The two line breaks beyond ASCII (U+2028, U+2029) are written as
+/// they are: three octal digits cannot hold them, and C++ takes them.
 fn text(text: &str) -> String {
-    format!("{}s", lower::quoted(text, |code| format!("\\{code:03o}")))
+    let escape = |code: u32| match char::from_u32(code) {
+        Some(c) if code > 0x7f => c.to_string(),
+        _ => format!("\\{code:03o}"),
+    };
+    format!("{}s", lower::quoted(text, escape))
 }
 
 fn names(names: &[String]) -> String {

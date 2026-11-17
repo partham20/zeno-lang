@@ -1,0 +1,29 @@
+print("shapes starts")
+enum Shape {
+    Circle(r: float)
+    Square(side: float)
+}
+class Problem {
+    code: int
+}
+let total = 100
+var count = 0
+function area(s: Shape) -> float {
+    match s {
+        case Circle(r) { return 3.0 * r * r }
+        case Square(side) { return side * side }
+    }
+}
+function describe(s: Shape) -> str {
+    return f"shape of area {area(s)}"
+}
+function counter() -> int {
+    count += 1
+    return count
+}
+function fail(n: int) raises ValueError, Problem {
+    if n == 1 {
+        raise ValueError("from shapes")
+    }
+    raise Problem(n)
+}

@@ -1,0 +1,32 @@
+# A program in several files, with names that clash on purpose.
+import shapes
+import static.void
+import new.delete
+from shapes import area, Shape, Circle, counter
+from new.delete import state
+print("main starts")
+function describe(s: Shape) -> str {
+    return f"{s} has area {area(s)}"
+}
+let total = 5
+print(describe(Circle(1.0)), shapes.describe(Circle(2.0)), shapes.total, total)
+print(static.void.describe(3), new.delete.describe("x"), new.delete.area(2), new.delete.total)
+print(counter(), counter(), shapes.counter(), shapes.count)
+state.append(1)
+new.delete.state.append(2)
+print(state, new.delete.state, new.delete.touch(), state)
+let shape_maker = shapes.Square
+let made = shape_maker(2.0)
+print(made, shapes.area(made), made == shapes.Square(2.0), [shapes.describe, static.void.describe][1](9))
+try {
+    shapes.fail(1)
+} except ValueError as e {
+    print("caught", e.message)
+}
+try {
+    static.void.deeper()
+} except shapes.Problem as p {
+    print("caught", p, p.code)
+}
+print(shapes.Problem(1) == shapes.Problem(1), static.void.twice(shapes.Problem(2)))
+new.delete.late()

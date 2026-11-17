@@ -1,0 +1,12 @@
+import shapes
+print("static.void starts", shapes.total)
+let total = 200
+function describe(n: int) -> str {
+    return f"class {n} {total}"
+}
+function deeper() raises ValueError, shapes.Problem {
+    shapes.fail(7)
+}
+function twice[T](x: T) -> list[T] {
+    return [x, x]
+}

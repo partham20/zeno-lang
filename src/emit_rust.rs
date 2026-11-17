@@ -35,6 +35,9 @@ pub fn emit(program: &Program, source: &str) -> String {
     let _ = writeln!(out, "// {source}, written in Rust by `zeno build --target rust`.");
     let _ = writeln!(out, "// Build it with `rustc -O --edition 2021`. What it prints is what `zeno run` prints.");
     let _ = writeln!(out);
+    // The file may have any name: `my prog.rs`, `2048.rs`. The crate's
+    // name is said here, so rustc does not make one from the file's.
+    let _ = writeln!(out, "#![crate_name = \"zeno_program\"]");
     out.push_str(RUNTIME);
     let files: Vec<String> = program.files.iter().map(|file| text(file)).collect();
     out.push_str("\n// The program.\nfn main() {\n");

@@ -161,7 +161,11 @@ fn range(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     let mut i = start;
     while (step > 0 && i < stop) || (step < 0 && i > stop) {
         items.push(Value::Int(i));
-        i += step;
+        // A step past the last int there is ends the range.
+        match i.checked_add(step) {
+            Some(next) => i = next,
+            None => break,
+        }
     }
     Ok(Value::list(items))
 }
@@ -174,7 +178,7 @@ fn int(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Float(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
         Value::Str(text) => match strip(text).replace('_', "").parse() {
             Ok(n) => Ok(Value::Int(n)),
-            Err(_) => raise("ValueError", format!("cannot turn {text:?} into an int"), span),
+            Err(_) => raise("ValueError", format!("cannot turn {} into an int", crate::value::quoted(text)), span),
         },
         other => wrong_type("int", "a number or a str", other, span),
     }
@@ -187,7 +191,7 @@ fn float(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Float(x) => Ok(Value::Float(*x)),
         Value::Str(text) => match strip(text).parse() {
             Ok(x) => Ok(Value::Float(x)),
-            Err(_) => raise("ValueError", format!("cannot turn {text:?} into a float"), span),
+            Err(_) => raise("ValueError", format!("cannot turn {} into a float", crate::value::quoted(text)), span),
         },
         other => wrong_type("float", "a number or a str", other, span),
     }
@@ -446,6 +450,28 @@ fn is_blank(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
 }
 
+/// The lines of a text. A line ends at "\n", and a "\r" just before
+/// that "\n" goes with it. A "\r" anywhere else stays in its line. The
+/// last line need not end, and an end at the very end starts no line.
+fn lines(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        match rest.find('\n') {
+            Some(at) => {
+                let line = &rest[..at];
+                out.push(line.strip_suffix('\r').unwrap_or(line));
+                rest = &rest[at + 1..];
+            }
+            None => {
+                out.push(rest);
+                rest = "";
+            }
+        }
+    }
+    out
+}
+
 /// `text` without the blanks at either end.
 fn strip(text: &str) -> &str {
     text.trim_matches(is_blank)
@@ -656,7 +682,7 @@ pub fn call_method(
             // from Windows) goes with it. The last line need not end.
             "lines" => {
                 arity(name, &args, 0, 0, span)?;
-                Ok(Value::list(this.lines().map(Value::str).collect()))
+                Ok(Value::list(lines(this).into_iter().map(Value::str).collect()))
             }
             "replace" => {
                 arity(name, &args, 2, 2, span)?;
@@ -1169,7 +1195,7 @@ fn one_number(name: &str, args: &[Value], span: Span) -> Result<f64> {
 fn sqrt(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     let x = one_number("sqrt", &args, span)?;
     if x < 0.0 {
-        return raise("ValueError", format!("cannot take the square root of {x:?}"), span);
+        return raise("ValueError", format!("cannot take the square root of {}", crate::value::float_text(x)), span);
     }
     Ok(Value::Float(x.sqrt()))
 }
@@ -1230,7 +1256,7 @@ fn tan(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 fn ratio(name: &str, args: &[Value], span: Span) -> Result<f64> {
     let x = one_number(name, args, span)?;
     if x < -1.0 || x > 1.0 {
-        return raise("ValueError", format!("`{name}` needs a number from -1 to 1, and this is {x:?}"), span);
+        return raise("ValueError", format!("`{name}` needs a number from -1 to 1, and this is {}", crate::value::float_text(x)), span);
     }
     Ok(x)
 }
@@ -1266,7 +1292,7 @@ fn exp(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 fn above_zero(name: &str, args: &[Value], span: Span) -> Result<f64> {
     let x = one_number(name, args, span)?;
     if x <= 0.0 {
-        return raise("ValueError", format!("cannot take the logarithm of {x:?}"), span);
+        return raise("ValueError", format!("cannot take the logarithm of {}", crate::value::float_text(x)), span);
     }
     Ok(x)
 }
@@ -1373,8 +1399,10 @@ fn json_parse(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Some(json) => Ok(from_json(&json)),
         None => {
             // Enough of the text to know it by, and no more.
-            let start: String = written.trim_start().chars().take(30).collect();
-            let more = if written.trim_start().chars().count() > 30 { "..." } else { "" };
+            // The blanks before it are the four that JSON has.
+            let seen = written.trim_start_matches([' ', '\t', '\n', '\r']);
+            let start: String = seen.chars().take(30).collect();
+            let more = if seen.chars().count() > 30 { "..." } else { "" };
             raise("ValueError", format!("this text is not JSON: `{start}{more}`"), span)
         }
     }

@@ -9,15 +9,17 @@
 
 The programs are every example in examples/, the programs in
 tools/targets/ (written to try the corners: the edges of an int, escapes,
-errors; a `.stdin` file beside one is what is typed at it), and every
-sample of the book that `zeno run` runs (book/chapters/*.tex). Each is run with
-`zeno run`, which says what it must print. Then for each target it is
-built with `zeno build --target <target>`, the result is run with that
-language's own tools, and what it printed is held to what `zeno run`
-printed: the same text, and the same answer to "did it stop with an
-error". A program that a target refuses to build because it uses what no
-target can do (`import board`, `unsafe`) is counted as left out, not as
-a failure.
+errors; a `.stdin` file beside one is what is typed at it, a `.args`
+file the words it is started with, and a folder with a `main.zeno` is a
+program in several files), and every sample of the book that `zeno run`
+runs (book/chapters/*.tex). Each is run with `zeno run`, which says what
+it must print. Then for each target it is built with
+`zeno build --target <target>`, the result is run with that language's
+own tools, and what it did is held to what `zeno run` did: the same text
+printed, the same answer to "did it stop with an error", and if it did,
+the same message, in the same file, at the same line. A program that a
+target refuses to build because it uses what no target can do
+(`import board`, `unsafe`) is counted as left out, not as a failure.
 
 A target whose tools are not installed is left out with a note. The
 weekly check on GitHub (.github/workflows/targets.yml) installs them all.
@@ -104,10 +106,15 @@ def programs(scratch):
         elif path.is_dir() and (path / "main.zeno").exists():
             found.append(Program(f"examples/{path.name}", path, "main.zeno"))
     # Programs written to try the corners: big numbers, escapes, errors.
-    for path in sorted((REPO / "tools/targets").glob("*.zeno")):
-        typed = path.with_suffix(".stdin")
-        stdin = typed.read_text() if typed.exists() else ""
-        found.append(Program(f"tools/targets/{path.name}", path.parent, path.name, stdin))
+    # What is typed at one is bytes: some of it is not UTF-8, on purpose.
+    for path in sorted((REPO / "tools/targets").iterdir()):
+        if path.suffix == ".zeno":
+            typed, words = path.with_suffix(".stdin"), path.with_suffix(".args")
+            stdin = typed.read_bytes() if typed.exists() else b""
+            args = words.read_text().split() if words.exists() else []
+            found.append(Program(f"tools/targets/{path.name}", path.parent, path.name, stdin, args))
+        elif path.is_dir() and (path / "main.zeno").exists():
+            found.append(Program(f"tools/targets/{path.name}", path, "main.zeno"))
     for chapter in sorted((REPO / "book/chapters").glob("*.tex")):
         shared = {}
         for number, match in enumerate(SAMPLE_RE.finditer(chapter.read_text())):
@@ -129,15 +136,26 @@ def programs(scratch):
     return found
 
 
-def run(command, cwd, stdin="", timeout=60):
+def run(command, cwd, stdin=b"", timeout=120):
+    if isinstance(stdin, str):
+        stdin = stdin.encode()
     try:
-        done = subprocess.run(command, cwd=cwd, input=stdin, capture_output=True, text=True, timeout=timeout,
+        done = subprocess.run(command, cwd=cwd, input=stdin, capture_output=True, timeout=timeout,
                               env=dict(os.environ, NO_COLOR="1"))
-        return done.returncode, done.stdout, done.stderr
+        return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         return -1, "", "timed out"
     except FileNotFoundError as error:
         return -1, "", str(error)
+
+
+def stopped_by(errors):
+    """What stopped a program, from what it said: the line that begins
+    `error`, and the file and line after `-->`. The column is left out:
+    `zeno run` gives one, and a built program does not."""
+    message = next((line for line in errors.splitlines() if line.startswith("error")), "")
+    place = re.search(r"--> (.*?):(\d+)", errors)
+    return message, f"{Path(place.group(1)).name}:{place.group(2)}" if place else ""
 
 
 def main():
@@ -165,8 +183,8 @@ def main():
 
     # What `zeno run` prints is what every target must print.
     def run_zeno(program):
-        status, out, _ = run([str(ZENO), "run", program.file] + program.args, program.folder, program.stdin)
-        return status == 0, out
+        status, out, errors = run([str(ZENO), "run", program.file] + program.args, program.folder, program.stdin)
+        return status == 0, out, stopped_by(errors)
 
     expected = dict(zip((p.name for p in found), pool.map(run_zeno, found)))
 
@@ -180,7 +198,7 @@ def main():
         if status != 0:
             if "a program built for another language cannot use" in errors or "manual memory" in errors:
                 return "left out"
-            ok, _ = expected[program.name]
+            ok = expected[program.name][0]
             if not ok and "error" in errors:
                 # A program that `zeno run` refuses is refused here too.
                 return "pass"
@@ -190,10 +208,12 @@ def main():
         command = [part.replace("{file}", str(out_dir / file)).replace("{dir}", str(out_dir))
                    for part in spec["run"]]
         status, out, errors = run(command + program.args, program.folder, program.stdin)
-        ok, want = expected[program.name]
-        if (status == 0) == ok and out == want:
+        ok, want, stopped = expected[program.name]
+        if (status == 0) == ok and out == want and (ok or stopped_by(errors) == stopped):
             return "pass"
         why = f"zeno run {'succeeded' if ok else 'failed'}, the {target} program {'succeeded' if status == 0 else 'failed'}"
+        if (status == 0) == ok and out == want:
+            why = f"zeno run stopped with {stopped}, the {target} program with {stopped_by(errors)}"
         return f"{why}\n--- zeno run printed\n{want}--- {target} printed\n{out}--- {target} said\n{errors}"
 
     failed_any = False

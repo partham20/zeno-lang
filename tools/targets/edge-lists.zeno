@@ -1,0 +1,144 @@
+# Lists and dicts: order, sharing, and what happens when they change underfoot.
+let d = ["1": "str one", "__proto__": "p", "constructor": "c", "toString": "t", "hasOwnProperty": "h", "length": "l", "": "empty", "valueOf": "v", "__class__": "k"]
+print(d, len(d), d["1"], d["__proto__"], d.get("constructor"), d.get("prototype"), "toString" in d, "__defineGetter__" in d, "watch" in d, d.keys())
+let order = [10: "a", 2: "b", -1: "c", 9223372036854775807: "d", 0: "e", 2147483648: "f", 4294967295: "g", 4294967294: "h", 1: "i"]
+print(order, order.keys(), order.values())
+order[5] = "new"
+print(order.pop(2), order.keys())
+order[2] = "back"
+order[10] = "changed"
+print(order.keys(), order[10], order.get(-1), order.get(3), order.get(3, "dflt"))
+for k, v in order { print(k, v) }
+let sk = ["b": 1, "a": 2, "10": 3, "9": 4, "B": 5, "é": 6, "😀": 7, "a b": 8, "01": 9, "1.0": 10, "-0": 11]
+print(sk, sk.keys(), sk["01"], sk["1.0"], sk["-0"], sk.get("0"), sk.get("1"))
+print(["a": 1, "b": 2] == ["b": 2, "a": 1], ["a": 1] == ["a": 2], ["a": 1] == ["b": 1], [1: "x"] == [1: "x"], ["a": [1, 2]] == ["a": [1, 2]], ["a": 1, "b": 2] != ["a": 1])
+var empty: dict[str, int] = [:]
+print(empty, len(empty), empty.keys(), empty.values(), empty.get("x"), "x" in empty, empty == empty)
+empty["k"] = 1
+empty["k"] += 5
+empty.clear()
+print(empty, len(empty))
+try { print(empty.pop("gone")) } except KeyError as e { print("1", e.message) }
+try { print(order[77]) } except KeyError as e { print("2", e.message) }
+try { print(sk["a\"q"]) } except KeyError as e { print("3", e.message) }
+try { print(order.pop(-5)) } except KeyError as e { print("4", e.message) }
+# Changing a dict or a list while it is gone through.
+var grow = ["a": 1, "b": 2]
+for k in grow {
+    grow[k + k] = 0
+    if len(grow) > 10 { break }
+}
+print(grow)
+for k, v in grow { if v == 0 { grow.pop(k) } }
+print(grow)
+var xs = [1, 2, 3]
+for x in xs { if x < 3 { xs.append(x * 10) } }
+print(xs)
+for i, x in xs {
+    if i == 0 { xs.clear() }
+    print(i, x)
+}
+print(xs, [x for x in xs])
+var ys = [1, 2, 3, 4]
+print([ys.pop() for y in ys], ys)
+# One list under two names; copies that are copies.
+let a = [1, 2]
+let b = a
+b.append(3)
+let c = a + []
+c.append(4)
+let s = a.slice(0)
+s.append(5)
+let nested = [a, a]
+nested[0].append(6)
+let dd = ["x": a]
+dd["x"].append(7)
+print(a, b, c, s, nested, dd, a == b, a == c, nested[0] == nested[1])
+let grid = [[0] for _ in range(3)]
+grid[0].append(1)
+let same = [a for _ in range(2)]
+same[1].append(8)
+print(grid, same, a)
+function change(items: list[int]) { items.append(99) }
+change(a)
+print(a)
+# Methods at their edges.
+var m = [5, 3, 8]
+m.insert(0, 1)
+m.insert(4, 9)
+m.insert(2, 7)
+print(m, m.pop(0), m.pop(4), m.pop(1), m)
+for at in [-1, 4, 9223372036854775807] {
+    try { m.insert(at, 0) } except IndexError as e { print("5", e.message) }
+    try { print(m.pop(at)) } except IndexError as e { print("6", e.message) }
+    try { print(m[at]) } except IndexError as e { print("7", e.message) }
+    try { m[at] = 1 } except IndexError as e { print("8", e.message) }
+}
+m.insert(3, 4)
+m.clear()
+try { print(m.pop()) } except IndexError as e { print("9", e.message) }
+try { print(m[0]) } except IndexError as e { print("10", e.message) }
+try { print(max(m)) } except ValueError as e { print("11", e.message) }
+try { print(min([])) } except ValueError as e { print("12", e.message) }
+print(sum(m), m, len(m), m.find(1), m.slice(0), m.slice(0, 0), [1, 2, 3].slice(3), [1, 2, 3].slice(1, 1), [1, 2, 3].slice(1, 3), m + m, m == [])
+for pair in [[-1, 1], [2, 1], [0, 4], [4, 4]] {
+    try { print([1, 2, 3].slice(pair[0], pair[1])) } except IndexError as e { print("13", e.message) }
+}
+var r = [1, 2, 3, 4, 5]
+r.reverse()
+print(r, [[1], [2]].find([2]), ["a", "b"].find("b"), [none, 1].find(none), [true, false].find(false), [1, 2, 1].find(1))
+# Sorting: the same order as `zeno run`, also for what looks equal.
+var mixed = [2, 1.0, 1, 2.0, -0.0, 0, 0.0, 3, 1, 1.0, -1, 1e300, -1e300, 0.5, 2]
+mixed.sort()
+print(mixed)
+let nan = float("nan")
+var withnan = [3.0, nan, 1.0, nan, 2.0, 0.0, -1.0, nan, 5.0, 4.0]
+withnan.sort()
+print(withnan)
+var big = [n * 7919 % 1009 for n in range(300)]
+big.sort()
+print(big.slice(0, 12), big.slice(288), sum(big))
+class P {
+    name: str
+    age: int
+}
+var people = [P("d", 30), P("a", 25), P("c", 30), P("b", 25), P("e", 30), P("f", 20), P("g", 25), P("h", 30), P("i", 20), P("j", 25), P("k", 30)]
+people.sort(function(p: P) -> int { return p.age })
+print([p.name for p in people])
+people.sort(function(p: P) -> str { return p.name })
+print([p.name for p in people])
+people.sort(function(p: P) -> float { return -p.age / 10 })
+print([p.name for p in people])
+var by_nan = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+by_nan.sort(function(x: float) -> float {
+    if x == 4.0 or x == 2.0 { return nan }
+    return -x
+})
+print(by_nan)
+var strs = ["b", "a", "B", "A", "", "ab", "a ", "é", "z", "aa", "a"]
+strs.sort()
+print(strs)
+var shrink = [3, 1, 2]
+try {
+    shrink.sort(function(n: int) -> int {
+        if len(shrink) > 1 { shrink.pop() }
+        return n
+    })
+} except ValueError as e { print("14", e.message) }
+print(shrink)
+# Functions given to map, filter and reduce may change the list.
+var src = [1, 2, 3]
+print(src.map(function(n: int) -> int {
+    src.append(n)
+    return n * 2
+}), src)
+print(src.filter(function(n: int) -> bool {
+    src.clear()
+    return n > 1
+}), src)
+print([1, 2, 3].reduce(function(t: str, n: int) -> str { return t + str(n) }, ""), [].reduce(function(t: int, n: int) -> int { return t + n }, 7), [[1], [2, 3]].reduce(function(t: list[int], n: list[int]) -> list[int] { return t + n }, []))
+print([1, 2, 3].map(str), ["1", "2"].map(int), [1.5, -2.5].map(abs), ["a", "bb"].map(len), [3, 4].map(float))
+print(range(0), range(-3), range(3, 3), range(0, 10, 3), range(10, 0, -3), range(0, -10, -3), range(5, 0), range(0, 5, -1), range(-2, 2), range(9223372036854775806, 9223372036854775807), range(-9223372036854775807, -9223372036854775805, 1), len(range(100000)))
+try { print(range(0, 5, 0)) } except ValueError as e { print("15", e.message) }
+print([1, "a", 2.5, none, true, [1, [2, [3, []]]], ["k": [1: ["z": 0]]], P("x", 1), [P("y", 2)]], [[], [[]], [:], [[:]]], [[1, 2], [3]] + [[4]])
+print(3 in [1, 2, 3], 4 in [1, 2, 3], [1] in [[1], [2]], "a" in ["a"], none in [none], 2 not in [1, 2], [] in [[]], "k" in ["k": 1], 1 in [1: 2], 2 in [1: 2])

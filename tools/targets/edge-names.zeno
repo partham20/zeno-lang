@@ -1,0 +1,310 @@
+# Names that are words of other languages.
+let new = 1
+let delete = 2
+let this = 3
+let super = 4
+let null = 5
+let void = 6
+let static = 7
+let package = 8
+let func = 9
+let chan = 10
+let go = 11
+let defer = 12
+let lambda = 13
+let def = 14
+let del = 15
+let yield = 16
+let async = 17
+let await = 18
+let typeof = 19
+let namespace = 20
+let template = 21
+let union = 22
+let struct = 23
+let impl = 24
+let fn = 25
+let mut = 26
+let crate = 27
+let dyn = 28
+let loop = 29
+let mod = 30
+let pub = 31
+let ref = 32
+let type = 33
+let use = 34
+let where = 35
+let string = 36
+let object = 37
+let String = 38
+let Object = 39
+let System = 40
+let Math = 41
+let console = 42
+let process = 43
+let eval = 44
+let undefined = 45
+let NaN = 46
+let Infinity = 47
+let main = 48
+let Main = 49
+let std = 50
+let None = 51
+let True = 52
+let nil = 53
+let auto = 54
+let register = 55
+let goto = 56
+let switch = 57
+let default = 58
+let do = 59
+let double = 60
+let char_ = 61
+let long = 62
+let short = 63
+let unsigned = 64
+let signed = 65
+let volatile = 66
+let const_ = 67
+let throw = 68
+let throws = 69
+let catch = 70
+let finally = 71
+let instanceof = 72
+let extends = 73
+let implements = 74
+let interface_ = 75
+let abstract = 76
+let final = 77
+let native = 78
+let synchronized = 79
+let transient = 80
+let boolean = 81
+let byte = 82
+let global = 83
+let nonlocal = 84
+let pass = 85
+let with = 86
+let elif = 87
+let exec = 88
+let assert_ = 89
+let is_ = 90
+let lock = 91
+let base = 92
+let checked = 93
+let decimal = 94
+let delegate = 95
+let event = 96
+let explicit = 97
+let extern = 98
+let fixed = 99
+let foreach = 100
+let implicit = 101
+let internal = 102
+let operator = 103
+let out = 104
+let override = 105
+let params = 106
+let readonly = 107
+let sealed = 108
+let sizeof = 109
+let stackalloc = 110
+let uint = 111
+let ulong = 112
+let unchecked = 113
+let ushort = 114
+let virtual = 115
+let select = 116
+let fallthrough = 117
+let map = 118
+let make = 119
+let cap = 120
+let append = 121
+let copy = 122
+let panic = 123
+let recover = 124
+let iota = 125
+let error = 126
+let rune = 127
+let uintptr = 128
+let complex = 129
+let friend = 130
+let inline = 131
+let typename = 132
+let typedef = 133
+let export = 134
+let module = 135
+let require = 136
+let exports = 137
+let window = 138
+let document = 139
+let globalThis = 140
+let let_ = 141
+let Self = 142
+let trait = 143
+let unsafe_ = 144
+let move = 145
+let box = 146
+let become = 147
+let macro = 148
+let priv = 149
+let unsized = 150
+let usize = 151
+let isize = 152
+let Vec = 153
+let Rc = 154
+let Box = 155
+let Some = 156
+let Ok = 157
+let Err = 158
+let Option = 159
+let Result = 160
+let V = 161
+let R = 162
+let args = 163
+let line = 164
+let fmt = 165
+let os = 166
+let sys = 167
+let math_ = 168
+let Console = 169
+let Program = 170
+let Exception = 171
+let Integer = 172
+let Double = 173
+let List = 174
+let Map = 175
+let BigInt = 176
+let Number = 177
+let Array = 178
+let Symbol = 179
+let Promise = 180
+let Error_ = 181
+let var_ = 182
+let dynamic = 183
+let record = 184
+let when = 185
+let get = 186
+let set = 187
+let value = 188
+let add = 189
+let remove = 190
+let alias = 191
+let ascending = 192
+let nameof = 193
+let partial = 194
+let global_ = 195
+let and_eq = 196
+let bitand = 197
+let compl = 198
+let not_eq = 199
+let xor = 200
+let concept = 201
+let requires = 202
+let co_await = 203
+let int8_t = 204
+let size_t = 205
+let wchar_t = 206
+let nullptr = 207
+let noexcept = 208
+let constexpr = 209
+let decltype = 210
+let thread_local = 211
+let alignas = 212
+let mutable = 213
+let enum_ = 214
+let __init__ = 215
+let __name__ = 216
+let _ = 217
+let __proto__ = 218
+let constructor = 219
+let prototype = 220
+let toString = 221
+let valueOf = 222
+let hasOwnProperty = 223
+let length = 224
+let equals = 225
+let hashCode = 226
+let getClass = 227
+let wait = 228
+let notify = 229
+let clone = 230
+let finalize = 231
+let GetType = 232
+let ToString = 233
+let Equals = 234
+let GetHashCode = 235
+let name = 236
+let self_ = 237
+print(new + delete + this + super + null + void + static + package + func + chan + go + defer + lambda + def + del + yield + async + await + typeof + namespace)
+print(template + union + struct + impl + fn + mut + crate + dyn + loop + mod + pub + ref + type + use + where + string + object + String + Object + System + Math + console + process + eval + undefined + NaN + Infinity + main + Main + std + None + True + nil)
+print(auto + register + goto + switch + default + do + double + char_ + long + short + unsigned + signed + volatile + const_ + throw + throws + catch + finally + instanceof + extends + implements + interface_ + abstract + final + native + synchronized + transient + boolean + byte + global + nonlocal + pass + with + elif + exec + assert_ + is_)
+print(lock + base + checked + decimal + delegate + event + explicit + extern + fixed + foreach + implicit + internal + operator + out + override + params + readonly + sealed + sizeof + stackalloc + uint + ulong + unchecked + ushort + virtual + select + fallthrough + map + make + cap + append + copy + panic + recover + iota + error + rune + uintptr + complex)
+print(friend + inline + typename + typedef + export + module + require + exports + window + document + globalThis + let_ + Self + trait + unsafe_ + move + box + become + macro + priv + unsized + usize + isize + Vec + Rc + Box + Some + Ok + Err + Option + Result + V + R + args + line + fmt + os + sys + math_)
+print(Console + Program + Exception + Integer + Double + List + Map + BigInt + Number + Array + Symbol + Promise + Error_ + var_ + dynamic + record + when + get + set + value + add + remove + alias + ascending + nameof + partial + global_ + and_eq + bitand + compl + not_eq + xor + concept + requires + co_await + int8_t + size_t + wchar_t + nullptr + noexcept + constexpr + decltype + thread_local + alignas + mutable + enum_)
+print(__init__ + __name__ + __proto__ + constructor + prototype + toString + valueOf + hasOwnProperty + length + equals + hashCode + getClass + wait + notify + clone + finalize + GetType + ToString + Equals + GetHashCode + name + self_)
+
+class new_ {
+    new: int
+    delete: int = 2
+    class_: int = 3
+    this: int = 4
+    constructor: int = 5
+    prototype: int = 6
+    __proto__: int = 7
+    toString: int = 8
+    length: int = 9
+    hashCode: int = 10
+    __init__: int = 11
+    __dict__: int = 12
+    __class__: int = 13
+    type: int = 14
+    default: int = 15
+    function static(self, void: int, null: int = 1) -> int {
+        return self.new + void + null + self.toString + self.__class__
+    }
+    function valueOf(self) -> int {
+        return self.constructor * self.prototype
+    }
+    function equals(self, other: int) -> bool {
+        return other == self.new
+    }
+    function __str__(self) -> str {
+        return "not used"
+    }
+    function hasOwnProperty(self, x: int) -> int {
+        return x
+    }
+}
+let o = new_(1)
+print(o, o.static(5), o.static(void=5, null=7), o.static(null=7, void=5), o.valueOf(), o.equals(1), o.__str__(), o.hasOwnProperty(3), o.toString, o.__proto__, o.__class__, o.default)
+o.constructor = 50
+o.__proto__ = 70
+o.length += 1
+print(o, o == new_(1), o == new_(1, constructor=50, __proto__=70, length=10))
+enum struct_ {
+    None_
+    null_(new: int, delete: str)
+    Some_(value: int)
+    Ok_
+}
+function describe(u: struct_) -> str {
+    match u {
+        case None_ { return "none case" }
+        case null_(new, delete) { return f"null {new} {delete}" }
+        case Some_(value) { return f"some {value}" }
+        case Ok_ { return "ok" }
+    }
+}
+print(describe(None_), describe(null_(1, "x")), describe(Some_(2)), describe(Ok_), null_(delete="d", new=9), [None_, Ok_, Some_(1)])
+function typeof_(new: int, this: int = 2, arguments_: int = 3) -> int {
+    let eval_ = new * this
+    var undefined_ = eval_ + arguments_
+    undefined_ += 1
+    return undefined_
+}
+print(typeof_(1), typeof_(this=5, new=2), typeof_(1, 2, arguments_=10))
+let dict_ = ["__proto__": 1, "constructor": 2, "toString": 3, "hasOwnProperty": 4, "length": 5, "": 6]
+print(dict_, dict_["__proto__"], dict_.get("valueOf"), "toString" in dict_, "valueOf" in dict_, dict_.keys(), len(dict_))
+dict_["valueOf"] = 7
+print(dict_.pop("__proto__"), dict_)

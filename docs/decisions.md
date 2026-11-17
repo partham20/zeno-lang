@@ -10285,6 +10285,7 @@ message that asks if the function calls itself forever. The Go, Java
 and C# runtimes count calls the same way and stop with the same
 message, and they run the program on a thread with a big stack so that
 1000 calls always fit.
+(JavaScript and Python count too since 24.23.)
 
 **Why.** A program that recurses forever should end the same way in
 every language, with Zeno's message, not with a Go "goroutine stack
@@ -10380,3 +10381,172 @@ the browser's. `zeno build --web` puts Zeno itself in a page as
 WebAssembly. What was missing was a program that runs anywhere a
 WebAssembly host does, the same file on every computer, and that is
 WASI.
+
+### 24.20 Text in quotes: Zeno's own rule
+
+A text shown inside a list, a dict or an object, or named in the
+message of an error, is in quotes. Inside them `"`, `\`, the new line,
+the carriage return and the tab are written as a program writes them
+(`\"`, `\\`, `\n`, `\r`, `\t`). Any other control character (below a
+space, and U+007F to U+009F) is written as its code, `\u{1b}`, because
+it would not show on a screen. Every other character is written as it
+is.
+
+Until now `zeno run` used Rust's `{:?}` for this, which escapes
+whatever Rust's tables of Unicode call "not printable" or "extending".
+That made `["தமிழ்"]` print as `["தமிழ\u{bcd}"]`: the last sign of
+the word is a combining one. The C that `zeno build` writes escaped
+five characters and nothing else, and the runtimes of the targets
+already followed the rule above. Three ways of running one program
+gave three answers. Now `zeno run`, the C runtime and every target
+quote a text the same way.
+
+**Why not Rust's rule everywhere.** It needs Unicode's tables, which
+change with each version of Unicode, so the answer would depend on
+the version of Rust that built Zeno, and each runtime would need a
+copy of the tables. It also breaks words in Tamil, Hindi, Thai and
+every script that uses combining signs. `strip` and `upper` already
+keep to ASCII so that no table is needed (3.14); this is the same
+choice.
+
+**Why escape control characters at all.** A list is shown to be read.
+An escape character or a zero-width control inside a text would
+change what the terminal does, or show nothing, and the reader could
+not tell `"a"` from `"a\u{1b}"`.
+
+**Rejected.** Escaping everything that is not ASCII: exact, but a
+program that prints a list of names in Tamil would print codes.
+
+### 24.21 A float between two shortest texts takes the even one
+
+A float is printed with the fewest digits that name it and no other
+float. Now and then two texts of that length are equally near: the
+float `1e15 + 0.25` lies exactly between `1000000000000000.2` and
+`1000000000000000.3`. Zeno prints the one whose last digit is even.
+
+**Why.** C, JavaScript, Python, Java and C# do, and so did the C that
+`zeno build` writes. `zeno run` printed the upper one, because Rust
+does, so `zeno run` and `zeno build` disagreed, and so did five of the
+targets. The even digit is also what the rest of Zeno does with a
+half: `{x:.1f}` rounds the exact value to even. It can only happen to
+a float that needs 16 or 17 digits. `value::float_text` puts Rust's
+answer right in that one case; the Rust target carries the same
+function.
+
+**Rejected.** Teaching five runtimes to round up as Rust does: more
+code in more places, for the rarer habit.
+
+### 24.22 A variable is read when its turn comes
+
+Zeno works a line out from left to right, and reads a variable at the
+moment its turn comes. The lowering (24.3, 24.14) now keeps to that in
+four places where it did not:
+
+- `f(b=two(), a=one())` runs `two()` first, as written. On JavaScript,
+  Python, Java, C# and Rust it ran `one()` first, because the
+  arguments had already been put in the order of the parameters.
+- `x += f()` reads `x` before `f()` runs, so a change `f` makes to `x`
+  is lost, as in `zeno run`. Go and C++ read `x` after.
+- `[x, bump()]`, `x < bump() < y`, `f"{x} {bump()}"`, `[x: bump()]`:
+  wherever a later part needs statements of its own (24.14), an
+  earlier plain variable is copied first. Before, only earlier calls
+  were copied, and a variable was read after the later part had
+  changed it, on every target.
+- `list[i] = value` and `object.field = value` work out the list, the
+  index and the value in that order.
+
+**Why.** It is the rule of `zeno run`, and "it prints what `zeno run`
+prints" has no exceptions. None of the 319 programs changed a variable
+in the middle of a line that also read it, so none showed it.
+
+**Rejected.** Copying every variable always: right, but each line of
+the written program would grow, and most lines change nothing midway.
+A variable is copied only when something after it on the line can run
+code.
+
+### 24.23 Nesting is counted in JavaScript and Python too
+
+24.15 had JavaScript and Python stop "where their own limit is". That
+is not the same program: `zeno run` stops at the 1000th nested call,
+with the name of the function and the line, and JavaScript ran more
+than 10,000 deep before it stopped with another message. Now both
+count as the other targets do: a call of a function of the program is
+`Z.direct(f, line, ...)`, which counts it in, calls it, and counts it
+out again whether it returned or raised.
+
+**Why.** A program that prints how deep it got, or that recurses 5000
+deep on purpose, did something else in two of nine targets.
+
+**Cost.** A call in Python is slower by about a third (`fib`: 2.3 s to
+3.5 s), in JavaScript a little (0.12 s to 0.16 s). Correct first
+(24.2).
+
+### 24.24 Corners of the library, pinned down
+
+The review of the targets found places where `zeno run` did whatever
+the Rust it is built with does, and a target did what its own language
+does. Each now has a rule, which `zeno run` and all targets follow:
+
+- **`lines()`.** A line ends at `\n`. A `\r` just before that `\n`
+  goes with it. A `\r` anywhere else, and one at the very end with no
+  `\n` after it, stays in its line. It is written out in
+  `builtins.rs`, not left to Rust's `str::lines`.
+- **`input()`.** The same for the line end. Bytes that are not UTF-8
+  become U+FFFD the way Rust, Python and browsers do it: one for each
+  run of bytes that began a character and did not finish it, one for
+  each byte that could not begin one.
+- **`range`.** A step past the last int ends the range. `zeno run`
+  added the step without looking, which is a stop in a debug build
+  and a wrong, endless list in a release build.
+- **`math.floor`, `math.ceil`.** Always an int: too big a float gives
+  the biggest int, not-a-number gives 0, as `math.round` and
+  `zeno run` do. Five targets gave the float back.
+- **`//` and `%` of floats.** `-0.0` is kept where the arithmetic
+  gives it (Python lost it).
+- **JSON.** The four hex digits of `\u` are digits (`zeno run` took
+  `\u+041`); the second half of a pair is DC00 to DFFF; the blanks
+  before a text that is not JSON, which the message leaves out, are
+  JSON's four.
+- **`files`.** A path with nothing in it is "no file". A path through
+  a file (`notes.txt/x`) "cannot be read".
+
+**Why list them.** Each was found by a program written to look for it
+(`tools/targets/edge-*.zeno`), not by a user. They are small, but a
+rule that is whatever one compiler happens to do is not a rule
+(principle: unambiguous).
+
+### 24.25 File names, and names in capitals
+
+- A program may have any file name. The Rust file names its own crate
+  (`#![crate_name]`), so `my prog.rs` and `2048.rs` build; the command
+  that `zeno build` prints has `-o`, and quotes a name a shell would
+  split.
+- `go run` refuses a file that ends in `_test.go` and does not see one
+  that begins with `_` or `.`. For those, the Go file gets `program`
+  in its name: `speed_test.zeno` is written as
+  `speed_test_program.go`.
+- Python looks for a module in the program's folder before its own
+  library. A program called `struct.py` or `re.py` was taken for
+  Python's module of that name. The runtime takes the folder off the
+  list before it imports anything.
+- A name in capitals may be a macro of a C header (`ERANGE`, `SIGINT`,
+  `OVERFLOW`). The C++ file says `#undef` for each such name of the
+  program, after the runtime and before the program.
+- The words the list of 24.4 had missed (`args`, `delegate`, the
+  sized ints of C++ and others) are in it.
+
+**Why `#undef` and not a longer list.** The macros differ from system
+to system and there are hundreds; no list is complete. After the
+runtime nothing needs them.
+
+### 24.26 The check holds the error to `zeno run` too
+
+`tools/targets.py` (24.9) compared what was printed and whether the
+program stopped with an error. Now, when it stops, the message, the
+file and the line must be the same too. It also takes a corner
+program in several files (a folder with `main.zeno`), the words a
+program is started with (`.args`), and typed input that is not text
+(`.stdin` is bytes).
+
+**Why.** "The same error" was promised (24.2) and not checked. The
+nesting difference of 24.23 would have been caught the first day.

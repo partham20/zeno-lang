@@ -1,0 +1,49 @@
+# Text past ASCII and past the first 65536 characters.
+let astral = "a😀b𝄞c"
+print(len(astral), astral[1], astral[3], astral.find("b"), astral.find("𝄞"), astral.find(""), astral.slice(1, 4), astral.slice(4), astral.upper(), astral.slice(5, 5), astral.slice(0, 0))
+for i, c in astral { print(i, c, c.code(), len(c)) }
+for c in "e" + char(769) + "é" { print(c.code()) }
+print("😀" in astral, "😀b" in astral, "" in astral, "x" in "", "" in "", "b𝄞" not in astral)
+print(char(65535) < "😀", "😀" < char(65535), char(65535) < char(65536), "😀" > "z", "" < "😀", "😀" < "😀a", "a😀" < "a" + char(65535), "é" < "e" + char(769), "Z" < "a", "a" < "B", "abc" < "abcd", "ab" + char(1) < "ab ")
+let words = ["😀", char(65535), "z", "é", "e" + char(769), "Z", "", "a", "𝄞", char(57344), char(65536), "aa", "a😀", "a" + char(65535)]
+words.sort()
+print([w.code() for w in words if len(w) == 1], words.find("a😀"), words.find("a" + char(65535)))
+words.sort(len)
+print([len(w) for w in words])
+print("straße".upper(), "İSTANBUL".lower(), "ǅ".lower(), "ǅ".upper(), "ÀÉÎ".lower(), "àéî".upper(), "aZ09_~".upper(), "aZ09_~".lower(), "ﬁ".upper(), "ΑΣ".lower(), "ω".upper())
+let odd = "a" + char(160) + "b" + char(11) + "c" + char(28) + "d" + char(8232) + "e" + char(12288) + "f" + char(12) + "g" + char(133) + "h"
+print(len(odd.split()), [len(p) for p in odd.split()], len(odd.lines()), len(odd.strip()))
+let padded = char(160) + char(11) + " \t\r\n" + char(12) + "x" + char(12) + "\n\r\t " + char(8232) + char(160)
+print(len(padded.strip()), padded.strip().starts_with(char(160)), len(" \t x \t ".strip()), len((char(11) + "x" + char(11)).strip()), len((char(133) + "x").strip()), "".strip() == "", "   ".strip() == "")
+print("a\rb\n\nc\r\n\r\nd\r".lines(), "\r\n".lines(), "\r".lines(), "x\n\r".lines(), "\n\n".lines(), "a\r\r\nb".lines(), ("a" + char(8232) + "b" + char(11) + "c" + char(12) + "d" + char(133) + "e").lines(), "no newline".lines(), "\nlead".lines())
+print("aaa".split("aa"), "abc".split("abc"), "".split(","), ",".split(","), ",,".split(","), "a😀b😀c".split("😀"), "abab".split("ab"), "a, b,c".split(", "), "  ".split(), "".split(), "\ta\n".split(), "a  b".split(" "), "xyz".split("xyzw"), "a\r\nb".split("\n"))
+print("a😀b".replace("", "-"), "😀".replace("😀", ""), "aaa".replace("aa", "b"), "abc".replace("b", ""), "abc".replace("x", "y"), "".replace("a", "b"), "a.b.c".replace(".", ".."), "$1 \\1 $& %s {0}".replace("$", "$$"), "aXbXc".replace("X", "$&"), "a|b".replace("|", "\\"), "tab\there".replace("\t", "\\t"), "ééé".replace("é", "e" + char(769)))
+print("abc".starts_with(""), "abc".ends_with(""), "".starts_with(""), "abc".starts_with("abcd"), "😀a".starts_with("😀"), "a😀".ends_with("😀"), "abc".ends_with("bc"), "abc".starts_with("b"), "é".starts_with("e"), ("e" + char(769)).starts_with("e"))
+print("abcabc".find("c"), "abcabc".find("ca"), "abc".find("abcd"), "".find(""), "".find("a"), "😀😀a".find("a"), "😀😀a".find("😀a"), "aé😀".find("😀"), "a.b".find("."), "a*b".find("*"), "a\\b".find("\\"))
+for n in [0, -1, 55296, 57343, 1114112, 9223372036854775807, -9223372036854775807] {
+    try { print(char(n)) } except ValueError as e { print("no:", e.message) }
+}
+print(char(1114111).code(), char(55295).code(), char(57344).code(), char(65536).code(), char(128512), char(1), len(char(1)), char(127).code(), "😀".code(), "𝄞".code(), char(10) == "\n", char(9) == "\t", "\0".code(), len("\0"), len("a\0b"), "a\0b"[2], "a\0b".find("b"))
+for text in ["", "ab", "😀😀", "e" + char(769)] {
+    try { print(text.code()) } except ValueError as e { print("no:", e.message) }
+}
+for at in [-1, 5, 6, 9223372036854775807] {
+    try { print(astral[at]) } except IndexError as e { print("no:", e.message) }
+}
+for pair in [[-1, 2], [2, 1], [0, 6], [6, 6], [5, 5], [9223372036854775807, 9223372036854775807]] {
+    try { print(astral.slice(pair[0], pair[1])) } except IndexError as e { print("no:", e.message) }
+}
+try { print(astral.slice(6)) } except IndexError as e { print("no:", e.message) }
+print(["a\"b", "a'b", "a\\b", "a\nb", "a\rb", "a\tb", "a\0b", char(1), char(27), char(127), char(128), char(159), char(160), "é", "😀", "{}", "%d", "$x", "`", "\\n", "\\", "\"", "'", ""], ["k\"": "v\n", "": ""], str("a\"b"), f"{'q'}")
+print(f"{'a'}{1}{'b'}", f"{{}}{{{1}}}", f"}}{{", f"{'x':>4}{'y':<4}|", f"100%", f"{1}%{2}", f"\t{1}\n{2}\\", f"{'é😀':>5}|{'e' + char(769):>5}|", f"", f"{''}" == "")
+print("a" + "b" + "", "" + "", "é" + "😀", "ab" == "a" + "b", "a" != "A", "😀" == "😀", "é" == "e" + char(769), len("é"), len("e" + char(769)), len("👨‍👩‍👧"), len("தமிழ்"), "தமிழ்"[1], "தமிழ்".slice(2), "தமிழ்".find("ழ"))
+print(["a", "b"].join(""), ["😀", "é"].join("𝄞"), [""].join("x"), ["", ""].join("x"), ["a"].join("long"), ["x", "y", "z"].join("\n").lines(), ["a", "b"].join(", ").split(", "))
+var long = "ab"
+for _ in range(16) { long = long + long }
+print(len(long), long.find("ba"), len(long.replace("a", "")), len(long.split("b")), long.slice(131070), len(long.upper()), long.ends_with("ab"))
+let s = "hello"
+var count = 0
+for c in s { if c == "l" { count += 1 } }
+print(count, [c for c in "héy"], [c.upper() for c in "aé😀"], [c.code() for c in "A\n\0"], s[0] + s[4], s == "hello")
+# Text in quotes: every character as it is, but for the control characters (decision 24.20).
+print(["தமிழ்", "é", "e" + char(769), char(769), "a" + char(8205) + "b", char(173), char(57344), char(65535), char(127), char(133), char(8232), char(65279), char(8203), char(917505), char(1114111), char(888), "👨‍👩‍👧", "हिन्दी", "ไทย", char(12288), char(160), char(5760), char(8239)])

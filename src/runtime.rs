@@ -140,6 +140,65 @@ mod z {
         pub fields: Vec<V>,
     }
 
+    // A long chain of objects (a linked list of a million nodes) is let
+    // go link by link. Left to Rust, each link would let the next one go
+    // from inside its own letting go, a million calls deep, which needs
+    // more stack than a WebAssembly host gives. So an object or a case
+    // that is let go hands what it held to a list, and one loop works
+    // through the list.
+    thread_local! {
+        static LETTING_GO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static HELD: RefCell<Vec<V>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn let_go(values: Vec<V>) {
+        if values.iter().all(|v| !matches!(v, V::List(_) | V::Dict(_) | V::Instance(_) | V::Case(_) | V::Error(_))) {
+            return;
+        }
+        // At the end of the program the list may be gone already: then
+        // Rust lets the values go its own way.
+        let Ok(running) = HELD.try_with(|held| {
+            held.borrow_mut().extend(values);
+            LETTING_GO.with(|flag| flag.replace(true))
+        }) else {
+            return;
+        };
+        if running {
+            return;
+        }
+        while let Some(value) = HELD.with(|held| held.borrow_mut().pop()) {
+            match value {
+                // A list or a dict nothing else holds: its items join the list.
+                V::List(list) => {
+                    if let Ok(items) = Rc::try_unwrap(list) {
+                        HELD.with(|held| held.borrow_mut().extend(items.into_inner()));
+                    }
+                }
+                V::Dict(dict) => {
+                    if let Ok(dict) = Rc::try_unwrap(dict) {
+                        let dict = dict.into_inner();
+                        HELD.with(|held| held.borrow_mut().extend(dict.map.into_values()));
+                    }
+                }
+                // An object or a case hands over what it held, below.
+                other => drop(other),
+            }
+        }
+        LETTING_GO.with(|flag| flag.set(false));
+    }
+
+    impl Drop for Instance {
+        fn drop(&mut self) {
+            let_go(std::mem::take(self.fields.get_mut()));
+        }
+    }
+
+    impl Drop for Case {
+        fn drop(&mut self) {
+            let_go(std::mem::take(&mut self.fields));
+        }
+    }
+
     pub struct ZError {
         pub kind: String,
         pub message: String,
@@ -241,9 +300,55 @@ mod z {
 
     // --------------------------------------------------------- Showing
 
-    /// How Rust's `{:?}` shows a str, as `zeno run` shows one.
+    /// A float as text: the fewest digits that name this float and no other,
+    /// with `.0` on a whole one, and an exponent below 0.0001 and from 1e16.
+///
+    /// Now and then two texts of that length are equally near the float:
+    /// 1e15 + 0.25 lies exactly between `...0.2` and `...0.3`. Then the one
+    /// that ends in an even digit is taken, as C, JavaScript, Python, Java
+    /// and C# take it. Rust alone takes the upper one, so
+    /// that case is put right here. It needs 16 digits or more to happen.
+    fn float_text(x: f64) -> String {
+        let shown = format!("{x:?}");
+        if shown.len() < 16 || !x.is_finite() {
+            return shown;
+        }
+        let shortest = format!("{x:e}");
+        let digits = shortest.bytes().take_while(|b| *b != b'e').filter(u8::is_ascii_digit).count();
+        // The same number of digits, rounded from the exact value, to even.
+        let even = format!("{:.*e}", digits - 1, x);
+        if even == shortest || even.parse::<f64>() != Ok(x) {
+            return shown;
+        }
+        // The two differ in the last digit alone: Rust's is one more, and odd.
+        let last = even.bytes().take_while(|b| *b != b'e').filter(u8::is_ascii_digit).last().unwrap_or(b'0');
+        let end = shown.find('e').unwrap_or(shown.len());
+        match shown[..end].rfind(|c: char| c.is_ascii_digit()) {
+            Some(at) if shown.as_bytes()[at] == last + 1 => format!("{}{}{}", &shown[..at], last as char, &shown[at + 1..]),
+            _ => shown,
+        }
+    }
+
+    /// A text in its quotes: `"`, `\\`, new line, carriage return and
+    /// tab as a program writes them, any other control character as its
+    /// code, and every other character as it is.
     fn quoted(s: &str) -> String {
-        format!("{s:?}")
+        let mut b = String::with_capacity(s.len() + 2);
+        b.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => b.push_str("\\\""),
+                '\\' => b.push_str("\\\\"),
+                '\n' => b.push_str("\\n"),
+                '\r' => b.push_str("\\r"),
+                '\t' => b.push_str("\\t"),
+                '\0' => b.push_str("\\0"),
+                c if (c as u32) < 0x20 || (0x7f..0xa0).contains(&(c as u32)) => b.push_str(&format!("\\u{{{:x}}}", c as u32)),
+                c => b.push(c),
+            }
+        }
+        b.push('"');
+        b
     }
 
     /// How `print`, `str()` and f-strings show a value.
@@ -251,7 +356,7 @@ mod z {
         match v {
             V::Str(s) => s.to_string(),
             V::Int(n) => n.to_string(),
-            V::Float(x) => format!("{x:?}"),
+            V::Float(x) => float_text(*x),
             V::Bool(b) => b.to_string(),
             V::None => "none".into(),
             V::Missing => "?".into(),
@@ -268,7 +373,7 @@ mod z {
                 format!("[{}]", parts.join(", "))
             }
             V::Quantity(x, unit) if x.fract() == 0.0 && x.abs() < 1e15 => format!("{} {unit}", *x as i64),
-            V::Quantity(x, unit) => format!("{x:?} {unit}"),
+            V::Quantity(x, unit) => format!("{} {unit}", float_text(*x)),
             V::Instance(o) => {
                 let fields = o.fields.borrow();
                 let parts: Vec<String> = o.cls.fields.iter().zip(fields.iter()).map(|(n, v)| format!("{n}={}", repr(v))).collect();
@@ -1431,6 +1536,28 @@ mod z {
         }
     }
 
+    /// The lines of a text. A line ends at "\n", and a "\r" just before
+    /// that "\n" goes with it. A "\r" anywhere else stays in its line. The
+    /// last line need not end, and an end at the very end starts no line.
+    fn lines(text: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while !rest.is_empty() {
+            match rest.find('\n') {
+                Some(at) => {
+                    let line = &rest[..at];
+                    out.push(line.strip_suffix('\r').unwrap_or(line));
+                    rest = &rest[at + 1..];
+                }
+                None => {
+                    out.push(rest);
+                    rest = "";
+                }
+            }
+        }
+        out
+    }
+
     fn strings<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> V {
         new_list(parts.into_iter().map(|p| s(p.as_ref())).collect())
     }
@@ -1465,7 +1592,7 @@ mod z {
                     }
                     "lines" => {
                         arity(name, &args, 0, 0, line)?;
-                        Ok(strings(s_.lines()))
+                        Ok(strings(lines(s_)))
                     }
                     "replace" => {
                         arity(name, &args, 2, 2, line)?;
@@ -1782,7 +1909,7 @@ mod z {
                         let mut code = self.four_hex()?;
                         if (0xD800..0xDC00).contains(&code) && self.word("\\u") {
                             let low = self.four_hex()?;
-                            if low < 0xDC00 {
+                            if !(0xDC00..0xE000).contains(&low) {
                                 return None;
                             }
                             code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
@@ -1890,8 +2017,8 @@ mod z {
             V::None => "null".into(),
             V::Bool(b) => b.to_string(),
             V::Int(n) => n.to_string(),
-            V::Float(x) if !x.is_finite() => return raise_error("ValueError", format!("JSON has no way to write {x:?}"), line),
-            V::Float(x) => format!("{x:?}"),
+            V::Float(x) if !x.is_finite() => return raise_error("ValueError", format!("JSON has no way to write {}", float_text(*x)), line),
+            V::Float(x) => float_text(*x),
             V::Str(s) => json_text(s),
             V::List(l) => {
                 let parts: Result<Vec<String>, Exc> = l.borrow().iter().map(|item| json_write(item, line)).collect();
@@ -2015,7 +2142,7 @@ mod z {
             V::Float(x) => raise_error("ValueError", format!("cannot turn {x} into an int"), line),
             V::Str(t) => match strip(t).replace('_', "").parse() {
                 Ok(n) => Ok(V::Int(n)),
-                Err(_) => raise_error("ValueError", format!("cannot turn {t:?} into an int"), line),
+                Err(_) => raise_error("ValueError", format!("cannot turn {} into an int", quoted(t)), line),
             },
             other => wrong_type("int", "a number or a str", other, line),
         }
@@ -2028,7 +2155,7 @@ mod z {
             V::Float(x) => Ok(V::Float(*x)),
             V::Str(t) => match strip(t).parse() {
                 Ok(x) => Ok(V::Float(x)),
-                Err(_) => raise_error("ValueError", format!("cannot turn {t:?} into a float"), line),
+                Err(_) => raise_error("ValueError", format!("cannot turn {} into a float", quoted(t)), line),
             },
             other => wrong_type("float", "a number or a str", other, line),
         }
@@ -2118,7 +2245,7 @@ mod z {
     fn ratio(name: &str, args: &[V], line: usize) -> Result<f64, Exc> {
         let x = one_number(name, args, line)?;
         if !(-1.0..=1.0).contains(&x) {
-            return raise_error("ValueError", format!("`{name}` needs a number from -1 to 1, and this is {x:?}"), line);
+            return raise_error("ValueError", format!("`{name}` needs a number from -1 to 1, and this is {}", float_text(x)), line);
         }
         Ok(x)
     }
@@ -2126,20 +2253,22 @@ mod z {
     fn above_zero(name: &str, args: &[V], line: usize) -> Result<f64, Exc> {
         let x = one_number(name, args, line)?;
         if x <= 0.0 {
-            return raise_error("ValueError", format!("cannot take the logarithm of {x:?}"), line);
+            return raise_error("ValueError", format!("cannot take the logarithm of {}", float_text(x)), line);
         }
         Ok(x)
     }
 
     /// A whole float as an int; infinity and NaN stay as they are.
+    /// What `floor` and `ceil` give is an int: one too big for an int is
+    /// the biggest int there is, and what is not a number is 0.
     fn whole_of(x: f64) -> V {
-        if x.is_finite() { V::Int(x as i64) } else { V::Float(x) }
+        V::Int(x as i64)
     }
 
     pub fn b_math_sqrt(args: Vec<V>, line: usize) -> R {
         let x = one_number("sqrt", &args, line)?;
         if x < 0.0 {
-            return raise_error("ValueError", format!("cannot take the square root of {x:?}"), line);
+            return raise_error("ValueError", format!("cannot take the square root of {}", float_text(x)), line);
         }
         Ok(V::Float(x.sqrt()))
     }
@@ -2227,14 +2356,45 @@ mod z {
         Ok(q(STARTED.with(|t| t.elapsed().as_secs_f64() * 1000.0), "ms"))
     }
 
+    /// What is at a path: nothing, a file that can be read, or something
+    /// else (a folder, a file that may not be read). It opens the path and
+    /// reads one byte, since some systems open a folder and only fail
+    /// when it is read.
+    #[derive(PartialEq)]
+    enum At {
+        Nothing,
+        File,
+        Other,
+    }
+
+    fn at(path: &str) -> At {
+        use std::io::Read;
+        // A system may say something else of a path with nothing in it.
+        if path.is_empty() {
+            return At::Nothing;
+        }
+        match std::fs::File::open(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => At::Nothing,
+            Err(_) => At::Other,
+            Ok(mut file) => match file.read(&mut [0u8; 1]) {
+                Ok(_) => At::File,
+                Err(_) => At::Other,
+            },
+        }
+    }
+
     pub fn b_files_read(args: Vec<V>, line: usize) -> R {
         let path = paths("read", &args, 1, line)?.remove(0);
+        match at(&path) {
+            At::Nothing => return file_error(format!("there is no file `{path}`"), line),
+            At::Other => return file_error(format!("cannot read `{path}`"), line),
+            At::File => {}
+        }
         match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(t) if !t.contains('\0') => Ok(st(t)),
                 _ => file_error(format!("`{path}` does not hold text"), line),
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => file_error(format!("there is no file `{path}`"), line),
             Err(_) => file_error(format!("cannot read `{path}`"), line),
         }
     }
@@ -2258,19 +2418,16 @@ mod z {
 
     pub fn b_files_exists(args: Vec<V>, line: usize) -> R {
         let path = paths("exists", &args, 1, line)?.remove(0);
-        Ok(V::Bool(std::path::Path::new(&path).is_file()))
+        Ok(V::Bool(at(&path) == At::File))
     }
 
     pub fn b_files_remove(args: Vec<V>, line: usize) -> R {
         let path = paths("remove", &args, 1, line)?.remove(0);
-        let p = std::path::Path::new(&path);
-        if !p.exists() {
-            return file_error(format!("there is no file `{path}`"), line);
+        match at(&path) {
+            At::Nothing => file_error(format!("there is no file `{path}`"), line),
+            At::File if std::fs::remove_file(&path).is_ok() => Ok(V::None),
+            _ => file_error(format!("cannot remove `{path}`"), line),
         }
-        if p.is_file() && std::fs::remove_file(p).is_ok() {
-            return Ok(V::None);
-        }
-        file_error(format!("cannot remove `{path}`"), line)
     }
 
     pub fn b_program_arguments(args: Vec<V>, line: usize) -> R {
@@ -2284,7 +2441,7 @@ mod z {
         match json_parse(&t) {
             Some(v) => Ok(v),
             None => {
-                let start = t.trim_start();
+                let start = t.trim_start_matches([' ', '\t', '\n', '\r']);
                 let shown = if start.chars().count() > 30 { format!("{}...", start.chars().take(30).collect::<String>()) } else { start.to_string() };
                 raise_error("ValueError", format!("this text is not JSON: `{shown}`"), line)
             }

@@ -1226,9 +1226,9 @@ static class Z
     // A float as Rust's `parse::<f64>` reads it, or null.
     static double? parseFloat(string s)
     {
-        if (!FLOAT.IsMatch(s) || s.EndsWith("\n")) return null;
+        if (!FLOAT.IsMatch(s) || s.EndsWith('\n')) return null;
         string body = s.TrimStart('+', '-').ToLowerInvariant();
-        bool negative = s.StartsWith("-");
+        bool negative = s.StartsWith('-');
         if (body == "inf" || body == "infinity") return negative ? double.NegativeInfinity : double.PositiveInfinity;
         if (body == "nan") return double.NaN;
         return double.Parse(s, System.Globalization.NumberStyles.Float, C);
@@ -1372,9 +1372,12 @@ static class Z
                     {
                         arity(name, args, 0, 0, line);
                         if (s.Length == 0) return new ZList(new System.Collections.Generic.List<object>());
+                        // A "\r" goes with the "\n" just after it, and with nothing else.
                         var parts = new System.Collections.Generic.List<string>(s.Split('\n'));
-                        if (parts[parts.Count - 1].Length == 0) parts.RemoveAt(parts.Count - 1);
-                        for (int i = 0; i < parts.Count; i++) if (parts[i].EndsWith("\r")) parts[i] = parts[i].Substring(0, parts[i].Length - 1);
+                        string last = parts[parts.Count - 1];
+                        parts.RemoveAt(parts.Count - 1);
+                        for (int i = 0; i < parts.Count; i++) if (parts[i].EndsWith('\r')) parts[i] = parts[i].Substring(0, parts[i].Length - 1);
+                        if (last.Length > 0) parts.Add(last);
                         return strings(parts);
                     }
                 case "replace":
@@ -1616,7 +1619,7 @@ static class Z
         bool isNum = isNumber(v) || v is Quantity;
         if (zero && isNum)
         {
-            if (body.StartsWith("-")) return "-" + new string('0', padding) + body.Substring(1);
+            if (body.StartsWith('-')) return "-" + new string('0', padding) + body.Substring(1);
             return new string('0', padding) + body;
         }
         string a = align ?? (isNum ? ">" : "<");
@@ -1693,7 +1696,7 @@ static class Z
                             if (code >= 0xD800 && code < 0xDC00 && word("\\u"))
                             {
                                 int low = fourHex();
-                                if (low < 0xDC00) throw new NotJson();
+                                if (low < 0xDC00 || low > 0xDFFF) throw new NotJson();
                                 code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                             }
                             if ((code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF) throw new NotJson();
@@ -1831,6 +1834,8 @@ static class Z
     // "file", "nothing" or "other": what is at a path.
     static string at(string path)
     {
+        // .NET refuses a path with nothing in it before it looks.
+        if (path.Length == 0) return "nothing";
         try
         {
             using var f = System.IO.File.OpenRead(path);
@@ -1838,8 +1843,20 @@ static class Z
             return "file";
         }
         catch (System.IO.FileNotFoundException) { return "nothing"; }
-        catch (System.IO.DirectoryNotFoundException) { return "nothing"; }
+        catch (System.IO.DirectoryNotFoundException) { return throughFile(path) ? "other" : "nothing"; }
         catch (System.Exception) { return "other"; }
+    }
+
+    // A path through a file (`notes.txt/x`) is not "nothing": something is
+    // in the way, as `zeno run` says.
+    static bool throughFile(string path)
+    {
+        for (string up = System.IO.Path.GetDirectoryName(path); !string.IsNullOrEmpty(up); up = System.IO.Path.GetDirectoryName(up))
+        {
+            if (System.IO.File.Exists(up)) return true;
+            if (System.IO.Directory.Exists(up)) return false;
+        }
+        return false;
     }
 
     static string[] paths(string name, object[] args, int count, int line)
@@ -1885,7 +1902,7 @@ static class Z
         }
         if (!any) return null;
         string s = new System.Text.UTF8Encoding(false).GetString(bytes.ToArray());
-        if (ended && s.EndsWith("\r")) s = s.Substring(0, s.Length - 1);
+        if (ended && s.EndsWith('\r')) s = s.Substring(0, s.Length - 1);
         return s.Replace("\0", "");
     }
 
@@ -1943,7 +1960,7 @@ static class Z
             case string s:
                 {
                     string t = strip(s).Replace("_", "");
-                    if (System.Text.RegularExpressions.Regex.IsMatch(t, "^[+-]?[0-9]+$") && !t.EndsWith("\n")
+                    if (System.Text.RegularExpressions.Regex.IsMatch(t, "^[+-]?[0-9]+$") && !t.EndsWith('\n')
                         && long.TryParse(t, System.Globalization.NumberStyles.AllowLeadingSign, C, out long v))
                     {
                         return v;
@@ -2064,7 +2081,9 @@ static class Z
     }
 
     // A whole float as an int; infinity and NaN stay as they are.
-    static object wholeOf(double x) => double.IsNaN(x) || double.IsInfinity(x) ? (object)x : (object)toInt(x);
+    // What `floor` and `ceil` give is an int: one too big for an int is the
+    // biggest int there is, and what is not a number is 0, as in `zeno run`.
+    static object wholeOf(double x) => toInt(x);
 
     public static object b_math_sqrt(object[] args, int line)
     {
@@ -2194,7 +2213,7 @@ static class Z
         if (v == NOT_JSON)
         {
             int a = 0;
-            while (a < s.Length && char.IsWhiteSpace(s[a])) a++;
+            while (a < s.Length && " \t\n\r".IndexOf(s[a]) >= 0) a++;
             string start = s.Substring(a);
             string shown = textLength(start) > 30 ? sub(start, 0, 30) + "..." : start;
             throw raiseError("ValueError", "this text is not JSON: `" + shown + "`", line);

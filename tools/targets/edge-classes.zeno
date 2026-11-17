@@ -1,0 +1,198 @@
+# Classes, interfaces, generics, enums, match and sized ints at their edges.
+interface Shape {
+    function area(self) -> float
+    function name(self) -> str
+}
+class Square is Shape {
+    side: float
+    function area(self) -> float {
+        return self.side * self.side
+    }
+    function name(self) -> str {
+        return "square"
+    }
+}
+class Disc is Shape {
+    r: float
+    tags: list[str] = []
+    function area(self) -> float {
+        return 3.0 * self.r * self.r
+    }
+    function name(self) -> str {
+        return "disc"
+    }
+    function tag(self, t: str) -> Disc {
+        self.tags.append(t)
+        return self
+    }
+}
+let shapes: list[Shape] = [Square(2.0), Disc(1.0), Square(0.5)]
+print([s.name() for s in shapes], [s.area() for s in shapes], shapes)
+# A default is made new for each object.
+let d1 = Disc(1.0)
+let d2 = Disc(1.0)
+d1.tag("a").tag("b")
+print(d1, d2, d1 == d2, d1.tags == ["a", "b"], Disc(1.0, ["a", "b"]) == d1)
+# Objects are shared, not copied.
+let alias = d1
+alias.r = 9.0
+print(d1.r, alias == d1)
+let inner = [0, 0]
+let grid = [inner, inner]
+grid[0][0] = 7
+print(grid, inner)
+var rows = []
+for i in range(2) {
+    rows.append([i, i])
+}
+let same = rows[0]
+same.append(99)
+print(rows, same)
+# Equal contents, cycles left alone.
+class Node {
+    value: int
+    next: Node or none = none
+    function sum(self) -> int {
+        var total = self.value
+        var at = self.next
+        while at is not none {
+            total += at.value
+            at = at.next
+        }
+        return total
+    }
+}
+let chain = Node(1, Node(2, Node(3)))
+print(chain, chain.sum(), chain == Node(1, Node(2, Node(3))), chain == Node(1, Node(2)))
+# Methods as values.
+let get_sum = chain.sum
+let pieces = [chain.sum, Node(10).sum]
+print(get_sum(), [f() for f in pieces])
+chain.value = 100
+print(get_sum())
+# Generic class and function.
+class Pair[A, B] {
+    first: A
+    second: B
+    function swap(self) -> Pair[B, A] {
+        return Pair(self.second, self.first)
+    }
+}
+function twice[T](x: T) -> list[T] {
+    return [x, x]
+}
+let pair = Pair(1, "one")
+print(pair, pair.swap(), pair.swap().swap() == pair, twice(pair.first), twice("x"), twice([1]), twice(none), twice(2.5))
+# Enums: cases with and without fields, equality, as dict values, in lists.
+enum Token {
+    Number(value: float)
+    Word(text: str)
+    Two(left: Token, right: Token)
+    End
+}
+function show(t: Token) -> str {
+    match t {
+        case Number(v) { return f"n{v}" }
+        case Word(w) { return "w" + w }
+        case Two(l, r) { return "(" + show(l) + " " + show(r) + ")" }
+        case End { return "." }
+    }
+}
+let tokens = [Number(1.0), Word("a"), Two(Number(2.0), Two(Word("b"), End)), End]
+print([show(t) for t in tokens], tokens)
+print(Number(1.0) == Number(1.0), Number(1.0) == Number(2.0), End == End, Word("a") != Word("a"), End in tokens, Word("zz") in tokens, tokens.find(End), tokens.find(Word("a")))
+# match on values: ints, strs, bools, none, with a catch-all.
+function kind(x: int) -> str {
+    match x {
+        case 0 { return "zero" }
+        case 1 { return "one" }
+        case n { return f"many {n}" }
+    }
+}
+print([kind(n) for n in [0, 1, -1, 5]])
+function word(s: str) -> int {
+    match s {
+        case "a" { return 1 }
+        case "" { return 0 }
+        case "é" { return 2 }
+        case other { return len(other) }
+    }
+}
+print([word(s) for s in ["a", "", "é", "long"]])
+# Sized ints: every width at its edges, in fields and lists.
+class Reg {
+    a: u8
+    b: i8
+    c: u16
+    d: i16
+    e: u32
+    f: i32
+    g: int
+    h: int
+}
+let reg = Reg(255, -128, 65535, -32768, 4294967295, -2147483648, 9223372036854775807, -9223372036854775807 - 1)
+print(reg)
+print(u8.wrap(256), u8.wrap(-1), i8.wrap(128), i8.wrap(-129), u16.wrap(65536), i16.wrap(32768), u32.wrap(-1), i32.wrap(2147483648), u8.wrap(1000000007), i8.wrap(-1000000007))
+var small: u8 = 250
+try {
+    small += 10
+} except OverflowError as e {
+    print("u8:", e.message, small)
+}
+try {
+    let big = 256
+    print(u8(big))
+} except Error as e {
+    print(e.kind, e.message)
+}
+try {
+    let low = -129
+    print(i8(low))
+} except Error as e {
+    print(e.kind, e.message)
+}
+try {
+    reg.a = u8(reg.a + 1)
+} except Error as e {
+    print(e.kind, e.message)
+}
+var bytes: list[u8] = [1, 2, 255]
+try {
+    bytes[0] = u8(bytes[2] * 2)
+} except Error as e {
+    print(e.kind, e.message, bytes)
+}
+print(u8(200) + u8(55), u8(7) * u8(3), u8(255) & u8(15), u8(1) << 7, u8(128) >> 7, ~0, ~255, -128 // 3, i8(-128) % 3)
+# Errors of the program's own, raised through calls.
+class Fault {
+    code: int
+    where: str = "here"
+}
+function deep(n: int) raises Fault {
+    if n == 0 {
+        raise Fault(42)
+    }
+    deep(n - 1)
+}
+try {
+    deep(5)
+} except Fault as f {
+    print("fault", f.code, f.where, f)
+}
+function wrap_fault() -> str raises Fault {
+    try {
+        deep(2)
+        return "none"
+    } except Fault as f {
+        if f.code == 42 {
+            raise Fault(f.code + 1, "there")
+        }
+        return "other"
+    }
+}
+try {
+    print(wrap_fault())
+} except Fault as f {
+    print("again", f)
+}
+raise Fault(7, "the end")

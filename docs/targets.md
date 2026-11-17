@@ -29,7 +29,7 @@ Wrote hello.html. Open it in a browser
 | `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
 | `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
 | `cpp` | `hello.cpp` | `g++ -std=c++17 -O2 hello.cpp -o hello && ./hello` |
-| `rust` | `hello.rs` | `rustc -O --edition 2021 hello.rs && ./hello` |
+| `rust` | `hello.rs` | `rustc -O --edition 2021 hello.rs -o hello && ./hello` |
 | `wasm` | `hello.wasm`, built by `rustc` | `wasmtime hello.wasm`, or any WebAssembly host with WASI |
 
 `--target wasm` is the one that builds as well as writes: it writes the
@@ -76,21 +76,25 @@ overflows; the written program still overflows where Zeno's does,
 because the rules of Zeno come with it.
 
 That is held to by a tool, not by hope. `tools/targets.py` runs every
-example, every sample of the book and four programs written to try the
-corners (`tools/targets/`) with `zeno run`, then builds each for every
-target, runs it, and compares:
+example, every sample of the book and twenty-two programs written to try
+the corners (`tools/targets/`: the edges of an int, floats as text,
+text in every script, the order a line is worked out in, errors, deep
+calls, JSON, files, typed lines that are not text, names that are words
+of other languages) with `zeno run`, then builds each for every target,
+runs it, and compares what it printed and, if it stopped with an error,
+the message, the file and the line:
 
 ```
 $ python3 tools/targets.py
-js: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-py: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-go: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-java: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-cs: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-cpp: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-rust: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-wasm: 319 of 319 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-html: 311 of 311 programs print what `zeno run` prints (29 left out: ...)
+js: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+py: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+go: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+java: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+cs: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+cpp: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+rust: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+wasm: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+html: 328 of 328 programs print what `zeno run` prints (30 left out: ...)
 ```
 
 ## How it is done
@@ -136,7 +140,7 @@ Z.start(["area.zeno"], function main() {
     return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4);
   });
   math_ = Z.module("math");
-  Z.b.print([area(Z.float(2.0))], 6);
+  Z.b.print([Z.direct(area, 6, Z.float(2.0))], 6);
 });
 ```
 
@@ -148,14 +152,16 @@ def main():
         return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4)
     area = Z.fn("area", ["r"], [False], z_f1)
     math_.v = Z.module("math")
-    Z.b.print([area(2.0)], 6)
+    Z.b.print([Z.direct(area, 6, 2.0)], 6)
 ```
 
 `Z.mul(a, b, 4)` multiplies as Zeno multiplies, and if the answer does
-not fit, stops with Zeno's message for line 4. `area` is called as a
-plain function, since it is known where it is written; `math` is the
-module, renamed `math_` because `math` is a name the targets' own libraries
-use.
+not fit, stops with Zeno's message for line 4. `Z.direct(area, 6, ...)`
+calls `area` straight away, since it is known where it is written, and
+counts the call: the 1000th call inside another stops the program at
+line 6 with Zeno's message, as `zeno run` does (decision 24.23). `math`
+is the module, renamed `math_` because `math` is a name the targets'
+own libraries use.
 `area` is moved above the `import` line, as Zeno lets a function be
 used before the line it is written on. A function is a real
 function of the language, with its Zeno name and parameters kept on it
@@ -290,6 +296,38 @@ whose failure the code after it looks at, as in Go. Zeno is itself
 written in Rust, so the Rust runtime prints and reads floats, and
 quotes text, with the very code `zeno run` uses.
 
+## Corners that have a rule
+
+A review of every target (2026-11-16) wrote programs to look for
+places where a target did what its own language does and not what
+`zeno run` does. It found about thirty, all in corners the first 319
+programs did not reach. Each now has a rule that `zeno run` and every
+target keep, and a program in `tools/targets/` that holds them to it:
+
+- **The order of a line.** Named arguments are worked out in the order
+  they are written; `x += f()` reads `x` first; a variable is read
+  when its turn comes, whatever a later part of the line changes
+  (decision 24.22).
+- **Text in quotes.** `["தமிழ்"]` prints as it is written. Only
+  control characters are shown as codes (24.20).
+- **Floats.** A float exactly between two shortest texts takes the
+  even one (24.21); the smallest floats print as `5e-324` in Java too.
+- **Nesting.** Every target counts calls and stops at the 1000th, with
+  the function's name and the line (24.23).
+- **The library.** `lines()` and `input()` and a lone `\r`; typed bytes
+  that are not UTF-8; `range` at the last int; `math.floor` of what is
+  not a number; `-0.0`; `\u` in JSON; a path with nothing in it
+  (24.24).
+- **Names.** Any file name builds (`my prog.zeno`, `2048.zeno`,
+  `speed_test.zeno`, `struct.zeno`); a name in capitals is safe from
+  the macros of C; `args` and `delegate` are safe in Java and C#
+  (24.25).
+- **Long chains.** A linked list of a million objects is let go link
+  by link in Rust and WebAssembly, not by a million calls inside one
+  another, which a WebAssembly host has no stack for.
+- **A page.** A text that says `</script>` or `<!--` cannot end or
+  hide the script of the page it is printed in.
+
 ## Known limits
 
 - **The last digit of `sin`, `exp`, `pow` and the like.** `zeno run`
@@ -298,10 +336,9 @@ quotes text, with the very code `zeno run` uses.
   carry their own, which can give a different 17th digit, the last one
   a float prints, for some inputs. Go uses a copy of JavaScript's `sin`,
   `cos` and `tan`, and Java uses `Math` rather than `StrictMath`, which
-  makes it rare; none of the 319 programs shows it (decision 24.16).
-- **Nesting.** Every target stops at 1000 nested calls with Zeno's
-  message, as `zeno run` does. Go, Java and C# count; JavaScript and
-  Python stop where their own limit is, with a message close to Zeno's.
+  makes it rare; none of the 337 programs shows it (decision 24.16).
+- **A device as a file.** On WebAssembly a program sees only the folder
+  it was started in, so `/dev/null` and the like are not there.
 
 ## Speed
 
@@ -311,10 +348,10 @@ that allows. Seconds, on the benchmarks in `bench/`, against `zeno run
 
 | | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) | `cpp` (g++ 13) | `rust` (1.97) | `wasm` (in Node) |
 |---|---|---|---|---|---|---|---|---|---|
-| fib | 0.78 | 0.12 | 2.3 | 0.31 | 0.19 | 0.90 | 0.19 | 0.40 | 0.59 |
-| sort | 3.7 | 1.2 | 18.1 | 2.1 | 1.2 | 4.2 | 1.3 | 1.8 | 2.6 |
-| strings | 1.8 | 0.6 | 1.6 | 0.9 | 0.8 | 1.8 | 1.8 | 1.3 | 1.2 |
-| trees | 10.6 | 2.2 | 28.3 | 4.2 | 1.4 | 6.6 | 4.6 | 4.5 | 4.2 |
+| fib | 0.78 | 0.16 | 3.5 | 0.31 | 0.19 | 0.90 | 0.19 | 0.40 | 0.59 |
+| sort | 3.7 | 1.2 | 19.6 | 2.1 | 1.2 | 4.2 | 1.3 | 1.8 | 2.6 |
+| strings | 1.8 | 0.6 | 1.7 | 0.9 | 0.8 | 1.8 | 1.8 | 1.3 | 1.2 |
+| trees | 10.6 | 2.3 | 37.4 | 4.2 | 1.4 | 6.6 | 4.6 | 4.5 | 4.2 |
 
 (Go, Java, C++ and Rust timed as built programs, built first; C#
 as `dotnet run` on its second run, which reuses the build, about half

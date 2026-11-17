@@ -1,0 +1,7 @@
+# Too deep: the same stop, with the same message, and no `except` catches it.
+function down(n: int) -> int {
+    return down(n + 1) + 1
+}
+print("before")
+try { print(down(0)) } except { print("caught") }
+print("after")

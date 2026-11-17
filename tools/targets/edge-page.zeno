@@ -1,0 +1,16 @@
+# Text that would end a script in a page, or hide the rest of it.
+let texts = ["</script>", "</SCRIPT>", "</ScRiPt >", "<!--", "<!-- <script>", "-->", "<script>alert(1)</script>", "]]>", "<\\/script>", "a</b", "<", "</", "<!", "<![CDATA[", "\\x3c/script>", "</style></body></html>"]
+for text in texts {
+    print(text, len(text), [text])
+}
+print(f"</script>{1 + 1}<!--{2}-->", "</scr" + "ipt>")
+class Tag {
+    name: str = "</script>"
+}
+print(Tag(), ["</script>": "<!--"])
+try {
+    raise ValueError("</script><!--")
+} except ValueError as e {
+    print(e.message)
+}
+raise ValueError("</script> at the end <!--")

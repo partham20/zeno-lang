@@ -275,7 +275,10 @@ impl<'a> Printer<'a> {
                 let names: Vec<String> = names.iter().map(|name| string(name)).collect();
                 format!("Z.call_named({}, [{}], [{}], [{}], {line})", self.expr(callee), self.exprs(args), names.join(", "), self.exprs(named))
             }
-            Expr::CallDirect { function, args, .. } => format!("{}({})", self.var(*function), self.exprs(args)),
+            Expr::CallDirect { function, args, line } => {
+                let args: String = args.iter().map(|arg| format!(", {}", self.expr(arg))).collect();
+                format!("Z.direct({}, {line}{args})", self.var(*function))
+            }
             Expr::CallMethod { object, name, args, names, named, line } => {
                 if names.is_empty() {
                     format!("Z.call_method({}, {}, [{}], {line})", self.expr(object), string(name), self.exprs(args))

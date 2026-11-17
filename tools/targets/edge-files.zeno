@@ -1,0 +1,79 @@
+# Files and typed lines at their edges.
+import files
+from program import arguments
+print(arguments(), len(arguments()))
+let path = "zeno-targets-edge-files.txt"
+function attempt(what: str, action: function() -> str) {
+    try {
+        print(what, "->", action())
+    } except FileError as e {
+        print(what, "-> FileError:", e.message)
+    }
+}
+attempt("read missing", function() -> str { return files.read("zeno-targets-no-such-file.txt") })
+attempt("read folder", function() -> str { return files.read(".") })
+attempt("read empty name", function() -> str { return files.read("") })
+attempt("remove missing", function() -> str {
+    files.remove("zeno-targets-no-such-file.txt")
+    return "removed"
+})
+attempt("remove folder", function() -> str {
+    files.remove(".")
+    return "removed"
+})
+attempt("write folder", function() -> str {
+    files.write(".", "x")
+    return "written"
+})
+attempt("write in missing folder", function() -> str {
+    files.write("zeno-targets-no-such-folder/x.txt", "x")
+    return "written"
+})
+attempt("append in missing folder", function() -> str {
+    files.append("zeno-targets-no-such-folder/x.txt", "x")
+    return "written"
+})
+attempt("write empty name", function() -> str {
+    files.write("", "x")
+    return "written"
+})
+print(files.exists("."), files.exists(""), files.exists("zeno-targets-no-such-file.txt"), files.exists("edge-files.bytes"), files.exists("edge-files.zeno"))
+attempt("read not text", function() -> str { return files.read("edge-files.bytes") })
+attempt("read zero byte", function() -> str { return files.read("edge-files.nul") })
+# What is written is what is read: nothing added, nothing changed.
+let texts = ["", "\n", "no end", "a\r\nb\r\n", "\r", "tab\tand space ", "é😀தமிழ்" + char(8232) + char(65279), "\n\n\n", " "]
+for text in texts {
+    files.write(path, text)
+    let back = files.read(path)
+    print(back == text, len(back), back.lines())
+}
+files.write(path, "one")
+files.append(path, "")
+files.append(path, "\ntwo")
+files.append(path, "\r\n")
+files.write(path + ".2", "")
+files.append(path + ".2", "made by append")
+print(files.read(path) == "one\ntwo\r\n", files.read(path + ".2"), files.read(path).lines())
+files.write(path, "second write is shorter")
+files.write(path, "short")
+print(files.read(path))
+files.remove(path)
+files.remove(path + ".2")
+print(files.exists(path), files.exists(path + ".2"))
+attempt("remove twice", function() -> str {
+    files.remove(path)
+    return "removed"
+})
+# A sleep of no time, or less, is no sleep.
+import time
+time.sleep(0 ms)
+time.sleep(-5 s)
+# Typed lines.
+var n = 0
+var line = input("first> ")
+while line is not none {
+    n += 1
+    print(n, len(line), f"[{line}]", [line], line.strip() == line, line.split())
+    line = input()
+}
+print(input("after the end> "), input())

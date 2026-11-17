@@ -1,0 +1,9 @@
+# 999 calls inside one another is the most there can be: the 1000th stops the program.
+function count(n: int) -> int {
+    if n == 0 { return 0 }
+    return count(n - 1) + 1
+}
+print(count(998))
+print(count(999))
+print(count(1000))
+print(count(1001))

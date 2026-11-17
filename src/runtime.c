@@ -2230,21 +2230,31 @@ static int64_t zeno_int(double x, int line, int col) {
 
 /* A str the way it is shown inside a list or an object: in quotes. */
 static const char *zeno_repr_str(const char *text) {
-    size_t length = 2;
-    for (const char *p = text; *p != '\0'; p++) {
-        length += (*p == '"' || *p == '\\' || *p == '\n' || *p == '\t' || *p == '\r') ? 2 : 1;
-    }
-    char *out = zeno_alloc_text(length + 1);
+    static const char hex[] = "0123456789abcdef";
+    /* The longest a byte becomes is the six of `\u{1f}`. */
+    char *out = zeno_alloc_text(strlen(text) * 6 + 3);
     char *o = out;
     *o++ = '"';
-    for (const char *p = text; *p != '\0'; p++) {
-        switch (*p) {
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        unsigned c = *p;
+        /* U+0080 to U+009F are the two bytes C2 80 to C2 9F. */
+        bool high = c == 0xC2 && p[1] >= 0x80 && p[1] <= 0x9F;
+        if (high) c = *++p;
+        switch (c) {
         case '"': *o++ = '\\'; *o++ = '"'; break;
         case '\\': *o++ = '\\'; *o++ = '\\'; break;
         case '\n': *o++ = '\\'; *o++ = 'n'; break;
         case '\t': *o++ = '\\'; *o++ = 't'; break;
         case '\r': *o++ = '\\'; *o++ = 'r'; break;
-        default: *o++ = *p;
+        default:
+            if (c < 0x20 || c == 0x7F || high) {
+                *o++ = '\\'; *o++ = 'u'; *o++ = '{';
+                if (c >= 0x10) *o++ = hex[c >> 4];
+                *o++ = hex[c & 15];
+                *o++ = '}';
+            } else {
+                *o++ = (char)c;
+            }
         }
     }
     *o++ = '"';

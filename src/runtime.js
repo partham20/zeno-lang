@@ -667,13 +667,39 @@ const Z = (function () {
     return slots;
   }
 
+  // How many calls are nested now. `zeno run` stops at 1000, long before
+  // JavaScript's own limit, so a program stops at the same call here.
+  let depth = 0;
+  const MAX_DEPTH = 1000;
+
+  function enter(fn, line) {
+    if (depth >= MAX_DEPTH) fatal("more than 1000 calls are nested. Is `" + (fn.zname || "function") + "` calling itself forever?", line);
+    depth++;
+  }
+
+  // A call of a function of the program known where it is written, with
+  // its arguments lined up already.
+  function direct(fn, line, ...args) {
+    enter(fn, line);
+    try {
+      return fn(...args);
+    } finally {
+      depth--;
+    }
+  }
+
   function callFunction(fn, positional, namedNames, named, line) {
     const name = fn.zname || "function";
-    const slots = bind(name, fn.zparams, positional, namedNames, named, line);
-    for (let i = 0; i < slots.length; i++) {
-      if (slots[i] === MISSING && !fn.zdefaults[i]) fatal("`" + name + "` needs a value for `" + fn.zparams[i] + "`", line);
+    enter(fn, line);
+    try {
+      const slots = bind(name, fn.zparams, positional, namedNames, named, line);
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i] === MISSING && !fn.zdefaults[i]) fatal("`" + name + "` needs a value for `" + fn.zparams[i] + "`", line);
+      }
+      return fn.apply(null, slots);
+    } finally {
+      depth--;
     }
-    return fn.apply(null, slots);
   }
 
   function noNamed(what, namedNames, line) {
@@ -804,7 +830,8 @@ const Z = (function () {
     for (;;) {
       const at = typed.indexOf(10);
       if (at >= 0) {
-        const line = typed.subarray(0, at);
+        // With its "\n", so that the caller knows the line was ended.
+        const line = typed.subarray(0, at + 1);
         typed = typed.subarray(at + 1);
         return line;
       }
@@ -946,10 +973,13 @@ const Z = (function () {
         }
         case "lines": {
           arity(name, args, 0, 0, line);
+          // A "\r" goes with the "\n" just after it, and with nothing else.
           if (s === "") return [];
           const parts = s.split("\n");
-          if (parts[parts.length - 1] === "") parts.pop();
-          return parts.map((p) => (p.endsWith("\r") ? p.slice(0, -1) : p));
+          const last = parts.pop();
+          const lines = parts.map((p) => (p.endsWith("\r") ? p.slice(0, -1) : p));
+          if (last !== "") lines.push(last);
+          return lines;
         }
         case "replace": {
           arity(name, args, 2, 2, line);
@@ -1159,7 +1189,7 @@ const Z = (function () {
             let code = fourHex();
             if (code >= 0xd800 && code < 0xdc00 && word("\\u")) {
               const low = fourHex();
-              if (low < 0xdc00) throw 0;
+              if (low < 0xdc00 || low > 0xdfff) throw 0;
               code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
             }
             if (code >= 0xd800 && code <= 0xdfff) throw 0;
@@ -1297,7 +1327,12 @@ const Z = (function () {
       const bytes = readLine();
       if (bytes === null) return null;
       let s = Buffer.from(bytes).toString("utf8");
-      if (s.endsWith("\r")) s = s.slice(0, -1);
+      // The line end is not part of the line: "\n", or "\r\n". A "\r"
+      // at the end of input that no "\n" follows stays.
+      if (s.endsWith("\n")) {
+        s = s.slice(0, -1);
+        if (s.endsWith("\r")) s = s.slice(0, -1);
+      }
       return s.replace(/\0/g, "");
     },
     len(args, line) {
@@ -1314,9 +1349,15 @@ const Z = (function () {
       let [start, stop, step] = args.length === 1 ? [0, args[0], 1] : args.length === 2 ? [args[0], args[1], 1] : args;
       if (step == 0) raise("ValueError", "the step of a range cannot be 0", line);
       const out = [];
-      start = Number(start); stop = Number(stop); step = Number(step);
-      if (step > 0) for (let i = start; i < stop; i += step) out.push(i);
-      else for (let i = start; i > stop; i += step) out.push(i);
+      if (Number.isSafeInteger(start) && Number.isSafeInteger(stop) && Number.isSafeInteger(step) && Number.isSafeInteger(stop + step)) {
+        if (step > 0) for (let i = start; i < stop; i += step) out.push(i);
+        else for (let i = start; i > stop; i += step) out.push(i);
+        return out;
+      }
+      // Ints too big for a JavaScript number to hold exactly. A step
+      // past the last int there is ends the range.
+      start = big(start); stop = big(stop); step = big(step);
+      for (let i = start; (step > 0n ? i < stop : i > stop) && i >= MIN && i <= MAX; i += step) out.push(int(i, line));
       return out;
     },
     int(args, line) {
@@ -1412,8 +1453,8 @@ const Z = (function () {
       const scale = convert(v.unit, "s");
       if (scale === null) fatal("`sleep` needs a time, such as `500 ms`, not a quantity in " + v.unit, line);
       const seconds = apply(scale, v.v);
-      if (!inNode) fatal("a program in a page cannot `sleep`: the page would stand still until it woke. Say what is to happen later with `web.after(500 ms, ...)`", line);
       if (seconds > 0) {
+        if (!inNode) fatal("a program in a page cannot `sleep`: the page would stand still until it woke. Say what is to happen later with `web.after(500 ms, ...)`", line);
         flush();
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(seconds, 1e9) * 1000);
       }
@@ -1461,7 +1502,7 @@ const Z = (function () {
       const s = text("parse", args[0], line);
       const v = jsonParse(s);
       if (v === undefined) {
-        const start = Array.from(s.replace(/^\s+/, ""));
+        const start = Array.from(s.replace(/^[ \t\n\r]+/, ""));
         raise("ValueError", "this text is not JSON: `" + start.slice(0, 30).join("") + (start.length > 30 ? "..." : "") + "`", line);
       }
       return v;
@@ -1597,7 +1638,7 @@ const Z = (function () {
     // Items, fields, loops
     index, setIndex, field, setField, items, pairs, isCase, caseField,
     // Calls
-    call, callNamed, callMethod, callMethodNamed, callBuiltin, builtin, module,
+    direct, call, callNamed, callMethod, callMethodNamed, callBuiltin, builtin, module,
     // Errors
     raise: raiseValue, catches, caught, fatal, raised,
     noMatch: (v, line) => fatal("no `case` matches " + repr(v), line),

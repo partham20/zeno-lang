@@ -1282,6 +1282,57 @@ mod tests {
     }
 
     #[test]
+    fn text_in_quotes_is_shown_by_zenos_own_rule() {
+        // Every character as it is, whatever script it is in (24.20).
+        assert_eq!(output("print([\"தமிழ்\", \"e\" + char(769), char(160), char(8232), \"😀\"])"), "[\"தமிழ்\", \"e\u{301}\", \"\u{a0}\", \"\u{2028}\", \"😀\"]\n");
+        // But for the five a program writes with `\\`, and the control characters.
+        assert_eq!(
+            output("print([\"q\\\"b\\\\n\\nr\\rt\\t\", char(1) + char(27) + char(127) + char(133) + char(159)])"),
+            "[\"q\\\"b\\\\n\\nr\\rt\\t\", \"\\u{1}\\u{1b}\\u{7f}\\u{85}\\u{9f}\"]\n"
+        );
+        assert_eq!(error("int(\"நூறு\")"), "uncaught ValueError: cannot turn \"நூறு\" into an int");
+    }
+
+    #[test]
+    fn a_float_between_two_shortest_texts_takes_the_even_one() {
+        // 1e15 + 0.25 is exactly between ...0.2 and ...0.3 (24.21).
+        assert_eq!(
+            output("print(1e15 + 0.25, 1e15 + 0.75, 8388608.0 + 1.0 / 1024.0, 70368744177664.0 + 0.125, -(1e15 + 0.25))"),
+            "1000000000000000.2 1000000000000000.8 8388608.000976562 70368744177664.12 -1000000000000000.2\n"
+        );
+        // Every other float is as it was.
+        assert_eq!(output("print(0.1 + 0.2, 1e16, 1.5e-7, 5e-324, 1.7976931348623157e308, 123456789012345680.0)"), "0.30000000000000004 1e16 1.5e-7 5e-324 1.7976931348623157e308 1.2345678901234568e17\n");
+    }
+
+    #[test]
+    fn a_range_ends_at_the_last_int() {
+        assert_eq!(
+            output("print(range(9223372036854775806, 9223372036854775807, 5), range(-9223372036854775807, -9223372036854775807 - 1, -5))"),
+            "[9223372036854775806] [-9223372036854775807]\n"
+        );
+    }
+
+    #[test]
+    fn the_hex_of_a_json_escape_is_four_digits() {
+        // A sign is not a digit, the low half of a pair has its own
+        // range, and the blanks of JSON are four: a form feed is not one.
+        let source = r#"import json
+let bs = "\\"
+for text in ["\"" + bs + "u+041\"", "\"" + bs + "ud83d" + bs + "ue000\"", char(12) + "1"] {
+    try {
+        print(json.parse(text))
+    } except ValueError as e {
+        print(e.message)
+    }
+}
+print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
+        assert_eq!(
+            output(source),
+            "this text is not JSON: `\"\\u+041\"`\nthis text is not JSON: `\"\\ud83d\\ue000\"`\nthis text is not JSON: `\u{c}1`\nA😀\n"
+        );
+    }
+
+    #[test]
     fn the_lines_of_a_text() {
         assert_eq!(
             output(

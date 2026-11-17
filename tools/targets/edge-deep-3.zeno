@@ -1,0 +1,24 @@
+# A mistake no except catches, inside a try.
+enum Light {
+    Red
+    Green
+}
+function name(light: Light) -> str {
+    match light {
+        case Red { return "red" }
+        case Green { return "green" }
+    }
+}
+class Thing {
+    n: int
+    function grow(self) -> int {
+        return self.grow() + 1
+    }
+}
+print(name(Red), name(Green))
+try {
+    print(Thing(1).grow())
+} except Error as e {
+    print("caught", e.kind)
+}
+print("not reached")

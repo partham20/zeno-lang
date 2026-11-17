@@ -565,10 +565,69 @@ impl Value {
     /// How the value looks inside a list or an object: strings get their quotes.
     pub fn repr(&self) -> String {
         match self {
-            Value::Str(s) => format!("{s:?}"),
+            Value::Str(s) => quoted(s),
             other => other.to_string(),
         }
     }
+}
+
+/// A float as text: the fewest digits that name this float and no other,
+/// with `.0` on a whole one, and an exponent below 0.0001 and from 1e16.
+///
+/// Now and then two texts of that length are equally near the float:
+/// 1e15 + 0.25 lies exactly between `...0.2` and `...0.3`. Then the one
+/// that ends in an even digit is taken, as C, JavaScript, Python, Java
+/// and C# take it (decision 24.21). Rust alone takes the upper one, so
+/// that case is put right here. It needs 16 digits or more to happen.
+pub fn float_text(x: f64) -> String {
+    let shown = format!("{x:?}");
+    if shown.len() < 16 || !x.is_finite() {
+        return shown;
+    }
+    let shortest = format!("{x:e}");
+    let digits = shortest.bytes().take_while(|b| *b != b'e').filter(u8::is_ascii_digit).count();
+    // The same number of digits, rounded from the exact value, to even.
+    let even = format!("{:.*e}", digits - 1, x);
+    if even == shortest || even.parse::<f64>() != Ok(x) {
+        return shown;
+    }
+    // The two differ in the last digit alone: Rust's is one more, and odd.
+    let last = even.bytes().take_while(|b| *b != b'e').filter(u8::is_ascii_digit).last().unwrap_or(b'0');
+    let end = shown.find('e').unwrap_or(shown.len());
+    match shown[..end].rfind(|c: char| c.is_ascii_digit()) {
+        Some(at) if shown.as_bytes()[at] == last + 1 => format!("{}{}{}", &shown[..at], last as char, &shown[at + 1..]),
+        _ => shown,
+    }
+}
+
+/// A text in its quotes, as it is shown inside a list, a dict or an
+/// object, and in the message of an error (decision 24.20).
+///
+/// `"`, `\\`, the new line, the carriage return and the tab are written
+/// the way a Zeno program writes them. Any other control character (below
+/// a space, or from U+007F to U+009F) would not show on a screen, so it is
+/// written as its code, `\u{1b}`. Every other character is written as it
+/// is. The rule is Zeno's own and needs no table of Unicode, so that every
+/// way of running a program quotes a text the same.
+pub fn quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 || (0x7f..0xa0).contains(&(c as u32)) => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// `==` in Zeno. Values are equal when their contents are equal; an int and
@@ -635,14 +694,14 @@ impl fmt::Display for Value {
         match self {
             Value::Int(n) => write!(f, "{n}"),
             // {:?} keeps the ".0" on whole floats, so 3.0 does not print as 3.
-            Value::Float(x) => write!(f, "{x:?}"),
+            Value::Float(x) => f.write_str(&float_text(*x)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::None => write!(f, "none"),
             Value::Quantity(x, unit) if x.fract() == 0.0 && x.abs() < 1e15 => {
                 write!(f, "{} {unit}", *x as i64)
             }
-            Value::Quantity(x, unit) => write!(f, "{x:?} {unit}"),
+            Value::Quantity(x, unit) => write!(f, "{} {unit}", float_text(*x)),
             Value::List(items) => {
                 let items: Vec<String> = items.borrow().iter().map(Value::repr).collect();
                 write!(f, "[{}]", items.join(", "))

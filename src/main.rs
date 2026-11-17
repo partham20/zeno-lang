@@ -806,7 +806,7 @@ fn own_page(path: &str) -> Option<String> {
 /// The languages `--target` can write a program in: the name after
 /// `--target`, the file it writes, and how to run that file.
 const TARGETS: &[(&str, &str, &str)] =
-    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}"), ("rust", "rs", "rustc -O --edition 2021 {file} && ./{name}"), ("wasm", "wasm", "wasmtime {file}")];
+    &[("js", "js", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}"), ("rust", "rs", "rustc -O --edition 2021 {file} -o {name} && ./{name}"), ("wasm", "wasm", "wasmtime {file}")];
 
 /// `zeno build --target js <file>`: write the program in another
 /// language (lower.rs, and emit_js.rs and the others).
@@ -841,6 +841,16 @@ fn build_target(path: &str, target: &str) -> Option<()> {
     };
     let source = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
+    // Go reads a meaning into two kinds of file name: `go run` refuses a
+    // file that ends in `_test.go`, and does not see one that begins
+    // with `_` or `.`. Such a program gets `program` in its name.
+    let go_name = match name {
+        _ if target != "go" => name.to_string(),
+        _ if name.starts_with(['_', '.']) => format!("program{name}"),
+        _ if name.ends_with("_test") => format!("{name}_program"),
+        _ => name.to_string(),
+    };
+    let name = go_name.as_str();
     let file = format!("{name}.{extension}");
     let text = match target {
         // The page written for the program, if there is one, with the
@@ -871,9 +881,29 @@ fn build_target(path: &str, target: &str) -> Option<()> {
     if target == "html" {
         println!("Wrote {file}. Open it in a browser");
     } else {
-        println!("Wrote {file}. Run it with `{}`", how.replace("{file}", &file).replace("{name}", name));
+        println!("Wrote {file}. Run it with `{}`", command_for(how, &file, name));
     }
     Some(())
+}
+
+/// The command that runs what was built, with the names in quotes where a
+/// shell would otherwise read them as something else (`my prog.py`).
+fn command_for(how: &str, file: &str, name: &str) -> String {
+    fn quoted(name: &str) -> String {
+        if name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '+')) {
+            return name.to_string();
+        }
+        let mut out = String::from("\"");
+        for c in name.chars() {
+            if matches!(c, '"' | '\\' | '$' | '`') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('"');
+        out
+    }
+    how.replace("./{name}", &quoted(&format!("./{name}"))).replace("{file}", &quoted(file)).replace("{name}", &quoted(name))
 }
 
 /// `zeno build --target wasm`: the program written in Rust, then built by
@@ -883,7 +913,7 @@ fn build_target(path: &str, target: &str) -> Option<()> {
 /// the `.wasm` file (decision 24.19).
 fn build_wasm(rust: &str, name: &str, file: &str, how: &str) -> Option<()> {
     let folder = env::temp_dir().join(format!("zeno-wasm-{}-{name}", std::process::id()));
-    let source = folder.join(format!("{name}.rs"));
+    let source = folder.join("program.rs");
     if fs::create_dir_all(&folder).and_then(|_| fs::write(&source, rust)).is_err() {
         eprintln!("zeno: cannot write the Rust for `{file}` in {}", folder.display());
         return None;
@@ -895,7 +925,7 @@ fn build_wasm(rust: &str, name: &str, file: &str, how: &str) -> Option<()> {
     let _ = fs::remove_dir_all(&folder);
     match built {
         Ok(status) if status.success() => {
-            println!("Built {file}. Run it with `{}`, or any WebAssembly host with WASI", how.replace("{file}", file));
+            println!("Built {file}. Run it with `{}`, or any WebAssembly host with WASI", command_for(how, file, ""));
             Some(())
         }
         Ok(_) => {

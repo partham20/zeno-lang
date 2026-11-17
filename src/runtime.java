@@ -241,6 +241,12 @@ final class Z {
         if (x == Double.POSITIVE_INFINITY) return "inf";
         if (x == Double.NEGATIVE_INFINITY) return "-inf";
         if (x == 0) return (1 / x < 0) ? "-0.0" : "0.0";
+        // Java writes two digits at least, so the smallest floats there are
+        // come out as 4.9E-324 where one digit, 5e-324, names the float.
+        if (Math.abs(x) < 1e-320) {
+            var one = new java.math.BigDecimal(Math.abs(x)).round(new java.math.MathContext(1, java.math.RoundingMode.HALF_EVEN));
+            if (one.doubleValue() == Math.abs(x)) return (x < 0 ? "-" : "") + one.unscaledValue() + "e" + (-one.scale());
+        }
         String s = Double.toString(x);
         String sign = "";
         if (s.charAt(0) == '-') { sign = "-"; s = s.substring(1); }
@@ -1231,12 +1237,14 @@ final class Z {
                 case "lines": {
                     arity(name, args, 0, 0, line);
                     if (s.isEmpty()) return new ZList(new java.util.ArrayList<>());
+                    // A "\r" goes with the "\n" just after it, and with nothing else.
                     var parts = splitOn(s, "\n");
-                    if (parts.get(parts.size() - 1).isEmpty()) parts.remove(parts.size() - 1);
+                    String last = parts.remove(parts.size() - 1);
                     for (int i = 0; i < parts.size(); i++) {
                         String p = parts.get(i);
                         if (p.endsWith("\r")) parts.set(i, p.substring(0, p.length() - 1));
                     }
+                    if (!last.isEmpty()) parts.add(last);
                     return strings(parts);
                 }
                 case "replace": {
@@ -1493,7 +1501,7 @@ final class Z {
                         int code = fourHex();
                         if (code >= 0xD800 && code < 0xDC00 && word("\\u")) {
                             int low = fourHex();
-                            if (low < 0xDC00) throw new NotJson();
+                            if (low < 0xDC00 || low > 0xDFFF) throw new NotJson();
                             code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                         }
                         if ((code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF) throw new NotJson();
@@ -1609,11 +1617,19 @@ final class Z {
 
     // "file", "nothing" or "other": what is at a path.
     static String at(String path) {
+        // Java takes a path with nothing in it for the folder it runs in.
+        if (path.isEmpty()) return "nothing";
         try (var in = new java.io.FileInputStream(path)) {
             in.read();
             return "file";
         } catch (java.io.FileNotFoundException e) {
-            return java.nio.file.Files.exists(java.nio.file.Path.of(path)) ? "other" : "nothing";
+            if (java.nio.file.Files.exists(java.nio.file.Path.of(path))) return "other";
+            // A path through a file (`notes.txt/x`) is not "nothing":
+            // something is in the way, as `zeno run` says.
+            for (var up = new java.io.File(path).getParentFile(); up != null; up = up.getParentFile()) {
+                if (up.exists()) return up.isDirectory() ? "nothing" : "other";
+            }
+            return "nothing";
         } catch (java.io.IOException e) {
             return "other";
         }
@@ -1643,6 +1659,39 @@ final class Z {
 
     static final java.io.InputStream IN = new java.io.BufferedInputStream(System.in);
 
+    // Text from outside that may not be UTF-8. Each run of bytes that
+    // could have begun a character and did not finish one becomes one
+    // U+FFFD, and so does each byte that could not begin one: the way
+    // Rust, Python and the browsers read such text. Java's own reader
+    // counts some of them otherwise.
+    static String lossy(byte[] b) {
+        var out = new java.io.ByteArrayOutputStream();
+        for (int i = 0; i < b.length; ) {
+            int c = b[i] & 0xFF;
+            if (c < 0x80) { out.write(c); i++; continue; }
+            int need = 0, lo = 0x80, hi = 0xBF;
+            if (c >= 0xC2 && c <= 0xDF) need = 1;
+            else if (c == 0xE0) { need = 2; lo = 0xA0; }
+            else if (c == 0xED) { need = 2; hi = 0x9F; }
+            else if (c >= 0xE1 && c <= 0xEF) need = 2;
+            else if (c == 0xF0) { need = 3; lo = 0x90; }
+            else if (c == 0xF4) { need = 3; hi = 0x8F; }
+            else if (c >= 0xF1 && c <= 0xF3) need = 3;
+            int j = i + 1;
+            boolean whole = need > 0;
+            for (int k = 0; whole && k < need; k++) {
+                if (j < b.length && (b[j] & 0xFF) >= lo && (b[j] & 0xFF) <= hi) j++;
+                else whole = false;
+                lo = 0x80;
+                hi = 0xBF;
+            }
+            if (whole) out.write(b, i, j - i);
+            else { out.write(0xEF); out.write(0xBF); out.write(0xBD); }
+            i = j;
+        }
+        return out.toString(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     static Object b_input(Object[] args, int line) {
         arity("input", args, 0, 1, line);
         if (args.length > 0) OUT.print(text("input", args[0], line));
@@ -1660,7 +1709,7 @@ final class Z {
             // As at the end of the input.
         }
         if (!any) return null;
-        String s = bytes.toString(java.nio.charset.StandardCharsets.UTF_8);
+        String s = lossy(bytes.toByteArray());
         if (ended && s.endsWith("\r")) s = s.substring(0, s.length() - 1);
         return s.replace("\0", "");
     }
@@ -1817,7 +1866,9 @@ final class Z {
     }
 
     // A whole float as an int; infinity and NaN stay as they are.
-    static Object wholeOf(double x) { return Double.isNaN(x) || Double.isInfinite(x) ? (Object) x : (Object) toInt(x); }
+    // What `floor` and `ceil` give is an int: one too big for an int is the
+    // biggest int there is, and what is not a number is 0, as in `zeno run`.
+    static Object wholeOf(double x) { return toInt(x); }
 
     static Object b_math_sqrt(Object[] args, int line) {
         double x = oneNumber("sqrt", args, line);
@@ -1952,7 +2003,7 @@ final class Z {
         Object v = jsonParse(s);
         if (v == NOT_JSON) {
             int a = 0;
-            while (a < s.length() && Character.isWhitespace(s.charAt(a))) a++;
+            while (a < s.length() && " \t\n\r".indexOf(s.charAt(a)) >= 0) a++;
             String start = s.substring(a);
             int n = textLength(start);
             String shown = n > 30 ? sub(start, 0, 30) + "..." : start;

@@ -1538,9 +1538,12 @@ V callMethodOf(const V& receiver, const string& name, const Args& args, int line
             arity(name, args, 0, 0, line);
             if (s.empty()) return newList({});
             std::vector<string> parts = splitOn(s, "\n");
-            if (parts.back().empty()) parts.pop_back();
+            // A "\r" goes with the "\n" just after it, and with nothing else.
+            string last = parts.back();
+            parts.pop_back();
             for (auto& p : parts)
                 if (!p.empty() && p.back() == '\r') p.pop_back();
+            if (!last.empty()) parts.push_back(last);
             return strings(parts);
         }
         if (name == "replace") {
@@ -1845,7 +1848,7 @@ struct Json {
                 int code = fourHex();
                 if (code >= 0xD800 && code < 0xDC00 && word("\\u")) {
                     int low = fourHex();
-                    if (low < 0xDC00) throw NotJson();
+                    if (low < 0xDC00 || low > 0xDFFF) throw NotJson();
                     code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                 }
                 if ((code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF) throw NotJson();
@@ -1969,7 +1972,9 @@ string jsonWrite(const V& v, int line) {
 // "file", "nothing" or "other": what is at a path.
 string at(const string& path) {
     FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return errno == ENOENT || errno == ENOTDIR ? "nothing" : "other";
+    // A path through a file (`notes.txt/x`) is not "nothing": something
+    // is in the way, as `zeno run` says.
+    if (!f) return errno == ENOENT ? "nothing" : "other";
     fgetc(f);
     bool bad = ferror(f);
     fclose(f);
@@ -2023,6 +2028,39 @@ V b_print(const Args& args, int line) {
     return V();
 }
 
+// Text from outside that may not be UTF-8. Each run of bytes that could
+// have begun a character and did not finish one becomes one U+FFFD, and
+// so does each byte that could not begin one: the way Rust, Python and
+// the browsers read such text.
+string lossy(const string& s) {
+    string out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = s[i];
+        if (c < 0x80) { out += (char)c; i++; continue; }
+        int need = 0;
+        unsigned char lo = 0x80, hi = 0xBF;
+        if (c >= 0xC2 && c <= 0xDF) need = 1;
+        else if (c == 0xE0) { need = 2; lo = 0xA0; }
+        else if (c == 0xED) { need = 2; hi = 0x9F; }
+        else if (c >= 0xE1 && c <= 0xEF) need = 2;
+        else if (c == 0xF0) { need = 3; lo = 0x90; }
+        else if (c == 0xF4) { need = 3; hi = 0x8F; }
+        else if (c >= 0xF1 && c <= 0xF3) need = 3;
+        size_t j = i + 1;
+        bool whole = need > 0;
+        for (int k = 0; whole && k < need; k++) {
+            if (j < s.size() && (unsigned char)s[j] >= lo && (unsigned char)s[j] <= hi) j++;
+            else whole = false;
+            lo = 0x80;
+            hi = 0xBF;
+        }
+        if (whole) out.append(s, i, j - i);
+        else out += "\xEF\xBF\xBD";
+        i = j;
+    }
+    return out;
+}
+
 V b_input(const Args& args, int line) {
     arity("input", args, 0, 1, line);
     if (!args.empty()) write(text("input", args[0], line));
@@ -2037,12 +2075,7 @@ V b_input(const Args& args, int line) {
     }
     if (!any) return V();
     if (ended && !bytes.empty() && bytes.back() == '\r') bytes.pop_back();
-    if (!validUtf8(bytes)) {
-        // As a str is read leniently elsewhere: each bad byte is U+FFFD.
-        string fixed;
-        for (unsigned char b : bytes) fixed += b < 0x80 ? string(1, (char)b) : "\xEF\xBF\xBD";
-        bytes = fixed;
-    }
+    if (!validUtf8(bytes)) bytes = lossy(bytes);
     bytes.erase(std::remove(bytes.begin(), bytes.end(), '\0'), bytes.end());
     return S(bytes);
 }
@@ -2207,7 +2240,9 @@ double aboveZero(const string& name, const Args& args, int line) {
 }
 
 // A whole float as an int; infinity and NaN stay as they are.
-V wholeOf(double x) { return std::isnan(x) || std::isinf(x) ? F(x) : I(toInt(x)); }
+// What `floor` and `ceil` give is an int: one too big for an int is the
+// biggest int there is, and what is not a number is 0, as in `zeno run`.
+V wholeOf(double x) { return I(toInt(x)); }
 
 V b_math_sqrt(const Args& args, int line) {
     double x = oneNumber("sqrt", args, line);
@@ -2324,7 +2359,7 @@ V b_json_parse(const Args& args, int line) {
     if (!jsonParse(str(s), v)) {
         const string& t = str(s);
         size_t a = 0;
-        while (a < t.size() && (t[a] == ' ' || (t[a] >= '\t' && t[a] <= '\r'))) a++;
+        while (a < t.size() && (t[a] == ' ' || t[a] == '\t' || t[a] == '\n' || t[a] == '\r')) a++;
         V start = S(t.substr(a));
         string shown = textLength(start) > 30 ? sub(start, 0, 30) + "..." : str(start);
         raiseError("ValueError", "this text is not JSON: `" + shown + "`", line);

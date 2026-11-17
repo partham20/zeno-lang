@@ -1566,9 +1566,14 @@ func zParseFloat(s string) (float64, bool) {
 		body = body[1:]
 	}
 	switch strings.ToLower(body) {
-	case "inf", "infinity", "nan":
-		x, err := strconv.ParseFloat(s, 64)
-		return x, err == nil
+	case "inf", "infinity":
+		if s[0] == '-' {
+			return math.Inf(-1), true
+		}
+		return math.Inf(1), true
+	case "nan":
+		// With a sign too, which strconv refuses.
+		return math.NaN(), true
 	}
 	digits, point, i := 0, false, 0
 	for ; i < len(body); i++ {
@@ -1752,12 +1757,15 @@ func zCallMethodOf(receiver ZV, name string, args []ZV, line int) ZV {
 			if s == "" {
 				return &ZList{nil}
 			}
+			// A "\r" goes with the "\n" just after it, and with nothing else.
 			parts := strings.Split(s, "\n")
-			if parts[len(parts)-1] == "" {
-				parts = parts[:len(parts)-1]
-			}
+			last := parts[len(parts)-1]
+			parts = parts[:len(parts)-1]
 			for i, p := range parts {
 				parts[i] = strings.TrimSuffix(p, "\r")
+			}
+			if last != "" {
+				parts = append(parts, last)
 			}
 			return zStrings(parts)
 		case "replace":
@@ -2137,7 +2145,7 @@ func (j *zJSON) text() string {
 			code := j.fourHex()
 			if code >= 0xD800 && code < 0xDC00 && j.word("\\u") {
 				low := j.fourHex()
-				if low < 0xDC00 {
+				if low < 0xDC00 || low > 0xDFFF {
 					j.fail()
 				}
 				code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
@@ -2361,6 +2369,60 @@ func Zb_print(args []ZV, line int) ZV {
 
 var zIn = bufio.NewReader(os.Stdin)
 
+// Text from outside that may not be UTF-8. Each run of bytes that could
+// have begun a character and did not finish one becomes one U+FFFD, and
+// so does each byte that could not begin one: the way Rust, Python and
+// the browsers read such text.
+func zLossy(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var out strings.Builder
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < 0x80 {
+			out.WriteByte(c)
+			i++
+			continue
+		}
+		// How many bytes follow a first byte like this one, and what
+		// the second of them may be.
+		need, lo, hi := 0, byte(0x80), byte(0xBF)
+		switch {
+		case c >= 0xC2 && c <= 0xDF:
+			need = 1
+		case c == 0xE0:
+			need, lo = 2, 0xA0
+		case c == 0xED:
+			need, hi = 2, 0x9F
+		case c >= 0xE1 && c <= 0xEF:
+			need = 2
+		case c == 0xF0:
+			need, lo = 3, 0x90
+		case c == 0xF4:
+			need, hi = 3, 0x8F
+		case c >= 0xF1 && c <= 0xF3:
+			need = 3
+		}
+		j, whole := i+1, need > 0
+		for k := 0; whole && k < need; k++ {
+			if j < len(s) && s[j] >= lo && s[j] <= hi {
+				j++
+			} else {
+				whole = false
+			}
+			lo, hi = 0x80, 0xBF
+		}
+		if whole {
+			out.WriteString(s[i:j])
+		} else {
+			out.WriteString("\uFFFD")
+		}
+		i = j
+	}
+	return out.String()
+}
+
 func Zb_input(args []ZV, line int) ZV {
 	zArity("input", args, 0, 1, line)
 	if len(args) > 0 {
@@ -2371,7 +2433,7 @@ func Zb_input(args []ZV, line int) ZV {
 	if err != nil && s == "" {
 		return nil
 	}
-	s = strings.ToValidUTF8(s, "�")
+	s = zLossy(s)
 	if strings.HasSuffix(s, "\n") {
 		s = strings.TrimSuffix(strings.TrimSuffix(s, "\n"), "\r")
 	}
@@ -2597,10 +2659,9 @@ func zAboveZero(name string, args []ZV, line int) float64 {
 }
 
 // A whole float as an int; infinity and NaN stay as they are.
+// What `floor` and `ceil` give is an int: one too big for an int is the
+// biggest int there is, and what is not a number is 0, as in `zeno run`.
 func zWholeOf(x float64) ZV {
-	if math.IsNaN(x) || math.IsInf(x, 0) {
-		return x
-	}
 	return zToInt(x)
 }
 
@@ -2740,7 +2801,7 @@ func Zb_json_parse(args []ZV, line int) ZV {
 	s := zText("parse", args[0], line)
 	v, ok := zJSONParse(s)
 	if !ok {
-		start := []rune(strings.TrimLeft(s, " \t\n\r\f\v"))
+		start := []rune(strings.TrimLeft(s, " \t\n\r"))
 		shown := string(start)
 		if len(start) > 30 {
 			shown = string(start[:30]) + "..."

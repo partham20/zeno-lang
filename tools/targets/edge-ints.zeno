@@ -1,0 +1,59 @@
+# Whole numbers and floats where they meet.
+import math
+let big = 9007199254740993
+let fbig = 9007199254740992.0
+print(big == fbig, big != fbig, big < fbig, big > fbig, big <= fbig, big >= fbig)
+print(big + 0.0, big * 1.0, big - 0.5, 9007199254740993 == 9007199254740992.0)
+print(max(9007199254740993, 9007199254740992), min(9007199254740993, 9007199254740992))
+print(max(9007199254740992, 9007199254740993), min(9007199254740992, 9007199254740993))
+print(max(1, 1.0), max(1.0, 1), min(1, 1.0), min(1.0, 1), max(-0.0, 0.0), max(0.0, -0.0), min(0.0, -0.0), min(-0.0, 0.0))
+print(sum([9007199254740993, 1]), sum([9007199254740993, 1.0]), sum([0.1, 0.2, 0.3]), sum([1e308, 1e308]), sum([1, 2.5, 3]))
+let lowest = -9223372036854775807 - 1
+print(lowest, lowest // 1, lowest % 2, lowest % -1, lowest % 7, lowest // 7, lowest // -7, lowest % -7)
+try { print(lowest // -1) } except OverflowError as e { print("1", e.message) }
+try { print(-lowest) } except OverflowError as e { print("2", e.message) }
+try { print(abs(lowest)) } except OverflowError as e { print("3", e.message) }
+try { print(lowest * -1) } except OverflowError as e { print("4", e.message) }
+try { print(lowest - 1) } except OverflowError as e { print("5", e.message) }
+try { print(3037000500 * 3037000500) } except OverflowError as e { print("6", e.message) }
+print(3037000499 * 3037000499, -3037000499 * 3037000499, 4294967296 * 2147483647, lowest * 1, lowest * 0, lowest + 9223372036854775807)
+print(9223372036854775807 // -1, 9223372036854775807 % -2, -1 // 9223372036854775807, 1 // -9223372036854775807, -1 % 9223372036854775807)
+let one = 1
+let neg = -1
+let zero = 0
+try { print(one ** 4294967296) } except OverflowError as e { print("7", e.message) }
+try { print(zero ** 5000000000) } except OverflowError as e { print("8", e.message) }
+try { print(neg ** 9223372036854775807) } except OverflowError as e { print("9", e.message) }
+try { print(2 ** neg) } except ValueError as e { print("10", e.message) }
+print(one ** 4294967295, neg ** 4294967295, neg ** 4294967294, zero ** 4294967295, 2 ** 62, (-2) ** 63, 7 ** 22, 3 ** 39, (-3) ** 39)
+try { print(3 ** 40) } except OverflowError as e { print("11", e.message) }
+try { print((-2) ** 64) } except OverflowError as e { print("12", e.message) }
+print(2.0 ** 3, 2 ** 0.5, 2 ** 3.0, 10.0 ** 15, 10.0 ** 16, 10.0 ** -3, 0.0 ** 0, 0.0 ** -1, (-8.0) ** (1.0 / 3), 2.0 ** 1024, 2.0 ** -1075, (-2.0) ** 3, (-2.0) ** 2)
+print(neg << 63, neg >> 63, lowest >> 63, lowest >> 1, 1 << 0, zero << 63, 5 >> 63, -5 >> 2, -1 >> 0)
+try { print(3 << 62) } except OverflowError as e { print("13", e.message) }
+try { print(neg << 64) } except ValueError as e { print("14", e.message) }
+try { print(1 >> neg) } except ValueError as e { print("15", e.message) }
+try { print(1 >> 64) } except ValueError as e { print("16", e.message) }
+try { print(-2 << 63) } except OverflowError as e { print("17", e.message) }
+print(neg & 255, ~lowest, lowest ^ neg, lowest | 1, lowest & neg, ~0, ~neg, 6 & -4, 6 | -4, 6 ^ -4, 9223372036854775807 & lowest)
+print(int(1e19), int(-1e19), int(9223372036854775808.0), int(-9223372036854775808.0), int(-0.9), int(0.9), int(1e15 + 0.5), int(-1e-300))
+let nan = float("nan")
+let inf = float("inf")
+try { print(int(nan)) } except ValueError as e { print("18", e.message) }
+try { print(int(inf)) } except ValueError as e { print("19", e.message) }
+try { print(int(-inf)) } except ValueError as e { print("20", e.message) }
+print(math.floor(1e19), math.ceil(-1e19), math.round(1e19), math.floor(nan), math.ceil(nan), math.round(nan), math.floor(inf), math.ceil(-inf), math.round(-inf))
+print(math.floor(-0.5), math.ceil(-0.5), math.round(-0.5), math.round(0.5), math.round(1.5), math.round(-1.5), math.round(2.4999999999999996), math.round(4503599627370497.0), math.round(-4503599627370496.5))
+print(math.floor(3), math.ceil(3), math.round(3), math.floor(-3.0), math.ceil(9007199254740993), math.sqrt(-0.0), math.sqrt(nan), math.sqrt(inf), math.sqrt(2), math.sqrt(1e-320))
+print(5.0 // inf, -5.0 // inf, 5.0 % inf, -5.0 % inf, 5.0 % -inf, inf % 5.0, 5.5 % -2, -5.5 % 2, 5.5 % 2, -5.5 % -2, 1e308 % 3.0, 7.0 // 0.1, 7.0 % 0.1, 1 % 0.1, -0.0 % 5.0, 0.0 // -5)
+print(nan == nan, nan != nan, nan < 1, nan > 1, nan <= nan, nan >= nan, [nan] == [nan], nan in [nan], [nan].find(nan), 1 < nan, inf == inf, -inf < inf, inf > 9223372036854775807)
+print(max(nan, 1), max(1, nan), min(nan, 1), min(1, nan), max([nan, nan]), max(inf, 1), min(-inf, 1), max(1, 2.0, 2), max(2, 2.0), abs(-0.0), abs(nan), abs(-inf))
+print(-0.0 == 0.0, -0.0 < 0.0, str(-0.0), 0.0 * -1, -0.0 + 0.0, -0.0 - 0.0, 0 * -1.0, -0.0 * 0, 1 / inf, -1 / inf, zero / 5, -zero / 5, zero * -1)
+try { print(1 / zero) } except ZeroDivisionError as e { print("21", e.message) }
+try { print(1.0 / 0.0) } except ZeroDivisionError as e { print("22", e.message) }
+try { print(1.0 / -0.0) } except ZeroDivisionError as e { print("23", e.message) }
+try { print(1 % 0.0) } except ZeroDivisionError as e { print("24", e.message) }
+try { print(1.0 // 0) } except ZeroDivisionError as e { print("25", e.message) }
+try { print(zero % zero) } except ZeroDivisionError as e { print("26", e.message) }
+print(nan / 1, nan // 1, nan % 1, inf / inf, inf - inf, inf * 0, inf // 1, -inf // 1, inf + 1, 1e308 + 1e308, -1e308 - 1e308, 1e308 * 10, 5e-324 / 2, 1 / 3, 2 / 3, 10 / 5, 9223372036854775807 / 1, 9007199254740993 / 1)
+print(7 // 2.0, -7 // 2.0, 7.0 // -2, 1e300 // 1e-300, 0.1 + 0.2 == 0.3, 0.1 * 3, 1.1 * 1.1, 1 - 0.9, 4.35 * 100, 1.005 * 1000, 3 * 1.1, 0.1 + 0.7)

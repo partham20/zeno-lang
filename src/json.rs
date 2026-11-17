@@ -237,7 +237,10 @@ impl Reader<'_> {
                             // written as two: a high half and a low half.
                             if (0xD800..0xDC00).contains(&code) && self.word("\\u") {
                                 let low = self.four_hex()?;
-                                code = 0x10000 + ((code - 0xD800) << 10) + (low.checked_sub(0xDC00)?);
+                                if !(0xDC00..0xE000).contains(&low) {
+                                    return None;
+                                }
+                                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                             }
                             text.push(char::from_u32(code)?);
                         }
@@ -250,9 +253,13 @@ impl Reader<'_> {
     }
 
     fn four_hex(&mut self) -> Option<u32> {
-        let digits: String = self.chars.get(self.at..self.at + 4)?.iter().collect();
+        // Four digits, each 0-9, a-f or A-F. A sign is not one.
+        let mut code = 0;
+        for digit in self.chars.get(self.at..self.at + 4)? {
+            code = code * 16 + digit.to_digit(16)?;
+        }
         self.at += 4;
-        u32::from_str_radix(&digits, 16).ok()
+        Some(code)
     }
 }
 

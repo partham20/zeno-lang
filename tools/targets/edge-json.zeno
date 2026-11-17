@@ -1,0 +1,57 @@
+# JSON at its edges.
+import json
+function show(text: str) {
+    try {
+        let value = json.parse(text)
+        print("ok", value, json.write(value))
+    } except ValueError as e {
+        print("no", e.message)
+    }
+}
+let bs = "\\"
+let cases = [
+    "+1", ".5", "5.", "01", "-", "-0", "-0.0", "1e5", "1E+2", "1e400", "-1e400", "1e-400", "1.e3", "--1", "e5", "1e", "0x10", "1_000",
+    "9007199254740993", "9000000000000000", "8999999999999999", "9000000000000001", "1e15", "123456789012345678901234567890",
+    "12.0", "12.50", "1e2", "100.0e-2", "NaN", "Infinity", "-Infinity", "nan", "inf",
+    "true", "false", "null", "True", "nul", "truex", "",  " ", "\t\n\r 1 \t\n\r", char(160) + "1", "1" + char(160), char(12) + "1", char(65279) + "1",
+    "[", "]", "[1,]", "[,1]", "[1 2]", "[1,,2]", "[[[[[]]]]]", "{}", "{\"a\":1,}", "{\"a\"}", "{\"a\":}", "{a:1}", "{'a':1}", "{\"a\":1 \"b\":2}",
+    "{\"a\":1,\"a\":2}", "{\"b\":1,\"a\":2,\"b\":3}", "{\"a\":null,\"a\":2}", "{\"a\":2,\"a\":null}", "{\"\":1}", "[null]", "[null, 1, null]", "{\"a\":{\"b\":null}}",
+    "\"a", "\"a\"b\"", "\"tab\tin\"", "\"line\nin\"", "\"" + char(1) + "\"", "\"" + bs + "x\"", "\"" + bs + "a\"", "\"" + bs + "'\"", "\"" + bs + "/\"", "\"" + bs + "b" + bs + "f" + bs + "n" + bs + "r" + bs + "t\"",
+    "\"" + bs + "u0041\"", "\"" + bs + "u004\"", "\"" + bs + "u+041\"", "\"" + bs + "u-041\"", "\"" + bs + "u00e9\"", "\"" + bs + "u00E9\"", "\"" + bs + "U0041\"", "\"" + bs + "u 041\"",
+    "\"" + bs + "ud83d" + bs + "ude00\"", "\"" + bs + "ud83d\"", "\"" + bs + "ude00\"", "\"" + bs + "ud83d" + bs + "u0041\"", "\"" + bs + "ud83d" + bs + "ue000\"", "\"" + bs + "ud83d" + bs + "uffff\"", "\"" + bs + "ud83dx\"", "\"" + bs + "ud83d" + bs + "n\"",
+    "\"" + bs + "u0000\"", "\"" + bs + "u001f\"", "\"" + bs + "u007f\"", "\"" + bs + "u2028\"", "\"" + bs + "\"",
+    "1 2", "[] []", "{} x", "// c\n1", "[1] // c", "{\"a\": [1, {\"b\": [true, false, null, \"x\", 1.5e3, -2]}]}",
+    "                                        not json at all, a long text that goes on",
+    char(160) + char(8195) + "   xyz", "\"" + char(233) + char(128512) + char(8232) + "\"", "[1.0, 2.50, 1e2, 1e16, 1e-7, 123456789.125, 0.1, -0.0, 0.000001, 1e21, 1e22]"
+]
+for text in cases {
+    show(text)
+}
+# Writing.
+print(json.write("q\"b\\s/ \t\n\r" + char(1) + char(8) + char(12) + char(31) + char(127) + char(128) + char(159) + char(160) + char(8232) + char(128512)))
+print(json.write(1.0), json.write(-0.0), json.write(1e21), json.write(1e-7), json.write(0.1 + 0.2), json.write(100), json.write(1e15), json.write(1e16), json.write(123456789012345680.0))
+print(json.write(none), json.write(true), json.write([]), json.write(["a": 1]), json.write([1: "a", 2: "b"]))
+try { print(json.write(1.0 / 0.0 * 1e308 * 10.0)) } except Error as e { print(e.kind, e.message) }
+try { print(json.write(float("nan"))) } except Error as e { print(e.kind, e.message) }
+try { print(json.write(float("inf"))) } except Error as e { print(e.kind, e.message) }
+try { print(json.write([1.0, float("-inf")])) } except Error as e { print(e.kind, e.message) }
+enum Colour {
+    Red
+    Mix(r: int, g: int)
+}
+class Inner {
+    v: list[int]
+    c: Colour
+}
+class Outer {
+    name: str
+    inner: Inner
+    maybe: int or none
+}
+try { print(json.write(Outer("o", Inner([1, 2], Mix(1, 2)), none))) } except Error as e { print(e.kind, e.message) }
+try { print(json.write(Outer("o", Inner([], Red), 5))) } except Error as e { print(e.kind, e.message) }
+try { print(json.write([Red, Mix(3, 4)])) } except Error as e { print(e.kind, e.message) }
+try { print(json.write(5 ms)) } except Error as e { print(e.kind, e.message) }
+try { print(json.write(print)) } except Error as e { print(e.kind, e.message) }
+let back = json.parse(json.write(["k": [1, 2.5, "x", true, none], "z": [1]]))
+print(back)

@@ -9,11 +9,13 @@
 //! node hello.js
 //! ```
 //!
-//! A Zeno function becomes a JavaScript function, so a call of a function
-//! known where it is written is a plain call: `area(r)`. Everything else
-//! goes through the runtime, which does what `zeno run` does: `Z.add(a, b,
-//! 3)` adds as Zeno adds, and stops at line 3 with Zeno's message if the
-//! sum is too big for an int.
+//! A Zeno function becomes a JavaScript function. A call of a function
+//! known where it is written is `Z.direct(area, 6, r)`: the runtime counts
+//! how deep the calls are nested, so 1000 calls inside each other stop the
+//! program at line 6 as they do under `zeno run`, and then calls `area(r)`.
+//! Everything else goes through the runtime too, which does what `zeno
+//! run` does: `Z.add(a, b, 3)` adds as Zeno adds, and stops at line 3 with
+//! Zeno's message if the sum is too big for an int.
 //!
 //! The same JavaScript is what `--target html` puts in a page.
 
@@ -58,8 +60,6 @@ pub fn page(program: &Program, page: &str) -> String {
     );
     script.push_str(&program_body(program));
     script.push_str("</script>\n");
-    // Text in the program that says `</script>` must not end the script.
-    let script = script.replace("</script>\n", "\u{0}").replace("</script", "<\\/script").replace('\u{0}', "</script>\n");
     match page.rfind("</body>") {
         Some(at) => format!("{}{script}{}", &page[..at], &page[at..]),
         None => format!("{page}\n{script}"),
@@ -85,8 +85,12 @@ struct Printer<'a> {
 }
 
 /// A JavaScript string literal.
+///
+/// The program may be put in a page, where `</script` in a text would
+/// end the script and `<!--` would hide what comes after it. So a `<`
+/// before a `/` or a `!` is written as its code.
 fn string(text: &str) -> String {
-    lower::quoted(text, |code| format!("\\u{code:04x}"))
+    lower::quoted(text, |code| format!("\\u{code:04x}")).replace("</", "\\x3c/").replace("<!", "\\x3c!")
 }
 
 impl<'a> Printer<'a> {
@@ -251,7 +255,10 @@ impl<'a> Printer<'a> {
                 let names: Vec<String> = names.iter().map(|name| string(name)).collect();
                 format!("Z.callNamed({}, [{}], [{}], [{}], {line})", self.expr(callee), self.exprs(args), names.join(", "), self.exprs(named))
             }
-            Expr::CallDirect { function, args, .. } => format!("{}({})", self.name(*function), self.exprs(args)),
+            Expr::CallDirect { function, args, line } => {
+                let args: String = args.iter().map(|arg| format!(", {}", self.expr(arg))).collect();
+                format!("Z.direct({}, {line}{args})", self.name(*function))
+            }
             Expr::CallMethod { object, name, args, names, named, line } => {
                 if names.is_empty() {
                     format!("Z.callMethod({}, {}, [{}], {line})", self.expr(object), string(name), self.exprs(args))
