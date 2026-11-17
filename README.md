@@ -103,7 +103,7 @@ piece of the compiler:
 
 ## Install
 
-**Windows.** Download `zeno-0.5.0-windows-setup.exe` from the
+**Windows.** Download `zeno-0.5.1-windows-setup.exe` from the
 [releases page](https://github.com/partham20/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
@@ -125,10 +125,10 @@ what both do, line by line, and how to take Zeno off again.
 pacman, snap and flatpak, installed from the file:
 
 ```sh
-sudo apt install ./zeno_0.5.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.5.0-1-x86_64.pkg.tar.zst         # Arch
-sudo snap install --classic --dangerous zeno_0.5.0_amd64.snap
-flatpak install --user zeno-0.5.0-x86_64.flatpak
+sudo apt install ./zeno_0.5.1_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.5.1-1-x86_64.pkg.tar.zst         # Arch
+sudo snap install --classic --dangerous zeno_0.5.1_amd64.snap
+flatpak install --user zeno-0.5.1-x86_64.flatpak
 ```
 
 The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
@@ -158,25 +158,25 @@ an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.5.0-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.5.0-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.5.0-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.5.0-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.5.0-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.5.0-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.5.0-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.5.0-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.5.0-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.5.0-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.5.1-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.5.1-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.5.1-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.5.1-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.5.1-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.5.1-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.5.1-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.5.1-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.5.1-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.5.1-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
 `PATH`. It is one file and needs nothing else installed. To build web
 pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.5.0-linux-x86_64.tar.gz
-cd zeno-0.5.0-linux-x86_64
-./zeno --version                 # zeno 0.5.0
+tar -xzf zeno-0.5.1-linux-x86_64.tar.gz
+cd zeno-0.5.1-linux-x86_64
+./zeno --version                 # zeno 0.5.1
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
