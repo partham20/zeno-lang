@@ -1,6 +1,6 @@
 [package]
 name = "zeno"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Zeno: a small, readable, statically typed language that compiles to C"
 license = "MIT"
@@ -15,3 +15,9 @@ path = "src/main.rs"
 # makes the file about a seventh smaller.
 [profile.release]
 strip = true
+# The compiler works on Zeno as one piece. With its usual sixteen
+# pieces, what it puts next to what, and what it folds into what,
+# changes whenever code is added anywhere, and `zeno run --vm` was 3 to
+# 7 % slower in 0.5.0 than in 0.4.0 with not a line of the VM changed
+# (decision 24.29).
+codegen-units = 1

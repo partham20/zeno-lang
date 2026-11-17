@@ -115,6 +115,25 @@ It is not a step of the release workflow: GitHub's machines are shared
 and their times move by a quarter from one run to the next, more than
 most of the changes the record is there to show (decisions 22.12).
 
+## As fast as the release before
+
+A release that adds code is compared with the one before, on one
+machine, before it goes out. The one before is built from its tag in a
+`git worktree`, and then:
+
+```sh
+python3 bench/run.py --count --engines zeno,zeno-release,zeno-owned,zeno-fast,vm --zeno path/to/old/zeno
+python3 bench/run.py --count --engines zeno,zeno-release,zeno-owned,zeno-fast,vm
+python3 bench/compare.py --old path/to/old/zeno
+```
+
+The first two count instructions, which shows a change of one in a
+hundred in what the program does. The third times the two builds in
+rounds, which shows what a count cannot: the same instructions placed
+worse. 0.5.0 went out with the count alone and its `zeno run --vm` was
+a few in a hundred slower than 0.4.0's; 0.5.1 mended it (decision
+24.29).
+
 ## Where each one is built
 
 GitHub lends three kinds of machine: Linux on x86-64, macOS on Apple

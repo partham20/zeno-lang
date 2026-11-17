@@ -29,6 +29,10 @@ zeno-owned-checked zeno-fast zeno-fast-gc vm run python` (`zeno-fast` is
 run for the slow interpreters), taken in rounds: every engine once,
 then every engine again. `--count` counts instructions instead. C is built with `cc -O2`, Rust with `rustc -O`.
 
+`python3 compare.py --old path/to/another/zeno` times two builds of
+Zeno against each other in rounds, to see whether a change made `zeno
+run --vm` slower ([docs/release.md](../docs/release.md)).
+
 Since 0.5 there are engines for the program written in another language
 (`zeno build --target`, [docs/targets.md](../docs/targets.md)): `to-js
 to-py to-php to-go to-java to-cs to-cpp to-rust to-wasm`. Each has Zeno

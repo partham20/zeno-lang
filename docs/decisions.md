@@ -10635,3 +10635,48 @@ target has (`$total->v` everywhere, where PHP has a word for exactly
 this). `mb_strlen` and `number_format` (the first is not always
 installed, the second rounds a half up after rounding the float
 first, which is not what `zeno run` prints).
+
+### 24.29 Zeno is built as one piece, so its speed does not move when code is added
+
+`Cargo.toml` has `codegen-units = 1` for a release build: the Rust
+compiler works on all of Zeno at once.
+
+**What happened.** 0.5.0 added the targets, about 20,000 lines that
+nothing runs unless `--target` is given. No line of the VM changed,
+and `bench/run.py --count` showed it: within two in a hundred of
+0.4.0's instructions, fewer on some programs and more on others. But
+timed, in four rounds on a quiet machine, `zeno run --vm` in the 0.5.0
+build was slower than in 0.4.0's on every benchmark: fib 7 %, loop
+5 %, sort 9 %, strings 1 %, trees 4 %, nbody 4 %. The built programs
+were not touched by it (their C is the same), nor was plain `zeno
+run`.
+
+**Why.** By default the compiler cuts a program into sixteen pieces
+and works on each alone. Which functions land in one piece, and so
+which can be folded into which and what ends up beside what in the
+file, depends on everything else in the program. Adding code that
+never runs moved the VM's loop and its helpers about, and the
+processor's guesses and its cache did a little worse on the same
+instructions.
+
+**With one piece** there is no cutting, so nothing unrelated decides
+it. The same source then runs fewer instructions than 0.4.0 (fib 2 %
+fewer, sort 1 %, strings 1 %) and, timed the same way, is within two
+in a hundred of 0.4.0 on five benchmarks (loop −2 %, sort −1 %,
+strings −2 %, trees −1 %, nbody −1 %) and 3 % above on fib, which is
+two hundredths of a second. Building Zeno takes 47 seconds where it
+took 36. The program is half a megabyte smaller.
+
+**The rule this is for.** Partha, 2026-11-17: writing a program in
+other languages is a flag, and Zeno itself must stay as fast as it
+was. A count of instructions is not enough to show that; the check
+before a release that adds code is now both, the count and timed
+rounds against the release before.
+
+**Alternatives rejected.** Moving the targets into a crate of their
+own (the VM's crate still changes with every other feature, so the
+same thing would come back). Whole-program `lto` on top of it (Zeno has no
+crates beside itself, so there is little for it to join; it took a
+minute to build and was not timed). Leaving
+it, as within the noise of this machine: it was the same direction on
+all six programs, four rounds running.
