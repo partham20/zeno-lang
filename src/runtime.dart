@@ -371,7 +371,7 @@ class Z {
     return at;
   }
 
-  static String sub(String s, int from, int to) {
+  static String part(String s, int from, int to) {
     if (plain(s)) return s.substring(from, to);
     final a = offset(s, 0, from);
     return s.substring(a, offset(s, a, to - from));
@@ -688,7 +688,7 @@ class Z {
     return number(a) + number(b);
   }
 
-  static Object? sub_(Object? a, Object? b, int line) {
+  static Object? sub(Object? a, Object? b, int line) {
     if (a is int && b is int) {
       final r = a - b;
       if (((a ^ b) & (a ^ r)) < 0) overflow(line);
@@ -920,7 +920,7 @@ class Z {
     if (obj is List<Object?>) return obj[position(i, obj.length, "list", line)];
     if (obj is String) {
       final at = position(i, textLength(obj), "str", line);
-      return sub(obj, at, at + 1);
+      return part(obj, at, at + 1);
     }
     if (obj is Map<Object?, Object?>) {
       final k = key(i, line);
@@ -1503,7 +1503,7 @@ class Z {
         case "slice":
           arity(name, args, 1, 2, line);
           final r = slice(args, textLength(s), "str", line);
-          return sub(s, r[0], r[1]);
+          return part(s, r[0], r[1]);
         case "code":
           arity(name, args, 0, 0, line);
           final n = textLength(s);
@@ -2215,7 +2215,7 @@ class Z {
       while (a < s.length && " \t\n\r".contains(s[a])) a++;
       final start = s.substring(a);
       final n = textLength(start);
-      final shown = n > 30 ? sub(start, 0, 30) + "..." : start;
+      final shown = n > 30 ? part(start, 0, 30) + "..." : start;
       raiseError("ValueError", "this text is not JSON: `" + shown + "`", line);
     }
     return v;

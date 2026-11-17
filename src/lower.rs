@@ -381,7 +381,7 @@ const RESERVED: &[&str] = &[
     "_4", "_5", "_6", "_7", "_8", "_9",
     // Dart
     "covariant", "deferred", "extension", "external", "factory", "hide", "late", "library", "mixin", "on", "part",
-    "required", "rethrow", "show", "sync",
+    "required", "rethrow", "show", "sync", "List", "identical",
     // Kotlin
     "fun", "typealias", "val", "it", "arrayOf",
 ];

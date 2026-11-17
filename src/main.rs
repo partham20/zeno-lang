@@ -23,6 +23,7 @@ mod emit_c;
 mod emit_go;
 mod emit_cpp;
 mod emit_cs;
+mod emit_dart;
 mod emit_java;
 mod emit_js;
 mod emit_lua;
@@ -809,7 +810,7 @@ fn own_page(path: &str) -> Option<String> {
 /// The languages `--target` can write a program in: the name after
 /// `--target`, the file it writes, and how to run that file.
 const TARGETS: &[(&str, &str, &str)] =
-    &[("js", "js", "node {file}"), ("ts", "ts", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("php", "php", "php {file}"), ("lua", "lua", "lua {file}"), ("ruby", "rb", "ruby {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}"), ("rust", "rs", "rustc -O --edition 2021 {file} -o {name} && ./{name}"), ("wasm", "wasm", "wasmtime {file}")];
+    &[("js", "js", "node {file}"), ("ts", "ts", "node {file}"), ("html", "html", "open {file} in a browser"), ("py", "py", "python3 {file}"), ("php", "php", "php {file}"), ("lua", "lua", "lua {file}"), ("ruby", "rb", "ruby {file}"), ("dart", "dart", "dart run {file}"), ("go", "go", "go run {file}"), ("java", "java", "java {file}"), ("cs", "cs", "dotnet run {file}"), ("cpp", "cpp", "g++ -std=c++17 -O2 {file} -o {name} && ./{name}"), ("rust", "rs", "rustc -O --edition 2021 {file} -o {name} && ./{name}"), ("wasm", "wasm", "wasmtime {file}")];
 
 /// `zeno build --target js <file>`: write the program in another
 /// language (lower.rs, and emit_js.rs and the others).
@@ -873,6 +874,7 @@ fn build_target(path: &str, target: &str) -> Option<()> {
         "php" => emit_php::emit(&tree, source),
         "lua" => emit_lua::emit(&tree, source),
         "ruby" => emit_ruby::emit(&tree, source),
+        "dart" => emit_dart::emit(&tree, source),
         "go" => emit_go::emit(&tree, source),
         "java" => emit_java::emit(&tree, source),
         "cs" => emit_cs::emit(&tree, source),

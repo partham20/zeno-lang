@@ -52,6 +52,7 @@ TARGETS = {
     "php": {"needs": ["php"], "run": ["php", "{file}"]},
     "lua": {"needs": [LUA], "run": [LUA, "{file}"]},
     "ruby": {"needs": ["ruby"], "run": ["ruby", "{file}"]},
+    "dart": {"needs": ["dart"], "run": ["dart", "run", "{file}"]},
     "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},
