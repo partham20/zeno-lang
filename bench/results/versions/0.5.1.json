@@ -1,0 +1,258 @@
+{
+  "version": "0.5.1",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.30GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v553-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.5.1",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-17"
+  },
+  "big": {
+    "sizes": {
+      "fib": 40,
+      "loop": 1000000000,
+      "sort": 10000000,
+      "strings": 10000000,
+      "trees": 20,
+      "nbody": 10000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "rust": "Rust (rustc -O)",
+      "zeno": "zeno build",
+      "zeno-llvm": "zeno build --llvm",
+      "zeno-nc": "zeno build --no-collector",
+      "zeno-release": "zeno build --release",
+      "zeno-owned": "zeno build --release --owned",
+      "zeno-fast": "zeno build --fast --owned",
+      "zeno-fast-gc": "zeno build --fast"
+    },
+    "times": {
+      "fib": {
+        "c": 0.131,
+        "rust": 0.206,
+        "zeno": 0.389,
+        "zeno-llvm": 0.465,
+        "zeno-nc": 0.341,
+        "zeno-release": 0.12,
+        "zeno-owned": 0.121,
+        "zeno-fast": 0.136,
+        "zeno-fast-gc": 0.136
+      },
+      "loop": {
+        "c": 0.764,
+        "rust": 0.721,
+        "zeno": 0.953,
+        "zeno-llvm": 0.958,
+        "zeno-nc": 1.0,
+        "zeno-release": 0.723,
+        "zeno-owned": 0.733,
+        "zeno-fast": 0.701,
+        "zeno-fast-gc": 0.711
+      },
+      "sort": {
+        "c": 0.882,
+        "rust": 0.949,
+        "zeno": 1.13,
+        "zeno-llvm": 1.776,
+        "zeno-nc": 1.115,
+        "zeno-release": 1.11,
+        "zeno-owned": 0.98,
+        "zeno-fast": 0.87,
+        "zeno-fast-gc": 1.064
+      },
+      "strings": {
+        "c": 0.819,
+        "rust": 0.588,
+        "zeno": 0.683,
+        "zeno-llvm": 0.999,
+        "zeno-release": 0.685,
+        "zeno-owned": 0.609,
+        "zeno-fast": 0.576,
+        "zeno-fast-gc": 0.716
+      },
+      "trees": {
+        "c": 4.664,
+        "rust": 6.065,
+        "zeno": 6.122,
+        "zeno-llvm": 6.666,
+        "zeno-nc": 4.101,
+        "zeno-release": 5.872,
+        "zeno-owned": 2.984,
+        "zeno-fast": 2.999,
+        "zeno-fast-gc": 5.693
+      },
+      "nbody": {
+        "c": 0.394,
+        "rust": 0.302,
+        "zeno": 0.416,
+        "zeno-llvm": 0.465,
+        "zeno-nc": 0.417,
+        "zeno-release": 0.424,
+        "zeno-owned": 0.418,
+        "zeno-fast": 0.394,
+        "zeno-fast-gc": 0.394
+      }
+    }
+  },
+  "small": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "python": "Python 3",
+      "vm": "zeno run --vm",
+      "run": "zeno run"
+    },
+    "times": {
+      "fib": {
+        "c": 0.004,
+        "python": 0.196,
+        "vm": 0.579,
+        "run": 2.258
+      },
+      "loop": {
+        "c": 0.073,
+        "python": 8.9,
+        "vm": 6.28,
+        "run": 24.904
+      },
+      "sort": {
+        "c": 0.077,
+        "python": 1.717,
+        "vm": 2.727,
+        "run": 10.502
+      },
+      "strings": {
+        "c": 0.078,
+        "python": 0.322,
+        "vm": 1.334,
+        "run": 2.469
+      },
+      "trees": {
+        "c": 0.195,
+        "python": 3.14,
+        "vm": 7.379,
+        "run": 16.896
+      },
+      "nbody": {
+        "c": 0.039,
+        "python": 3.067,
+        "vm": 12.192,
+        "run": 40.177
+      }
+    }
+  },
+  "targets": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "vm": "zeno run --vm",
+      "to-js": "--target js, in Node",
+      "to-py": "--target py, in Python 3",
+      "to-php": "--target php, in PHP",
+      "to-go": "--target go, built by go",
+      "to-java": "--target java, built by javac",
+      "to-cs": "--target cs, built by dotnet",
+      "to-cpp": "--target cpp, built by g++ -O2",
+      "to-rust": "--target rust, built by rustc -O",
+      "to-wasm": "--target wasm, in Node"
+    },
+    "times": {
+      "fib": {
+        "c": 0.004,
+        "vm": 0.564,
+        "to-js": 0.112,
+        "to-py": 2.378,
+        "to-php": 1.562,
+        "to-go": 0.197,
+        "to-java": 0.147,
+        "to-cs": 0.702,
+        "to-cpp": 0.183,
+        "to-rust": 0.333,
+        "to-wasm": 0.468
+      },
+      "loop": {
+        "c": 0.073,
+        "vm": 6.433,
+        "to-js": 3.27,
+        "to-py": 43.41,
+        "to-php": 19.079,
+        "to-go": 4.042,
+        "to-java": 1.179,
+        "to-cs": 8.477,
+        "to-cpp": 1.4,
+        "to-rust": 4.744,
+        "to-wasm": 7.139
+      },
+      "sort": {
+        "c": 0.076,
+        "vm": 2.614,
+        "to-js": 0.775,
+        "to-py": 14.381,
+        "to-php": 6.795,
+        "to-go": 1.301,
+        "to-java": 0.861,
+        "to-cs": 3.02,
+        "to-cpp": 1.027,
+        "to-rust": 1.458,
+        "to-wasm": 2.231
+      },
+      "strings": {
+        "c": 0.079,
+        "vm": 1.455,
+        "to-js": 0.496,
+        "to-py": 1.352,
+        "to-php": 0.94,
+        "to-go": 0.828,
+        "to-java": 0.682,
+        "to-cs": 1.525,
+        "to-cpp": 1.445,
+        "to-rust": 0.975,
+        "to-wasm": 1.103
+      },
+      "trees": {
+        "c": 0.166,
+        "vm": 7.477,
+        "to-js": 1.702,
+        "to-py": 28.63,
+        "to-php": 14.896,
+        "to-go": 2.682,
+        "to-java": 0.892,
+        "to-cs": 5.024,
+        "to-cpp": 3.525,
+        "to-rust": 3.744,
+        "to-wasm": 3.979
+      },
+      "nbody": {
+        "c": 0.038,
+        "vm": 11.907,
+        "to-js": 6.827,
+        "to-py": 94.153,
+        "to-php": 48.162,
+        "to-go": 8.788,
+        "to-java": 3.008,
+        "to-cs": 17.919,
+        "to-cpp": 8.167,
+        "to-rust": 8.345,
+        "to-wasm": 13.391
+      }
+    }
+  }
+}

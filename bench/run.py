@@ -149,9 +149,16 @@ def main():
                     continue
                 cmd, out = built[key]
                 try:
-                    t0 = time.perf_counter()
-                    r = subprocess.run((VALGRIND if a.count else []) + cmd, cwd=out, capture_output=True, text=True, timeout=a.timeout)
-                    t = time.perf_counter() - t0
+                    # A run ended by a signal, with nothing said, is the
+                    # host falling over and not the program (Node 22 does
+                    # it under a big .wasm, docs/targets.md): it is run
+                    # again, up to five times.
+                    for attempt in range(5):
+                        t0 = time.perf_counter()
+                        r = subprocess.run((VALGRIND if a.count else []) + cmd, cwd=out, capture_output=True, text=True, timeout=a.timeout)
+                        t = time.perf_counter() - t0
+                        if not (r.returncode < 0 and not (r.stdout + r.stderr).strip()):
+                            break
                     if r.returncode:
                         raise RuntimeError((r.stdout + r.stderr)[-400:].strip() or f"it stopped with status {r.returncode} and said nothing")
                     if a.count:

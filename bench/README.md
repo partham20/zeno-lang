@@ -105,7 +105,11 @@ Small sizes, the program written in another language by `zeno build
 
 (The wasm time of strings is the best of the runs that ended: Node 22
 stopped with a fault of its own in about half of them, see "Known
-limits" in [docs/targets.md](../docs/targets.md).)
+limits" in [docs/targets.md](../docs/targets.md). `run.py` now runs a
+program again, up to five times, when its host is ended by a signal
+and has said nothing. The record of 0.5.1 was made on another machine
+than 0.5.0's, a 2.3 GHz Xeon, which is why a version's times are read
+against C's in the same record.)
 
 ## What the numbers say
 
