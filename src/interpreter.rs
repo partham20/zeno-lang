@@ -1491,6 +1491,55 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
     }
 
     #[test]
+    fn a_program_that_is_not_there_is_a_file_error() {
+        assert_eq!(
+            error("import program\nprogram.run(\"zeno-no-such-program\", [])"),
+            "uncaught FileError: there is no program `zeno-no-such-program` to run"
+        );
+        // It is an error that can be caught, and the program goes on.
+        assert_eq!(
+            output(
+                "from program import run\n\
+                 try { print(run(\"zeno-no-such-program\", [\"a\"])) } except FileError as error { print(error.message) }\n\
+                 print(\"still here\")"
+            ),
+            "there is no program `zeno-no-such-program` to run\nstill here\n"
+        );
+        assert_eq!(error("import program\nprogram.run(\"sh\")"), "`run` takes 2 arguments, but 1 was given");
+        assert_eq!(
+            error("import program\nlet words = [1]\nprogram.run(\"sh\", words)"),
+            "`run` needs a str, but this is an int"
+        );
+        assert_eq!(error("import program\nprogram.run(\"sh\", \"-c\")"), "`run` needs a list of str, but this is a str");
+    }
+
+    /// `sh` is on every Unix. Windows has no program that is sure to be
+    /// there and takes its words the same way, so this is not run there.
+    #[cfg(unix)]
+    #[test]
+    fn another_program_is_run_with_the_words_as_they_are() {
+        let path = scratch("run.txt");
+        // The other program writes each word it was given, with a `|`
+        // after it, into the file. No shell reads the words on the way:
+        // a blank, a quote, a `$` and a `*` arrive as they were written,
+        // and so does a word that is empty.
+        let source = format!(
+            "import files\nimport program\n\
+             let script = \"printf '%s|' \\\"$@\\\" > \\\"$0\\\"; exit 3\"\n\
+             let code = program.run(\"sh\", [\"-c\", script, \"{path}\", \"two words\", \"a\\\"b\", \"$HOME\", \"*\", \"\"])\n\
+             print(code, files.read(\"{path}\"))\n\
+             files.remove(\"{path}\")\n\
+             print(program.run(\"sh\", [\"-c\", \"exit 0\"]))\n\
+             let none_given: list[str] = []\n\
+             print(program.run(\"true\", none_given), program.run(\"false\", []))"
+        );
+        assert_eq!(output(&source), "3 two words|a\"b|$HOME|*||\n0\n0 1\n");
+        // A program that was stopped from outside has no number of its
+        // own: 128 and the number of the signal, as a shell says it.
+        assert_eq!(output("import program\nprint(program.run(\"sh\", [\"-c\", \"kill -9 $$\"]))"), "137\n");
+    }
+
+    #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
         assert_eq!(output("print(f\"{3.14159:.2f}|{42:5}|{'ab':5}|{'ab':>5}|{'a:}':^6}|\")"), "3.14|   42|ab   |   ab| a:}  |\n");

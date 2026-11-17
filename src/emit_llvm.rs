@@ -5238,6 +5238,9 @@ impl Emitter<'_> {
                 let words = self.call("ptr", "zeno_program_arguments", "");
                 Ok(Val::new(words, Kind::List(Box::new(Kind::Str))).made())
             }
+            // `program.run(name, words)` starts another program, which
+            // only `zeno run` does so far.
+            ("program", "run", _) => Err(cannot("`program.run`", span)),
             _ => Err(cannot(format!("`{module}.{name}` called this way"), span)),
         }
     }
@@ -6845,6 +6848,12 @@ pub(crate) mod tests {
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
         emit(&program, &types, "test.zeno", Build::Firmware, false).map_err(|error| error.message)
+    }
+
+    #[test]
+    fn starting_another_program_is_left_to_zeno_run() {
+        let message = compile("import program\nprint(program.run(\"ls\", [\"-l\"]))").err().unwrap_or_else(|| "it compiled".to_string());
+        assert_eq!(message, "`zeno build --llvm` cannot compile `program.run` yet. `zeno run` can still run this program");
     }
 
     /// Build the IR and the runtime with clang, run the program, and

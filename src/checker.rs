@@ -1615,6 +1615,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "exists") => Ty::Builtin("files.exists"),
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
+        ("program", "run") => Ty::Builtin("program.run"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -5919,6 +5920,19 @@ impl Checker {
                 self.arity("arguments", arguments, 0, 0, span);
                 Ty::list(Ty::Str)
             }
+            // `program.run(name, words)`: start another program and give
+            // the number it ended with. That there is such a program is
+            // known only when it is started, so this raises FileError as
+            // a value, as the `files` functions do.
+            "program.run" => {
+                if self.arity("run", arguments, 2, 2, span) {
+                    self.expect(&first, &Ty::Str, "the name of the program `program.run` starts", arguments[0].span);
+                    let words = Ty::list(Ty::Str);
+                    self.expect(&arguments[1].ty, &words, "the words `program.run` gives the program", arguments[1].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::Int
+            }
             // `char(65)`: the character with that code, as a str.
             "char" => {
                 if self.arity(name, arguments, 1, 1, span) {
@@ -10006,6 +10020,32 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import files\nfiles.write(\"a\")"), "`write` takes 2 arguments, but 1 was given");
         assert_eq!(error("import files\nlet n: int = files.read(\"a\")"), "`n` should be int, but this is str");
         assert_eq!(error("import files\nfiles.open(\"a\")"), "module `files` has no `open`");
+        // `program.run` gives the number the other program ended with,
+        // and can fail: the program may not be there.
+        strict_ok(
+            "import program\n\
+             function list_folder(folder: str) -> int raises FileError {\n    return program.run(\"ls\", [\"-l\", folder])\n}\n\
+             function there(name: str) -> bool {\n\
+             \x20   try {\n        return program.run(name, []) == 0\n    } except FileError {\n        return false\n    }\n}",
+        );
+        assert_eq!(
+            strict_error("import program\nfunction go() -> int {\n    return program.run(\"ls\", [])\n}"),
+            "`go` can raise FileError here but does not say so. Add `raises FileError` to it, or catch the error"
+        );
+        assert_eq!(error("import program\nprogram.run(\"ls\")"), "`run` takes 2 arguments, but 1 was given");
+        assert_eq!(
+            error("import program\nprogram.run(5, [])"),
+            "the name of the program `program.run` starts should be str, but this is int"
+        );
+        assert_eq!(
+            error("import program\nprogram.run(\"ls\", \"-l\")"),
+            "the words `program.run` gives the program should be list[str], but this is str"
+        );
+        assert_eq!(
+            error("import program\nprogram.run(\"ls\", [1])"),
+            "the words `program.run` gives the program should be list[str], but this is list[int]"
+        );
+        assert_eq!(error("import program\nlet text: str = program.run(\"ls\", [])"), "`text` should be str, but this is int");
         // A line may not be there, so it is tested before it is used.
         assert_eq!(
             error("print(input().upper())"),

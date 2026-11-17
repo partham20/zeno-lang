@@ -4850,6 +4850,9 @@ impl Emitter<'_> {
                 words.made = true;
                 Ok(words)
             }
+            // `program.run(name, words)` starts another program, which
+            // only `zeno run` does so far.
+            ("program", "run", _) => Err(cannot("`program.run`", span)),
             _ => Err(cannot(format!("`{module}.{name}` called this way"), span)),
         }
     }
@@ -7337,6 +7340,12 @@ print(push(1), push(2), push(3, [0]))
             "the module `web` is for a program in a page, and this build makes a program for a desktop or a board. \
              `zeno build --web` builds the page"
         );
+    }
+
+    #[test]
+    fn starting_another_program_is_left_to_zeno_run() {
+        let message = compile("import program\nprint(program.run(\"ls\", [\"-l\"]))").err().unwrap_or_else(|| "it compiled".to_string());
+        assert_eq!(message, "`zeno build` cannot compile `program.run` yet. `zeno run` can still run this program");
     }
 
     #[test]

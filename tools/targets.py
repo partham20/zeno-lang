@@ -19,7 +19,8 @@ own tools, and what it did is held to what `zeno run` did: the same text
 printed, the same answer to "did it stop with an error", and if it did,
 the same message, in the same file, at the same line. A program that a
 target refuses to build because it uses what no target can do
-(`import board`, `unsafe`) is counted as left out, not as a failure.
+(`import board`, `unsafe`, `program.run`) is counted as left out, not as
+a failure.
 
 A target whose tools are not installed is left out with a note. The
 weekly check on GitHub (.github/workflows/targets.yml) installs them all.
@@ -238,7 +239,7 @@ def main():
                 failures.append((program, result))
         total = passed + len(failures)
         print(f"{target}: {passed} of {total} programs print what `zeno run` prints"
-              + (f" ({len(left_out)} left out: they use the board, a page, manual memory"
+              + (f" ({len(left_out)} left out: they use the board, a page, manual memory, another program"
                  + (", the keyboard, the command line, files or sleep" if spec.get("page") else "") + ")" if left_out else ""))
         for program, why in failures:
             failed_any = True

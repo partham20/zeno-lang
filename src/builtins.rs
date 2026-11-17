@@ -127,6 +127,64 @@ fn program_arguments(machine: &mut dyn Machine, args: Vec<Value>, span: Span) ->
     Ok(Value::list(machine.outside().arguments.iter().map(Value::str).collect()))
 }
 
+/// `program.run(name, words)`: start another program with these words,
+/// wait until it ends, and give the number it ended with (0 says that
+/// all went well, by custom).
+///
+/// The words go to the other program one by one, exactly as they are:
+/// no shell reads them, so a blank or a quote inside a word is part of
+/// that word and nothing else. The other program uses this program's
+/// keyboard and screen while it runs.
+fn program_run(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("run", &args, 2, 2, span)?;
+    let name = text("run", &args[0], span)?;
+    let Value::List(items) = &args[1] else {
+        return wrong_type("run", "a list of str", &args[1], span);
+    };
+    let mut words = Vec::new();
+    for item in items.borrow().iter() {
+        words.push(text("run", item, span)?.to_string());
+    }
+    // A page is inside a browser, which starts no programs.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = words;
+        file_error(format!("cannot run `{name}`: a page cannot start a program"), span)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        // What this program printed so far is on the screen before the
+        // other one prints.
+        let _ = std::io::stdout().flush();
+        match std::process::Command::new(name).args(&words).status() {
+            Ok(status) => Ok(Value::Int(ended_with(status))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                file_error(format!("there is no program `{name}` to run"), span)
+            }
+            Err(_) => file_error(format!("cannot run `{name}`"), span),
+        }
+    }
+}
+
+/// The number a program ended with. One that was stopped from outside
+/// (Ctrl-C, `kill`) has no number of its own: it gets 128 plus the
+/// number of the signal that stopped it, which is what a shell says.
+#[cfg(not(target_arch = "wasm32"))]
+fn ended_with(status: std::process::ExitStatus) -> i64 {
+    if let Some(code) = status.code() {
+        return code as i64;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal as i64;
+        }
+    }
+    1
+}
+
 fn len(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("len", &args, 1, 1, span)?;
     match &args[0] {
@@ -1032,7 +1090,10 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
         ),
         "program" => (
             "program",
-            vec![("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments }))],
+            vec![
+                ("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments })),
+                ("run", Value::Builtin(Builtin { name: "run", call: program_run })),
+            ],
         ),
         "json" => (
             "json",

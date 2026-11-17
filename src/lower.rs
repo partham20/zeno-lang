@@ -277,6 +277,19 @@ pub fn module_members(module: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// What a module that comes with Zeno has and no target has yet. A
+/// program that uses it is refused when it is built, with the place,
+/// which is better than a program that stops when it gets there.
+fn no_target_has(member: &str, span: Span) -> Result<()> {
+    if member == "program.run" {
+        return Err(Error::new(
+            "a program built for another language cannot use `program.run` yet. `zeno run` can still run this program",
+            span,
+        ));
+    }
+    Ok(())
+}
+
 /// Make the portable tree of a checked program.
 ///
 /// `files` are the paths of its files, by number. An `Err` says what the
@@ -933,6 +946,7 @@ impl Lowerer {
                     return Ok(());
                 }
                 for name in names {
+                    no_target_has(&format!("{path}.{name}"), statement.span)?;
                     let members = module_members(&path).unwrap_or(&[]);
                     if !members.contains(&name.as_str()) {
                         return Err(Error::new(format!("module `{path}` has no `{name}`"), statement.span));
@@ -1275,6 +1289,7 @@ impl Lowerer {
             ExprKind::Field { object, name, .. } => {
                 if let ExprKind::Name(module) = &object.kind {
                     if let Some(member) = self.member(module, name) {
+                        no_target_has(&member, expr.span)?;
                         return Ok(Expr::Builtin(member));
                     }
                 }
@@ -1342,6 +1357,7 @@ impl Lowerer {
             _ => None,
         };
         if let Some(name) = builtin {
+            no_target_has(&name, callee.span)?;
             if !named.is_empty() {
                 out.push(Stmt::Fatal { message: format!("`{name}` does not take a named argument `{}`", names[0]), line: at });
                 return Ok(Expr::None);
@@ -1589,4 +1605,23 @@ pub fn quoted(text: &str, escape: fn(u32) -> String) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    /// `program.run` starts another program, and no target does that
+    /// yet. The build says so, with the place, however it is written.
+    #[test]
+    fn what_no_target_has_is_refused_when_built() {
+        let refused = |source: &str| {
+            let program = crate::modules::testing::built(source);
+            super::lower(&program, vec!["test.zeno".to_string()], super::Options::default()).err().map(|error| error.message)
+        };
+        let message = "a program built for another language cannot use `program.run` yet. `zeno run` can still run this program";
+        assert_eq!(refused("import program\nprint(program.run(\"ls\", []))").as_deref(), Some(message));
+        assert_eq!(refused("from program import run\nprint(run(\"ls\", []))").as_deref(), Some(message));
+        assert_eq!(refused("import program\nlet start = program.run\nprint(start(\"ls\", []))").as_deref(), Some(message));
+        // The rest of the module is there as before.
+        assert_eq!(refused("import program\nprint(program.arguments())"), None);
+    }
 }
