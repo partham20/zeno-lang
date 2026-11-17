@@ -30,7 +30,8 @@ Say as much of this as you can:
 
 A program that crashes, or a wrong answer from the compiler, is an
 ordinary bug. Those are welcome as
-[issues](https://github.com/partham20/zeno-lang/issues).
+[issues](https://github.com/partham20/zeno-lang/issues), or at
+issues@zeno-lang.org if you have no GitHub account.
 
 ## Which versions
 
@@ -44,5 +45,7 @@ time for an answer. Every report is read and answered. The fix comes
 out in a new release, and its notes thank you by name unless you would
 rather they did not.
 
-For anything that is not a security problem, write to
-contact@zeno-lang.org.
+## Everything else
+
+For help with installing or using Zeno, write to help@zeno-lang.org.
+For anything else, write to contact@zeno-lang.org.

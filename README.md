@@ -685,6 +685,15 @@ packaging/                    the PKGBUILD and the winget files, written at each
 .cargo/config.toml  how `zeno` is linked for each kind of machine
 ```
 
+## Help and contact
+
+| For | Write to |
+|---|---|
+| Help with installing or using Zeno | help@zeno-lang.org |
+| A bug in Zeno | the [issues](https://github.com/partham20/zeno-lang/issues) on GitHub, where others can see it and its answer. With no GitHub account, issues@zeno-lang.org |
+| A security problem | security@zeno-lang.org, in private. [`SECURITY.md`](SECURITY.md) says what to send |
+| Anything else: an idea, the website, the book | contact@zeno-lang.org |
+
 ## Licence
 
 Zeno is under the MIT licence: anyone may use it, change it and pass it
