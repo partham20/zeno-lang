@@ -12,7 +12,7 @@ So there are two installers that do all of it.
 **On Windows**, a setup program, as Python has:
 
 ```
-zeno-0.2.0-windows-setup.exe
+zeno-0.5.1-windows-setup.exe
 ```
 
 Run it and press Next. It is the same file for every Windows machine.
@@ -127,8 +127,8 @@ the environment has changed, which is why a terminal opened after it
 finds `zeno` and one that was already open does not.
 
 ```
-tools\installer\build.cmd 0.2.0 files       makes zeno-0.2.0-windows-setup.exe
-pwsh tools\installer\try.ps1 zeno-0.2.0-windows-setup.exe
+tools\installer\build.cmd 0.5.1 files       makes zeno-0.5.1-windows-setup.exe
+pwsh tools\installer\try.ps1 zeno-0.5.1-windows-setup.exe
 ```
 
 `try.ps1` installs without showing a window, checks that `zeno` is
@@ -149,10 +149,10 @@ three hundred lines, half of them comments, written for the plainest
 shell there is, and it is meant to be read before it is trusted.
 
 ```
-Zeno 0.2.0 for macos on arm64
-  from https://github.com/partham20/zeno-lang/releases/download/v0.2.0
+Zeno 0.5.1 for macos on arm64
+  from https://github.com/partham20/zeno-lang/releases/download/v0.5.1
   the download is whole
-  installed zeno 0.2.0 in /Users/partha/.zeno
+  installed zeno 0.5.1 in /Users/partha/.zeno
   added it to the PATH, in /Users/partha/.zshrc
 
 Zeno is installed. Open a new terminal, so that it is on the PATH, and try it:
@@ -216,8 +216,9 @@ makes the setup program, and tries it. The Linux and macOS builds that
 run on their own processor run `try-install.sh`. If either fails,
 there is no release.
 
-A release then has twelve files and their checksums: the ten archives,
-`zeno-0.2.0-windows-setup.exe` and `install.sh`.
+A release then has the ten archives, `zeno-0.5.1-windows-setup.exe`,
+`install.sh` and their checksums, and with them the ten packages of
+[`packages.md`](packages.md).
 
 `.github/workflows/installer.yml` tries the installers on one machine
 without a release, and keeps the setup program it made for a week, to
