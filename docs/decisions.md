@@ -10680,3 +10680,160 @@ crates beside itself, so there is little for it to join; it took a
 minute to build and was not timed). Leaving
 it, as within the noise of this machine: it was the same direction on
 all six programs, four rounds running.
+
+## 25. Starting another program
+
+Partha asked (2026-11-17) for a program in Zeno that downloads a video
+from YouTube. [`examples/download.zeno`](../examples/download.zeno) is
+that program, and `program.run` is what Zeno needed for it.
+[`running-programs.md`](running-programs.md) is the walkthrough.
+
+### 25.1 The example starts yt-dlp, and does not fetch the video itself
+
+`download.zeno` checks the address, starts
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) with the right words, and
+says how it went.
+
+**Why.** How YouTube hands out a video is not written down anywhere,
+and it changes every few weeks. yt-dlp is kept working by many people
+who follow each change; the same thing written in Zeno would work for
+a month. It would also need an encrypted connection, which Zeno has
+no library for. What the example shows instead is something nearly
+every real program does sooner or later: it uses a tool that is
+already there.
+
+**What its first lines say.** That it is for videos the user has the
+right to keep: their own, one whose licence allows it, or one whose
+owner agreed. YouTube's terms of service allow no other download, and
+a reader of the example should not have to find that out afterwards.
+
+**Alternatives rejected.** Fetching the video in Zeno (above). An
+`http` module first: the larger part of it is the encryption, and the
+video would still be out of reach.
+
+### 25.2 `program.run(name, words)` starts a program, waits for it, and gives the number it ended with
+
+```zeno
+import program
+
+let ended = program.run("yt-dlp", ["--paths", folder, address])
+if ended != 0 {
+    print("that did not work")
+}
+```
+
+**Why a number.** Every program on Linux, macOS and Windows ends with
+a whole number, and 0 means that all went well. A `bool` would throw
+away what the other numbers say: `grep` ends with 1 for "nothing
+found" and 2 for "could not look".
+
+**Why it waits.** A line of a Zeno program is done when the next line
+begins. A program that went on while another ran would need a value
+for the one still running, and ways to ask it, wait for it and stop
+it. That is left for later (25.7).
+
+**Why in `program`.** `program.arguments()` is the words this program
+was started with. `program.run` gives another program the words it is
+started with, and if that program is written in Zeno, its
+`program.arguments()` is exactly the list that was passed. The two
+are one idea seen from its two ends, so they are in one module, and
+`import program` is still the one line for "the programs on this
+computer".
+
+**Alternatives rejected.** A module of its own (`process`, `system`):
+a module for one function, and a second name to learn beside
+`program`. `run` as a plain word like `print`: it would take a common
+name away from every program for something few of them do.
+
+### 25.3 The words are a list, and no shell reads them
+
+Each item of the list is one word for the other program, whatever is
+in it.
+
+**Why.** The other way is one line of text that a shell takes apart:
+`system("yt-dlp " + address)` in C. Then a blank in a folder's name
+makes two words of it, and an address with `&` or `;` in it is the
+end of one command and the start of another, which may be `rm`. That
+is one of the oldest ways a program is broken into, and it is there
+whenever the text comes from outside, as an address does. With a list
+there is nothing to quote and nothing to get wrong: `"my videos"` is
+one word because it is one item.
+
+A program that wants what a shell does asks for a shell, and it shows
+on the line: `program.run("sh", ["-c", "ls | wc -l"])`.
+
+**Alternatives rejected.** One str, split at blanks (then a blank
+inside a word needs quoting rules, which differ between Windows and
+the rest). Both a str and a list (two ways to write one thing, and
+the shorter one is the one with the hole).
+
+### 25.4 The other program uses this program's keyboard and screen
+
+What it prints appears where this program's lines appear, and what is
+typed while it runs goes to it. What this program printed before is
+on the screen first.
+
+**Why.** yt-dlp redraws a line of progress as it goes, and a tool
+that asks a question can be answered. Nothing has to be kept in
+memory, however much the other program prints. It is also what
+happens when one program is started from another at a command line,
+so it is what a user expects to see.
+
+### 25.5 A program that cannot be started is a `FileError`, and one that ends badly is not
+
+```
+FileError: there is no program `yt-dlp` to run
+FileError: cannot run `notes.txt`
+```
+
+**Why an error that is raised as a value.** Whether the program is
+installed is known only when it is started, as whether a file is
+there is known only when it is opened (6.14). So a function that
+calls `program.run` says `raises FileError` or catches it, in a
+`--strict` check too.
+
+**Why `FileError`.** A program is a file that is looked for in the
+folders the system keeps for programs, and what goes wrong is what
+goes wrong with a file: it is not there, or it may not be used. A
+kind of its own would be an eighth name for one function, and a
+program that handles both would write two `except` blocks that say
+the same.
+
+**Why a number other than 0 is not an error.** The program was
+started and ran, which is all `run` promised. What its number means is
+the other program's business: for `grep`, 1 is an answer.
+
+**Stopped from outside.** A program that was stopped by Ctrl-C or
+`kill` has no number of its own. `run` gives 128 plus the number of
+the signal, which is what a shell reports, so 137 for `kill -9`.
+
+### 25.6 Only `zeno run` has it so far (provisional)
+
+`program.run` works under `zeno run`, with and without `--vm`, and
+under `zeno test`. `zeno build`, in C and in LLVM, and `zeno build
+--target` refuse a program that uses it, with a message that names
+the line and says that `zeno run` can run it. That is how `json` is
+treated by `zeno build` (18.1). In a page it raises a `FileError`: a
+browser starts no programs.
+
+**Why provisional.** In C, starting a program is `fork` and `exec` on
+Linux and macOS and `CreateProcess` on Windows, where the words have
+to be joined into one line by quoting rules of their own, and the
+list has to be read in each of the three ways memory is kept. For
+`--target` it is ten runtimes. None of it is hard, and all of it
+needs trying on three systems. The example that asked for `run` is a
+script, and `zeno run` is how a script is run.
+
+**Not provisional.** A firmware build will never have it: a board has
+no other programs.
+
+### 25.7 Left for later
+
+- `program.run` in a built program and in the targets (25.6).
+- Reading what the other program printed, and giving it text to
+  read.
+- Going on while the other program runs; stopping it; giving up
+  after a time.
+- The folder it starts in, and its environment variables.
+- `program.exit(n)`: `download.zeno` can say in words that the
+  download failed, and cannot yet end with a number that says so.

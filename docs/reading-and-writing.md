@@ -294,6 +294,10 @@ entry:
 `zeno_program_arguments` then makes a new list from `argv[1]` onward
 at each call.
 
+The module has a second function since, `program.run(name, words)`,
+which starts another program with words of its own. It has a page to
+itself: [`running-programs.md`](running-programs.md).
+
 ## One function, through the engines
 
 Follow `files.read(path)`.

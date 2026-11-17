@@ -88,17 +88,17 @@ the message, the file and the line:
 
 ```
 $ python3 tools/targets.py
-js: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-ts: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-py: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-php: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-go: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-java: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-cs: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-cpp: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-rust: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-wasm: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
-html: 328 of 328 programs print what `zeno run` prints (30 left out: ...)
+js: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+ts: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+py: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+php: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+go: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+java: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+cs: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+cpp: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+rust: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+wasm: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+html: 328 of 328 programs print what `zeno run` prints (31 left out: ...)
 ```
 
 ## How it is done
@@ -338,6 +338,8 @@ file and a faster program, but no `import web` yet.
 - `import web`, except in `--web` builds.
 - `unsafe` blocks and manual memory: they are only for a program
   compiled to machine code.
+- `program.run`, which starts another program: only `zeno run` has
+  it so far (decision 25.6).
 
 Zeno refuses such a program with a message that names the line.
 

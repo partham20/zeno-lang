@@ -1,0 +1,99 @@
+# Save a video from YouTube in a folder.
+#
+#     zeno run examples/download.zeno https://www.youtube.com/watch?v=VIDEO
+#     zeno run examples/download.zeno https://youtu.be/VIDEO videos
+#     zeno run examples/download.zeno https://youtu.be/VIDEO music --audio
+#
+# This is for videos you have the right to keep: your own, one whose
+# licence allows it (Creative Commons, for one), or one whose owner said
+# yes. YouTube's terms of service allow no other download.
+#
+# Zeno does not fetch the video itself. That is the work of yt-dlp
+# (https://github.com/yt-dlp/yt-dlp), which has to be installed, with
+# ffmpeg beside it for the best picture and for `--audio`. This program
+# checks what it was asked, starts yt-dlp with `program.run`, and says
+# in plain words how it went.
+
+import program
+
+# The addresses a video on YouTube can have.
+let sites = [
+    "https://www.youtube.com/",
+    "https://youtube.com/",
+    "https://m.youtube.com/",
+    "https://music.youtube.com/",
+    "https://youtu.be/",
+]
+
+function is_on_youtube(address: str) -> bool {
+    for site in sites {
+        if address.starts_with(site) and len(address) > len(site) {
+            return true
+        }
+    }
+    return false
+}
+
+# The words yt-dlp is started with. Each item of the list is one word
+# for yt-dlp, whatever is in it: a folder with a blank in its name
+# needs no quotes, and nothing in the address is read by a shell.
+function words_for(address: str, folder: str, audio_only: bool) -> list[str] {
+    var words = [
+        "--no-playlist",
+        "--paths",
+        folder,
+        "--output",
+        "%(title)s.%(ext)s",
+    ]
+    if audio_only {
+        words.append("--extract-audio")
+        words.append("--audio-format")
+        words.append("mp3")
+    }
+    words.append(address)
+    return words
+}
+
+function usage() {
+    print("usage: zeno run download.zeno <address of the video> [folder] [--audio]")
+    print("  folder    where to save it. Left out, it is this folder")
+    print("  --audio   keep only the sound, as an mp3")
+}
+
+# The words this program was started with: `--audio` wherever it is, and
+# then the address and the folder, in that order.
+var audio_only = false
+var plain: list[str] = []
+for word in program.arguments() {
+    if word == "--audio" {
+        audio_only = true
+    } else {
+        plain.append(word)
+    }
+}
+
+if len(plain) < 1 or len(plain) > 2 {
+    usage()
+} else if not is_on_youtube(plain[0]) {
+    print(f"`{plain[0]}` is not the address of a video on YouTube.")
+    print("It should begin with https://www.youtube.com/ or https://youtu.be/")
+} else {
+    let address = plain[0]
+    var folder = "."
+    if len(plain) == 2 {
+        folder = plain[1]
+    }
+    try {
+        let ended = program.run("yt-dlp", words_for(address, folder, audio_only))
+        if ended == 0 and folder == "." {
+            print("Saved in this folder.")
+        } else if ended == 0 {
+            print(f"Saved in `{folder}`.")
+        } else {
+            print(f"yt-dlp could not save it, and ended with {ended}. What went wrong is in its lines above.")
+        }
+    } except FileError {
+        print("yt-dlp is not installed, or is not where programs are looked for.")
+        print("Get it with `pip install yt-dlp`, or from https://github.com/yt-dlp/yt-dlp")
+    }
+}
