@@ -171,7 +171,7 @@ ok
 ```
 
 Since 0.5 it also has `zeno build --target` write `examples/hello.zeno`
-in each of ten languages, which needs none of them installed.
+in each of fourteen languages, which needs none of them installed.
 
 A build for another processor cannot run on the machine that built it.
 For the ARM builds for Linux the script is given an emulator, a program

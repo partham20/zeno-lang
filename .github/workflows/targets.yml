@@ -1,9 +1,9 @@
 # Holds every target language to `zeno run`, on the newest version of
 # each language, once a week (decision 24.9).
 #
-# It installs the newest Node, TypeScript, Python, PHP, Go, Java, .NET, C++
-# and Rust (with its WebAssembly target), and Playwright's Chromium for
-# the page, then runs tools/targets.py: every example, every sample of the book and the
+# It installs the newest Node, TypeScript, Python, PHP, Lua, Ruby, Dart,
+# Kotlin, Go, Java, .NET, C++ and Rust (with its WebAssembly target), and
+# Playwright's Chromium for the page, then runs tools/targets.py: every example, every sample of the book and the
 # corner programs in tools/targets/, built for every target and compared
 # with what `zeno run` prints. A language that changes under us shows up
 # here first. Its report is kept with the run.
@@ -32,7 +32,8 @@ permissions:
 jobs:
   targets:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Kotlin is compiled for every program, some ten seconds each.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +59,17 @@ jobs:
           php-version: latest
           coverage: none
 
+      - name: Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ruby
+
+      - uses: dart-lang/setup-dart@v1
+
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -70,6 +82,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
+
+      # After Java: `kotlinc` runs on it. The machine comes with Kotlin.
+      - name: Kotlin
+        run: command -v kotlinc || sudo snap install --classic kotlin
 
       - name: The newest g++
         run: |
@@ -86,7 +102,9 @@ jobs:
 
       - name: Every program, in every language
         run: |
-          for tool in node tsc python3 php go java dotnet g++ rustc; do "$tool" --version 2>&1 | head -1; done
+          for tool in node tsc python3 php ruby dart go java dotnet g++ rustc; do "$tool" --version 2>&1 | head -1; done
+          lua5.4 -v
+          kotlinc -version 2>&1 | tail -1
           python3 tools/targets.py | tee targets-report.txt
 
       - uses: actions/upload-artifact@v4

@@ -257,8 +257,9 @@ collector in the program) and `--memory`.
 `zeno build --target <language>` writes the program in another language,
 by fixed rules, as a file that runs with that language's own tools:
 `js` (Node), `ts` (TypeScript), `html` (a page that runs it), `py`
-(Python), `php`, `go`, `java`, `cs` (C#), `cpp` (C++), `rust`, and
-`wasm` (WebAssembly, built with `rustc`)
+(Python), `php`, `lua`, `ruby`, `dart`, `kotlin`, `go`, `java`, `cs`
+(C#), `cpp` (C++), `rust`, and `wasm` (WebAssembly, built with
+`rustc`)
 ([`docs/targets.md`](docs/targets.md)). The written program
 prints what `zeno run` prints, overflows and errors included, and
 `tools/targets.py` checks that for every example and book sample.
@@ -624,7 +625,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     --target` writes it in JavaScript, TypeScript, Python, PHP, Go,
     Java, C#, C++ or Rust, as a page, or as WebAssembly. Each file
     carries Zeno's rules and prints what `zeno run` prints, which
-    `tools/targets.py` checks on 337 programs.
+    `tools/targets.py` checks on 338 programs. Lua, Ruby, Dart and
+    Kotlin were added after 0.5.1 and will be in the release after it.
     See [`docs/targets.md`](docs/targets.md) and chapter 24 of
     [`docs/decisions.md`](docs/decisions.md))
 
@@ -664,8 +666,8 @@ src/emit_c.rs       syntax tree -> C source, for `zeno build`
 src/emit_llvm.rs    syntax tree -> LLVM IR, for `zeno build --llvm`
 src/runtime.c       the C library every compiled program carries
 src/lower.rs        syntax tree -> a plain program any language can say, for `zeno build --target`
-src/emit_js.rs      that program -> JavaScript and TypeScript; emit_py, emit_php, emit_go, emit_java, emit_cs, emit_cpp and emit_rust are the others
-src/runtime.js      Zeno's rules in JavaScript, put into each written program; runtime.ts, .py, .php, .go, .java, .cs, .cpp and .rs are the others
+src/emit_js.rs      that program -> JavaScript and TypeScript; emit_py, emit_php, emit_lua, emit_ruby, emit_dart, emit_kotlin, emit_go, emit_java, emit_cs, emit_cpp and emit_rust are the others
+src/runtime.js      Zeno's rules in JavaScript, put into each written program; runtime.ts, .py, .php, .lua, .rb, .dart, .kt, .go, .java, .cs, .cpp and .rs are the others
 tools/targets.py    builds every example for every target and compares it with `zeno run`
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works

@@ -22,7 +22,7 @@ BIG = "c,rust,zeno,zeno-llvm,zeno-nc,zeno-release,zeno-owned,zeno-fast,zeno-fast
 SMALL = "c,python,vm,run"
 # Since 0.5: the Zeno program written in another language and run
 # there, at the small sizes, beside C and the VM.
-TARGETS = "c,vm,to-js,to-py,to-php,to-go,to-java,to-cs,to-cpp,to-rust,to-wasm"
+TARGETS = "c,vm,to-js,to-py,to-php,to-lua,to-ruby,to-dart,to-kotlin,to-go,to-java,to-cs,to-cpp,to-rust,to-wasm"
 
 def run(zeno, size, engines, timeout):
     with tempfile.TemporaryDirectory() as tmp:

@@ -35,7 +35,8 @@ run --vm` slower ([docs/release.md](../docs/release.md)).
 
 Since 0.5 there are engines for the program written in another language
 (`zeno build --target`, [docs/targets.md](../docs/targets.md)): `to-js
-to-py to-php to-go to-java to-cs to-cpp to-rust to-wasm`. Each has Zeno
+to-py to-php to-lua to-ruby to-dart to-kotlin to-go to-java to-cs
+to-cpp to-rust to-wasm`. Each has Zeno
 write the program in that language, builds it there if the language is
 a built one, and times the run. `record.py` keeps them, at the small
 sizes, under `targets`.

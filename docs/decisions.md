@@ -10681,6 +10681,203 @@ minute to build and was not timed). Leaving
 it, as within the noise of this machine: it was the same direction on
 all six programs, four rounds running.
 
+### 24.30 Lua: its own ints, a `none` of its own, `try` as a coroutine
+
+`zeno build --target lua` writes a `.lua` file that `lua` runs (5.4),
+with `src/runtime.lua` at its top. The target's name is the
+language's, in full, as `rust` is: `lua`, `ruby`, `dart` and `kotlin`
+are short already, and `rb` or `kt` would have to be learnt.
+
+- **An int is a Lua integer, a float a Lua float.** Lua 5.4 keeps the
+  two apart and its integer has 64 bits. Its `+`, `-` and `*` wrap
+  around when the answer does not fit; the runtime looks for that
+  (the signs of the two sides and of the answer) and raises
+  `OverflowError`. That is why it is 5.4 and not LuaJIT or 5.1, where
+  every number is a float.
+- **`none` is `Z.none`, not `nil`.** A Lua table cannot hold `nil`:
+  `{1, nil, 3}` has a hole and no certain length. A Zeno list can
+  hold `none`, and a dict can have it as a value. So `none` is one
+  value the runtime makes, and `nil` never reaches the program.
+- **A list is a table from 1, a dict a table of keys in order and a
+  table of values.** Lua's own table forgets the order keys were
+  added in, and Zeno's dict keeps it.
+- **`try` is a function handed to `Z.try`.** Lua has no `try`; it has
+  `pcall`, which calls a function and says whether it failed. A
+  `return`, `break` or `continue` inside that function cannot leave
+  what is around it, so the function gives back how it ended (1, 2, or
+  3 and a value) and the lines after the call do it, as in Go (24.13).
+- **The body runs as a coroutine.** `pcall` may be inside itself about
+  190 times and then Lua stops with "C stack overflow". A Zeno program
+  may be 999 calls deep with a `try` in each (24.15). So `Z.try` does
+  not call the body: it hands it to the loop in `Z.start`, which runs
+  it as a coroutine of its own while the one that asked waits. However
+  many `try`s are inside one another, Lua sees one `pcall`.
+- **`continue` is `goto`.** Lua has `goto` and no `continue`; the
+  label is at the end of the loop's body.
+- **Past 100 variables, a block keeps its own in a table.** A Lua
+  function may have 200 `local`s, and what an expression is worked out
+  in counts toward a limit of 255. A program is one function, and a
+  generated one can pass that.
+- **Time.** Lua has `os.time`, in whole seconds, and no `sleep`. If
+  LuaSocket is there the runtime uses it. If not, `time.now()` is
+  `os.clock`, the time the processor worked, and `sleep` counts it.
+  A wait that keeps the processor busy is a poor wait; the other
+  choices were to stop the program with a message (then a program
+  that sleeps cannot be written in Lua at all) or to start `sleep`,
+  the program of the system, for each wait (not there on Windows, and
+  slow).
+
+**Alternatives rejected.** `nil` for `none`, with a list that keeps
+its own length (every step that reads a list would have to know).
+`pcall` as it is, with the limit of 190 written down (a limit `zeno
+run` does not have). A `repeat ... until true` around a loop's body
+for `continue` (a `break` inside it then means `continue`, and the
+real `break` needs a flag).
+
+### 24.31 Ruby: lambdas, loops that are blocks, and room for calls
+
+`zeno build --target ruby` writes a `.rb` file that `ruby` runs (3.0
+or newer, no gem), with `src/runtime.rb` at its top.
+
+- **A Zeno function is a lambda**, `->(r) { ... }`. Ruby has three
+  things like a function. A `def` does not see the variables around
+  it, and a Zeno function does. A `proc` takes any number of arguments
+  and its `return` leaves the method around it. A lambda takes the
+  arguments it names and its `return` leaves the lambda.
+- **An int is a Ruby Integer.** It grows without end, so each step
+  looks whether the answer still fits in 64 bits, as the Python
+  runtime does.
+- **`for` is a block**: `Z.each(xs, line) do |x| ... end`. A block's
+  parameter is a new variable each round, so the functions made in
+  three rounds see three values. Ruby's own `for x in xs` has one `x`
+  for all rounds.
+- **`while` is Ruby's `while`, unless its body declares a variable an
+  inner function uses.** A variable first set inside a Ruby `while`
+  belongs to what is around the loop: one for all rounds. So such a
+  loop is written `Z.loop do ... break unless cond ... end`, a block,
+  whose variables are new each round. Only such a loop, because a
+  block costs a call each round and most loops make no function.
+- **A name that begins with a capital gets `z_` before it.** In Ruby
+  that is a constant: it cannot be set inside a function, and setting
+  it twice is a warning. `Total` becomes `z_Total`. This is done in
+  the Ruby printer and not in the shared list of names, since no other
+  target minds.
+- **`#` in a text is written `\#`.** `"#{x}"` in Ruby fills in `x`.
+- **The program starts itself once more.** Ruby gives a program one
+  megabyte for calls inside one another, and 999 Zeno calls, each
+  some Ruby calls, can pass it. How much there is, is decided before
+  Ruby starts (`RUBY_THREAD_VM_STACK_SIZE`), so the runtime starts the
+  same file again asking for 64 megabytes. If that cannot be done, the
+  program runs with what it has.
+
+**Alternatives rejected.** Cells, as in Python (Ruby's blocks already
+do it). Every `while` as a block (slower for nothing). Running the
+program in a `Thread` with a bigger stack (a thread's stack size
+cannot be set in Ruby). Telling the reader to set the variable (the
+file must run by `ruby hello.rb` and nothing more).
+
+### 24.32 Dart: `Object?`, one list of arguments, and the VM only
+
+`zeno build --target dart` writes a `.dart` file that `dart run` runs
+(Dart 3 or newer), with `src/runtime.dart` at its top.
+
+- **Every value is an `Object?`.** Dart checks types before the
+  program runs, and what a Zeno value is, is found out while it runs
+  (24.2). `Object?` is Dart's `any`: `dynamic` would let a wrong call
+  through to fail with Dart's message, and with `Object?` every use
+  goes through the runtime, which gives Zeno's.
+- **A function takes one list.** `(List<Object?> z_a) { Object? r =
+  z_a[0]; ... }`. All functions then have one type, and a call with
+  names, defaults or a wrong count is lined up by the runtime, as in
+  Go, Java and C#.
+- **For the Dart VM only.** There an `int` has 64 bits and wraps, and
+  the runtime sees the overflow. Compiled to JavaScript for a page, a
+  Dart `int` is a JavaScript number, and the checks would be wrong.
+  `--target html` is the target for a page.
+- **`$` in a text is written `\$`.** `"$x"` in Dart fills in `x`.
+- **`log10` is worked out as the C library does it.** Dart has `log`
+  and no `log10`, and `log(x) / ln10` is one digit off for some
+  inputs (`log10(1000)` gives `2.9999999999999996`). The runtime does
+  the steps of the C library's `log10`, so it prints what `zeno run`
+  prints.
+- **Printing waits.** Dart's `stdout.write` hands the text to be
+  written later, and a program that stops with an error could lose
+  its last lines. The runtime writes the bytes itself and waits for
+  them.
+
+**Alternatives rejected.** `dynamic` (above). Real Dart types from the
+Zeno types (a Zeno `int` that overflows is still not a Dart `int`,
+and a second printer for every target is not worth what it gives).
+
+### 24.33 Kotlin: the Java runtime in Kotlin, and `fun`, not a lambda
+
+`zeno build --target kotlin` writes a `.kt` file. `kotlinc` compiles
+it to a `.jar` and `java` runs that. `src/runtime.kt` is
+`src/runtime.java` in Kotlin, for the same machine: an int is a
+`Long`, a list an `ArrayList`, a dict a `LinkedHashMap`, and `sin` and
+`exp` are Java's `Math` (24.16).
+
+- **No cells.** A Java lambda may only read the variables around it,
+  so the Java target keeps a shared variable in a `Z.Cell` (24.13). A
+  Kotlin function may change them, and a variable declared in a loop's
+  body is new each round. The program is plain variables.
+- **A Zeno function is `fun(z_a: Array<Any?>): Any? { ... }`.** Kotlin
+  has a shorter way, a lambda `{ a -> ... }`. But a plain `return` is
+  not allowed in a lambda, and its value is its last line. A `fun`
+  with no name has `return` as Zeno has it.
+- **A block of its own is `if (true) { ... }`.** `{ ... }` alone is a
+  lambda in Kotlin, made and never called.
+- **The file turns Kotlin's warnings off** (`@file:Suppress`). A Zeno
+  function that ends without a `return` gives `none`, so there is a
+  `return null` after its last line, which Kotlin calls unreachable
+  when that line was a `return` too; and a `var` that is set once
+  "could be `val`". Both are what the rules write, as in C# (24.13).
+- **The program runs in a thread with room for calls**, as in Java
+  (24.15): 999 Zeno calls, each some calls of the runtime, do not
+  always fit in what a JVM gives its first thread.
+- **The program comes first in the file, the runtime after**, as in
+  Java and C#, so the reader finds `main` at the top.
+- **`$` in a text is written `\$`**, as in Dart.
+
+**The cost.** `kotlinc` takes about ten seconds for any program,
+because the runtime, some 2,200 lines, is compiled with it each time.
+A jar of the runtime made once would be faster, and then the `.kt`
+file would not run by itself, which every target's file does (24.2).
+
+**Alternatives rejected.** Calling the Java runtime from Kotlin (two
+files and a build). Kotlin for JavaScript or native (other machines,
+with other ints and other limits; one Kotlin is enough to say the
+program in Kotlin).
+
+### 24.34 The words of the four languages, and a program that tries them
+
+The list of words that get a `_` (24.4, 24.25) took those of Lua
+(`end`, `local`, `then`, `until`, `repeat`, `elseif`), Ruby (`begin`,
+`rescue`, `ensure`, `unless`, `redo`, `retry`, `alias`, `undef`,
+`defined`, `elsif`, and `_1` to `_9`, which in a Ruby block mean its
+arguments), Dart (`late`, `required`, `factory`, `mixin`, `on`,
+`show`, `hide`, `part`, `library`, `external`, `covariant`,
+`deferred`, `extension`, `rethrow`, `sync`, and `List` and
+`identical`, which the printed program itself uses) and Kotlin
+(`fun`, `val`, `it`, `typealias`, `arrayOf`, `booleanArrayOf`).
+
+It is still one list for every target, so a variable `end` is `end_`
+in JavaScript too, where it need not be. That keeps a program's names
+the same in every language it is written in (24.4), and it means the
+old targets are checked again with the new words: all of them still
+print what `zeno run` prints.
+
+`tools/targets/edge-names-2.zeno` is the twenty-third corner program.
+It has a variable for each of about a hundred such words and for
+names that look like the runtimes' own (`Z`, `ZRaise`, `z_ok`, `z_a`,
+`_G`, `self`, `it`); variables, a class, its fields and a function
+with capitals; texts that say `$5`, `${x}`, `#{y}`, `#$z`, `#@w` and
+`[[x]]`; functions made in the rounds of a `while` and of a `for`;
+`break`, `continue` and `return` from inside a `try` inside a loop; an
+error raised again through the `try`s of calls inside one another; and
+a function with 230 variables. The Lua coroutines, Ruby's `Z.loop` and the table of
+variables each came from a program like these failing first.
+
 ## 25. Starting another program
 
 Partha asked (2026-11-17) for a program in Zeno that downloads a video

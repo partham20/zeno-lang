@@ -27,6 +27,10 @@ Wrote hello.html. Open it in a browser
 | `html` | `hello.html`, a page that runs the program | a browser |
 | `py` | `hello.py` | `python3 hello.py` |
 | `php` | `hello.php` | `php hello.php` (PHP 8.0 or later, no extension needed) |
+| `lua` | `hello.lua` | `lua hello.lua` (Lua 5.4) |
+| `ruby` | `hello.rb` | `ruby hello.rb` (Ruby 3.0 or later, no gem needed) |
+| `dart` | `hello.dart` | `dart run hello.dart` (Dart 3 or later) |
+| `kotlin` | `hello.kt` | `kotlinc hello.kt -include-runtime -d hello.jar && java -jar hello.jar` |
 | `go` | `hello.go` | `go run hello.go` |
 | `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
 | `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
@@ -78,7 +82,7 @@ overflows; the written program still overflows where Zeno's does,
 because the rules of Zeno come with it.
 
 That is held to by a tool, not by hope. `tools/targets.py` runs every
-example, every sample of the book and twenty-two programs written to try
+example, every sample of the book and twenty-three programs written to try
 the corners (`tools/targets/`: the edges of an int, floats as text,
 text in every script, the order a line is worked out in, errors, deep
 calls, JSON, files, typed lines that are not text, names that are words
@@ -88,17 +92,21 @@ the message, the file and the line:
 
 ```
 $ python3 tools/targets.py
-js: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-ts: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-py: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-php: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-go: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-java: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-cs: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-cpp: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-rust: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-wasm: 337 of 337 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
-html: 328 of 328 programs print what `zeno run` prints (31 left out: ...)
+js: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+ts: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+py: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+php: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+lua: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+ruby: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+dart: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+kotlin: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+go: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+java: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+cs: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+cpp: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+rust: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+wasm: 338 of 338 programs print what `zeno run` prints (22 left out: they use the board, a page, manual memory, another program)
+html: 329 of 329 programs print what `zeno run` prints (31 left out: ...)
 ```
 
 ## How it is done
@@ -114,17 +122,19 @@ Three steps, in three files.
    statements for (`[x * x for x in xs if x > 0]`, `0 <= t < 10`) made
    into statements, in the order Zeno would do them.
 2. **The runtime** (`src/runtime.js`, `src/runtime.py`,
-   `src/runtime.php`, `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`,
-   `src/runtime.cpp`, `src/runtime.rs`): what every Zeno
+   `src/runtime.php`, `src/runtime.lua`, `src/runtime.rb`,
+   `src/runtime.dart`, `src/runtime.kt`, `src/runtime.go`,
+   `src/runtime.java`, `src/runtime.cs`, `src/runtime.cpp`,
+   `src/runtime.rs`): what every Zeno
    value is in that language, and what each operator and built-in does
    with it, written to do what `ops.rs` and `builtins.rs` do for
-   `zeno run`, step for step and message for message. It goes at the
-   top of the file, so the file needs nothing else.
-3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_php.rs`, `src/emit_go.rs`,
-   `src/emit_java.rs`, `src/emit_cs.rs`, `src/emit_cpp.rs`,
-   `src/emit_rust.rs`): the lowered
-   program in that
-   language's words.
+   `zeno run`, step for step and message for message. It goes in the
+   same file as the program, so the file needs nothing else.
+3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_php.rs`,
+   `src/emit_lua.rs`, `src/emit_ruby.rs`, `src/emit_dart.rs`,
+   `src/emit_kotlin.rs`, `src/emit_go.rs`, `src/emit_java.rs`,
+   `src/emit_cs.rs`, `src/emit_cpp.rs`, `src/emit_rust.rs`): the
+   lowered program in that language's words.
 
 Here is a function, and what the JavaScript and the Python say:
 
@@ -305,6 +315,168 @@ after `use`, with `&` so that it is the same variable and not a copy.
 The file needs PHP 8.0 or later and no extension: not `mbstring`, not
 `bcmath` (decision 24.28).
 
+## Lua: `--target lua`
+
+```lua
+Z.start({"area.zeno"}, function()
+  local area, math_
+  area = Z.fn("area", {"r"}, {false}, function(r)
+    return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4)
+  end)
+  math_ = Z.module("math")
+  Z.b_print({Z.direct(area, 6, 2.0)}, 6)
+end)
+```
+
+An int is a Lua integer and a float a Lua float: Lua 5.4 keeps the two
+apart, and its integer has 64 bits. Lua's own `+` wraps around when
+the answer does not fit, so `Z.add` looks for that and raises Zeno's
+error. Zeno's `none` is a value of the runtime's own, `Z.none`, and
+not Lua's `nil`: a Lua table cannot hold `nil`, and a Zeno list can
+hold `none`.
+
+A Lua function shares the variables around it, and a `local` in the
+body of a loop is a new variable each round, so a function made in a
+loop needs no box. Three things Lua does not have are written with
+what it has (decision 24.30):
+
+```lua
+  for m in Z.items(makers, 8) do
+    Z.b_print({Z.call(m, {}, 9)}, 9)
+  end
+  do
+    local z_ok, z_how = Z.try(function()
+      Z.b_print({Z.index(makers, 5, 12)}, 12)
+    end)
+    if not z_ok then
+      local t = z_how
+      if Z.catches(t, "IndexError") then
+```
+
+- **`try`.** The body is a function handed to `Z.try`, which says
+  whether it raised. A `return`, `break` or `continue` in the body
+  cannot leave the function around it from in there, so the body says
+  how it ended and the lines after the call do it.
+- **`continue`** is a `goto` to a label at the end of the loop's body.
+- **More than 200 variables.** A Lua function may have 200 `local`s. A
+  block that would pass that keeps its variables in a table.
+
+Lua by itself has no clock finer than a second and nothing to wait
+with. If LuaSocket is installed the runtime uses its clock and its
+`sleep`; if not, `time.now()` counts the time the processor worked and
+`sleep` waits by counting it (see "Known limits").
+
+## Ruby: `--target ruby`
+
+```ruby
+Z.start(["area.zeno"], -> {
+  area = math_ = nil
+  area = Z.fn("area", ["r"], [false], ->(r) {
+    return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4)
+  })
+  math_ = Z.module_of("math")
+  Z.b_print([Z.direct(area, 6, 2.0)], 6)
+})
+```
+
+A Zeno function is a Ruby lambda (`->(r) { ... }`): a lambda takes
+exactly the arguments it names, `return` leaves it, and it shares the
+variables around it. An int is a Ruby Integer; Ruby's never overflows,
+so each step looks whether the answer still fits in 64 bits. `none` is
+`nil`, a list an Array, and a dict a Hash, which keeps its keys in the
+order they were added, as Zeno's does.
+
+A `for` is a block, so each round has its own variable. A `while`
+stays Ruby's `while`, unless its body makes a variable that an inner
+function uses: Ruby's `while` has one such variable for all its
+rounds, so that loop is a block too (decision 24.31):
+
+```ruby
+  Z.loop do
+    break unless Z.lt(i, 3, 3)
+    n = nil
+    n = Z.mul(i, i, 4)
+    Z.call_method(makers, "append", [Z.fn("", [], [], ->() {
+      return n
+    })], 5)
+    i = Z.add(i, 1, 6)
+  end
+  Z.each(makers, 8) do |m|
+    Z.b_print([Z.call(m, [], 9)], 9)
+  end
+```
+
+A name that begins with a capital is a constant in Ruby, which cannot
+be set twice or inside a function, so a Zeno variable `Total` is
+written `z_Total`. Ruby gives a program one megabyte for calls inside
+one another, less than 999 Zeno calls can need, and how much is
+decided before Ruby starts: the program starts itself once more,
+asking for 64.
+
+## Dart: `--target dart`
+
+```dart
+void main(List<String> z_args) {
+  Z.start(<String>["area.zeno"], z_args, () {
+    Object? area, math_;
+    area = Z.fn("area", <String>["r"], <bool>[false], (List<Object?> z_a) {
+      Object? r = z_a[0];
+      return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4);
+    });
+    math_ = Z.module("math");
+    Z.b_print(<Object?>[Z.direct(area, 6, <Object?>[2.0])], 6);
+    return null;
+  });
+}
+```
+
+Every value is an `Object?`, Dart's "anything, or nothing", as it is
+`any` in Go and `Object` in Java. An int is a Dart `int`, 64 bits on
+the Dart VM, and a float a `double`. Every function takes one list of
+its arguments, so that all of them have one type and a call can be
+lined up by the runtime. A variable declared in the body of a Dart
+loop is a new one each round, so a function made in a loop needs no
+box.
+
+The file is for the Dart VM (`dart run`, or `dart compile exe`). It is
+not for a web page: compiled to JavaScript, a Dart `int` is a
+JavaScript number and no longer has 64 bits. For a page there is
+`--target html` (decision 24.32).
+
+## Kotlin: `--target kotlin`
+
+```kotlin
+fun main(args: Array<String>) {
+    Z.start(arrayOf<String>("area.zeno"), args, fun(): Any? {
+        var area: Any? = null
+        var math_: Any? = null
+        area = Z.fn("area", arrayOf<String>("r"), booleanArrayOf(false), fun(z_a: Array<Any?>): Any? {
+            var r: Any? = z_a[0]
+            return Z.mul(Z.mul(Z.builtin("math.pi", 0), r, 4), r, 4)
+        })
+        math_ = Z.module("math")
+        Z.b_print(arrayOf<Any?>(Z.direct(area, 6, arrayOf<Any?>(2.0))), 6)
+        return null
+    })
+}
+```
+
+Kotlin runs on Java's machine, and `src/runtime.kt` is the Java
+runtime said in Kotlin: every value is an `Any?`, an int a `Long`, a
+list an `ArrayList`. Two things are simpler than in Java. An inner
+function may change the variables around it, so there is no `Z.Cell`.
+And a line after a `return` is only a warning; the file turns Kotlin's
+warnings off in its first line, as the C# file does, so `return` needs
+no `if (true)` before it.
+
+A Zeno function is written `fun(...): Any? { ... }` and not as a
+Kotlin lambda `{ ... }`: in a lambda a plain `return` is not allowed,
+and in a `fun` it means what it means in Zeno (decision 24.33).
+
+`kotlinc` makes a `.jar` with Kotlin's own library in it, and `java`
+runs that. Compiling takes some seconds for any program, because the
+runtime is compiled with it each time.
+
 ## The page: `--target html`
 
 `--target html` writes one `.html` file: the program in JavaScript,
@@ -383,7 +555,9 @@ target keep, and a program in `tools/targets/` that holds them to it:
 - **Names.** Any file name builds (`my prog.zeno`, `2048.zeno`,
   `speed_test.zeno`, `struct.zeno`); a name in capitals is safe from
   the macros of C; `args` and `delegate` are safe in Java and C#
-  (24.25).
+  (24.25). `end`, `local`, `rescue`, `it`, `fun`, `val` and `List`
+  are safe in Lua, Ruby, Dart and Kotlin, and so is text that says
+  `#{x}` or `${x}`, which those languages would fill in (24.34).
 - **Long chains.** A linked list of a million objects is let go link
   by link in Rust and WebAssembly, not by a million calls inside one
   another, which a WebAssembly host has no stack for.
@@ -398,7 +572,22 @@ target keep, and a program in `tools/targets/` that holds them to it:
   carry their own, which can give a different 17th digit, the last one
   a float prints, for some inputs. Go uses a copy of JavaScript's `sin`,
   `cos` and `tan`, and Java uses `Math` rather than `StrictMath`, which
-  makes it rare; none of the 337 programs shows it (decision 24.16).
+  makes it rare; none of the 338 programs shows it (decision 24.16).
+  Lua and Ruby use the C library. Kotlin uses Java's `Math`, as the
+  Java target does. Dart has its own; its `log10` is worked out the
+  way the C library does it, because `log(x) / ln10` is one digit off
+  for some inputs.
+- **Time in Lua.** Lua has a clock in whole seconds and no `sleep`.
+  With LuaSocket installed, `time.now()` and `sleep` are exact. Without
+  it, `time.now()` counts the time the processor worked, which is
+  right for timing a piece of the program and wrong across a wait, and
+  `sleep` keeps the processor busy until the time is over.
+- **A very long line.** A sum of some hundreds of terms written as one
+  expression (`a1 + a2 + ... + a300`) becomes as many calls inside one
+  another, which is more than the parsers of Python and Lua take. Put
+  the terms in a list and use `sum`, or add them in steps.
+- **Kotlin takes seconds to compile.** About ten for any program:
+  `kotlinc` compiles the runtime with it each time.
 - **Node 22 and a big WebAssembly program.** Node 22 (seen with
   22.23) can stop with a segmentation fault while it runs a `.wasm`
   that asks for hundreds of megabytes: the strings and sort benchmarks
@@ -434,7 +623,10 @@ takes the types off and runs the same JavaScript. PHP has no JIT as it
 is installed, and is slower than the VM and faster than Python, except
 for strings, where PHP's own text functions do the work. The table is
 the record of 0.5.0 (`bench/results/versions/0.5.0.json`, made by
-`python3 bench/record.py`).
+`python3 bench/record.py`). Lua, Ruby, Dart and Kotlin came after
+0.5.0 and are not in that record; `python3 bench/run.py --engines
+c,vm,to-lua,to-ruby,to-dart,to-kotlin` times them where they are
+installed.
 
 JavaScript is two to six times faster than the VM and Java two to
 nine, because Node and the JVM compile the program to machine code as
@@ -475,6 +667,12 @@ overflow check) would do; that is the next step for speed.
    `go run`. What does Go say? Then take the `if (true)` off a
    `return` in the Java file, and the `#pragma` line off the C# file,
    and compare what each language thinks of a line after `return`.
-9. Write `function f(n: int) -> int { return f(n + 1) }` and call it.
+9. Build the loop above for `ruby` and find `Z.loop`. Then make the
+   function inside it use `i` and not a variable of the body. Is the
+   loop still a block? Why does it not need to be?
+10. Build a program with a `try` inside a `for` that has a `continue`
+   in it, for `lua`. Find the `goto`, and find how the `continue`
+   gets out of the function `Z.try` was given.
+11. Write `function f(n: int) -> int { return f(n + 1) }` and call it.
    Build it for `go`, `java` and `cs`. Do they all stop with the same
    message as `zeno run`? Find `1000` in `src/runtime.go`.

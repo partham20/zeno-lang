@@ -83,7 +83,7 @@ echo "\`zeno new\` makes a program that runs and whose tests pass"
 # Writing a program in another language needs none of those languages.
 # (`wasm` is left out: it has rustc build what it writes.)
 examples=$PWD/examples
-for target in js ts html py php go java cs cpp rust; do
+for target in js ts html py php lua ruby dart kotlin go java cs cpp rust; do
     (
         mkdir "$work/$target"
         cd "$work/$target"
@@ -91,7 +91,7 @@ for target in js ts html py php go java cs cpp rust; do
         grep -q 'Hello, Zeno!' hello.*
     ) || { echo "\`zeno build --target $target\` did not write examples/hello.zeno"; exit 1; }
 done
-echo "\`zeno build --target\` writes a program in ten other languages"
+echo "\`zeno build --target\` writes a program in fourteen other languages"
 
 wasm=$PWD/target/wasm32-unknown-unknown/release/zeno.wasm
 if [ -f "$wasm" ]; then
