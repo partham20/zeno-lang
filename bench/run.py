@@ -153,7 +153,7 @@ def main():
                     r = subprocess.run((VALGRIND if a.count else []) + cmd, cwd=out, capture_output=True, text=True, timeout=a.timeout)
                     t = time.perf_counter() - t0
                     if r.returncode:
-                        raise RuntimeError((r.stdout + r.stderr)[-400:])
+                        raise RuntimeError((r.stdout + r.stderr)[-400:].strip() or f"it stopped with status {r.returncode} and said nothing")
                     if a.count:
                         refs = [line for line in r.stderr.splitlines() if "I refs:" in line or "I   refs:" in line]
                         if not refs:
@@ -163,7 +163,7 @@ def main():
                 except subprocess.TimeoutExpired:
                     value[key] = f"over {a.timeout} s"
                 except RuntimeError as why:
-                    value[key] = "failed: " + str(why).strip().splitlines()[0][:160]
+                    value[key] = "failed: " + (str(why).strip().splitlines() or ["it stopped and said nothing"])[0][:160]
         for out in folders:
             shutil.rmtree(out, ignore_errors=True)
         for key in keys:
