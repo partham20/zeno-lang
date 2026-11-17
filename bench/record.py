@@ -3,8 +3,9 @@
 
     python3 bench/record.py --version 0.3.0 [--zeno path/to/zeno]
 
-Runs run.py twice (the big sizes for the compiled engines, the small
-sizes for the engines that interpret) and writes
+Runs run.py three times (the big sizes for the compiled engines, the
+small sizes for the engines that interpret, and the small sizes for the
+program written in each other language) and writes
 bench/results/versions/<version>.json. C, Rust and Python run each time
 too, so a version's times can be read against C's on the same machine:
 the history page shows times as "times C", which stays fair when the
@@ -19,6 +20,9 @@ import argparse, json, os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIG = "c,rust,zeno,zeno-llvm,zeno-nc,zeno-release,zeno-owned,zeno-fast,zeno-fast-gc"
 SMALL = "c,python,vm,run"
+# Since 0.5: the Zeno program written in another language and run
+# there, at the small sizes, beside C and the VM.
+TARGETS = "c,vm,to-js,to-py,to-php,to-go,to-java,to-cs,to-cpp,to-rust,to-wasm"
 
 def run(zeno, size, engines, timeout):
     with tempfile.TemporaryDirectory() as tmp:
@@ -43,9 +47,13 @@ def main():
     zeno = os.path.abspath(a.zeno)
     big = run(zeno, "big", BIG, a.timeout)
     small = run(zeno, "small", SMALL, a.timeout)
+    targets = run(zeno, "small", TARGETS, a.timeout)
     record = {"version": a.version, "machine": big["machine"],
               "big": {k: big[k] for k in ("sizes", "engines", "times")},
               "small": {k: small[k] for k in ("sizes", "engines", "times")}}
+    # A version from before `--target` has none of these engines.
+    if any(k.startswith("to-") for k in targets["engines"]):
+        record["targets"] = {k: targets[k] for k in ("sizes", "engines", "times")}
     folder = os.path.join(HERE, "results", "versions")
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, a.version + ".json")

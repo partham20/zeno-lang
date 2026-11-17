@@ -68,6 +68,20 @@ def engines(zeno):
         r = sh(["rustc", "-C", "opt-level=3", "-o", "p", src], out)
         if r.returncode: raise RuntimeError(r.stderr)
         return [os.path.join(out, "p")]
+    def target(language, run, *steps):
+        # The Zeno program written in another language, built there if
+        # that language is built, and run. {name} is the program's name.
+        def build(src, out):
+            r = sh([zeno, "build", "--target", language, src], out)
+            if r.returncode:
+                raise RuntimeError(r.stdout + r.stderr)
+            name = os.path.splitext(os.path.basename(src))[0]
+            for step in steps:
+                r = sh([part.format(name=name) for part in step], out)
+                if r.returncode:
+                    raise RuntimeError(r.stdout + r.stderr)
+            return [part.format(name=name, out=out) for part in run]
+        return build
     return {
         "c": ("C (cc -O2)", ".c", c, False),
         "rust": ("Rust (rustc -O)", ".rs", rust, False),
@@ -82,6 +96,15 @@ def engines(zeno):
         "vm": ("zeno run --vm", ".zeno", lambda src, out: [zeno, "run", "--vm", src], True),
         "run": ("zeno run", ".zeno", lambda src, out: [zeno, "run", src], True),
         "python": ("Python 3", ".py", lambda src, out: [sys.executable, src], True),
+        "to-js": ("--target js, in Node", ".zeno", target("js", ["node", "{name}.js"]), False),
+        "to-py": ("--target py, in Python 3", ".zeno", target("py", [sys.executable, "{name}.py"]), True),
+        "to-php": ("--target php, in PHP", ".zeno", target("php", ["php", "{name}.php"]), True),
+        "to-go": ("--target go, built by go", ".zeno", target("go", ["{out}/p"], ["go", "build", "-o", "p", "{name}.go"]), False),
+        "to-java": ("--target java, built by javac", ".zeno", target("java", ["java", "-cp", "classes", "ZenoProgram"], ["javac", "-nowarn", "-d", "classes", "{name}.java"]), False),
+        "to-cs": ("--target cs, built by dotnet", ".zeno", target("cs", ["dotnet", "run", "--no-build", "{name}.cs"], ["dotnet", "build", "{name}.cs"]), False),
+        "to-cpp": ("--target cpp, built by g++ -O2", ".zeno", target("cpp", ["{out}/p"], ["g++", "-std=c++17", "-O2", "-o", "p", "{name}.cpp"]), False),
+        "to-rust": ("--target rust, built by rustc -O", ".zeno", target("rust", ["{out}/p"], ["rustc", "-O", "--edition", "2021", "-o", "p", "{name}.rs"]), False),
+        "to-wasm": ("--target wasm, in Node", ".zeno", target("wasm", ["node", "--no-warnings", os.path.join(HERE, "..", "tools", "run-wasi.js"), "{name}.wasm"]), False),
     }
 
 def main():
