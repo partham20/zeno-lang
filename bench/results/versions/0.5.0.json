@@ -1,0 +1,258 @@
+{
+  "version": "0.5.0",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v509-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.5.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-17"
+  },
+  "big": {
+    "sizes": {
+      "fib": 40,
+      "loop": 1000000000,
+      "sort": 10000000,
+      "strings": 10000000,
+      "trees": 20,
+      "nbody": 10000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "rust": "Rust (rustc -O)",
+      "zeno": "zeno build",
+      "zeno-llvm": "zeno build --llvm",
+      "zeno-nc": "zeno build --no-collector",
+      "zeno-release": "zeno build --release",
+      "zeno-owned": "zeno build --release --owned",
+      "zeno-fast": "zeno build --fast --owned",
+      "zeno-fast-gc": "zeno build --fast"
+    },
+    "times": {
+      "fib": {
+        "c": 0.189,
+        "rust": 0.288,
+        "zeno": 0.625,
+        "zeno-llvm": 0.696,
+        "zeno-nc": 0.541,
+        "zeno-release": 0.173,
+        "zeno-owned": 0.178,
+        "zeno-fast": 0.196,
+        "zeno-fast-gc": 0.203
+      },
+      "loop": {
+        "c": 1.029,
+        "rust": 1.076,
+        "zeno": 1.462,
+        "zeno-llvm": 1.274,
+        "zeno-nc": 1.472,
+        "zeno-release": 1.088,
+        "zeno-owned": 1.093,
+        "zeno-fast": 1.028,
+        "zeno-fast-gc": 1.014
+      },
+      "sort": {
+        "c": 1.25,
+        "rust": 1.315,
+        "zeno": 1.637,
+        "zeno-llvm": 2.343,
+        "zeno-nc": 1.522,
+        "zeno-release": 1.541,
+        "zeno-owned": 1.343,
+        "zeno-fast": 1.245,
+        "zeno-fast-gc": 1.416
+      },
+      "strings": {
+        "c": 1.062,
+        "rust": 0.794,
+        "zeno": 0.83,
+        "zeno-llvm": 1.128,
+        "zeno-release": 0.816,
+        "zeno-owned": 0.83,
+        "zeno-fast": 0.839,
+        "zeno-fast-gc": 0.875
+      },
+      "trees": {
+        "c": 6.713,
+        "rust": 8.144,
+        "zeno": 8.546,
+        "zeno-llvm": 9.265,
+        "zeno-nc": 5.431,
+        "zeno-release": 7.761,
+        "zeno-owned": 4.176,
+        "zeno-fast": 3.93,
+        "zeno-fast-gc": 7.637
+      },
+      "nbody": {
+        "c": 0.551,
+        "rust": 0.442,
+        "zeno": 0.612,
+        "zeno-llvm": 0.668,
+        "zeno-nc": 0.608,
+        "zeno-release": 0.59,
+        "zeno-owned": 0.652,
+        "zeno-fast": 0.58,
+        "zeno-fast-gc": 0.563
+      }
+    }
+  },
+  "small": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "python": "Python 3",
+      "vm": "zeno run --vm",
+      "run": "zeno run"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "python": 0.289,
+        "vm": 0.982,
+        "run": 3.416
+      },
+      "loop": {
+        "c": 0.101,
+        "python": 13.923,
+        "vm": 9.314,
+        "run": 37.598
+      },
+      "sort": {
+        "c": 0.109,
+        "python": 2.722,
+        "vm": 4.551,
+        "run": 16.05
+      },
+      "strings": {
+        "c": 0.103,
+        "python": 0.497,
+        "vm": 1.919,
+        "run": 3.39
+      },
+      "trees": {
+        "c": 0.242,
+        "python": 4.159,
+        "vm": 10.526,
+        "run": 25.53
+      },
+      "nbody": {
+        "c": 0.056,
+        "python": 4.503,
+        "vm": 18.229,
+        "run": 59.303
+      }
+    }
+  },
+  "targets": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "vm": "zeno run --vm",
+      "to-js": "--target js, in Node",
+      "to-py": "--target py, in Python 3",
+      "to-php": "--target php, in PHP",
+      "to-go": "--target go, built by go",
+      "to-java": "--target java, built by javac",
+      "to-cs": "--target cs, built by dotnet",
+      "to-cpp": "--target cpp, built by g++ -O2",
+      "to-rust": "--target rust, built by rustc -O",
+      "to-wasm": "--target wasm, in Node"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "vm": 0.814,
+        "to-js": 0.142,
+        "to-py": 3.429,
+        "to-php": 2.142,
+        "to-go": 0.296,
+        "to-java": 0.182,
+        "to-cs": 0.899,
+        "to-cpp": 0.273,
+        "to-rust": 0.455,
+        "to-wasm": 0.657
+      },
+      "loop": {
+        "c": 0.102,
+        "vm": 8.996,
+        "to-js": 4.691,
+        "to-py": 60.085,
+        "to-php": 28.498,
+        "to-go": 6.174,
+        "to-java": 1.46,
+        "to-cs": 11.205,
+        "to-cpp": 2.157,
+        "to-rust": 6.755,
+        "to-wasm": 10.53
+      },
+      "sort": {
+        "c": 0.109,
+        "vm": 4.414,
+        "to-js": 1.124,
+        "to-py": 19.662,
+        "to-php": 10.165,
+        "to-go": 1.867,
+        "to-java": 1.178,
+        "to-cs": 4.046,
+        "to-cpp": 1.603,
+        "to-rust": 2.272,
+        "to-wasm": 3.123
+      },
+      "strings": {
+        "c": 0.104,
+        "vm": 1.76,
+        "to-js": 0.57,
+        "to-py": 1.886,
+        "to-php": 1.23,
+        "to-go": 0.93,
+        "to-java": 0.967,
+        "to-cs": 1.912,
+        "to-cpp": 2.01,
+        "to-rust": 1.374,
+        "to-wasm": 1.354
+      },
+      "trees": {
+        "c": 0.252,
+        "vm": 10.675,
+        "to-js": 2.906,
+        "to-py": 39.068,
+        "to-php": 22.296,
+        "to-go": 4.459,
+        "to-java": 1.213,
+        "to-cs": 6.711,
+        "to-cpp": 5.53,
+        "to-rust": 5.846,
+        "to-wasm": 5.721
+      },
+      "nbody": {
+        "c": 0.056,
+        "vm": 17.78,
+        "to-js": 10.387,
+        "to-py": 134.471,
+        "to-php": 66.964,
+        "to-go": 12.758,
+        "to-java": 4.334,
+        "to-cs": 26.511,
+        "to-cpp": 12.433,
+        "to-rust": 13.313,
+        "to-wasm": 19.281
+      }
+    }
+  }
+}

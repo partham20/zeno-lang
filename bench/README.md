@@ -85,6 +85,24 @@ Small sizes, interpreted, against Python 3.13:
 | trees 16 | 3.95 | 10.01 | 22.01 |
 | nbody 10⁶ | 3.85 | 15.78 | 52.31 |
 
+Small sizes, the program written in another language by `zeno build
+--target` and run there (0.5.0, 2026-11-17; Node 22, Python 3.13, PHP
+8.3, Go 1.24, JDK 21, .NET 10, g++ 13 `-O2`, rustc 1.97 `-O`, and the
+`.wasm` in Node):
+
+| Program | `zeno run --vm` | `js` | `py` | `php` | `go` | `java` | `cs` | `cpp` | `rust` | `wasm` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fib 32 | 0.81 | 0.14 | 3.4 | 2.1 | 0.30 | 0.18 | 0.90 | 0.27 | 0.46 | 0.66 |
+| loop 10⁸ | 9.0 | 4.7 | 60.1 | 28.5 | 6.2 | 1.5 | 11.2 | 2.2 | 6.8 | 10.5 |
+| sort 10⁶ | 4.4 | 1.1 | 19.7 | 10.2 | 1.9 | 1.2 | 4.0 | 1.6 | 2.3 | 3.1 |
+| strings 10⁶ | 1.8 | 0.57 | 1.9 | 1.2 | 0.93 | 0.97 | 1.9 | 2.0 | 1.4 | 1.4 |
+| trees 16 | 10.7 | 2.9 | 39.1 | 22.3 | 4.5 | 1.2 | 6.7 | 5.5 | 5.8 | 5.7 |
+| nbody 10⁶ | 17.8 | 10.4 | 134 | 67.0 | 12.8 | 4.3 | 26.5 | 12.4 | 13.3 | 19.3 |
+
+(The wasm time of strings is the best of the runs that ended: Node 22
+stopped with a fault of its own in about half of them, see "Known
+limits" in [docs/targets.md](../docs/targets.md).)
+
 ## What the numbers say
 
 - `zeno build --fast --owned` (0.4, decisions 23.1, 23.6 and 23.8) runs

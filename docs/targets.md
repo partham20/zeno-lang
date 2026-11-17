@@ -397,6 +397,14 @@ target keep, and a program in `tools/targets/` that holds them to it:
   a float prints, for some inputs. Go uses a copy of JavaScript's `sin`,
   `cos` and `tan`, and Java uses `Math` rather than `StrictMath`, which
   makes it rare; none of the 337 programs shows it (decision 24.16).
+- **Node 22 and a big WebAssembly program.** Node 22 (seen with
+  22.23) can stop with a segmentation fault while it runs a `.wasm`
+  that asks for hundreds of megabytes: the strings and sort benchmarks
+  at a million items stopped in about half of their runs. The fault is
+  inside Node, in its garbage collector, when the program's memory
+  grows; a WebAssembly program cannot do that to its host by any
+  mistake of its own. Node 24 ran the same files every time. If it
+  happens, use a newer Node, or wasmtime.
 - **A device as a file.** On WebAssembly a program sees only the folder
   it was started in, so `/dev/null` and the like are not there.
 
@@ -406,29 +414,32 @@ The written program is as correct as `zeno run` first, and as fast as
 that allows. Seconds, on the benchmarks in `bench/`, against `zeno run
 --vm`:
 
-| | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) | `cpp` (g++ 13) | `rust` (1.97) | `wasm` (in Node) |
-|---|---|---|---|---|---|---|---|---|---|
-| fib | 0.78 | 0.16 | 3.5 | 0.31 | 0.19 | 0.90 | 0.19 | 0.40 | 0.59 |
-| sort | 3.7 | 1.2 | 19.6 | 2.1 | 1.2 | 4.2 | 1.3 | 1.8 | 2.6 |
-| strings | 1.8 | 0.6 | 1.7 | 0.9 | 0.8 | 1.8 | 1.8 | 1.3 | 1.2 |
-| trees | 10.6 | 2.3 | 37.4 | 4.2 | 1.4 | 6.6 | 4.6 | 4.5 | 4.2 |
+| | `zeno run --vm` | `js` (Node 22) | `py` (Python 3.13) | `php` (PHP 8.3) | `go` (Go 1.24) | `java` (JDK 21) | `cs` (.NET 10) | `cpp` (g++ 13) | `rust` (1.97) | `wasm` (in Node) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fib | 0.81 | 0.14 | 3.4 | 2.1 | 0.30 | 0.18 | 0.90 | 0.27 | 0.46 | 0.66 |
+| loop | 9.0 | 4.7 | 60.1 | 28.5 | 6.2 | 1.5 | 11.2 | 2.2 | 6.8 | 10.5 |
+| sort | 4.4 | 1.1 | 19.7 | 10.2 | 1.9 | 1.2 | 4.0 | 1.6 | 2.3 | 3.1 |
+| strings | 1.8 | 0.57 | 1.9 | 1.2 | 0.93 | 0.97 | 1.9 | 2.0 | 1.4 | 1.4 |
+| trees | 10.7 | 2.9 | 39.1 | 22.3 | 4.5 | 1.2 | 6.7 | 5.5 | 5.8 | 5.7 |
+| nbody | 17.8 | 10.4 | 134 | 67.0 | 12.8 | 4.3 | 26.5 | 12.4 | 13.3 | 19.3 |
 
-(Go, Java, C++ and Rust timed as built programs, built first; C#
-as `dotnet run` on its second run, which reuses the build, about half
-a second of each figure being `dotnet` starting.)
+(Go, Java, C#, C++ and Rust are built first and the built program is
+timed; for C# that is `dotnet run --no-build`, about half a second of
+each figure being `dotnet` starting.)
 
 TypeScript is not in the table because it is the `js` column: Node
-takes the types off and runs the same JavaScript. PHP (8.3, as it is
-installed, with no JIT) takes 2.1 seconds for fib, 9.9 for sort, 1.3
-for strings and 21.5 for trees: slower than the VM and faster than
-Python, except for strings, where PHP's own text functions do the work
-and it is faster than both.
+takes the types off and runs the same JavaScript. PHP has no JIT as it
+is installed, and is slower than the VM and faster than Python, except
+for strings, where PHP's own text functions do the work. The table is
+the record of 0.5.0 (`bench/results/versions/0.5.0.json`, made by
+`python3 bench/record.py`).
 
-JavaScript and Java are three to eight times faster than the VM,
-because Node and the JVM compile the program to machine code as it runs
-and learn which kinds of value each `Z.add` really sees. Go is two to
-three times faster: it is compiled before it runs, but every value is
-an `any` and every `+` a call that looks at both sides. Python is
+JavaScript is two to six times faster than the VM and Java two to
+nine, because Node and the JVM compile the program to machine code as
+it runs and learn which kinds of value each `Z.add` really sees. Go is
+one and a half to three times faster: it is compiled before it runs,
+but every value is an `any` and every `+` a call that looks at both
+sides. Python is
 slower: every `+` is a call of `Z.add`, which checks what Zeno checks.
 Where the checker knows both sides are ints, a plain `+` (with the
 overflow check) would do; that is the next step for speed.
