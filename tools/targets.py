@@ -38,6 +38,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ZENO = Path(os.environ.get("ZENO", REPO / "target/release/zeno"))
 
+# Lua 5.4 is `lua5.4` where an older `lua` is installed beside it.
+LUA = "lua5.4" if shutil.which("lua5.4") else "lua"
+
 # For each target: what has to be installed, and how to run what was
 # built. {name} is the program's name, {file} the file `zeno build` wrote.
 TARGETS = {
@@ -47,6 +50,8 @@ TARGETS = {
     "ts": {"needs": ["node", "tsc"], "run": ["sh", "-c", "tsc --noEmit --strict --target es2022 \"$0\" >&2 && exec node --no-warnings \"$0\" \"$@\"", "{file}"]},
     "py": {"needs": ["python3"], "run": ["python3", "{file}"]},
     "php": {"needs": ["php"], "run": ["php", "{file}"]},
+    "lua": {"needs": [LUA], "run": [LUA, "{file}"]},
+    "ruby": {"needs": ["ruby"], "run": ["ruby", "{file}"]},
     "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},

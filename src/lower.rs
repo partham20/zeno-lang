@@ -374,6 +374,16 @@ const RESERVED: &[&str] = &[
     // the Python and PHP printers use in a loop and a `catch`.
     "GLOBALS", "_SERVER", "_GET", "_POST", "_FILES", "_COOKIE", "_SESSION", "_REQUEST", "_ENV", "z_item",
     "z_second", "z_error",
+    // Lua
+    "elseif", "end", "local", "repeat", "then", "until",
+    // Ruby
+    "alias", "begin", "defined", "ensure", "elsif", "redo", "rescue", "retry", "undef", "unless", "_1", "_2", "_3",
+    "_4", "_5", "_6", "_7", "_8", "_9",
+    // Dart
+    "covariant", "deferred", "extension", "external", "factory", "hide", "late", "library", "mixin", "on", "part",
+    "required", "rethrow", "show", "sync",
+    // Kotlin
+    "fun", "typealias", "val", "it", "arrayOf",
 ];
 
 #[derive(Default)]
