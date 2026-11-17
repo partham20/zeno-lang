@@ -357,6 +357,10 @@ const RESERVED: &[&str] = &[
     // program, and words the lists above had missed.
     "args", "delegate", "clear", "comparable", "println", "int8_t", "int16_t", "int32_t", "uint8_t", "uint16_t",
     "uint32_t", "uint64_t", "alloca", "offsetof",
+    // PHP: the variables it has in every function, and the spare names
+    // the Python and PHP printers use in a loop and a `catch`.
+    "GLOBALS", "_SERVER", "_GET", "_POST", "_FILES", "_COOKIE", "_SESSION", "_REQUEST", "_ENV", "z_item",
+    "z_second", "z_error",
 ];
 
 #[derive(Default)]

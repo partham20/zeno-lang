@@ -18,6 +18,11 @@
 //! Zeno's message if the sum is too big for an int.
 //!
 //! The same JavaScript is what `--target html` puts in a page.
+//!
+//! `--target ts` is the same program again, as TypeScript: runtime.ts is
+//! runtime.js with types, and the program has a type on every variable
+//! and parameter. The type is `any`, since what a Zeno value is, is
+//! found out while the program runs. The file passes `tsc --strict`.
 
 use std::fmt::Write;
 
@@ -25,6 +30,9 @@ use crate::lower::{self, Block, Cond, Expr, Func, Program, Stmt, VarId};
 
 /// The runtime every program built for JavaScript carries.
 pub const RUNTIME: &str = include_str!("runtime.js");
+
+/// The same runtime with types, for a program built for TypeScript.
+pub const TYPED_RUNTIME: &str = include_str!("runtime.ts");
 
 /// The whole `.js` file: the runtime, then the program.
 pub fn emit(program: &Program, source: &str) -> String {
@@ -34,7 +42,22 @@ pub fn emit(program: &Program, source: &str) -> String {
     let _ = writeln!(out);
     out.push_str(RUNTIME);
     out.push('\n');
-    out.push_str(&program_body(program));
+    out.push_str(&program_body(program, false));
+    out
+}
+
+/// The whole `.ts` file: `zeno build --target ts`. The last line makes
+/// the file a module, so that its `Z` is its own and two built programs
+/// can be in one project.
+pub fn emit_typed(program: &Program, source: &str) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "// {source}, written in TypeScript by `zeno build --target ts`.");
+    let _ = writeln!(out, "// Run it with `node` (22.18 or newer). What it prints is what `zeno run` prints.");
+    let _ = writeln!(out);
+    out.push_str(TYPED_RUNTIME);
+    out.push('\n');
+    out.push_str(&program_body(program, true));
+    out.push_str("\nexport {};\n");
     out
 }
 
@@ -58,7 +81,7 @@ pub fn page(program: &Program, page: &str) -> String {
          output.textContent += text;\n\
          });\n",
     );
-    script.push_str(&program_body(program));
+    script.push_str(&program_body(program, false));
     script.push_str("</script>\n");
     match page.rfind("</body>") {
         Some(at) => format!("{}{script}{}", &page[..at], &page[at..]),
@@ -66,9 +89,10 @@ pub fn page(program: &Program, page: &str) -> String {
     }
 }
 
-/// The program alone, with no runtime: a call of `Z.start`.
-pub fn program_body(program: &Program) -> String {
-    let mut printer = Printer { program, out: String::new(), depth: 0 };
+/// The program alone, with no runtime: a call of `Z.start`. `typed` is
+/// for TypeScript: every variable and parameter is given its type.
+pub fn program_body(program: &Program, typed: bool) -> String {
+    let mut printer = Printer { program, out: String::new(), depth: 0, typed };
     let files: Vec<String> = program.files.iter().map(|file| string(file)).collect();
     let _ = writeln!(printer.out, "// The program.");
     let _ = writeln!(printer.out, "Z.start([{}], function main() {{", files.join(", "));
@@ -82,6 +106,8 @@ struct Printer<'a> {
     program: &'a Program,
     out: String,
     depth: usize,
+    /// Writing TypeScript: a name that is declared is followed by `: any`.
+    typed: bool,
 }
 
 /// A JavaScript string literal.
@@ -98,6 +124,15 @@ impl<'a> Printer<'a> {
         &self.program.vars[id].ident
     }
 
+    /// A name where it is declared: with its type, in TypeScript.
+    fn declared(&self, id: VarId) -> String {
+        format!("{}{}", self.name(id), self.any())
+    }
+
+    fn any(&self) -> &'static str {
+        if self.typed { ": any" } else { "" }
+    }
+
     fn line(&mut self, text: &str) {
         for _ in 0..self.depth {
             self.out.push_str("  ");
@@ -109,7 +144,7 @@ impl<'a> Printer<'a> {
     /// The statements of a block, after a line that declares its variables.
     fn block_body(&mut self, block: &Block) {
         if !block.decls.is_empty() {
-            let names: Vec<&str> = block.decls.iter().map(|id| self.name(*id)).collect();
+            let names: Vec<String> = block.decls.iter().map(|id| self.declared(*id)).collect();
             let line = format!("let {};", names.join(", "));
             self.line(&line);
         }
@@ -193,7 +228,7 @@ impl<'a> Printer<'a> {
                 self.line("try {");
                 self.nested(body);
                 let error = self.name(*error).to_string();
-                let line = format!("}} catch ({error}) {{");
+                let line = format!("}} catch ({error}{}) {{", self.any());
                 self.line(&line);
                 self.depth += 1;
                 // A mistake in the program, or one of JavaScript's own,
@@ -317,10 +352,10 @@ impl<'a> Printer<'a> {
     /// A Zeno function: a JavaScript function with its Zeno name and
     /// parameters on it, so that a call with named arguments can be lined up.
     fn function(&mut self, function: &Func) -> String {
-        let params: Vec<String> = function.params.iter().map(|param| self.name(param.var).to_string()).collect();
+        let params: Vec<String> = function.params.iter().map(|param| self.declared(param.var)).collect();
         let names: Vec<String> = function.params.iter().map(|param| string(&param.name)).collect();
         let defaults: Vec<&str> = function.params.iter().map(|param| if param.default.is_some() { "true" } else { "false" }).collect();
-        let mut inner = Printer { program: self.program, out: String::new(), depth: self.depth + 1 };
+        let mut inner = Printer { program: self.program, out: String::new(), depth: self.depth + 1, typed: self.typed };
         for param in &function.params {
             if let Some(default) = &param.default {
                 let line = format!("if ({} === Z.MISSING) {{", inner.name(param.var));
@@ -395,5 +430,46 @@ fn float(x: f64) -> String {
         if x > 0.0 { "Infinity" } else { "-Infinity" }.to_string()
     } else {
         lower::float_literal(x)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TypeScript with its types taken away. Only the few forms runtime.ts
+    /// uses: a field declared in a class, `?: any`, `: any[]`, `: any` and
+    /// `as any`.
+    fn without_types(typed: &str) -> String {
+        let mut out = String::new();
+        let mut rest = typed;
+        // `declare name: any; `, a field of a class.
+        while let Some(at) = rest.find("declare ") {
+            let after = &rest[at + "declare ".len()..];
+            let name = after.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(after.len());
+            out.push_str(&rest[..at]);
+            match after[name..].strip_prefix(": any; ") {
+                Some(left) if name > 0 => rest = left,
+                _ => {
+                    out.push_str("declare ");
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out.replace("?: any", "").replace(": any[]", "").replace(": any", "").replace(" as any", "")
+    }
+
+    /// runtime.ts is runtime.js with types, and nothing else: so what was
+    /// tried for JavaScript holds for TypeScript too.
+    #[test]
+    fn the_typed_runtime_is_the_runtime_with_types() {
+        let code = |text: &'static str| &text[text.find("\"use strict\";").expect("where the code starts")..];
+        let (plain, typed) = (code(RUNTIME), without_types(code(TYPED_RUNTIME)));
+        for (number, (js, ts)) in plain.lines().zip(typed.lines()).enumerate() {
+            assert_eq!(js, ts, "line {} of the code of runtime.js is not that line of runtime.ts without its types", number + 1);
+        }
+        assert_eq!(plain.lines().count(), typed.lines().count(), "runtime.js and runtime.ts are not the same length");
+        assert!(!RUNTIME.contains(": any"), "runtime.js has a type in it");
     }
 }

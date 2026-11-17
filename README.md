@@ -255,9 +255,10 @@ collector in the program) and `--memory`.
 
 `zeno build --target <language>` writes the program in another language,
 by fixed rules, as a file that runs with that language's own tools:
-`js` (Node), `html` (a page that runs it), `py` (Python), `go`,
-`java`, `cs` (C#), `cpp` (C++), `rust`, and `wasm` (WebAssembly, built
-with `rustc`) ([`docs/targets.md`](docs/targets.md)). The written program
+`js` (Node), `ts` (TypeScript), `html` (a page that runs it), `py`
+(Python), `php`, `go`, `java`, `cs` (C#), `cpp` (C++), `rust`, and
+`wasm` (WebAssembly, built with `rustc`)
+([`docs/targets.md`](docs/targets.md)). The written program
 prints what `zeno run` prints, overflows and errors included, and
 `tools/targets.py` checks that for every example and book sample.
 

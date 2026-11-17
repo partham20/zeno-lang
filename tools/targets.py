@@ -41,7 +41,11 @@ ZENO = Path(os.environ.get("ZENO", REPO / "target/release/zeno"))
 # built. {name} is the program's name, {file} the file `zeno build` wrote.
 TARGETS = {
     "js": {"needs": ["node"], "run": ["node", "{file}"]},
+    # Checked by TypeScript's own compiler with every strict rule on, then
+    # run by Node as it is.
+    "ts": {"needs": ["node", "tsc"], "run": ["sh", "-c", "tsc --noEmit --strict --target es2022 \"$0\" >&2 && exec node --no-warnings \"$0\" \"$@\"", "{file}"]},
     "py": {"needs": ["python3"], "run": ["python3", "{file}"]},
+    "php": {"needs": ["php"], "run": ["php", "{file}"]},
     "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},

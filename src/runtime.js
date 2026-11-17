@@ -31,8 +31,12 @@ const Z = (function () {
   const MIN = -9223372036854775808n;
   const SAFE = 9007199254740991n;
   const LINES_A_FILE = 1000000;
+  // What the program runs in: Node, or a page. Node's own things are
+  // taken from it by name, so the file runs as a script and as a module.
+  const host = globalThis;
+  const process = host.process, Buffer = host.Buffer;
   const inNode = typeof process !== "undefined" && process.versions && process.versions.node;
-  const fs = inNode ? require("fs") : null;
+  const fs = inNode ? process.getBuiltinModule("fs") : null;
 
   // ---------------------------------------------------------------- Values
 
@@ -1622,7 +1626,7 @@ const Z = (function () {
       } else {
         // In a page, under what it printed, and where a test can see it.
         writePage(message + "\n");
-        globalThis.zenoError = message;
+        host.zenoError = message;
       }
     }
   }

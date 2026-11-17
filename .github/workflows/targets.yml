@@ -1,9 +1,9 @@
 # Holds every target language to `zeno run`, on the newest version of
 # each language, once a week (decision 24.9).
 #
-# It installs the newest Node, Python, Go, Java, .NET, C++ and Rust (with
-# its WebAssembly target), and Playwright's Chromium for the page, then
-# runs tools/targets.py: every example, every sample of the book and the
+# It installs the newest Node, TypeScript, Python, PHP, Go, Java, .NET, C++
+# and Rust (with its WebAssembly target), and Playwright's Chromium for
+# the page, then runs tools/targets.py: every example, every sample of the book and the
 # corner programs in tools/targets/, built for every target and compared
 # with what `zeno run` prints. A language that changes under us shows up
 # here first. Its report is kept with the run.
@@ -46,9 +46,17 @@ jobs:
         with:
           node-version: latest
 
+      - name: TypeScript's compiler
+        run: npm install --global typescript
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: latest
+          coverage: none
 
       - uses: actions/setup-go@v5
         with:
@@ -78,7 +86,7 @@ jobs:
 
       - name: Every program, in every language
         run: |
-          for tool in node python3 go java dotnet g++ rustc; do "$tool" --version 2>&1 | head -1; done
+          for tool in node tsc python3 php go java dotnet g++ rustc; do "$tool" --version 2>&1 | head -1; done
           python3 tools/targets.py | tee targets-report.txt
 
       - uses: actions/upload-artifact@v4

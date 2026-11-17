@@ -23,8 +23,10 @@ Wrote hello.html. Open it in a browser
 | `--target` | Writes | Run it with |
 |---|---|---|
 | `js` | `hello.js` | `node hello.js` |
+| `ts` | `hello.ts`, TypeScript | `node hello.ts` (Node 22.18 or later), or `tsc`, Bun, Deno |
 | `html` | `hello.html`, a page that runs the program | a browser |
 | `py` | `hello.py` | `python3 hello.py` |
+| `php` | `hello.php` | `php hello.php` (PHP 8.0 or later, no extension needed) |
 | `go` | `hello.go` | `go run hello.go` |
 | `java` | `hello.java` | `java hello.java` (JDK 11 or later) |
 | `cs` | `hello.cs` | `dotnet run hello.cs` (.NET 10 or later) |
@@ -87,7 +89,9 @@ the message, the file and the line:
 ```
 $ python3 tools/targets.py
 js: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+ts: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 py: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
+php: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 go: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 java: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
 cs: 337 of 337 programs print what `zeno run` prints (21 left out: they use the board, a page, manual memory)
@@ -110,13 +114,13 @@ Three steps, in three files.
    statements for (`[x * x for x in xs if x > 0]`, `0 <= t < 10`) made
    into statements, in the order Zeno would do them.
 2. **The runtime** (`src/runtime.js`, `src/runtime.py`,
-   `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`,
+   `src/runtime.php`, `src/runtime.go`, `src/runtime.java`, `src/runtime.cs`,
    `src/runtime.cpp`, `src/runtime.rs`): what every Zeno
    value is in that language, and what each operator and built-in does
    with it, written to do what `ops.rs` and `builtins.rs` do for
    `zeno run`, step for step and message for message. It goes at the
    top of the file, so the file needs nothing else.
-3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_go.rs`,
+3. **Printing** (`src/emit_js.rs`, `src/emit_py.rs`, `src/emit_php.rs`, `src/emit_go.rs`,
    `src/emit_java.rs`, `src/emit_cs.rs`, `src/emit_cpp.rs`,
    `src/emit_rust.rs`): the lowered
    program in that
@@ -245,6 +249,62 @@ made:
         Z.call_method(makers, "append", [Z.fn("", [], [], z_f1)], 3)
 ```
 
+## TypeScript: `--target ts`
+
+`--target ts` writes the program `--target js` writes, as TypeScript:
+`src/runtime.ts` is `runtime.js` with types, and every variable,
+parameter and caught error of the program has its type.
+
+```ts
+Z.start(["area.zeno"], function main() {
+  let area: any, math_: any;
+  area = Z.fn("area", ["r"], [false], function (r: any) {
+    return Z.mul(Z.mul(Z.builtin("math.pi"), r, 4), r, 4);
+  });
+  math_ = Z.module("math");
+  Z.b.print([Z.direct(area, 7, Z.float(2.0))], 7);
+});
+
+export {};
+```
+
+The type is `any`. What a Zeno value is, is found out while the
+program runs, by the runtime, as in every target: that is what gives
+Zeno's message at Zeno's line for an int that overflows or a unit
+that does not fit. A `number` on a Zeno int would promise what
+JavaScript does, and Zeno does not do what JavaScript does (decision
+24.27).
+
+The file passes `tsc --strict`, so a TypeScript project can take it as
+it is, and it is a module (it ends in `export {};`), so two built
+programs in one project do not share their names. Node 22.18 or later
+runs a `.ts` file as it is; `tools/targets.py` checks each program
+with `tsc --strict` and then runs it with Node.
+
+## PHP: `--target php`
+
+```php
+Z::start(["area.zeno"], function () {
+    $area = $math_ = null;
+    $area = Z::fn("area", ["r"], [false], function ($r) use (&$math_) {
+        return Z::mul(Z::mul(Z::builtin("math.pi"), $r, 4), $r, 4);
+    });
+    $math_ = Z::module("math");
+    Z::b_print([Z::direct($area, 7, 2.0)], 7);
+});
+```
+
+An int is a PHP int and a float a PHP float: PHP keeps the two apart
+and its int has 64 bits. A sum too big for an int becomes a float in
+PHP, which is how the runtime sees the overflow and raises Zeno's
+error. A list and a dict are objects around a PHP array, because PHP
+copies an array when it is handed on and a Zeno list is shared.
+
+An inner function names the variables around it that it works with,
+after `use`, with `&` so that it is the same variable and not a copy.
+The file needs PHP 8.0 or later and no extension: not `mbstring`, not
+`bcmath` (decision 24.28).
+
 ## The page: `--target html`
 
 `--target html` writes one `.html` file: the program in JavaScript,
@@ -356,6 +416,13 @@ that allows. Seconds, on the benchmarks in `bench/`, against `zeno run
 (Go, Java, C++ and Rust timed as built programs, built first; C#
 as `dotnet run` on its second run, which reuses the build, about half
 a second of each figure being `dotnet` starting.)
+
+TypeScript is not in the table because it is the `js` column: Node
+takes the types off and runs the same JavaScript. PHP (8.3, as it is
+installed, with no JIT) takes 2.1 seconds for fib, 9.9 for sort, 1.3
+for strings and 21.5 for trees: slower than the VM and faster than
+Python, except for strings, where PHP's own text functions do the work
+and it is faster than both.
 
 JavaScript and Java are three to eight times faster than the VM,
 because Node and the JVM compile the program to machine code as it runs
