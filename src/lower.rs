@@ -383,7 +383,7 @@ const RESERVED: &[&str] = &[
     "covariant", "deferred", "extension", "external", "factory", "hide", "late", "library", "mixin", "on", "part",
     "required", "rethrow", "show", "sync", "List", "identical",
     // Kotlin
-    "fun", "typealias", "val", "it", "arrayOf",
+    "fun", "typealias", "val", "it", "arrayOf", "booleanArrayOf",
 ];
 
 #[derive(Default)]

@@ -53,6 +53,8 @@ TARGETS = {
     "lua": {"needs": [LUA], "run": [LUA, "{file}"]},
     "ruby": {"needs": ["ruby"], "run": ["ruby", "{file}"]},
     "dart": {"needs": ["dart"], "run": ["dart", "run", "{file}"]},
+    # Compiled into a jar beside the file, with Kotlin's own library in it, then run.
+    "kotlin": {"needs": ["kotlinc", "java"], "run": ["sh", "-c", "kotlinc \"$0\" -include-runtime -d \"$0.jar\" >&2 && exec java -jar \"$0.jar\" \"$@\"", "{file}"]},
     "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},

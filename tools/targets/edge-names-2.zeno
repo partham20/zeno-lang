@@ -1,0 +1,439 @@
+# Names that are words of Lua, Ruby, Dart and Kotlin, and what else is theirs alone.
+let end = 0
+let local = 1
+let elseif = 2
+let then = 3
+let repeat = 4
+let until = 5
+let nil = 6
+let begin = 7
+let rescue = 8
+let ensure = 9
+let elsif = 10
+let unless = 11
+let redo = 12
+let retry = 13
+let alias = 14
+let undef = 15
+let defined = 16
+let puts = 17
+let p = 18
+let proc = 19
+let it = 20
+let fun = 21
+let val = 22
+let when = 23
+let object = 24
+let typealias = 25
+let companion = 26
+let data = 27
+let late = 28
+let final = 29
+let dynamic = 30
+let covariant = 31
+let external = 32
+let factory = 33
+let mixin = 34
+let on = 35
+let part = 36
+let show = 37
+let hide = 38
+let sync = 39
+let required = 40
+let rethrow = 41
+let library = 42
+let extension = 43
+let deferred = 44
+let identical = 45
+let List = 46
+let Any = 47
+let Array = 48
+let Long = 49
+let Double = 50
+let Float = 51
+let Integer = 52
+let Hash = 53
+let Kernel = 54
+let Z = 55
+let ZRaise = 56
+let z_ok = 57
+let z_how = 58
+let z_item = 59
+let z_pair = 60
+let z_a = 61
+let z_v1 = 62
+let _1 = 63
+let _2 = 64
+let _9 = 65
+let _G = 66
+let _ENV = 67
+let self = 68
+let arrayOf = 69
+let booleanArrayOf = 70
+let coroutine = 71
+let table = 72
+let string = 73
+let os = 74
+let io = 75
+let debug = 76
+let require = 77
+let error = 78
+let pcall = 79
+let select = 80
+let type = 81
+let tostring = 82
+let tonumber = 83
+let pairs = 84
+let ipairs = 85
+let next = 86
+let unpack = 87
+let stdout = 88
+let stdin = 89
+let exit = 90
+let sleep = 91
+let File = 92
+let Map = 93
+let Set = 94
+let Object = 95
+let Function = 96
+let Never = 97
+let Null = 98
+let Comparable = 99
+let Iterable = 100
+let main = 101
+let args = 102
+print(end + local + elseif + then + repeat + until + nil + begin + rescue + ensure + elsif + unless + redo + retry + alias + undef + defined + puts + p + proc + it + fun + val + when + object + typealias + companion + data + late + final + dynamic + covariant + external + factory + mixin + on + part + show + hide + sync + required + rethrow + library + extension + deferred + identical + List + Any + Array + Long + Double + Float + Integer + Hash + Kernel + Z + ZRaise + z_ok + z_how + z_item + z_pair + z_a + z_v1 + _1 + _2 + _9 + _G + _ENV + self + arrayOf + booleanArrayOf + coroutine + table + string + os + io + debug + require + error + pcall + select + type + tostring + tonumber + pairs + ipairs + next + unpack + stdout + stdin + exit + sleep + File + Map + Set + Object + Function + Never + Null + Comparable + Iterable + main + args)
+print([end, local, elseif, then, repeat, until, nil, begin, rescue, ensure, elsif, unless, redo, retry, alias, undef, defined, puts, p, proc])
+# Names that begin with a capital letter are constants in Ruby.
+var Total = 0
+class Point {
+    X: int
+    Y: int
+    function Sum(self) -> int { return self.X + self.Y }
+}
+function Twice(N: int) -> int { return N * 2 }
+let Origin = Point(1, 2)
+Total += Twice(Origin.Sum())
+for Item in [1, 2, 3] { Total += Item }
+print(Total, Origin, Twice)
+# Text that Ruby, Dart, Kotlin and Lua would read as more than text.
+let money = "$5 and ${x} and $x and #{y} and #$z and #@w and %d and \\n and [[x]] and --"
+print(money, len(money))
+print("a\tb", "q\"q", "back\\slash", f"{money.slice(0, 2)}$", f"#{{1 + 1}}", f"${{2}}")
+# A function made in each round of a loop keeps that round's variables.
+var made = []
+var round = 0
+while round < 4 {
+    let mine = round * round
+    var count = 0
+    made.append(function() -> int {
+        count += 1
+        return mine + count
+    })
+    round += 1
+}
+print([f() for f in made], [f() for f in made])
+var each = []
+for a, b in [10, 20, 30] {
+    var seen = a
+    while seen < 2 {
+        let now = seen + b
+        each.append(function() -> int { return now })
+        seen += 1
+    }
+}
+print([f() for f in each])
+# `break`, `continue` and `return` from inside a `try`, in a loop, in a function.
+function hunt(limit: int) -> str {
+    var trail = ""
+    for i in range(10) {
+        try {
+            if i == 1 { continue }
+            if i == limit { return trail + "!" }
+            if i == 6 { break }
+            var j = 0
+            while true {
+                try {
+                    j += 1
+                    if j == 2 { continue }
+                    if j > 3 { break }
+                    if i == 4 and j == 3 { raise ValueError("four") }
+                    trail += str(j)
+                } except IndexError as e {
+                    trail += "never"
+                }
+            }
+            trail += "."
+        } except ValueError as e {
+            trail += "<" + e.message + ">"
+            if limit == 5 { continue }
+            return trail + "?"
+        }
+    }
+    return trail
+}
+print(hunt(3), hunt(5), hunt(9))
+function deep(n: int) -> int {
+    try {
+        if n == 0 { raise KeyError("bottom") }
+        return deep(n - 1) + 1
+    } except KeyError as e {
+        if n < 3 { raise e }
+        return n * 100
+    }
+}
+print(deep(2 + 3))
+try { deep(1) } except KeyError as e { print(e.message) }
+# More variables than a Lua function may have.
+function many(seed: int) -> int {
+    var v0 = seed + 0
+    var v1 = seed + 1
+    var v2 = seed + 2
+    var v3 = seed + 3
+    var v4 = seed + 4
+    var v5 = seed + 5
+    var v6 = seed + 6
+    var v7 = seed + 7
+    var v8 = seed + 8
+    var v9 = seed + 9
+    var v10 = seed + 10
+    var v11 = seed + 11
+    var v12 = seed + 12
+    var v13 = seed + 13
+    var v14 = seed + 14
+    var v15 = seed + 15
+    var v16 = seed + 16
+    var v17 = seed + 17
+    var v18 = seed + 18
+    var v19 = seed + 19
+    var v20 = seed + 20
+    var v21 = seed + 21
+    var v22 = seed + 22
+    var v23 = seed + 23
+    var v24 = seed + 24
+    var v25 = seed + 25
+    var v26 = seed + 26
+    var v27 = seed + 27
+    var v28 = seed + 28
+    var v29 = seed + 29
+    var v30 = seed + 30
+    var v31 = seed + 31
+    var v32 = seed + 32
+    var v33 = seed + 33
+    var v34 = seed + 34
+    var v35 = seed + 35
+    var v36 = seed + 36
+    var v37 = seed + 37
+    var v38 = seed + 38
+    var v39 = seed + 39
+    var v40 = seed + 40
+    var v41 = seed + 41
+    var v42 = seed + 42
+    var v43 = seed + 43
+    var v44 = seed + 44
+    var v45 = seed + 45
+    var v46 = seed + 46
+    var v47 = seed + 47
+    var v48 = seed + 48
+    var v49 = seed + 49
+    var v50 = seed + 50
+    var v51 = seed + 51
+    var v52 = seed + 52
+    var v53 = seed + 53
+    var v54 = seed + 54
+    var v55 = seed + 55
+    var v56 = seed + 56
+    var v57 = seed + 57
+    var v58 = seed + 58
+    var v59 = seed + 59
+    var v60 = seed + 60
+    var v61 = seed + 61
+    var v62 = seed + 62
+    var v63 = seed + 63
+    var v64 = seed + 64
+    var v65 = seed + 65
+    var v66 = seed + 66
+    var v67 = seed + 67
+    var v68 = seed + 68
+    var v69 = seed + 69
+    var v70 = seed + 70
+    var v71 = seed + 71
+    var v72 = seed + 72
+    var v73 = seed + 73
+    var v74 = seed + 74
+    var v75 = seed + 75
+    var v76 = seed + 76
+    var v77 = seed + 77
+    var v78 = seed + 78
+    var v79 = seed + 79
+    var v80 = seed + 80
+    var v81 = seed + 81
+    var v82 = seed + 82
+    var v83 = seed + 83
+    var v84 = seed + 84
+    var v85 = seed + 85
+    var v86 = seed + 86
+    var v87 = seed + 87
+    var v88 = seed + 88
+    var v89 = seed + 89
+    var v90 = seed + 90
+    var v91 = seed + 91
+    var v92 = seed + 92
+    var v93 = seed + 93
+    var v94 = seed + 94
+    var v95 = seed + 95
+    var v96 = seed + 96
+    var v97 = seed + 97
+    var v98 = seed + 98
+    var v99 = seed + 99
+    var v100 = seed + 100
+    var v101 = seed + 101
+    var v102 = seed + 102
+    var v103 = seed + 103
+    var v104 = seed + 104
+    var v105 = seed + 105
+    var v106 = seed + 106
+    var v107 = seed + 107
+    var v108 = seed + 108
+    var v109 = seed + 109
+    var v110 = seed + 110
+    var v111 = seed + 111
+    var v112 = seed + 112
+    var v113 = seed + 113
+    var v114 = seed + 114
+    var v115 = seed + 115
+    var v116 = seed + 116
+    var v117 = seed + 117
+    var v118 = seed + 118
+    var v119 = seed + 119
+    var v120 = seed + 120
+    var v121 = seed + 121
+    var v122 = seed + 122
+    var v123 = seed + 123
+    var v124 = seed + 124
+    var v125 = seed + 125
+    var v126 = seed + 126
+    var v127 = seed + 127
+    var v128 = seed + 128
+    var v129 = seed + 129
+    var v130 = seed + 130
+    var v131 = seed + 131
+    var v132 = seed + 132
+    var v133 = seed + 133
+    var v134 = seed + 134
+    var v135 = seed + 135
+    var v136 = seed + 136
+    var v137 = seed + 137
+    var v138 = seed + 138
+    var v139 = seed + 139
+    var v140 = seed + 140
+    var v141 = seed + 141
+    var v142 = seed + 142
+    var v143 = seed + 143
+    var v144 = seed + 144
+    var v145 = seed + 145
+    var v146 = seed + 146
+    var v147 = seed + 147
+    var v148 = seed + 148
+    var v149 = seed + 149
+    var v150 = seed + 150
+    var v151 = seed + 151
+    var v152 = seed + 152
+    var v153 = seed + 153
+    var v154 = seed + 154
+    var v155 = seed + 155
+    var v156 = seed + 156
+    var v157 = seed + 157
+    var v158 = seed + 158
+    var v159 = seed + 159
+    var v160 = seed + 160
+    var v161 = seed + 161
+    var v162 = seed + 162
+    var v163 = seed + 163
+    var v164 = seed + 164
+    var v165 = seed + 165
+    var v166 = seed + 166
+    var v167 = seed + 167
+    var v168 = seed + 168
+    var v169 = seed + 169
+    var v170 = seed + 170
+    var v171 = seed + 171
+    var v172 = seed + 172
+    var v173 = seed + 173
+    var v174 = seed + 174
+    var v175 = seed + 175
+    var v176 = seed + 176
+    var v177 = seed + 177
+    var v178 = seed + 178
+    var v179 = seed + 179
+    var v180 = seed + 180
+    var v181 = seed + 181
+    var v182 = seed + 182
+    var v183 = seed + 183
+    var v184 = seed + 184
+    var v185 = seed + 185
+    var v186 = seed + 186
+    var v187 = seed + 187
+    var v188 = seed + 188
+    var v189 = seed + 189
+    var v190 = seed + 190
+    var v191 = seed + 191
+    var v192 = seed + 192
+    var v193 = seed + 193
+    var v194 = seed + 194
+    var v195 = seed + 195
+    var v196 = seed + 196
+    var v197 = seed + 197
+    var v198 = seed + 198
+    var v199 = seed + 199
+    var v200 = seed + 200
+    var v201 = seed + 201
+    var v202 = seed + 202
+    var v203 = seed + 203
+    var v204 = seed + 204
+    var v205 = seed + 205
+    var v206 = seed + 206
+    var v207 = seed + 207
+    var v208 = seed + 208
+    var v209 = seed + 209
+    var v210 = seed + 210
+    var v211 = seed + 211
+    var v212 = seed + 212
+    var v213 = seed + 213
+    var v214 = seed + 214
+    var v215 = seed + 215
+    var v216 = seed + 216
+    var v217 = seed + 217
+    var v218 = seed + 218
+    var v219 = seed + 219
+    var v220 = seed + 220
+    var v221 = seed + 221
+    var v222 = seed + 222
+    var v223 = seed + 223
+    var v224 = seed + 224
+    var v225 = seed + 225
+    var v226 = seed + 226
+    var v227 = seed + 227
+    var v228 = seed + 228
+    var v229 = seed + 229
+    let reach = function() -> int {
+        v7 += 1
+        return v7 + v229
+    }
+    for step in range(3) {
+        v0 += step
+        v23 += step
+        v46 += step
+        v69 += step
+        v92 += step
+        v115 += step
+        v138 += step
+        v161 += step
+        v184 += step
+        v207 += step
+        let inner = v0 + reach()
+        v1 = inner
+    }
+    return sum([v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, v111, v112, v113, v114, v115, v116, v117, v118, v119, v120, v121, v122, v123, v124, v125, v126, v127, v128, v129, v130, v131, v132, v133, v134, v135, v136, v137, v138, v139, v140, v141, v142, v143, v144, v145, v146, v147, v148, v149, v150, v151, v152, v153, v154, v155, v156, v157, v158, v159, v160, v161, v162, v163, v164, v165, v166, v167, v168, v169, v170, v171, v172, v173, v174, v175, v176, v177, v178, v179, v180, v181, v182, v183, v184, v185, v186, v187, v188, v189, v190, v191, v192, v193, v194, v195, v196, v197, v198, v199, v200, v201, v202, v203, v204, v205, v206, v207, v208, v209, v210, v211, v212, v213, v214, v215, v216, v217, v218, v219, v220, v221, v222, v223, v224, v225, v226, v227, v228, v229])
+}
+print(many(1), many(-100))
