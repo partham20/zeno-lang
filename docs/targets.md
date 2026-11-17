@@ -623,10 +623,26 @@ takes the types off and runs the same JavaScript. PHP has no JIT as it
 is installed, and is slower than the VM and faster than Python, except
 for strings, where PHP's own text functions do the work. The table is
 the record of 0.5.0 (`bench/results/versions/0.5.0.json`, made by
-`python3 bench/record.py`). Lua, Ruby, Dart and Kotlin came after
-0.5.0 and are not in that record; `python3 bench/run.py --engines
-c,vm,to-lua,to-ruby,to-dart,to-kotlin` times them where they are
-installed.
+`python3 bench/record.py`).
+
+Lua, Ruby, Dart and Kotlin came after 0.5.0 and are not in that
+record. Timed once on the same machine (`python3 bench/run.py
+--engines c,vm,to-lua,to-ruby,to-dart,to-kotlin`, 2026-11-17):
+
+| | `zeno run --vm` | `lua` (Lua 5.4) | `ruby` (Ruby 3.3) | `dart` (Dart 3.14) | `kotlin` (Kotlin 2.4, JDK 21) |
+|---|---|---|---|---|---|
+| fib | 0.74 | 2.3 | 5.2 | 0.60 | 0.31 |
+| loop | 8.1 | 45.8 | 57.0 | 1.1 | 1.5 |
+| sort | 3.5 | 17.3 | 16.9 | 1.4 | 1.3 |
+| strings | 1.6 | 3.7 | 3.3 | 1.4 | 0.83 |
+| trees | 9.9 | 48.9 | 44.1 | 2.5 | 1.4 |
+| nbody | 17.6 | 91.7 | 126.9 | 9.4 | 4.7 |
+
+Dart and Kotlin are compiled to machine code as they run, as
+JavaScript and Java are, and are two to seven times faster than the
+VM. Lua and Ruby are interpreted, and every `+` is a call of the
+runtime: they are about as slow as Python. (The Kotlin program is
+compiled first and the jar is timed.)
 
 JavaScript is two to six times faster than the VM and Java two to
 nine, because Node and the JVM compile the program to machine code as
