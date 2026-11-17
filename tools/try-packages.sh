@@ -21,7 +21,7 @@
 # which the `stores` workflow runs:
 #
 #     tools/try-packages.sh apt 0.2.0 lists files
-#     tools/try-packages.sh apt 0.2.0 lists https://github.com/partham20/zeno-lang/releases/latest/download/
+#     tools/try-packages.sh apt 0.2.0 lists https://github.com/zeno-src/zeno-lang/releases/latest/download/
 #     tools/try-packages.sh tap 0.2.0
 #     tools/try-packages.sh aur 0.2.0 packaging/arch
 #
@@ -161,7 +161,7 @@ case $kind in
         brew tap-new --no-git zeno/try >/dev/null
         tap=$(brew --repository zeno/try)
         mkdir -p "$tap/Formula"
-        sed "s|https://github.com/partham20/zeno-lang/releases/download/v$version|file://$files|" \
+        sed "s|https://github.com/zeno-src/zeno-lang/releases/download/v$version|file://$files|" \
             "$formula" > "$tap/Formula/zeno.rb"
         brew install zeno/try/zeno >/dev/null
         runs "$(brew --prefix)/share/zeno/examples" "$(brew --prefix)/bin/zeno"
@@ -214,13 +214,13 @@ case $kind in
 
     tap)
         export HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
-        brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang >/dev/null
-        brew install partham20/zeno-lang/zeno >/dev/null
+        brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang >/dev/null
+        brew install zeno-src/zeno-lang/zeno >/dev/null
         runs "$(brew --prefix)/share/zeno/examples" "$(brew --prefix)/bin/zeno"
-        brew test partham20/zeno-lang/zeno >/dev/null
-        brew uninstall partham20/zeno-lang/zeno >/dev/null
+        brew test zeno-src/zeno-lang/zeno >/dev/null
+        brew uninstall zeno-src/zeno-lang/zeno >/dev/null
         if [ -e "$(brew --prefix)/bin/zeno" ]; then stop "after removing it, Zeno is still there"; fi
-        brew untap partham20/zeno-lang >/dev/null
+        brew untap zeno-src/zeno-lang >/dev/null
         say "  removed: nothing is left"
         ;;
 

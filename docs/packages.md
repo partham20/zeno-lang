@@ -49,8 +49,8 @@ flatpak install --user zeno-0.5.1-x86_64.flatpak
 and Homebrew, which reads formulas from a repository, reads this one:
 
 ```sh
-brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
-brew install partham20/zeno-lang/zeno
+brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang
+brew install zeno-src/zeno-lang/zeno
 ```
 
 ## apt: a .deb
@@ -279,7 +279,7 @@ be in the place that manager looks in. That is a stage of its own, in
 
 | For | State | Then it is |
 |---|---|---|
-| Homebrew | works now | `brew install partham20/zeno-lang/zeno` |
+| Homebrew | works now | `brew install zeno-src/zeno-lang/zeno` |
 | apt | a signed list of the `.deb` files, in the release itself. Made and tried, and waits for a key to sign with | one line to add it, then `sudo apt install zeno` |
 | pacman | the `PKGBUILD` and its `.SRCINFO` are ready for the AUR, and wait for an account | `yay -S zeno-lang-bin` |
 | winget | the three files are ready for Microsoft's `winget-pkgs`, and wait for a pull request | `winget install ZenoLang.Zeno` |

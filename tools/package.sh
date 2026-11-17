@@ -42,7 +42,7 @@ version=$1
 files=$(cd "$2" && pwd)
 mkdir -p "$3"
 out=$(cd "$3" && pwd)
-url=${ZENO_URL:-https://github.com/partham20/zeno-lang/releases/download/v$version}
+url=${ZENO_URL:-https://github.com/zeno-src/zeno-lang/releases/download/v$version}
 
 say() { printf '%s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -265,8 +265,8 @@ cat > "$recipes/Formula/zeno.rb" <<EOF
 # Zeno, for Homebrew. This file is written by tools/package.sh when a
 # version is released: change that, not this.
 #
-#     brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
-#     brew install partham20/zeno-lang/zeno
+#     brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang
+#     brew install zeno-src/zeno-lang/zeno
 class Zeno < Formula
   desc "Small, readable, statically typed language for firmware"
   homepage "$site"
@@ -489,14 +489,14 @@ PackageVersion: $version
 PackageLocale: en-US
 Publisher: The Zeno language
 PublisherUrl: $site
-PublisherSupportUrl: https://github.com/partham20/zeno-lang/issues
+PublisherSupportUrl: https://github.com/zeno-src/zeno-lang/issues
 PackageName: Zeno
 PackageUrl: $site
-$(if [ -n "$licence" ]; then say "License: $licence"; say "LicenseUrl: https://github.com/partham20/zeno-lang/blob/v$version/LICENSE"; else say "# No licence had been chosen for Zeno $version."; say "License: All rights reserved"; fi)
+$(if [ -n "$licence" ]; then say "License: $licence"; say "LicenseUrl: https://github.com/zeno-src/zeno-lang/blob/v$version/LICENSE"; else say "# No licence had been chosen for Zeno $version."; say "License: All rights reserved"; fi)
 ShortDescription: $summary
 Description: $about
 Moniker: zeno
-ReleaseNotesUrl: https://github.com/partham20/zeno-lang/releases/tag/v$version
+ReleaseNotesUrl: https://github.com/zeno-src/zeno-lang/releases/tag/v$version
 Tags:
   - compiler
   - firmware

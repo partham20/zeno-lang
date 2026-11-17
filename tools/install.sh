@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Zeno on macOS and Linux.
 #
-#     curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+#     curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/install.sh | sh
 #
 # It works out which kind of machine this is, downloads the `zeno` that
 # was built for it, checks that the download arrived whole, puts it in
@@ -36,7 +36,7 @@ version=0.5.1
 
 version=${ZENO_VERSION:-$version}
 home=${ZENO_HOME:-$HOME/.zeno}
-from=${ZENO_FROM:-https://github.com/partham20/zeno-lang/releases/download/v$version}
+from=${ZENO_FROM:-https://github.com/zeno-src/zeno-lang/releases/download/v$version}
 
 # The line this script adds to a shell's startup file ends with this,
 # so that it can find the line again and not add it twice.

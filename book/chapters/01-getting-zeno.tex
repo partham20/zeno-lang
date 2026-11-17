@@ -14,7 +14,7 @@ Zeno 0.5.1 is the current release, and everything below installs it.
 Its files are on the releases page of the repository:
 
 \begin{center}
-\url{https://github.com/partham20/zeno-lang/releases/latest}
+\url{https://github.com/zeno-src/zeno-lang/releases/latest}
 \end{center}
 
 \section{The installers}
@@ -45,7 +45,7 @@ also be removed from the list of installed apps in Windows' settings.
 One line in a terminal:
 
 \begin{zenofrag}[lang=shell]
-curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/install.sh | sh
 \end{zenofrag}
 
 \verb|curl| downloads a shell script of about three hundred lines, half
@@ -110,8 +110,8 @@ alias zeno='flatpak run org.zeno_lang.Zeno'
 Homebrew, on macOS or Linux, reads a formula from the Zeno repository:
 
 \begin{zenofrag}[lang=shell]
-brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
-brew install partham20/zeno-lang/zeno
+brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang
+brew install zeno-src/zeno-lang/zeno
 \end{zenofrag}
 
 On Windows, winget runs the same setup program as above, with its
@@ -265,7 +265,7 @@ Zeno is built and tested on Linux, macOS and Windows, with the same
 steps on each. Get the source and build it:
 
 \begin{zenofrag}[lang=shell]
-git clone https://github.com/partham20/zeno-lang
+git clone https://github.com/zeno-src/zeno-lang
 cd zeno-lang
 cargo build --release
 \end{zenofrag}

@@ -30,7 +30,7 @@ Say as much of this as you can:
 
 A program that crashes, or a wrong answer from the compiler, is an
 ordinary bug. Those are welcome as
-[issues](https://github.com/partham20/zeno-lang/issues), or at
+[issues](https://github.com/zeno-src/zeno-lang/issues), or at
 issues@zeno-lang.org if you have no GitHub account.
 
 ## Which versions

@@ -18,13 +18,13 @@ Commands:
   - zeno
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
     InstallerSha256: 376355B632892E46B050D924D4CE29F38E18B7F459CD4A48F7625BC94E2B49D3
   - Architecture: x86
-    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
     InstallerSha256: 376355B632892E46B050D924D4CE29F38E18B7F459CD4A48F7625BC94E2B49D3
   - Architecture: arm64
-    InstallerUrl: https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-windows-setup.exe
     InstallerSha256: 376355B632892E46B050D924D4CE29F38E18B7F459CD4A48F7625BC94E2B49D3
 ManifestType: installer
 ManifestVersion: 1.28.0

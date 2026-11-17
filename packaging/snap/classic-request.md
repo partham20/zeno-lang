@@ -15,7 +15,7 @@ compiler: one program, `zeno`, that checks, runs, tests, formats and
 compiles Zeno programs. It is open source under the MIT licence.
 
 - Website: https://zeno-lang.org
-- Source: https://github.com/partham20/zeno-lang
+- Source: https://github.com/zeno-src/zeno-lang
 - How the snap is made: `tools/package.sh` in that repository (the
   function `snap_of`), from the files of a release, with `snap pack`
 

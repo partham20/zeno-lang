@@ -20,7 +20,7 @@ Run it and press Next. It is the same file for every Windows machine.
 **On macOS and Linux**, one line in a terminal, as Rust has:
 
 ```sh
-curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/install.sh | sh
 ```
 
 Both do the same five things:
@@ -140,7 +140,7 @@ releasing it.
 ## The line for macOS and Linux
 
 ```sh
-curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/install.sh | sh
 ```
 
 `curl` downloads [`tools/install.sh`](../tools/install.sh), which is a
@@ -150,7 +150,7 @@ shell there is, and it is meant to be read before it is trusted.
 
 ```
 Zeno 0.5.1 for macos on arm64
-  from https://github.com/partham20/zeno-lang/releases/download/v0.5.1
+  from https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1
   the download is whole
   installed zeno 0.5.1 in /Users/partha/.zeno
   added it to the PATH, in /Users/partha/.zshrc

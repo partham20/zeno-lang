@@ -18,15 +18,15 @@ optdepends=('gcc: for `zeno build`'
 # The program is already built, and is not to be changed.
 options=('!strip' '!debug')
 arch=('x86_64' 'aarch64' 'armv7h' 'armv6h' 'i686')
-source_x86_64=("https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86_64.tar.gz")
+source_x86_64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86_64.tar.gz")
 sha256sums_x86_64=('318e58181522b50eaf2b51aea7083bac5d0dd320e05f1a502355643d5b9a6bcd')
-source_aarch64=("https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-arm64.tar.gz")
+source_aarch64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-arm64.tar.gz")
 sha256sums_aarch64=('cb69d0c759f5bf437480e728e63092cea46b4528bae10d8164d484598f59256b')
-source_armv7h=("https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv7.tar.gz")
+source_armv7h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv7.tar.gz")
 sha256sums_armv7h=('36a44c76038e30f7aeed77a787765502f855f48090e27b8cc8ac676bae403b96')
-source_armv6h=("https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv6.tar.gz")
+source_armv6h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv6.tar.gz")
 sha256sums_armv6h=('68171d925ae90262e441aa48d79b47e5c865470623573b1a49a7e51aac160ca3')
-source_i686=("https://github.com/partham20/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86.tar.gz")
+source_i686=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86.tar.gz")
 sha256sums_i686=('599571cd2d390d6275d8ba67c42d8a9ef19e5d4e2fb53283ca91c59d93532ee2')
 
 package() {

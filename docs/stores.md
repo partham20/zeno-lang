@@ -17,7 +17,7 @@ the steps, in order, with the page for each.
 
 | Manager | Where it looks | State | The line, once it is there |
 |---|---|---|---|
-| Homebrew | a repository on GitHub, here this one | **works now** | `brew install partham20/zeno-lang/zeno` |
+| Homebrew | a repository on GitHub, here this one | **works now** | `brew install zeno-src/zeno-lang/zeno` |
 | apt | a signed list beside the `.deb` files, here in the release | made and tried, waits for a key | `sudo apt install zeno` |
 | pacman | the AUR | files ready, waits for an account | `yay -S zeno-lang-bin` |
 | winget | Microsoft's `winget-pkgs` | files ready, waits for a pull request | `winget install ZenoLang.Zeno` |
@@ -33,8 +33,8 @@ tap. The formula is in this repository, in `Formula/zeno.rb`, and the
 repository is public, so there is nothing more to do:
 
 ```sh
-brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
-brew install partham20/zeno-lang/zeno
+brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang
+brew install zeno-src/zeno-lang/zeno
 ```
 
 The two lines were run as they stand on a Mac and on Linux, on 16
@@ -74,9 +74,9 @@ What somebody types, once, and from then on apt updates Zeno with
 everything else:
 
 ```sh
-curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/zeno-apt-key.asc |
+curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/zeno-apt-key.asc |
     sudo tee /usr/share/keyrings/zeno.asc > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/zeno.asc] https://github.com/partham20/zeno-lang/releases/latest/download/ /" |
+echo "deb [signed-by=/usr/share/keyrings/zeno.asc] https://github.com/zeno-src/zeno-lang/releases/latest/download/ /" |
     sudo tee /etc/apt/sources.list.d/zeno.list
 sudo apt update
 sudo apt install zeno
@@ -106,7 +106,7 @@ checked the signature, installed Zeno and removed it.
    ```
 
 2. Open
-   [New secret](https://github.com/partham20/zeno-lang/settings/secrets/actions/new),
+   [New secret](https://github.com/zeno-src/zeno-lang/settings/secrets/actions/new),
    name it `APT_SIGNING_KEY`, and paste the whole of
    `zeno-apt-private.asc` as its value.
 3. Keep `zeno-apt-private.asc` somewhere safe and nowhere public. If
@@ -156,7 +156,7 @@ it, and `.SRCINFO` says what the `PKGBUILD` says.
    "SSH Public Key" on the AUR's
    [My Account](https://aur.archlinux.org/account) page.
 3. Open
-   [New secret](https://github.com/partham20/zeno-lang/settings/secrets/actions/new),
+   [New secret](https://github.com/zeno-src/zeno-lang/settings/secrets/actions/new),
    name it `AUR_SSH_KEY`, and paste the whole of the file `aur`, the
    private half.
 4. Run the workflow `stores` with "send" ticked. The first push makes
@@ -253,7 +253,7 @@ send them.
    ```
 
 5. Open
-   [New secret](https://github.com/partham20/zeno-lang/settings/secrets/actions/new),
+   [New secret](https://github.com/zeno-src/zeno-lang/settings/secrets/actions/new),
    name it `SNAPCRAFT_STORE_CREDENTIALS`, and paste the whole of
    `login.txt`. Then delete the file.
 6. Once `classic` is given, run the workflow `stores` with "send"

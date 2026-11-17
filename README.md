@@ -105,7 +105,7 @@ piece of the compiler:
 ## Install
 
 **Windows.** Download `zeno-0.5.1-windows-setup.exe` from the
-[releases page](https://github.com/partham20/zeno-lang/releases) and
+[releases page](https://github.com/zeno-src/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
 about it the first time, because it is not signed: "More info", then
@@ -114,7 +114,7 @@ about it the first time, because it is not signed: "More info", then
 **macOS and Linux.** One line in a terminal:
 
 ```sh
-curl -fsSL https://github.com/partham20/zeno-lang/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/zeno-src/zeno-lang/releases/latest/download/install.sh | sh
 ```
 
 It finds the `zeno` for your machine, checks the download, installs it
@@ -140,8 +140,8 @@ Zeno if the machine has none.
 Homebrew, on macOS and Linux:
 
 ```sh
-brew tap partham20/zeno-lang https://github.com/partham20/zeno-lang
-brew install partham20/zeno-lang/zeno
+brew tap zeno-src/zeno-lang https://github.com/zeno-src/zeno-lang
+brew install zeno-src/zeno-lang/zeno
 ```
 
 For winget there are three files in
@@ -692,7 +692,7 @@ packaging/                    the PKGBUILD and the winget files, written at each
 | For | Write to |
 |---|---|
 | Help with installing or using Zeno | help@zeno-lang.org |
-| A bug in Zeno | the [issues](https://github.com/partham20/zeno-lang/issues) on GitHub, where others can see it and its answer. With no GitHub account, issues@zeno-lang.org |
+| A bug in Zeno | the [issues](https://github.com/zeno-src/zeno-lang/issues) on GitHub, where others can see it and its answer. With no GitHub account, issues@zeno-lang.org |
 | A security problem | security@zeno-lang.org, in private. [`SECURITY.md`](SECURITY.md) says what to send |
 | Anything else: an idea, the website, the book | contact@zeno-lang.org |
 
