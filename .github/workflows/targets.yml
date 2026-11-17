@@ -101,8 +101,12 @@ jobs:
         run: cargo build --release
 
       - name: Every program, in every language
+        # `bash` with a name is bash with `pipefail`: the step fails when
+        # targets.py does, though `tee` after it does not.
+        shell: bash
         run: |
-          for tool in node tsc python3 php ruby dart go java dotnet g++ rustc; do "$tool" --version 2>&1 | head -1; done
+          for tool in node tsc python3 php ruby dart java dotnet g++ rustc; do "$tool" --version 2>&1 | sed -n 1p; done
+          go version
           lua5.4 -v
           kotlinc -version 2>&1 | tail -1
           python3 tools/targets.py | tee targets-report.txt

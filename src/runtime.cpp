@@ -43,6 +43,21 @@
 #include <utility>
 #include <vector>
 
+// `a * b + c` is two steps: multiply and round, then add and round. Some
+// processors (ARM64, and x86 where the compiler is told it may) have one
+// instruction that does both and rounds once, and a C++ compiler is
+// allowed to pick it without being asked. `zeno run` always takes two
+// steps, so this program must too: `7.0 % 0.1` is 0.0 in two steps and
+// -3.885780586188048e-16 in one. These lines say so to each family of
+// compiler, as runtime.c does for C.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#elif defined(__GNUC__)
+#pragma GCC optimize("fp-contract=off")
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+
 namespace Z {
 
 using std::string;

@@ -10878,6 +10878,55 @@ error raised again through the `try`s of calls inside one another; and
 a function with 230 variables. The Lua coroutines, Ruby's `Z.loop` and the table of
 variables each came from a program like these failing first.
 
+### 24.35 Multiply, then add, is two steps in C++ and Go too; and the check fails when a program differs
+
+The first run of the weekly check with the four new languages
+(2026-11-17) showed a line that was not theirs: with the newest g++
+(15.2), `tools/targets/edge-ints.zeno` printed in C++
+
+```
+1e308 % 3.0    4.9896007738368e291     where `zeno run` prints 0.0
+7.0 % 0.1      -3.885780586188048e-16  where `zeno run` prints 0.0
+1 % 0.1        -5.551115123125783e-17  where `zeno run` prints 0.0
+```
+
+**Why.** `a % b` on floats is `a - b * floor(a / b)`. Zeno multiplies
+and rounds, then takes away and rounds. A processor with a fused
+multiply-add does both in one instruction and rounds once, and what
+is left is the tiny error of the product, where two steps leave 0. A
+C++ compiler may pick that instruction without being asked, and that
+g++ did. The C of `zeno build` has said "two steps" to its compiler
+since the first release (decision 12.5); `runtime.cpp` did not.
+With g++ 13 on the same kind of machine nothing showed, because that
+compiler was not using the instruction.
+
+**The rule.** `src/runtime.cpp` now says it to each family of
+compiler (`#pragma STDC FP_CONTRACT OFF` for clang, `#pragma GCC
+optimize("fp-contract=off")` for g++, `#pragma fp_contract(off)` for
+Microsoft's), for the whole file, the program included. In
+`src/runtime.go` the product in `%` is written `float64(y * q)`: Go
+may fuse too, on ARM64, and its rule is that a conversion written out
+rounds first. `edge-ints.zeno` has a line of `a * b + c` in a
+function, for every target. The other languages take two steps by
+their own rules (Java, Kotlin, C#, Rust, JavaScript, Dart) or run
+each step as an instruction of their own (Python, PHP, Lua, Ruby).
+
+**Not done.** The Go runtime's own `sin`, `cos` and `tan` (24.16) are
+sums of products, and on ARM64 Go may fuse those: a last digit could
+differ there. It has not been seen and cannot be tried here; it is
+with the known limits.
+
+**The check did not fail.** The step was `python3 tools/targets.py |
+tee targets-report.txt`, and without `pipefail` a step has the status
+of its last command, `tee`. So the run was green with a failed
+program in its report. The step now runs under `bash` with
+`pipefail`, and is red when any program differs.
+
+**Alternatives rejected.** `-ffp-contract=off` in the command the
+user is told to run (the file must be right by itself, however it is
+compiled). A `volatile` in `%` only (a compiler that fuses there may
+fuse elsewhere in the file).
+
 ## 25. Starting another program
 
 Partha asked (2026-11-17) for a program in Zeno that downloads a video

@@ -57,3 +57,7 @@ try { print(1.0 // 0) } except ZeroDivisionError as e { print("25", e.message) }
 try { print(zero % zero) } except ZeroDivisionError as e { print("26", e.message) }
 print(nan / 1, nan // 1, nan % 1, inf / inf, inf - inf, inf * 0, inf // 1, -inf // 1, inf + 1, 1e308 + 1e308, -1e308 - 1e308, 1e308 * 10, 5e-324 / 2, 1 / 3, 2 / 3, 10 / 5, 9223372036854775807 / 1, 9007199254740993 / 1)
 print(7 // 2.0, -7 // 2.0, 7.0 // -2, 1e300 // 1e-300, 0.1 + 0.2 == 0.3, 0.1 * 3, 1.1 * 1.1, 1 - 0.9, 4.35 * 100, 1.005 * 1000, 3 * 1.1, 0.1 + 0.7)
+# Multiply, then add: two steps, each rounded, on a processor that could do both in one.
+function then_add(a: float, b: float, c: float) -> float { return a * b + c }
+function then_take(a: float, b: float, c: float) -> float { return c - a * b }
+print(then_add(0.1, 10.0, -1.0), then_take(0.1, 10.0, 1.0), then_add(1e308, 3.0, -inf), 0.1 * 10.0 - 1.0, then_add(1.1, 1.1, -1.21))

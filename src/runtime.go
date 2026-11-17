@@ -790,10 +790,13 @@ func Zmod(a, b ZV, line int) ZV {
 		zByZero(line)
 	}
 	q := x / y
+	// float64(...) rounds the product before it is taken away. Without
+	// it Go may do both in one step where the processor can (ARM64),
+	// and `7.0 % 0.1` would be -3.885780586188048e-16, not 0.0.
 	if math.IsNaN(q) || math.IsInf(q, 0) {
-		return x - y*q
+		return x - float64(y*q)
 	}
-	return x - y*math.Floor(q)
+	return x - float64(y*math.Floor(q))
 }
 
 func Zpow(a, b ZV, line int) ZV {

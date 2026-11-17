@@ -558,6 +558,10 @@ target keep, and a program in `tools/targets/` that holds them to it:
   (24.25). `end`, `local`, `rescue`, `it`, `fun`, `val` and `List`
   are safe in Lua, Ruby, Dart and Kotlin, and so is text that says
   `#{x}` or `${x}`, which those languages would fill in (24.34).
+- **Multiply, then add.** `a * b + c` is two steps, each rounded, on
+  a processor that could do both in one: the C++ file says so to its
+  compiler, as the C of `zeno build` does, and `7.0 % 0.1` is `0.0`
+  everywhere (24.35).
 - **Long chains.** A linked list of a million objects is let go link
   by link in Rust and WebAssembly, not by a million calls inside one
   another, which a WebAssembly host has no stack for.
@@ -576,7 +580,9 @@ target keep, and a program in `tools/targets/` that holds them to it:
   Lua and Ruby use the C library. Kotlin uses Java's `Math`, as the
   Java target does. Dart has its own; its `log10` is worked out the
   way the C library does it, because `log(x) / ln10` is one digit off
-  for some inputs.
+  for some inputs. On ARM64, Go may also do a multiply and an add of
+  its own `sin`, `cos` and `tan` in one step, which could move a last
+  digit there (24.35).
 - **Time in Lua.** Lua has a clock in whole seconds and no `sleep`.
   With LuaSocket installed, `time.now()` and `sleep` are exact. Without
   it, `time.now()` counts the time the processor worked, which is
