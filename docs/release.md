@@ -99,8 +99,8 @@ the tag is pushed, on the machine the earlier versions were timed on:
 
 ```sh
 cargo build --release
-python3 bench/record.py --version 0.4.0
-git add bench/results/versions/0.4.0.json
+python3 bench/record.py --version 0.5.0
+git add bench/results/versions/0.5.0.json
 ```
 
 [`bench/record.py`](../bench/record.py) times every program with every
@@ -150,6 +150,9 @@ every example is laid out as `zeno format` lays it out
 `zeno new` makes a program that runs and whose tests pass
 ok
 ```
+
+Since 0.5 it also has `zeno build --target` write `examples/hello.zeno`
+in each of ten languages, which needs none of them installed.
 
 A build for another processor cannot run on the machine that built it.
 For the ARM builds for Linux the script is given an emulator, a program

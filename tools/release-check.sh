@@ -16,7 +16,9 @@
 # `zeno new` makes a program that runs. If Zeno has also been built for
 # a browser (`cargo build --release --target wasm32-unknown-unknown`),
 # it checks that `zeno build --web` writes a page with the program in
-# it. It needs no C compiler and no browser, because none of these do.
+# it. It checks that `zeno build --target` writes a file for each
+# language. It needs no C compiler, no browser and no other language,
+# because none of these do.
 
 set -eu
 
@@ -77,6 +79,19 @@ echo "every example is laid out as \`zeno format\` lays it out"
     run test >/dev/null
 )
 echo "\`zeno new\` makes a program that runs and whose tests pass"
+
+# Writing a program in another language needs none of those languages.
+# (`wasm` is left out: it has rustc build what it writes.)
+examples=$PWD/examples
+for target in js ts html py php go java cs cpp rust; do
+    (
+        mkdir "$work/$target"
+        cd "$work/$target"
+        run build --target "$target" "$examples/hello.zeno" >/dev/null
+        grep -q 'Hello, Zeno!' hello.*
+    ) || { echo "\`zeno build --target $target\` did not write examples/hello.zeno"; exit 1; }
+done
+echo "\`zeno build --target\` writes a program in ten other languages"
 
 wasm=$PWD/target/wasm32-unknown-unknown/release/zeno.wasm
 if [ -f "$wasm" ]; then
