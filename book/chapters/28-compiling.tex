@@ -223,6 +223,10 @@ languages are \verb|js| (JavaScript, for Node), \verb|ts|
 \verb|cpp| (C++), \verb|rust|, and \verb|wasm| (WebAssembly, built
 through Rust).
 
+{\itshape Four more are on their way and not yet released:
+\verb|lua|, \verb|ruby|, \verb|dart| and \verb|kotlin|. They are in
+Zeno built from its source today, and in the release after 0.5.1.}
+
 \begin{zeno}[file=area.zeno, cmd=zeno build --target js {file} ;; node area.js ;; zeno build --target py {file} ;; python3 area.py]
 import math
 
@@ -265,8 +269,9 @@ cannot use the keyboard or files, or \verb|sleep|.
 A program you have written in Zeno can then live where another language
 lives: on a web page, in a Python project, on a Java server. And it is a
 way to learn: the same program, written by fixed rules in eleven
-languages, shows what each language needs said that Zeno does not.
-(Decisions 24.1 to 24.28; \verb|docs/targets.md| has every target.)
+languages, and fifteen with the four on their way, shows what each
+language needs said that Zeno does not.
+(Decisions 24.1 to 24.34; \verb|docs/targets.md| has every target.)
 \end{why}
 
 \begin{summary}
