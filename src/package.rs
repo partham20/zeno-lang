@@ -10,6 +10,7 @@
 //!
 //! needs filters in "../filters"
 //! needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
+//! needs crc at "v2.0.1"
 //! ```
 //!
 //! - `needs filters in "../filters"` uses the package in that folder,
@@ -18,10 +19,14 @@
 //!   tag, branch or commit in it. `zeno fetch` gets it into the folder
 //!   `packages/units` beside this file, and writes the commit it got
 //!   into `zeno.lock`, so that the next person gets exactly the same.
+//! - `needs crc at "v2.0.1"` names a package by its name alone. The
+//!   registry (`registry.rs`) knows which git repository `crc` is, and
+//!   which commit of it is version 2.0.1. `zeno fetch` asks it, and
+//!   then goes on as for the line above.
 //!
 //! This file reads `zeno.package` and `zeno.lock`, and is `zeno fetch`.
 //! How `import` then finds the modules of a package is in `modules.rs`.
-//! See docs/packages.md for a walk through both.
+//! See docs/registry.md for a walk through fetching and the registry.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,6 +37,7 @@ use crate::builtins;
 use crate::error::Error;
 use crate::lexer;
 use crate::modules::shown;
+use crate::registry;
 use crate::token::{Span, Token, TokenKind};
 
 /// The file that makes a folder a package.
@@ -51,6 +57,15 @@ pub struct Manifest {
     /// memory when it is built, unless `zeno build` is told otherwise.
     /// `None` when the file does not say, which means `collector`.
     pub memory: Option<Memory>,
+    /// `about "..."`: one line that says what the package is for. The
+    /// registry shows it to somebody who searches, so a package has to
+    /// have one to be published, and needs none otherwise.
+    pub about: Option<String>,
+    /// `registry "address"`: where the names of `needs units at "v1.2.0"`
+    /// lines are looked up, when that is not Zeno's own registry. Like
+    /// `memory`, it is the program's line that counts: the one in a
+    /// needed package says nothing about the program that needs it.
+    pub registry: Option<String>,
 }
 
 /// How a built program frees memory. docs/memory-modes.md compares them.
@@ -84,13 +99,19 @@ pub enum Source {
     /// `needs units from "https://..." at "v1.2.0"`: a git repository,
     /// and a tag, branch or commit in it.
     Git { url: String, at: String },
+    /// `needs crc at "v2.0.1"`: a package of the registry, by its name,
+    /// and one version of it.
+    Registry { at: String },
 }
 
 const LINES: &str = "A line of `zeno.package` is one of:\n    \
     package name\n    \
+    about \"what the package is for, in one line\"\n    \
     memory owned            (or `memory collector`)\n    \
     needs name in \"folder\"\n    \
-    needs name from \"address of a git repository\" at \"tag, branch or commit\"";
+    needs name at \"v1.2.0\"   (a version of a package in the registry)\n    \
+    needs name from \"address of a git repository\" at \"tag, branch or commit\"\n    \
+    registry \"address\"      (a registry other than Zeno's own)";
 
 /// Read a `zeno.package`. `file` is the file's number in the program,
 /// which goes into the position of each mistake (see `Span`).
@@ -103,6 +124,8 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
     let mut name: Option<String> = None;
     let mut needs: Vec<Need> = Vec::new();
     let mut memory: Option<Memory> = None;
+    let mut about: Option<String> = None;
+    let mut registry: Option<String> = None;
 
     for line in tokens.split(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Eof)) {
         let Some(first) = line.first() else { continue };
@@ -144,9 +167,55 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
                 }
                 memory.get_or_insert(said);
             }
+            [_, TokenKind::Str { value, formatted: false }] if word(0, "about") => {
+                if about.is_some() {
+                    errors.push(Error::new("a `zeno.package` says `about` once", span));
+                } else if let Err(why) = registry::about_fits(value) {
+                    errors.push(Error::new(why, span));
+                }
+                about.get_or_insert(value.clone());
+            }
+            [_, TokenKind::Str { value, formatted: false }] if word(0, "registry") => {
+                if registry.is_some() {
+                    errors.push(Error::new("a `zeno.package` says `registry` once", span));
+                } else if value.trim().is_empty() || value.contains(char::is_whitespace) {
+                    errors.push(Error::new(
+                        "`registry` is followed by the address of a git repository that is a registry, as in \
+                         `registry \"https://git.example.com/zeno-packages\"`",
+                        span,
+                    ));
+                }
+                registry.get_or_insert(value.clone());
+            }
             [_, TokenKind::Ident(need), rest @ ..] if word(0, "needs") => {
                 let source = match rest {
                     [TokenKind::In, TokenKind::Str { value, formatted: false }] => Source::Folder(value.clone()),
+                    [_, TokenKind::Str { value: at, formatted: false }] if word(2, "at") => {
+                        if !registry::is_version(at) {
+                            errors.push(Error::new(
+                                format!(
+                                    "`{at}` is not a version of a package in the registry. One is written as the \
+                                     letter v and three numbers, as in `needs {need} at \"v1.2.0\"`. A branch or a \
+                                     commit is of a git repository, which this line then names: \
+                                     `needs {need} from \"address\" at \"{at}\"`"
+                                ),
+                                span,
+                            ));
+                            continue;
+                        }
+                        Source::Registry { at: at.clone() }
+                    }
+                    [] => {
+                        errors.push(Error::new(
+                            format!(
+                                "this does not say where `{need}` is. A package in a folder: \
+                                 `needs {need} in \"../{need}\"`. A package in the registry, and which version \
+                                 of it: `needs {need} at \"v1.0.0\"` (`zeno search {need}` shows the versions there are)"
+                            ),
+                            span,
+                        ));
+                        continue;
+                    }
                     [TokenKind::From, TokenKind::Str { value: url, formatted: false }, _, TokenKind::Str { value: at, formatted: false }]
                         if word(4, "at") =>
                     {
@@ -185,7 +254,7 @@ pub fn parse(source: &str, file: usize) -> Result<Manifest, Vec<Error>> {
     }
     let top = Span { line: file * crate::token::LINES_A_FILE + 1, col: 1 };
     match name {
-        Some(name) if errors.is_empty() => Ok(Manifest { name, needs, memory }),
+        Some(name) if errors.is_empty() => Ok(Manifest { name, needs, memory, about, registry }),
         Some(_) => Err(errors),
         None => {
             errors.insert(
@@ -206,23 +275,46 @@ pub struct Pinned {
     pub url: String,
     pub at: String,
     pub commit: String,
+    /// The `needs` line named no repository: the registry gave `url`
+    /// and `commit` for the version `at`.
+    pub registry: bool,
 }
 
 /// Read a `zeno.lock`. A line that is not one of its lines is left out:
 /// the file is written by `zeno fetch`, and the worst a damaged one can
 /// do is make the next `zeno fetch` look a version up again.
+///
+/// A line begins as the `needs` line it is for, without the `needs`, and
+/// then says what `zeno fetch` found:
+///
+/// ```text
+/// units from "https://example.com/units" at "v1.2.0" commit "9f8e7d6..."
+/// crc at "v2.0.1" from "https://example.com/crc" commit "0123abc..."
+/// ```
+///
+/// The second is for `needs crc at "v2.0.1"`: the address is something
+/// the registry said, so it stands with what was found.
 pub fn parse_lock(source: &str) -> Vec<Pinned> {
     let Ok(tokens) = lexer::lex(source) else { return Vec::new() };
     let text = |token: &Token| match &token.kind {
         TokenKind::Str { value, .. } => Some(value.clone()),
         _ => None,
     };
+    let word = |token: &Token, wanted: &str| matches!(&token.kind, TokenKind::Ident(found) if found == wanted);
     let mut pinned = Vec::new();
     for line in tokens.split(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Eof)) {
-        if let [Token { kind: TokenKind::Ident(name), .. }, _, url, _, at, _, commit] = line {
-            if let (Some(url), Some(at), Some(commit)) = (text(url), text(at), text(commit)) {
-                pinned.push(Pinned { name: name.clone(), url, at, commit });
-            }
+        let [Token { kind: TokenKind::Ident(name), .. }, first, a, second, b, third, commit] = line else { continue };
+        let from = |token: &Token| token.kind == TokenKind::From;
+        let (url, at, registry) = match () {
+            () if from(first) && word(second, "at") => (a, b, false),
+            () if word(first, "at") && from(second) => (b, a, true),
+            () => continue,
+        };
+        if !word(third, "commit") {
+            continue;
+        }
+        if let (Some(url), Some(at), Some(commit)) = (text(url), text(at), text(commit)) {
+            pinned.push(Pinned { name: name.clone(), url, at, commit, registry });
         }
     }
     pinned
@@ -236,7 +328,11 @@ pub fn write_lock(pinned: &[Pinned]) -> String {
          # Keep this file with the program. `zeno fetch --update` writes it afresh.\n\n",
     );
     for package in pinned {
-        text += &format!("{} from \"{}\" at \"{}\" commit \"{}\"\n", package.name, package.url, package.at, package.commit);
+        let Pinned { name, url, at, commit, .. } = package;
+        text += &match package.registry {
+            false => format!("{name} from \"{url}\" at \"{at}\" commit \"{commit}\"\n"),
+            true => format!("{name} at \"{at}\" from \"{url}\" commit \"{commit}\"\n"),
+        };
     }
     text
 }
@@ -292,8 +388,12 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
              #\n\
              #     needs filters in \"../filters\"\n\
              #\n\
-             # One that somebody else keeps is named by its git repository and a\n\
-             # version of it, and `zeno fetch` gets it:\n\
+             # One from the registry is named by its name and a version of it.\n\
+             # `zeno search` lists what there is, and `zeno fetch` gets it:\n\
+             #\n\
+             #     needs units at \"v1.2.0\"\n\
+             #\n\
+             # One that is in no registry is named by its git repository:\n\
              #\n\
              #     needs units from \"https://github.com/someone/zeno-units\" at \"v1.2.0\"\n\
              package {name}\n"
@@ -373,6 +473,13 @@ pub fn new(path: &Path, package: bool) -> Result<Vec<String>, String> {
 /// again, which moves a package that follows a branch to the branch's
 /// newest commit.
 pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
+    fetch_with(root, update, None)
+}
+
+/// `fetch`, with the folder the registry's index is kept in. `None` is
+/// the folder this machine keeps such things in (`registry::cache`); a
+/// test names one of its own.
+pub fn fetch_with(root: &Path, update: bool, cache: Option<&Path>) -> Result<Vec<String>, String> {
     let manifest = read_manifest(root).map_err(|why| match root.as_os_str().is_empty() || root == Path::new(".") {
         true => format!("{why}. `zeno fetch` is run in the folder of a program, where its `{FILE}` is"),
         false => why,
@@ -381,6 +488,11 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
         true => Vec::new(),
         false => fs::read_to_string(root.join(LOCK)).map(|text| parse_lock(&text)).unwrap_or_default(),
     };
+    // Where a name with no address is looked up: the registry the
+    // program names, or Zeno's own. It is asked at most once, and only
+    // if the lock does not already say what a name and a version are.
+    let registry = manifest.registry.clone().unwrap_or_else(|| registry::ZENOS_OWN.to_string());
+    let mut index: Option<registry::Index> = None;
 
     let mut said = Vec::new();
     let mut pinned: Vec<Pinned> = Vec::new();
@@ -394,19 +506,20 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
         for need in needs {
             let place = match &need.source {
                 Source::Folder(path) => folder.join(path),
-                Source::Git { .. } => root.join(FOLDER).join(&need.name),
+                Source::Git { .. } | Source::Registry { .. } => root.join(FOLDER).join(&need.name),
             };
             if let Some(known) = seen.get(&need.name) {
                 // Two packages may need the same one, and must mean the same one.
                 let same = match (&need.source, pinned.iter().find(|package| package.name == need.name)) {
-                    (Source::Git { url, at }, Some(package)) => package.url == *url && package.at == *at,
+                    (Source::Git { url, at }, Some(package)) => !package.registry && package.url == *url && package.at == *at,
+                    (Source::Registry { at }, Some(package)) => package.registry && package.at == *at,
                     (Source::Folder(_), None) => same_folder(known, &place),
                     _ => false,
                 };
                 if !same {
                     return Err(format!(
                         "two packages need a package called `{}`, and do not mean the same one. `{needed_by}` \
-                         needs {}, and another needs it from somewhere else or at another version. \
+                         needs it {}, and another needs it from somewhere else or at another version. \
                          A program has one package of each name: make the `needs` lines agree",
                         need.name,
                         described(&need.source)
@@ -414,19 +527,41 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
                 }
                 continue;
             }
-            if let Source::Git { url, at } = &need.source {
-                let wanted = lock.iter().find(|package| package.name == need.name && package.url == *url && package.at == *at);
-                let (commit, news) = get(&place, url, at, wanted.map(|package| package.commit.as_str()))?;
+            // Which repository, which name for the version, and which
+            // commit if something already says: the lock, or the registry.
+            let wanted = match &need.source {
+                Source::Folder(_) => None,
+                Source::Git { url, at } => {
+                    let locked = lock.iter().find(|package| !package.registry && package.name == need.name && package.url == *url && package.at == *at);
+                    Some((url.clone(), at.clone(), locked.map(|package| (package.commit.clone(), format!("`{LOCK}`"))), false))
+                }
+                Source::Registry { at } => {
+                    let locked = lock.iter().find(|package| package.registry && package.name == need.name && package.at == *at);
+                    Some(match locked {
+                        Some(package) => (package.url.clone(), at.clone(), Some((package.commit.clone(), format!("`{LOCK}`"))), true),
+                        None => {
+                            if index.is_none() {
+                                index = Some(registry::Index::open(&registry, cache, true)?);
+                                said.push(format!("Asked the registry {registry}"));
+                            }
+                            let (url, commit) = index.as_ref().unwrap().version(&need.name, at)?;
+                            (url, at.clone(), Some((commit, "the registry".to_string())), true)
+                        }
+                    })
+                }
+            };
+            if let Some((url, at, commit, from_registry)) = wanted {
+                let (commit, news) = get(&place, &url, &at, commit.as_ref().map(|(commit, who)| (commit.as_str(), who.as_str())))?;
                 let short: String = commit.chars().take(7).collect();
                 said.push(match news {
                     true => format!("Fetched {} {at} ({short}) into {}", need.name, shown(&place)),
                     false => format!("{} {at} ({short}) is already in {}", need.name, shown(&place)),
                 });
-                pinned.push(Pinned { name: need.name.clone(), url: url.clone(), at: at.clone(), commit });
+                pinned.push(Pinned { name: need.name.clone(), url, at, commit, registry: from_registry });
             }
             let theirs = read_manifest(&place).map_err(|why| format!("`{needed_by}` needs `{}`, and {why}", need.name))?;
             if theirs.name != need.name {
-                if matches!(need.source, Source::Git { .. }) {
+                if !matches!(need.source, Source::Folder(_)) {
                     // Do not leave it lying under a name that is not its own.
                     let _ = fs::remove_dir_all(&place);
                 }
@@ -460,11 +595,13 @@ pub fn fetch(root: &Path, update: bool) -> Result<Vec<String>, String> {
     Ok(said)
 }
 
-/// "in `../filters`", or "from `https://...` at `v1.2.0`".
+/// "in `../filters`", or "from `https://...` at `v1.2.0`", or "at
+/// `v2.0.1` from the registry".
 fn described(source: &Source) -> String {
     match source {
         Source::Folder(path) => format!("in `{path}`"),
         Source::Git { url, at } => format!("from `{url}` at `{at}`"),
+        Source::Registry { at } => format!("at `{at}` from the registry"),
     }
 }
 
@@ -476,7 +613,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 }
 
 /// The `zeno.package` of the package in `folder`.
-fn read_manifest(folder: &Path) -> Result<Manifest, String> {
+pub fn read_manifest(folder: &Path) -> Result<Manifest, String> {
     let path = folder.join(FILE);
     let text = fs::read_to_string(&path).map_err(|_| format!("there is no file `{}`", shown(&path)))?;
     parse(&text, 0).map_err(|errors| {
@@ -485,7 +622,7 @@ fn read_manifest(folder: &Path) -> Result<Manifest, String> {
 }
 
 /// Run git, and give what it printed.
-fn git(folder: Option<&Path>, args: &[&str]) -> Result<String, String> {
+pub fn git(folder: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new("git");
     if let Some(folder) = folder {
         command.arg("-C").arg(folder);
@@ -504,16 +641,17 @@ fn git(folder: Option<&Path>, args: &[&str]) -> Result<String, String> {
 }
 
 /// Have the repository at `url` in `place`, at the commit that `at`
-/// names, or at `pinned` if the lock names one. Gives the commit, and
-/// whether anything had to be fetched.
-fn get(place: &Path, url: &str, at: &str, pinned: Option<&str>) -> Result<(String, bool), String> {
+/// names, or at `pinned` if something already names one: the lock, or
+/// the registry. With the commit comes who names it, for a message.
+/// Gives the commit, and whether anything had to be fetched.
+fn get(place: &Path, url: &str, at: &str, pinned: Option<(&str, &str)>) -> Result<(String, bool), String> {
     let cannot = |why: String| format!("cannot fetch `{url}`: {why}");
     let here_already = place.join(".git").exists();
     if here_already {
         // It is here already. If it is at the pinned commit there is
         // nothing to ask the network for.
         let here = git(Some(place), &["rev-parse", "HEAD"]).map_err(cannot)?;
-        if pinned == Some(here.as_str()) {
+        if pinned.map(|(commit, _)| commit) == Some(here.as_str()) {
             return Ok((here, false));
         }
         git(Some(place), &["remote", "set-url", "origin", url]).map_err(cannot)?;
@@ -534,7 +672,18 @@ fn get(place: &Path, url: &str, at: &str, pinned: Option<&str>) -> Result<(Strin
     // repository, or a commit, looked for in that order.
     let ways = [format!("refs/tags/{at}^{{commit}}"), format!("refs/remotes/origin/{at}^{{commit}}"), format!("{at}^{{commit}}")];
     let commit = match pinned {
-        Some(commit) => commit.to_string(),
+        Some((commit, who)) => {
+            // A repository whose history was written again may have lost it.
+            if git(Some(place), &["cat-file", "-e", &format!("{commit}^{{commit}}")]).is_err() {
+                if !here_already {
+                    let _ = fs::remove_dir_all(place);
+                }
+                return Err(format!(
+                    "`{url}` has no commit `{commit}`, which is the one {who} names for `{at}`. Nothing of it was used"
+                ));
+            }
+            commit.to_string()
+        }
         None => ways
             .iter()
             .find_map(|way| git(Some(place), &["rev-parse", "--verify", "--quiet", way]).ok())
@@ -549,7 +698,7 @@ fn get(place: &Path, url: &str, at: &str, pinned: Option<&str>) -> Result<(Strin
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn error(source: &str) -> String {
@@ -620,22 +769,60 @@ mod tests {
     }
 
     #[test]
+    fn a_package_file_names_a_package_of_the_registry() {
+        let manifest = parse(
+            "package logger\nabout \"Keeps a log of readings\"\nregistry \"https://git.example.com/zeno-packages\"\n\
+             needs units at \"v1.2.0\"\n",
+            0,
+        )
+        .expect("it is read");
+        assert_eq!(manifest.about.as_deref(), Some("Keeps a log of readings"));
+        assert_eq!(manifest.registry.as_deref(), Some("https://git.example.com/zeno-packages"));
+        assert_eq!(manifest.needs[0].source, Source::Registry { at: "v1.2.0".to_string() });
+        let plain = parse("package logger\n", 0).expect("it is read");
+        assert_eq!((plain.about, plain.registry), (None, None));
+
+        assert_eq!(
+            error("package a\nneeds units at \"1.2.0\"\n"),
+            "`1.2.0` is not a version of a package in the registry. One is written as the letter v and three numbers, \
+             as in `needs units at \"v1.2.0\"`. A branch or a commit is of a git repository, which this line then \
+             names: `needs units from \"address\" at \"1.2.0\"`"
+        );
+        assert_eq!(
+            error("package a\nneeds units\n"),
+            "this does not say where `units` is. A package in a folder: `needs units in \"../units\"`. A package in \
+             the registry, and which version of it: `needs units at \"v1.0.0\"` (`zeno search units` shows the \
+             versions there are)"
+        );
+        assert_eq!(error("package a\nabout \"one\"\nabout \"two\"\n"), "a `zeno.package` says `about` once");
+        assert!(error("package a\nabout \"\"\n").starts_with("`about` is followed by one line that says what the package is for"));
+        assert!(error(&format!("package a\nabout \"{}\"\n", "long ".repeat(30))).contains("at most 120 characters"));
+        assert_eq!(error("package a\nregistry \"x\"\nregistry \"y\"\n"), "a `zeno.package` says `registry` once");
+        assert!(error("package a\nregistry \"\"\n").starts_with("`registry` is followed by the address of a git repository"));
+        assert_eq!(error("package a\nabout units\n"), format!("this is not a line of a `zeno.package`. {LINES}"));
+    }
+
+    #[test]
     fn a_lock_is_written_and_read_back() {
         let pinned = vec![
-            Pinned { name: "crc".into(), url: "file:///srv/crc".into(), at: "main".into(), commit: "0123abc".into() },
-            Pinned { name: "units".into(), url: "https://example.com/units".into(), at: "v1.2.0".into(), commit: "9f8e7d6".into() },
+            Pinned { name: "crc".into(), url: "file:///srv/crc".into(), at: "main".into(), commit: "0123abc".into(), registry: false },
+            Pinned { name: "units".into(), url: "https://example.com/units".into(), at: "v1.2.0".into(), commit: "9f8e7d6".into(), registry: false },
+            // From the registry: the line begins as its `needs` line does.
+            Pinned { name: "wave".into(), url: "https://example.com/wave".into(), at: "v2.0.1".into(), commit: "5a5a5a5".into(), registry: true },
         ];
         let text = write_lock(&pinned);
         assert!(text.ends_with(
             "crc from \"file:///srv/crc\" at \"main\" commit \"0123abc\"\n\
-             units from \"https://example.com/units\" at \"v1.2.0\" commit \"9f8e7d6\"\n"
+             units from \"https://example.com/units\" at \"v1.2.0\" commit \"9f8e7d6\"\n\
+             wave at \"v2.0.1\" from \"https://example.com/wave\" commit \"5a5a5a5\"\n"
         ));
         assert_eq!(parse_lock(&text), pinned);
         assert_eq!(parse_lock("nonsense here\n"), []);
+        assert_eq!(parse_lock("wave at \"v2.0.1\" at \"x\" commit \"5a5a5a5\"\nwave from \"x\" at \"v2.0.1\" pinned \"5a5a5a5\"\n"), []);
     }
 
     /// A folder for one test, empty to begin with.
-    fn scratch(name: &str) -> PathBuf {
+    pub(crate) fn scratch(name: &str) -> PathBuf {
         let folder = std::env::temp_dir().join(format!("zeno-package-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).expect("a temporary folder");
@@ -644,7 +831,7 @@ mod tests {
 
     /// Make a git repository in `folder` holding these files, with one
     /// commit. `None` if there is no git here to try it with.
-    fn repository(folder: &Path, files: &[(&str, &str)], message: &str) -> Option<String> {
+    pub(crate) fn repository(folder: &Path, files: &[(&str, &str)], message: &str) -> Option<String> {
         fs::create_dir_all(folder).expect("a folder");
         if !folder.join(".git").exists() {
             git(Some(folder), &["init", "--quiet", "--initial-branch=main"]).ok()?;
@@ -694,8 +881,8 @@ mod tests {
         assert_eq!(
             pinned,
             [
-                Pinned { name: "prefix".into(), url: prefix_url.clone(), at: "main".into(), commit: prefix_first.clone() },
-                Pinned { name: "units".into(), url: units_url.clone(), at: "v1.0.0".into(), commit: units_first.clone() },
+                Pinned { name: "prefix".into(), url: prefix_url.clone(), at: "main".into(), commit: prefix_first.clone(), registry: false },
+                Pinned { name: "units".into(), url: units_url.clone(), at: "v1.0.0".into(), commit: units_first.clone(), registry: false },
             ]
         );
 

@@ -62,8 +62,8 @@ test "hello says who it greets" {
 ```
 
 `zeno.package` is the project file ([`packages.md`](packages.md)). It
-has one line that counts, and comments that show the two lines you
-may add to it one day:
+has one line that counts, and comments that show the three lines you
+may add to it one day ([`registry.md`](registry.md)):
 
 ```
 # What this program is called, and the packages it needs.
@@ -72,8 +72,12 @@ may add to it one day:
 #
 #     needs filters in "../filters"
 #
-# One that somebody else keeps is named by its git repository and a
-# version of it, and `zeno fetch` gets it:
+# One from the registry is named by its name and a version of it.
+# `zeno search` lists what there is, and `zeno fetch` gets it:
+#
+#     needs units at "v1.2.0"
+#
+# One that is in no registry is named by its git repository:
 #
 #     needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
 package blinker

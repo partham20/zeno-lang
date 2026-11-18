@@ -48,6 +48,7 @@ mod package;
 mod page;
 mod parser;
 mod printer;
+mod registry;
 mod token;
 mod units;
 mod value;
@@ -61,6 +62,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Print what a command had to say, or what went wrong with it.
+fn said(lines: Result<Vec<String>, String>) -> ExitCode {
+    match lines {
+        Ok(lines) => {
+            lines.iter().for_each(|line| println!("{line}"));
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("zeno: {why}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
 fn usage() {
     println!("zeno {VERSION}");
@@ -95,6 +110,19 @@ fn usage() {
     println!("  zeno fetch [folder]       get the packages that the program in this");
     println!("                            folder (or in that one) needs, as the");
     println!("                            `needs` lines of its `zeno.package` list them");
+    println!("  zeno search [words]       list the packages of the registry that have");
+    println!("                            these words in their name or in what they");
+    println!("                            say they are for. With no word, all of them");
+    println!("  zeno publish [version]    check that the package in this folder is");
+    println!("                            ready for the registry, and say how to ask");
+    println!("                            the registry to take it (docs/registry.md)");
+    println!("  zeno registry accept <folder> <address> <version> --owner <who>");
+    println!("                            for whoever keeps a registry: take a version");
+    println!("                            of the package at that address into the");
+    println!("                            clone of the registry in that folder");
+    println!("  zeno registry index <folder>");
+    println!("                            write that registry's `index.json` afresh,");
+    println!("                            after a change made by hand");
     println!("  zeno --version            print the version");
     println!("  zeno --help               print this message");
     println!();
@@ -1310,6 +1338,49 @@ fn main() -> ExitCode {
                 }
                 Err(why) => {
                     eprintln!("zeno: {why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("search") => {
+            // `zeno search`, `zeno search filter noise`
+            if let Some(option) = args.iter().skip(1).find(|arg| arg.starts_with('-')) {
+                eprintln!("zeno: `search` has no option `{option}`. It takes words to look for, as in `zeno search filter`");
+                return ExitCode::FAILURE;
+            }
+            said(registry::search(&args[1..], Path::new(""), None))
+        }
+        Some("publish") => {
+            // `zeno publish`, `zeno publish v1.2.0`
+            match (args.iter().skip(1).find(|arg| arg.starts_with('-')), args.get(2)) {
+                (Some(option), _) => {
+                    eprintln!("zeno: `publish` has no option `{option}`. It is run in the folder of a package, as `zeno publish`");
+                    ExitCode::FAILURE
+                }
+                (None, Some(_)) => {
+                    eprintln!("zeno: `publish` takes one version at most, as in `zeno publish v1.2.0`");
+                    ExitCode::FAILURE
+                }
+                (None, None) => said(registry::publish(Path::new(""), args.get(1).map(String::as_str), None)),
+            }
+        }
+        Some("registry") => {
+            // `zeno registry accept . https://github.com/someone/zeno-units v1.2.0 --owner someone`
+            let owner = args.iter().position(|arg| arg == "--owner").and_then(|at| {
+                let owner = args.get(at + 1).cloned();
+                args.drain(at..(at + 2).min(args.len()));
+                owner
+            });
+            match (args.get(1).map(String::as_str), &args[2.min(args.len())..], owner) {
+                (Some("accept"), [folder, address, version], Some(owner)) => said(registry::accept(Path::new(folder), address, version, &owner)),
+                (Some("index"), [folder], None) => said(registry::relist(Path::new(folder))),
+                _ => {
+                    eprintln!("zeno: `registry` is for whoever keeps a registry, and does two things (docs/registry.md):");
+                    eprintln!("        zeno registry accept <folder> <address> <version> --owner <who>");
+                    eprintln!("      takes that version of the package at that address into the clone of the");
+                    eprintln!("      registry in that folder, for the owner named");
+                    eprintln!("        zeno registry index <folder>");
+                    eprintln!("      writes the registry's `index.json` afresh, after a change made by hand");
                     ExitCode::FAILURE
                 }
             }

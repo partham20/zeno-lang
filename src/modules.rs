@@ -442,7 +442,9 @@ impl Loader<'_> {
             package::Source::Folder(path) => tidy(&self.packages[by].folder.join(path)),
             // Fetched packages are all kept in one folder of the program,
             // whichever package needs them.
-            package::Source::Git { .. } => self.packages[0].folder.join(package::FOLDER).join(&need.name),
+            package::Source::Git { .. } | package::Source::Registry { .. } => {
+                self.packages[0].folder.join(package::FOLDER).join(&need.name)
+            }
         };
         let name = &need.name;
         if let Some(&known) = self.by_name.get(name) {
@@ -468,7 +470,7 @@ impl Loader<'_> {
                 package::Source::Folder(written) => format!(
                     "there is no package in `{written}`. This line reads the file `{path}`, and there is no such file"
                 ),
-                package::Source::Git { .. } => format!(
+                package::Source::Git { .. } | package::Source::Registry { .. } => format!(
                     "the package `{name}` has not been fetched: there is no file `{path}`. \
                      Run `zeno fetch` in the folder of the program"
                 ),
