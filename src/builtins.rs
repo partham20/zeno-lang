@@ -874,6 +874,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::Pin(_) => PIN_METHODS.contains(&name),
         Value::InputPin(_) => name == "is_high" || name == "is_low",
         Value::Serial(_) => matches!(name, "write" | "write_bytes" | "read_byte" | "has_byte"),
+        Value::AnalogPin(_) => name == "voltage" || name == "count",
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
         Value::Timer(_) => name == "stop",
@@ -1351,6 +1352,22 @@ pub fn call_method(
             }
             _ => fatal(format!("a serial port has no method `{name}`"), span),
         },
+        // `sensor.voltage()` and `sensor.count()`: what the converter
+        // reads on the pin now. The voltage is the count's share of the
+        // largest count, times the reference, worked out in that order
+        // in every engine and build.
+        Value::AnalogPin(pin) => {
+            arity(name, &args, 0, 0, span)?;
+            let count = machine.board().analog_read(*pin);
+            match name {
+                "count" => Ok(Value::Int(count)),
+                "voltage" => {
+                    let volts = count as f64 / board::analog_max() as f64 * board::ANALOG_REFERENCE;
+                    Ok(Value::Quantity(volts, Rc::from("V")))
+                }
+                _ => fatal(format!("an analog pin has no method `{name}`"), span),
+            }
+        }
         // `button.is_low()`: what the pin reads now.
         Value::InputPin(pin) => {
             arity(name, &args, 0, 0, span)?;
@@ -1543,6 +1560,7 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("register", Value::Builtin(Builtin { name: "register", call: register })),
                 ("input_pin", Value::Builtin(Builtin { name: "input_pin", call: input_pin })),
                 ("serial", Value::Builtin(Builtin { name: "serial", call: serial })),
+                ("analog_pin", Value::Builtin(Builtin { name: "analog_pin", call: analog_pin })),
                 // How an input is held: the str of its name, as in a
                 // compiled program (decision 45.3).
                 ("pull_up", Value::Str(Rc::from("pull_up"))),
@@ -1887,6 +1905,14 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// `analog_pin(0)`: the pin with that number, for reading its voltage.
+/// Every pin of the simulated board can be read this way.
+fn analog_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("analog_pin", &args, 1, 1, span)?;
+    let Value::Pin(number) = pin(machine, vec![args[0].clone()], span)? else { unreachable!("`pin` gives a pin") };
+    Ok(Value::AnalogPin(number))
+}
+
 /// `serial(1, 115200 baud)`: the serial port with that number.
 fn serial(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("serial", &args, 2, 2, span)?;

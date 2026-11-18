@@ -163,6 +163,56 @@ module of the type \verb|Pull|, so a function can take one.
 The example \verb|examples/doorbell.zeno| counts presses of a button
 and rings a bell for each.
 
+\section{Reading a voltage}
+
+Most of what a board measures arrives as a voltage: a potentiometer,
+a thermistor, a battery through two resistors. \verb|analog_pin(n)|
+gives an \verb|AnalogPin|, read by the board's converter:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Gives \\
+\midrule
+\verb|a.voltage()| & what the pin is at now, in \verb|V| \\
+\verb|a.count()| & the same as the converter counted it, an \verb|int| \\
+\verb|a.max_count| & the count that stands for the whole reference \\
+\verb|a.number| & which pin it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The voltage has its unit, so it is compared with a voltage and
+nothing else, and it makes other units
+(\hyperref[ch-units]{Numbers with Units}):
+
+\begin{zeno}
+from board import analog_pin, pin
+
+let sensor = analog_pin(4)
+print(sensor.voltage(), sensor.count())
+pin(4).on()
+let level = sensor.voltage()
+print(level, level.mV, level < 1200 mV)
+print(level / 330 ohm, sensor.count() / sensor.max_count)
+\end{zeno}
+
+On a computer nothing is wired to the pin: one that is low reads
+\verb|0 V|, and one that is high reads the whole reference,
+\verb|3.3 V| and a count of 4095, as a voltmeter on it would.
+
+\begin{why}
+A bare \verb|512| from a converter means nothing until one knows its
+bits and its reference, and those are the board's. So the board says
+them once, and \verb|voltage()| hands the program volts, which the
+checker then keeps from being compared with a bare number. The count
+is there too, with \verb|max_count|, for a share of the scale or a
+lookup table. (Decision 47.)
+\end{why}
+
+The example \verb|examples/battery.zeno| watches a battery through a
+divider and lights the LED when it is low.
+
 \section{A serial port}
 
 A serial port is how a board talks: to a terminal on a computer, to a
@@ -299,7 +349,9 @@ A program that reads a pin needs a fifth,
 no pull (0), a pull-up (1) or a pull-down (2). A program with a serial
 port needs four more, and \verb|ZENO_SERIALS|, the number of ports:
 \verb|zeno_board_serial_open|, \verb|_write|, \verb|_ready| and
-\verb|_read|. Only a program that uses them calls them, so a header
+\verb|_read|. One that reads a voltage needs
+\verb|zeno_board_analog| and \verb|zeno_board_analog_read|, with the
+converter's bits and reference. Only a program that uses them calls them, so a header
 with four still builds every other program.
 
 The simulated board is these four, written for a computer. For a real
@@ -319,8 +371,8 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 A button can be read, but nothing waits for it: a program looks at the
 pin as often as it needs to. On a computer nothing can press it yet.
-Interrupts, timers, PWM and an analogue converter are not in the
-\verb|board| module either. Until they are, a program reaches them
+Nor can a voltage be fed to a pin there. Interrupts, timers and PWM
+are not in the \verb|board| module yet. Until they are, a program reaches them
 through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
 
@@ -329,8 +381,9 @@ through their registers, at the addresses the data sheet gives.
 \verb|on|, \verb|off| and \verb|toggle| and asked with \verb|is_on|;
 \verb|Pin| is a type. \verb|input_pin(n, pull_up)| gives an
 \verb|InputPin|, read with \verb|is_high| and \verb|is_low|.
-\verb|serial(n, 115200 baud)| gives a \verb|Serial|, which writes text
-and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
+\verb|analog_pin(n)| gives an \verb|AnalogPin|, whose \verb|voltage()|
+is in volts. \verb|serial(n, 115200 baud)| gives a \verb|Serial|, which
+writes text and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|
 simulates the board and prints each change; a compiled program sits on
 four C functions that a real board provides.

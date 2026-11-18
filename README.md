@@ -93,6 +93,7 @@ Samples, none of them final:
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/doorbell.zeno`](examples/doorbell.zeno): a button on an input pin with a pull-up rings a bell, once for each press.
 - [`examples/console.zeno`](examples/console.zeno): a command line over a serial port that drives the LED.
+- [`examples/battery.zeno`](examples/battery.zeno): a battery read through a divider on an analog pin, in volts, with the LED on when it is low.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -759,6 +760,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     four functions, which only a program with a port calls. In every
     engine and every C and LLVM build.
     See [`docs/serial.md`](docs/serial.md) and chapter 46 of
+    [`docs/decisions.md`](docs/decisions.md))
+45. Reading a voltage on a board (done, after 0.5.2 and not yet
+    released: `analog_pin(0)` gives an `AnalogPin`; `voltage()` is a
+    quantity in `V`, so `level < 1200 mV` works and `level < 1200` is
+    refused, and `count()` with `max_count` is the converter's own
+    number. A board header says its bits and reference and gains two
+    functions. In every engine and every C and LLVM build.
+    See [`docs/analog.md`](docs/analog.md) and chapter 47 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with

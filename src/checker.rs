@@ -98,6 +98,9 @@ pub enum Kind {
     /// A serial port of the board: `serial(1, 115200 baud)`. It is the
     /// port's number (decision 46).
     Serial,
+    /// A pin whose voltage the program reads: `analog_pin(0)`. It is the
+    /// pin's number (decision 47).
+    AnalogPin,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -518,6 +521,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Pin => Kind::Pin,
         Ty::InputPin => Kind::InputPin,
         Ty::Serial => Kind::Serial,
+        Ty::AnalogPin => Kind::AnalogPin,
         // `pull_up` and `pull_down` are the strs of their names, so
         // printing one, comparing two and keeping them in a list work
         // as they do for any str. The checker keeps them apart.
@@ -701,6 +705,8 @@ enum Ty {
     Pull,
     /// A serial port of the board: `serial(1, 115200 baud)`.
     Serial,
+    /// A pin whose voltage the program reads: `analog_pin(0)`.
+    AnalogPin,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -913,6 +919,7 @@ enum Key {
     InputPin,
     Pull,
     Serial,
+    AnalogPin,
     Element,
     Event,
     Timer,
@@ -1156,6 +1163,7 @@ impl fmt::Display for Ty {
             Ty::InputPin => write!(f, "InputPin"),
             Ty::Pull => write!(f, "Pull"),
             Ty::Serial => write!(f, "Serial"),
+            Ty::AnalogPin => write!(f, "AnalogPin"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1286,6 +1294,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::InputPin, Ty::InputPin)
         | (Ty::Pull, Ty::Pull)
         | (Ty::Serial, Ty::Serial)
+        | (Ty::AnalogPin, Ty::AnalogPin)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -1982,6 +1991,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "input_pin") => Ty::Builtin("input_pin"),
         ("board", "pull_up") | ("board", "pull_down") => Ty::Pull,
         ("board", "serial") => Ty::Builtin("serial"),
+        ("board", "analog_pin") => Ty::Builtin("analog_pin"),
         _ => return None,
     })
 }
@@ -2607,6 +2617,7 @@ impl Checker {
             Ty::InputPin => Key::InputPin,
             Ty::Pull => Key::Pull,
             Ty::Serial => Key::Serial,
+            Ty::AnalogPin => Key::AnalogPin,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2659,6 +2670,7 @@ impl Checker {
             Key::InputPin => Ty::InputPin,
             Key::Pull => Ty::Pull,
             Key::Serial => Ty::Serial,
+            Key::AnalogPin => Ty::AnalogPin,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3071,6 +3083,7 @@ impl Checker {
                         _ if name == "InputPin" => Ty::InputPin,
                         _ if name == "Pull" => Ty::Pull,
                         _ if name == "Serial" => Ty::Serial,
+                        _ if name == "AnalogPin" => Ty::AnalogPin,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6209,6 +6222,19 @@ impl Checker {
                 Ty::BuiltinMethod(Box::new(Ty::InputPin), Rc::from(name))
             }
             Ty::InputPin if name == "number" => Ty::Int,
+            Ty::AnalogPin if ANALOG_PIN_METHODS.contains(&name) => {
+                Ty::BuiltinMethod(Box::new(Ty::AnalogPin), Rc::from(name))
+            }
+            // `sensor.number`, and `sensor.max_count`: the count that
+            // stands for the whole reference voltage (47.2).
+            Ty::AnalogPin if name == "number" || name == "max_count" => Ty::Int,
+            Ty::AnalogPin => self.error(
+                format!(
+                    "an AnalogPin has no `{name}`. It has `voltage()`, `count()`, `max_count` and `number`. \
+                     A pin read as high or low is made with `input_pin( )`"
+                ),
+                span,
+            ),
             Ty::Serial if SERIAL_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Serial), Rc::from(name)),
             Ty::Serial if name == "number" => Ty::Int,
             Ty::Serial => self.error(
@@ -7331,6 +7357,13 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            // `analog_pin(0)`: a pin whose voltage the program reads (47.1).
+            "analog_pin" => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Int, "the number of a pin", arguments[0].span);
+                }
+                Ty::AnalogPin
+            }
             // `serial(1, 115200 baud)`: a serial port of the board, at
             // that speed (46.1, 46.2).
             "serial" => {
@@ -7455,6 +7488,12 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            // `sensor.voltage()`: what the pin is at now, in volts.
+            // `sensor.count()`: the same as the converter counts it.
+            (Ty::AnalogPin, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                if name == "voltage" { Ty::Quantity(Rc::from("V")) } else { Ty::Int }
             }
             // `button.is_low()`: the level the pin is at now.
             (Ty::InputPin, _) => {
@@ -8712,6 +8751,7 @@ const LIST_METHODS: &[&str] = &[
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
+const ANALOG_PIN_METHODS: &[&str] = &["voltage", "count"];
 const SERIAL_METHODS: &[&str] = &["write", "write_bytes", "read_byte", "has_byte"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -9967,6 +10007,30 @@ mod tests {
         assert_eq!(error("from board import input_pin\ninput_pin(2, 3, 4)"), "`input_pin` takes 1 to 2 arguments, but 3 were given");
         assert_eq!(error("from board import input_pin, pull_up\ninput_pin(pull_up)"), "the number of a pin should be int, but this is Pull");
         assert_eq!(error("from board import input_pin\ninput_pin(2).is_high(1)"), "`is_high` takes 0 arguments, but 1 was given");
+    }
+
+    #[test]
+    fn an_analog_pin_reads_a_voltage() {
+        ok("from board import analog_pin\nlet sensor: AnalogPin = analog_pin(0)\nlet level: V = sensor.voltage()\n\
+            let count: int = sensor.count()\nlet most: int = sensor.max_count\nlet n: int = sensor.number\n\
+            let low: bool = level < 1200 mV");
+        ok("import board\nfunction read(of: AnalogPin) -> mV { return of.voltage().mV }\nread(board.analog_pin(1))");
+        assert_eq!(
+            error("from board import analog_pin\nanalog_pin(0).is_high()"),
+            "an AnalogPin has no `is_high`. It has `voltage()`, `count()`, `max_count` and `number`. \
+             A pin read as high or low is made with `input_pin( )`"
+        );
+        assert_eq!(
+            error("from board import analog_pin\nlet v: float = analog_pin(0).voltage()"),
+            "`v` should be float, but this is a quantity in V"
+        );
+        assert_eq!(
+            error("from board import analog_pin\nlet v: mV = analog_pin(0).voltage()"),
+            "`v` should be a quantity in mV, but this is a quantity in V. Convert it with `.mV`"
+        );
+        assert_eq!(error("from board import analog_pin\nanalog_pin(0).count(1)"), "`count` takes 0 arguments, but 1 was given");
+        assert_eq!(error("from board import analog_pin\nanalog_pin(0.5)"), "the number of a pin should be int, but this is float");
+        assert_eq!(error("from board import analog_pin, pin\nlet p: Pin = analog_pin(0)"), "`p` should be Pin, but this is AnalogPin");
     }
 
     #[test]

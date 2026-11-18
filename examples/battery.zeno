@@ -1,0 +1,30 @@
+# A battery monitor: the LED comes on when the battery is low.
+#
+# A lithium cell gives up to 4.2 V, and the converter of this board
+# reads up to 3.3 V. So two equal resistors halve the battery's voltage
+# on its way to pin 0, and the program doubles what it reads.
+#
+# On a computer nothing is wired to the pin, so it reads 0 V and the
+# battery is always low. On a board, wire one. See docs/analog.md.
+from board import analog_pin, led
+from time import sleep
+
+let sense = analog_pin(0)
+let low = 3.4 V
+
+# The battery's voltage, from the half of it that reaches the pin.
+function battery(half: AnalogPin) -> V {
+    return half.voltage() * 2
+}
+
+# Firmware would watch for ever. This looks three times.
+for look in range(3) {
+    let level = battery(sense)
+    print(f"battery: {level:.2f}, count {sense.count()} of {sense.max_count}")
+    if level < low {
+        led.on()
+    } else {
+        led.off()
+    }
+    sleep(10 ms)
+}

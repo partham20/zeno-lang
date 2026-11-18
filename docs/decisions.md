@@ -14675,3 +14675,97 @@ keeps them apart, and is how the tests wire a port back to itself.
 - Running it on a real board, with ST's HAL underneath, as in
   [`serial.md`](serial.md). Like the rest of the board layer it is a
   sketch until then.
+
+## 47. Reading a voltage: an analog pin
+
+```zeno
+from board import analog_pin
+
+let sensor = analog_pin(0)
+let level = sensor.voltage()          # 1.65 V
+if level < 1200 mV {
+    print("low")
+}
+print(sensor.count(), "of", sensor.max_count)    # 2048 of 4095
+```
+
+A thermistor, a potentiometer, a battery through a divider, a current
+through a shunt: most of what a board measures arrives as a voltage on
+a pin, read by its analogue-to-digital converter (ADC). It is the third
+part of item 7 of [`missing.md`](missing.md), after inputs (45) and the
+serial port (46). Walkthrough: [`analog.md`](analog.md).
+
+### 47.1 An analog pin is a type of its own
+
+**`analog_pin(0)` gives an `AnalogPin`**, which has `voltage()`,
+`count()`, `max_count` and `number`, and prints as `AnalogPin(0)`. It
+is the pin's number underneath, as every pin is (3.15). It has no
+`on` and no `is_high`: those belong to a `Pin` and an `InputPin`, and
+the message says which to make. Three types for three things a pin can
+be is the rule of 45.1 carried on: the checker knows which a pin is.
+
+### 47.2 `voltage()` is in volts, and `count()` is the converter's own number
+
+**`sensor.voltage()` gives a quantity in `V`.** Units are what Zeno
+has that C does not (1.15), and this is where a firmware program meets
+its first real one. `level < 1200 mV`, `level * 20 mA` (a power, 43)
+and `level.mV` all work, and `level < 1200` is refused.
+
+**`sensor.count()` gives the number the converter counted, an `int`,
+and `sensor.max_count` the count that stands for the whole reference**
+(4095 for 12 bits). A program that wants a share, as for a
+potentiometer, writes `sensor.count() / sensor.max_count`, and one
+that does its own sums on counts, as C code does, can.
+
+**Why both?** A voltage is what the reading means, and a count is what
+was measured; a lookup table for a thermistor is indexed by count, and
+a battery is compared in volts. **Turned down:**
+
+- **A bare count only**, as Arduino's `analogRead`. `512` means
+  nothing until one knows the bits and the reference, and those are
+  the board's, not the program's.
+- **A float from 0 to 1 only**, as Mbed's `AnalogIn.read()`. It has
+  no unit to check, and the program multiplies by the reference by
+  hand, which is the slip units are for.
+- **`read()`**, which does not say what comes back.
+
+The voltage is the count's share of the largest count, times the
+reference, worked out in that order by every engine and build, so the
+whole scale is the reference exactly and they print the same digits.
+
+### 47.3 The board says its bits and its reference, and has two functions
+
+```c
+#define ZENO_ANALOG_BITS 12           /* the converter counts 0 to 4095 */
+#define ZENO_ANALOG_REFERENCE 3.3     /* the volts its largest count stands for */
+bool zeno_board_analog(int pin);      /* make the pin one the converter reads; false if it cannot be */
+int  zeno_board_analog_read(int pin); /* what it counts on the pin now */
+```
+
+**Only a program that makes an analog pin calls them**, by the rule of
+45.4 (`#ifdef ZENO_ANALOG_PINS`), so a header without them still
+builds every other program. **A pin the converter cannot read is a
+`ValueError`** ("pin 7 of this board cannot read a voltage"): on most
+chips only some pins reach the converter, and the board is what knows
+which.
+
+### 47.4 On a computer nothing is wired
+
+**On the simulated board a pin that is high reads the whole reference
+(3.3 V, a count of 4095) and one that is low reads 0 V.** Every pin
+can be read, the converter has 12 bits, and making an analog pin
+prints nothing, as making an input prints nothing (45.5). It is what a
+voltmeter on the pin would show: a pin the program drove high, or one
+a pull-up holds, is at the supply. A board of one's own (5.12b) feeds
+real readings: the test `a_voltage_is_read_on_a_board_of_its_own` has
+a 10-bit converter against 5 V that reads a ramp.
+
+### 47.5 Left for later
+
+- Feeding a voltage to a pin under `zeno run`, with pressing a button
+  (45.5): one design for both.
+- Averaging, a sample time, and choosing the reference. The board
+  header sets them.
+- Reading several pins in one sweep, and a reading by interrupt.
+- A voltage written out: a DAC, and PWM, which is next.
+- A temperature from a thermistor, in the library written in Zeno.

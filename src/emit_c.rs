@@ -90,7 +90,7 @@ pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
 /// The parts of the runtime that call a function of the board layer
 /// beyond the first four, each marked `#ifdef` its name: input pins
 /// (decision 45.4) and serial ports (46.5).
-pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS"];
+pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS", "ZENO_ANALOG_PINS"];
 
 /// `runtime` with each part of `BOARD_PARTS` kept when the program uses
 /// it (`used`) and left out when it does not. Only those parts call the
@@ -118,14 +118,18 @@ pub fn with_board_parts(runtime: &str, used: &[&str]) -> String {
 }
 
 /// The parts of `BOARD_PARTS` that a program of LLVM IR uses, by the
-/// functions of the runtime it calls.
+/// functions of the runtime it calls. (What shows a port or a pin,
+/// `zeno_str_serial`, is in no part, and begins differently.)
 pub fn board_parts_in_ir(ir: &str) -> Vec<&'static str> {
     let mut used = Vec::new();
     if ir.contains("@zeno_input_pin(") {
         used.push("ZENO_INPUT_PINS");
     }
-    if ir.contains("@zeno_serial(") {
+    if ir.contains("@zeno_serial") {
         used.push("ZENO_SERIAL_PORTS");
+    }
+    if ir.contains("@zeno_analog_") {
+        used.push("ZENO_ANALOG_PINS");
     }
     used
 }
@@ -1306,7 +1310,7 @@ pub fn for_a_page(span: Span) -> Error {
 fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial => "int64_t ".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin => "int64_t ".to_string(),
         // Only ever an item of a list; read, it is an int.
         Kind::Byte => "uint8_t ".to_string(),
         // A register is its address.
@@ -1333,7 +1337,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // bool cannot, so it is paired with a flag.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
-            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "zeno_opt_int ".to_string(),
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1367,7 +1371,7 @@ fn is_pointer(kind: &Kind) -> bool {
 fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1405,7 +1409,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 /// collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
         // Nor is what C gave.
@@ -1490,6 +1494,7 @@ fn key(kind: &Kind) -> String {
         Kind::Pin => "pin".to_string(),
         Kind::InputPin => "input_pin".to_string(),
         Kind::Serial => "serial".to_string(),
+        Kind::AnalogPin => "analog_pin".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
         Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
@@ -1513,7 +1518,7 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
         // A list of bytes holds bytes, not slots (decision 36.2).
         Kind::Byte => return Ok(format!("((int64_t)({code}))")),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "i",
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => "i",
         // A u64 is kept as the int with the same bits.
         Kind::U64 => return Ok(format!("(zeno_slot){{.i = (int64_t)({code})}}")),
         // In a slot an f32 is kept as the float it is exactly.
@@ -1565,7 +1570,7 @@ fn read_kind(item: &Kind) -> Kind {
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
         Kind::Byte => format!("((int64_t){slot})"),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => format!("{slot}.i"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::F32 => format!("((float){slot}.f)"),
         Kind::U64 => format!("((uint64_t){slot}.i)"),
@@ -1590,7 +1595,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 /// Which of the runtime's three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -3336,6 +3341,7 @@ impl Emitter<'_> {
             ("Pin", []) => Kind::Pin,
             ("InputPin", []) => Kind::InputPin,
             ("Serial", []) => Kind::Serial,
+            ("AnalogPin", []) => Kind::AnalogPin,
             // `pull_up` and `pull_down` are the strs of their names.
             ("Pull", []) => Kind::Str,
             ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
@@ -4472,7 +4478,7 @@ impl Emitter<'_> {
             (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
             (from, Kind::Optional(inner)) if from == &**inner => match from {
                 from if is_pointer(from) => val.code.clone(),
-                Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial => format!("(zeno_opt_int){{true, {}}}", val.code),
+                Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin => format!("(zeno_opt_int){{true, {}}}", val.code),
                 Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -4518,7 +4524,7 @@ impl Emitter<'_> {
         let code = match (&inner, changeable) {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
-            (Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial, true) => format!("zeno_still_int({}, {again})", val.code),
+            (Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin, true) => format!("zeno_still_int({}, {again})", val.code),
             (Kind::Float | Kind::F32 | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
             (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
             (inner, true) => {
@@ -5372,6 +5378,13 @@ impl Emitter<'_> {
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::from(format!("zeno_pin({}, {})", number.code, self.at(span)), Kind::Pin, &[number]).failing_if(!self.minimal))
             }
+            // `analog_pin(0)`. Making a pin one the converter reads is
+            // done to the board, so it is a call.
+            ("board", "analog_pin", [number]) if number.kind == Kind::Int => {
+                self.uses_board_part("ZENO_ANALOG_PINS");
+                let call = format!("zeno_analog_pin({}, {})", number.code, self.at(span));
+                Ok(self.called(call, &vals, Kind::AnalogPin).failing_if(!self.minimal))
+            }
             // `serial(1, 115200 baud)`. The speed is in baud already, and
             // opening a port is done to the board, so it is a call.
             ("board", "serial", [number, speed]) if number.kind == Kind::Int && speed.kind == Kind::Quantity("baud".to_string()) => {
@@ -5869,9 +5882,22 @@ impl Emitter<'_> {
                     _ => Err(cannot(format!("the method `{name}`"), span)),
                 }
             }
+            // `sensor.voltage()` and `sensor.count()`: what the converter
+            // reads now. A voltage changes by itself, so two reads are
+            // two reads.
+            Kind::AnalogPin => match (name, args) {
+                ("voltage" | "count", []) => {
+                    self.uses_board_part("ZENO_ANALOG_PINS");
+                    let returns = if name == "voltage" { Kind::Quantity("V".to_string()) } else { Kind::Int };
+                    Ok(self.called(format!("zeno_analog_{name}({})", receiver.code), &[receiver], returns))
+                }
+                _ => Err(cannot(format!("the method `{name}` of an analog pin"), span)),
+            },
             // A serial port: `port.write(text)`, `port.write_bytes(bytes)`,
             // `port.read_byte()`. Each is one call into the runtime.
             Kind::Serial => {
+                // Also for a function that is handed a port and makes none.
+                self.uses_board_part("ZENO_SERIAL_PORTS");
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 match (name, vals.as_slice()) {
@@ -6117,7 +6143,7 @@ impl Emitter<'_> {
                     // number that may be `none` travels with a flag.
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
-                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "int",
+                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Register(_) => "int",
                             Kind::Float | Kind::F32 | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
@@ -6297,7 +6323,12 @@ impl Emitter<'_> {
                 Ok(Val::from(format!("{}->{name}", val.code), Kind::Str, &[&val]))
             }
             // `led.number`: a pin is its number already.
-            Kind::Pin | Kind::InputPin | Kind::Serial if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
+            Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
+            // `sensor.max_count`: the board's, whichever pin it is.
+            Kind::AnalogPin if name == "max_count" => {
+                self.uses_board_part("ZENO_ANALOG_PINS");
+                Ok(Val::from("zeno_analog_max()".to_string(), Kind::Int, &[&val]))
+            }
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
@@ -6344,6 +6375,7 @@ impl Emitter<'_> {
             Kind::Pin => format!("zeno_str_pin({})", val.code),
             Kind::InputPin => format!("zeno_str_input_pin({})", val.code),
             Kind::Serial => format!("zeno_str_serial({})", val.code),
+            Kind::AnalogPin => format!("zeno_str_analog_pin({})", val.code),
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
@@ -6387,7 +6419,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Quantity(_) => {
+            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::Quantity(_) => {
                 format!("({a} == {b})")
             }
             // Two pointers are equal when they point at the same item.
@@ -9052,6 +9084,7 @@ print(word[5])
             ("scheduler", include_str!("../examples/scheduler.zeno")),
             ("doorbell", include_str!("../examples/doorbell.zeno")),
             ("console", include_str!("../examples/console.zeno")),
+            ("battery", include_str!("../examples/battery.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
             ("handlers", include_str!("../examples/handlers.zeno")),
             ("driver", include_str!("../examples/driver.zeno")),
@@ -16100,6 +16133,11 @@ print(d.value)
                 !c.contains("static void zeno_board_serial_open(") && !c.contains("zeno_board_serial_open((int)"),
                 "a program with no serial port asks the board for one"
             );
+            // Nor for its converter (decision 47.3).
+            assert!(
+                !c.contains("static bool zeno_board_analog(") && !c.contains("zeno_board_analog_read((int)"),
+                "a program that reads no voltage asks the board for its converter"
+            );
             assert!(!c.contains("ZENO_INPUT_PINS"));
         }
         for c in [compile(INPUTS).unwrap(), compile_firmware(INPUTS).unwrap(), compile_no_collector(INPUTS).unwrap()] {
@@ -16143,6 +16181,81 @@ print(d.value)
             assert_eq!(printed, "input 2 1\nwrite 9 1 at 10\nwrite 9 0 at 60\npresses: 1\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pins whose voltage is read (decision 47).
+    const ANALOG: &str = "from board import analog_pin, pin, input_pin, pull_up\nimport board\n\
+        let sensor = analog_pin(0)\nlet other = board.analog_pin(4)\n\
+        print(sensor, sensor.number, sensor.max_count, sensor == other, f\"{other}\")\n\
+        print(sensor.voltage(), sensor.count())\npin(4).on()\n\
+        print(other.voltage(), other.count(), other.voltage().mV)\n\
+        let level: V = other.voltage()\n\
+        if level > 1.5 V {\n    print(\"high enough\", level / 2, level * 20 mA)\n}\n\
+        function share(of: AnalogPin) -> float {\n    return of.count() / of.max_count\n}\n\
+        print(share(sensor), share(other))\n\
+        let pins: list[AnalogPin] = [sensor, other]\n\
+        for p in pins {\n    print(p.number, p.voltage())\n}\n\
+        var spare: AnalogPin or none = none\nprint(spare)\nspare = other\n\
+        if spare is not none { print(spare.count()) }\n\
+        input_pin(7, pull_up)\nprint(analog_pin(7).voltage())\n";
+
+    #[test]
+    fn analog_pins_match() {
+        assert!(interpreted(ANALOG).contains("3.3 V 4095 3300 mV\nhigh enough 1.65 V 0.066 W\n0.0 1.0\n"), "{}", interpreted(ANALOG));
+        same_as_interpreter("analog", ANALOG);
+        no_collector_as_interpreter("analog", ANALOG);
+        same_as_interpreter(
+            "no-analog-pin",
+            "from board import analog_pin\n\
+             try {\n    analog_pin(64)\n} except ValueError as error {\n    print(\"no:\", error.message)\n}\n\
+             analog_pin(-1)\n",
+        );
+    }
+
+    /// A board of its own whose converter counts with 10 bits against
+    /// 5 V, reads a ramp on pin 0, and cannot read pin 1 at all.
+    #[test]
+    fn a_voltage_is_read_on_a_board_of_its_own() {
+        let header = "#define ZENO_PINS 2\n\
+                      #define ZENO_ANALOG_BITS 10\n\
+                      #define ZENO_ANALOG_REFERENCE 5.0\n\
+                      static bool my_levels[ZENO_PINS];\n\
+                      static int my_ramp = 0;\n\
+                      static bool zeno_board_read(int pin) { return my_levels[pin]; }\n\
+                      static void zeno_board_write(int pin, bool level) { my_levels[pin] = level; }\n\
+                      static void zeno_board_sleep(double seconds) { (void)seconds; }\n\
+                      static double zeno_board_now(void) { return 0.0; }\n\
+                      static bool zeno_board_analog(int pin) { printf(\"analog %d\\n\", pin); return pin == 0; }\n\
+                      static int zeno_board_analog_read(int pin) { (void)pin; my_ramp += 341; return my_ramp; }\n";
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-my-analog", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let file = dir.join("my_board.h");
+        std::fs::write(&file, header).expect("the header is written");
+        let flag = format!("-DZENO_BOARD=\"{}\"", file.display());
+        // In a firmware build an error of the runtime stops the program,
+        // so the pin that cannot be read ends it there.
+        let source = "from board import analog_pin\nlet sensor = analog_pin(0)\n\
+                      print(sensor.max_count, sensor.count(), sensor.count(), sensor.voltage())\n\
+                      analog_pin(1)\n";
+        for c in [compile(source).unwrap(), compile_firmware(source).unwrap(), compile_no_collector(source).unwrap()] {
+            let Some((printed, errors, finished)) = build_and_run("analog-header", &c, &[&flag]) else {
+                return;
+            };
+            // 1023 of 1023 is the whole 5 V.
+            assert_eq!(printed, "analog 0\n1023 341 682 5 V\nanalog 1\n");
+            assert!(!finished);
+            assert_eq!(errors, "error: uncaught ValueError: pin 1 of this board cannot read a voltage\n --> test.zeno:4:1\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A function that is handed a port, in a program that makes none,
+    /// still finds the runtime's part for serial ports.
+    #[test]
+    fn a_port_that_is_only_handed_over_builds() {
+        let source = "function talk(to: Serial) {\n    to.write(\"hi\")\n    print(to.has_byte())\n}\n\
+                      function level(of: AnalogPin) -> V {\n    return of.voltage()\n}\nprint(1)\n";
+        same_as_interpreter("handed-over", source);
     }
 
     /// Serial ports (decision 46). On a computer each is the terminal.

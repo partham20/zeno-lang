@@ -2364,7 +2364,16 @@ static double zeno_acos(double x, int line, int col) {
  *                                               not been read? No waiting
  *   zeno_board_serial_read(port)                the next byte, waiting
  *                                               for it, or -1 when no
- *                                               more can ever come Below is a simulated
+ *                                               more can ever come
+ *
+ * And a program that reads a voltage (`analog_pin(0)`) needs two, with
+ * ZENO_ANALOG_BITS, how many bits the converter counts with, and
+ * ZENO_ANALOG_REFERENCE, the volts its largest count stands for
+ * (decision 47.3):
+ *
+ *   zeno_board_analog(pin)        make the pin one the converter reads.
+ *                                 False if this pin cannot be
+ *   zeno_board_analog_read(pin)   what the converter counts on it now Below is a simulated
  * board, for a program that runs on a computer: it keeps the level of
  * each pin in an array, and prints a line when a level changes, as a
  * logic analyser on the pin would show it.
@@ -2401,6 +2410,23 @@ static void zeno_board_input(int pin, int pull) {
     if (pull == 2) zeno_levels[pin] = false;
 }
 #endif /* ZENO_INPUT_PINS */
+
+#ifdef ZENO_ANALOG_PINS
+/* Nothing is wired to the simulated board, so a pin that is high reads
+ * the whole reference and one that is low reads nothing. Every pin can
+ * be read (decision 47.4). */
+#define ZENO_ANALOG_BITS 12
+#define ZENO_ANALOG_REFERENCE 3.3
+
+static bool zeno_board_analog(int pin) {
+    (void)pin;
+    return true;
+}
+
+static int zeno_board_analog_read(int pin) {
+    return zeno_levels[pin] ? (1 << ZENO_ANALOG_BITS) - 1 : 0;
+}
+#endif /* ZENO_ANALOG_PINS */
 
 #ifdef ZENO_SERIAL_PORTS
 /* On a computer every serial port is the terminal, as a serial monitor
@@ -3570,6 +3596,48 @@ static bool zeno_serial_has_byte(int64_t port) {
     return zeno_board_serial_ready((int)port);
 }
 #endif /* ZENO_SERIAL_PORTS */
+
+/* ------------------------------------------------------------- Analog pins
+ *
+ * `analog_pin(0)`, `sensor.voltage()`, `sensor.count()` and
+ * `sensor.max_count`, over the two functions of the board layer for the
+ * converter (see "The board"). Only a program that reads a voltage keeps
+ * this part. */
+
+#ifdef ZENO_ANALOG_PINS
+/* The pin with that number, made one the converter reads. */
+static int64_t zeno_analog_pin(int64_t number, int line, int col) {
+    int64_t pin = zeno_pin(number, line, col);
+#ifndef ZENO_MINIMAL
+    if (!zeno_board_analog((int)pin)) {
+        zeno_fail("ValueError", zeno_join(3, "pin ", zeno_str_int(pin), " of this board cannot read a voltage"), line, col);
+    }
+#else /* ZENO_MINIMAL */
+    zeno_board_analog((int)pin);
+#endif /* ZENO_MINIMAL */
+    return pin;
+}
+
+/* The count that stands for the whole reference voltage. */
+static int64_t zeno_analog_max(void) {
+    return ((int64_t)1 << ZENO_ANALOG_BITS) - 1;
+}
+
+static int64_t zeno_analog_count(int64_t pin) {
+    return zeno_board_analog_read((int)pin);
+}
+
+/* The count's share of the largest count, times the reference, in that
+ * order, as `zeno run` works it out. */
+static double zeno_analog_voltage(int64_t pin) {
+    return (double)zeno_analog_count(pin) / (double)zeno_analog_max() * ZENO_ANALOG_REFERENCE;
+}
+#endif /* ZENO_ANALOG_PINS */
+
+/* An analog pin as `print` shows it. */
+static const char *zeno_str_analog_pin(int64_t pin) {
+    return zeno_join(3, "AnalogPin(", zeno_str_int(pin), ")");
+}
 
 /* A serial port as `print` shows it. */
 static const char *zeno_str_serial(int64_t port) {

@@ -22,6 +22,16 @@ pub const PINS: i64 = 64;
 /// the terminal (decision 46.6).
 pub const SERIALS: i64 = 4;
 
+/// How many bits the converter of the simulated board counts with, and
+/// the voltage its largest count stands for (decision 47.3).
+pub const ANALOG_BITS: u32 = 12;
+pub const ANALOG_REFERENCE: f64 = 3.3;
+
+/// The largest count of the converter.
+pub const fn analog_max() -> i64 {
+    (1 << ANALOG_BITS) - 1
+}
+
 /// The pin the LED is on. 13 is where an Arduino Uno has its LED, which
 /// makes it the number most people have already met.
 pub const LED: i64 = 13;
@@ -66,6 +76,13 @@ impl Board {
             Pull::Down => self.levels[pin as usize] = false,
             Pull::Nothing => {}
         }
+    }
+
+    /// What the converter counts on the pin. Nothing is wired to the
+    /// simulated board, so a pin that is high reads the whole reference
+    /// and one that is low reads nothing (decision 47.4).
+    pub fn analog_read(&self, pin: i64) -> i64 {
+        if self.levels[pin as usize] { analog_max() } else { 0 }
     }
 
     /// Is the pin high?
