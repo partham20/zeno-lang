@@ -66,11 +66,13 @@ pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
             .spawn_scoped(scope, || {
                 let main = emit_bytecode::compile(program);
                 let mut vm = Vm {
-                    output: capture.then(String::new),
-                    warned: String::new(),
-                    board: Board::new(),
-                    page: crate::page::Page::simulated(outside.page.as_deref()),
-                    outside,
+                    world: Box::new(World {
+                        output: capture.then(String::new),
+                        warned: String::new(),
+                        board: Board::new(),
+                        page: crate::page::Page::simulated(outside.page.as_deref()),
+                        outside,
+                    }),
                     // Under every frame's stretch of the stack is the thing
                     // that was called. The program was called by nobody.
                     stack: vec![Value::None],
@@ -85,7 +87,8 @@ pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
                 // Another language that was started beside the program
                 // (`import python`) is told the program is over.
                 crate::bridge::close();
-                Ran::ended(vm.output.unwrap_or_default(), vm.warned, finished)
+                let world = *vm.world;
+                Ran::ended(world.output.unwrap_or_default(), world.warned, finished)
             })
             .expect("could not start the VM thread")
             .join()
@@ -124,7 +127,10 @@ pub fn run_both_ending(program: &Program, source: &str) -> Ran {
     interpreted
 }
 
-struct Vm {
+/// What the program reaches outside itself. Kept in a box of its own,
+/// so that the fields every instruction reads stay together in a few
+/// bytes, whatever the board or the page come to hold (decision 34.7).
+struct World {
     /// `Some` collects printed text; `None` prints straight to the screen.
     output: Option<String>,
     /// What `program.warn` wrote, when printed text is collected.
@@ -135,6 +141,10 @@ struct Vm {
     page: crate::page::Page,
     /// The keyboard and the command line, for `input` and `program`.
     outside: Outside,
+}
+
+struct Vm {
+    world: Box<World>,
     stack: Vec<Value>,
     frames: Vec<Frame>,
     handlers: Vec<Handler>,
@@ -198,7 +208,7 @@ enum Called {
 /// What the built-ins ask of the VM (see `Machine` in value.rs).
 impl Machine for Vm {
     fn write_line(&mut self, text: &str) {
-        match &mut self.output {
+        match &mut self.world.output {
             Some(buffer) => {
                 buffer.push_str(text);
                 buffer.push('\n');
@@ -208,33 +218,33 @@ impl Machine for Vm {
     }
 
     fn write(&mut self, text: &str) {
-        match &mut self.output {
+        match &mut self.world.output {
             Some(buffer) => buffer.push_str(text),
             None => print_text(text),
         }
     }
 
     fn warn(&mut self, text: &str) {
-        match &mut self.output {
+        match &mut self.world.output {
             // Kept apart from what is printed, as the shell keeps it.
             Some(_) => {
-                self.warned.push_str(text);
-                self.warned.push('\n');
+                self.world.warned.push_str(text);
+                self.world.warned.push('\n');
             }
             None => warn_line(text),
         }
     }
 
     fn outside(&mut self) -> &mut Outside {
-        &mut self.outside
+        &mut self.world.outside
     }
 
     fn board(&mut self) -> &mut Board {
-        &mut self.board
+        &mut self.world.board
     }
 
     fn page(&mut self) -> &mut crate::page::Page {
-        &mut self.page
+        &mut self.world.page
     }
 
     /// A built-in such as `map` calls a Zeno function. The instruction

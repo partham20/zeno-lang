@@ -12819,6 +12819,25 @@ Windows are declared inside the function that uses them, so that a
 keeps them with it. **Turned down: `_wgetenv`**, which is Microsoft's
 C library's own and reads a copy made when the program started.
 
+### 34.7 What the VM reaches outside itself sits in a box of its own
+
+`program.warn` gave the VM one more field, the text it collects for
+the tests, and the board had grown with its inputs, ports and
+converter. Both sat in the VM before the stack and the frames, which
+every instruction reads, and pushed them 48 bytes further on. With
+that, `bench/loop.zeno` ran 6% slower by the clock than in 0.5.2
+while running the same instructions to the last digit: callgrind
+showed the two builds' inner loop identical but for those two
+offsets. It was measured, not guessed: with the output, the warnings,
+the board, the page and the keyboard moved into one `World` behind a
+pointer, the same program is within 1.5% of 0.5.2 by the clock, and
+the others are level or faster (nbody 4% faster).
+
+So the rule: what an instruction reads on every step (the stack, the
+frames, the handlers) stays together at the front of the VM, and what
+only a call of a built-in reaches goes in the box, where it can grow
+without moving anything.
+
 ## 35. A case of an enum can stand for a number
 
 ```zeno
