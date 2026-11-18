@@ -14138,6 +14138,30 @@ edge-u64.zeno` holds them all to `zeno run`.
 - A u64 field in a firmware struct is 8 bytes in C; packed layouts of
   registers are item 9 of [`missing.md`](missing.md).
 
+### 42.11 The new numbers cost the old ones nothing
+
+f32 and u64 each brought a test to the top of every `a + b`, and arms
+for `none`, `u64` and the pins to the test of `a == b`. Counted by
+`bench/run.py --count`, a program of strings ran 0.85% more
+instructions in the VM than in 0.5.2 and one of trees 0.54% more,
+though neither has an f32 or a u64 in it. Two causes, both found with
+callgrind and not guessed from timings:
+
+- `value::equal` grew too big for the compiler to copy into each
+  operator, so every `==` became a call. It is now two parts: the
+  common pairs (int, string, bool, `none`) in a small part that is
+  copied in, and every other pair in a second part that is called.
+  The answers are the same for every pair.
+- The two tests for f32 and u64 asked four questions of every
+  operator. They are now one question per side (f32 and u64 sit next
+  to each other in `Value`, so "is it either" is one comparison), and
+  the work for them lives in its own function, `narrow_binary`.
+
+After both, against 0.5.2: fib, loop and sort run the same count to
+0.03%, strings 0.07% fewer, trees 0.08% more and nbody 0.13% more.
+The rule stays that a feature a program does not use costs that
+program nothing (decision 34.5 is the same lesson for `program.exit`).
+
 ## 43. Units made of units: `V * A` is `W`
 
 ```zeno

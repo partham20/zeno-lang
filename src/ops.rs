@@ -222,16 +222,12 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         return Ok(Value::Pointer(memory.clone(), at.wrapping_add(n)));
     }
 
-    // An f32 with an f32 or an int: worked out in 32 bits (decision 41.2).
-    if matches!(left, Value::F32(_)) || matches!(right, Value::F32(_)) {
-        if let Some(answer) = f32_binary(op, &left, &right, span) {
-            return answer;
-        }
-    }
-
-    // A u64 with a u64 (decision 42.2).
-    if matches!(left, Value::U64(_)) || matches!(right, Value::U64(_)) {
-        if let Some(answer) = u64_binary(op, &left, &right, span) {
+    // An f32 or a u64 on either side: worked out in 32 bits (decision
+    // 41.2) or as a u64 (decision 42.2). One test of both sides, so the
+    // ints, floats and strings of every other program pay for no more
+    // (decision 42.11).
+    if matches!(left, Value::F32(_) | Value::U64(_)) || matches!(right, Value::F32(_) | Value::U64(_)) {
+        if let Some(answer) = narrow_binary(op, &left, &right, span) {
             return answer;
         }
     }
@@ -438,6 +434,20 @@ pub const BELOW_0_FOR_U64: &str = "the result is below 0, and a u64 never is";
 /// `a op b` where one side is a u64, or `None` for an operator that works
 /// no differently on one (`in`). Sums are checked as an int's are: one
 /// past 64 bits, or below 0, is an `OverflowError` (decision 42.2).
+/// An operator with an f32 or a u64 on one side, kept out of `binary`.
+#[inline(never)]
+fn narrow_binary(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Option<Result> {
+    if matches!(left, Value::F32(_)) || matches!(right, Value::F32(_)) {
+        if let Some(answer) = f32_binary(op, left, right, span) {
+            return Some(answer);
+        }
+    }
+    if matches!(left, Value::U64(_)) || matches!(right, Value::U64(_)) {
+        return u64_binary(op, left, right, span);
+    }
+    None
+}
+
 fn u64_binary(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Option<Result> {
     use BinaryOp::*;
     let too_big = || raise("OverflowError", TOO_BIG_FOR_U64, span);

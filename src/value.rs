@@ -843,7 +843,27 @@ pub fn quoted(text: &str) -> String {
 
 /// `==` in Zeno. Values are equal when their contents are equal; an int and
 /// a float are equal when they are the same number.
+///
+/// The kinds a program compares most are answered here, where the caller
+/// can have it in its own code; the rest in `equal_other`. When `u64`,
+/// `f32` and the pins of a board came, the whole of `==` grew too large
+/// to be put in its callers, and `strings` ran 0.9 % more instructions
+/// (decision 42.11).
+#[inline]
 pub fn equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::None, Value::None) => true,
+        // Only a value that stays in another language is asked whether
+        // it equals `none`; nothing else of Zeno does.
+        (Value::None, other) | (other, Value::None) if !matches!(other, Value::Foreign(_)) => false,
+        _ => equal_other(a, b),
+    }
+}
+
+fn equal_other(a: &Value, b: &Value) -> bool {
     use Value::*;
     match (a, b) {
         (Int(a), Int(b)) => a == b,
