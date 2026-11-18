@@ -14,6 +14,7 @@
 
 mod ast;
 mod board;
+mod board_build;
 mod bridge;
 mod bridge_c;
 mod builtins;
@@ -180,6 +181,14 @@ fn usage() {
     println!("                           does, as in C. It goes with --firmware,");
     println!("                           --no-collector, --owned, --fast and --memory");
     println!("                           (docs/minimal.md)");
+    println!("  --board <folder>         with build: build the program for a board, in one");
+    println!("                           step. The `zeno.board` in the folder names the");
+    println!("                           board's C compiler, its flags, the files that");
+    println!("                           run before the program and the linker script,");
+    println!("                           and the program comes out as `<name>.elf`. It");
+    println!("                           is built with no collector, as --no-collector");
+    println!("                           builds it, and goes with --minimal, --release,");
+    println!("                           --fast and --memory (docs/board-build.md)");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");
@@ -563,7 +572,12 @@ fn how_built(
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options) -> Option<()> {
+fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options, board: Option<&str>) -> Option<()> {
+    // A mistake in the board's own file is said before anything is built.
+    let board = match board {
+        Some(folder) => Some((folder, read_board(folder)?)),
+        None => None,
+    };
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.
@@ -612,6 +626,16 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
         return None;
     }
     println!("Wrote {c_file}");
+    if let Some((folder, board)) = &board {
+        let mut before: Vec<String> = optimise(options).iter().map(|flag| flag.to_string()).collect();
+        if memory_report && !options.minimal {
+            before.push("-DZENO_MEMORY_REPORT".to_string());
+        }
+        // A chip has no loader to be told where a library is.
+        let libraries = declared.iter().filter(|word| !word.starts_with("-Wl,-rpath,")).cloned();
+        let after: Vec<String> = libraries.chain(emit_c::LIBRARIES.iter().map(|library| library.to_string())).collect();
+        return build_for_board(folder, board, name, &c_file, &before, &after);
+    }
 
     // `CC` is the usual way to say which C compiler to use. With no
     // `CC`, the first of these that is installed is used: `cc` is the
@@ -659,6 +683,67 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
         emit_c::LIBRARIES.join(" ")
     );
     None
+}
+
+/// The `zeno.board` of the folder `--board` names, or `None` after
+/// saying what is wrong with it.
+fn read_board(folder: &str) -> Option<board_build::Board> {
+    let file = Path::new(folder).join(board_build::FILE);
+    let shown = modules::shown(&file);
+    if !Path::new(folder).is_dir() {
+        eprintln!("zeno: `--board` is followed by the folder of a board, and `{folder}` is not a folder");
+        return None;
+    }
+    let Ok(source) = fs::read_to_string(&file) else {
+        eprintln!("zeno: `{folder}` has no `{}`, the file that says how a program is built for a board", board_build::FILE);
+        eprintln!("      (docs/board-build.md)");
+        return None;
+    };
+    let board = match board_build::parse(&source) {
+        Ok(board) => board,
+        Err(errors) => {
+            for error in &errors {
+                report(&alone(&shown, &source), error);
+            }
+            return None;
+        }
+    };
+    let missing = board.missing(Path::new(folder));
+    if !missing.is_empty() {
+        eprintln!("zeno: `{shown}` names {}, and the folder has no such file", modules::listed(&missing));
+        return None;
+    }
+    Some(board)
+}
+
+/// The last step of `zeno build --board`: the board's own compiler makes
+/// `<name>.elf` of the program's C, the board's files and its linker
+/// script, in one command (decision 51).
+fn build_for_board(folder: &str, board: &board_build::Board, name: &str, c_file: &str, before: &[String], after: &[String]) -> Option<()> {
+    let program_file = format!("{name}.elf");
+    let asks = board.asks(Path::new(folder), before, c_file, &program_file, after);
+    let compiler = &board.compiler;
+    match Command::new(compiler).args(&asks).status() {
+        Ok(status) if status.success() => {
+            println!("Built {program_file} for the board in `{folder}`.");
+            if let Some(run) = board.runs(&program_file) {
+                println!("Run it with: {}", board_build::typed(&run));
+            }
+            Some(())
+        }
+        Ok(_) => {
+            eprintln!("zeno: `{compiler}` could not build `{c_file}` for the board in `{folder}`. What it said is above.");
+            eprintln!("      If it names a file of the board, the mistake is in the board's folder. If it names");
+            eprintln!("      `{c_file}`, that is a bug in Zeno, not in your program");
+            None
+        }
+        Err(_) => {
+            eprintln!("zeno: the board in `{folder}` is built with `{compiler}`, and there is no such command here,");
+            eprintln!("      so only the C was written. Install it, then build again, or run:");
+            eprintln!("        {compiler} {}", board_build::typed(&asks));
+            None
+        }
+    }
 }
 
 /// How hard the C compiler (or clang, for IR) is asked to work. `--fast`
@@ -1212,6 +1297,17 @@ fn main() -> ExitCode {
             None => Some(String::new()),
         };
     }
+    // `--board boards/mine` builds for a board, as the `zeno.board` in
+    // that folder says (docs/board-build.md).
+    let mut board: Option<String> = None;
+    if let Some(at) = args.iter().position(|arg| arg == "--board" || arg.starts_with("--board=")) {
+        let option = args.remove(at);
+        board = match option.strip_prefix("--board=") {
+            Some(named) => Some(named.to_string()),
+            None if at < args.len() => Some(args.remove(at)),
+            None => Some(String::new()),
+        };
+    }
     // `--owned` and `--collector` say how a program frees its memory,
     // over what its `zeno.package` says (docs/memory-modes.md).
     let owned = args.iter().any(|arg| arg == "--owned");
@@ -1232,6 +1328,30 @@ fn main() -> ExitCode {
         eprintln!("zeno: `--owned` and `--collector` are two ways to free memory. Choose one");
         return ExitCode::FAILURE;
     }
+    if let Some(folder) = &board {
+        if args.first().is_some_and(|command| command != "build") {
+            eprintln!("zeno: `--board` is an option of `zeno build`: it says which board a program is built for");
+            return ExitCode::FAILURE;
+        }
+        if folder.is_empty() || folder.starts_with("--") {
+            eprintln!("zeno: `--board` is followed by the folder of a board, e.g.");
+            eprintln!("        zeno build --board boards/qemu-cortex-m3 examples/blink.zeno");
+            return ExitCode::FAILURE;
+        }
+        if collector {
+            eprintln!("zeno: a program for a board is built with no collector, as `--no-collector` builds it.");
+            eprintln!("      (The collector is made for a computer: it takes its memory from the system 64 KB");
+            eprintln!("      at a time.) `--collector` asks for it. Leave one of the two out");
+            return ExitCode::FAILURE;
+        }
+        if llvm || web || target.is_some() {
+            eprintln!("zeno: `--board` hands the program's C to the C compiler of a board. `--llvm`, `--web` and");
+            eprintln!("      `--target` write something other than C. Choose one");
+            return ExitCode::FAILURE;
+        }
+    }
+    // A board is a chip, and a build for a chip has no collector (decision 51.3).
+    let no_collector = no_collector || board.is_some();
     if no_collector && collector {
         eprintln!("zeno: `--no-collector` leaves the collector out, and `--collector` asks for it. Choose one");
         return ExitCode::FAILURE;
@@ -1484,7 +1604,7 @@ fn main() -> ExitCode {
             let built = match (web, llvm) {
                 (true, _) => build_web(path),
                 (false, true) => build_llvm(path, memory_report, kind, options),
-                (false, false) => build(path, memory_report, kind, options),
+                (false, false) => build(path, memory_report, kind, options, board.as_deref()),
             };
             match built {
                 Some(()) => ExitCode::SUCCESS,
@@ -1646,7 +1766,7 @@ mod tests {
         let at = |name: &str| root.join(name).display().to_string();
         assert!(check(&at("gaps.zeno"), checker::Rules { strict: true, one_owner: true, firmware: true }).is_some());
         assert!(check_no_collector(&at("gaps.zeno")).is_none());
-        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector, emit_c::Options::default()).is_none());
+        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector, emit_c::Options::default(), None).is_none());
         assert!(check_no_collector(&at("fine.zeno")).is_some());
         let _ = fs::remove_dir_all(&root);
     }

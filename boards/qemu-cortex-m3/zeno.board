@@ -1,0 +1,37 @@
+# An ARM Cortex-M3 that needs no hardware: the board QEMU emulates as
+# `lm3s6965evb` (a Stellaris LM3S6965, 256 KB of flash, 64 KB of RAM).
+#
+#     zeno build --board boards/qemu-cortex-m3 examples/blink.zeno
+#
+# Zeno's own tests build programs for it, to see that the C `zeno build`
+# writes does on a 32-bit chip what it does on a computer. It is also
+# the pattern for the folder of a real board: docs/board-build.md.
+
+about "An ARM Cortex-M3 that QEMU emulates (its machine lm3s6965evb)"
+
+# The C compiler for ARM chips with no system on them, and the
+# processor it makes code for.
+compiler "arm-none-eabi-gcc"
+flags "-mcpu=cortex-m3" "-mthumb"
+
+# Each function in a part of its own, so that the linker can leave out
+# the ones the program never calls.
+flags "-ffunction-sections" "-fdata-sections"
+
+# This board has no header of its own: its pins are the simulated ones,
+# as on a computer (docs/board.md). The simulated board sleeps and reads
+# the clock the POSIX way, and system.c has the two functions for it.
+flags "-D_POSIX_TIMERS=1" "-D_POSIX_MONOTONIC_CLOCK=1"
+
+# What runs before `main`, and what the C library asks of a system.
+sources "startup.c" "system.c"
+
+# Where the flash and the RAM of the chip are.
+script "link.ld"
+
+# The start is startup.c, not the one that comes with the compiler.
+link "-nostartfiles" "-Wl,--gc-sections"
+
+# QEMU runs the program. What it prints comes out of the first serial
+# port, which `-nographic` joins to the terminal.
+run "qemu-system-arm" "-M" "lm3s6965evb" "-nographic" "-semihosting" "-kernel"

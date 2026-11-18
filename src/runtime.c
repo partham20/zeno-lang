@@ -2674,7 +2674,7 @@ static void zeno_register_write(int64_t address, int bits, int64_t value) {
     zeno_register_holds[i] = value;
     /* Every write is printed, also one that changes nothing: on real
      * hardware a write is an event, whatever was there before. */
-    printf("register 0x%08" PRIx64 " = 0x%0*" PRIx64 "\n", (uint64_t)address, bits / 4, (uint64_t)value);
+    printf("register 0x%08llx = 0x%0*llx\n", (unsigned long long)address, bits / 4, (unsigned long long)value);
 }
 
 #endif /* ZENO_BOARD */
@@ -2682,7 +2682,7 @@ static void zeno_register_write(int64_t address, int bits, int64_t value) {
 /* A register as `print` shows it. */
 static const char *zeno_str_register(int64_t address) {
     char buffer[40];
-    int length = snprintf(buffer, sizeof buffer, "Register(0x%08" PRIx64 ")", (uint64_t)address);
+    int length = snprintf(buffer, sizeof buffer, "Register(0x%08llx)", (unsigned long long)address);
     return zeno_copy(buffer, (size_t)length);
 }
 

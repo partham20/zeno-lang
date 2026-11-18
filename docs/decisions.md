@@ -3106,7 +3106,7 @@ kinds of C build.
 file with nothing to link (5.5). A header keeps that true, and lets
 the C compiler inline a register write into the loop that does it.
 
-### 5.12c `zeno build` does not cross-compile
+### 5.12c `zeno build` does not cross-compile *(revised: chapter 51)*
 
 It writes the C and builds it for the computer it is on. Building for
 a microcontroller is done with that microcontroller's own compiler,
@@ -3115,6 +3115,10 @@ flags and linker script, by hand or from its project.
 **Why.** Those tools exist, differ for every vendor, and are what a
 firmware engineer already has set up. A `--target` option would be a
 second, worse copy of each of them. *(Principle: keep what works.)*
+
+*Since chapter 51, `zeno build --board` runs those tools, and still
+copies none of them: a folder names the vendor's own compiler, flags
+and linker script, and Zeno types the one command.*
 
 ### 5.13 A sized number is an ordinary int when the program runs
 
@@ -15368,4 +15372,282 @@ it by answering 0, which a real board never does.
 - Interrupts of a serial port or a converter. A board header may use
   them inside its own functions already.
 - Pressing a button under `zeno run` (45.5).
+- A trial on a real board.
+
+## 51. One step to a board: `zeno build --board`
+
+```sh
+zeno build --board boards/qemu-cortex-m3 examples/blink.zeno
+```
+
+```
+Wrote blink.c
+Built blink.elf for the board in `boards/qemu-cortex-m3`.
+Run it with: qemu-system-arm -M lm3s6965evb -nographic -semihosting -kernel blink.elf
+```
+
+Item 8 of [`missing.md`](missing.md) is "one step from a `.zeno` file
+to a board", and has three parts: the cross-compiler in the same
+command, a runtime with no `printf` and no `exit`, and checks without
+GCC's built-ins. This chapter is the first part. It was built first
+because it is what lets the other two be tried: before it, nothing
+Zeno wrote had ever run on a processor other than the computer's.
+Walkthrough: [`board-build.md`](board-build.md).
+
+### 51.1 `--board` names a folder, and the folder says how
+
+**A board is a folder with a file called `zeno.board` in it, and
+`zeno build --board <folder>` builds the program for it.** The file
+names the board's C compiler, its flags, the files of C that are built
+with every program, the linker script, and the command that runs or
+loads the result:
+
+```
+compiler "arm-none-eabi-gcc"
+flags "-mcpu=cortex-m3" "-mthumb"
+header "board.h"
+sources "startup.c" "system.c"
+script "link.ld"
+link "-nostartfiles" "-Wl,--gc-sections"
+run "qemu-system-arm" "-M" "lm3s6965evb" "-nographic" "-kernel"
+```
+
+**Why a folder.** Decision 5.12c turned cross-compiling down, because
+"those tools exist, differ for every vendor, and are what a firmware
+engineer already has set up", and a `--target thumbv7m` would be "a
+second, worse copy of each of them". That reason still holds, and the
+folder respects it: Zeno knows no processor, no flag and no vendor.
+It reads the names of the tools the engineer already has, and types
+the command they would have typed. What 5.12c did not weigh is that
+the command is long, is the same for every program on a board, and
+was typed again for each one.
+
+**Why not on the line**, as [`missing.md`](missing.md) first had it
+(`zeno build --cc arm-none-eabi-gcc`, with the flags in
+`zeno.package`). A line with a compiler, six flags, two files and a
+linker script on it is the command 5.12c already had. And the flags
+are not the program's: the same program is built for two boards, and
+one board runs many programs. Written in `zeno.package` they would be
+copied into every program, and a program for two boards would need two
+packages. The header with the board's functions (5.12b) already lives
+apart from the program. The flags, the startup file and the linker
+script belong beside it.
+
+**Why the file is read as `zeno.package` is** (8.1): one lexer, so a
+comment starts with `#` and text is written as in a program. **Each
+word in quotes is one word of the command**, and no shell reads the
+line, so a path with a space in it needs no second kind of quoting,
+and the same file works on Windows.
+
+**Why a path and not a name** (`--board nucleo`). A name needs a place
+where names are looked up, and there is none yet (51.9). A path is
+what the engineer's own board will always be.
+
+### 51.2 Eight lines, and one of them must be there
+
+`compiler` is the only line a board must have. `about`, `compiler`,
+`header`, `script` and `run` are said once; `flags`, `sources` and
+`link` any number of times, and the words add up in the order written.
+
+**A file is named as it is in the board's folder** (`header`,
+`sources`, `script`), wherever the command is typed, so a board can
+be moved and shared whole. **A file that is named and not there is
+said before anything is built**, by its name, and so is every other
+mistake in the file, with its line. A cross-compiler's own message for
+a missing linker script is three lines about `ld`.
+
+**Why `flags` and `link` are two lines.** `-mcpu` must be said when
+compiling and when linking; `-nostartfiles` only means something when
+linking. One compiler command does both here, so one list would work
+today. Two lists say what each word is for, and stay right if the two
+steps are ever run apart.
+
+**Why `header` is a line of its own and not `-DZENO_BOARD=...` under
+`flags`.** It is the one flag Zeno itself defines the meaning of
+(5.12b), a file that must exist, and the difference between a board
+with pins of its own and one with the simulated pins. A board with no
+`header` line gets the simulated board, which is what makes the
+emulated board of 51.6 so small.
+
+### 51.3 A build for a board has no collector
+
+**`--board` builds the C that `--no-collector` builds**: every list
+and object has one owner, and memory comes from a pool whose size is
+fixed when the program is built (5.9). `--collector` with `--board` is
+refused, with the reason.
+
+**Why.** The collector takes its memory from the system 64 KB at a
+time, and first looks for garbage when 4 MB are in use (22.5). That
+is right for a computer and cannot fit a chip that has 64 KB in all. A
+collector made for a chip is a piece of work of its own (51.9). Until
+it exists, building one in would give a program that links and then
+stops at its first list.
+
+**Why not leave the choice to the line**, so that `--board` alone gave
+an ordinary build and `--board --no-collector` this one. Because the
+shorter command would then be the one that does not work. The option
+that names a chip gives the build made for a chip.
+
+**`--minimal`, `--release`, `--fast` and `--memory` go with it** and
+mean what they mean elsewhere. **`--llvm`, `--web` and `--target` are
+refused**: the board's compiler is handed C, and those write something
+else. (clang can make code for a chip from IR; nobody has asked.)
+**`--board` belongs to `build` alone**: `zeno run` and `zeno check`
+with it are refused, because a board changes nothing in what they do.
+
+### 51.4 What the compiler is asked, and in what order
+
+```
+<compiler> -O2 <flags> -I<folder> [-DZENO_BOARD="<header>"]
+    -o <name>.elf <name>.c <sources> [-T <script>] <link>
+    <the libraries of C the program declares> -lm
+```
+
+One command compiles and links. **Zeno's own flag comes first and the
+board's after it**, so the board has the last word: with `flags
+"-Os"`, GCC takes the later `-Os` over the earlier `-O2`. **The
+board's folder is on the path of headers**, so the header is found by
+its plain name, and it and the sources can include the vendor's
+headers beside them. **The libraries of C a program declares with
+`import c` are built in** as in every C build (44.10): a vendor's HAL
+is C, and this is where it meets the board. Only the hint to the
+loader about where a library lies (`-Wl,-rpath`) is left out, since a
+chip has no loader.
+
+**The compiler is the board's, and `CC` is not read.** `CC` says which
+compiler builds for this computer, and many people have it set. A
+board build that obeyed it would hand ARM flags to the computer's
+compiler.
+
+**When the compiler is not installed**, the C has been written, and
+the message gives the whole command, to run once it is.
+
+### 51.5 The program is `<name>.elf`, and `run` is shown, not run
+
+**The file is `<name>.elf`**, whatever the processor: it is what a
+cross-compiler writes, what QEMU, OpenOCD, pyOCD and gdb read, and a
+`.bin` or a `.hex` is one `objcopy` away from it. It also cannot be
+mistaken for the program `zeno build` makes for the computer, which
+has no ending.
+
+**`zeno build` prints the board's `run` command with the program in
+it, and does not run it.** The program is the last word, or stands
+where a word says `{program}`, since some tools take a sentence
+(`"program {program} verify reset exit"`).
+
+**Why not run it.** For QEMU it would be harmless. For a real board
+`run` writes to the chip's flash, and `build` has never changed
+anything but files in the folder it is typed in. Doing it in the same
+command is an option for later, and one that should be asked for by
+name (51.9).
+
+### 51.6 The board that comes with Zeno needs no hardware
+
+**[`boards/qemu-cortex-m3`](../boards/qemu-cortex-m3) is the board
+QEMU emulates as `lm3s6965evb`**: an ARM Cortex-M3 with 256 KB of
+flash and 64 KB of RAM. The folder is four files: `zeno.board`, a
+linker script, `startup.c` (the table of vectors, the first values of
+the variables, a millisecond clock on the SysTick timer, then `main`)
+and `system.c` (the handful of functions newlib leaves to a system).
+
+**Why an emulated board first.** Nothing in Zeno has run on hardware,
+and that needs a board on a desk ([`missing.md`](missing.md)). An
+emulated chip needs nothing, runs in the tests of every change, and
+still differs from the computer in the ways that matter to the C: a
+processor of 32 bits under whole numbers of 64, no floating point in
+the processor, another C library, a start with no system before it,
+and 64 KB. **Why this one**: of the Cortex-M boards QEMU has, it is
+the one with the most emulated (pins, serial ports, timers, a
+converter), which the next steps will use.
+
+**It has no `header`: its pins are the simulated ones**, a line of
+text for each change, as under `zeno run`. That is what lets every
+example be compared with the computer byte for byte. The simulated
+board sleeps and reads the clock with two POSIX functions
+(`nanosleep`, `clock_gettime`); the folder says the board has them
+(`-D_POSIX_TIMERS=1`) and `system.c` supplies them on the SysTick
+clock. So the runtime needed no third family beside "Windows" and
+"everything else" (5.12).
+
+**What a program prints goes out of the first serial port**, which
+QEMU joins to the terminal, and what it reads comes in from it. **The
+message of an error nothing caught goes to the debugger** (ARM
+semihosting, which QEMU answers), and so does the end of the program,
+with its answer: QEMU ends with 0, or with 1 after an error. On a real
+board with a probe attached the same two calls reach the debugger on
+the desk. So a test can tell what was printed from what went wrong,
+and knows when the program is over, with nothing added to Zeno's C.
+
+**The clock is real.** `sleep(500 ms)` takes half a second of QEMU's
+time. A clock that only moved when the program slept (as in the test
+of 5.12b) would be quicker and would hide the one thing a start-up
+file most often gets wrong, its interrupt.
+
+### 51.7 Every program, on the board and on the computer
+
+**`tools/board.py` builds each example, each sample of the book and
+each corner program of `tools/targets/` twice, with `--no-collector`
+for the computer and with `--board` for the Cortex-M3, and the two
+must do the same**: print the same text, end the same way, and stop
+with the same message. Then again with `--minimal`, for the programs
+no check stops. On the day it was written: 228 of 228 in the build
+that checks, and 212 of 212 in the minimal one.
+
+Left out, and counted: a program a build with no collector refuses; a
+program with words on its line or with files; and a program that
+reads what is typed to its end, which a serial port does not have.
+**A number with a fraction may differ after its fifteenth digit.**
+`cosh(1.0)` is `1.5430806348152437` from the computer's C library and
+`1.543080634815244` from newlib: the next number along. Both are
+within the last place, the function is the C library's and not Zeno's,
+and holding them to one answer would mean writing the mathematics
+again. Zeno's own printing of a float is the same on both: in the
+first run of the check, which made no such allowance, this was the
+only number in any program that differed.
+
+The workflow `board` runs it on a push that changes the C backend, the
+runtime or a board. `cargo test cortex_m3` is the short form, one
+program with every part of a board in it, and skips the run where the
+tools are not installed.
+
+### 51.8 Found on the way
+
+- **A list that is the default of a field was freed while the object
+  still held it**, in every build with no collector, since those
+  builds exist. `class Bag { items: list[str] = [] }`, made as
+  `Bag()`: the list was made beside the call and freed when the
+  statement ended. Two samples of the book did this, and
+  `tools/minimal.py` had counted them as passing, because the checked
+  build and the minimal build both ended with the same signal and so
+  "did the same". The board did not: its memory is laid out otherwise,
+  and it printed something else. **A place that keeps what it is
+  given (a field, a `take` parameter) now owns the default made for
+  it**, as it owns a `[]` written in the call, and `tools/minimal.py`
+  fails a program that the system stops, but for three that are meant
+  to end that way.
+- **`PRIx64` is not there on every C library.** The runtime printed a
+  register's address with it, and the newlib that Ubuntu ships does
+  not define it for this compiler. It is `%llx` with a cast now, which
+  is C99 everywhere.
+- **`main` is given its two arguments by the board's start-up**, a
+  name and no words, because the program's `main` takes them when the
+  program asks for its arguments.
+
+### 51.9 Left for later
+
+- The rest of item 8: `print` and the end of the program through
+  functions of the board, so that no C library is needed, and the
+  checks without GCC's built-ins.
+- A header for the emulated board that drives its real registers, as
+  a second board: the pattern for a real one, tried as far as QEMU
+  emulates it.
+- A collector made for a chip (51.3).
+- `--board` by name, a `board` line in `zeno.package`, boards as
+  packages in the registry, and the emulated board carried inside the
+  `zeno` program, which today needs a copy of the repository.
+- Loading the program in the same command, asked for by name (51.5),
+  and a `.bin` or `.hex` beside the `.elf`.
+- `--llvm` for a board.
+- An end to what is typed over a serial port, so that a program that
+  reads to the end can be tried on a board.
 - A trial on a real board.

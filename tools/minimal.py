@@ -160,31 +160,44 @@ def message(errors):
     return next((line for line in errors.splitlines() if line.startswith("error")), "")
 
 
-def try_program(kind, program, scratch):
-    """("pass" | "left out" | "at a check" | "no C" | the reason it failed, the sizes of the two C files)."""
-    folder = scratch / kind / program.name.replace("/", "_").replace("#", "_")
-    checked, why = written(kind, program, folder / "checked", False)
-    if checked is None:
+def checked_run(kind, program, folder):
+    """What the build that checks does with a program:
+    ("left out" | "at a check" | "no C" | "ran" | why it failed, its status, what it printed, what it said, its C).
+
+    "at a check" is a program that a check stops, or would stop if
+    nothing caught the error, or that has a mistake no build checks:
+    without the checks it has no defined result."""
+    wrote, why = written(kind, program, folder / "checked", False)
+    if wrote is None:
         # `--owned` and its like refuse a program that shares its lists;
         # `zeno build` refuses what only `zeno run` can do.
-        return "left out", None
-    c_file, binary = checked
+        return "left out", 0, "", "", ""
+    c_file, binary = wrote
     text = c_file.read_text()
     marked, count = ENDS_IN.subn(lambda found: found.group(1) + "\n    zeno_marks_a_check();", text)
     if count == 0:
-        return "the checked build has no `zeno_fail` to mark", None
+        return "the checked build has no `zeno_fail` to mark", 0, "", "", text
     c_file.write_text(MARKER + marked)
     if compiled(c_file, binary, ["-O0", "-w"]):
         # Not a matter of `--minimal`: the checked build's own C is wrong.
-        return "no C", None
+        return "no C", 0, "", "", text
     status, out, errors = targets.run([str(binary)] + program.args, program.folder, program.stdin, timeout=LONGEST)
     if MARK in errors or GIVEN_BACK_TWICE in errors or program.name in UNDEFINED:
-        return "at a check", None
+        return "at a check", status, out, errors, text
     if status < -1 and program.name not in THE_SYSTEM_STOPS:
         # Not an error of Zeno's: the system stopped it, for reading
         # memory that is not its own, say. Two builds that both do that
         # are not two builds that agree.
-        return f"the system stopped the checked build (signal {-status}), after it printed\n{out[-1000:]}", None
+        return f"the system stopped the checked build (signal {-status}), after it printed\n{out[-1000:]}", status, out, errors, text
+    return "ran", status, out, errors, text
+
+
+def try_program(kind, program, scratch):
+    """("pass" | "left out" | "at a check" | "no C" | the reason it failed, the sizes of the two C files)."""
+    folder = scratch / kind / program.name.replace("/", "_").replace("#", "_")
+    result, status, out, errors, text = checked_run(kind, program, folder)
+    if result != "ran":
+        return result, None
 
     minimal, why = written(kind, program, folder / "minimal", True)
     if minimal is None:

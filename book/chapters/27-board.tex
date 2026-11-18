@@ -563,6 +563,11 @@ header, and the C compiler is told where it is.
 \hyperref[ch-firmware]{Firmware} shows how, with a sketch for an
 STM32. The Zeno program does not change by a line.
 
+The chip's compiler, its flags, its start-up file and its linker
+script are written down once as well, in the board's folder, and
+\verb|zeno build --board| builds a program for the board in one step
+(\hyperref[ch-compiling]{Compiling}).
+
 \begin{why}
 Four functions is the smallest surface a port can have: a board is
 working the day those four are. The checks, such as a pin that does

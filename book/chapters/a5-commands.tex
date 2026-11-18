@@ -97,6 +97,13 @@ Option & With & What it does \\
   no check of any kind, only the parts of the runtime the program
   uses, \verb|print| as \verb|printf|, and \verb|-Os|
   (\hyperref[ch-compiling]{Compiling}; new in 0.5.2) \\
+\verb|--board <folder>| & \verb|build| & build for a board in one
+  step: the \verb|zeno.board| in the folder names the board's C
+  compiler, flags, start-up files and linker script, and the program
+  comes out as \verb|name.elf|. Built with no collector. Goes with
+  \verb|--minimal|, \verb|--release|, \verb|--fast| and
+  \verb|--memory| (\hyperref[ch-compiling]{Compiling}; new after
+  0.5.2) \\
 \verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
   to \verb|clang|. Goes with the three options around it \\
 \verb|--web| & \verb|build| & write a web page that runs the program:

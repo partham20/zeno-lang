@@ -255,21 +255,66 @@ Zeno} shows a piece of it.
 
 \section{For another processor}
 
-\verb|zeno build| compiles for the computer it runs on. For a
-microcontroller, take the C file it wrote and give it to the
-microcontroller's own C compiler, with the board's header
-(\hyperref[ch-firmware]{Firmware}):
+\verb|zeno build| compiles for the computer it runs on. A
+microcontroller has a C compiler of its own, flags that say which
+processor it is, a file that runs before \verb|main|, and a linker
+script that says where its flash and RAM are. Those four are the same
+for every program on one board, so they are written down once, in a
+folder, and \verb|--board| names the folder:
 
 \begin{zenofrag}[lang=shell]
-$ zeno build --firmware --no-collector blink.zeno
-$ arm-none-eabi-gcc -O2 -DZENO_BOARD='"nucleo.h"' -c blink.c
+$ zeno build --board boards/qemu-cortex-m3 blink.zeno
+Wrote blink.c
+Built blink.elf for the board in `boards/qemu-cortex-m3`.
+Run it with: qemu-system-arm -M lm3s6965evb -nographic -kernel blink.elf
 \end{zenofrag}
+
+The folder has a file called \verb|zeno.board|, read as a
+\verb|zeno.package| is. Each word in quotes is one word of the command
+the compiler is given:
+
+\begin{zenofrag}[lang=shell]
+about "An ARM Cortex-M3 that QEMU emulates"
+
+compiler "arm-none-eabi-gcc"
+flags "-mcpu=cortex-m3" "-mthumb"
+sources "startup.c" "system.c"
+script "link.ld"
+link "-nostartfiles" "-Wl,--gc-sections"
+run "qemu-system-arm" "-M" "lm3s6965evb" "-nographic" "-kernel"
+\end{zenofrag}
+
+(The board's real \verb|run| line has one more word,
+\verb|"-semihosting"|, which lets the program tell QEMU that it has
+ended.)
+
+\verb|compiler| is the one line a board must have. \verb|header| names
+the header with the board's own functions
+(\hyperref[ch-firmware]{Firmware}); a board without one, like this
+one, has the simulated pins. \verb|zeno build| shows the \verb|run|
+command and does not run it: on a real board it writes to the chip.
+
+The program is built as \verb|--no-collector| builds it, because the
+garbage collector takes its memory 64 KB at a time and this chip has
+64 KB in all. \verb|--minimal|, \verb|--release|, \verb|--fast| and
+\verb|--memory| go with \verb|--board|.
+
+The board in the example comes with Zeno, in its repository, and needs
+no hardware: QEMU emulates an ARM Cortex-M3 with 256 KB of flash and
+64 KB of RAM. Every example in this book that a build with no
+collector accepts is built for it and compared with the same program
+on a computer, each time the compiler changes. No program of Zeno's
+has run on a real board yet.
 
 \begin{why}
 Building C for a target is a job the target's own tools already do
 well, with the flags, linker scripts and start-up code that only they
-know. Zeno's part ends at a C file that compiles anywhere.
-(Decision 5.12c.)
+know. So Zeno copies none of them. A board's folder names the tools an
+engineer already has, and Zeno types the one long command that was
+typed by hand before. The flags are in a folder of the board's and not
+in the program's package, because one program is built for two boards
+and one board runs many programs. (Decisions 5.12c and 51; new after
+0.5.2.)
 \end{why}
 
 \section{What does not compile yet}

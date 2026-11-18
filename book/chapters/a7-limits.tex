@@ -72,9 +72,11 @@ The numbers are the decisions, for anyone who wants the argument.
   value.
 \item[One file at a time.] A build compiles the whole program at once
   (7.11).
-\item[Another processor in one step.] A build writes C for the C
-  compiler you name; compiling for a board is a second step on the
-  \verb|cc| line.
+\item[A board by its name.] \verb|zeno build --board| takes the
+  folder of a board, which today is in a copy of Zeno's repository or
+  written by you; it does not load the program onto the board, and a
+  build for a board has no collector (51.9). The one board that comes
+  with Zeno is emulated.
 \item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
   wants one of those two compilers (5.5e).
 \item[\texttt{setjmp} in an ordinary build.] An ordinary build uses it

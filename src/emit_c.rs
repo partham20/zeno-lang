@@ -16710,6 +16710,131 @@ print(d.value)
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The board in `boards/qemu-cortex-m3`, as its `zeno.board` says it.
+    fn emulated_board() -> (std::path::PathBuf, crate::board_build::Board) {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("boards").join("qemu-cortex-m3");
+        let said = std::fs::read_to_string(folder.join(crate::board_build::FILE)).expect("the board has a `zeno.board`");
+        let board = crate::board_build::parse(&said).unwrap_or_else(|errors| panic!("{}", errors[0].message));
+        (folder, board)
+    }
+
+    /// Build the C for the emulated Cortex-M3 as `zeno build --board`
+    /// does, and run it in QEMU: what it printed, what it wrote as
+    /// errors, and whether it finished cleanly. `None` where the
+    /// compiler for ARM or QEMU is not installed.
+    fn on_the_emulated_board(name: &str, c: &str, before: &[&str]) -> Option<(String, String, bool)> {
+        let (folder, board) = emulated_board();
+        let there = |tool: &str| Command::new(tool).arg("--version").output().is_ok();
+        if !there(&board.compiler) || !there(&board.run[0]) {
+            eprintln!("no `{}` or no `{}` here; skipping the run on the emulated board", board.compiler, board.run[0]);
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let (c_file, program) = (dir.join("test.c"), dir.join("test.elf"));
+        std::fs::write(&c_file, c).expect("the C file is written");
+        let before: Vec<String> = before.iter().map(|flag| flag.to_string()).collect();
+        let after: Vec<String> = LIBRARIES.iter().map(|library| library.to_string()).collect();
+        let asks = board.asks(&folder, &before, &c_file.to_string_lossy(), &program.to_string_lossy(), &after);
+        let built = Command::new(&board.compiler).args(&asks).output().expect("the compiler runs");
+        let complaints: String = String::from_utf8_lossy(&built.stderr).chars().take(1500).collect();
+        assert!(built.status.success(), "the C does not build for the board:\n{complaints}");
+        let run = board.runs(&program.to_string_lossy()).expect("the board says how a program is run");
+        let ran = crate::value::testing::run(Command::new(&run[0]).args(&run[1..])).expect("QEMU runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        // QEMU says one thing of its own as this board starts.
+        let errors = String::from_utf8_lossy(&ran.stderr).replace("Timer with period zero, disabling\n", "");
+        Some((String::from_utf8_lossy(&ran.stdout).into_owned(), errors, ran.status.success()))
+    }
+
+    /// The folder of the board that comes with Zeno is whole: every file
+    /// its `zeno.board` names is there.
+    #[test]
+    fn the_emulated_board_has_its_files() {
+        let (folder, board) = emulated_board();
+        assert_eq!(board.missing(&folder), Vec::<String>::new());
+        assert_eq!(board.compiler, "arm-none-eabi-gcc");
+        // It has no header: its pins are the simulated ones.
+        assert_eq!(board.header, None);
+        assert_eq!(board.sources, ["startup.c", "system.c"]);
+        assert_eq!(board.script.as_deref(), Some("link.ld"));
+    }
+
+    /// One program with every part of a board in it, whole numbers of 64
+    /// bits, floats, text, a list, a dict, an error that is caught and
+    /// one that is not: on an ARM Cortex-M3 with 64 KB of RAM, which
+    /// QEMU emulates, it prints what `zeno run` prints, in the build
+    /// that checks and in the minimal one, and it ends as an error ends.
+    #[test]
+    fn a_program_does_on_a_cortex_m3_what_it_does_under_zeno_run() {
+        let source = "from board import led, pin, input_pin, pull_up, analog_pin, pwm_pin, ticker, falling\n\
+                      from time import sleep, now\n\
+                      \n\
+                      class Reading {\n\
+                          volts: float\n\
+                          count: int\n\
+                      }\n\
+                      \n\
+                      function mean(values: list[float]) -> float raises ValueError {\n\
+                          if len(values) == 0 {\n\
+                              raise ValueError(\"no values\")\n\
+                          }\n\
+                          var sum = 0.0\n\
+                          for value in values {\n\
+                              sum += value\n\
+                          }\n\
+                          return sum / len(values)\n\
+                      }\n\
+                      \n\
+                      led.on()\n\
+                      sleep(2 ms)\n\
+                      led.off()\n\
+                      let button = input_pin(2, pull_up)\n\
+                      print(button.is_high(), button.number)\n\
+                      let sensor = analog_pin(2)\n\
+                      let reading = Reading(sensor.voltage() / 1 V, sensor.count())\n\
+                      print(reading, sensor.max_count)\n\
+                      let fan = pwm_pin(9, 1 kHz)\n\
+                      fan.duty(0.25)\n\
+                      let beat = ticker(5 ms)\n\
+                      print(beat.wait() >= 1, beat)\n\
+                      let press = button.interrupt(falling)\n\
+                      pin(2).off()\n\
+                      pin(2).on()\n\
+                      pin(2).off()\n\
+                      print(press.edges(), press.edges())\n\
+                      let started = now()\n\
+                      sleep(3 ms)\n\
+                      print(now() - started >= 3 ms)\n\
+                      print(2 ** 40, 7 // 2, -7 % 3, 1.0 / 3.0, 9007199254740993, 0.1 + 0.2, 1e300 * 10.0)\n\
+                      let big: u64 = 18446744073709551615\n\
+                      let small: f32 = 0.1\n\
+                      print(big, small, 3000000000 * 3, \"héllo\".upper(), len(\"héllo\"))\n\
+                      try {\n\
+                          print(mean([1.5, 2.5, 5.0]))\n\
+                          print(mean([]))\n\
+                      } except ValueError as error {\n\
+                          print(\"caught:\", error.message)\n\
+                      }\n\
+                      let names: dict[str, int] = [\"a\": 1]\n\
+                      names[\"b\"] = 2\n\
+                      print(names, [n * n for n in range(5)])\n";
+        let mistake = "let numbers = [1, 2, 3]\nprint(numbers[5])\n";
+        let wanted = interpreted(source);
+        assert!(wanted.ends_with("[\"a\": 1, \"b\": 2] [0, 1, 4, 9, 16]\n"), "{wanted}");
+        let checked = compile_no_collector(&format!("{source}{mistake}")).unwrap();
+        let Some((printed, errors, finished)) = on_the_emulated_board("cortex-m3", &checked, &["-O2"]) else {
+            return;
+        };
+        assert_eq!(printed, wanted);
+        assert!(!finished);
+        assert_eq!(errors, "error: uncaught IndexError: index 5 is out of range for a list of length 3\n --> test.zeno:54:7\n");
+        // The least C, which checks nothing, so without the mistake.
+        let minimal = compile_minimal(source, Build::NoCollector, false);
+        let (printed, errors, finished) = on_the_emulated_board("cortex-m3-minimal", &minimal, &["-Os"]).expect("as above");
+        assert_eq!((printed, errors.as_str(), finished), (wanted, "", true));
+    }
+
     /// A function that is handed a port, in a program that makes none,
     /// still finds the runtime's part for serial ports.
     #[test]

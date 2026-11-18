@@ -341,6 +341,7 @@ cargo run -- build --web examples/todo.zeno     # todo.web.html: the page and th
 cargo run -- test examples/sketch.zeno          # a page that draws: its tests press the mouse on the simulated page
 cargo run -- playground                         # playground.html: write Zeno programs and run them in a browser, with nothing installed
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
+cargo run -- build --board boards/qemu-cortex-m3 examples/signal.zeno  # the same for an ARM Cortex-M3, in one step: signal.elf, which QEMU runs
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
@@ -352,6 +353,10 @@ cargo test
 clock. On a computer the board is simulated and prints each pin as it changes.
 A compiled program meets the board through four C functions, so a real one
 can be put underneath ([`docs/board.md`](docs/board.md)).
+`zeno build --board <folder>` builds a program for a board in one step,
+with the board's own compiler, flags, start-up file and linker script,
+which the folder names
+([`docs/board-build.md`](docs/board-build.md)).
 
 `import web` gives a program a web page: `web.element("#count").text = "3"`,
 `button.on("click", pressed)`. `zeno build --web` writes one file that a
@@ -398,6 +403,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
+  [`docs/board-build.md`](docs/board-build.md),
   [`docs/web.md`](docs/web.md), [`docs/playground.md`](docs/playground.md),
   [`docs/json.md`](docs/json.md), [`docs/install.md`](docs/install.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -791,6 +797,17 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     engine and every C and LLVM build.
     See [`docs/interrupts.md`](docs/interrupts.md) and chapter 50 of
     [`docs/decisions.md`](docs/decisions.md))
+49. One step to a board (done, after 0.5.2 and not yet released:
+    `zeno build --board boards/qemu-cortex-m3 blink.zeno` writes the
+    program's C and has the board's own compiler make `blink.elf` of
+    it. A board is a folder whose `zeno.board` names the compiler, the
+    flags, the start-up files, the linker script and the command that
+    runs the result. The board that comes with Zeno is an ARM
+    Cortex-M3 that QEMU emulates, so every example is tried on a
+    32-bit chip with 64 KB of RAM and no hardware. A build for a board
+    has no collector.
+    See [`docs/board-build.md`](docs/board-build.md) and chapter 51 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
@@ -820,6 +837,7 @@ src/emit_bytecode.rs  syntax tree -> bytecode
 src/vm.rs           runs bytecode, for `zeno run --vm`
 src/builtins.rs     print, len, methods, modules, formatting
 src/board.rs        the simulated board that `zeno run` uses
+src/board_build.rs  reads `zeno.board`, and says what a board's compiler is asked (`zeno build --board`)
 src/page.rs         the page of the `web` module: the browser's, or a simulated one
 src/web_host.rs     where `main` would be, when Zeno is built for a browser
 src/web.js          starts a program in a page, and does what it asks of the page
@@ -837,6 +855,8 @@ src/emit_js.rs      that program -> JavaScript and TypeScript; emit_py, emit_php
 src/runtime.js      Zeno's rules in JavaScript, put into each written program; runtime.ts, .py, .php, .lua, .rb, .dart, .kt, .go, .java, .cs, .cpp and .rs are the others
 tools/targets.py    builds every example for every target and compares it with `zeno run`
 tools/minimal.py    builds every example with and without `--minimal` and compares the two
+tools/board.py      builds every example for an emulated ARM Cortex-M3 and for the computer and compares the two
+boards/             a folder for each board `zeno build --board` can build for: today one, which QEMU emulates
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs

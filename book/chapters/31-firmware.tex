@@ -196,7 +196,9 @@ it raises.
 return values, tested after each call, with no \verb|setjmp|. Errors
 the runtime finds are faults that stop the program, and a \verb|try|
 that hopes to catch one is refused. A real board goes under the program
-as a header of four functions, named with \verb|-DZENO_BOARD|.
+as a header of four functions, named with \verb|-DZENO_BOARD|, or by
+the \verb|header| line of the board's folder when
+\verb|zeno build --board| does the whole build.
 \end{summary}
 
 \begin{tryit}

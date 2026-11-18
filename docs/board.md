@@ -292,9 +292,20 @@ static void zeno_board_sleep(double seconds) { HAL_Delay((uint32_t)(seconds * 10
 static double zeno_board_now(void) { return (double)HAL_GetTick(); }
 ```
 
-`zeno build` does not run the cross compiler for you. It writes C, and
-building C for a target is a job the target's own tools already do well
-(decision 5.12c). The reasons for the four functions are in 5.12.
+The `cc` line above is for a computer. For a chip the line is longer:
+the chip's own compiler, its flags, a start-up file and a linker
+script. They are the same for every program on one board, so they are
+written once, in a folder, and `zeno build --board <folder>` types the
+line ([`board-build.md`](board-build.md), chapter 51 of the
+decisions). The folder names the header too:
+
+```sh
+zeno build --board boards/qemu-cortex-m3 examples/blink.zeno
+```
+
+That board is an ARM Cortex-M3 that QEMU emulates. It has no header of
+its own, so its pins are the simulated ones, on a real processor's
+instructions. The reasons for the four functions are in 5.12.
 
 ## The tests
 
