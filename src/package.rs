@@ -26,7 +26,8 @@
 //!
 //! This file reads `zeno.package` and `zeno.lock`, and is `zeno fetch`.
 //! How `import` then finds the modules of a package is in `modules.rs`.
-//! See docs/registry.md for a walk through fetching and the registry.
+//! See docs/using-packages.md for a walk through both, and
+//! docs/registry.md for the registry.
 
 use std::collections::HashMap;
 use std::fs;

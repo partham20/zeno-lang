@@ -189,7 +189,8 @@ run.
 
 `zeno build` hands the C it writes to a C compiler, so it needs one:
 `cc`, `gcc` or `clang`, whichever it finds first, or the one `CC`
-names. `zeno build --llvm` needs clang. `zeno fetch` needs git.
+names. `zeno build --llvm` needs clang. `zeno fetch`, `zeno search` and
+`zeno publish` need git.
 Everything else needs nothing. The installers offer to install these.
 
 Or build it from this source, which needs only
@@ -358,7 +359,8 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/running-programs.md`](docs/running-programs.md),
   [`docs/python.md`](docs/python.md),
   [`docs/math.md`](docs/math.md), [`docs/dict.md`](docs/dict.md),
-  [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
+  [`docs/modules.md`](docs/modules.md), [`docs/using-packages.md`](docs/using-packages.md),
+  [`docs/registry.md`](docs/registry.md), [`docs/packages.md`](docs/packages.md),
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),
   [`docs/private.md`](docs/private.md), [`docs/interfaces.md`](docs/interfaces.md),
   [`docs/testing.md`](docs/testing.md), [`docs/new.md`](docs/new.md),
@@ -471,8 +473,16 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `import filters.lowpass` then reads `lowpass.zeno` of that
     package. `zeno fetch` gets the repositories with git into
     `packages/` and pins each commit in `zeno.lock`; running a
-    program never uses the network.
-    See [`docs/packages.md`](docs/packages.md))
+    program never uses the network. Since 0.5.1, and in no release
+    yet: a registry, so that `needs units at "v1.2.0"` finds a package
+    by its name. It is a git repository,
+    [zeno-src/packages](https://github.com/zeno-src/packages), with
+    one small file for each package and no server. `zeno search`
+    lists it, `zeno publish` checks a package and gives the address
+    of the form that asks the registry to take it, and
+    `zeno registry accept` is the registry's own side.
+    See [`docs/using-packages.md`](docs/using-packages.md) and
+    [`docs/registry.md`](docs/registry.md))
 17. Editor support
     - A formatter (done: `zeno format file.zeno` lays a file out the
       one way Zeno lays programs out, with no options. It changes
@@ -644,6 +654,7 @@ src/parser.rs       tokens -> syntax tree
 src/printer.rs      syntax tree -> text, for `zeno parse`
 src/modules.rs      the files of a program -> one syntax tree
 src/package.rs      reads `zeno.package` and `zeno.lock`, and is `zeno fetch` and `zeno new`
+src/registry.rs     the registry: a package by its name, `zeno search`, `zeno publish`, `zeno registry`
 src/format.rs       `zeno format`: one layout for every file
 src/json.rs         reads and writes JSON, for the language server and the `json` module
 src/lsp.rs          `zeno lsp`: the language server an editor starts

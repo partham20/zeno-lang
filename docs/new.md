@@ -61,7 +61,7 @@ test "hello says who it greets" {
 }
 ```
 
-`zeno.package` is the project file ([`packages.md`](packages.md)). It
+`zeno.package` is the project file ([`using-packages.md`](using-packages.md)). It
 has one line that counts, and comments that show the three lines you
 may add to it one day ([`registry.md`](registry.md)):
 

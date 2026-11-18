@@ -33,6 +33,15 @@ Command & What it does \\
   for other programs to need, and no \verb|main.zeno| \\
 \verb|zeno fetch| & get the packages that the \verb|needs| lines of
   \verb|zeno.package| list, for this folder or a named one \\
+\verb|zeno search words| & list the packages of the registry that have
+  these words in their name or in what they are for; with no word, all
+  of them \\
+\verb|zeno publish| & check that the package in this folder is ready
+  for the registry, and say how to ask the registry to take it. A
+  version after it, \verb|zeno publish v1.2.0|, says which tag \\
+\verb|zeno registry accept| & for whoever keeps a registry: take a
+  version of a package into a clone of it
+  (\hyperref[ch-packages]{Packages}) \\
 \verb|zeno tokens f.zeno| & show the tokens the lexer finds
   (\hyperref[ch-inside]{Inside Zeno}) \\
 \verb|zeno parse f.zeno| & show the syntax tree the parser builds, with

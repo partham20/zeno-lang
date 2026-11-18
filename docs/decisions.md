@@ -5510,7 +5510,8 @@ modules that lives somewhere else: beside the program, or in somebody
 else's git repository. This section says how a program names the
 packages it needs, how an import finds a module of one, and how
 `zeno fetch` gets them. The walk through the code is in
-[`packages.md`](packages.md).
+[`using-packages.md`](using-packages.md). Finding a package by its
+name alone came later, in chapter 27.
 
 **Checked against "unambiguous and intuitive".** The project file is
 read aloud as it is written (8.2). A version is one exact thing, never
@@ -5614,7 +5615,8 @@ So `zeno fetch` runs `git`, and Zeno still links nothing.
 TLS library, its first dependency. A central registry with short
 names (`needs units "1.2"`): see above. *(Was provisional (11.4): a registry
 could be added later as a third kind of line. The two here would stay
-as they are.)*
+as they are.)* *(Added in chapter 27: `needs units at "v1.2.0"`, and the
+two here are as they were.)*
 
 ### 8.4 A version is one exact thing: what stands after `at`
 
@@ -5720,7 +5722,7 @@ are refused when the loader meets them:
 | one file reached as two modules, `filters` and `lib.filters` | it would run twice, and its types would exist twice |
 | an import of the file the program starts in | it would run twice |
 
-### 8.9 Only `zeno fetch` uses the network
+### 8.9 Only `zeno fetch` uses the network *(widened in 27.7)*
 
 ```
 zeno fetch              in the folder of the program
@@ -7283,7 +7285,7 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 7.3 | No `import drivers.uart as uart` | Settled | One module has one name. `from drivers.uart import send` gives the short form of what is used, and since this pass an `as` after an `import` gets a message that says so |
 | 7.4 | Everything at the top of a file could be imported | Changed in 10.1: `private` | |
 | 7.11 | The files of a program are joined and compiled together | A limit of 0.1 | Compiling each file by itself needs a written description of what every module offers. It is what a large program will want, and no program is that large yet |
-| 8.3 | No registry of packages with short names | Settled for 0.1 | A package is a folder or a git address. A registry could be added as a third kind of `needs` line, and the two that exist would stay as they are |
+| 8.3 | No registry of packages with short names | Settled for 0.1. Added since, in chapter 27 | A package is a folder or a git address. A registry could be added as a third kind of `needs` line, and the two that exist would stay as they are |
 | 8.9 | No `zeno new`, no `zeno add` | Changed in 10.22: `zeno new`. `zeno add` is settled: there is none | A `needs` line is one line, and a new `zeno.package` shows both kinds |
 | 9.3 | The formatter never joins or splits a line | Settled | Where a line breaks is the one thing about layout that carries the author's meaning. Everything else has one answer |
 | 9.8 | The formatter does not line comments up | Settled | It keeps the distance the author chose, and never fights a column somebody made on purpose |
@@ -11292,3 +11294,310 @@ rounds (24.29).
 - A loop that takes items one at a time, for what never ends.
 - `python` in a built program, and in `--target py` (26.9).
 - JavaScript and Java, then the rest of 26.1.
+
+## 27. The registry: a package by its name
+
+Partha asked (2026-11-18) for a central place to find packages, as
+crates.io is for Rust and npm for JavaScript. Until now a `needs`
+line said where a package is: a folder, or a git repository (8.3).
+8.3 turned a registry down for 0.1, and said one could come later as
+a third kind of line with the two others left as they are. This is
+that. [`registry.md`](registry.md) is the walkthrough.
+
+**Checked against "unambiguous and intuitive".** The new line is an
+old line with the address left out (27.1). A version is still one
+exact thing, and now it cannot even move (27.2, 27.4). A name is
+looked up in one registry, which the program's own file names
+(27.13). A command that uses the network is one that was typed to do
+that (27.7). And publishing has one step that changes something, and
+it is the registry's, not the one on your machine (27.10).
+
+### 27.1 `needs units at "v1.2.0"`: a name, and a version
+
+```
+needs filters in "../filters"
+needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
+needs units at "v1.2.0"
+```
+
+The third line names no place. The registry says which repository
+`units` is, and which commit of it is `v1.2.0`.
+
+**Why this spelling.** It is the second line without `from` and its
+address. `at` means what it meant, and nothing new has to be learned:
+somebody who moves a package into the registry deletes an address
+from the lines that need it. A line with a name and nothing else is
+refused, with both ways to finish it.
+
+**Alternatives rejected.** `needs units "1.2"` (the first idea, in
+8.3): two texts side by side in the git line would then mean an
+address and a version by their order alone. `needs units from
+registry at "v1.2.0"`: a word that says what the missing address
+already says. A separate file for registry needs: 8.2 again.
+
+### 27.2 A version in the registry is the letter v and three numbers
+
+`v1.2.0`. It is a tag of the package's repository, exactly as
+written. No number has a zero in front, so a version has one
+spelling.
+
+**Why the v.** What stands after `at` is then the same text in the
+git line and in the registry line, and the same text as the tag that
+`git tag` made. With `1.2.0` in one line and `v1.2.0` in the other,
+one version would have two spellings, and somebody would have to
+remember which line takes which.
+
+**Why three numbers and nothing else.** A registry has to say which
+version is the newest, so versions need an order, and three numbers
+have one that everybody knows. `main` or a commit after `at` is still
+possible, in the line that names the repository: those are things a
+repository has, not things a registry lists.
+
+**Alternatives rejected.** `1.2` standing for the newest `1.2.x`: a
+range under another name, and 8.4 has no ranges. Any tag at all:
+then "the newest version" has no meaning. `-rc1` and the like: left
+out until somebody needs one.
+
+### 27.3 The registry is a git repository with one small file for each package
+
+The packages stay in their authors' repositories. The registry holds
+`index/<name>` for each: its name, what it is for, where it is, who
+published it, and a line for each version with its commit.
+
+**Why.** 8.3 gave four reasons against a registry: a server,
+accounts, uploads, and people taking names. This shape answers the
+first three and leaves the fourth small.
+
+- *No server.* A git repository on GitHub is free to host and is
+  kept running by somebody else. Zeno has no library for encrypted
+  connections (8.3), and needs none: it reads the registry with the
+  `git` it already uses for every package.
+- *No accounts of its own.* Whoever publishes is somebody with an
+  account where the registry is hosted (27.11).
+- *No uploads.* A package is fetched from where it already is. The
+  registry never holds anybody's code, so it stays a few hundred
+  bytes a package, and there is nothing to store, scan or pay for.
+- *Names.* See 27.11.
+
+It is also something a reader can understand whole: open the
+repository and read a file.
+
+**Why one file for each package.** Two people who publish at the same
+time change two files, and git joins that by itself. A version is one
+line added to one file, which is what a history of the registry
+should look like.
+
+**Why in Zeno's plain words.** The file is read by the lexer that
+reads `zeno.package` and `zeno.lock`, so there is no second reader
+(8.2).
+
+**Alternatives rejected.** A server that packages are uploaded to
+(crates.io, npm, PyPI): the usual shape, and all four of the reasons
+above. An index in git plus archives on a server (crates.io's own
+split): still the server. One big file: every change touches it.
+
+### 27.4 The registry names the commit, and a published version never changes
+
+The line for a version holds the commit the tag named on the day it
+was published. `zeno fetch` checks out that commit. It does not ask
+the repository what the tag names today.
+
+**Why.** A tag can be moved, by mistake or on purpose. With the
+commit written down, moving it changes nothing for anybody: the
+version everybody has is the version everybody keeps getting. This
+is what an upload gives a registry with a server, and here it costs
+forty letters. Taking the same version in a second time is refused,
+and the message says so if the tag has moved.
+
+If the repository no longer has the commit, the fetch stops and says
+that, and uses nothing.
+
+### 27.5 The lock line begins as its `needs` line does, and with a lock nobody is asked
+
+```
+units at "v1.2.0" from "https://github.com/someone/zeno-units" commit "9f8e7d6..."
+```
+
+**Why this order.** A line of `zeno.lock` is the `needs` line it is
+for, without the `needs`, and then what `zeno fetch` found. For a
+line with an address that was the commit. For a line with a name it
+is the address and the commit, both from the registry.
+
+**Why the address is in the lock.** So that a fetch with a lock does
+not need the registry. The lock already answers "what exactly is
+built?" (8.10), and where it comes from is part of the answer. A
+program with its lock builds next year, whatever has become of the
+registry.
+
+### 27.6 This machine keeps one copy of the registry, where things are kept that can be fetched again
+
+`~/.cache/zeno` on Linux, `~/Library/Caches/zeno` on macOS,
+`%LOCALAPPDATA%\zeno` on Windows, or the folder `ZENO_CACHE` names.
+Only the newest state is kept. It is brought up to date when a name
+has to be looked up, once in a run.
+
+**Why not in the program's folder**, where `packages/` is. `zeno
+search` is run where there is no program yet. And each program would
+fetch its own copy of the same list.
+
+**Why this is not 8.6 again.** 8.6 turned down a file "in a folder
+you may not know is there" that changes what a program means. This
+copy changes nothing: it is a copy of what the registry says, the
+first line `zeno fetch` prints says the registry was asked, and
+deleting the folder only makes the next fetch get it again.
+
+### 27.7 Three commands use the network, and each is typed to do that *(widens 8.9)*
+
+`zeno fetch`, `zeno search` and `zeno publish`. `run`, `check`,
+`build` and `test` still read files and nothing else.
+
+`zeno search` with no network shows the copy from last time, and
+begins by saying that this is what it shows.
+
+### 27.8 `about "..."`: one line that says what a package is for
+
+A new line of `zeno.package`, at most 120 characters. A package
+needs it to be published, and not before.
+
+**Why.** A list of names tells a searcher nothing. The line is in
+the package's own file, so it travels with the version: the registry
+shows the one of the newest version.
+
+**Alternatives rejected.** Asking for it in the form: then it is in
+the registry and not in the package. The first line of a README: a
+second file with a rule about its first line.
+
+### 27.9 A name in the registry is small letters, digits and `_`
+
+2 to 40 of them, starting with a letter. Not a word of the language,
+and not a module that comes with Zeno.
+
+**Why small letters.** The registry is a folder of files named after
+packages, and Windows and macOS take `Units` and `units` for one
+file. And nobody can publish a `Units` to be mistaken for somebody
+else's `units`. A package that is never published may still be
+called what any name of the language may be.
+
+### 27.10 `zeno publish` checks, and changes nothing
+
+It checks the package (the table in `registry.md`), and ends with
+how to ask the registry: the address of a form, for a registry on
+GitHub, or the line for whoever keeps one that is elsewhere.
+
+**Why it does not do the publishing itself.** To add to a registry,
+`zeno` would have to hold something that proves who you are: a token
+in a file on your machine, a `zeno login`, and an encrypted
+connection to send it over. That is a secret to leak and Zeno's first
+dependency. As it is, the only thing that proves who you are is that
+you are signed in to GitHub in your own browser.
+
+It also keeps the command honest. `zeno publish` can be run as often
+as you like, at any stage, to see what is still missing.
+
+**Alternatives rejected.** Pushing a branch to a fork of the
+registry and opening a pull request: needs the fork, and GitHub's
+API to open the request. `zeno login`: above.
+
+### 27.11 Zeno's own registry is asked by a form on GitHub, and the first to publish a name owns it
+
+The form is an issue with two answers: the repository and the
+version. A workflow reads it and runs `zeno registry accept` (27.12).
+
+- **Who is asking** is the account that sent the form. GitHub says
+  so, and it cannot be typed in.
+- **They must publish their own repository**: one that belongs to
+  that account, or to an organization that shows them as a member.
+- **The first to publish a name owns it.** Later versions come from
+  the same repository and the same account.
+
+**Why.** This is the answer to "accounts" and to most of "people
+taking names" (8.3). Nobody can publish another person's repository
+under a name they would then own, and nobody can add a version to a
+package that is not theirs. What is left is somebody taking a good
+name for an empty package of their own. No rule stops that at the
+door without a person reading every request, so that is for a keeper
+of the registry to undo when it is reported.
+
+**Why a form and not a pull request** (as Homebrew and winget do).
+A pull request has the asker write the registry's file, which then
+has to be checked line by line, by a program or a person. A form has
+two answers, and the registry writes its own file.
+
+**Provisional.** The form takes repositories on GitHub. A package
+that lives elsewhere is added by a keeper by hand. And an owner is
+one account: handing a package on is a keeper's edit.
+
+### 27.12 `zeno registry accept` is part of `zeno`
+
+```
+zeno registry accept <folder> <address> <version> --owner <who>
+```
+
+It fetches the repository at the tag, checks the package, and writes
+`index/<name>` and `index.json` in a clone of a registry. It commits
+nothing.
+
+**Why in `zeno`.** What a package must be to be published is asked
+twice: by `zeno publish`, of a folder, and by the registry, of what
+the repository really holds. Both ask the same function (`fits`),
+and both read `zeno.package` with the one reader there is. A script
+in the registry's repository would be a second reader of that file,
+to keep in step by hand.
+
+**Why it commits nothing.** Who commits, and how, belongs to whoever
+keeps the registry: a workflow for Zeno's own, a person with a
+terminal for a small one.
+
+**Why `--owner` is a word and not an account.** What an owner is
+depends on where the registry is. The workflow passes the GitHub
+account; a company's registry can pass whatever it calls its people.
+
+### 27.13 A program can name another registry, and there is one for each program
+
+```
+registry "https://git.example.com/zeno-packages"
+```
+
+Every name in the program is looked up there, in place of Zeno's
+own. It is the line in the program's own `zeno.package` that counts,
+as with `memory`.
+
+**Why.** A company's packages are often not for the world. Since a
+registry is any git repository, one of your own costs nothing.
+
+**Why in the file, and not a setting of the machine.** What `needs
+units at "v1.2.0"` means would then depend on a variable somebody
+set last year. In the file, whoever reads the program can see where
+its names come from.
+
+**Why one, and not a list to look through in order.** With two
+registries, a name that is in both has two meanings, and which one a
+program gets depends on the order. That is how a package published
+in public under the name of a private one ends up in a company's
+build. One registry for a program, and a name has one meaning.
+
+**Alternatives rejected.** A registry on each `needs` line. A list
+of registries. An environment variable (`ZENO_CACHE` is one, but it
+says where a copy is kept, and changes what no program means).
+
+### 27.14 `index.json` is the same list for a browser, and the page reads it there
+
+`zeno registry accept` writes `index.json` beside `index`: every
+package on a line of its own. zeno-lang.org/packages reads it from
+the registry when the page is opened.
+
+**Why.** A page in a browser cannot run git. And a page that read the
+list when the site was built would be out of date until the site was
+built again, which is a step somebody has to take. This way a
+package is on the page a few minutes after it is published.
+
+`zeno` itself does not read `index.json`.
+
+### 27.15 Left for later
+
+- Taking a version out, or marking one as not to be used.
+- Handing a package to another owner, and more than one owner.
+- The form for packages that are not on GitHub.
+- A licence line, and running a package's tests before it is taken.
+- Versions before a release (`v1.2.0-rc1`).
+- Saying in the lock which registry a line came from.

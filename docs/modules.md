@@ -64,7 +64,7 @@ comes with Zeno is.
    gave to `zeno run`, whichever file does the importing. One name is
    one file, everywhere in the program (7.2). (An import whose first
    word is a package the program needs reads that package:
-   [`packages.md`](packages.md).)
+   [`using-packages.md`](using-packages.md).)
 2. **What can be imported.** Everything a file declares at its top:
    functions, classes, enums and their cases, `let`, `var` and `const`.
    What the file itself imports is not passed on (7.4). A declaration
@@ -239,7 +239,7 @@ if let ExprKind::Field { object, name } = &expr.kind {
 `whole` holds the modules the file imported with `import`, each with
 the name it has in the whole program. In a program of one folder the
 two are the same word. They differ inside a package, which is the
-subject of [`packages.md`](packages.md).
+subject of [`using-packages.md`](using-packages.md).
 
 The one hard part is knowing when a name is *not* the module's. In
 
@@ -357,7 +357,7 @@ use it.
 - **Other people's modules** are not on this page. A module of the
   program is found from the program's own folder and nowhere else. A
   folder of modules that lives somewhere else is a package, and
-  [`packages.md`](packages.md) is about those.
+  [`using-packages.md`](using-packages.md) is about those.
 
 ## Things to try
 

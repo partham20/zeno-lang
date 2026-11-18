@@ -2,8 +2,9 @@
 
 Modules put one program into several files. A \emph{package} lets a
 program use files that are not its own: a folder of modules that lives
-somewhere else, beside the program or in somebody else's git
-repository.
+somewhere else. It may be beside the program, in somebody else's git
+repository, or in the \emph{registry}, where a package is found by
+its name alone.
 
 \section{Starting a program with zeno new}
 
@@ -29,7 +30,7 @@ what can be written, and then one line:
 package weather
 \end{zeno}
 
-There are three kinds of line, and that is all the file can say:
+These are the lines there are, and that is all the file can say:
 
 \begin{center}
 \begin{tabular}{lP{7.6cm}}
@@ -39,8 +40,14 @@ Line & Means \\
 \verb|package weather| & the name of this package \\
 \verb|needs filters in "../filters"| & it needs the package in that
   folder, counted from this file's folder. Nothing is copied \\
+\verb|needs units at "v1.2.0"| & it needs that version of the package
+  the registry calls \verb|units| \\
 \verb|needs units from "address" at "v1.2.0"| & it needs the package in
   that git repository, at that tag, branch or commit \\
+\verb|about "Filters for noisy readings"| & what the package is for, in
+  one line. A package needs it to be published \\
+\verb|registry "address"| & look names up in that registry, and not in
+  Zeno's own \\
 \verb|memory owned| & how the program frees memory: \verb|owned| (one
   owner for each value, no collector) or \verb|collector|, which is what
   it gets with no line (\hyperref[ch-memory]{Memory}) \\
@@ -137,18 +144,48 @@ its own.
 
 \section{Other people's packages: zeno fetch}
 
-A package that somebody else keeps is named by its git repository and
-by one exact version of it:
+A package that somebody else keeps is in a git repository of theirs.
+The short way to need it is by its name:
 
 \begin{zenofrag}[lang=shell]
 package logger
 
+needs units at "v1.2.0"
+\end{zenofrag}
+
+The name is looked up in the \emph{registry}: a list that says, for
+each name, which repository the package is and which commit of it each
+version is. \verb|zeno search| shows what the registry has, and under
+each package the line to write:
+
+{\itshape The registry is on its way and not yet released: the line
+with only a name, \verb|zeno search| and \verb|zeno publish| are in
+Zeno built from its source today, and in the release after 0.5.1.}
+
+\begin{zenofrag}[lang=shell]
+$ zeno search lengths
+1 package in the registry https://github.com/zeno-src/packages:
+
+units v1.2.0    Lengths, masses and times that the checker keeps apart
+    needs units at "v1.2.0"
+    https://github.com/someone/zeno-units
+    older: v1.0.0
+\end{zenofrag}
+
+The same list, with a box to search it, is at
+\url{https://zeno-lang.org/packages/}.
+
+A package that is in no registry is named by its repository:
+
+\begin{zenofrag}[lang=shell]
 needs units from "https://github.com/someone/zeno-units" at "v1.2.0"
 \end{zenofrag}
 
-\verb|at| is a tag, a branch or a commit. There are no ranges such as
-\verb|^1.2|: the version written is the version used. Then, in the
-program's folder:
+In this line \verb|at| is a tag, a branch or a commit of that
+repository. In the line with only a name it is a version, which is
+written as the letter v and three numbers. In neither are there ranges
+such as \verb|^1.2|: the version written is the version used. Then, in
+the program's folder:
 
 \begin{zenofrag}[lang=shell]
 $ zeno run main.zeno
@@ -156,27 +193,31 @@ error: the package `units` has not been fetched: there is no file
 `packages/units/zeno.package`. Run `zeno fetch` in the folder of the program
 
 $ zeno fetch
+Asked the registry https://github.com/zeno-src/packages
 Fetched units v1.2.0 (1c4e326) into packages/units
-Fetched prefix main (d4461d9) into packages/prefix
+Fetched prefix v1.0.0 (d4461d9) into packages/prefix
 Wrote zeno.lock
 
 $ zeno run main.zeno
 42.0
 \end{zenofrag}
 
-Three things happened.
+Four things happened.
 
 \begin{itemize}
 \item \textbf{Running never fetches.} \verb|zeno run|, \verb|check|
   and \verb|build| read files and nothing else. Only \verb|zeno fetch|
-  uses the network, with the \verb|git| that is on the machine.
+  gets packages, with the \verb|git| that is on the machine.
+\item \textbf{The registry was asked once}, for the names that had no
+  address. A line that names its repository does not need it.
 \item \textbf{What a package needs comes too.} \verb|units| needs
   \verb|prefix|, so that was fetched as well. All of them go into one
   folder, \verb|packages/|, beside the program's \verb|zeno.package|,
   and a program has one package of each name.
-\item \textbf{zeno.lock was written.} It holds the exact commit each
-  package was at. A branch moves, but the next \verb|zeno fetch|, here
-  or on another machine, gets the commit in the lock.
+\item \textbf{zeno.lock was written.} It holds the repository and the
+  exact commit of each package. A branch moves, but the next
+  \verb|zeno fetch|, here or on another machine, gets the commit in
+  the lock, and asks no registry to find it.
   \verb|zeno fetch --update| looks every version up again and writes
   the lock afresh.
 \end{itemize}
@@ -194,6 +235,105 @@ build never depends on the network, which a factory build machine may
 not have. (Decisions 8.4, 8.9 and 8.10.)
 \end{why}
 
+\section{The registry, and publishing to it}
+
+The registry is not a server. It is a git repository,
+\url{https://github.com/zeno-src/packages}, with one small file for each
+package. This is the file for \verb|units|:
+
+\begin{zenofrag}[lang=shell]
+package units
+about "Lengths, masses and times that the checker keeps apart"
+from "https://github.com/someone/zeno-units"
+owner "someone"
+
+version "v1.0.0" commit "0123abc..." dated "2026-11-02"
+version "v1.2.0" commit "9f8e7d6..." dated "2026-11-18"
+\end{zenofrag}
+
+The package itself stays in its author's repository. The registry
+says where that is, and which commit each version is. \verb|zeno fetch|
+checks out that commit, so a version that has been published stays
+what it was, even if somebody moves the tag afterwards.
+
+To publish a package of your own, it needs three things: a git
+repository of its own that anybody can fetch from, an \verb|about|
+line in its \verb|zeno.package|, and a tag on the commit that is the
+version.
+
+\begin{zenofrag}[lang=shell]
+package filters
+about "Filters for noisy readings"
+\end{zenofrag}
+
+\begin{zenofrag}[lang=shell]
+$ git tag v1.0.0
+$ git push origin main v1.0.0
+$ zeno publish
+`filters` v1.0.0 (32a7444) is ready to be published, from https://github.com/someone/zeno-filters
+
+Open this address, signed in to GitHub, and press the button under the form:
+
+    https://github.com/zeno-src/packages/issues/new?template=publish.yml&...
+
+The registry checks the package and answers on that page, most often within a few minutes.
+\end{zenofrag}
+
+\verb|zeno publish| changes nothing. It checks the package, and what
+it finds wrong it says, with what to do: a change that is not
+committed, a tag that is not pushed, a \verb|needs| line that points
+at a folder nobody else would have. When everything is in order it
+gives the address of a form, already filled in. Sending the form is
+the publishing, and the registry does the rest: it fetches the
+repository at the tag, checks it again, writes the package's file and
+answers.
+
+Three rules keep the registry something that can be relied on.
+
+\begin{itemize}
+\item \textbf{A name is small letters}, digits and \verb|_|, 2 to 40 of
+  them, so that \verb|Units| and \verb|units| can never be two
+  packages.
+\item \textbf{The first to publish a name owns it.} Its later versions
+  are taken only from the same repository, asked for by the same
+  GitHub account, and you publish only from a repository that is
+  yours.
+\item \textbf{A published version never changes.} To change something,
+  publish a new version.
+\end{itemize}
+
+\begin{why}
+A registry is usually a server that packages are uploaded to, with
+accounts and tokens of its own. This one needs none of that. It is a
+repository that \verb|zeno| reads with git, the accounts are GitHub's,
+and nothing is uploaded, because a package is fetched from where it
+already is. So it costs nothing to keep, and anybody can read all of
+it. (Decisions 27.3, 27.4, 27.10 and 27.11.)
+\end{why}
+
+\subsection{A registry of your own}
+
+Since a registry is any git repository, a company can keep one for
+packages that are not for the world. A program names it, and every
+name in that program is then looked up there:
+
+\begin{zenofrag}[lang=shell]
+package logger
+registry "https://git.example.com/zeno-packages"
+
+needs units at "v1.2.0"
+\end{zenofrag}
+
+Whoever keeps such a registry adds a package to a clone of it with
+\verb|zeno registry accept|, which is the command Zeno's own registry
+runs when a form arrives, and then commits and pushes:
+
+\begin{zenofrag}[lang=shell]
+$ zeno registry accept . https://git.example.com/units v1.2.0 --owner ada
+Accepted units v1.2.0 (9f8e7d6) from https://git.example.com/units
+Wrote index/units and index.json
+\end{zenofrag}
+
 \section{What can go wrong}
 
 Each mistake in a \verb|zeno.package| is shown with its file and line,
@@ -209,14 +349,23 @@ error: two packages called `b` are needed: the one in `a/b` and the one in `b`.
 A program has one package of each name. Make the `needs` lines agree
 \end{zenofrag}
 
+And \verb|zeno fetch| says what the registry has when it does not have
+what was asked for:
+
+\begin{zenofrag}[lang=shell]
+zeno: the registry has no version `v9.0.0` of `units`. It has v1.2.0 and v1.0.0
+\end{zenofrag}
+
 \begin{summary}
 \verb|zeno new| starts a program, \verb|zeno new --package| a package.
 \verb|zeno.package| names a package and lists what it needs: a folder
-with \verb|in|, or a git repository and one exact version with
-\verb|from| and \verb|at|. An import whose first word is a needed
-package reads that package's folder. \verb|zeno fetch| gets git
-packages into \verb|packages/| and pins them in \verb|zeno.lock|;
-nothing else touches the network.
+with \verb|in|, a package of the registry by its name and a version
+with \verb|at|, or a git repository with \verb|from| and \verb|at|.
+An import whose first word is a needed package reads that package's
+folder. \verb|zeno fetch| gets packages into \verb|packages/| and
+pins them in \verb|zeno.lock|; running and building never touch the
+network. \verb|zeno search| lists the registry, and \verb|zeno publish|
+checks a package and says how to ask the registry to take it.
 \end{summary}
 
 \begin{tryit}
@@ -230,5 +379,12 @@ nothing else touches the network.
   package's folder (\hyperref[ch-testing]{Testing}).
 \item Put a package of yours in a git repository, tag it, and need it
   from a program with \verb|from| and \verb|at|.
+\item Give that package an \verb|about| line and run \verb|zeno publish|
+  in its folder before the tag is pushed. Read what it says, do what it
+  asks, and run it again.
+\item Make a registry of your own in a folder (\verb|git init --bare|),
+  take your package into a clone of it with
+  \verb|zeno registry accept|, and need the package by its name from a
+  program with a \verb|registry| line.
 \end{enumerate}
 \end{tryit}

@@ -50,7 +50,7 @@ instead?
 | Memory | [`memory.md`](memory.md), [`ownership.md`](ownership.md), [`no-collector.md`](no-collector.md), [`one-owner.md`](one-owner.md), [`pool.md`](pool.md), [`text.md`](text.md), [`temporaries.md`](temporaries.md), [`enums-and-none.md`](enums-and-none.md), [`functions-and-errors.md`](functions-and-errors.md), [`unsafe.md`](unsafe.md) |
 | Types beyond the first few | [`sized-ints.md`](sized-ints.md), [`generics.md`](generics.md), [`interfaces.md`](interfaces.md), [`private.md`](private.md) |
 | The library | [`library.md`](library.md), [`reading-and-writing.md`](reading-and-writing.md), [`math.md`](math.md), [`dict.md`](dict.md), [`board.md`](board.md) |
-| More than one file | [`modules.md`](modules.md), [`packages.md`](packages.md), [`new.md`](new.md) |
+| More than one file | [`modules.md`](modules.md), [`using-packages.md`](using-packages.md), [`new.md`](new.md) |
 | Tools | [`format.md`](format.md), [`lsp.md`](lsp.md), [`testing.md`](testing.md) |
 | The last gaps | [`gaps.md`](gaps.md) |
 
