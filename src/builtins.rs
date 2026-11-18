@@ -872,6 +872,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::List(_) => LIST_METHODS.contains(&name),
         Value::Dict(_) => DICT_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
+        Value::InputPin(_) => name == "is_high" || name == "is_low",
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
         Value::Timer(_) => name == "stop",
@@ -1324,6 +1325,15 @@ pub fn call_method(
                 _ => fatal(format!("a pin has no method `{name}`"), span),
             }
         }
+        // `button.is_low()`: what the pin reads now.
+        Value::InputPin(pin) => {
+            arity(name, &args, 0, 0, span)?;
+            match name {
+                "is_high" => Ok(Value::Bool(machine.board().read(*pin))),
+                "is_low" => Ok(Value::Bool(!machine.board().read(*pin))),
+                _ => fatal(format!("an input pin has no method `{name}`"), span),
+            }
+        }
         Value::Element(id, _) => element_method(machine, *id, name, args, span),
         // `ticking.stop()`: the call that waits is called off. Stopping
         // what has stopped, or what has been called already, is nothing.
@@ -1505,6 +1515,11 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("led", Value::Pin(board::LED)),
                 ("pin", Value::Builtin(Builtin { name: "pin", call: pin })),
                 ("register", Value::Builtin(Builtin { name: "register", call: register })),
+                ("input_pin", Value::Builtin(Builtin { name: "input_pin", call: input_pin })),
+                // How an input is held: the str of its name, as in a
+                // compiled program (decision 45.3).
+                ("pull_up", Value::Str(Rc::from("pull_up"))),
+                ("pull_down", Value::Str(Rc::from("pull_down"))),
             ],
         ),
         _ => return None,
@@ -1845,6 +1860,20 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// `input_pin(2, pull_up)`: the pin with that number, made an input.
+fn input_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("input_pin", &args, 1, 2, span)?;
+    let Value::Pin(number) = pin(machine, vec![args[0].clone()], span)? else { unreachable!("`pin` gives a pin") };
+    let pull = match args.get(1) {
+        None => board::Pull::Nothing,
+        Some(Value::Str(name)) if &**name == "pull_up" => board::Pull::Up,
+        Some(Value::Str(name)) if &**name == "pull_down" => board::Pull::Down,
+        Some(other) => return wrong_type("input_pin", "`pull_up` or `pull_down`", other, span),
+    };
+    machine.board().input(number, pull);
+    Ok(Value::InputPin(number))
+}
+
 fn drive(machine: &mut dyn Machine, pin: i64, level: bool) -> Result {
     if let Some(line) = machine.board().write(pin, level) {
         machine.write_line(&line);

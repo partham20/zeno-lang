@@ -706,7 +706,9 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
     };
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
     let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
-    let mut runtime = emit_llvm::runtime_for(kind, options.grows);
+    // The part of the runtime for input pins, only if the program makes
+    // one (decision 45.4).
+    let mut runtime = emit_c::with_input_pins(&emit_llvm::runtime_for(kind, options.grows), ir.contains("@zeno_input_pin("));
     if options.fast {
         runtime.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }

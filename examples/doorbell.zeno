@@ -1,0 +1,35 @@
+# A doorbell: a button on pin 2 rings a bell on pin 9, once for each
+# press.
+#
+# The button joins pin 2 to ground when it is pressed. A pull-up holds
+# the pin high the rest of the time, so the pin reads low while the
+# button is down. A press is counted when the pin goes from high to low,
+# and reading it every 5 ms is slow enough to step over the few
+# milliseconds a button bounces for.
+#
+# On a computer nothing presses the button, so it watches and rings
+# nothing. On a board, press it. See docs/inputs.md.
+from board import input_pin, pin, pull_up
+from time import sleep, now
+
+let button = input_pin(2, pull_up)
+let bell = pin(9)
+
+# Firmware would watch for ever. This watches for a fifth of a second.
+let watch = 200 ms
+
+var presses = 0
+var was_down = false
+let start = now()
+while now() - start < watch {
+    let down = button.is_low()
+    if down and not was_down {
+        presses += 1
+        bell.on()
+        sleep(50 ms)
+        bell.off()
+    }
+    was_down = down
+    sleep(5 ms)
+}
+print(f"presses: {presses}")

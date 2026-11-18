@@ -91,6 +91,7 @@ Samples, none of them final:
 - [`examples/sketch.zeno`](examples/sketch.zeno): a sheet to draw on with the mouse, with [`sketch.html`](examples/sketch.html) as the page. A function asks for the `Event` to learn where the mouse is, draws on a `<canvas>`, sets the style of one element, and keeps the chosen colour for the next visit. Its tests press the mouse with `fire`.
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
+- [`examples/doorbell.zeno`](examples/doorbell.zeno): a button on an input pin with a pull-up rings a bell, once for each press.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -742,6 +743,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     list. In every engine, every build and all fifteen target
     languages. See [`docs/units-made.md`](docs/units-made.md) and
     chapter 43 of [`docs/decisions.md`](docs/decisions.md))
+43. Inputs on a board (done, after 0.5.2 and not yet released:
+    `input_pin(2, pull_up)` gives an `InputPin`, read with
+    `is_high()` and `is_low()`, and driving one is refused before the
+    program runs. A board header gains a fifth function,
+    `zeno_board_input`, which only a program that reads a pin calls.
+    In every engine and every C and LLVM build.
+    See [`docs/inputs.md`](docs/inputs.md) and chapter 45 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

@@ -40,6 +40,7 @@ Zeno. This page is about how both of those work.
 | `board` | `led` | the pin the LED is on |
 | | `pin(7)` | the pin with that number. A `ValueError` if the board has none |
 | | `register(u32, 0x4002_0014)` | the register at that address, read and written inside `unsafe { }` ([`unsafe.md`](unsafe.md)) |
+| | `input_pin(2, pull_up)` | the pin with that number, as an input the program reads ([`inputs.md`](inputs.md)) |
 | `time` | `sleep(500 ms)` | wait. The time must have a unit |
 | | `now()` | the reading of a clock that only goes forward, in `ms` |
 
@@ -163,7 +164,9 @@ is the part worth reading slowly:
 ```
 
 Those four, and `ZENO_PINS`, the number of pins, are everything Zeno
-knows about hardware. What the program calls is written on top of them
+knows about hardware. A program that reads a pin needs a fifth,
+`zeno_board_input(pin, pull)`, and only such a program calls it
+([`inputs.md`](inputs.md), decision 45.4). What the program calls is written on top of them
 once, for every board:
 
 ```c
@@ -307,8 +310,10 @@ as `now() - start >= 200 ms` after sleeping that long.
 
 ## What it does not do yet
 
-- **Inputs.** `is_on()` reads back what the program wrote. There is no
-  button, and no way to say a pin is an input.
+- **Pressing a button under `zeno run`.** Inputs can be made and read
+  ([`inputs.md`](inputs.md)), and a board header can press them, but
+  the simulated board has no way to. Nor can a program wait for an
+  edge yet.
 - **Everything else on a microcontroller**: interrupts, timers, PWM, an
   ADC, a serial port. Each would be a few more functions in the board
   layer. Until then a program can reach the hardware itself, through
@@ -333,10 +338,11 @@ as `now() - start >= 200 ms` after sleeping that long.
 2. `led.on()` twice prints one line. Find the two places that decide
    that, one in Rust and one in C. Change both to print every write.
    Which tests fail, and is the new output more useful or less?
-3. Add `button` to the `board` module: a pin whose level the program
-   reads but does not drive. On the simulated board, let it be pressed
-   every third time it is read. You will need a fifth function in the
-   board layer, or will you?
+3. Add `button` to the `board` module, as `led` is: an input pin with
+   a pull-up, on a pin the board chooses. On the simulated board, let
+   it be pressed every third time it is read. Compare what you did
+   with `input_pin` ([`inputs.md`](inputs.md)), which needed a fifth
+   function in the board layer.
 4. Write `my_board.h` for a board with eight pins where every write
    prints all eight levels as one byte in binary, such as `00100000`.
    Build `signal.zeno` on it by hand with `-DZENO_BOARD`.

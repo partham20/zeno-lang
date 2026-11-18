@@ -36,6 +36,8 @@ pub enum Value {
     Dict(Rc<RefCell<Dict>>),
     /// A pin of the board, by its number: `led`, `pin(7)`
     Pin(i64),
+    /// A pin the program reads, by its number: `input_pin(2)`
+    InputPin(i64),
     /// A raw pointer: the block that `allocate` made, and how many items
     /// into it this pointer points.
     Pointer(Rc<Memory>, i64),
@@ -646,6 +648,7 @@ impl Value {
             Value::List(_) => "a list".to_string(),
             Value::Dict(_) => "a dict".to_string(),
             Value::Pin(_) => "a pin".to_string(),
+            Value::InputPin(_) => "an input pin".to_string(),
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
             Value::Timer(_) => "a Timer".to_string(),
@@ -785,6 +788,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
         (Pin(a), Pin(b)) => a == b,
+        (InputPin(a), InputPin(b)) => a == b,
         // Two elements are equal when they are one element of the page.
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
@@ -866,6 +870,7 @@ impl fmt::Display for Value {
                 write!(f, "[{}]", entries.join(", "))
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
+            Value::InputPin(number) => write!(f, "InputPin({number})"),
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),
             Value::Timer(_) => write!(f, "Timer"),

@@ -2346,7 +2346,15 @@ static double zeno_acos(double x, int line, int col) {
  *   zeno_board_sleep(seconds)      wait
  *   zeno_board_now()               a clock that only goes forward, in ms
  *
- * together with ZENO_PINS, the number of pins. Below is a simulated
+ * together with ZENO_PINS, the number of pins. A program that reads a
+ * pin (`input_pin(2, pull_up)`) needs a fifth:
+ *
+ *   zeno_board_input(pin, pull)    make the pin an input: 0 nothing pulls
+ *                                  it, 1 a pull-up, 2 a pull-down
+ *
+ * and reads it with zeno_board_read. Only such a program calls it, so a
+ * board header written before there were inputs still builds every
+ * program that has none (decision 45.4). Below is a simulated
  * board, for a program that runs on a computer: it keeps the level of
  * each pin in an array, and prints a line when a level changes, as a
  * logic analyser on the pin would show it.
@@ -2372,6 +2380,17 @@ static bool zeno_levels[ZENO_PINS];
 static bool zeno_board_read(int pin) {
     return zeno_levels[pin];
 }
+
+#ifdef ZENO_INPUT_PINS
+/* An input is not driven, so what it reads is what holds it: a pull-up
+ * reads high, a pull-down low, and a pin nothing pulls keeps the level
+ * it had. Nothing is printed: the lines are what the program drives,
+ * and a pull is not driven (decision 45.5). */
+static void zeno_board_input(int pin, int pull) {
+    if (pull == 1) zeno_levels[pin] = true;
+    if (pull == 2) zeno_levels[pin] = false;
+}
+#endif /* ZENO_INPUT_PINS */
 
 static void zeno_board_write(int pin, bool level) {
     /* A pin that is already there does not move, and shows nothing. */
@@ -2580,6 +2599,26 @@ static bool zeno_pin_is_on(int64_t pin) { return zeno_board_read((int)pin); }
 /* A pin as `print` shows it. */
 static const char *zeno_str_pin(int64_t pin) {
     return zeno_join(3, "Pin(", zeno_str_int(pin), ")");
+}
+
+#ifdef ZENO_INPUT_PINS
+/* `input_pin(2, pull_up)`: the pin with that number, made an input. The
+ * pull comes as the program holds it, the str of its name, or NULL when
+ * nothing pulls the pin. */
+static int64_t zeno_input_pin(int64_t number, const char *pull, int line, int col) {
+    int64_t pin = zeno_pin(number, line, col);
+    zeno_board_input((int)pin, pull == NULL ? 0 : strcmp(pull, "pull_up") == 0 ? 1 : 2);
+    return pin;
+}
+#endif /* ZENO_INPUT_PINS */
+
+/* `button.is_high()` and `button.is_low()`. */
+static bool zeno_input_is_high(int64_t pin) { return zeno_board_read((int)pin); }
+static bool zeno_input_is_low(int64_t pin) { return !zeno_board_read((int)pin); }
+
+/* An input pin as `print` shows it. */
+static const char *zeno_str_input_pin(int64_t pin) {
+    return zeno_join(3, "InputPin(", zeno_str_int(pin), ")");
 }
 
 /* `sleep(500 ms)`. The compiler has already turned the time into

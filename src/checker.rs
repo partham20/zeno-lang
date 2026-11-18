@@ -92,6 +92,9 @@ pub enum Kind {
     Optional(Box<Kind>),
     /// A pin of the board: `led`, `pin(7)`. It is the pin's number.
     Pin,
+    /// A pin the program reads: `input_pin(2)`. It is the pin's number
+    /// too (decision 45).
+    InputPin,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -510,6 +513,11 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
         Ty::Pin => Kind::Pin,
+        Ty::InputPin => Kind::InputPin,
+        // `pull_up` and `pull_down` are the strs of their names, so
+        // printing one, comparing two and keeping them in a list work
+        // as they do for any str. The checker keeps them apart.
+        Ty::Pull => Kind::Str,
         Ty::Pointer(pointee) => Kind::Pointer(*pointee),
         Ty::Register(width) => Kind::Register(*width),
         Ty::None => Kind::None,
@@ -682,6 +690,11 @@ enum Ty {
     Quantity(Rc<str>),
     /// A pin of the board, from the `board` module.
     Pin,
+    /// A pin of the board that the program reads: `input_pin(2)`.
+    InputPin,
+    /// How an input pin is held when nothing drives it: `pull_up` or
+    /// `pull_down`, from the `board` module.
+    Pull,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -891,6 +904,8 @@ enum Key {
     Str,
     Bool,
     Pin,
+    InputPin,
+    Pull,
     Element,
     Event,
     Timer,
@@ -1131,6 +1146,8 @@ impl fmt::Display for Ty {
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
+            Ty::InputPin => write!(f, "InputPin"),
+            Ty::Pull => write!(f, "Pull"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1258,6 +1275,8 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Str, Ty::Str)
         | (Ty::Bool, Ty::Bool)
         | (Ty::Pin, Ty::Pin)
+        | (Ty::InputPin, Ty::InputPin)
+        | (Ty::Pull, Ty::Pull)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -1951,6 +1970,8 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "led") => Ty::Pin,
         ("board", "pin") => Ty::Builtin("pin"),
         ("board", "register") => Ty::Builtin("register"),
+        ("board", "input_pin") => Ty::Builtin("input_pin"),
+        ("board", "pull_up") | ("board", "pull_down") => Ty::Pull,
         _ => return None,
     })
 }
@@ -2573,6 +2594,8 @@ impl Checker {
             Ty::Str => Key::Str,
             Ty::Bool => Key::Bool,
             Ty::Pin => Key::Pin,
+            Ty::InputPin => Key::InputPin,
+            Ty::Pull => Key::Pull,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2622,6 +2645,8 @@ impl Checker {
             Key::Str => Ty::Str,
             Key::Bool => Ty::Bool,
             Key::Pin => Ty::Pin,
+            Key::InputPin => Ty::InputPin,
+            Key::Pull => Ty::Pull,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3031,6 +3056,8 @@ impl Checker {
                         // A pin of the board. A class of the program's own
                         // called `Pin` was found above, and comes first.
                         _ if name == "Pin" => Ty::Pin,
+                        _ if name == "InputPin" => Ty::InputPin,
+                        _ if name == "Pull" => Ty::Pull,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6165,9 +6192,28 @@ impl Checker {
             Ty::Register(_) if name == "address" => Ty::Int,
             // `led.number`: which pin this is.
             Ty::Pin if name == "number" => Ty::Int,
+            Ty::InputPin if INPUT_PIN_METHODS.contains(&name) => {
+                Ty::BuiltinMethod(Box::new(Ty::InputPin), Rc::from(name))
+            }
+            Ty::InputPin if name == "number" => Ty::Int,
             // `ticking.stop()`: the one thing a timer does.
             Ty::Timer if name == "stop" => Ty::BuiltinMethod(Box::new(Ty::Timer), Rc::from(name)),
             Ty::Timer => self.error(format!("a Timer has no `{name}`. It has `stop()`, which calls off what is waiting"), span),
+            // An input is read and an output is driven (45.1, 45.2).
+            Ty::InputPin if PIN_METHODS.contains(&name) => self.error(
+                format!(
+                    "an InputPin is read and not driven, so it has no `{name}`. Read it with `is_high()` or `is_low()`. \
+                     A pin the program drives is made with `pin( )`"
+                ),
+                span,
+            ),
+            Ty::Pin if INPUT_PIN_METHODS.contains(&name) => self.error(
+                format!(
+                    "`{name}` reads an input, and this Pin is driven by the program. Ask it what it was driven to with \
+                     `is_on()`. A pin the program reads is made with `input_pin( )`"
+                ),
+                span,
+            ),
             Ty::Element if crate::builtins::ELEMENT_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(Ty::Element), Rc::from(name))
             }
@@ -7264,6 +7310,24 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            // `input_pin(2)`, `input_pin(2, pull_up)`: a pin the program
+            // reads, and what holds it when nothing drives it (45.3).
+            "input_pin" => {
+                if self.arity(name, arguments, 1, 2, span) {
+                    self.expect(&first, &Ty::Int, "the number of a pin", arguments[0].span);
+                    if let Some(pull) = arguments.get(1).filter(|pull| !fits(&pull.ty, &Ty::Pull)) {
+                        self.error(
+                            format!(
+                                "what holds an input pin is `pull_up` or `pull_down`, from the `board` module, \
+                                 and this is {}. With nothing there, nothing pulls the pin",
+                                pull.ty
+                            ),
+                            pull.span,
+                        );
+                    }
+                }
+                Ty::InputPin
+            }
             "web.element" | "web.elements" => {
                 let short = &name["web.".len()..];
                 if self.arity(short, arguments, 1, 1, span) {
@@ -7352,6 +7416,11 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            // `button.is_low()`: the level the pin is at now.
+            (Ty::InputPin, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Bool
             }
             // `button.on("click", pressed)`: the page calls `pressed`
             // with nothing.
@@ -8574,6 +8643,7 @@ const LIST_METHODS: &[&str] = &[
 ];
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
+const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
 /// What is looking at a part of an owner's value, so that the part must
@@ -9798,6 +9868,36 @@ mod tests {
         assert_eq!(error("from board import led\nlet n: int = led"), "`n` should be int, but this is Pin");
         assert_eq!(error("from board import led\nprint(led == 13)"), "`==` between Pin and int is always false");
         assert_eq!(error("from board import button"), "module `board` has no `button`");
+    }
+
+    #[test]
+    fn an_input_pin_is_read_and_an_output_is_driven() {
+        ok("from board import input_pin, pull_up, pull_down\nlet a: InputPin = input_pin(2, pull_up)\n\
+            let b = input_pin(3, pull_down)\nlet c = input_pin(4)\nlet high: bool = a.is_high() and b.is_low()\n\
+            let n: int = c.number\nlet how: Pull = pull_up\nprint(how == pull_down, a == b, how)");
+        ok("import board\nfunction made(n: int, how: Pull) -> InputPin { return board.input_pin(n, how) }\n\
+            let pins: list[InputPin] = [made(1, board.pull_up)]\nlet spare: InputPin or none = none");
+        assert_eq!(
+            error("from board import input_pin\ninput_pin(2).on()"),
+            "an InputPin is read and not driven, so it has no `on`. Read it with `is_high()` or `is_low()`. \
+             A pin the program drives is made with `pin( )`"
+        );
+        assert_eq!(
+            error("from board import led\nprint(led.is_low())"),
+            "`is_low` reads an input, and this Pin is driven by the program. Ask it what it was driven to with \
+             `is_on()`. A pin the program reads is made with `input_pin( )`"
+        );
+        assert_eq!(
+            error("from board import input_pin\nlet b = input_pin(2, \"up\")"),
+            "what holds an input pin is `pull_up` or `pull_down`, from the `board` module, and this is str. \
+             With nothing there, nothing pulls the pin"
+        );
+        assert_eq!(error("from board import input_pin, pin\nlet b: Pin = input_pin(2)"), "`b` should be Pin, but this is InputPin");
+        assert_eq!(error("from board import input_pin, pin\nprint(input_pin(2) == pin(2))"), "`==` between InputPin and Pin is always false");
+        assert_eq!(error("from board import pull_up\nlet s: str = pull_up"), "`s` should be str, but this is Pull");
+        assert_eq!(error("from board import input_pin\ninput_pin(2, 3, 4)"), "`input_pin` takes 1 to 2 arguments, but 3 were given");
+        assert_eq!(error("from board import input_pin, pull_up\ninput_pin(pull_up)"), "the number of a pin should be int, but this is Pull");
+        assert_eq!(error("from board import input_pin\ninput_pin(2).is_high(1)"), "`is_high` takes 0 arguments, but 1 was given");
         // A class of the program's own called `Pin` comes first.
         ok("class Pin {\n n: int\n}\nlet p: Pin = Pin(1)\nprint(p.n)");
     }

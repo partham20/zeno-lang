@@ -52,6 +52,18 @@ impl Board {
         format!("register 0x{address:08x} = 0x{value:0digits$x}")
     }
 
+    /// Make the pin an input. It is not driven, so what it reads is what
+    /// holds it: a pull-up reads high, a pull-down low, and a pin nothing
+    /// pulls keeps the level it had. Nothing is printed: the lines are
+    /// what the program drives, and a pull is not driven (decision 45.5).
+    pub fn input(&mut self, pin: i64, pull: Pull) {
+        match pull {
+            Pull::Up => self.levels[pin as usize] = true,
+            Pull::Down => self.levels[pin as usize] = false,
+            Pull::Nothing => {}
+        }
+    }
+
     /// Is the pin high?
     pub fn read(&self, pin: i64) -> bool {
         self.levels[pin as usize]
@@ -66,6 +78,14 @@ impl Board {
         self.levels[pin as usize] = level;
         Some(format!("{} {}", name(pin), if level { "on" } else { "off" }))
     }
+}
+
+/// What holds an input pin when nothing drives it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Pull {
+    Nothing,
+    Up,
+    Down,
 }
 
 /// What a pin is called in the lines the board prints.

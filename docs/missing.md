@@ -45,7 +45,7 @@ release ([`release.md`](release.md)).
 | 4 | Bytes: bytes from and to a file (**done**, [`bytes.md`](bytes.md)), a packed `list[u8]` (**done**, decision 36.2), a list of a fixed length (**done**, [`fixed-lists.md`](fixed-lists.md), decision 36.4; kept off the pool is left) | large | "The first thing a real driver will ask for" (5.13a) |
 | 5 | `u64` and `f32`. **Done** ([`f32.md`](f32.md), chapter 41; [`u64.md`](u64.md), chapter 42) | medium | Counters and timestamps; a board whose float unit is 32 bits |
 | 6 | Units made of units: `V * A` is `W`. **Done** ([`units-made.md`](units-made.md), chapter 43) | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
-| 7 | Inputs on a board, a serial port, an ADC, PWM, interrupts | large, wants a board | The one thing that keeps Zeno off real hardware |
+| 7 | Inputs on a board (**done**, [`inputs.md`](inputs.md), chapter 45; not yet tried on a real board), a serial port, an ADC, PWM, interrupts | large, wants a board | The one thing that keeps Zeno off real hardware |
 | 8 | One step from a `.zeno` file to a board: a runtime with no `printf` and no `exit`, the cross-compiler named on the line, checks without GCC built-ins | large | The same |
 | 9 | What a build with no collector still refuses, and `raises` in a function type | medium | Firmware builds should take every program `zeno run` takes |
 | 10 | Several values from one function | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
@@ -64,7 +64,7 @@ C.
 
 | Missing | What the others have | Recommendation |
 |---|---|---|
-| **Inputs**: reading a pin, saying a pin is an input, a pull-up (3.15b) | C through the vendor's header. Rust: `embedded-hal` | Build it. Outputs were designed on a simulated board and a header put underneath; inputs can be done the same way, with a test that says what the pin reads. Then try it on one real board before it is called done |
+| ~~**Inputs**: reading a pin, saying a pin is an input, a pull-up (3.15b)~~ | C through the vendor's header. Rust: `embedded-hal` | **Done** (chapter 45, [`inputs.md`](inputs.md)): `input_pin(2, pull_up)`, `is_high()`, `is_low()`, a fifth board function. Left: pressing a button under `zeno run`, and trying it on one real board |
 | **A serial port, an ADC, PWM, a hardware timer** | The same | Build after inputs, in that order. The serial port first: it is how every board talks |
 | **Interrupts**: a function that runs when a pin or a timer says so, and a safe way to share a variable with it | C: a vector table and `volatile`. Rust: `#[interrupt]` and a critical section | Design it with item 14 in mind. A variable shared with an interrupt needs a rule, and the rule should be one sentence |
 | **A runtime for a board**: the firmware C still calls `printf` and `exit` ([`board.md`](board.md)) | C and Rust build with no library at all | Build it. `print` goes to a function the board supplies, as the pins do |

@@ -87,6 +87,29 @@ pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
     runtime_of(firmware, collector, grows, false)
 }
 
+/// `runtime` with its part for input pins, marked `#ifdef
+/// ZENO_INPUT_PINS`, kept when the program makes one and left out when
+/// it makes none. Only that part calls `zeno_board_input`, the fifth
+/// function of the board layer, so a board header written before there
+/// were inputs still builds every program that reads no pin, and the C
+/// of such a program is what it was before (decision 45.4).
+pub fn with_input_pins(runtime: &str, used: bool) -> String {
+    let mut text = String::with_capacity(runtime.len());
+    let mut inside = false;
+    for line in runtime.lines() {
+        match line.trim() {
+            "#ifdef ZENO_INPUT_PINS" => inside = true,
+            "#endif /* ZENO_INPUT_PINS */" => inside = false,
+            _ if inside && !used => {}
+            _ => {
+                text += line;
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
+
 /// The same, saying also whether it is for `zeno build --minimal`, which
 /// leaves the checks out (marked `#ifndef ZENO_MINIMAL`).
 fn runtime_of(firmware: bool, collector: bool, grows: bool, minimal: bool) -> String {
@@ -188,6 +211,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         release: options.release || options.fast || options.minimal,
         fast: options.fast || options.minimal,
         minimal: options.minimal,
+        input_pins: false,
         in_place: false,
         text_stays: false,
         once: None,
@@ -385,7 +409,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
         return Ok(crate::minimal::assemble(crate::minimal::Parts {
             source,
-            runtime: &runtime_of(firmware, collector, options.grows && !collector, true),
+            runtime: &with_input_pins(&runtime_of(firmware, collector, options.grows && !collector, true), emitter.input_pins),
             declarations: declarations.iter().map(String::as_str).collect(),
             functions: definitions.iter().map(String::as_str).collect(),
             program: &program,
@@ -400,7 +424,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = runtime_for(firmware, collector, options.grows && !collector);
+    let mut c = with_input_pins(&runtime_for(firmware, collector, options.grows && !collector), emitter.input_pins);
     if options.fast {
         c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
@@ -1034,6 +1058,9 @@ struct Emitter<'a> {
     /// `--minimal`: no checks at all, and C as a person would write it
     /// where that can be done (decisions chapter 30).
     minimal: bool,
+    /// The program makes an input pin, so the runtime keeps its part
+    /// marked `#ifdef ZENO_INPUT_PINS` (decision 45.4).
+    input_pins: bool,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
@@ -1259,7 +1286,7 @@ pub fn for_a_page(span: Span) -> Error {
 fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
-        Kind::Int | Kind::Pin => "int64_t ".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin => "int64_t ".to_string(),
         // Only ever an item of a list; read, it is an int.
         Kind::Byte => "uint8_t ".to_string(),
         // A register is its address.
@@ -1286,7 +1313,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // bool cannot, so it is paired with a flag.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
-            Kind::Int | Kind::Pin | Kind::Register(_) => "zeno_opt_int ".to_string(),
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1320,7 +1347,7 @@ fn is_pointer(kind: &Kind) -> bool {
 fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
-        Kind::Int | Kind::Pin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1358,7 +1385,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 /// collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
         // Nor is what C gave.
@@ -1441,6 +1468,7 @@ fn key(kind: &Kind) -> String {
         Kind::U64 => "u64".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
+        Kind::InputPin => "input_pin".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
         Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
@@ -1464,7 +1492,7 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
         // A list of bytes holds bytes, not slots (decision 36.2).
         Kind::Byte => return Ok(format!("((int64_t)({code}))")),
-        Kind::Int | Kind::Pin | Kind::Register(_) => "i",
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "i",
         // A u64 is kept as the int with the same bits.
         Kind::U64 => return Ok(format!("(zeno_slot){{.i = (int64_t)({code})}}")),
         // In a slot an f32 is kept as the float it is exactly.
@@ -1516,7 +1544,7 @@ fn read_kind(item: &Kind) -> Kind {
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
         Kind::Byte => format!("((int64_t){slot})"),
-        Kind::Int | Kind::Pin | Kind::Register(_) => format!("{slot}.i"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::F32 => format!("((float){slot}.f)"),
         Kind::U64 => format!("((uint64_t){slot}.i)"),
@@ -1541,7 +1569,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 /// Which of the runtime's three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin | Kind::Register(_) => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -3285,6 +3313,9 @@ impl Emitter<'_> {
             (name, []) if self.enums.contains_key(name) => Kind::Enum(name.to_string()),
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
             ("Pin", []) => Kind::Pin,
+            ("InputPin", []) => Kind::InputPin,
+            // `pull_up` and `pull_down` are the strs of their names.
+            ("Pull", []) => Kind::Str,
             ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
             ("Register", [Type::Named { name, args }]) if args.is_empty() => Kind::Register(ints::width(name)?),
             // `u8` and the rest: an int that is known to be small.
@@ -3993,6 +4024,14 @@ impl Emitter<'_> {
             {
                 Ok(Val::plain("ZENO_LED", Kind::Pin))
             }
+            // `from board import pull_up`: the str of its name (45.3).
+            ExprKind::Name(name)
+                if self.lookup(name).is_none()
+                    && matches!(name.as_str(), "pull_up" | "pull_down")
+                    && self.imported.get(name).is_some_and(|m| m == "board") =>
+            {
+                Ok(Val::plain(c_string(name), Kind::Str).fixed())
+            }
             ExprKind::Name(name) => match self.lookup(name) {
                 // The owner gives its value away here. Take the pointer
                 // out and leave NULL behind, so that the end of the owner's
@@ -4411,7 +4450,7 @@ impl Emitter<'_> {
             (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
             (from, Kind::Optional(inner)) if from == &**inner => match from {
                 from if is_pointer(from) => val.code.clone(),
-                Kind::Int | Kind::Pin => format!("(zeno_opt_int){{true, {}}}", val.code),
+                Kind::Int | Kind::Pin | Kind::InputPin => format!("(zeno_opt_int){{true, {}}}", val.code),
                 Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -4457,7 +4496,7 @@ impl Emitter<'_> {
         let code = match (&inner, changeable) {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
-            (Kind::Int | Kind::Pin, true) => format!("zeno_still_int({}, {again})", val.code),
+            (Kind::Int | Kind::Pin | Kind::InputPin, true) => format!("zeno_still_int({}, {again})", val.code),
             (Kind::Float | Kind::F32 | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
             (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
             (inner, true) => {
@@ -5311,6 +5350,14 @@ impl Emitter<'_> {
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::from(format!("zeno_pin({}, {})", number.code, self.at(span)), Kind::Pin, &[number]).failing_if(!self.minimal))
             }
+            // `input_pin(2, pull_up)`. Making a pin an input is done to
+            // the board, so it is a call, and is not worked out twice.
+            ("board", "input_pin", [number, rest @ ..]) if number.kind == Kind::Int && rest.len() < 2 => {
+                self.input_pins = true;
+                let pull = rest.first().map_or("NULL".to_string(), |pull| pull.code.clone());
+                let call = format!("zeno_input_pin({}, {pull}, {})", number.code, self.at(span));
+                Ok(self.called(call, &vals, Kind::InputPin).failing_if(!self.minimal))
+            }
             // The `files` module. Each is one call into the runtime.
             ("files", "exists", [path]) if path.kind == Kind::Str => {
                 Ok(self.called(format!("zeno_files_exists({})", path.code), &vals, Kind::Bool))
@@ -5786,6 +5833,16 @@ impl Emitter<'_> {
                     _ => Err(cannot(format!("the method `{name}`"), span)),
                 }
             }
+            // `button.is_low()`: what the pin reads now. The board can
+            // change it at any time, so it is read each time it is asked.
+            Kind::InputPin => match (name, args) {
+                ("is_high" | "is_low", []) => {
+                    let mut val = Val::from(format!("zeno_input_{name}({})", receiver.code), Kind::Bool, &[&receiver]);
+                    val.reads = true;
+                    Ok(val)
+                }
+                _ => Err(cannot(format!("the method `{name}` of an input pin"), span)),
+            },
             Kind::Str => {
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
@@ -5999,7 +6056,7 @@ impl Emitter<'_> {
                     // number that may be `none` travels with a flag.
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
-                            Kind::Int | Kind::Pin | Kind::Register(_) => "int",
+                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "int",
                             Kind::Float | Kind::F32 | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
@@ -6110,6 +6167,9 @@ impl Emitter<'_> {
                 if owner == "board" && name == "led" {
                     return Ok(Val::plain("ZENO_LED", Kind::Pin));
                 }
+                if owner == "board" && matches!(name, "pull_up" | "pull_down") {
+                    return Ok(Val::plain(c_string(name), Kind::Str).fixed());
+                }
                 // `Shape.Idle`
                 if self.enums.contains_key(owner) && self.cases.get(name).is_some_and(|(of, _)| of == owner) {
                     let index = self.cases[name].1;
@@ -6176,7 +6236,7 @@ impl Emitter<'_> {
                 Ok(Val::from(format!("{}->{name}", val.code), Kind::Str, &[&val]))
             }
             // `led.number`: a pin is its number already.
-            Kind::Pin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
+            Kind::Pin | Kind::InputPin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
@@ -6221,6 +6281,7 @@ impl Emitter<'_> {
             Kind::U64 => format!("zeno_str_u64({})", val.code),
             Kind::Bool => format!("zeno_str_bool({})", val.code),
             Kind::Pin => format!("zeno_str_pin({})", val.code),
+            Kind::InputPin => format!("zeno_str_input_pin({})", val.code),
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
@@ -6264,7 +6325,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::Quantity(_) => {
+            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Quantity(_) => {
                 format!("({a} == {b})")
             }
             // Two pointers are equal when they point at the same item.
@@ -8927,6 +8988,7 @@ print(word[5])
             ("labels", include_str!("../examples/labels.zeno")),
             ("words", include_str!("../examples/words.zeno")),
             ("scheduler", include_str!("../examples/scheduler.zeno")),
+            ("doorbell", include_str!("../examples/doorbell.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
             ("handlers", include_str!("../examples/handlers.zeno")),
             ("driver", include_str!("../examples/driver.zeno")),
@@ -15930,6 +15992,87 @@ print(d.value)
             assert_eq!(printed, "write 0 1\nwrite 0 0\nwrite 1 1\ntrue 250 ms\n");
             assert!(!finished);
             assert_eq!(errors, "error: uncaught ValueError: this board has no pin 2. Its pins are 0 to 1\n --> test.zeno:9:7\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pins the program reads (decision 45).
+    const INPUTS: &str = "from board import led, pin, input_pin, pull_up, pull_down\n\
+        import board\n\
+        let start = input_pin(2, pull_up)\nlet stop = input_pin(3, board.pull_down)\nlet door = board.input_pin(4)\n\
+        print(start, stop, door)\n\
+        print(start.is_high(), start.is_low(), stop.is_high(), door.is_low())\n\
+        print(start.number, pull_up, pull_down == board.pull_down, f\"{door}\")\n\
+        function wired(n: int, how: Pull) -> InputPin {\n    return input_pin(n, how)\n}\n\
+        let inputs: list[InputPin] = [start, wired(5, pull_up), door]\n\
+        for p in inputs {\n    print(p.number, p.is_high())\n}\n\
+        print(start in inputs, stop in inputs, start == door, inputs[0] == start)\n\
+        var spare: InputPin or none = none\nprint(spare)\nspare = wired(6, pull_down)\n\
+        if spare is not none { print(spare.is_low()) }\n\
+        led.on()\nlet back = input_pin(13)\nprint(back.is_high())\n\
+        pin(4).on()\nprint(door.is_high())\nlet held = input_pin(4, pull_down)\nprint(held.is_high(), door.is_high())\n";
+
+    #[test]
+    fn input_pins_match() {
+        same_as_interpreter("inputs", INPUTS);
+        no_collector_as_interpreter("inputs", INPUTS);
+        same_as_interpreter(
+            "no-input-pin",
+            "from board import input_pin, pull_up\n\
+             try {\n    input_pin(64, pull_up)\n} except ValueError as error {\n    print(\"no:\", error.message)\n}\n\
+             input_pin(-1)\n",
+        );
+    }
+
+    /// A program that makes no input pin never calls the fifth function
+    /// of the board layer, so a board header written before there were
+    /// inputs builds it as before (decision 45.4).
+    #[test]
+    fn only_a_program_with_inputs_asks_the_board_for_them() {
+        for c in [compile(PINS).unwrap(), compile_firmware(PINS).unwrap(), compile_no_collector(PINS).unwrap()] {
+            // The comment at the top of the board layer names it; no C does.
+            assert!(!c.contains("static void zeno_board_input(") && !c.contains("zeno_board_input((int)"), "a program with no input pins asks the board for one");
+            assert!(!c.contains("ZENO_INPUT_PINS"));
+        }
+        for c in [compile(INPUTS).unwrap(), compile_firmware(INPUTS).unwrap(), compile_no_collector(INPUTS).unwrap()] {
+            assert!(c.contains("zeno_board_input((int)pin, "), "the input pins are not made");
+            assert!(!c.contains("ZENO_INPUT_PINS"));
+        }
+    }
+
+    /// The doorbell on a board of its own, whose button is held down for
+    /// three of the times it is read, and whose clock moves only when the
+    /// program sleeps. It is how a button is pressed on a desk.
+    #[test]
+    fn a_button_is_pressed_on_a_board_of_its_own() {
+        let header = "#define ZENO_PINS 10\n\
+                      static bool my_levels[ZENO_PINS];\n\
+                      static int my_reads = 0;\n\
+                      static double my_clock = 0.0;\n\
+                      static bool zeno_board_read(int pin) {\n\
+                      \x20   if (pin != 2) return my_levels[pin];\n\
+                      \x20   my_reads++;\n\
+                      \x20   return !(my_reads >= 3 && my_reads <= 5);\n\
+                      }\n\
+                      static void zeno_board_write(int pin, bool level) {\n\
+                      \x20   my_levels[pin] = level;\n\
+                      \x20   printf(\"write %d %d at %g\\n\", pin, (int)level, my_clock);\n\
+                      }\n\
+                      static void zeno_board_input(int pin, int pull) { printf(\"input %d %d\\n\", pin, pull); }\n\
+                      static void zeno_board_sleep(double seconds) { my_clock += seconds * 1000.0; }\n\
+                      static double zeno_board_now(void) { return my_clock; }\n";
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-my-button", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let file = dir.join("my_board.h");
+        std::fs::write(&file, header).expect("the header is written");
+        let flag = format!("-DZENO_BOARD=\"{}\"", file.display());
+        let source = include_str!("../examples/doorbell.zeno");
+        for c in [compile(source).unwrap(), compile_firmware(source).unwrap(), compile_no_collector(source).unwrap()] {
+            let Some((printed, errors, finished)) = build_and_run("button-header", &c, &[&flag]) else {
+                return;
+            };
+            assert!(finished, "{errors}");
+            assert_eq!(printed, "input 2 1\nwrite 9 1 at 10\nwrite 9 0 at 60\npresses: 1\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

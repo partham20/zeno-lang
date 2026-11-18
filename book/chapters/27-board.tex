@@ -101,6 +101,68 @@ and a plain number in the compiled program, so it costs what an
 \verb|int| costs. Units work the same way. (Decision 3.15.)
 \end{why}
 
+\section{Inputs}
+
+A button, a switch or a sensor that says yes or no is a pin the
+program reads. \verb|input_pin(n)| makes the pin with that number an
+input, and gives an \verb|InputPin|:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Gives \\
+\midrule
+\verb|input_pin(2, pull_up)| & an input that a pull-up holds high \\
+\verb|input_pin(2, pull_down)| & an input that a pull-down holds low \\
+\verb|input_pin(2)| & an input that nothing pulls \\
+\verb|b.is_high()|, \verb|b.is_low()| & the level the pin is at now \\
+\verb|b.number| & which pin it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A button usually joins its pin to ground when it is pressed, and a
+pull-up holds the pin high the rest of the time, so a press reads low:
+
+\begin{zeno}
+from board import input_pin, pull_up, led
+
+let button = input_pin(2, pull_up)
+if button.is_low() {
+    led.on()
+}
+print(button, button.is_high())
+\end{zeno}
+
+On a computer nothing presses the button, so a pull-up reads high, a
+pull-down low, and a pin nothing pulls keeps the level it had. Making
+an input prints nothing: the simulated board prints what the program
+drives, and a pull is not driven.
+
+An \verb|InputPin| has no \verb|on| and a \verb|Pin| has no
+\verb|is_low|, and each mistake is found before the program runs:
+
+\begin{zeno}[fails=yes]
+from board import input_pin, pull_up
+let button = input_pin(2, pull_up)
+button.on()
+\end{zeno}
+
+\begin{why}
+An output is driven and an input is read, and a pin is one or the
+other, so they are two types and the checker keeps them apart, as
+Rust's \verb|embedded-hal| does. An input says \verb|is_high| and
+\verb|is_low| and not \verb|is_on|, because with a pull-up a pressed
+button is low, and ``on'' would then mean two things. The pull is said
+where the pin is made, because that is where the hardware sets it, and
+\verb|pull_up| and \verb|pull_down| are values of the \verb|board|
+module of the type \verb|Pull|, so a function can take one.
+(Decision 45.)
+\end{why}
+
+The example \verb|examples/doorbell.zeno| counts presses of a button
+and rings a bell for each.
+
 \section{The clock}
 
 \verb|sleep| waits for a time with a unit, and \verb|now()| reads a
@@ -179,6 +241,11 @@ zeno_board_sleep(seconds)      wait
 zeno_board_now()               a clock that only goes forward, in ms
 \end{zenofrag}
 
+A program that reads a pin needs a fifth,
+\verb|zeno_board_input(pin, pull)|, which makes the pin an input with
+no pull (0), a pull-up (1) or a pull-down (2). Only such a program
+calls it, so a header with four still builds every other program.
+
 The simulated board is these four, written for a computer. For a real
 microcontroller they are written once, over the vendor's library, in a
 header, and the C compiler is told where it is.
@@ -194,17 +261,18 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 \section{What the board does not have yet}
 
-In version 0.1 \verb|is_on()| reads back what the program wrote:
-there is no button, and no way to make a pin an input. Interrupts,
-timers, PWM, an analogue converter and a serial port are not in the
-\verb|board| module either. Until they are, a program reaches them
+A button can be read, but nothing waits for it: a program looks at the
+pin as often as it needs to. On a computer nothing can press it yet.
+Interrupts, timers, PWM, an analogue converter and a serial port are
+not in the \verb|board| module either. Until they are, a program reaches them
 through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
 
 \begin{summary}
 \verb|from board import led, pin, register|. A pin is driven with
 \verb|on|, \verb|off| and \verb|toggle| and asked with \verb|is_on|;
-\verb|Pin| is a type. \verb|sleep| and \verb|now| keep time with units.
+\verb|Pin| is a type. \verb|input_pin(n, pull_up)| gives an
+\verb|InputPin|, read with \verb|is_high| and \verb|is_low|. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|
 simulates the board and prints each change; a compiled program sits on
 four C functions that a real board provides.
@@ -218,5 +286,7 @@ four C functions that a real board provides.
 \item Change the traffic light so that green lasts twice as long as
   red, and add a pedestrian lamp on pin 5.
 \item Write a register without \verb|unsafe| and read the message.
+\item Change the doorbell to ring twice for a press that lasts longer
+  than half a second.
 \end{enumerate}
 \end{tryit}

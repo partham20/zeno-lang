@@ -14407,3 +14407,142 @@ purpose:
 - **That layer already works here.** A library of C++ with `extern
   "C"` functions is a library of C, and `c.library` takes it, as it
   takes Go and Rust (44.6).
+
+## 45. Inputs: a pin the program reads
+
+```zeno
+from board import input_pin, pull_up, led
+
+let button = input_pin(2, pull_up)    # pressed joins pin 2 to ground
+if button.is_low() {
+    led.on()
+}
+print(button, button.is_high())       # InputPin(2) true
+```
+
+Until now a pin could only be driven: `is_on()` read back what the
+program had written, and 3.15b kept inputs off the list for 0.1
+because they want a real board. A board that cannot read a button is
+not much of a board, and it is the first half of item 7 of
+[`missing.md`](missing.md). Walkthrough: [`inputs.md`](inputs.md).
+
+### 45.1 An input is a type of its own
+
+**`input_pin(2)` gives an `InputPin`, and `pin(2)` still gives a
+`Pin`.** An `InputPin` has `is_high()`, `is_low()` and `number`. It
+has no `on`, `off` or `toggle`, and a `Pin` has no `is_high`; each is
+an error before the program runs that names what to write instead.
+Underneath, an input pin is its number, as a pin is (3.15), and costs
+what an `int` costs.
+
+**Why two types?** An output is driven and an input is read, and on
+the hardware a pin is one or the other at a time. Rust's
+`embedded-hal` splits them the same way, into `OutputPin` and
+`InputPin`. Driving a button's pin is a short circuit waiting to
+happen, and the checker can see it. **Turned down: a mode set while
+the program runs**, as Arduino's `pinMode(2, INPUT)`. The mode then
+lives in the board and not in the program, and `on()` of an input is
+found on the bench.
+
+### 45.2 It is read with `is_high` and `is_low`
+
+**An input says `is_high()` and `is_low()`, and not `is_on()`.** A
+button usually joins its pin to ground, with a pull-up holding the pin
+high the rest of the time, so a pressed button reads low. "On" would
+then mean the opposite of "pressed", or of "high", depending on who
+reads it. High and low are what the data sheet and the scope say, and
+they mean one thing. Both are given so that a test reads as it is
+meant: `if button.is_low()`, and not `if not button.is_high()`.
+
+**`is_on()` of a `Pin` stays as it is.** For an output, "on" is what
+the program drove it to, and nothing that works today changes.
+
+### 45.3 The pull is said where the pin is made
+
+**`input_pin(2, pull_up)`, `input_pin(2, pull_down)`, or
+`input_pin(2)` with nothing pulling it.** `pull_up` and `pull_down`
+are values of the `board` module, of the type `Pull`, as `led` is a
+value of the type `Pin`. They are imported like anything else
+(`from board import pull_up`, or `board.pull_up`), a function can take
+a `Pull` and pass it on, and one prints as its name.
+
+**Why there?** The pull is set in the same register write that makes
+the pin an input, and the schematic decides it once: a button with no
+resistor of its own needs the pull-up, for as long as the board is on.
+**Turned down:**
+
+- **A word of the call** that is not a value, as `register(u8, ...)`
+  takes a type. A program's own variable called `pull_up` would then
+  mean one thing in the call and another outside it.
+- **A str**, `input_pin(2, "up")`. A typing slip would be found when
+  the program runs, if at all.
+- **A `bool`**, `input_pin(2, pull_up=true)`. Two of them would let a
+  program ask for both pulls at once.
+- **An enum with the cases `up` and `down`.** An enum's cases are
+  names of their own in Zeno (`Ack`, not `Reply.Ack`), so it would
+  take two common words from every program that imports it.
+
+A `Pull` is the str of its name underneath, so printing one, comparing
+two and keeping them in a list work as they do for any str. The
+checker keeps a `Pull` and a `str` apart.
+
+### 45.4 A fifth function in the board layer
+
+**A compiled program that makes an input pin calls
+`zeno_board_input(pin, pull)`**, with 0 for nothing, 1 for a pull-up
+and 2 for a pull-down, and reads the pin with `zeno_board_read`, as
+`is_on` already does. With ST's HAL it is one `HAL_GPIO_Init`.
+
+**Only such a program calls it.** The part of the runtime that does is
+marked `#ifdef ZENO_INPUT_PINS`, and the build keeps it only when the
+program makes an input pin. So a board header written for the four
+functions (5.12) still builds every program that reads no pin, and
+the C of such a program is what it was before, line for line. A
+program that does read one, built over such a header, gets the C
+compiler's message naming `zeno_board_input`, which is the function to
+write. **Turned down: asking every header for the fifth function**,
+which would break every header there is for a feature most of their
+programs do not use.
+
+### 45.5 On a computer nothing presses the button
+
+**On the simulated board a pull-up reads high, a pull-down low, and a
+pin nothing pulls keeps the level it had** (they all start low, as
+before). That is what a pin with nothing wired to it does, near
+enough. **Making an input prints nothing.** The lines the simulated
+board prints are what the program drives, as a logic analyser on an
+output shows it; a pull is weak, and is not driven.
+
+So under `zeno run` a button is never pressed. A board of one's own
+(5.12b) can press it: the test
+`a_button_is_pressed_on_a_board_of_its_own` builds
+`examples/doorbell.zeno` over a header whose button is down for three
+reads, and the bell rings once. That is how firmware is tested on a
+desk. **Turned down for now: pressing a button under `zeno run`**,
+from a file of times and levels. It is worth having, and wants its own
+design: what the file looks like, and whether the clock moves by
+itself while a program waits for a press.
+
+### 45.6 Nothing changes for a program that reads no pin
+
+`led`, `pin`, `register`, `Pin` and every line the simulated board
+prints are as they were, and so is the C of every program that makes
+no input pin. `board` gains `input_pin`, `pull_up` and `pull_down`,
+and Zeno gains the type names `InputPin` and `Pull`; a program's own
+class of either name comes first, as one called `Pin` does (3.15).
+`--target` builds still refuse the `board` module.
+
+### 45.7 Left for later
+
+- Pressing a button under `zeno run` (45.5).
+- Waiting for an edge, and an interrupt when one comes: item 7 of
+  [`missing.md`](missing.md), with the rule for a variable an
+  interrupt shares.
+- Debouncing in the library: a press read twice, some milliseconds
+  apart.
+- `button` as a value of the board, as `led` is, for boards that have
+  one.
+- An `InputPin` as a key of a dict, which a `Pin` cannot be either.
+- Running it on a real board. The STM32 sketch in
+  [`board.md`](board.md) gains its fifth function, and like the other
+  four it has not been tried on hardware.
