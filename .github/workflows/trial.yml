@@ -1,5 +1,6 @@
 # Tries Zeno on one kind of machine. It builds `zeno`, compiles three
-# examples through C and through LLVM, and runs the whole test suite.
+# examples through C and through LLVM, builds a few programs with
+# `--minimal`, and runs the whole test suite.
 # Nothing is packed and nothing is released.
 #
 # It is for a mend that can only be seen to work on a machine that is
@@ -87,6 +88,47 @@ jobs:
             echo "::notice title=Compiled through LLVM::three examples print what zeno run prints"
           fi
           exit $status
+
+      # `--minimal` is the same program in the least C, and a correct
+      # program prints the same from it. One that does not is built
+      # again for a debugger, which says where it stopped.
+      - name: A program built with `--minimal` prints what `zeno run` prints
+        continue-on-error: true
+        run: |
+          zeno=$PWD/target/release/zeno
+          mkdir through-minimal
+          cd through-minimal
+          # The program of the test `a_minimal_build_prints_what_zeno_run_prints_for_a_correct_program`.
+          sed -n '/fn a_minimal_build_prints_what_zeno_run_prints_for_a_correct_program/,/^"#;/p' ../src/emit_c.rs |
+            sed -e '1,/r#"/{/r#"/!d;}' -e 's/^ *let source = r#"//' -e '$d' > whole.zeno
+          cp ../examples/shapes.zeno ../examples/sensor.zeno ../examples/sentence.zeno ../examples/words.zeno ../examples/faults.zeno .
+          failed=""
+          for program in shapes sensor sentence words faults whole; do
+            for kind in "" "--owned"; do
+              rm -f $program $program.exe
+              "$zeno" run $program.zeno > ran.txt 2> ran-errors.txt || true
+              ended=0
+              "$zeno" build --minimal $kind $program.zeno > build.txt 2>&1 || { echo "$program $kind: not built: $(tail -n 3 build.txt)"; continue; }
+              ./$program > built.txt 2> built-errors.txt || ended=$?
+              if [ $ended -ne 0 ] || ! diff ran.txt built.txt > differs.txt; then
+                failed="$failed $program$kind"
+                echo "$program $kind: ended with $ended"
+                head -n 6 differs.txt built-errors.txt || true
+                if command -v gdb > /dev/null; then
+                  cc -Os -g -o stopped $program.c -lm 2> /dev/null || cc -Os -g -o stopped $program.c
+                  gdb -batch -ex run -ex bt -ex "info registers rip rsp rbp" ./stopped 2>&1 | grep -v '^\[' | tail -n 16 > stopped.txt || true
+                  cat stopped.txt
+                  echo "::notice title=Where $program $kind stopped::$(tr '\r\n' ' |' < stopped.txt | cut -c1-2400)"
+                fi
+              fi
+            done
+          done
+          cc --version 2>&1 | sed -n 1p || true
+          if [ -n "$failed" ]; then
+            echo "::error title=Built with --minimal::these differ from zeno run:$failed"
+            exit 1
+          fi
+          echo "::notice title=Built with --minimal::every program that builds prints what zeno run prints, with the collector and with one owner"
 
       # Last, so that what it says is at the end of the log.
       - name: The whole test suite
