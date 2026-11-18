@@ -41,6 +41,7 @@ pub fn all() -> Vec<(&'static str, Value)> {
         Builtin { name: "range", call: range },
         Builtin { name: "int", call: int },
         Builtin { name: "float", call: float },
+        Builtin { name: "f32", call: f32_of },
         Builtin { name: "str", call: str },
         Builtin { name: "abs", call: abs },
         Builtin { name: "min", call: min },
@@ -419,6 +420,8 @@ fn int(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) if x.is_finite() => Ok(Value::Int(x.trunc() as i64)),
         Value::Float(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
+        Value::F32(x) if x.is_finite() => Ok(Value::Int(x.trunc() as i64)),
+        Value::F32(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
         Value::Str(text) => match strip(text).replace('_', "").parse() {
             Ok(n) => Ok(Value::Int(n)),
             Err(_) => raise("ValueError", format!("cannot turn {} into an int", crate::value::quoted(text)), span),
@@ -432,11 +435,27 @@ fn float(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     match &args[0] {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
         Value::Float(x) => Ok(Value::Float(*x)),
+        Value::F32(x) => Ok(Value::Float(*x as f64)),
         Value::Str(text) => match strip(text).parse() {
             Ok(x) => Ok(Value::Float(x)),
             Err(_) => raise("ValueError", format!("cannot turn {} into a float", crate::value::quoted(text)), span),
         },
         other => wrong_type("float", "a number or a str", other, span),
+    }
+}
+
+/// `f32(x)`: the nearest f32 to a number (decision 41.5). A float too
+/// big for 32 bits is an OverflowError, as 300 is for `u8( )`.
+fn f32_of(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("f32", &args, 1, 1, span)?;
+    match &args[0] {
+        Value::Int(n) => Ok(Value::F32(*n as f64 as f32)),
+        Value::F32(x) => Ok(Value::F32(*x)),
+        Value::Float(x) => match crate::value::to_f32(*x) {
+            Some(near) => Ok(Value::F32(near)),
+            None => raise("OverflowError", crate::value::too_big_for_f32(*x), span),
+        },
+        other => wrong_type("f32", "a number", other, span),
     }
 }
 
@@ -453,6 +472,7 @@ fn abs(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
             None => raise("OverflowError", "the result is too big for an int", span),
         },
         Value::Float(x) => Ok(Value::Float(x.abs())),
+        Value::F32(x) => Ok(Value::F32(x.abs())),
         Value::Quantity(x, unit) => Ok(Value::Quantity(x.abs(), unit.clone())),
         other => wrong_type("abs", "a number", other, span),
     }
@@ -508,7 +528,14 @@ fn numbers(name: &str, args: Vec<Value>, span: Span) -> Result<(Vec<Value>, Opti
 
 /// Shared by `min` and `max`: keep the item that `better` prefers.
 fn pick(name: &str, args: Vec<Value>, span: Span, better: fn(f64, f64) -> bool) -> Result {
-    let mut items = numbers(name, args, span)?.0.into_iter();
+    let items = numbers(name, args, span)?.0;
+    // f32s with ints: the answer is an f32, whichever it is (41.2).
+    let singles = items.iter().any(|item| matches!(item, Value::F32(_)))
+        && items.iter().all(|item| matches!(item, Value::F32(_) | Value::Int(_)));
+    let mut items = items.into_iter().map(|item| match (singles, item) {
+        (true, Value::Int(n)) => Value::F32(n as f64 as f32),
+        (_, item) => item,
+    });
     let Some(mut best) = items.next() else {
         return raise("ValueError", format!("`{name}` of nothing"), span);
     };
@@ -534,6 +561,18 @@ fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     // be in (decision 17.3).
     if unit.is_some() {
         return fatal(SUM_OF_QUANTITIES, span);
+    }
+    // f32s, perhaps with ints, are added in 32 bits, one at a time.
+    if items.iter().any(|item| matches!(item, Value::F32(_))) && items.iter().all(|item| matches!(item, Value::F32(_) | Value::Int(_))) {
+        let mut total = 0.0f32;
+        for item in &items {
+            total += match item {
+                Value::F32(x) => *x,
+                Value::Int(n) => *n as f64 as f32,
+                _ => 0.0,
+            };
+        }
+        return Ok(Value::F32(total));
     }
     // Stay an int while every item is an int.
     let mut int_total: Option<i64> = Some(0);
@@ -1059,7 +1098,7 @@ pub fn call_method(
                 let walked = items.borrow().clone();
                 for item in walked {
                     let key = machine.call(function.clone(), vec![item], Vec::new(), span)?;
-                    if !matches!(key, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+                    if !matches!(key, Value::Int(_) | Value::Float(_) | Value::F32(_) | Value::Str(_)) {
                         return fatal(
                             format!(
                                 "the function given to `sort` must return a number or text to order by, but it returned {}",

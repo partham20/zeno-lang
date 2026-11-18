@@ -1,0 +1,55 @@
+# f32: a float of 32 bits (decision 41).
+import math
+let gain: f32 = 0.1
+print(gain, gain * 3.0, gain * 3, 3 * gain, gain + gain + gain)
+print(float(gain), int(f32(2.7)), int(f32(-2.7)), str(gain), f"{gain} {gain:.4f} {gain:>8.2f}")
+var total: f32 = 0.0
+for i in range(10) {
+    total += gain
+}
+print(total, total == 1.0, total < 1.0, total > 1, -total)
+let readings: list[f32] = [0.5, 1.25, -2.0, 0.1]
+print(readings, sum(readings), min(readings), max(readings), len(readings))
+print(min(gain, f32(0.05)), max(gain, 1), abs(f32(-2.5)))
+print(f32(7.0) / 3.0, f32(7.0) // 2.0, f32(7.5) % 2.0, f32(-7.5) % 2.0, f32(2.0) ** 10, f32(2.0) ** 0.5)
+print(f32(16777217), f32(1.0) / 3, f32(1e38) * 10.0, f32(3.4e38), f32(1e-45), f32(1.5e-40))
+print(f32(123456789.0), f32(0.000123), f32(1e16), f32(-0.0), f32(100.0))
+let wide: float = gain
+print(wide, math.sqrt(f32(2.0)), math.floor(f32(2.5)))
+let maybe: f32 or none = 1.5
+if maybe is not none {
+    print(maybe * 2.0)
+}
+class Reading {
+    volts: f32
+    count: u8
+}
+let r = Reading(3.3, 2)
+print(r, r.volts * 2.0)
+r.volts = 1.2
+print(r.volts)
+function half(v: f32) -> f32 {
+    return v / 2.0
+}
+print(half(5.0), half(gain))
+function first[T](xs: list[T]) -> T {
+    return xs[0]
+}
+print(first(readings), [x * 2.0 for x in readings], readings.map(function(x: f32) -> f32 { return x + 1.0 }))
+var sorted_readings = readings.slice(0)
+sorted_readings.sort()
+var by_size = readings.slice(0)
+by_size.sort(function(x: f32) -> f32 { return abs(x) })
+print(by_size)
+print(sorted_readings, 0.5 in readings, readings == [0.5, 1.25, -2.0, 0.1], readings.find(1.25))
+let w = 1e300
+try {
+    print(f32(w))
+} except OverflowError as e {
+    print(e)
+}
+try {
+    print(gain / 0.0)
+} except ZeroDivisionError as e {
+    print(e)
+}

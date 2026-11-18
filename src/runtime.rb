@@ -11,6 +11,7 @@
 #   int        a Ruby Integer. Ruby's own never overflows, so each step
 #              looks whether the result still fits in 64 bits
 #   float      a Ruby Float
+#   f32        a `ZF32`: the float it is exactly (decision 41)
 #   str        a Ruby String, in UTF-8
 #   bool       true, false
 #   none       nil
@@ -25,6 +26,14 @@
 # The steps the printed program calls are the methods of `Z`.
 
 require "rbconfig"
+
+class ZF32
+  attr_reader :v
+
+  def initialize(v)
+    @v = v
+  end
+end
 
 class ZQuantity
   attr_reader :v, :unit
@@ -221,7 +230,52 @@ module Z
     def number(v)
       return v if v.is_a?(Float)
       return v.to_f if v.is_a?(Integer)
+      return v.v if v.is_a?(ZF32)
       nil
+    end
+
+    # The nearest f32 to a float, as a float.
+    def fround(x)
+      [x].pack("e").unpack1("e")
+    end
+
+    # An f32, or an int as a float and then the nearest f32 (41.2).
+    def single(v)
+      return v.v if v.is_a?(ZF32)
+      return fround(v.to_f) if v.is_a?(Integer)
+      nil
+    end
+
+    # The float with the fewest digits that reads back as this f32.
+    def f32_shown(x)
+      return x if x.nan? || x == 0 || !x.finite?
+      (1..9).each do |digits|
+        d = Float(format("%.#{digits - 1}e", x))
+        return d if fround(d) == x
+      end
+      x
+    end
+
+    def f32_op(op, a, b, line)
+      x = single(a)
+      y = single(b)
+      if x.nil? || y.nil?
+        if a.is_a?(Float) || b.is_a?(Float)
+          fatal("`" + op + "` between " + type_name(a) + " and " + type_name(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line)
+        end
+        mismatch(op, a, b, line)
+      end
+      by_zero(line) if ["/", "//", "%"].include?(op) && y == 0
+      r = case op
+          when "+" then x + y
+          when "-" then x - y
+          when "*" then x * y
+          when "/" then x / y
+          when "//" then floor(x / y)
+          when "%" then x - y * floor(x / y)
+          else pow(x, y, line)
+          end
+      ZF32.new(fround(r))
     end
 
     def negative?(x)
@@ -243,6 +297,7 @@ module Z
       case v
       when Integer then "an int"
       when Float then "a float"
+      when ZF32 then "an f32"
       when String then "a str"
       when true, false then "a bool"
       when nil then "none"
@@ -340,6 +395,7 @@ module Z
       when String then v
       when Integer then v.to_s
       when Float then show_float(v)
+      when ZF32 then show_float(f32_shown(v.v))
       when true then "true"
       when false then "false"
       when nil then "none"
@@ -438,6 +494,14 @@ module Z
     end
 
     def eq(a, b)
+      if a.is_a?(ZF32) || b.is_a?(ZF32)
+        x = single(a)
+        y = single(b)
+        return x == y unless x.nil? || y.nil?
+        x = number(a)
+        y = number(b)
+        return !x.nil? && !y.nil? && x == y
+      end
       case a
       when Integer
         return a == b if b.is_a?(Integer)
@@ -488,6 +552,7 @@ module Z
     end
 
     def add(a, b, line)
+      return f32_op("+", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       return fits(a + b, line) if a.is_a?(Integer) && b.is_a?(Integer)
       return a + b if a.is_a?(String) && b.is_a?(String)
       return a + b if a.is_a?(Array) && b.is_a?(Array)
@@ -502,6 +567,7 @@ module Z
     end
 
     def sub(a, b, line)
+      return f32_op("-", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       return fits(a - b, line) if a.is_a?(Integer) && b.is_a?(Integer)
       if a.is_a?(ZQuantity) && b.is_a?(ZQuantity)
         x, y, unit = met("-", a, b, line)
@@ -514,6 +580,7 @@ module Z
     end
 
     def mul(a, b, line)
+      return f32_op("*", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Array) && b.is_a?(Integer)
         raise_("ValueError", "`*` repeats a list 0 or more times, and this is #{b}", line) if b < 0
         return a * b
@@ -532,6 +599,7 @@ module Z
     end
 
     def div(a, b, line)
+      return f32_op("/", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(ZQuantity)
         by_zero(line) if ((b.is_a?(Integer) || b.is_a?(Float)) && b == 0) || (b.is_a?(ZQuantity) && b.v == 0)
         if b.is_a?(ZQuantity)
@@ -550,6 +618,7 @@ module Z
     end
 
     def floordiv(a, b, line)
+      return f32_op("//", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         by_zero(line) if b == 0
         return fits(a.div(b), line)
@@ -562,6 +631,7 @@ module Z
     end
 
     def mod(a, b, line)
+      return f32_op("%", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         by_zero(line) if b == 0
         return a % b
@@ -574,6 +644,7 @@ module Z
     end
 
     def pow(a, b, line)
+      return f32_op("**", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         raise_("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line) if b < 0
         # As Rust's `checked_pow` with a u32 power.
@@ -637,6 +708,7 @@ module Z
     def neg(v, line)
       return fits(-v, line) if v.is_a?(Integer)
       return -v if v.is_a?(Float)
+      return ZF32.new(-v.v) if v.is_a?(ZF32)
       return ZQuantity.new(-v.v, v.unit) if v.is_a?(ZQuantity)
       fatal("`-` does not work on " + type_name(v), line)
     end
@@ -648,6 +720,12 @@ module Z
 
     # `<` and the others: -1, 0, 1, or nil for a NaN.
     def order(op, a, b, line)
+      if a.is_a?(ZF32) || b.is_a?(ZF32)
+        x = single(a)
+        y = single(b)
+        f32_op(op, a, b, line) if x.nil? || y.nil?
+        return x < y ? -1 : (x > y ? 1 : (x == y ? 0 : nil))
+      end
       return a <=> b if a.is_a?(Integer) && b.is_a?(Integer)
       return a <=> b if a.is_a?(String) && b.is_a?(String)
       if a.is_a?(ZQuantity) && b.is_a?(ZQuantity)
@@ -1194,6 +1272,9 @@ module Z
     def pick(name, args, line, smaller)
       values, = numbers(name, args, line)
       raise_("ValueError", "`" + name + "` of nothing", line) if values.empty?
+      if values.any? { |item| item.is_a?(ZF32) } && values.all? { |item| item.is_a?(ZF32) || item.is_a?(Integer) }
+        values = values.map { |item| ZF32.new(single(item)) }
+      end
       best = values[0]
       values.each do |item|
         a = amount(item)
@@ -1256,7 +1337,7 @@ module Z
       i = 0
       while i < given.length
         k = call(fn, [given[i]], line)
-        unless k.is_a?(Integer) || k.is_a?(Float) || k.is_a?(String)
+        unless k.is_a?(Integer) || k.is_a?(Float) || k.is_a?(ZF32) || k.is_a?(String)
           fatal("the function given to `sort` must return a number or text to order by, but it returned " + type_name(k), line)
         end
         keys << k
@@ -1782,6 +1863,7 @@ module Z
       arity("int", args, 1, 1, line)
       v = args[0]
       return v if v.is_a?(Integer)
+      v = v.v if v.is_a?(ZF32)
       if v.is_a?(Float)
         raise_("ValueError", "cannot turn " + show_float(v) + " into an int", line) unless v.finite?
         return to_int(v.truncate.to_f)
@@ -1802,12 +1884,28 @@ module Z
       v = args[0]
       return v.to_f if v.is_a?(Integer)
       return v if v.is_a?(Float)
+      return v.v if v.is_a?(ZF32)
       if v.is_a?(String)
         x = parse_float(strip(v))
         raise_("ValueError", "cannot turn " + quoted(v) + " into a float", line) if x.nil?
         return x
       end
       wrong_type("float", "a number or a str", v, line)
+    end
+
+    def b_f32(args, line)
+      arity("f32", args, 1, 1, line)
+      v = args[0]
+      return v if v.is_a?(ZF32)
+      return ZF32.new(single(v)) if v.is_a?(Integer)
+      if v.is_a?(Float)
+        r = fround(v)
+        if !r.finite? && v.finite?
+          raise_("OverflowError", show_float(v) + " does not fit in an f32, whose largest is about 3.4e38", line)
+        end
+        return ZF32.new(r)
+      end
+      wrong_type("f32", "a number", v, line)
     end
 
     def b_str(args, line)
@@ -1820,6 +1918,7 @@ module Z
       v = args[0]
       return v < 0 ? neg(v, line) : v if v.is_a?(Integer)
       return v.abs if v.is_a?(Float)
+      return ZF32.new(v.v.abs) if v.is_a?(ZF32)
       return ZQuantity.new(v.v.abs, v.unit) if v.is_a?(ZQuantity)
       wrong_type("abs", "a number", v, line)
     end
@@ -1836,6 +1935,11 @@ module Z
       values, unit = numbers("sum", args, line)
       unless unit.nil?
         fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line)
+      end
+      if values.any? { |item| item.is_a?(ZF32) } && values.all? { |item| item.is_a?(ZF32) || item.is_a?(Integer) }
+        single32 = 0.0
+        values.each { |item| single32 = fround(single32 + single(item)) }
+        return ZF32.new(single32)
       end
       total = 0
       all_ints = true

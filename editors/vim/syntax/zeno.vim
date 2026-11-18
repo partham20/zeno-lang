@@ -13,7 +13,7 @@ syntax keyword zenoWord and or not is
 syntax keyword zenoConstant true false none
 syntax keyword zenoSelf self
 syntax keyword zenoType int float bool str list dict pointer
-syntax keyword zenoType u8 u16 u32 i8 i16 i32
+syntax keyword zenoType u8 u16 u32 i8 i16 i32 f32
 
 syntax match zenoTypeName "\<[A-Z][A-Za-z0-9_]*\>"
 syntax match zenoCall "\<[a-z_][A-Za-z0-9_]*\ze("

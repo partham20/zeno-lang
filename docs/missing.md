@@ -43,7 +43,7 @@ release ([`release.md`](release.md)).
 | 2 | The small library gaps. **Done:** `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`, random numbers, and `program.exit`, `program.environment` and `program.warn` ([`ending-a-program.md`](ending-a-program.md)) | small | First use of 1. Every one is asked for by ordinary programs |
 | 3 | An enum case with a number: `Ack = 6`. **Done** ([`enum-numbers.md`](enum-numbers.md)); a loop over the cases is left | medium | Every protocol and every register field is a number with a name |
 | 4 | Bytes: bytes from and to a file (**done**, [`bytes.md`](bytes.md)), a packed `list[u8]` (**done**, decision 36.2), a list of a fixed length (**done**, [`fixed-lists.md`](fixed-lists.md), decision 36.4; kept off the pool is left) | large | "The first thing a real driver will ask for" (5.13a) |
-| 5 | `u64` and `f32` | medium | Counters and timestamps; a board whose float unit is 32 bits |
+| 5 | `u64` and `f32`. **`f32` done** ([`f32.md`](f32.md), chapter 41) | medium | Counters and timestamps; a board whose float unit is 32 bits |
 | 6 | Units made of units: `V * A` is `W` | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
 | 7 | Inputs on a board, a serial port, an ADC, PWM, interrupts | large, wants a board | The one thing that keeps Zeno off real hardware |
 | 8 | One step from a `.zeno` file to a board: a runtime with no `printf` and no `exit`, the cross-compiler named on the line, checks without GCC built-ins | large | The same |
@@ -82,7 +82,7 @@ C.
 | ~~**A list of a fixed length**~~, whose size is known when the program is built | C, C++, Rust and Go arrays | **Done** (36.4): `list[u8, 64]`, with `[0] * 64` to fill one (36.3). Left: keeping its items in the object or on the stack, with no block from the pool (36.5) |
 | ~~Bytes from and to a file~~ (6.16) | All seven | **Done** (chapter 36): `files.read_bytes` gives a `list[u8]`, `files.write_bytes` takes one |
 | **`u64`** (2.8d), and `i64` as a name | All but JavaScript and Python, which have big numbers | Build it, with its own rule: an operator between two `u64` gives a `u64`, checked, and it mixes with an `int` only when written |
-| **`f32`** | C, C++, Java, Rust, Go | Build it. On a board with a 32-bit float unit every `float` sum is done in software today |
+| ~~**`f32`**~~ | C, C++, Java, Rust, Go | **Done** (chapter 41): sums in 32 bits, an f32 goes where a float is wanted, and an f32 beside a float is refused. Left: `math` in 32 bits (41.9) |
 | **`u8.max` and `u8.min`** | Rust: `u8::MAX` | Small. Build with `u64` |
 | **Small variables and parameters**: only a field of a class is stored at its size | C | Leave. The C compiler keeps them in registers either way |
 | **The layout of an object**: no promise of the order or the gaps between fields, and no fields of a few bits | C: structs and bit fields. Rust: `repr(C)` | Build after bytes, as a word on the class. A frame or a register block is then a class |

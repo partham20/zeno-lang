@@ -10,6 +10,7 @@
 #
 #   int        a Python int, kept to the 64 bits of a Zeno int
 #   float      a Python float
+#   f32        an `F32`: the float it is exactly (decision 41)
 #   str        a Python str
 #   bool       True, False
 #   none       None
@@ -60,6 +61,67 @@ class Quantity:
     def __init__(self, v, unit):
         self.v = v
         self.unit = unit
+
+
+class F32:
+    __slots__ = ("v",)
+
+    def __init__(self, v):
+        self.v = v
+
+
+def _fround(x):
+    """The nearest f32 to a float, as a float."""
+    try:
+        return _struct.unpack("f", _struct.pack("f", x))[0]
+    except OverflowError:
+        return _math.copysign(_math.inf, x)
+
+
+def _single(v):
+    """An f32, or an int as a float and then the nearest f32 (41.2)."""
+    t = type(v)
+    if t is F32:
+        return v.v
+    if t is int:
+        return _fround(float(v))
+    return None
+
+
+def _f32_shown(x):
+    """The float with the fewest digits that reads back as this f32."""
+    if x != x or x == 0.0 or x in (_math.inf, -_math.inf):
+        return x
+    for digits in range(1, 10):
+        d = float("%.*e" % (digits - 1, x))
+        if _fround(d) == x:
+            return d
+    return x
+
+
+def _f32_op(op, a, b, line):
+    x, y = _single(a), _single(b)
+    if x is None or y is None:
+        if type(a) is float or type(b) is float:
+            fatal("`" + op + "` between " + type_name(a) + " and " + type_name(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line)
+        _mismatch(op, a, b, line)
+    if op in ("/", "//", "%") and y == 0:
+        _by_zero(line)
+    if op == "+":
+        r = x + y
+    elif op == "-":
+        r = x - y
+    elif op == "*":
+        r = x * y
+    elif op == "/":
+        r = x / y
+    elif op == "//":
+        r = _floor(x / y)
+    elif op == "%":
+        r = x - y * _floor(x / y)
+    else:
+        r = pow_(x, y, line)
+    return F32(_fround(r))
 
 
 class Class:
@@ -173,6 +235,8 @@ def _number(v):
     t = type(v)
     if t is int or t is float:
         return float(v) if t is int else v
+    if t is F32:
+        return v.v
     return None
 
 
@@ -187,6 +251,8 @@ def type_name(v):
         return "an int"
     if t is float:
         return "a float"
+    if t is F32:
+        return "an f32"
     if t is str:
         return "a str"
     if t is bool:
@@ -317,6 +383,8 @@ def show(v):
         return str(v)
     if t is float:
         return show_float(v)
+    if t is F32:
+        return show_float(_f32_shown(v.v))
     if t is bool:
         return "true" if v else "false"
     if v is None:
@@ -427,6 +495,12 @@ def eq(a, b):
         return a == b
     if (ta is int or ta is float) and (tb is int or tb is float):
         return float(a) == float(b)
+    if ta is F32 or tb is F32:
+        x, y = _single(a), _single(b)
+        if x is not None and y is not None:
+            return x == y
+        x, y = _number(a), _number(b)
+        return x is not None and y is not None and x == y
     if ta is str and tb is str:
         return a == b
     if ta is bool and tb is bool:
@@ -470,6 +544,8 @@ def _mismatch(op, a, b, line):
 
 
 def add(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('+', a, b, line)
     ta, tb = type(a), type(b)
     if ta is int and tb is int:
         r = a + b
@@ -492,6 +568,8 @@ def add(a, b, line):
 
 
 def sub(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('-', a, b, line)
     ta, tb = type(a), type(b)
     if ta is int and tb is int:
         r = a - b
@@ -510,6 +588,8 @@ def sub(a, b, line):
 
 
 def mul(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('*', a, b, line)
     ta, tb = type(a), type(b)
     if ta is list and tb is int:
         if b < 0:
@@ -540,6 +620,8 @@ def _fdiv(x, y):
 
 
 def div(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('/', a, b, line)
     ta, tb = type(a), type(b)
     if ta is Quantity:
         if (tb is Quantity or tb is float) and (b.v if tb is Quantity else b) == 0:
@@ -573,6 +655,8 @@ def _floor(q):
 
 
 def floordiv(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('//', a, b, line)
     if type(a) is int and type(b) is int:
         if b == 0:
             _by_zero(line)
@@ -586,6 +670,8 @@ def floordiv(a, b, line):
 
 
 def mod(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('%', a, b, line)
     if type(a) is int and type(b) is int:
         if b == 0:
             _by_zero(line)
@@ -599,6 +685,8 @@ def mod(a, b, line):
 
 
 def pow_(a, b, line):
+    if type(a) is F32 or type(b) is F32:
+        return _f32_op('**', a, b, line)
     if type(a) is int and type(b) is int:
         if b < 0:
             _raise("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line)
@@ -685,6 +773,8 @@ def neg(v, line):
         return _int(-v, line)
     if t is float:
         return -v
+    if t is F32:
+        return F32(-v.v)
     if t is Quantity:
         return Quantity(-v.v, v.unit)
     fatal("`-` does not work on " + type_name(v), line)
@@ -698,6 +788,11 @@ def bitnot(v, line):
 
 def _order(op, a, b, line):
     ta, tb = type(a), type(b)
+    if ta is F32 or tb is F32:
+        x, y = _single(a), _single(b)
+        if x is None or y is None:
+            _f32_op(op, a, b, line)
+        return -1 if x < y else (1 if x > y else (0 if x == y else None))
     if (ta is int and tb is int) or (ta is str and tb is str):
         return -1 if a < b else (1 if a > b else 0)
     if ta is Quantity and tb is Quantity:
@@ -1173,6 +1268,8 @@ def _pick(name, args, line, better):
     values, _ = _numbers(name, args, line)
     if not values:
         _raise("ValueError", "`" + name + "` of nothing", line)
+    if any(type(item) is F32 for item in values) and all(type(item) in (F32, int) for item in values):
+        values = [F32(_single(item)) for item in values]
     best = values[0]
     for item in values[1:]:
         if better(_amount(item), _amount(best)):
@@ -1223,7 +1320,7 @@ def _sort_by(xs, function, line):
     keys = []
     for item in xs[:]:
         k = call(function, [item], line)
-        if type(k) not in (int, float, str):
+        if type(k) not in (int, float, str, F32):
             fatal("the function given to `sort` must return a number or text to order by, but it returned " + type_name(k), line)
         keys.append(k)
     s = xs[:]
@@ -1741,6 +1838,8 @@ def _b_int(args, line):
     t = type(v)
     if t is int:
         return v
+    if t is F32:
+        v, t = v.v, float
     if t is float:
         if v != v or v in (_math.inf, -_math.inf):
             _raise("ValueError", "cannot turn " + ("NaN" if v != v else ("inf" if v > 0 else "-inf")) + " into an int", line)
@@ -1764,12 +1863,30 @@ def _b_float(args, line):
         return float(v)
     if t is float:
         return v
+    if t is F32:
+        return v.v
     if t is str:
         x = _parse_float(_strip(v))
         if x is None:
             _raise("ValueError", "cannot turn " + quoted(v) + " into a float", line)
         return x
     _wrong_type("float", "a number or a str", v, line)
+
+
+def _b_f32(args, line):
+    _arity("f32", args, 1, 1, line)
+    v = args[0]
+    t = type(v)
+    if t is F32:
+        return v
+    if t is int:
+        return F32(_single(v))
+    if t is float:
+        r = _fround(v)
+        if r in (_math.inf, -_math.inf) and v == v and v not in (_math.inf, -_math.inf):
+            _raise("OverflowError", show_float(v) + " does not fit in an f32, whose largest is about 3.4e38", line)
+        return F32(r)
+    _wrong_type("f32", "a number", v, line)
 
 
 def _b_str(args, line):
@@ -1785,6 +1902,8 @@ def _b_abs(args, line):
         return _int(abs(v), line)
     if t is float:
         return abs(v)
+    if t is F32:
+        return F32(abs(v.v))
     if t is Quantity:
         return Quantity(abs(v.v), v.unit)
     _wrong_type("abs", "a number", v, line)
@@ -1802,6 +1921,11 @@ def _b_sum(args, line):
     values, u = _numbers("sum", args, line)
     if u is not None:
         fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line)
+    if any(type(item) is F32 for item in values) and all(type(item) in (F32, int) for item in values):
+        single = 0.0
+        for item in values:
+            single = _fround(single + _single(item))
+        return F32(single)
     total, all_ints, float_total = 0, True, 0.0
     for item in values:
         float_total += _number(item)
@@ -2043,6 +2167,7 @@ BUILTINS = {
     "range": _b_range,
     "int": _b_int,
     "float": _b_float,
+    "f32": _b_f32,
     "str": _b_str,
     "abs": _b_abs,
     "min": _b_min,

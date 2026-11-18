@@ -68,14 +68,50 @@ const Z = (function () {
   function number(v: any) {
     if (typeof v === "number") return v;
     if (v instanceof Float) return v.v;
+    if (v instanceof F32) return v.v;
     if (typeof v === "bigint") return Number(v);
     return null;
   }
   const float = (x: any) => new Float(x);
+  class F32 { declare v: any; constructor(v: any) { this.v = v; } }
+  const f32 = (x: any) => new F32(x);
+  // An f32, or an int as a float and then the nearest f32 (41.2).
+  function single(v: any) {
+    if (v instanceof F32) return v.v;
+    if (isInt(v)) return Math.fround(Number(v));
+    return null;
+  }
+  // The float with the fewest digits that reads back as this f32.
+  function f32Shown(x: any) {
+    if (x !== x || x === 0 || !Number.isFinite(x)) return x;
+    for (let digits = 1; digits <= 9; digits++) {
+      const d = Number(x.toExponential(digits - 1));
+      if (Math.fround(d) === x) return d;
+    }
+    return x;
+  }
+  function f32Op(op: any, a: any, b: any, line: any): any {
+    const x = single(a), y = single(b);
+    if (x === null || y === null) {
+      if (a instanceof Float || b instanceof Float) fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line);
+      mismatch(op, a, b, line);
+    }
+    if ((op === "/" || op === "//" || op === "%") && y === 0) byZero(line);
+    let r;
+    if (op === "+") r = x + y;
+    else if (op === "-") r = x - y;
+    else if (op === "*") r = x * y;
+    else if (op === "/") r = x / y;
+    else if (op === "//") r = Math.floor(x / y);
+    else if (op === "%") r = x - y * Math.floor(x / y);
+    else r = pow(float(x), float(y), line).v;
+    return f32(Math.fround(r));
+  }
 
   function typeName(v: any) {
     if (isInt(v)) return "an int";
     if (v instanceof Float) return "a float";
+    if (v instanceof F32) return "an f32";
     if (typeof v === "string") return "a str";
     if (typeof v === "boolean") return "a bool";
     if (v === null) return "none";
@@ -175,6 +211,7 @@ const Z = (function () {
     if (typeof v === "number" || typeof v === "bigint") return String(v);
     if (typeof v === "string") return v;
     if (v instanceof Float) return showFloat(v.v);
+    if (v instanceof F32) return showFloat(f32Shown(v.v));
     if (typeof v === "boolean") return v ? "true" : "false";
     if (v === null) return "none";
     if (v instanceof Quantity) {
@@ -257,7 +294,13 @@ const Z = (function () {
   // ------------------------------------------------------------ Equality
 
   function equal(a: any, b: any) {
-    if (a === b) return !(a instanceof Float) || a.v === a.v;
+    if (a === b) return !(a instanceof Float || a instanceof F32) || a.v === a.v;
+    if (a instanceof F32 || b instanceof F32) {
+      const x = single(a), y = single(b);
+      if (x !== null && y !== null) return x === y;
+      const p = number(a), q = number(b);
+      return p !== null && q !== null && p === q;
+    }
     if (isInt(a) && isInt(b)) return a == b;
     if ((isInt(a) || a instanceof Float) && (isInt(b) || b instanceof Float)) return number(a) === number(b);
     if (a instanceof Quantity && b instanceof Quantity) {
@@ -313,6 +356,7 @@ const Z = (function () {
   }
 
   function add(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('+', a, b, line);
     if (typeof a === "number" && typeof b === "number") {
       const r = a + b;
       return Number.isSafeInteger(r) ? r : int(BigInt(a) + BigInt(b), line);
@@ -331,6 +375,7 @@ const Z = (function () {
   }
 
   function sub(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('-', a, b, line);
     if (typeof a === "number" && typeof b === "number") {
       const r = a - b;
       return Number.isSafeInteger(r) ? r : int(BigInt(a) - BigInt(b), line);
@@ -347,6 +392,7 @@ const Z = (function () {
   }
 
   function mul(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('*', a, b, line);
     if (Array.isArray(a) && isInt(b)) {
       if (b < 0) raise("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line);
       const repeated = [];
@@ -370,6 +416,7 @@ const Z = (function () {
   }
 
   function div(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('/', a, b, line);
     if (a instanceof Quantity) {
       if ((b instanceof Quantity || b instanceof Float) && b.v === 0) byZero(line);
       if (b === 0) byZero(line);
@@ -389,6 +436,7 @@ const Z = (function () {
   }
 
   function floordiv(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('//', a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b == 0) byZero(line);
       if (typeof a === "number" && typeof b === "number") {
@@ -410,6 +458,7 @@ const Z = (function () {
   }
 
   function mod(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op("%", a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b == 0) byZero(line);
       if (typeof a === "number" && typeof b === "number") {
@@ -427,6 +476,7 @@ const Z = (function () {
   }
 
   function pow(a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) return f32Op('**', a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b < 0) raise("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
       // As Rust's `checked_pow` with a u32 power.
@@ -472,6 +522,7 @@ const Z = (function () {
     if (typeof v === "number") return v === 0 ? 0 : -v;
     if (typeof v === "bigint") return int(-v, line);
     if (v instanceof Float) return float(-v.v);
+    if (v instanceof F32) return f32(-v.v);
     if (v instanceof Quantity) return new Quantity(-v.v, v.unit);
     fatal("`-` does not work on " + typeName(v), line);
   }
@@ -482,6 +533,11 @@ const Z = (function () {
 
   // `<` and the others: -1, 0, 1, or null for a NaN.
   function order(op: any, a: any, b: any, line: any) {
+    if (a instanceof F32 || b instanceof F32) {
+      const x = single(a), y = single(b);
+      if (x === null || y === null) f32Op(op, a, b, line);
+      return x < y ? -1 : x > y ? 1 : x === y ? 0 : null;
+    }
     if (isInt(a) && isInt(b)) return a < b ? -1 : a > b ? 1 : 0;
     if (typeof a === "string" && typeof b === "string") return compareStr(a, b);
     if (a instanceof Quantity && b instanceof Quantity) {
@@ -870,8 +926,9 @@ const Z = (function () {
   }
 
   function pick(name: any, args: any, line: any, better: any) {
-    const [values] = numbers(name, args, line);
+    let [values] = numbers(name, args, line);
     if (values.length === 0) raise("ValueError", "`" + name + "` of nothing", line);
+    if (values.some((item: any) => item instanceof F32) && values.every((item: any) => item instanceof F32 || isInt(item))) values = values.map((item: any) => f32(single(item)));
     let best = values[0];
     for (const item of values.slice(1)) if (better(amount(item), amount(best))) best = item;
     return best;
@@ -918,7 +975,7 @@ const Z = (function () {
     const keys: any[] = [];
     for (const item of items.slice()) {
       const k = call(fn, [item], line);
-      if (!isInt(k) && !(k instanceof Float) && typeof k !== "string") fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
+      if (!isInt(k) && !(k instanceof Float) && !(k instanceof F32) && typeof k !== "string") fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
       keys.push(k);
     }
     const sorted = items.slice();
@@ -1363,6 +1420,7 @@ const Z = (function () {
       arity("int", args, 1, 1, line);
       const v = args[0];
       if (isInt(v)) return v;
+      if (v instanceof F32) return BUILTINS.int([float(v.v)], line);
       if (v instanceof Float) {
         if (!Number.isFinite(v.v)) raise("ValueError", "cannot turn " + (Number.isNaN(v.v) ? "NaN" : v.v > 0 ? "inf" : "-inf") + " into an int", line);
         const t = Math.trunc(v.v);
@@ -1385,6 +1443,7 @@ const Z = (function () {
       const v = args[0];
       if (isInt(v)) return float(Number(v));
       if (v instanceof Float) return v;
+      if (v instanceof F32) return float(v.v);
       if (typeof v === "string") {
         const x = parseFloatText(strip(v));
         if (x === null) raise("ValueError", "cannot turn " + quoted(v) + " into a float", line);
@@ -1392,12 +1451,25 @@ const Z = (function () {
       }
       wrongType("float", "a number or a str", v, line);
     },
+    f32(args: any, line: any) {
+      arity("f32", args, 1, 1, line);
+      const v = args[0];
+      if (v instanceof F32) return v;
+      if (isInt(v)) return f32(single(v));
+      if (v instanceof Float) {
+        const r = Math.fround(v.v);
+        if (!Number.isFinite(r) && Number.isFinite(v.v)) raise("OverflowError", showFloat(v.v) + " does not fit in an f32, whose largest is about 3.4e38", line);
+        return f32(r);
+      }
+      wrongType("f32", "a number", v, line);
+    },
     str(args: any, line: any) { arity("str", args, 1, 1, line); return show(args[0]); },
     abs(args: any, line: any) {
       arity("abs", args, 1, 1, line);
       const v = args[0];
       if (isInt(v)) return v < 0 ? neg(v, line) : v;
       if (v instanceof Float) return float(Math.abs(v.v));
+      if (v instanceof F32) return f32(Math.abs(v.v));
       if (v instanceof Quantity) return new Quantity(Math.abs(v.v), v.unit);
       wrongType("abs", "a number", v, line);
     },
@@ -1406,6 +1478,11 @@ const Z = (function () {
     sum(args: any, line: any) {
       const [values, u] = numbers("sum", args, line);
       if (u !== null) fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+      if (values.some((item: any) => item instanceof F32) && values.every((item: any) => item instanceof F32 || isInt(item))) {
+        let single32 = 0;
+        for (const item of values) single32 = Math.fround(single32 + single(item));
+        return f32(single32);
+      }
       let total = 0, allInts = true, floatTotal = 0;
       for (const item of values) {
         floatTotal += number(item);

@@ -129,6 +129,7 @@ pub fn unary(op: UnaryOp, value: Value, span: Span) -> Result {
             None => raise("OverflowError", "the result is too big for an int", span),
         },
         (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
+        (UnaryOp::Neg, Value::F32(x)) => Ok(Value::F32(-x)),
         (UnaryOp::Neg, Value::Quantity(x, unit)) => Ok(Value::Quantity(-x, unit)),
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
         // Every bit turned over. For a number held in two's complement
@@ -201,6 +202,13 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
     if let (Add | Sub, Value::Pointer(memory, at), Int(n)) = (op, &left, &right) {
         let n = if op == Add { *n } else { n.wrapping_neg() };
         return Ok(Value::Pointer(memory.clone(), at.wrapping_add(n)));
+    }
+
+    // An f32 with an f32 or an int: worked out in 32 bits (decision 41.2).
+    if matches!(left, Value::F32(_)) || matches!(right, Value::F32(_)) {
+        if let Some(answer) = f32_binary(op, &left, &right, span) {
+            return answer;
+        }
     }
 
     match op {
@@ -381,6 +389,56 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         // Handled by each engine, because they must not always work out both sides.
         And | Or => mismatch(),
     }
+}
+
+/// `a op b` where one side is an f32, or `None` for an operator that
+/// works no differently on one (`in`). The other side is an f32 or an
+/// int, which becomes a float and then the nearest f32 first. `+`, `-`,
+/// `*` and `/` are done in 32 bits; `//`, `%` and `**` in 64, rounded
+/// once at the end, so that every engine gives the same f32 (41.2).
+fn f32_binary(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Option<Result> {
+    use BinaryOp::*;
+    let side = |value: &Value| match value {
+        Value::F32(x) => Some(*x),
+        Value::Int(n) => Some(*n as f64 as f32),
+        _ => None,
+    };
+    let (Some(a), Some(b)) = (side(left), side(right)) else {
+        if matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow | Lt | LtEq | Gt | GtEq)
+            && (matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)))
+        {
+            return Some(fatal(
+                format!(
+                    "`{}` between {} and {} would have to choose between 32 bits and 64. \
+                     Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64",
+                    op.text(),
+                    left.type_name(),
+                    right.type_name()
+                ),
+                span,
+            ));
+        }
+        return None;
+    };
+    let by_zero = || raise("ZeroDivisionError", "division by zero", span);
+    let (wide_a, wide_b) = (a as f64, b as f64);
+    Some(match op {
+        Add => Ok(Value::F32(a + b)),
+        Sub => Ok(Value::F32(a - b)),
+        Mul => Ok(Value::F32(a * b)),
+        Div | FloorDiv | Mod if b == 0.0 => by_zero(),
+        Div => Ok(Value::F32(a / b)),
+        FloorDiv => Ok(Value::F32((wide_a / wide_b).floor() as f32)),
+        Mod => Ok(Value::F32((wide_a - wide_b * (wide_a / wide_b).floor()) as f32)),
+        Pow => Ok(Value::F32(wide_a.powf(wide_b) as f32)),
+        Eq => Ok(Value::Bool(a == b)),
+        NotEq => Ok(Value::Bool(a != b)),
+        Lt => Ok(Value::Bool(a < b)),
+        LtEq => Ok(Value::Bool(a <= b)),
+        Gt => Ok(Value::Bool(a > b)),
+        GtEq => Ok(Value::Bool(a >= b)),
+        _ => return None,
+    })
 }
 
 // ----------------------------------------------------------- Fields and items

@@ -67,6 +67,8 @@ pub struct Rules {
 pub enum Kind {
     Int,
     Float,
+    /// A float of 32 bits (decision 41). C keeps it in a `float`.
+    F32,
     Str,
     Bool,
     None,
@@ -265,6 +267,14 @@ pub struct Types {
     /// Where each enum is written that such a call uses: those are the
     /// enums that get the two functions.
     numbered_enums: HashSet<(usize, usize)>,
+    /// Each float written out where an f32 is wanted, by where it starts:
+    /// `0.5` in `let gain: f32 = 0.5`. `checked` makes each `f32(0.5)`
+    /// (decision 41.4), so every engine meets an f32 there.
+    f32s: HashSet<(usize, usize)>,
+    /// Each f32 that goes where a float is wanted, by where it starts.
+    /// `checked` makes each `float(...)`, so that a float holds a float
+    /// in every engine, and prints as one (decision 41.3).
+    widened: HashSet<(usize, usize)>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -470,6 +480,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         // Only a field of an object stores it small: see `Types::widths`.
         Ty::Int | Ty::Sized(_) => Kind::Int,
         Ty::Float => Kind::Float,
+        Ty::F32 => Kind::F32,
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
         Ty::Pin => Kind::Pin,
@@ -501,11 +512,13 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
 /// statement is checked once.
 pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
     let (errors, types) = check_by(&program, rules);
-    if !errors.is_empty() || (types.fits.is_empty() && types.numbered.is_empty()) {
+    if !errors.is_empty()
+        || (types.fits.is_empty() && types.numbered.is_empty() && types.f32s.is_empty() && types.widened.is_empty())
+    {
         return (program, errors, types);
     }
-    let Types { fits, numbered, numbered_enums, .. } = types;
-    let program = program.with_fits(&fits).with_numbers(numbered, &numbered_enums);
+    let Types { fits, numbered, numbered_enums, f32s, widened, .. } = types;
+    let program = program.with_fits(&fits).with_numbers(numbered, &numbered_enums).with_f32s(f32s, widened);
     let (errors, types) = check_by(&program, rules);
     (program, errors, types)
 }
@@ -609,6 +622,9 @@ enum Ty {
 
     Int,
     Float,
+    /// A float of 32 bits: `f32` (decision 41). Its sums are done in 32
+    /// bits, and it goes where a float is wanted.
+    F32,
     Str,
     Bool,
     None,
@@ -1051,6 +1067,7 @@ impl fmt::Display for Ty {
             Ty::Dynamic | Ty::Invalid => write!(f, "any"),
             Ty::Int => write!(f, "int"),
             Ty::Float => write!(f, "float"),
+            Ty::F32 => write!(f, "f32"),
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
@@ -1162,7 +1179,7 @@ fn as_parameter(ty: &Ty) -> String {
 /// those `or none`. What is not known yet is not ruled out.
 fn takes_a_number(ty: &Ty) -> bool {
     match ty {
-        Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Quantity(_) | Ty::Dynamic | Ty::Invalid | Ty::Param(_) => true,
+        Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Quantity(_) | Ty::Dynamic | Ty::Invalid | Ty::Param(_) => true,
         Ty::Optional(inner) => takes_a_number(inner),
         _ => false,
     }
@@ -1173,6 +1190,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
         (Ty::Int, Ty::Int)
         | (Ty::Float, Ty::Float)
+        | (Ty::F32, Ty::F32)
         | (Ty::Str, Ty::Str)
         | (Ty::Bool, Ty::Bool)
         | (Ty::Pin, Ty::Pin)
@@ -1239,6 +1257,10 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         // wanted and nothing has to be written. The other way round needs
         // a conversion, because not every int is a u8.
         (Ty::Sized(_), Ty::Int) => true,
+        // Every f32 is a float, so an f32 goes where a float is wanted
+        // (decision 41.3). A float going where an f32 is wanted needs
+        // `f32( )`, since most floats are not one.
+        (Ty::F32, Ty::Float) => true,
         // Any error fits the catch-all `Error`.
         (Ty::Error(_), Ty::Error(to)) => &**to == "Error",
         // A function going where a function type is wanted is compared in
@@ -1325,7 +1347,7 @@ fn first_line(signature: &Signature) -> String {
 /// shape of `int` is wanted?
 fn sized_into_int(from: &Ty, to: &Ty) -> bool {
     match (from, to) {
-        (Ty::Sized(_), Ty::Int) => true,
+        (Ty::Sized(_), Ty::Int) | (Ty::F32, Ty::Float) => true,
         (Ty::List(from), Ty::List(to)) | (Ty::Optional(from), Ty::Optional(to)) => sized_into_int(from, to),
         (from, Ty::Optional(to)) => sized_into_int(from, to),
         _ => false,
@@ -1339,6 +1361,9 @@ fn sized_into_int(from: &Ty, to: &Ty) -> bool {
 #[derive(Clone)]
 enum Written {
     Number(i128),
+    /// A float written out, and where the number itself starts. It can
+    /// be an f32 where one is wanted (decision 41.4).
+    Real(f64, Span),
     List(Vec<Written>),
     /// `[0] * 64`: a list written out, and how many times it is repeated
     /// when that is written as a number. `place` is the list written out.
@@ -1348,8 +1373,10 @@ enum Written {
 fn written(expr: &Expr) -> Option<Written> {
     match &expr.kind {
         ExprKind::Int(n) => Some(Written::Number(*n as i128)),
+        ExprKind::Float(x) => Some(Written::Real(*x, expr.span)),
         ExprKind::Unary { op: UnaryOp::Neg, operand } => match written(operand)? {
             Written::Number(n) => Some(Written::Number(-n)),
+            Written::Real(x, at) => Some(Written::Real(-x, at)),
             Written::List(_) | Written::Repeat { .. } => None,
         },
         ExprKind::Binary { op: BinaryOp::Mul, left, right } => {
@@ -1376,6 +1403,7 @@ fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
             let fits = i64::try_from(*n).is_ok_and(|n| width.holds(n));
             Some(if fits { Ok(()) } else { Err(width.does_not_fit(n)) })
         }
+        (Written::Real(x, _), Ty::F32) => Some(f32_holds(*x)),
         (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => written_fits(written, inner),
         (Written::Repeat { list, .. }, _) => written_fits(list, to),
         (Written::List(items), Ty::List(item) | Ty::Fixed(item, _)) => {
@@ -1387,6 +1415,39 @@ fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
             Some(Ok(()))
         }
         _ => None,
+    }
+}
+
+/// Can a float written out be an f32? Any can, rounded to the nearest
+/// f32, but one too big for 32 bits would be infinity.
+fn f32_holds(x: f64) -> Result<(), String> {
+    if x.is_finite() && (x as f32).is_infinite() {
+        return Err(crate::value::too_big_for_f32(x));
+    }
+    Ok(())
+}
+
+/// Where each float written out begins that becomes an f32 where a `to`
+/// is wanted: `0.5`, or the items of `[0.5, 1.5]` for a `list[f32]`.
+fn reals_into_f32(written: &Written, to: &Ty, out: &mut Vec<Span>) {
+    match (written, to) {
+        (Written::Real(_, at), Ty::F32) => out.push(*at),
+        (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => reals_into_f32(written, inner, out),
+        (Written::Repeat { list, .. }, _) => reals_into_f32(list, to, out),
+        (Written::List(items), Ty::List(item) | Ty::Fixed(item, _)) => {
+            items.iter().for_each(|written| reals_into_f32(written, item, out))
+        }
+        _ => {}
+    }
+}
+
+/// Does a value of type `from`, going where a `to` is wanted, go as an
+/// f32 where a float is wanted? Then it is made a float on the way.
+fn widens_f32(from: &Ty, to: &Ty) -> bool {
+    match (from, to) {
+        (Ty::F32, Ty::Float) => true,
+        (Ty::F32, Ty::Optional(to) | Ty::Borrowed(to)) => widens_f32(from, to),
+        _ => false,
     }
 }
 
@@ -1417,6 +1478,7 @@ fn call_in(place: &Expr) -> Option<&Expr> {
 fn sized_as(from: &Ty, to: &Ty) -> Ty {
     match (from, to) {
         (Ty::Int, Ty::Sized(_)) => to.clone(),
+        (Ty::Float, Ty::F32) => Ty::F32,
         (Ty::List(from), Ty::List(to) | Ty::Fixed(to, _)) => Ty::list(sized_as(from, to)),
         (Ty::Owned(from), Ty::Owned(to)) => Ty::Owned(Box::new(sized_as(from, to))),
         (from, Ty::Optional(to) | Ty::Borrowed(to) | Ty::Owned(to)) => sized_as(from, to),
@@ -1443,6 +1505,8 @@ fn join(a: &Ty, b: &Ty) -> Ty {
         (Ty::Owned(a), Ty::Owned(b)) => Ty::Owned(Box::new(join(a, b))),
         // A u8 beside an int, or beside an i16: what covers both is an int.
         (Ty::Sized(_), Ty::Int | Ty::Sized(_)) | (Ty::Int, Ty::Sized(_)) => Ty::Int,
+        // An f32 beside a float: every f32 is a float.
+        (Ty::F32, Ty::Float) | (Ty::Float, Ty::F32) => Ty::Float,
         // Unrelated types: only known when the program runs.
         _ => Ty::Dynamic,
     }
@@ -1652,6 +1716,8 @@ fn globals() -> Env {
     for width in ints::WIDTHS {
         env.declare(width.name, Ty::Builtin(width.name), false);
     }
+    // `f32(x)` converts, and `f32` is also a type (decision 41).
+    env.declare("f32", Ty::Builtin("f32"), false);
     for kind in crate::builtins::ERROR_TYPES {
         env.declare(kind, Ty::ErrorType(Rc::from(*kind)), false);
     }
@@ -2146,6 +2212,17 @@ impl Checker {
                 (Ty::Int, Ty::Float) => {
                     message += ". Write a number with a decimal point, as in `1.0`, and convert a value with `float( )`"
                 }
+                (Ty::Int | Ty::Sized(_), Ty::F32) => {
+                    message += ". Write a number with a decimal point, as in `1.0`, and convert a value with `f32( )`"
+                }
+                (Ty::Float, Ty::F32) => {
+                    message += ". An f32 holds about 7 digits and a float about 16, so most floats are not one. \
+                                Convert it with `f32( )`, which rounds it to the nearest f32"
+                }
+                (Ty::List(from), Ty::List(to)) if matches!((&**from, &**to), (Ty::F32, Ty::Float)) => {
+                    message += ". The list could then be given a float that is not an f32. \
+                                Make a list of floats from it with `[float(x) for x in ...]`"
+                }
                 (_, Ty::Function(_)) => {
                     message += ". A variable that was given a function of the program and no type holds that one \
                                 function only. Write its type to let it hold others, as in \
@@ -2181,6 +2258,9 @@ impl Checker {
             self.error(message, span);
             return;
         }
+        if widens_f32(from, to) {
+            self.types.widened.insert((span.line, span.col));
+        }
         self.arrives(from, to, what, span);
     }
 
@@ -2202,7 +2282,12 @@ impl Checker {
         };
         let mut ty = match written_fits(&written, wanted) {
             None => given,
-            Some(Ok(())) => sized_as(&given, wanted),
+            Some(Ok(())) => {
+                let mut reals = Vec::new();
+                reals_into_f32(&written, wanted, &mut reals);
+                self.types.f32s.extend(reals.iter().map(|at| (at.line, at.col)));
+                sized_as(&given, wanted)
+            }
             Some(Err(message)) => self.error(message, span),
         };
         // `[0] * 64` where a `list[u8, 64]` is wanted: the length is
@@ -2613,6 +2698,7 @@ impl Checker {
                 let ty = match (name.as_str(), args.as_slice()) {
                     ("int", []) => Ty::Int,
                     ("float", []) => Ty::Float,
+                    ("f32", []) => Ty::F32,
                     ("str", []) => Ty::Str,
                     ("bool", []) => Ty::Bool,
                     ("list", [item]) => {
@@ -3221,6 +3307,7 @@ impl Checker {
                             );
                         }
                         let given = self.look(value, env);
+                        let given = self.real_beside(given, &holds.clone().looked_at(), value);
                         // `xs += [4]` is `xs = xs + [4]`. On an owned list,
                         // the list that `+` makes takes the old one's place.
                         match (&wanted, self.binary(*op, &holds.looked_at(), &given, span)) {
@@ -4850,7 +4937,8 @@ impl Checker {
             // for a list written out as the item, where the items of
             // that list are kept another way than they say themselves.
             Ty::BuiltinMethod(receiver, name) if &**name == "append" => match &**receiver {
-                Ty::List(item) if item.is_owned() || asks_more(item) => {
+                // A float written out goes into a list of f32s as one.
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32) => {
                     Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
@@ -4861,11 +4949,14 @@ impl Checker {
                 Ty::List(item) if item.is_owned() => {
                     Some(vec![Slot { name: "item".to_string(), ty: lent(item), has_default: false, id: None }])
                 }
+                Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32) => {
+                    Some(vec![Slot { name: "item".to_string(), ty: Ty::F32, has_default: false, id: None }])
+                }
                 _ => None,
             },
             // So does `insert`, after the position.
             Ty::BuiltinMethod(receiver, name) if &**name == "insert" => match &**receiver {
-                Ty::List(item) if item.is_owned() || asks_more(item) => Some(vec![
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32) => Some(vec![
                     Slot { name: "position".to_string(), ty: Ty::Int, has_default: false, id: None },
                     Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None },
                 ]),
@@ -5336,7 +5427,7 @@ impl Checker {
                 let ty = self.look(operand, env).widened();
                 match (op, &ty) {
                     (_, ty) if ty.is_loose() => ty.clone(),
-                    (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::Quantity(_)) => ty,
+                    (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::F32 | Ty::Quantity(_)) => ty,
                     (UnaryOp::Not, Ty::Bool) => Ty::Bool,
                     (UnaryOp::BitNot, Ty::Int) => Ty::Int,
                     (UnaryOp::BitNot, _) => {
@@ -5366,8 +5457,15 @@ impl Checker {
             }
             ExprKind::Binary { op, left, right } => {
                 let (tested, right_side) = (left, right);
-                let left = self.look(left, env);
-                let right = self.look(right, env);
+                let left_type = self.look(left, env);
+                let right_type = self.look(right, env);
+                // `0.5 in readings`: the 0.5 is beside the items.
+                let beside_left = match (op, right_type.clone().widened().looked_at()) {
+                    (BinaryOp::In | BinaryOp::NotIn, Ty::List(item) | Ty::Fixed(item, _)) => *item,
+                    _ => right_type.clone(),
+                };
+                let left = self.real_beside(left_type.clone(), &beside_left, tested);
+                let right = self.real_beside(right_type, &left_type, right_side);
                 // A name that may be `none` is known to be there after a
                 // test or a new value. Testing it again is not a mistake,
                 // so `is none` looks at the type it was declared with.
@@ -5398,10 +5496,14 @@ impl Checker {
             }
             ExprKind::Compare { first, rest } => {
                 let mut left = self.look(first, env);
+                let mut left_expr: &Expr = first;
                 for (op, operand) in rest {
                     let right = self.look(operand, env);
-                    self.binary(*op, &left, &right, span);
-                    left = right;
+                    let (left_type, right_type) =
+                        (self.real_beside(left.clone(), &right, left_expr), self.real_beside(right.clone(), &left, operand));
+                    self.binary(*op, &left_type, &right_type, span);
+                    left = right_type;
+                    left_expr = operand;
                 }
                 Ty::Bool
             }
@@ -6308,7 +6410,7 @@ impl Checker {
             "int" | "float" => {
                 if self.arity(name, arguments, 1, 1, span) {
                     match first {
-                        Ty::Int | Ty::Float => {}
+                        Ty::Int | Ty::Float | Ty::F32 => {}
                         // Text from outside may not be a number at all.
                         Ty::Str | Ty::Dynamic => self.can_raise("ValueError", span),
                         Ty::Invalid => {}
@@ -6526,12 +6628,32 @@ impl Checker {
                 }
                 Ty::Str
             }
+            // `f32(x)`: the nearest f32 to a number (decision 41.5).
+            "f32" => {
+                if !self.arity(name, arguments, 1, 1, span) {
+                    return Ty::Invalid;
+                }
+                match &first {
+                    Ty::Int | Ty::Float | Ty::F32 => {}
+                    ty if ty.is_loose() => {}
+                    _ => return wrong(self, "a number"),
+                }
+                if let Some(Written::Real(x, _)) = &arguments[0].written {
+                    if let Err(message) = f32_holds(*x) {
+                        return self.error(message, arguments[0].span);
+                    }
+                } else if matches!(first, Ty::Float) || first.is_loose() {
+                    // A float too big for 32 bits.
+                    self.can_raise("OverflowError", span);
+                }
+                Ty::F32
+            }
             "abs" => {
                 if !self.arity(name, arguments, 1, 1, span) {
                     return Ty::Invalid;
                 }
                 match first {
-                    Ty::Int | Ty::Float | Ty::Quantity(_) => first,
+                    Ty::Int | Ty::Float | Ty::F32 | Ty::Quantity(_) => first,
                     ty if ty.is_loose() => ty,
                     _ => wrong(self, "a number"),
                 }
@@ -6569,6 +6691,10 @@ impl Checker {
                     }
                     return if types.iter().any(|ty| ty.is_loose()) { Ty::Dynamic } else { Ty::Quantity((*first).clone()) };
                 }
+                // f32s, perhaps with ints: the answer is an f32.
+                if types.iter().any(|ty| matches!(ty, Ty::F32)) && types.iter().all(|ty| matches!(ty, Ty::F32 | Ty::Int)) {
+                    return Ty::F32;
+                }
                 let joined = self.join_all(&types).unwrap_or(Ty::Int);
                 if !joined.is_number() && !joined.is_loose() {
                     return self.error(format!("`{name}` needs numbers, but this is {joined}"), span);
@@ -6576,6 +6702,8 @@ impl Checker {
                 joined
             }
             "sqrt" | "floor" | "ceil" | "round" | "exp" | "log" | "log2" | "log10" => {
+                self.math_widens(arguments);
+                let first = if matches!(first, Ty::F32) { Ty::Float } else { first.clone() };
                 if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !first.is_loose() {
                     wrong(self, "a number");
                 }
@@ -6584,6 +6712,8 @@ impl Checker {
             // An angle goes in: a plain number is radians, as in
             // mathematics, and `30 deg` or `0.5 rad` says which it is.
             "sin" | "cos" | "tan" => {
+                self.math_widens(arguments);
+                let first = if matches!(first, Ty::F32) { Ty::Float } else { first.clone() };
                 let angle = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "rad").is_some());
                 if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !angle && !first.is_loose() {
                     wrong(self, "a number or an angle, such as `30 deg`");
@@ -6592,15 +6722,19 @@ impl Checker {
             }
             // An angle comes out, and says that it is in radians.
             "asin" | "acos" | "atan" => {
+                self.math_widens(arguments);
+                let first = if matches!(first, Ty::F32) { Ty::Float } else { first.clone() };
                 if self.arity(name, arguments, 1, 1, span) && !first.is_number() && !first.is_loose() {
                     wrong(self, "a number");
                 }
                 Ty::Quantity(Rc::from("rad"))
             }
             "atan2" => {
+                self.math_widens(arguments);
                 if self.arity(name, arguments, 2, 2, span) {
                     for argument in arguments {
                         let ty = argument.ty.widened();
+                        let ty = if matches!(ty, Ty::F32) { Ty::Float } else { ty };
                         if !ty.is_number() && !ty.is_loose() {
                             self.error(format!("`atan2` needs two numbers, but this is {ty}"), argument.span);
                         }
@@ -6957,7 +7091,7 @@ impl Checker {
                     );
                 }
                 let key = apply(self, &arguments[0], vec![each(item)]);
-                if !matches!(key, Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Str | Ty::Invalid) && !key.is_loose() {
+                if !matches!(key, Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Str | Ty::Invalid) && !key.is_loose() {
                     return self.error(
                         format!(
                             "the function given to `sort` says what each item is ordered by, a number or text, \
@@ -6970,7 +7104,7 @@ impl Checker {
             }
             (Ty::List(item), "sort") => {
                 self.arity(name, arguments, 0, 1, span);
-                if !matches!(**item, Ty::Int | Ty::Float | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
+                if !matches!(**item, Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
                     return self.error(
                         format!(
                             "`sort` puts numbers or text in order, smallest first, and this is {receiver}. \
@@ -7663,6 +7797,41 @@ impl Checker {
 
     // ------------------------------------------------------------- Operators
 
+    /// The functions of `math` work in floats: an f32 given to one is
+    /// made a float on the way in (decision 41.6).
+    fn math_widens(&mut self, arguments: &[Argument]) {
+        for argument in arguments {
+            if matches!(argument.ty.widened(), Ty::F32) {
+                self.types.widened.insert((argument.span.line, argument.span.col));
+            }
+        }
+    }
+
+    /// A float written out beside an f32, as in `gain * 0.5`, is an f32
+    /// too (decision 41.4): this gives its type there, and notes it.
+    /// So is a list of them beside a list of f32s: `readings == [0.5, 1.5]`.
+    fn real_beside(&mut self, ty: Ty, other: &Ty, expr: &Expr) -> Ty {
+        let other = other.widened().looked_at();
+        let wanted = match &other {
+            Ty::F32 => other.clone(),
+            Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32) => Ty::list(Ty::F32),
+            _ => return ty,
+        };
+        let Some(written) = written(expr) else { return ty };
+        match written_fits(&written, &wanted) {
+            Some(Ok(())) => {}
+            Some(Err(message)) => return self.error(message, expr.span),
+            None => return ty,
+        }
+        let mut reals = Vec::new();
+        reals_into_f32(&written, &wanted, &mut reals);
+        if reals.is_empty() {
+            return ty;
+        }
+        self.types.f32s.extend(reals.iter().map(|at| (at.line, at.col)));
+        sized_as(&ty, &wanted)
+    }
+
     /// The type of `left op right`. The rules are the interpreter's, applied
     /// to types.
     fn binary(&mut self, op: BinaryOp, left: &Ty, right: &Ty, span: Span) -> Ty {
@@ -7680,6 +7849,31 @@ impl Checker {
                 (Ty::Invalid, _) | (_, Ty::Invalid) => Ty::Invalid,
                 _ => Ty::Dynamic,
             };
+        }
+
+        // An f32 with an f32 or an int is worked out in 32 bits, and the
+        // answer is an f32. With a float, which of the two is meant is
+        // not clear, and the program says (decision 41.2).
+        if matches!(left, Ty::F32) || matches!(right, Ty::F32) {
+            let other = if matches!(left, Ty::F32) { right } else { left };
+            let sum = matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow);
+            let order = matches!(op, Eq | NotEq | Lt | LtEq | Gt | GtEq);
+            match other {
+                Ty::F32 | Ty::Int if sum => return Ty::F32,
+                Ty::F32 | Ty::Int if order => return Ty::Bool,
+                Ty::Float if sum || order => {
+                    self.error(
+                        format!(
+                            "`{}` between {left} and {right} would have to choose between 32 bits and 64. \
+                             Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64",
+                            op.text()
+                        ),
+                        span,
+                    );
+                    return if order { Ty::Bool } else { Ty::Invalid };
+                }
+                _ => {}
+            }
         }
 
         let numbers = left.is_number() && right.is_number();
@@ -11358,6 +11552,39 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             (format!("{r}r.address = 5"), "a field cannot be set on Register[u8]"),
         ] {
             assert_eq!(error(&source), message, "\n{source}");
+        }
+    }
+
+    #[test]
+    fn an_f32_is_never_mixed_with_a_float_by_guess() {
+        // Decision 41: sums with an int stay f32, a float literal fits
+        // where an f32 is wanted, and an f32 fits where a float is.
+        ok("let a: f32 = 0.5\nlet b = a + 1\nlet c: f32 = b * 2.0\nlet d: float = c\nprint(d, a < 1, abs(a), min(a, 2), sum([a, a]))");
+        ok("let a: f32 = f32(3) / 2\nimport math\nprint(math.sqrt(a), float(a), int(a))");
+        for (source, message) in [
+            (
+                "let a: f32 = 0.5\nlet b = 1.5\nprint(a + b)",
+                "`+` between f32 and float would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64",
+            ),
+            (
+                "let a: f32 = 0.5\nlet b = 2.0\nprint(a < b)",
+                "`<` between f32 and float would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64",
+            ),
+            ("let a: f32 = 1e39", "1e39 does not fit in an f32, whose largest is about 3.4e38"),
+            (
+                "let n = 3\nlet a: f32 = n",
+                "`a` should be f32, but this is int. Write a number with a decimal point, as in `1.0`, and convert a value with `f32( )`",
+            ),
+            (
+                "let x = 1.5\nlet a: f32 = x",
+                "`a` should be f32, but this is float. An f32 holds about 7 digits and a float about 16, so most floats are not one. Convert it with `f32( )`, which rounds it to the nearest f32",
+            ),
+            (
+                "let a: list[f32] = [0.5]\nlet b: list[float] = a",
+                "`b` should be list[float], but this is list[f32]. The list could then be given a float that is not an f32. Make a list of floats from it with `[float(x) for x in ...]`",
+            ),
+        ] {
+            assert_eq!(error(source), message, "\n{source}");
         }
     }
 }

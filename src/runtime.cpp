@@ -76,7 +76,8 @@ struct Obj {
 };
 
 struct V {
-    enum T : uint8_t { NONE, INT, FLOAT, BOOL, OBJ, MISSING } t = NONE;
+    // An f32 is an F32, whose `f` is the float it is exactly (decision 41).
+    enum T : uint8_t { NONE, INT, FLOAT, BOOL, OBJ, MISSING, F32 } t = NONE;
     union {
         int64_t i;
         double f;
@@ -94,6 +95,7 @@ using Cell = std::shared_ptr<V>;
 
 inline V I(int64_t n) { V v; v.t = V::INT; v.i = n; return v; }
 inline V F(double x) { V v; v.t = V::FLOAT; v.f = x; return v; }
+inline V F32V(double x) { V v; v.t = V::F32; v.f = (double)(float)x; return v; }
 inline V B(bool b) { V v; v.t = V::BOOL; v.b = b; return v; }
 inline V O(std::shared_ptr<Obj> p) { V v; v.t = V::OBJ; v.p = std::move(p); return v; }
 const V NONE_V;
@@ -259,9 +261,43 @@ struct Fatal {
 
 [[noreturn]] inline void byZero(int line) { raiseError("ZeroDivisionError", "division by zero", line); }
 
-inline bool isNumber(const V& v) { return v.t == V::INT || v.t == V::FLOAT; }
+inline bool isNumber(const V& v) { return v.t == V::INT || v.t == V::FLOAT || v.t == V::F32; }
 
 inline double number(const V& v) { return v.t == V::INT ? (double)v.i : v.f; }
+
+// The nearest f32 to a float, as a float.
+inline double fround(double x) { return (double)(float)x; }
+
+// An f32, or an int as a float and then the nearest f32 (41.2).
+inline bool single(const V& v, double& x) {
+    if (v.t == V::F32) { x = v.f; return true; }
+    if (v.t == V::INT) { x = fround((double)v.i); return true; }
+    return false;
+}
+
+inline bool isF32(const V& a, const V& b) { return a.t == V::F32 || b.t == V::F32; }
+
+// True when some value is an f32 and every one is an f32 or an int.
+inline bool allSingle(const Args& values) {
+    bool any = false;
+    for (auto& v : values) {
+        if (v.t == V::F32) any = true;
+        else if (v.t != V::INT) return false;
+    }
+    return any;
+}
+
+// The float with the fewest digits that reads back as this f32.
+inline double f32Shown(double x) {
+    if (std::isnan(x) || x == 0 || std::isinf(x)) return x;
+    for (int digits = 1; digits <= 9; digits++) {
+        char buffer[64];
+        snprintf(buffer, sizeof buffer, "%.*e", digits - 1, x);
+        double d = strtod(buffer, nullptr);
+        if (fround(d) == x) return d;
+    }
+    return x;
+}
 
 inline string num(int64_t n) { return std::to_string(n); }
 
@@ -269,6 +305,7 @@ string typeName(const V& v) {
     switch (v.t) {
     case V::INT: return "an int";
     case V::FLOAT: return "a float";
+    case V::F32: return "an f32";
     case V::BOOL: return "a bool";
     case V::NONE: return "none";
     case V::MISSING: return "a value";
@@ -457,6 +494,7 @@ string show(const V& v) {
     switch (v.t) {
     case V::INT: return num(v.i);
     case V::FLOAT: return showFloat(v.f);
+    case V::F32: return showFloat(f32Shown(v.f));
     case V::BOOL: return v.b ? "true" : "false";
     case V::NONE: return "none";
     case V::MISSING: return "?";
@@ -589,6 +627,11 @@ Key keyOf(const V& k) { return k.t == V::INT ? Key{true, k.i, ""} : Key{false, 0
 
 bool equal(const V& a, const V& b) {
     if (a.t == V::INT && b.t == V::INT) return a.i == b.i;
+    if (isF32(a, b)) {
+        double x, y;
+        if (single(a, x) && single(b, y)) return x == y;
+        return isNumber(a) && isNumber(b) && number(a) == number(b);
+    }
     if (isNumber(a) && isNumber(b)) return number(a) == number(b);
     if (a.t == V::BOOL && b.t == V::BOOL) return a.b == b.b;
     if (a.t != V::OBJ || b.t != V::OBJ) return a.t == b.t && (a.t == V::NONE || a.t == V::MISSING);
@@ -659,7 +702,32 @@ inline int64_t mulInt(int64_t a, int64_t b, int line) {
     return r;
 }
 
+V div(const V& a, const V& b, int line);
+V floordiv(const V& a, const V& b, int line);
+V mod(const V& a, const V& b, int line);
+V pow(const V& a, const V& b, int line);
+
+V f32Op(const string& op, const V& a, const V& b, int line) {
+    double x, y;
+    if (!single(a, x) || !single(b, y)) {
+        if (a.t == V::FLOAT || b.t == V::FLOAT) {
+            fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line);
+        }
+        mismatch(op, a, b, line);
+    }
+    double r;
+    if (op == "+") r = x + y;
+    else if (op == "-") r = x - y;
+    else if (op == "*") r = x * y;
+    else if (op == "/") r = div(F(x), F(y), line).f;
+    else if (op == "//") r = floordiv(F(x), F(y), line).f;
+    else if (op == "%") r = mod(F(x), F(y), line).f;
+    else r = pow(F(x), F(y), line).f;
+    return F32V(r);
+}
+
 V add(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("+", a, b, line);
     if (a.t == V::INT && b.t == V::INT) return I(addInt(a.i, b.i, line));
     if (a.is(K::STR) && b.is(K::STR)) return S(str(a) + str(b));
     if (a.is(K::LIST) && b.is(K::LIST)) {
@@ -678,6 +746,7 @@ V add(const V& a, const V& b, int line) {
 }
 
 V sub(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("-", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t r;
         if (__builtin_sub_overflow(a.i, b.i, &r)) overflow(line);
@@ -694,6 +763,7 @@ V sub(const V& a, const V& b, int line) {
 }
 
 V mul(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("*", a, b, line);
     if (a.is(K::LIST) && b.t == V::INT) {
         if (b.i < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + std::to_string(b.i), line);
         Args items;
@@ -712,6 +782,7 @@ V mul(const V& a, const V& b, int line) {
 }
 
 V div(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("/", a, b, line);
     if (a.is(K::QUANTITY)) {
         Quantity& q = as<Quantity>(a);
         if (b.is(K::QUANTITY) && as<Quantity>(b).v == 0) byZero(line);
@@ -732,6 +803,7 @@ V div(const V& a, const V& b, int line) {
 }
 
 V floordiv(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("//", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, y = b.i;
         if (y == 0) byZero(line);
@@ -746,6 +818,7 @@ V floordiv(const V& a, const V& b, int line) {
 }
 
 V mod(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("%", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, y = b.i;
         if (y == 0) byZero(line);
@@ -763,6 +836,7 @@ V mod(const V& a, const V& b, int line) {
 }
 
 V pow(const V& a, const V& b, int line) {
+    if (isF32(a, b)) return f32Op("**", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, n = b.i;
         if (n < 0) raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
@@ -824,6 +898,7 @@ V neg(const V& v, int line) {
         return I(-v.i);
     }
     if (v.t == V::FLOAT) return F(-v.f);
+    if (v.t == V::F32) return F32V(-v.f);
     if (v.is(K::QUANTITY)) return Q(-as<Quantity>(v).v, as<Quantity>(v).unit);
     fatal("`-` does not work on " + typeName(v), line);
 }
@@ -835,6 +910,11 @@ V bitnot(const V& v, int line) {
 
 // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
 int order(const string& op, const V& a, const V& b, int line) {
+    if (isF32(a, b)) {
+        double x, y;
+        if (!single(a, x) || !single(b, y)) f32Op(op, a, b, line);
+        return x < y ? -1 : x > y ? 1 : x == y ? 0 : 2;
+    }
     if (a.t == V::INT && b.t == V::INT) return a.i < b.i ? -1 : a.i > b.i ? 1 : 0;
     if (a.is(K::STR) && b.is(K::STR)) {
         // UTF-8 bytes are in the order of the code points, as Rust compares.
@@ -1367,6 +1447,13 @@ V pick(const string& name, const Args& args, int line, bool smaller) {
     string unit;
     Args values = numbers(name, args, line, unit);
     if (values.empty()) raiseError("ValueError", "`" + name + "` of nothing", line);
+    if (allSingle(values)) {
+        for (auto& v : values) {
+            double x;
+            single(v, x);
+            v = F32V(x);
+        }
+    }
     V best = values[0];
     for (size_t i = 1; i < values.size(); i++) {
         const V& item = values[i];
@@ -1443,7 +1530,7 @@ void sortBy(List& l, const V& function, int line) {
     Args copy = l.items;
     for (auto& item : copy) {
         V k = call(function, {item}, line);
-        if (k.t != V::INT && k.t != V::FLOAT && !k.is(K::STR)) {
+        if (k.t != V::INT && k.t != V::FLOAT && k.t != V::F32 && !k.is(K::STR)) {
             fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
         }
         keys.push_back(k);
@@ -2144,7 +2231,7 @@ V b_int(const Args& args, int line) {
     arity("int", args, 1, 1, line);
     const V& v = args[0];
     if (v.t == V::INT) return v;
-    if (v.t == V::FLOAT) {
+    if (v.t == V::FLOAT || v.t == V::F32) {
         if (std::isnan(v.f) || std::isinf(v.f)) raiseError("ValueError", "cannot turn " + showFloat(v.f) + " into an int", line);
         return I(toInt(v.f));
     }
@@ -2171,12 +2258,28 @@ V b_float(const Args& args, int line) {
     const V& v = args[0];
     if (v.t == V::INT) return F((double)v.i);
     if (v.t == V::FLOAT) return v;
+    if (v.t == V::F32) return F(v.f);
     if (v.is(K::STR)) {
         double x;
         if (!parseFloat(strip(str(v)), x)) raiseError("ValueError", "cannot turn " + quoted(str(v)) + " into a float", line);
         return F(x);
     }
     wrongType("float", "a number or a str", v, line);
+}
+
+V b_f32(const Args& args, int line) {
+    arity("f32", args, 1, 1, line);
+    const V& v = args[0];
+    if (v.t == V::F32) return v;
+    if (v.t == V::INT) return F32V(fround((double)v.i));
+    if (v.t == V::FLOAT) {
+        double r = fround(v.f);
+        if (std::isinf(r) && !std::isinf(v.f) && !std::isnan(v.f)) {
+            raiseError("OverflowError", showFloat(v.f) + " does not fit in an f32, whose largest is about 3.4e38", line);
+        }
+        return F32V(r);
+    }
+    wrongType("f32", "a number", v, line);
 }
 
 V b_str(const Args& args, int line) {
@@ -2192,6 +2295,7 @@ V b_abs(const Args& args, int line) {
         return I(v.i < 0 ? -v.i : v.i);
     }
     if (v.t == V::FLOAT) return F(std::fabs(v.f));
+    if (v.t == V::F32) return F32V(std::fabs(v.f));
     if (v.is(K::QUANTITY)) return Q(std::fabs(as<Quantity>(v).v), as<Quantity>(v).unit);
     wrongType("abs", "a number", v, line);
 }
@@ -2205,6 +2309,15 @@ V b_sum(const Args& args, int line) {
     Args values = numbers("sum", args, line, unit);
     if (!unit.empty()) {
         fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+    }
+    if (allSingle(values)) {
+        double single32 = 0;
+        for (auto& item : values) {
+            double x;
+            single(item, x);
+            single32 = fround(single32 + x);
+        }
+        return F32V(single32);
     }
     int64_t total = 0;
     bool allInts = true;
@@ -2501,7 +2614,7 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
     static const std::unordered_map<string, BuiltinBody> b = [] {
         std::unordered_map<string, BuiltinBody> b = {
             {"print", b_print}, {"input", b_input}, {"len", b_len}, {"range", b_range}, {"int", b_int},
-            {"float", b_float}, {"str", b_str}, {"abs", b_abs}, {"min", b_min}, {"max", b_max}, {"sum", b_sum},
+            {"float", b_float}, {"f32", b_f32}, {"str", b_str}, {"abs", b_abs}, {"min", b_min}, {"max", b_max}, {"sum", b_sum},
             {"char", b_char}, {"allocate", b_allocate}, {"free", b_free},
             {"math.sqrt", b_math_sqrt}, {"math.floor", b_math_floor}, {"math.ceil", b_math_ceil},
             {"math.round", b_math_round}, {"math.sin", b_math_sin}, {"math.cos", b_math_cos}, {"math.tan", b_math_tan},

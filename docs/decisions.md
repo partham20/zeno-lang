@@ -13742,3 +13742,150 @@ means in .NET what the kind means in Zeno, by .NET's own description.
 - What a method puts back in an `out` or `ref` parameter.
 - `csharp` in a built program, and in `--target cs`, as 26.9 has it
   for Python.
+
+## 41. `f32`: a float of 32 bits
+
+```zeno
+let gain: f32 = 0.1
+var total: f32 = 0.0
+for i in range(10) {
+    total += gain
+}
+print(gain, total)          # 0.1 1.0000001
+let wide: float = total     # an f32 goes where a float is wanted
+```
+
+Most boards with a float unit (a Cortex-M4F, an M33, an ESP32) have one
+of 32 bits. A `float` of 64 bits is done there in software, many times
+slower, and a sensor's reading, a filter's coefficient or a PID gain
+never needed 16 digits. `f32` is a float of 32 bits, as C's `float`,
+Rust's `f32` and Java's `float`. It is the fifth item of
+[`missing.md`](missing.md). Walkthrough: [`f32.md`](f32.md).
+
+### 41.1 The name is `f32`
+
+**`f32`, beside `u8` and `i32`.** A sized type in Zeno is named by what
+it holds and how many bits: `u` for a whole number without a sign, `i`
+with one, and now `f` for a float. Rust and Zig spell it the same.
+**Turned down: `float32`**, Go's, which is longer and breaks the
+pattern; **`single`**, C#'s and Pascal's, which says nothing to anyone
+who has not met it; and C's own `float`, which Zeno already uses for the
+64-bit one.
+
+### 41.2 A sum of `f32`s is an `f32`, and a sum with a `float` is refused
+
+**An f32 with an f32, or with an int, gives an f32.** `+ - * /` are done
+in 32 bits, and `// % **` in 64 and rounded once to 32, which is the
+same answer to within the last bit and the same in every engine. An int
+beside an f32 is turned into a float and then into the nearest f32, so
+`gain * 3` is an f32. A comparison compares the two f32s.
+
+**Why not "arithmetic gives an int" (2.8a)?** A sized whole number is a
+way to store a number, and the danger is a sum that wraps; doing the sum
+in an `int` takes that danger away. An f32 is a way to *compute*: the
+point is that the board's float unit does the sum. Making every sum a
+`float` would put the sums back in software, which is the thing `f32`
+is for avoiding.
+
+**An f32 with a float is refused before the program runs**, with a
+message that says what to write:
+
+```
+error: `+` between f32 and float would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64
+```
+
+Either answer is a guess. C picks 64 bits silently, so a single `1.5`
+in a filter written in `float`s turns the whole sum into software
+`double`s, which is a classic slow bug on a microcontroller. Picking 32
+bits silently would throw away digits the float had. The principle is
+"one meaning" (4), and here the program has to say which one.
+
+A **written** float is not a float value, and adapts (41.4): `gain +
+1.5` is an f32 sum.
+
+### 41.3 An `f32` goes where a `float` is wanted
+
+**Every f32 is exactly a float**, so nothing is lost, and asking for
+`float( )` each time would be noise: an f32 is given to a function that
+takes a `float`, put in a `float` variable, or returned as one, and is
+widened on the way. This is the rule of sized whole numbers (2.8c),
+which go where an `int` is wanted.
+
+**A `list[f32]` is not a `list[float]`**, for the reason a `list[u8]` is
+not a `list[int]`: lists are shared, and whoever held it as a
+`list[float]` could put a float in it that is not an f32. The message
+says to copy it, `[float(x) for x in readings]`.
+
+### 41.4 A written float is rounded to the nearest `f32`
+
+**`let gain: f32 = 0.1` needs nothing more.** A number written in the
+program where an f32 is wanted, or beside an f32 in a sum or a
+comparison, is made the nearest f32 before the program runs. 0.1 has no
+exact f32, as it has no exact float, and the nearest one is what anyone
+writing 0.1 there means. **Turned down: C's `0.1f`**, a mark on every
+number in a filter, which says nothing the type does not.
+
+**A written number too big for an f32 is an error before the program
+runs**: `let a: f32 = 1e39` says `1e39 does not fit in an f32, whose
+largest is about 3.4e38`. A written number too small becomes the
+nearest f32, which may be a subnormal or 0, as in every language.
+
+**A float value is not rounded by itself.** `let a: f32 = x`, with `x` a
+`float`, is refused, and the message says to write `f32(x)`. Most
+floats are not f32s, so the rounding is a step the program should show.
+
+### 41.5 `f32(x)` makes one
+
+**`f32(x)` takes an int, a float or an f32** and gives the nearest f32.
+A float too big for an f32 is an `OverflowError`, a `try` can catch, as
+a whole number too big for a `u8` is a `ValueError` for `u8(n)`;
+`f32(inf)` is inf and `f32(nan)` is NaN, which are f32s. An int is first
+made a float, as everywhere: `f32(16777217)` is `16777216.0`.
+`float(x)` and `int(x)` take an f32.
+
+### 41.6 `math` works in 64 bits
+
+**`math.sqrt(gain)` gives a `float`.** The functions of `math` take a
+float, and an f32 goes in by 41.3. Each gives the same answer in every
+engine and target, because each language's 64-bit `sqrt`, `sin` and the
+rest agree, and not all of them have 32-bit ones. `abs`, `min`, `max`
+and `sum` keep an f32 an f32: they choose or add, and `sum` adds in 32
+bits, one item at a time.
+
+### 41.7 What a build writes
+
+**C writes `float`.** A sum of two f32s is C's `float` sum, a field is
+four bytes, and `-O2` uses the float unit's own instructions. Division
+by zero is a `ZeroDivisionError`, as for a float, except in a minimal
+build, which has no checks.
+
+**LLVM keeps an f32 in a `double` and rounds after each step.** For `+
+- * /` this is the same answer bit for bit: a double has more than
+twice the bits of an f32 and two more, so rounding the exact double
+answer to 32 bits gives the answer a 32-bit unit gives. It kept the
+backend's slots and calls unchanged.
+
+**Every target language** has a type for an f32 in its runtime and does
+the same rounding: Go's `float32`, Java's and Kotlin's `Float`, C#'s
+`float`, C++'s own tag, Rust's `f32`, and a small class with the value
+in Python, JavaScript, TypeScript, Ruby, PHP, Lua and Dart, which
+round with their own 32-bit tools (`struct`, `Math.fround`, `pack`,
+`string.pack`, `Float32List`). `tools/targets/edge-f32.zeno` holds them
+all to `zeno run`.
+
+### 41.8 An `f32` is printed with the fewest digits that read back as it
+
+**`print(gain)` shows `0.1`**, not `0.10000000149011612`: the shortest
+number that, made an f32 again, is the same f32, then written as a float
+is. That is what Rust, Java and C# print for one. `print(float(gain))`
+shows every digit of the float it is, for when that matters.
+
+### 41.9 Left for later
+
+- `json.write` of an f32, and `f32("0.5")` from text.
+- A format such as `{x:.2}` with no `f` after it, for an f32.
+- `math` in 32 bits (`sqrtf`), when a program shows it is too slow.
+- `pointer[f32]` and a register that holds an f32.
+- An f32 field in LLVM takes eight bytes, where C takes four.
+- A generic function copied for `T = f32` that changes a number written
+  once in it rounds it for every copy.

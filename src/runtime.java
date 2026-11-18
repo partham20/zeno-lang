@@ -170,13 +170,63 @@ final class Z {
 
     static Raise byZero(int line) { return raiseError("ZeroDivisionError", "division by zero", line); }
 
-    static boolean isNumber(Object v) { return v instanceof Long || v instanceof Double; }
+    static boolean isNumber(Object v) { return v instanceof Long || v instanceof Double || v instanceof Float; }
 
-    static double number(Object v) { return v instanceof Long l ? (double) (long) l : (Double) v; }
+    static double number(Object v) {
+        if (v instanceof Long l) return (double) (long) l;
+        if (v instanceof Float f) return (double) (float) f;
+        return (Double) v;
+    }
+
+    // An f32 is a `Float` (decision 41).
+    static double fround(double x) { return (double) (float) x; }
+
+    // An f32, or an int as a float and then the nearest f32 (41.2); null for anything else.
+    static Double single(Object v) {
+        if (v instanceof Float f) return (double) (float) f;
+        if (v instanceof Long l) return fround((double) (long) l);
+        return null;
+    }
+
+    // The float with the fewest digits that reads back as this f32.
+    static double f32Shown(float f) {
+        double x = f;
+        if (Double.isNaN(x) || x == 0 || Double.isInfinite(x)) return x;
+        var exact = new java.math.BigDecimal(x);
+        for (int digits = 1; digits <= 9; digits++) {
+            double d = exact.round(new java.math.MathContext(digits, java.math.RoundingMode.HALF_EVEN)).doubleValue();
+            if (fround(d) == x) return d;
+        }
+        return x;
+    }
+
+    static boolean isF32(Object a, Object b) { return a instanceof Float || b instanceof Float; }
+
+    static Object f32Op(String op, Object a, Object b, int line) {
+        Double x = single(a), y = single(b);
+        if (x == null || y == null) {
+            if (a instanceof Double || b instanceof Double) {
+                throw fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line);
+            }
+            throw mismatch(op, a, b, line);
+        }
+        double r;
+        switch (op) {
+            case "+": r = x + y; break;
+            case "-": r = x - y; break;
+            case "*": r = x * y; break;
+            case "/": r = (Double) div(x, y, line); break;
+            case "//": r = (Double) floordiv(x, y, line); break;
+            case "%": r = (Double) mod(x, y, line); break;
+            default: r = (Double) pow(x, y, line); break;
+        }
+        return (float) r;
+    }
 
     static String typeName(Object v) {
         if (v instanceof Long) return "an int";
         if (v instanceof Double) return "a float";
+        if (v instanceof Float) return "an f32";
         if (v instanceof String) return "a str";
         if (v instanceof Boolean) return "a bool";
         if (v == null) return "none";
@@ -302,6 +352,7 @@ final class Z {
         if (v instanceof String s) return s;
         if (v instanceof Long l) return Long.toString(l);
         if (v instanceof Double d) return showFloat(d);
+        if (v instanceof Float f) return showFloat(f32Shown(f));
         if (v instanceof Boolean b) return b ? "true" : "false";
         if (v == null) return "none";
         if (v instanceof ZList l) {
@@ -418,6 +469,11 @@ final class Z {
 
     static boolean equal(Object a, Object b) {
         if (a instanceof Long x && b instanceof Long y) return (long) x == (long) y;
+        if (isF32(a, b)) {
+            Double x = single(a), y = single(b);
+            if (x != null && y != null) return (double) x == (double) y;
+            return isNumber(a) && isNumber(b) && number(a) == number(b);
+        }
         if (isNumber(a) && isNumber(b)) return number(a) == number(b);
         if (a instanceof String x && b instanceof String y) return x.equals(y);
         if (a instanceof Boolean x && b instanceof Boolean y) return x.equals(y);
@@ -476,6 +532,7 @@ final class Z {
     }
 
     static Object add(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("+", a, b, line);
         if (a instanceof Long x && b instanceof Long y) return addInt(x, y, line);
         if (a instanceof String x && b instanceof String y) return x.concat(y);
         if (a instanceof ZList x && b instanceof ZList y) {
@@ -494,6 +551,7 @@ final class Z {
     }
 
     static Object sub(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("-", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             long r = x - y;
             if (((x ^ y) & (x ^ r)) < 0) throw overflow(line);
@@ -509,6 +567,7 @@ final class Z {
     }
 
     static Object mul(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("*", a, b, line);
         if (a instanceof ZList list && b instanceof Long times) {
             if (times < 0) throw raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + times, line);
             var items = new java.util.ArrayList<Object>();
@@ -527,6 +586,7 @@ final class Z {
     }
 
     static Object div(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("/", a, b, line);
         if (a instanceof Quantity q) {
             if (b instanceof Quantity y && y.v == 0) throw byZero(line);
             if (b instanceof Double y && y == 0) throw byZero(line);
@@ -545,6 +605,7 @@ final class Z {
     }
 
     static Object floordiv(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("//", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             if (y == 0) throw byZero(line);
             if (x == Long.MIN_VALUE && y == -1) throw overflow(line);
@@ -556,6 +617,7 @@ final class Z {
     }
 
     static Object mod(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("%", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             if (y == 0) throw byZero(line);
             return Math.floorMod((long) x, (long) y);
@@ -569,6 +631,7 @@ final class Z {
     }
 
     static Object pow(Object a, Object b, int line) {
+        if (isF32(a, b)) return f32Op("**", a, b, line);
         if (a instanceof Long xl && b instanceof Long nl) {
             long x = xl, n = nl;
             if (n < 0) throw raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
@@ -630,6 +693,7 @@ final class Z {
             return -x;
         }
         if (v instanceof Double x) return -x;
+        if (v instanceof Float x) return -x;
         if (v instanceof Quantity q) return new Quantity(-q.v, q.unit);
         throw fatal("`-` does not work on " + typeName(v), line);
     }
@@ -641,6 +705,11 @@ final class Z {
 
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     static int order(String op, Object a, Object b, int line) {
+        if (isF32(a, b)) {
+            Double x = single(a), y = single(b);
+            if (x == null || y == null) f32Op(op, a, b, line);
+            return x < y ? -1 : x > y ? 1 : x.doubleValue() == y.doubleValue() ? 0 : 2;
+        }
         if (a instanceof Long x && b instanceof Long y) return Long.compare(x, y);
         if (a instanceof String x && b instanceof String y) {
             // By code points, as Rust compares, not by UTF-16 units.
@@ -1094,6 +1163,11 @@ final class Z {
     static Object pick(String name, Object[] args, int line, boolean smaller) {
         var values = numbers(name, args, line, new String[1]);
         if (values.isEmpty()) throw raiseError("ValueError", "`" + name + "` of nothing", line);
+        if (values.stream().anyMatch(v -> v instanceof Float) && values.stream().allMatch(v -> v instanceof Float || v instanceof Long)) {
+            var widened = new java.util.ArrayList<Object>();
+            for (Object v : values) widened.add((float) (double) single(v));
+            values = widened;
+        }
         Object best = values.get(0);
         for (int i = 1; i < values.size(); i++) {
             Object item = values.get(i);
@@ -1150,7 +1224,7 @@ final class Z {
         var keys = new java.util.ArrayList<Object>();
         for (Object item : new java.util.ArrayList<>(l.items)) {
             Object k = call(function, new Object[] {item}, line);
-            if (!(k instanceof Long) && !(k instanceof Double) && !(k instanceof String)) {
+            if (!(k instanceof Long) && !(k instanceof Double) && !(k instanceof Float) && !(k instanceof String)) {
                 throw fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
             }
             keys.add(k);
@@ -1760,7 +1834,8 @@ final class Z {
         arity("int", args, 1, 1, line);
         Object v = args[0];
         if (v instanceof Long) return v;
-        if (v instanceof Double x) {
+        if (v instanceof Double || v instanceof Float) {
+            double x = number(v);
             if (Double.isNaN(x) || Double.isInfinite(x)) throw raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
             return toInt(x);
         }
@@ -1783,12 +1858,28 @@ final class Z {
         Object v = args[0];
         if (v instanceof Long n) return (double) n;
         if (v instanceof Double) return v;
+        if (v instanceof Float f) return (double) (float) f;
         if (v instanceof String s) {
             Double x = parseFloat(strip(s));
             if (x == null) throw raiseError("ValueError", "cannot turn " + quoted(s) + " into a float", line);
             return x;
         }
         throw wrongType("float", "a number or a str", v, line);
+    }
+
+    static Object b_f32(Object[] args, int line) {
+        arity("f32", args, 1, 1, line);
+        Object v = args[0];
+        if (v instanceof Float) return v;
+        if (v instanceof Long) return (float) (double) single(v);
+        if (v instanceof Double x) {
+            double r = fround(x);
+            if (Double.isInfinite(r) && !Double.isInfinite(x) && !Double.isNaN(x)) {
+                throw raiseError("OverflowError", showFloat(x) + " does not fit in an f32, whose largest is about 3.4e38", line);
+            }
+            return (float) r;
+        }
+        throw wrongType("f32", "a number", v, line);
     }
 
     static Object b_str(Object[] args, int line) {
@@ -1804,6 +1895,7 @@ final class Z {
             return Math.abs(n);
         }
         if (v instanceof Double x) return Math.abs(x);
+        if (v instanceof Float x) return Math.abs(x);
         if (v instanceof Quantity q) return new Quantity(Math.abs(q.v), q.unit);
         throw wrongType("abs", "a number", v, line);
     }
@@ -1817,6 +1909,11 @@ final class Z {
         var values = numbers("sum", args, line, unit);
         if (unit[0] != null) {
             throw fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+        }
+        if (values.stream().anyMatch(v -> v instanceof Float) && values.stream().allMatch(v -> v instanceof Float || v instanceof Long)) {
+            double single = 0;
+            for (Object item : values) single = fround(single + single(item));
+            return (float) single;
         }
         long total = 0;
         boolean allInts = true;
@@ -2128,6 +2225,7 @@ final class Z {
         BUILTINS.put("range", Z::b_range);
         BUILTINS.put("int", Z::b_int);
         BUILTINS.put("float", Z::b_float);
+        BUILTINS.put("f32", Z::b_f32);
         BUILTINS.put("str", Z::b_str);
         BUILTINS.put("abs", Z::b_abs);
         BUILTINS.put("min", Z::b_min);

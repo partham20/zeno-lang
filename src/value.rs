@@ -22,6 +22,8 @@ use crate::token::Span;
 pub enum Value {
     Int(i64),
     Float(f64),
+    /// A float of 32 bits (decision 41).
+    F32(f32),
     Str(Rc<str>),
     Bool(bool),
     None,
@@ -610,6 +612,7 @@ impl Value {
         match self {
             Value::Int(n) => Some(*n as f64),
             Value::Float(x) => Some(*x),
+            Value::F32(x) => Some(*x as f64),
             _ => None,
         }
     }
@@ -619,6 +622,7 @@ impl Value {
         match self {
             Value::Int(_) => "an int".to_string(),
             Value::Float(_) => "a float".to_string(),
+            Value::F32(_) => "an f32".to_string(),
             Value::Str(_) => "a str".to_string(),
             Value::Bool(_) => "a bool".to_string(),
             Value::None => "none".to_string(),
@@ -686,6 +690,43 @@ pub fn float_text(x: f64) -> String {
     }
 }
 
+/// An f32 as text: the fewest digits that name this f32 and no other,
+/// written the way a float with those digits is (decision 41.8). So
+/// `f32(0.1)` shows as `0.1`, though as a float it is 0.10000000149011612.
+///
+/// Each length from 1 digit to 9 is tried in turn, rounded from the exact
+/// value, until one reads back as the same f32. Every engine does exactly
+/// this, so they all show the same text.
+pub fn f32_text(x: f32) -> String {
+    float_text(f32_shown(x))
+}
+
+/// The nearest f32 to a float, or `None` if it is too big for one.
+/// Infinity and NaN stay what they are.
+pub fn to_f32(x: f64) -> Option<f32> {
+    let near = x as f32;
+    if near.is_infinite() && x.is_finite() { None } else { Some(near) }
+}
+
+/// What `f32( )` says to a float too big for it.
+pub fn too_big_for_f32(x: f64) -> String {
+    format!("{} does not fit in an f32, whose largest is about 3.4e38", float_text(x))
+}
+
+/// The float with the fewest digits that reads back as this f32.
+pub fn f32_shown(x: f32) -> f64 {
+    if !x.is_finite() || x == 0.0 {
+        return x as f64;
+    }
+    for digits in 1..=9 {
+        let text = format!("{:.*e}", digits - 1, x as f64);
+        if text.parse::<f32>() == Ok(x) {
+            return text.parse::<f64>().unwrap_or(x as f64);
+        }
+    }
+    x as f64
+}
+
 /// A text in its quotes, as it is shown inside a list, a dict or an
 /// object, and in the message of an error (decision 24.20).
 ///
@@ -722,7 +763,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
     use Value::*;
     match (a, b) {
         (Int(a), Int(b)) => a == b,
-        (Int(_) | Float(_), Int(_) | Float(_)) => a.number() == b.number(),
+        (Int(_) | Float(_) | F32(_), Int(_) | Float(_) | F32(_)) => a.number() == b.number(),
         (Str(a), Str(b)) => a == b,
         (Bool(a), Bool(b)) => a == b,
         (None, None) => true,
@@ -783,6 +824,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{n}"),
             // {:?} keeps the ".0" on whole floats, so 3.0 does not print as 3.
             Value::Float(x) => f.write_str(&float_text(*x)),
+            Value::F32(x) => f.write_str(&f32_text(*x)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::None => write!(f, "none"),

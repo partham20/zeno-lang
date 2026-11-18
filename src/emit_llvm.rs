@@ -221,6 +221,9 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_char_at", "declare ptr @zeno_char_at(ptr, i64, i32 signext, i32 signext)"),
     ("zeno_str_int", "declare ptr @zeno_str_int(i64)"),
     ("zeno_str_float", "declare ptr @zeno_str_float(double)"),
+    ("zeno_str_f32", "declare ptr @zeno_str_f32(float)"),
+    ("zeno_f32", "declare float @zeno_f32(double, i32 signext, i32 signext)"),
+    ("zeno_list_sum_f32", "declare float @zeno_list_sum_f32(ptr)"),
     ("zeno_str_bool", "declare ptr @zeno_str_bool(i1 zeroext)"),
     ("zeno_str_quantity", "declare ptr @zeno_str_quantity(double, ptr)"),
     ("zeno_repr_str", "declare ptr @zeno_repr_str(ptr)"),
@@ -1025,6 +1028,7 @@ fn described(kind: &Kind) -> String {
         Kind::Int => "an int".to_string(),
         Kind::Byte => "a byte".to_string(),
         Kind::Float => "a float".to_string(),
+        Kind::F32 => "an f32".to_string(),
         Kind::Str => "a str".to_string(),
         Kind::Bool => "a bool".to_string(),
         Kind::Pin => "a pin".to_string(),
@@ -1063,7 +1067,7 @@ fn is_pointer(kind: &Kind) -> bool {
 /// the collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
         Kind::Optional(inner) => holds_pointer(inner),
         _ => true,
     }
@@ -1123,6 +1127,7 @@ fn key(kind: &Kind) -> String {
         Kind::Int => "int".to_string(),
         Kind::Byte => "u8".to_string(),
         Kind::Float => "float".to_string(),
+        Kind::F32 => "f32".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
@@ -1192,7 +1197,9 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         Kind::Pointer(_) => "ptr",
         // A quantity is a float. Its unit has done its work in the
         // checker and costs nothing in the compiled program.
-        Kind::Float | Kind::Quantity(_) => "double",
+        // An f32 travels as the double it is exactly, and every sum on
+        // one is rounded to 32 bits (decision 41.7).
+        Kind::Float | Kind::F32 | Kind::Quantity(_) => "double",
         // One bit.
         Kind::Bool => "i1",
         // Text is the address of its first byte, as in the C backend.
@@ -1208,7 +1215,7 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => "ptr",
             Kind::Int | Kind::Pin | Kind::Register(_) => "{ i1, i64 }",
-            Kind::Float | Kind::Quantity(_) => "{ i1, double }",
+            Kind::Float | Kind::F32 | Kind::Quantity(_) => "{ i1, double }",
             Kind::Bool => "{ i1, i1 }",
             _ => return Err(cannot("this kind of value that may be `none`", span)),
         },
@@ -1254,7 +1261,7 @@ fn zero(ty: &str) -> &'static str {
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
         Kind::Int | Kind::Pin | Kind::Register(_) => Ok("int"),
-        Kind::Float | Kind::Quantity(_) => Ok("float"),
+        Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
     }
@@ -4135,7 +4142,7 @@ impl Emitter<'_> {
                     let val = self.expr(operand)?;
                     match val.kind {
                         Kind::Int => Val::new(self.checked("ssub", "0", &val.code, span), Kind::Int),
-                        Kind::Float | Kind::Quantity(_) => {
+                        Kind::Float | Kind::F32 | Kind::Quantity(_) => {
                             Val::new(self.set(format!("fneg double {}", val.code)), val.kind)
                         }
                         _ => return Err(cannot(format!("`-` in front of {}", described(&val.kind)), span)),
@@ -4309,6 +4316,26 @@ impl Emitter<'_> {
         }
     }
 
+    /// The value as the double an f32 is, for a sum on an f32: an int
+    /// becomes a float and then the nearest f32 (decision 41.2).
+    fn single(&mut self, val: &Val) -> String {
+        match val.kind {
+            Kind::Int => {
+                let wide = self.set(format!("sitofp i64 {} to double", val.code));
+                self.rounded(&wide)
+            }
+            _ => val.code.clone(),
+        }
+    }
+
+    /// A double rounded to the nearest f32, and held as a double again.
+    /// The double sum of two f32s, rounded so, is the f32 sum exactly,
+    /// and LLVM makes the pair one `float` instruction where it can.
+    fn rounded(&mut self, double: &str) -> String {
+        let near = self.set(format!("fptrunc double {double} to float"));
+        self.set(format!("fpext float {near} to double"))
+    }
+
     /// `+`, `-` or `*` on two ints, with the check Zeno promises.
     ///
     /// A plain `add` would wrap round on overflow. This asks for the
@@ -4475,6 +4502,28 @@ impl Emitter<'_> {
                 Val::new(self.call("double", "zeno.div", args), Quantity(unit.clone()))
             }
 
+            // An f32 with an f32 or an int (decision 41.2), worked out in
+            // double and rounded to 32 bits, which gives the f32 answer.
+            (_, Kind::F32, Kind::F32 | Int) | (_, Int, Kind::F32) => {
+                let (l, r) = (self.single(&left), self.single(&right));
+                let wide = match op {
+                    Add => self.set(format!("fadd double {l}, {r}")),
+                    Sub => self.set(format!("fsub double {l}, {r}")),
+                    Mul => self.set(format!("fmul double {l}, {r}")),
+                    Div => self.call("double", "zeno.div", format!("double {l}, double {r}, {}", at(span))),
+                    FloorDiv => self.call("double", "zeno_floordiv_float", format!("double {l}, double {r}, {}", at(span))),
+                    Mod => self.call("double", "zeno_mod_float", format!("double {l}, double {r}, {}", at(span))),
+                    Pow => self.call("double", "pow", format!("double {l}, double {r}")),
+                    _ => {
+                        return Err(cannot(
+                            format!("`{}` between {} and {}", op.text(), described(&left.kind), described(&right.kind)),
+                            span,
+                        ))
+                    }
+                };
+                Val::new(self.rounded(&wide), Kind::F32)
+            }
+
             // What is left is floats, or an int with a float. The float
             // instructions already do what Zeno wants, except for
             // dividing by zero.
@@ -4577,7 +4626,8 @@ impl Emitter<'_> {
 
     /// `==` and the rest, between two values.
     fn compare(&mut self, op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<String, Error> {
-        let plain = |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str | Kind::Quantity(_));
+        let plain =
+            |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::F32 | Kind::Bool | Kind::Str | Kind::Quantity(_));
         if plain(&left.kind) && plain(&right.kind) || !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
             return self.ordered(op, left, right, span);
         }
@@ -4634,6 +4684,10 @@ impl Emitter<'_> {
             }
             (Int | Float, Int | Float) => {
                 let (l, r) = (self.double(left), self.double(right));
+                self.set(format!("fcmp {float} double {l}, {r}"))
+            }
+            (Kind::F32, Kind::F32 | Int) | (Int, Kind::F32) => {
+                let (l, r) = (self.single(left), self.single(right));
                 self.set(format!("fcmp {float} double {l}, {r}"))
             }
             (Quantity(a), Quantity(b)) => {
@@ -4785,7 +4839,7 @@ impl Emitter<'_> {
     fn to_slot(&mut self, val: &Val, span: Span) -> Result<String, Error> {
         Ok(match &val.kind {
             Kind::Int | Kind::Byte | Kind::Pin | Kind::Register(_) => val.code.clone(),
-            Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast double {} to i64", val.code)),
+            Kind::Float | Kind::F32 | Kind::Quantity(_) => self.set(format!("bitcast double {} to i64", val.code)),
             // "Zero extend": the one bit, with 63 zeros in front.
             Kind::Bool => self.set(format!("zext i1 {} to i64", val.code)),
             kind if is_pointer(kind) => self.set(format!("ptrtoint ptr {} to i64", val.code)),
@@ -4809,7 +4863,7 @@ impl Emitter<'_> {
         let code = match kind {
             Kind::Byte => return Ok(Val::new(slot.to_string(), Kind::Int)),
             Kind::Int | Kind::Pin | Kind::Register(_) => slot.to_string(),
-            Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast i64 {slot} to double")),
+            Kind::Float | Kind::F32 | Kind::Quantity(_) => self.set(format!("bitcast i64 {slot} to double")),
             // "Truncate": keep the lowest bit.
             Kind::Bool => self.set(format!("trunc i64 {slot} to i1")),
             kind if is_pointer(kind) => self.set(format!("inttoptr i64 {slot} to ptr")),
@@ -5609,14 +5663,14 @@ impl Emitter<'_> {
             }
             ("abs", [val]) => match val.kind {
                 Kind::Int => Val::new(self.call("i64", "zeno_abs", format!("i64 {}, {}", val.code, at(span))), Kind::Int),
-                Kind::Float | Kind::Quantity(_) => {
+                Kind::Float | Kind::F32 | Kind::Quantity(_) => {
                     Val::new(self.call("double", "fabs", format!("double {}", val.code)), val.kind.clone())
                 }
                 _ => return Err(wrong()),
             },
             ("int", [val]) => match val.kind {
                 Kind::Int => val.clone(),
-                Kind::Float => {
+                Kind::Float | Kind::F32 => {
                     Val::new(self.call("i64", "zeno_int", format!("double {}, {}", val.code, at(span))), Kind::Int)
                 }
                 // Text may not be a number at all, so this one can raise.
@@ -5634,6 +5688,8 @@ impl Emitter<'_> {
             },
             ("float", [val]) => match val.kind {
                 Kind::Int | Kind::Float => Val::new(self.double(val), Kind::Float),
+                // An f32 is held as the double it is already.
+                Kind::F32 => Val::new(val.code.clone(), Kind::Float),
                 Kind::Str if self.firmware => {
                     self.code.built = !self.collector;
                     self.uses("zeno_parse_float");
@@ -5646,6 +5702,29 @@ impl Emitter<'_> {
                 ),
                 _ => return Err(wrong()),
             },
+            // `f32(x)`: the nearest f32 (decision 41.5). A float written
+            // out was checked to fit when the program was.
+            ("f32", [val]) => match val.kind {
+                Kind::F32 => val.clone(),
+                Kind::Int => Val::new(self.single(val), Kind::F32),
+                Kind::Float if val.code.parse::<f64>().is_ok() || val.code.starts_with("0x") => {
+                    Val::new(self.rounded(&val.code), Kind::F32)
+                }
+                Kind::Float => {
+                    let near = self.call("float", "zeno_f32", format!("double {}, {}", val.code, at(span)));
+                    Val::new(self.set(format!("fpext float {near} to double")), Kind::F32)
+                }
+                _ => return Err(wrong()),
+            },
+            ("sum", [Val { kind: Kind::List(item), code, .. }]) if **item == Kind::F32 => {
+                let total = self.call("float", "zeno_list_sum_f32", format!("ptr {code}"));
+                Val::new(self.set(format!("fpext float {total} to double")), Kind::F32)
+            }
+            ("min" | "max", [Val { kind: Kind::List(item), code, .. }]) if **item == Kind::F32 => {
+                let said = self.string(name);
+                let args = format!("ptr {code}, i1 {}, ptr {said}, {}", name == "min", at(span));
+                Val::new(self.call("double", "zeno_list_best_float", args), Kind::F32)
+            }
             // `sum`, `min` and `max` of one list of numbers.
             ("sum" | "min" | "max", [Val { kind: Kind::List(item), code, .. }]) => {
                 let (returns, function, args) = match (name, &**item) {
@@ -5669,6 +5748,21 @@ impl Emitter<'_> {
                     _ => return Err(cannot(format!("`{name}` of a list of anything but ints or floats"), span)),
                 };
                 Val::new(self.call(returns, function, args), read_kind(item))
+            }
+            // `min(gain, 1)`: f32s, perhaps with ints, give an f32.
+            ("min" | "max", [first, rest @ ..])
+                if !rest.is_empty()
+                    && vals.iter().any(|val| val.kind == Kind::F32)
+                    && vals.iter().all(|val| matches!(val.kind, Kind::F32 | Kind::Int)) =>
+            {
+                let compare = if name == "min" { "fcmp olt" } else { "fcmp ogt" };
+                let mut best = self.single(first);
+                for val in rest {
+                    let next = self.single(val);
+                    let better = self.set(format!("{compare} double {next}, {best}"));
+                    best = self.set(format!("select i1 {better}, double {next}, double {best}"));
+                }
+                Val::new(best, Kind::F32)
             }
             ("min" | "max", [first, rest @ ..])
                 if !rest.is_empty()
@@ -5877,7 +5971,7 @@ impl Emitter<'_> {
                 ("sort", []) => {
                     let kind = match &*item {
                         Kind::Int => 0,
-                        Kind::Float => 1,
+                        Kind::Float | Kind::F32 => 1,
                         Kind::Str => 2,
                         _ => return Err(cannot("`sort` on a list of anything but numbers or text", span)),
                     };
@@ -6660,7 +6754,7 @@ impl Emitter<'_> {
         // number, 1 a float, 2 text.
         let by = match (name, &kind.returns) {
             ("sort", Kind::Int) => 0,
-            ("sort", Kind::Float) => 1,
+            ("sort", Kind::Float | Kind::F32) => 1,
             ("sort", Kind::Str) => 2,
             ("sort", _) => {
                 return Err(cannot("`sort` with a function that returns anything but a number or text", span))
@@ -6779,6 +6873,10 @@ impl Emitter<'_> {
             Kind::Str => val.code.clone(),
             Kind::Int => self.call("ptr", "zeno_str_int", format!("i64 {}", val.code)),
             Kind::Float => self.call("ptr", "zeno_str_float", format!("double {}", val.code)),
+            Kind::F32 => {
+                let near = self.set(format!("fptrunc double {} to float", val.code));
+                self.call("ptr", "zeno_str_f32", format!("float {near}"))
+            }
             Kind::Bool => self.call("ptr", "zeno_str_bool", format!("i1 {}", val.code)),
             Kind::Pin => self.call("ptr", "zeno_str_pin", format!("i64 {}", val.code)),
             // Where a pointer points is different on every run, so it
@@ -6853,7 +6951,7 @@ impl Emitter<'_> {
             Kind::Byte => self.set(format!("icmp eq i64 {a}, {b}")),
             // Two pointers are equal when they point at the same item.
             Kind::Pointer(_) => self.set(format!("icmp eq ptr {a}, {b}")),
-            Kind::Float | Kind::Quantity(_) => self.set(format!("fcmp oeq double {a}, {b}")),
+            Kind::Float | Kind::F32 | Kind::Quantity(_) => self.set(format!("fcmp oeq double {a}, {b}")),
             Kind::Bool => self.set(format!("icmp eq i1 {a}, {b}")),
             Kind::Str => {
                 let order = self.call("i32", "strcmp", format!("ptr {a}, ptr {b}"));
@@ -7040,6 +7138,10 @@ impl Emitter<'_> {
         let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
         let emit_c::Format { align, zero, width, precision, kind } = emit_c::read_format(spec).ok_or_else(bad)?;
 
+        // `{gain:.3f}`: the decimals of the float an f32 is exactly.
+        if val.kind == Kind::F32 {
+            return self.formatted(&Val::new(val.code.clone(), Kind::Float), spec, span);
+        }
         // A quantity is a number with its unit, and lines up as numbers do.
         let is_number = matches!(val.kind, Kind::Int | Kind::Float | Kind::Quantity(_));
         let body = match (kind, precision, &val.kind) {

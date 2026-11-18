@@ -186,9 +186,73 @@ static class Z
 
     static System.Exception byZero(int line) => raiseError("ZeroDivisionError", "division by zero", line);
 
-    static bool isNumber(object v) => v is long || v is double;
+    static bool isNumber(object v) => v is long || v is double || v is float;
 
-    static double number(object v) => v is long l ? l : (double)v;
+    static double number(object v) => v is long l ? l : v is float f ? (double)f : (double)v;
+
+    // An f32 is a `float` (decision 41).
+    static double fround(double x) => (double)(float)x;
+
+    // An f32, or an int as a float and then the nearest f32 (41.2); null for anything else.
+    static double? single(object v)
+    {
+        if (v is float f) return (double)f;
+        if (v is long l) return fround((double)l);
+        return null;
+    }
+
+    // The float with the fewest digits that reads back as this f32.
+    static double f32Shown(float f)
+    {
+        double x = f;
+        if (double.IsNaN(x) || x == 0 || double.IsInfinity(x)) return x;
+        for (int digits = 1; digits <= 9; digits++)
+        {
+            double d = double.Parse(x.ToString("E" + (digits - 1), System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture);
+            if (fround(d) == x) return d;
+        }
+        return x;
+    }
+
+    static bool isF32(object a, object b) => a is float || b is float;
+
+    // True when some value is an f32 and every one is an f32 or an int.
+    static bool allSingle(System.Collections.Generic.IList<object> values)
+    {
+        bool any = false;
+        foreach (var v in values)
+        {
+            if (v is float) any = true;
+            else if (!(v is long)) return false;
+        }
+        return any;
+    }
+
+    static object f32Op(string op, object a, object b, int line)
+    {
+        double? sx = single(a), sy = single(b);
+        if (sx == null || sy == null)
+        {
+            if (a is double || b is double)
+            {
+                throw fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line);
+            }
+            throw mismatch(op, a, b, line);
+        }
+        double x = sx.Value, y = sy.Value;
+        double r;
+        switch (op)
+        {
+            case "+": r = x + y; break;
+            case "-": r = x - y; break;
+            case "*": r = x * y; break;
+            case "/": r = (double)div(x, y, line); break;
+            case "//": r = (double)floordiv(x, y, line); break;
+            case "%": r = (double)mod(x, y, line); break;
+            default: r = (double)pow(x, y, line); break;
+        }
+        return (float)r;
+    }
 
     static string typeName(object v)
     {
@@ -196,6 +260,7 @@ static class Z
         {
             case long: return "an int";
             case double: return "a float";
+            case float: return "an f32";
             case string: return "a str";
             case bool: return "a bool";
             case null: return "none";
@@ -363,6 +428,7 @@ static class Z
             case string s: return s;
             case long l: return l.ToString(C);
             case double d: return showFloat(d);
+            case float f: return showFloat(f32Shown(f));
             case bool b: return b ? "true" : "false";
             case null: return "none";
             case ZList l:
@@ -474,6 +540,12 @@ static class Z
     static bool equal(object a, object b)
     {
         if (a is long x && b is long y) return x == y;
+        if (isF32(a, b))
+        {
+            double? fx = single(a), fy = single(b);
+            if (fx != null && fy != null) return fx.Value == fy.Value;
+            return isNumber(a) && isNumber(b) && number(a) == number(b);
+        }
         if (isNumber(a) && isNumber(b)) return number(a) == number(b);
         if (a is string s && b is string t) return s == t;
         if (a is bool p && b is bool q) return p == q;
@@ -540,6 +612,7 @@ static class Z
 
     public static object add(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("+", a, b, line);
         if (a is long x && b is long y) return addInt(x, y, line);
         if (a is string s && b is string t) return s + t;
         if (a is ZList la && b is ZList lb)
@@ -561,6 +634,7 @@ static class Z
 
     public static object sub(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("-", a, b, line);
         if (a is long x && b is long y)
         {
             long r = unchecked(x - y);
@@ -579,6 +653,7 @@ static class Z
 
     public static object mul(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("*", a, b, line);
         if (a is ZList list && b is long times)
         {
             if (times < 0) throw raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + times, line);
@@ -600,6 +675,7 @@ static class Z
 
     public static object div(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("/", a, b, line);
         if (a is Quantity q)
         {
             if (b is Quantity bq && bq.v == 0) throw byZero(line);
@@ -621,6 +697,7 @@ static class Z
 
     public static object floordiv(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("//", a, b, line);
         if (a is long x && b is long y)
         {
             if (y == 0) throw byZero(line);
@@ -636,6 +713,7 @@ static class Z
 
     public static object mod(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("%", a, b, line);
         if (a is long x && b is long y)
         {
             if (y == 0) throw byZero(line);
@@ -654,6 +732,7 @@ static class Z
 
     public static object pow(object a, object b, int line)
     {
+        if (isF32(a, b)) return f32Op("**", a, b, line);
         if (a is long x && b is long n)
         {
             if (n < 0) throw raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
@@ -723,6 +802,7 @@ static class Z
             return -x;
         }
         if (v is double d) return -d;
+        if (v is float f) return -f;
         if (v is Quantity q) return new Quantity(-q.v, q.unit);
         throw fatal("`-` does not work on " + typeName(v), line);
     }
@@ -736,6 +816,13 @@ static class Z
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     static int order(string op, object a, object b, int line)
     {
+        if (isF32(a, b))
+        {
+            double? fx = single(a), fy = single(b);
+            if (fx == null || fy == null) f32Op(op, a, b, line);
+            double p = fx.Value, q = fy.Value;
+            return p < q ? -1 : p > q ? 1 : p == q ? 0 : 2;
+        }
         if (a is long lx && b is long ly) return lx.CompareTo(ly);
         if (a is string sx && b is string sy)
         {
@@ -1218,6 +1305,12 @@ static class Z
     {
         var values = numbers(name, args, line, out _);
         if (values.Count == 0) throw raiseError("ValueError", "`" + name + "` of nothing", line);
+        if (allSingle(values))
+        {
+            var widened = new System.Collections.Generic.List<object>();
+            foreach (var v in values) widened.Add((float)single(v).Value);
+            values = widened;
+        }
         object best = values[0];
         for (int i = 1; i < values.Count; i++)
         {
@@ -1280,7 +1373,7 @@ static class Z
         foreach (var item in new System.Collections.Generic.List<object>(l.items))
         {
             object k = call(function, new[] { item }, line);
-            if (!(k is long) && !(k is double) && !(k is string))
+            if (!(k is long) && !(k is double) && !(k is float) && !(k is string))
             {
                 throw fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
             }
@@ -1964,6 +2057,9 @@ static class Z
             case double x:
                 if (double.IsNaN(x) || double.IsInfinity(x)) throw raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
                 return toInt(x);
+            case float f:
+                if (float.IsNaN(f) || float.IsInfinity(f)) throw raiseError("ValueError", "cannot turn " + showFloat(f) + " into an int", line);
+                return toInt((double)f);
             case string s:
                 {
                     string t = strip(s).Replace("_", "");
@@ -1985,6 +2081,7 @@ static class Z
         {
             case long n: return (double)n;
             case double x: return x;
+            case float f: return (double)f;
             case string s:
                 {
                     double? x = parseFloat(strip(s));
@@ -1993,6 +2090,26 @@ static class Z
                 }
         }
         throw wrongType("float", "a number or a str", args[0], line);
+    }
+
+    public static object b_f32(object[] args, int line)
+    {
+        arity("f32", args, 1, 1, line);
+        switch (args[0])
+        {
+            case float f: return f;
+            case long n: return (float)single(n).Value;
+            case double x:
+                {
+                    double r = fround(x);
+                    if (double.IsInfinity(r) && !double.IsInfinity(x) && !double.IsNaN(x))
+                    {
+                        throw raiseError("OverflowError", showFloat(x) + " does not fit in an f32, whose largest is about 3.4e38", line);
+                    }
+                    return (float)r;
+                }
+        }
+        throw wrongType("f32", "a number", args[0], line);
     }
 
     public static object b_str(object[] args, int line)
@@ -2010,6 +2127,7 @@ static class Z
                 if (n == long.MinValue) throw overflow(line);
                 return System.Math.Abs(n);
             case double x: return System.Math.Abs(x);
+            case float f: return System.Math.Abs(f);
             case Quantity q: return new Quantity(System.Math.Abs(q.v), q.unit);
         }
         throw wrongType("abs", "a number", args[0], line);
@@ -2025,6 +2143,12 @@ static class Z
         if (unit != null)
         {
             throw fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+        }
+        if (allSingle(values))
+        {
+            double single32 = 0;
+            foreach (var item in values) single32 = fround(single32 + single(item).Value);
+            return (float)single32;
         }
         long total = 0;
         bool allInts = true;
@@ -2342,7 +2466,7 @@ static class Z
         var b = new System.Collections.Generic.Dictionary<string, BuiltinBody>
         {
             ["print"] = b_print, ["input"] = b_input, ["len"] = b_len, ["range"] = b_range, ["int"] = b_int,
-            ["float"] = b_float, ["str"] = b_str, ["abs"] = b_abs, ["min"] = b_min, ["max"] = b_max, ["sum"] = b_sum,
+            ["float"] = b_float, ["f32"] = b_f32, ["str"] = b_str, ["abs"] = b_abs, ["min"] = b_min, ["max"] = b_max, ["sum"] = b_sum,
             ["char"] = b_char, ["allocate"] = b_allocate, ["free"] = b_free,
             ["math.sqrt"] = b_math_sqrt, ["math.floor"] = b_math_floor, ["math.ceil"] = b_math_ceil,
             ["math.round"] = b_math_round, ["math.sin"] = b_math_sin, ["math.cos"] = b_math_cos, ["math.tan"] = b_math_tan,

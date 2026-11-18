@@ -1922,6 +1922,49 @@ static const char *zeno_quantity_text(double x, char out[64]) {
 }
 #endif /* ZENO_MINIMAL */
 
+/* An f32 (decision 41.8): the float with the fewest digits that reads
+ * back as the same f32. It is then written as a float is, so f32(0.1)
+ * prints as 0.1, though as a float it is 0.10000000149011612. */
+static double zeno_f32_shown(float x) {
+    if (x != x || x == 0.0f || x == INFINITY || x == -INFINITY) return (double)x;
+    char digits[40];
+    for (int precision = 1; precision <= 9; precision++) {
+        snprintf(digits, sizeof digits, "%.*e", precision - 1, (double)x);
+        if (strtof(digits, NULL) == x) return strtod(digits, NULL);
+    }
+    return (double)x;
+}
+
+static const char *zeno_str_f32(float x) {
+    return zeno_str_float(zeno_f32_shown(x));
+}
+
+/* `a / b` on two f32s, which C does in 32 bits. */
+static float zeno_div_f32(float a, float b, int line, int col) {
+#ifndef ZENO_UNCHECKED
+    if (b == 0.0f) zeno_by_zero(line, col);
+#else
+    (void)line;
+    (void)col;
+#endif
+    return a / b;
+}
+
+/* `f32(x)`: the nearest f32. A float too big for one is an OverflowError,
+ * as 300 is for `u8( )`; infinity and NaN stay what they are. */
+static float zeno_f32(double x, int line, int col) {
+    float near = (float)x;
+#ifndef ZENO_UNCHECKED
+    if ((near == INFINITY || near == -INFINITY) && x == x && x != INFINITY && x != -INFINITY) {
+        zeno_fail("OverflowError", zeno_join(2, zeno_str_float(x), " does not fit in an f32, whose largest is about 3.4e38"), line, col);
+    }
+#else
+    (void)line;
+    (void)col;
+#endif
+    return near;
+}
+
 /* `500 ms`. A whole quantity prints without a decimal point. */
 static const char *zeno_str_quantity(double x, const char *unit) {
     if (x == floor(x) && fabs(x) < 1e15) {
@@ -2934,6 +2977,13 @@ static int64_t zeno_list_sum_int(zeno_list *list, int line, int col) {
 static double zeno_list_sum_float(zeno_list *list) {
     double total = 0.0;
     for (int64_t i = 0; i < list->len; i++) total += list->items[i].f;
+    return total;
+}
+
+/* `sum` of a list of f32s: added in 32 bits, one at a time (41.2). */
+static float zeno_list_sum_f32(zeno_list *list) {
+    float total = 0.0f;
+    for (int64_t i = 0; i < list->len; i++) total = (float)(total + (float)list->items[i].f);
     return total;
 }
 

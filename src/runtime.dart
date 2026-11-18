@@ -40,6 +40,12 @@ class ZQuantity {
   ZQuantity(this.v, this.unit);
 }
 
+// An f32: the float it is exactly (decision 41).
+class ZF32 {
+  final double v;
+  ZF32(this.v);
+}
+
 typedef ZBody = Object? Function(List<Object?> args);
 typedef ZBuiltinBody = Object? Function(List<Object?> args, int line);
 
@@ -301,9 +307,64 @@ class Z {
 
   static Never byZero(int line) => raiseError("ZeroDivisionError", "division by zero", line);
 
-  static bool isNumber(Object? v) => v is int || v is double;
+  static bool isNumber(Object? v) => v is int || v is double || v is ZF32;
 
-  static double number(Object? v) => v is int ? v.toDouble() : v as double;
+  static double number(Object? v) => v is int ? v.toDouble() : (v is ZF32 ? v.v : v as double);
+
+  static final Float32List _single32 = Float32List(1);
+
+  // The nearest f32 to a float, as a float.
+  static double fround(double x) {
+    _single32[0] = x;
+    return _single32[0];
+  }
+
+  // An f32, or an int as a float and then the nearest f32 (41.2).
+  static double? single(Object? v) {
+    if (v is ZF32) return v.v;
+    if (v is int) return fround(v.toDouble());
+    return null;
+  }
+
+  static bool allSingle(List<Object?> values) => values.any((v) => v is ZF32) && values.every((v) => v is ZF32 || v is int);
+
+  // The float with the fewest digits that reads back as this f32.
+  static double f32Shown(double x) {
+    if (x.isNaN || x == 0 || x.isInfinite) return x;
+    for (var digits = 1; digits <= 9; digits++) {
+      final d = double.parse(x.toStringAsExponential(digits - 1));
+      if (fround(d) == x) return d;
+    }
+    return x;
+  }
+
+  static Object? f32Op(String op, Object? a, Object? b, int line) {
+    final x = single(a), y = single(b);
+    if (x == null || y == null) {
+      if (a is double || b is double) {
+        fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line);
+      }
+      mismatch(op, a, b, line);
+    }
+    double r;
+    switch (op) {
+      case "+":
+        r = x + y;
+      case "-":
+        r = x - y;
+      case "*":
+        r = x * y;
+      case "/":
+        r = div(x, y, line) as double;
+      case "//":
+        r = floordiv(x, y, line) as double;
+      case "%":
+        r = mod(x, y, line) as double;
+      default:
+        r = pow(x, y, line) as double;
+    }
+    return ZF32(fround(r));
+  }
 
   static bool isList(Object? v) => v is List<Object?>;
 
@@ -312,6 +373,7 @@ class Z {
   static String typeName(Object? v) {
     if (v is int) return "an int";
     if (v is double) return "a float";
+    if (v is ZF32) return "an f32";
     if (v is String) return "a str";
     if (v is bool) return "a bool";
     if (v == null) return "none";
@@ -483,6 +545,7 @@ class Z {
     if (v is String) return v;
     if (v is int) return v.toString();
     if (v is double) return showFloat(v);
+    if (v is ZF32) return showFloat(f32Shown(v.v));
     if (v is bool) return v ? "true" : "false";
     if (v == null) return "none";
     if (v is List<Object?>) {
@@ -611,6 +674,11 @@ class Z {
 
   static bool equal(Object? a, Object? b) {
     if (a is int && b is int) return a == b;
+    if (a is ZF32 || b is ZF32) {
+      final x = single(a), y = single(b);
+      if (x != null && y != null) return x == y;
+      return isNumber(a) && isNumber(b) && number(a) == number(b);
+    }
     if (isNumber(a) && isNumber(b)) return number(a) == number(b);
     if (a is String && b is String) return a == b;
     if (a is bool && b is bool) return a == b;
@@ -676,6 +744,7 @@ class Z {
   }
 
   static Object? add(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("+", a, b, line);
     if (a is int && b is int) return addInt(a, b, line);
     if (a is String && b is String) return a + b;
     if (a is List<Object?> && b is List<Object?>) return <Object?>[...a, ...b];
@@ -689,6 +758,7 @@ class Z {
   }
 
   static Object? sub(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("-", a, b, line);
     if (a is int && b is int) {
       final r = a - b;
       if (((a ^ b) & (a ^ r)) < 0) overflow(line);
@@ -704,6 +774,7 @@ class Z {
   }
 
   static Object? mul(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("*", a, b, line);
     if (a is List<Object?> && b is int) {
       if (b < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is $b", line);
       return <Object?>[for (var t = 0; t < b; t++) ...a];
@@ -720,6 +791,7 @@ class Z {
   }
 
   static Object? div(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("/", a, b, line);
     if (a is ZQuantity) {
       if (b is ZQuantity && b.v == 0) byZero(line);
       if (b is double && b == 0) byZero(line);
@@ -738,6 +810,7 @@ class Z {
   }
 
   static Object? floordiv(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("//", a, b, line);
     if (a is int && b is int) {
       if (b == 0) byZero(line);
       if (a == MIN_INT && b == -1) overflow(line);
@@ -751,6 +824,7 @@ class Z {
   }
 
   static Object? mod(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("%", a, b, line);
     if (a is int && b is int) {
       if (b == 0) byZero(line);
       if (b == -1) return 0;
@@ -767,6 +841,7 @@ class Z {
   }
 
   static Object? pow(Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) return f32Op("**", a, b, line);
     if (a is int && b is int) {
       if (b < 0) raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
       if (b > 4294967295) overflow(line);
@@ -829,6 +904,7 @@ class Z {
       return -v;
     }
     if (v is double) return -v;
+    if (v is ZF32) return ZF32(-v.v);
     if (v is ZQuantity) return ZQuantity(-v.v, v.unit);
     fatal("`-` does not work on " + typeName(v), line);
   }
@@ -840,6 +916,11 @@ class Z {
 
   // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
   static int order(String op, Object? a, Object? b, int line) {
+    if (a is ZF32 || b is ZF32) {
+      final x = single(a), y = single(b);
+      if (x == null || y == null) f32Op(op, a, b, line);
+      return x! < y! ? -1 : (x > y ? 1 : (x == y ? 0 : 2));
+    }
     if (a is int && b is int) return a < b ? -1 : (a > b ? 1 : 0);
     if (a is String && b is String) {
       // By code points, as Rust compares, not by UTF-16 units.
@@ -1310,8 +1391,9 @@ class Z {
   }
 
   static Object? pick(String name, List<Object?> args, int line, bool smaller) {
-    final values = numbers(name, args, line);
+    var values = numbers(name, args, line);
     if (values.isEmpty) raiseError("ValueError", "`" + name + "` of nothing", line);
+    if (allSingle(values)) values = <Object?>[for (final v in values) ZF32(single(v)!)];
     var best = values[0];
     for (var i = 1; i < values.length; i++) {
       final item = values[i];
@@ -1379,7 +1461,7 @@ class Z {
     final keys = <Object?>[];
     for (final item in List<Object?>.of(l)) {
       final k = call(function, <Object?>[item], line);
-      if (k is! int && k is! double && k is! String) {
+      if (k is! int && k is! double && k is! ZF32 && k is! String) {
         fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
       }
       keys.add(k);
@@ -1942,9 +2024,10 @@ class Z {
     arity("int", args, 1, 1, line);
     final v = args[0];
     if (v is int) return v;
-    if (v is double) {
-      if (v.isNaN || v.isInfinite) raiseError("ValueError", "cannot turn " + showFloat(v) + " into an int", line);
-      return toInt(v);
+    if (v is double || v is ZF32) {
+      final x = number(v);
+      if (x.isNaN || x.isInfinite) raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
+      return toInt(x);
     }
     if (v is String) {
       final t = strip(v).replaceAll("_", "");
@@ -1962,12 +2045,28 @@ class Z {
     final v = args[0];
     if (v is int) return v.toDouble();
     if (v is double) return v;
+    if (v is ZF32) return v.v;
     if (v is String) {
       final x = parseFloat(strip(v));
       if (x == null) raiseError("ValueError", "cannot turn " + quoted(v) + " into a float", line);
       return x;
     }
     wrongType("float", "a number or a str", v, line);
+  }
+
+  static Object? b_f32(List<Object?> args, int line) {
+    arity("f32", args, 1, 1, line);
+    final v = args[0];
+    if (v is ZF32) return v;
+    if (v is int) return ZF32(single(v)!);
+    if (v is double) {
+      final r = fround(v);
+      if (r.isInfinite && !v.isInfinite && !v.isNaN) {
+        raiseError("OverflowError", showFloat(v) + " does not fit in an f32, whose largest is about 3.4e38", line);
+      }
+      return ZF32(r);
+    }
+    wrongType("f32", "a number", v, line);
   }
 
   static Object? b_str(List<Object?> args, int line) {
@@ -1983,6 +2082,7 @@ class Z {
       return v.abs();
     }
     if (v is double) return v.abs();
+    if (v is ZF32) return ZF32(v.v.abs());
     if (v is ZQuantity) return ZQuantity(v.v.abs(), v.unit);
     wrongType("abs", "a number", v, line);
   }
@@ -1995,6 +2095,13 @@ class Z {
     final values = numbers("sum", args, line);
     if (unitOfNumbers != null) {
       fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+    }
+    if (allSingle(values)) {
+      var single32 = 0.0;
+      for (final item in values) {
+        single32 = fround(single32 + single(item)!);
+      }
+      return ZF32(single32);
     }
     var total = 0;
     var allInts = true;
@@ -2342,6 +2449,7 @@ class Z {
     "range": b_range,
     "int": b_int,
     "float": b_float,
+    "f32": b_f32,
     "str": b_str,
     "abs": b_abs,
     "min": b_min,

@@ -21,7 +21,7 @@
     <list name="types">
       <item>int</item><item>float</item><item>bool</item><item>str</item>
       <item>list</item><item>dict</item><item>u8</item><item>u16</item>
-      <item>u32</item><item>i8</item><item>i16</item><item>i32</item>
+      <item>u32</item><item>i8</item><item>i16</item><item>i32</item><item>f32</item>
       <item>any</item><item>pointer</item><item>Register</item><item>Pin</item>
     </list>
     <contexts>

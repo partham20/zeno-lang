@@ -682,7 +682,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and chapter
     33 of [`docs/decisions.md`](docs/decisions.md))
 35. Ending a program, its environment, and the error stream (done,
-    after 0.5.1 and not yet released: `program.exit(code)` ends the
+    after 0.5.2 and not yet released: `program.exit(code)` ends the
     program with a number for the shell, which no `try` stops;
     `program.environment(name)` gives `str or none`;
     `program.warn(text)` writes a line on the error stream. In every
@@ -691,24 +691,24 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     ends with and to what it warned.
     See [`docs/ending-a-program.md`](docs/ending-a-program.md) and
     chapter 34 of [`docs/decisions.md`](docs/decisions.md))
-36. A case of an enum can stand for a number (done, after 0.5.1 and
+36. A case of an enum can stand for a number (done, after 0.5.2 and
     not yet released: `Ack = 6` in the enum, for every case or for
     none; `int(Ack)` and `u8(Ack)` give the number, `Reply(6)` gives
     `Reply or none`. The checker writes two plain functions beside the
     enum, so it is the same in every engine, build and target.
     See [`docs/enum-numbers.md`](docs/enum-numbers.md) and chapter 35
     of [`docs/decisions.md`](docs/decisions.md))
-37. Bytes from and to a file (done, after 0.5.1 and not yet
+37. Bytes from and to a file (done, after 0.5.2 and not yet
     released: `files.read_bytes(path)` gives a `list[u8]`, whatever
     the file holds, and `files.write_bytes(path, bytes)` writes one. In
     every engine, every build and all fifteen target languages.
     See [`docs/bytes.md`](docs/bytes.md) and chapter 36 of
     [`docs/decisions.md`](docs/decisions.md))
-38. A `list[u8]` is stored one byte to an item (done, after 0.5.1 and
+38. A `list[u8]` is stored one byte to an item (done, after 0.5.2 and
     not yet released: in C and LLVM, every `list[u8]`, with nothing
     to write. An 8 MB file read and written back takes 13 MB where it
     took 64. Decision 36.2)
-39. A list of a fixed length (done, after 0.5.1 and not yet released:
+39. A list of a fixed length (done, after 0.5.2 and not yet released:
     `list[u8, 64]` always has 64 items. The count is checked before
     the program runs, `append`, `pop`, `insert` and `clear` are
     refused, and a function that never changes a list's length can be
@@ -716,6 +716,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     engine, every build and all fifteen target languages.
     See [`docs/fixed-lists.md`](docs/fixed-lists.md) and decisions
     36.3 and 36.4 in [`docs/decisions.md`](docs/decisions.md))
+40. `f32`, a float of 32 bits (done, after 0.5.2 and not yet
+    released: `let gain: f32 = 0.1`, sums done in 32 bits, as by a
+    board's float unit, an f32 wherever a float is wanted, and an f32
+    beside a float refused with a message that says which to write.
+    C writes `float`. In every engine, every build and all fifteen
+    target languages.
+    See [`docs/f32.md`](docs/f32.md) and chapter 41 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

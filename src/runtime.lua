@@ -11,6 +11,7 @@
 --   int        a Lua integer: 64 bits, as in Zeno. Lua's own sums wrap
 --              around, so each step looks for that and raises Zeno's error
 --   float      a Lua float
+--   f32        a table with the metatable `F32`: the float it is exactly (decision 41)
 --   str        a Lua string, in UTF-8
 --   bool       true, false
 --   none       `Z.none`, a value of its own. Lua's `nil` cannot be kept
@@ -35,6 +36,7 @@ local Z = {}
 local ARGV = {...}
 
 local List, Dict, Quantity, Fn, Class, Instance, Enum, Case, Constructor = {}, {}, {}, {}, {}, {}, {}, {}, {}
+local F32 = {}
 local ErrorType, Error, Module, Method, Bound = {}, {}, {}, {}, {}
 -- An error the program may catch, on its way to a `try`, and a mistake
 -- in the program, which nothing catches.
@@ -61,16 +63,35 @@ local function by_zero(line) raise_("ZeroDivisionError", "division by zero", lin
 Z.fatal = fatal
 
 -- The number inside an int or a float, as a float.
+local function is(v, kind) return type(v) == "table" and getmt(v) == kind end
 local function number(v)
   local kind = mtype(v)
   if kind == "float" then return v end
   if kind == "integer" then return v + 0.0 end
+  if is(v, F32) then return v.v end
   return nil
 end
 
 local function is_int(v) return mtype(v) == "integer" end
 local function is_float(v) return mtype(v) == "float" end
-local function is(v, kind) return type(v) == "table" and getmt(v) == kind end
+-- The nearest f32 to a float, as a float.
+local function fround(x) return (string.unpack("<f", string.pack("<f", x))) end
+local function f32(x) return setmt({v = x}, F32) end
+-- An f32, or an int as a float and then the nearest f32 (41.2).
+local function single(v)
+  if is(v, F32) then return v.v end
+  if mtype(v) == "integer" then return fround(v + 0.0) end
+  return nil
+end
+-- The float with the fewest digits that reads back as this f32.
+local function f32_shown(x)
+  if x ~= x or x == 0 or x == math.huge or x == -math.huge then return x end
+  for digits = 1, 9 do
+    local d = tonumber(string.format("%." .. (digits - 1) .. "e", x))
+    if fround(d) == x then return d end
+  end
+  return x
+end
 local function is_negative(x) return x < 0 or (x == 0 and 1 / x < 0) end
 local function is_finite(x) return x == x and x ~= INF and x ~= -INF end
 -- The whole number at or below a float, as a float.
@@ -80,6 +101,7 @@ local function ceil(x) return -((-x) // 1) end
 local function type_name(v)
   local kind = type(v)
   if kind == "number" then return mtype(v) == "integer" and "an int" or "a float" end
+  if is(v, F32) then return "an f32" end
   if kind == "string" then return "a str" end
   if kind == "boolean" then return "a bool" end
   if v == NONE then return "none" end
@@ -246,6 +268,7 @@ function show(v)
   if kind == "boolean" then return v and "true" or "false" end
   if v == NONE then return "none" end
   local mt = getmt(v)
+  if mt == F32 then return show_float(f32_shown(v.v)) end
   if mt == Quantity then
     local x = v.v
     if is_finite(x) and floor(x) == x and math.abs(x) < 1e15 then return fmt("%d", math.tointeger(x)) .. " " .. v.unit end
@@ -333,6 +356,12 @@ end
 -- ------------------------------------------------------------ Equality
 
 local function eq(a, b)
+  if is(a, F32) or is(b, F32) then
+    local x, y = single(a), single(b)
+    if x ~= nil and y ~= nil then return x == y end
+    x, y = number(a), number(b)
+    return x ~= nil and y ~= nil and x == y
+  end
   local ka, kb = type(a), type(b)
   if ka == "number" then
     if kb ~= "number" then return false end
@@ -384,6 +413,26 @@ local function mismatch(op, a, b, line)
   fatal("`" .. op .. "` does not work between " .. type_name(a) .. " and " .. type_name(b), line)
 end
 
+local function f32_op(op, a, b, line)
+  local x, y = single(a), single(b)
+  if x == nil or y == nil then
+    if is_float(a) or is_float(b) then
+      fatal("`" .. op .. "` between " .. type_name(a) .. " and " .. type_name(b) .. " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line)
+    end
+    mismatch(op, a, b, line)
+  end
+  if (op == "/" or op == "//" or op == "%") and y == 0 then by_zero(line) end
+  local r
+  if op == "+" then r = x + y
+  elseif op == "-" then r = x - y
+  elseif op == "*" then r = x * y
+  elseif op == "/" then r = x / y
+  elseif op == "//" then r = floor(x / y)
+  elseif op == "%" then r = x - y * floor(x / y)
+  else r = Z.pow(x, y, line) end
+  return f32(fround(r))
+end
+
 -- Both quantities as numbers in the unit they meet in.
 local function met(op, a, b, line)
   local unit, to_a, to_b = common(a.unit, b.unit)
@@ -392,6 +441,7 @@ local function met(op, a, b, line)
 end
 
 function Z.add(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("+", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
     -- A sum that does not fit comes back with the wrong sign.
@@ -414,6 +464,7 @@ function Z.add(a, b, line)
 end
 
 function Z.sub(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("-", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
     local r = a - b
@@ -436,6 +487,7 @@ local function product(a, b)
 end
 
 function Z.mul(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("*", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if is(a, List) and kb == "integer" then
     if b < 0 then raise_("ValueError", "`*` repeats a list 0 or more times, and this is " .. tostring(b), line) end
@@ -460,6 +512,7 @@ function Z.mul(a, b, line)
 end
 
 function Z.div(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("/", a, b, line) end
   if is(a, Quantity) then
     if (mtype(b) and b == 0) or (is(b, Quantity) and b.v == 0) then by_zero(line) end
     if is(b, Quantity) then
@@ -477,6 +530,7 @@ function Z.div(a, b, line)
 end
 
 function Z.floordiv(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("//", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
     if b == 0 then by_zero(line) end
@@ -492,6 +546,7 @@ function Z.floordiv(a, b, line)
 end
 
 function Z.mod(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("%", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
     if b == 0 then by_zero(line) end
@@ -505,6 +560,7 @@ function Z.mod(a, b, line)
 end
 
 function Z.pow(a, b, line)
+  if is(a, F32) or is(b, F32) then return f32_op("**", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
     if b < 0 then raise_("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line) end
@@ -572,6 +628,7 @@ function Z.neg(v, line)
     return -v
   end
   if kind == "float" then return -v end
+  if is(v, F32) then return f32(-v.v) end
   if is(v, Quantity) then return quantity(-v.v, v.unit) end
   fatal("`-` does not work on " .. type_name(v), line)
 end
@@ -582,6 +639,14 @@ end
 
 -- `<` and the others: -1, 0, 1, or nil for a NaN.
 local function order(op, a, b, line)
+  if is(a, F32) or is(b, F32) then
+    local x, y = single(a), single(b)
+    if x == nil or y == nil then f32_op(op, a, b, line) end
+    if x < y then return -1 end
+    if x > y then return 1 end
+    if x == y then return 0 end
+    return nil
+  end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then return a < b and -1 or (a > b and 1 or 0) end
   local x, y
@@ -1141,6 +1206,16 @@ end
 local function pick(name, args, line, smaller)
   local values = numbers(name, args, line)
   if #values == 0 then raise_("ValueError", "`" .. name .. "` of nothing", line) end
+  local singles, all = false, true
+  for i = 1, #values do
+    singles = singles or is(values[i], F32)
+    all = all and (is(values[i], F32) or is_int(values[i]))
+  end
+  if singles and all then
+    local made = {}
+    for i = 1, #values do made[i] = f32(single(values[i])) end
+    values = made
+  end
   local best = values[1]
   for i = 1, #values do
     local a, b = amount(values[i]), amount(best)
@@ -1198,7 +1273,7 @@ local function sort_by(items, fn, line)
   local keys, given = {}, copied(items)
   for i = 1, #given do
     local k = call(fn, {given[i]}, line)
-    if not mtype(k) and type(k) ~= "string" then
+    if not mtype(k) and not is(k, F32) and type(k) ~= "string" then
       fatal("the function given to `sort` must return a number or text to order by, but it returned " .. type_name(k), line)
     end
     keys[i] = k
@@ -1773,6 +1848,7 @@ end
 function Z.b_int(args, line)
   arity("int", args, 1, 1, line)
   local v = args[1]
+  if is(v, F32) then v = v.v end
   local kind = mtype(v)
   if kind == "integer" then return v end
   if kind == "float" then
@@ -1799,12 +1875,27 @@ function Z.b_float(args, line)
   local kind = mtype(v)
   if kind == "integer" then return v + 0.0 end
   if kind == "float" then return v end
+  if is(v, F32) then return v.v end
   if type(v) == "string" then
     local x = parse_float(strip(v))
     if x == nil then raise_("ValueError", "cannot turn " .. quoted(v) .. " into a float", line) end
     return x
   end
   wrong_type("float", "a number or a str", v, line)
+end
+function Z.b_f32(args, line)
+  arity("f32", args, 1, 1, line)
+  local v = args[1]
+  if is(v, F32) then return v end
+  if is_int(v) then return f32(single(v)) end
+  if is_float(v) then
+    local r = fround(v)
+    if not is_finite(r) and is_finite(v) then
+      raise_("OverflowError", show_float(v) .. " does not fit in an f32, whose largest is about 3.4e38", line)
+    end
+    return f32(r)
+  end
+  wrong_type("f32", "a number", v, line)
 end
 function Z.b_str(args, line)
   arity("str", args, 1, 1, line)
@@ -1816,6 +1907,7 @@ function Z.b_abs(args, line)
   local kind = mtype(v)
   if kind == "integer" then return v < 0 and Z.neg(v, line) or v end
   if kind == "float" then return math.abs(v) end
+  if is(v, F32) then return f32(math.abs(v.v)) end
   if is(v, Quantity) then return quantity(math.abs(v.v), v.unit) end
   wrong_type("abs", "a number", v, line)
 end
@@ -1825,6 +1917,16 @@ function Z.b_sum(args, line)
   local values, unit = numbers("sum", args, line)
   if unit ~= nil then
     fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line)
+  end
+  local singles, all = false, true
+  for i = 1, #values do
+    singles = singles or is(values[i], F32)
+    all = all and (is(values[i], F32) or is_int(values[i]))
+  end
+  if singles and all then
+    local single32 = 0.0
+    for i = 1, #values do single32 = fround(single32 + single(values[i])) end
+    return f32(single32)
   end
   local total, all_ints, float_total = 0, true, 0.0
   for i = 1, #values do

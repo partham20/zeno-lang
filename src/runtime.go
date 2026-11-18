@@ -149,8 +149,76 @@ func zNumber(v ZV) (float64, bool) {
 		return float64(x), true
 	case float64:
 		return x, true
+	case float32:
+		return float64(x), true
 	}
 	return 0, false
+}
+
+// The nearest f32 to a float, as a float (decision 41).
+func zFround(x float64) float64 { return float64(float32(x)) }
+
+// An f32, or an int as a float and then the nearest f32 (41.2).
+func zSingle(v ZV) (float64, bool) {
+	switch x := v.(type) {
+	case float32:
+		return float64(x), true
+	case int64:
+		return zFround(float64(x)), true
+	}
+	return 0, false
+}
+
+// The float with the fewest digits that reads back as this f32.
+func zF32Shown(f float32) float64 {
+	x := float64(f)
+	if x != x || x == 0 || math.IsInf(x, 0) {
+		return x
+	}
+	for digits := 1; digits <= 9; digits++ {
+		d, _ := strconv.ParseFloat(strconv.FormatFloat(x, 'e', digits-1, 64), 64)
+		if zFround(d) == x {
+			return d
+		}
+	}
+	return x
+}
+
+func zIsF32(a, b ZV) bool {
+	_, x := a.(float32)
+	_, y := b.(float32)
+	return x || y
+}
+
+func zF32Op(op string, a, b ZV, line int) ZV {
+	x, ok1 := zSingle(a)
+	y, ok2 := zSingle(b)
+	if !ok1 || !ok2 {
+		_, fa := a.(float64)
+		_, fb := b.(float64)
+		if fa || fb {
+			Zfatal("`"+op+"` between "+ZtypeName(a)+" and "+ZtypeName(b)+" would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line)
+		}
+		zMismatch(op, a, b, line)
+	}
+	var r float64
+	switch op {
+	case "+":
+		r = x + y
+	case "-":
+		r = x - y
+	case "*":
+		r = x * y
+	case "/":
+		r = Zdiv(x, y, line).(float64)
+	case "//":
+		r = Zfloordiv(x, y, line).(float64)
+	case "%":
+		r = Zmod(x, y, line).(float64)
+	case "**":
+		r = Zpow(x, y, line).(float64)
+	}
+	return float32(r)
 }
 
 func ZtypeName(v ZV) string {
@@ -159,6 +227,8 @@ func ZtypeName(v ZV) string {
 		return "an int"
 	case float64:
 		return "a float"
+	case float32:
+		return "an f32"
 	case string:
 		return "a str"
 	case bool:
@@ -345,6 +415,8 @@ func Zshow(v ZV) string {
 		return strconv.FormatInt(x, 10)
 	case float64:
 		return ZshowFloat(x)
+	case float32:
+		return ZshowFloat(zF32Shown(x))
 	case bool:
 		if x {
 			return "true"
@@ -494,6 +566,15 @@ func Zunit(v ZV, name string, line int) ZV {
 // ------------------------------------------------------------ Equality
 
 func zEqual(a, b ZV) bool {
+	if zIsF32(a, b) {
+		x, ok1 := zSingle(a)
+		y, ok2 := zSingle(b)
+		if !ok1 || !ok2 {
+			x, ok1 = zNumber(a)
+			y, ok2 = zNumber(b)
+		}
+		return ok1 && ok2 && x == y
+	}
 	switch x := a.(type) {
 	case int64:
 		switch y := b.(type) {
@@ -618,6 +699,9 @@ func zMulInt(a, b int64, line int) int64 {
 }
 
 func Zadd(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("+", a, b, line)
+	}
 	switch x := a.(type) {
 	case int64:
 		if y, ok := b.(int64); ok {
@@ -651,6 +735,9 @@ func Zadd(a, b ZV, line int) ZV {
 }
 
 func Zsub(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("-", a, b, line)
+	}
 	switch x := a.(type) {
 	case int64:
 		if y, ok := b.(int64); ok {
@@ -674,6 +761,9 @@ func Zsub(a, b ZV, line int) ZV {
 }
 
 func Zmul(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("*", a, b, line)
+	}
 	if list, ok := a.(*ZList); ok {
 		if times, ok := b.(int64); ok {
 			if times < 0 {
@@ -713,6 +803,9 @@ func Zmul(a, b ZV, line int) ZV {
 }
 
 func Zdiv(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("/", a, b, line)
+	}
 	if q, ok := a.(*ZQuantity); ok {
 		switch y := b.(type) {
 		case *ZQuantity:
@@ -751,6 +844,9 @@ func Zdiv(a, b ZV, line int) ZV {
 }
 
 func Zfloordiv(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("//", a, b, line)
+	}
 	if x, ok := a.(int64); ok {
 		if y, ok := b.(int64); ok {
 			if y == 0 {
@@ -778,6 +874,9 @@ func Zfloordiv(a, b ZV, line int) ZV {
 }
 
 func Zmod(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("%", a, b, line)
+	}
 	if x, ok := a.(int64); ok {
 		if y, ok := b.(int64); ok {
 			if y == 0 {
@@ -812,6 +911,9 @@ func Zmod(a, b ZV, line int) ZV {
 }
 
 func Zpow(a, b ZV, line int) ZV {
+	if zIsF32(a, b) {
+		return zF32Op("**", a, b, line)
+	}
 	if x, ok := a.(int64); ok {
 		if n, ok := b.(int64); ok {
 			if n < 0 {
@@ -912,6 +1014,8 @@ func Zneg(v ZV, line int) ZV {
 		return -x
 	case float64:
 		return -x
+	case float32:
+		return -x
 	case *ZQuantity:
 		return &ZQuantity{-x.v, x.unit}
 	}
@@ -929,6 +1033,23 @@ func Zbitnot(v ZV, line int) ZV {
 
 // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
 func zOrder(op string, a, b ZV, line int) int {
+	if zIsF32(a, b) {
+		x, ok1 := zSingle(a)
+		y, ok2 := zSingle(b)
+		if !ok1 || !ok2 {
+			zF32Op(op, a, b, line)
+		}
+		if x < y {
+			return -1
+		}
+		if x > y {
+			return 1
+		}
+		if x == y {
+			return 0
+		}
+		return 2
+	}
 	switch x := a.(type) {
 	case int64:
 		if y, ok := b.(int64); ok {
@@ -1565,6 +1686,24 @@ func zPick(name string, args []ZV, line int, better func(a, b float64) bool) ZV 
 	if len(values) == 0 {
 		zRaise("ValueError", "`"+name+"` of nothing", line)
 	}
+	single, others := false, false
+	for _, item := range values {
+		switch item.(type) {
+		case float32:
+			single = true
+		case int64:
+		default:
+			others = true
+		}
+	}
+	if single && !others {
+		widened := make([]ZV, len(values))
+		for i, item := range values {
+			x, _ := zSingle(item)
+			widened[i] = float32(x)
+		}
+		values = widened
+	}
 	best := values[0]
 	for _, item := range values[1:] {
 		if better(zAmount(item), zAmount(best)) {
@@ -1670,7 +1809,7 @@ func zSortBy(l *ZList, function ZV, line int) {
 	for _, item := range append([]ZV(nil), l.items...) {
 		k := Zcall(function, []ZV{item}, line)
 		switch k.(type) {
-		case int64, float64, string:
+		case int64, float64, float32, string:
 		default:
 			Zfatal("the function given to `sort` must return a number or text to order by, but it returned "+ZtypeName(k), line)
 		}
@@ -2521,11 +2660,12 @@ func Zb_int(args []ZV, line int) ZV {
 	switch v := args[0].(type) {
 	case int64:
 		return v
-	case float64:
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			zRaise("ValueError", "cannot turn "+ZshowFloat(v)+" into an int", line)
+	case float64, float32:
+		x, _ := zNumber(v)
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			zRaise("ValueError", "cannot turn "+ZshowFloat(x)+" into an int", line)
 		}
-		return zToInt(v)
+		return zToInt(x)
 	case string:
 		s := strings.ReplaceAll(zStrip(v), "_", "")
 		digits := strings.TrimLeft(s, "+-")
@@ -2551,6 +2691,8 @@ func Zb_float(args []ZV, line int) ZV {
 		return float64(v)
 	case float64:
 		return v
+	case float32:
+		return float64(v)
 	case string:
 		x, ok := zParseFloat(zStrip(v))
 		if !ok {
@@ -2559,6 +2701,25 @@ func Zb_float(args []ZV, line int) ZV {
 		return x
 	}
 	zWrongType("float", "a number or a str", args[0], line)
+	return nil
+}
+
+func Zb_f32(args []ZV, line int) ZV {
+	zArity("f32", args, 1, 1, line)
+	switch v := args[0].(type) {
+	case float32:
+		return v
+	case int64:
+		x, _ := zSingle(v)
+		return float32(x)
+	case float64:
+		r := zFround(v)
+		if math.IsInf(r, 0) && !math.IsInf(v, 0) && v == v {
+			zRaise("OverflowError", ZshowFloat(v)+" does not fit in an f32, whose largest is about 3.4e38", line)
+		}
+		return float32(r)
+	}
+	zWrongType("f32", "a number", args[0], line)
 	return nil
 }
 
@@ -2580,6 +2741,8 @@ func Zb_abs(args []ZV, line int) ZV {
 		return v
 	case float64:
 		return math.Abs(v)
+	case float32:
+		return float32(math.Abs(float64(v)))
 	case *ZQuantity:
 		return &ZQuantity{math.Abs(v.v), v.unit}
 	}
@@ -2599,6 +2762,24 @@ func Zb_sum(args []ZV, line int) ZV {
 	values, unit := zNumbers("sum", args, line)
 	if unit != "" {
 		Zfatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line)
+	}
+	single, others := false, false
+	for _, item := range values {
+		switch item.(type) {
+		case float32:
+			single = true
+		case int64:
+		default:
+			others = true
+		}
+	}
+	if single && !others {
+		r := 0.0
+		for _, item := range values {
+			x, _ := zSingle(item)
+			r = zFround(r + x)
+		}
+		return float32(r)
 	}
 	total, allInts, floatTotal := int64(0), true, 0.0
 	for _, item := range values {
@@ -2968,7 +3149,7 @@ var zBuiltins map[string]func([]ZV, int) ZV
 func init() {
 	zBuiltins = map[string]func([]ZV, int) ZV{
 		"print": Zb_print, "input": Zb_input, "len": Zb_len, "range": Zb_range, "int": Zb_int,
-		"float": Zb_float, "str": Zb_str, "abs": Zb_abs, "min": Zb_min, "max": Zb_max, "sum": Zb_sum,
+		"float": Zb_float, "f32": Zb_f32, "str": Zb_str, "abs": Zb_abs, "min": Zb_min, "max": Zb_max, "sum": Zb_sum,
 		"char": Zb_char, "allocate": Zb_allocate, "free": Zb_free,
 		"math.sqrt": Zb_math_sqrt, "math.floor": Zb_math_floor, "math.ceil": Zb_math_ceil,
 		"math.round": Zb_math_round, "math.sin": Zb_math_sin, "math.cos": Zb_math_cos,

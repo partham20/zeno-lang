@@ -204,13 +204,55 @@ object Z {
 
     fun byZero(line: Int): Nothing = raiseError("ZeroDivisionError", "division by zero", line)
 
-    fun isNumber(v: Any?): Boolean = v is Long || v is Double
+    fun isNumber(v: Any?): Boolean = v is Long || v is Double || v is Float
 
-    fun number(v: Any?): Double = if (v is Long) v.toDouble() else v as Double
+    fun number(v: Any?): Double = if (v is Long) v.toDouble() else if (v is Float) v.toDouble() else v as Double
+
+    // An f32 is a `Float` (decision 41).
+    fun fround(x: Double): Double = x.toFloat().toDouble()
+
+    // An f32, or an int as a float and then the nearest f32 (41.2); null for anything else.
+    fun single(v: Any?): Double? = if (v is Float) v.toDouble() else if (v is Long) fround(v.toDouble()) else null
+
+    // The float with the fewest digits that reads back as this f32.
+    fun f32Shown(f: Float): Double {
+        val x = f.toDouble()
+        if (x.isNaN() || x == 0.0 || x.isInfinite()) return x
+        val exact = java.math.BigDecimal(x)
+        for (digits in 1..9) {
+            val d = exact.round(java.math.MathContext(digits, java.math.RoundingMode.HALF_EVEN)).toDouble()
+            if (fround(d) == x) return d
+        }
+        return x
+    }
+
+    fun isF32(a: Any?, b: Any?): Boolean = a is Float || b is Float
+
+    fun f32Op(op: String, a: Any?, b: Any?, line: Int): Any? {
+        val x = single(a)
+        val y = single(b)
+        if (x == null || y == null) {
+            if (a is Double || b is Double) {
+                fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", line)
+            }
+            mismatch(op, a, b, line)
+        }
+        val r: Double = when (op) {
+            "+" -> x + y
+            "-" -> x - y
+            "*" -> x * y
+            "/" -> div(x, y, line) as Double
+            "//" -> floordiv(x, y, line) as Double
+            "%" -> mod(x, y, line) as Double
+            else -> pow(x, y, line) as Double
+        }
+        return r.toFloat()
+    }
 
     fun typeName(v: Any?): String {
         if (v is Long) return "an int"
         if (v is Double) return "a float"
+        if (v is Float) return "an f32"
         if (v is String) return "a str"
         if (v is Boolean) return "a bool"
         if (v == null) return "none"
@@ -363,6 +405,7 @@ object Z {
         if (v is String) return v
         if (v is Long) return v.toString()
         if (v is Double) return showFloat(v)
+        if (v is Float) return showFloat(f32Shown(v))
         if (v is Boolean) return if (v) "true" else "false"
         if (v == null) return "none"
         if (v is ArrayList<*>) {
@@ -486,6 +529,12 @@ object Z {
 
     fun equal(a: Any?, b: Any?): Boolean {
         if (a is Long && b is Long) return a == b
+        if (isF32(a, b)) {
+            val x = single(a)
+            val y = single(b)
+            if (x != null && y != null) return x == y
+            return isNumber(a) && isNumber(b) && number(a) == number(b)
+        }
         if (isNumber(a) && isNumber(b)) return number(a) == number(b)
         if (a is String && b is String) return a == b
         if (a is Boolean && b is Boolean) return a == b
@@ -544,6 +593,7 @@ object Z {
     }
 
     fun add(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("+", a, b, line)
         if (a is Long && b is Long) return addInt(a, b, line)
         if (a is String && b is String) return a + b
         if (a is ArrayList<*> && b is ArrayList<*>) {
@@ -561,6 +611,7 @@ object Z {
     }
 
     fun sub(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("-", a, b, line)
         if (a is Long && b is Long) {
             val r = a - b
             if (((a xor b) and (a xor r)) < 0) overflow(line)
@@ -575,6 +626,7 @@ object Z {
     }
 
     fun mul(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("*", a, b, line)
         if (a is ArrayList<*> && b is Long) {
             if (b < 0L) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line)
             val items = ArrayList<Any?>()
@@ -593,6 +645,7 @@ object Z {
     }
 
     fun div(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("/", a, b, line)
         if (a is ZQuantity) {
             if (b is ZQuantity && b.v == 0.0) byZero(line)
             if (b is Double && b == 0.0) byZero(line)
@@ -610,6 +663,7 @@ object Z {
     }
 
     fun floordiv(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("//", a, b, line)
         if (a is Long && b is Long) {
             if (b == 0L) byZero(line)
             if (a == Long.MIN_VALUE && b == -1L) overflow(line)
@@ -621,6 +675,7 @@ object Z {
     }
 
     fun mod(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("%", a, b, line)
         if (a is Long && b is Long) {
             if (b == 0L) byZero(line)
             return Math.floorMod(a, b)
@@ -635,6 +690,7 @@ object Z {
     }
 
     fun pow(a: Any?, b: Any?, line: Int): Any? {
+        if (isF32(a, b)) return f32Op("**", a, b, line)
         if (a is Long && b is Long) {
             if (b < 0) raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line)
             if (b > 4294967295L) overflow(line)
@@ -702,6 +758,7 @@ object Z {
             return -v
         }
         if (v is Double) return -v
+        if (v is Float) return -v
         if (v is ZQuantity) return ZQuantity(-v.v, v.unit)
         fatal("`-` does not work on " + typeName(v), line)
     }
@@ -713,6 +770,12 @@ object Z {
 
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     fun order(op: String, a: Any?, b: Any?, line: Int): Int {
+        if (isF32(a, b)) {
+            val x = single(a)
+            val y = single(b)
+            if (x == null || y == null) f32Op(op, a, b, line)
+            return if (x!! < y!!) -1 else if (x > y) 1 else if (x == y) 0 else 2
+        }
         if (a is Long && b is Long) return if (a < b) -1 else if (a > b) 1 else 0
         if (a is String && b is String) {
             // By code points, as Rust compares, not by UTF-16 units.
@@ -1192,8 +1255,11 @@ object Z {
     }
 
     fun pick(name: String, args: Array<Any?>, line: Int, smaller: Boolean): Any? {
-        val values = numbers(name, args, line)
+        var values = numbers(name, args, line)
         if (values.isEmpty()) raiseError("ValueError", "`" + name + "` of nothing", line)
+        if (values.any { it is Float } && values.all { it is Float || it is Long }) {
+            values = values.map { single(it)!!.toFloat() as Any? }
+        }
         var best = values[0]
         for (i in 1 until values.size) {
             val item = values[i]
@@ -1255,7 +1321,7 @@ object Z {
         val keys = ArrayList<Any?>()
         for (item in ArrayList<Any?>(l)) {
             val k = call(function, arrayOf<Any?>(item), line)
-            if (k !is Long && k !is Double && k !is String) {
+            if (k !is Long && k !is Double && k !is Float && k !is String) {
                 fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line)
             }
             keys.add(k)
@@ -1815,9 +1881,10 @@ object Z {
         arity("int", args, 1, 1, line)
         val v = args[0]
         if (v is Long) return v
-        if (v is Double) {
-            if (v.isNaN() || v.isInfinite()) raiseError("ValueError", "cannot turn " + showFloat(v) + " into an int", line)
-            return toInt(v)
+        if (v is Double || v is Float) {
+            val x = number(v)
+            if (x.isNaN() || x.isInfinite()) raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line)
+            return toInt(x)
         }
         if (v is String) {
             val t = (strip(v) as java.lang.String).replace("_", "")
@@ -1838,10 +1905,26 @@ object Z {
         val v = args[0]
         if (v is Long) return v.toDouble()
         if (v is Double) return v
+        if (v is Float) return v.toDouble()
         if (v is String) {
             return parseFloat(strip(v)) ?: raiseError("ValueError", "cannot turn " + quoted(v) + " into a float", line)
         }
         wrongType("float", "a number or a str", v, line)
+    }
+
+    fun b_f32(args: Array<Any?>, line: Int): Any? {
+        arity("f32", args, 1, 1, line)
+        val v = args[0]
+        if (v is Float) return v
+        if (v is Long) return single(v)!!.toFloat()
+        if (v is Double) {
+            val r = fround(v)
+            if (r.isInfinite() && !v.isInfinite() && !v.isNaN()) {
+                raiseError("OverflowError", showFloat(v) + " does not fit in an f32, whose largest is about 3.4e38", line)
+            }
+            return r.toFloat()
+        }
+        wrongType("f32", "a number", v, line)
     }
 
     fun b_str(args: Array<Any?>, line: Int): Any? {
@@ -1857,6 +1940,7 @@ object Z {
             return Math.abs(v)
         }
         if (v is Double) return Math.abs(v)
+        if (v is Float) return Math.abs(v)
         if (v is ZQuantity) return ZQuantity(Math.abs(v.v), v.unit)
         wrongType("abs", "a number", v, line)
     }
@@ -1869,6 +1953,11 @@ object Z {
         val values = numbers("sum", args, line)
         if (unitOfNumbers != null) {
             fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line)
+        }
+        if (values.any { it is Float } && values.all { it is Float || it is Long }) {
+            var single = 0.0
+            for (item in values) single = fround(single + single(item)!!)
+            return single.toFloat()
         }
         var total = 0L
         var allInts = true
@@ -2200,6 +2289,7 @@ object Z {
         BUILTINS["range"] = ::b_range
         BUILTINS["int"] = ::b_int
         BUILTINS["float"] = ::b_float
+        BUILTINS["f32"] = ::b_f32
         BUILTINS["str"] = ::b_str
         BUILTINS["abs"] = ::b_abs
         BUILTINS["min"] = ::b_min

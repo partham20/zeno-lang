@@ -86,6 +86,30 @@ impl Program {
         self
     }
 
+    /// `let gain: f32 = 0.5` means `let gain: f32 = f32(0.5)`, and an f32
+    /// that goes where a float is wanted is `float( )` of it (decision
+    /// 41). The checker says where each such float and f32 begins, and
+    /// here each is put in its call. Every engine then meets only `f32( )`
+    /// and `float( )`, which it can do already.
+    pub fn with_f32s(mut self, mut f32s: HashSet<(usize, usize)>, mut widened: HashSet<(usize, usize)>) -> Program {
+        let mut visit = |node: Node| {
+            let Node::Expr(expr) = node else { return };
+            let span = expr.span;
+            let name = if matches!(expr.kind, ExprKind::Float(_)) && f32s.remove(&(span.line, span.col)) {
+                "f32"
+            } else if widened.remove(&(span.line, span.col)) {
+                "float"
+            } else {
+                return;
+            };
+            let value = std::mem::replace(expr, Expr { kind: ExprKind::None, span });
+            let callee = Box::new(Expr { kind: ExprKind::Name(name.to_string()), span });
+            expr.kind = ExprKind::Call { callee, args: vec![Arg { name: None, value }] };
+        };
+        fresh_block(&mut self.statements, &mut visit);
+        self
+    }
+
     /// `int(Ack)` and `Reply(6)`, for an enum whose cases have numbers
     /// (decision 35.2). The checker says where each such call is, and
     /// which enums they use. Each of those enums gets two functions,

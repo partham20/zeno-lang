@@ -11,6 +11,7 @@
 //   int        a PHP int: 64 bits, as in Zeno. PHP turns a sum that
 //              does not fit into a float, which is how a step sees it
 //   float      a PHP float
+//   f32        a `ZF32`: the float it is exactly (decision 41)
 //   str        a PHP string, in UTF-8
 //   bool       true, false
 //   none       null
@@ -28,6 +29,7 @@
 
 final class ZList { public $v; function __construct(array $v) { $this->v = $v; } }
 final class ZDict { public $map = []; }
+final class ZF32 { public $v; function __construct(float $v) { $this->v = $v; } }
 final class ZQuantity { public $v; public $unit; function __construct(float $v, string $unit) { $this->v = $v; $this->unit = $unit; } }
 final class ZFn {
     public $name; public $params; public $defaults; public $fn; public $builtin;
@@ -83,13 +85,50 @@ final class Z {
     static function number($v): ?float {
         if (is_float($v)) return $v;
         if (is_int($v)) return (float)$v;
+        if ($v instanceof ZF32) return $v->v;
         return null;
+    }
+    // The nearest f32 to a float, as a float.
+    static function fround(float $x): float { return unpack("g", pack("g", $x))[1]; }
+    // An f32, or an int as a float and then the nearest f32 (41.2).
+    static function single($v): ?float {
+        if ($v instanceof ZF32) return $v->v;
+        if (is_int($v)) return self::fround((float)$v);
+        return null;
+    }
+    // The float with the fewest digits that reads back as this f32.
+    static function f32Shown(float $x): float {
+        if (is_nan($x) || $x == 0 || !is_finite($x)) return $x;
+        for ($digits = 1; $digits <= 9; $digits++) {
+            $d = (float)sprintf("%." . ($digits - 1) . "e", $x);
+            if (self::fround($d) === $x) return $d;
+        }
+        return $x;
+    }
+    static function f32Op(string $op, $a, $b, int $line) {
+        $x = self::single($a); $y = self::single($b);
+        if ($x === null || $y === null) {
+            if (is_float($a) || is_float($b)) self::fatal("`" . $op . "` between " . self::typeName($a) . " and " . self::typeName($b) . " would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", $line);
+            self::mismatch($op, $a, $b, $line);
+        }
+        if (($op === "/" || $op === "//" || $op === "%") && $y == 0) self::byZero($line);
+        switch ($op) {
+            case "+": $r = $x + $y; break;
+            case "-": $r = $x - $y; break;
+            case "*": $r = $x * $y; break;
+            case "/": $r = $x / $y; break;
+            case "//": $r = floor($x / $y); break;
+            case "%": $r = $x - $y * floor($x / $y); break;
+            default: $r = self::pow($x, $y, $line);
+        }
+        return new ZF32(self::fround($r));
     }
     static function float($x) { return $x; }
 
     static function typeName($v): string {
         if (is_int($v)) return "an int";
         if (is_float($v)) return "a float";
+        if ($v instanceof ZF32) return "an f32";
         if (is_string($v)) return "a str";
         if (is_bool($v)) return "a bool";
         if ($v === null) return "none";
@@ -250,6 +289,7 @@ final class Z {
         if (is_string($v)) return $v;
         if (is_int($v)) return (string)$v;
         if (is_float($v)) return self::showFloat($v);
+        if ($v instanceof ZF32) return self::showFloat(self::f32Shown($v->v));
         if (is_bool($v)) return $v ? "true" : "false";
         if ($v === null) return "none";
         if ($v instanceof ZQuantity) {
@@ -340,6 +380,12 @@ final class Z {
     // ------------------------------------------------------------ Equality
 
     static function eq($a, $b): bool {
+        if ($a instanceof ZF32 || $b instanceof ZF32) {
+            $x = self::single($a); $y = self::single($b);
+            if ($x !== null && $y !== null) return $x === $y;
+            $x = self::number($a); $y = self::number($b);
+            return $x !== null && $y !== null && $x === $y;
+        }
         if (is_int($a)) return is_int($b) ? $a === $b : (is_float($b) && (float)$a === $b);
         if (is_float($a)) return is_float($b) ? $a === $b : (is_int($b) && $a === (float)$b);
         if (!is_object($a) || !is_object($b)) return $a === $b;
@@ -383,6 +429,7 @@ final class Z {
     }
 
     static function add($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("+", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             // A sum too big for an int is a float in PHP.
             $r = $a + $b;
@@ -402,6 +449,7 @@ final class Z {
     }
 
     static function sub($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("-", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             $r = $a - $b;
             if (!is_int($r)) self::overflow($line);
@@ -418,6 +466,7 @@ final class Z {
     }
 
     static function mul($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("*", $a, $b, $line);
         if ($a instanceof ZList && is_int($b)) {
             if ($b < 0) self::raise_("ValueError", "`*` repeats a list 0 or more times, and this is " . $b, $line);
             $items = [];
@@ -441,6 +490,7 @@ final class Z {
     }
 
     static function div($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("/", $a, $b, $line);
         if ($a instanceof ZQuantity) {
             if ($b === 0 || $b === 0.0 || ($b instanceof ZQuantity && $b->v == 0)) self::byZero($line);
             if ($b instanceof ZQuantity) {
@@ -459,6 +509,7 @@ final class Z {
     }
 
     static function floordiv($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("//", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b === 0) self::byZero($line);
             if ($b === -1) {
@@ -477,6 +528,7 @@ final class Z {
     }
 
     static function mod($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("%", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b === 0) self::byZero($line);
             if ($b === -1) return 0;
@@ -490,6 +542,7 @@ final class Z {
     }
 
     static function pow($a, $b, int $line) {
+        if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("**", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b < 0) self::raise_("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", $line);
             // As Rust's `checked_pow` with a u32 power.
@@ -547,6 +600,7 @@ final class Z {
             return $r;
         }
         if (is_float($v)) return -$v;
+        if ($v instanceof ZF32) return new ZF32(-$v->v);
         if ($v instanceof ZQuantity) return new ZQuantity(-$v->v, $v->unit);
         self::fatal("`-` does not work on " . self::typeName($v), $line);
     }
@@ -557,6 +611,11 @@ final class Z {
 
     // `<` and the others: -1, 0, 1, or null for a NaN.
     static function order(string $op, $a, $b, int $line): ?int {
+        if ($a instanceof ZF32 || $b instanceof ZF32) {
+            $x = self::single($a); $y = self::single($b);
+            if ($x === null || $y === null) self::f32Op($op, $a, $b, $line);
+            return $x < $y ? -1 : ($x > $y ? 1 : ($x === $y ? 0 : null));
+        }
         if (is_int($a) && is_int($b)) return $a <=> $b;
         if (is_string($a) && is_string($b)) return strcmp($a, $b) <=> 0;
         if ($a instanceof ZQuantity && $b instanceof ZQuantity) {
@@ -945,6 +1004,10 @@ final class Z {
     static function pick(string $name, array $args, int $line, bool $smaller) {
         [$values] = self::numbers($name, $args, $line);
         if (count($values) === 0) self::raise_("ValueError", "`" . $name . "` of nothing", $line);
+        $singles = false;
+        foreach ($values as $item) $singles = $singles || $item instanceof ZF32;
+        foreach ($values as $item) $singles = $singles && ($item instanceof ZF32 || is_int($item));
+        if ($singles) $values = array_map(fn($item) => new ZF32(self::single($item)), $values);
         $best = $values[0];
         foreach ($values as $item) {
             $a = self::amount($item); $b = self::amount($best);
@@ -992,7 +1055,7 @@ final class Z {
         $keys = [];
         foreach ($items->v as $item) {
             $k = self::call($fn, [$item], $line);
-            if (!is_int($k) && !is_float($k) && !is_string($k)) self::fatal("the function given to `sort` must return a number or text to order by, but it returned " . self::typeName($k), $line);
+            if (!is_int($k) && !is_float($k) && !($k instanceof ZF32) && !is_string($k)) self::fatal("the function given to `sort` must return a number or text to order by, but it returned " . self::typeName($k), $line);
             $keys[] = $k;
         }
         $sorted = $items->v;
@@ -1482,6 +1545,7 @@ final class Z {
         self::arity("int", $args, 1, 1, $line);
         $v = $args[0];
         if (is_int($v)) return $v;
+        if ($v instanceof ZF32) $v = $v->v;
         if (is_float($v)) {
             if (!is_finite($v)) self::raise_("ValueError", "cannot turn " . (is_nan($v) ? "NaN" : ($v > 0 ? "inf" : "-inf")) . " into an int", $line);
             return self::toInt($v < 0 ? ceil($v) : floor($v));
@@ -1504,6 +1568,7 @@ final class Z {
         $v = $args[0];
         if (is_int($v)) return (float)$v;
         if (is_float($v)) return $v;
+        if ($v instanceof ZF32) return $v->v;
         if (is_string($v)) {
             $x = self::parseFloatText(self::strip($v));
             if ($x === null) self::raise_("ValueError", "cannot turn " . self::quoted($v) . " into a float", $line);
@@ -1511,12 +1576,25 @@ final class Z {
         }
         self::wrongType("float", "a number or a str", $v, $line);
     }
+    static function b_f32(array $args, int $line) {
+        self::arity("f32", $args, 1, 1, $line);
+        $v = $args[0];
+        if ($v instanceof ZF32) return $v;
+        if (is_int($v)) return new ZF32(self::single($v));
+        if (is_float($v)) {
+            $r = self::fround($v);
+            if (!is_finite($r) && is_finite($v)) self::raise_("OverflowError", self::showFloat($v) . " does not fit in an f32, whose largest is about 3.4e38", $line);
+            return new ZF32($r);
+        }
+        self::wrongType("f32", "a number", $v, $line);
+    }
     static function b_str(array $args, int $line) { self::arity("str", $args, 1, 1, $line); return self::show($args[0]); }
     static function b_abs(array $args, int $line) {
         self::arity("abs", $args, 1, 1, $line);
         $v = $args[0];
         if (is_int($v)) return $v < 0 ? self::neg($v, $line) : $v;
         if (is_float($v)) return abs($v);
+        if ($v instanceof ZF32) return new ZF32(abs($v->v));
         if ($v instanceof ZQuantity) return new ZQuantity(abs($v->v), $v->unit);
         self::wrongType("abs", "a number", $v, $line);
     }
@@ -1525,6 +1603,14 @@ final class Z {
     static function b_sum(array $args, int $line) {
         [$values, $u] = self::numbers("sum", $args, $line);
         if ($u !== null) self::fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", $line);
+        $singles = false;
+        foreach ($values as $item) $singles = $singles || $item instanceof ZF32;
+        foreach ($values as $item) $singles = $singles && ($item instanceof ZF32 || is_int($item));
+        if ($singles) {
+            $single = 0.0;
+            foreach ($values as $item) $single = self::fround($single + self::single($item));
+            return new ZF32($single);
+        }
         $total = 0; $allInts = true; $floatTotal = 0.0;
         foreach ($values as $item) {
             $floatTotal += self::number($item);

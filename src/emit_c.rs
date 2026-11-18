@@ -568,6 +568,16 @@ impl Val {
     fn is_number(&self) -> bool {
         matches!(self.kind, Kind::Int | Kind::Float)
     }
+
+    /// The value as a C float, for arithmetic on an f32: an int becomes
+    /// a float and then the nearest f32, as in every engine (decision 41.2).
+    fn single(&self) -> String {
+        match self.kind {
+            Kind::F32 => self.code.clone(),
+            Kind::Int => format!("((float)(double){})", self.code),
+            _ => format!("((float){})", self.code),
+        }
+    }
 }
 
 struct Variable {
@@ -1122,6 +1132,8 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // A raw pointer is exactly C's: `uint8_t *`.
         Kind::Pointer(pointee) => format!("{} *", pointee.c_type()),
         Kind::Float | Kind::Quantity(_) => "double ".to_string(),
+        // An f32 is C's own `float` (decision 41.7).
+        Kind::F32 => "float ".to_string(),
         Kind::Bool => "bool ".to_string(),
         Kind::Str => "const char *".to_string(),
         Kind::List(_) => "zeno_list *".to_string(),
@@ -1134,7 +1146,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
             Kind::Int | Kind::Pin | Kind::Register(_) => "zeno_opt_int ".to_string(),
-            Kind::Float | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
+            Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
         },
@@ -1167,7 +1179,7 @@ fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
         Kind::Int | Kind::Pin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
-        Kind::Float | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
+        Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
     })
@@ -1204,7 +1216,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 /// collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
         Kind::Optional(inner) => holds_pointer(inner),
@@ -1281,6 +1293,7 @@ fn key(kind: &Kind) -> String {
         Kind::Int => "int".to_string(),
         Kind::Byte => "u8".to_string(),
         Kind::Float => "float".to_string(),
+        Kind::F32 => "f32".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
@@ -1305,7 +1318,8 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         // A list of bytes holds bytes, not slots (decision 36.2).
         Kind::Byte => return Ok(format!("((int64_t)({code}))")),
         Kind::Int | Kind::Pin | Kind::Register(_) => "i",
-        Kind::Float | Kind::Quantity(_) => "f",
+        // In a slot an f32 is kept as the float it is exactly.
+        Kind::Float | Kind::F32 | Kind::Quantity(_) => "f",
         Kind::Bool => "b",
         Kind::Str => "s",
         Kind::List(_)
@@ -1354,6 +1368,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         Kind::Byte => format!("((int64_t){slot})"),
         Kind::Int | Kind::Pin | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
+        Kind::F32 => format!("((float){slot}.f)"),
         Kind::Bool => format!("{slot}.b"),
         Kind::Str => format!("{slot}.s"),
         Kind::List(_)
@@ -1375,7 +1390,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
         Kind::Int | Kind::Pin | Kind::Register(_) => Ok("int"),
-        Kind::Float | Kind::Quantity(_) => Ok("float"),
+        Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
     }
@@ -3895,7 +3910,7 @@ impl Emitter<'_> {
                     Kind::Int => {
                         Ok(Val::from(format!("zeno_neg({}, {})", val.code, self.at(span)), Kind::Int, &[&val]).failing_if(!self.minimal))
                     }
-                    Kind::Float | Kind::Quantity(_) => {
+                    Kind::Float | Kind::F32 | Kind::Quantity(_) => {
                         Ok(Val::from(format!("(-{})", val.code), val.kind.clone(), &[&val]))
                     }
                     _ => Err(cannot("`-` on this", span)),
@@ -4245,7 +4260,7 @@ impl Emitter<'_> {
             (from, Kind::Optional(inner)) if from == &**inner => match from {
                 from if is_pointer(from) => val.code.clone(),
                 Kind::Int | Kind::Pin => format!("(zeno_opt_int){{true, {}}}", val.code),
-                Kind::Float | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
+                Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
             },
@@ -4291,7 +4306,7 @@ impl Emitter<'_> {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
             (Kind::Int | Kind::Pin, true) => format!("zeno_still_int({}, {again})", val.code),
-            (Kind::Float | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
+            (Kind::Float | Kind::F32 | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
             (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
             (inner, true) => {
                 format!("(({})zeno_still({}, {again}))", c_type(inner, expr.span)?.trim_end(), val.code)
@@ -4607,7 +4622,7 @@ impl Emitter<'_> {
             "sort" => {
                 let by = match &kind.returns {
                     Kind::Int => 0,
-                    Kind::Float => 1,
+                    Kind::Float | Kind::F32 => 1,
                     Kind::Str => 2,
                     _ => return Err(cannot("`sort` with a function that returns anything but a number or text", span)),
                 };
@@ -4816,6 +4831,26 @@ impl Emitter<'_> {
             }
             (Div, Quantity(unit), Int | Float) => {
                 Val::from(self.divided(&dl, &dr, span), Quantity(unit.clone()), &parts).failing_if(!self.minimal)
+            }
+
+            // An f32 with an f32 or an int (decision 41.2). `+`, `-`, `*`
+            // and `/` are C's own on `float`; the cast holds the answer to
+            // 32 bits on a processor that would keep more. `//`, `%` and
+            // `**` are done in double and rounded once, as every engine does.
+            (_, Kind::F32, Kind::F32 | Int) | (_, Int, Kind::F32) => {
+                let (sl, sr) = (left.single(), right.single());
+                let (dl, dr) = (format!("((double){sl})"), format!("((double){sr})"));
+                let code = match op {
+                    Add | Sub | Mul => format!("((float)({sl} {symbol} {sr}))"),
+                    Div if self.minimal => format!("((float)({sl} / {sr}))"),
+                    Div => format!("zeno_div_f32({sl}, {sr}, {})", self.at(span)),
+                    FloorDiv => format!("((float)zeno_floordiv_float({dl}, {dr}, {}))", self.at(span)),
+                    Mod => format!("((float)zeno_mod_float({dl}, {dr}, {}))", self.at(span)),
+                    Pow => format!("((float)pow({dl}, {dr}))"),
+                    _ => return Err(cannot(format!("`{symbol}` between these two types"), span)),
+                };
+                let fails = matches!(op, Div | FloorDiv | Mod) && !self.minimal;
+                Val::from(code, Kind::F32, &parts).failing_if(fails)
             }
 
             // What is left is floats, or an int with a float. C's own float
@@ -5545,7 +5580,7 @@ impl Emitter<'_> {
                     ("sort", [list]) => {
                         let kind = match &*item {
                             Kind::Int => 0,
-                            Kind::Float => 1,
+                            Kind::Float | Kind::F32 => 1,
                             Kind::Str => 2,
                             _ => return Err(cannot("`sort` on a list of anything but numbers or text", span)),
                         };
@@ -5634,7 +5669,7 @@ impl Emitter<'_> {
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
                             Kind::Int | Kind::Pin | Kind::Register(_) => "int",
-                            Kind::Float | Kind::Quantity(_) => "float",
+                            Kind::Float | Kind::F32 | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
                             // A list, an object, another dict: NULL is
@@ -5824,6 +5859,7 @@ impl Emitter<'_> {
             Kind::Str => val.code.clone(),
             Kind::Int => format!("zeno_str_int({})", val.code),
             Kind::Float => format!("zeno_str_float({})", val.code),
+            Kind::F32 => format!("zeno_str_f32({})", val.code),
             Kind::Bool => format!("zeno_str_bool({})", val.code),
             Kind::Pin => format!("zeno_str_pin({})", val.code),
             // Where a pointer points is different on every run, so it
@@ -5866,7 +5902,9 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Byte | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) => format!("({a} == {b})"),
+            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::Bool | Kind::Pin | Kind::Quantity(_) => {
+                format!("({a} == {b})")
+            }
             // Two pointers are equal when they point at the same item.
             Kind::Pointer(_) | Kind::Register(_) => format!("({a} == {b})"),
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
@@ -5888,7 +5926,7 @@ impl Emitter<'_> {
 
     /// `==` and the rest, between two compiled values.
     fn compare(&mut self, op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<String, Error> {
-        let plain = |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str | Kind::Quantity(_));
+        let plain = |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::F32 | Kind::Bool | Kind::Str | Kind::Quantity(_));
         if plain(&left.kind) && plain(&right.kind) || !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
             return comparison(op, left, right, span);
         }
@@ -6195,6 +6233,7 @@ impl Emitter<'_> {
                     Kind::Float | Kind::Quantity(_) => {
                         Val::from(format!("fabs({})", val.code), val.kind.clone(), &parts)
                     }
+                    Kind::F32 => Val::from(format!("fabsf({})", val.code), Kind::F32, &parts),
                     _ => return Err(cannot("`abs` of this", span)),
                 }
             }
@@ -6202,7 +6241,7 @@ impl Emitter<'_> {
                 let val = one()?;
                 match &val.kind {
                     Kind::Int => Val::from(val.code.clone(), Kind::Int, &parts),
-                    Kind::Float => {
+                    Kind::Float | Kind::F32 => {
                         Val::from(format!("zeno_int({}, {})", val.code, self.at(span)), Kind::Int, &parts).failing_if(!self.minimal)
                     }
                     Kind::Str => {
@@ -6220,6 +6259,7 @@ impl Emitter<'_> {
                 let val = one()?;
                 match &val.kind {
                     Kind::Int | Kind::Float => Val::from(val.double(), Kind::Float, &parts),
+                    Kind::F32 => Val::from(format!("((double){})", val.code), Kind::Float, &parts),
                     Kind::Str => {
                         self.built = !self.collector;
                         let call = format!("zeno_parse_float({}, {})", val.code, self.at(span));
@@ -6229,6 +6269,22 @@ impl Emitter<'_> {
                         Val::from(call, Kind::Float, &parts).failing()
                     }
                     _ => return Err(cannot("`float` of anything but a number or a str", span)),
+                }
+            }
+            // `f32(x)`: the nearest f32 (decision 41.5). A float written
+            // out was checked to fit, and a minimal build does not look.
+            "f32" => {
+                let val = one()?;
+                match &val.kind {
+                    Kind::F32 => val.clone(),
+                    Kind::Int => Val::from(val.single(), Kind::F32, &parts),
+                    Kind::Float if self.minimal || val.code.parse::<f64>().is_ok() => {
+                        Val::from(format!("((float){})", val.code), Kind::F32, &parts)
+                    }
+                    Kind::Float => {
+                        Val::from(format!("zeno_f32({}, {})", val.code, self.at(span)), Kind::F32, &parts).failing()
+                    }
+                    _ => return Err(cannot("`f32` of anything but a number", span)),
                 }
             }
             // `sum`, `min` and `max` of one list of numbers.
@@ -6242,6 +6298,14 @@ impl Emitter<'_> {
                     }
                     ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, self.at(span)),
                     ("sum", Kind::Float) => format!("zeno_list_sum_float({})", list.code),
+                    ("sum", Kind::F32) => format!("zeno_list_sum_f32({})", list.code),
+                    ("min" | "max", Kind::F32) => format!(
+                        "((float)zeno_list_best_float({}, {}, {}, {}))",
+                        list.code,
+                        name == "min",
+                        c_string(name),
+                        self.at(span)
+                    ),
                     // A quantity is kept as a float, in its own unit.
                     ("min" | "max", Kind::Quantity(_)) => {
                         format!("zeno_list_best_float({}, {}, {}, {})", list.code, name == "min", c_string(name), self.at(span))
@@ -6261,6 +6325,15 @@ impl Emitter<'_> {
                 val
             }
             "min" | "max" => {
+                let singles = vals.iter().any(|val| val.kind == Kind::F32)
+                    && vals.iter().all(|val| matches!(val.kind, Kind::F32 | Kind::Int));
+                if singles && vals.len() >= 2 {
+                    let mut code = vals[0].single();
+                    for val in &vals[1..] {
+                        code = format!("((float)zeno_{name}_float({code}, {}))", val.single());
+                    }
+                    return Ok(Val::from(code, Kind::F32, &parts));
+                }
                 let kind = match vals.first() {
                     Some(first) if vals.len() >= 2 && vals.iter().all(|val| val.kind == first.kind) => {
                         first.kind.clone()
@@ -6563,6 +6636,10 @@ fn comparison(op: BinaryOp, left: &Val, right: &Val, span: Span) -> Result<Strin
         (Kind::Int, Kind::Int) | (Kind::Float, Kind::Float) => {
             format!("({} {symbol} {})", left.code, right.code)
         }
+        // An f32 with an int: the int becomes the nearest f32, as in a sum.
+        (Kind::F32, Kind::F32 | Kind::Int) | (Kind::Int, Kind::F32) => {
+            format!("({} {symbol} {})", left.single(), right.single())
+        }
         (Kind::Quantity(a), Kind::Quantity(b)) => {
             let (_, l, r) = in_common(left, a, right, b, span)?;
             format!("({l} {symbol} {r})")
@@ -6680,6 +6757,13 @@ fn atom(code: &str) -> String {
 /// by its characters and here by its bytes, and `printf` does not fill a
 /// float that is not a number with zeros.
 fn printf_of(val: &Val, spec: Option<&str>) -> Option<(String, Option<String>)> {
+    if val.kind == Kind::F32 {
+        if spec.is_none() {
+            return Some(("%s".to_string(), Some(format!("zeno_float_text(zeno_f32_shown({}), (char[64]){{0}})", val.code))));
+        }
+        let wide = Val { code: format!("((double){})", val.code), kind: Kind::Float, ..val.clone() };
+        return printf_of(&wide, spec);
+    }
     let whole = || Some(format!("(long long){}", atom(&val.code)));
     let float_text = |name: &str| Some(format!("{name}({}, (char[64]){{0}})", val.code));
     let unit_of = |unit: &str| {
@@ -6731,6 +6815,11 @@ fn printf_of(val: &Val, spec: Option<&str>) -> Option<(String, Option<String>)> 
 
 /// A value with a format after the colon, as in `{x:.2f}` or `{n:08b}`.
 fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String, Error> {
+    // `{gain:.3f}`: the decimals of the float an f32 is exactly.
+    if val.kind == Kind::F32 {
+        let wide = Val { code: format!("((double){})", val.code), kind: Kind::Float, ..val.clone() };
+        return formatted(&wide, spec, plain, span);
+    }
     let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
     let Format { align, zero, width, precision, kind } = read_format(spec).ok_or_else(bad)?;
 
@@ -13651,6 +13740,22 @@ print(m)
              let words: owned list[str] = [\"ab\", \"c\"] * 2\nprint(words)\nlet again: owned list[int] = zeros * 2\nprint(len(again))\n",
         );
         same_as_interpreter("repeat-negative", "let n = -2\nprint([0] * n)\n");
+    }
+
+    #[test]
+    fn an_f32_is_the_same_in_every_build() {
+        same_as_interpreter("f32", include_str!("../tools/targets/edge-f32.zeno"));
+        // Without `try`, so that the firmware build runs it too.
+        same_as_interpreter(
+            "f32-plain",
+            "let a: f32 = 0.1\nvar total: f32 = 0.0\nfor i in range(10) {\n    total += a\n}\n\
+             print(a, total, total == 1.0, a * 3, a / 3, a // 0.03, a % 0.03, a ** 2, -a, f32(16777217), f32(1e-45))\n\
+             let xs: list[f32] = [0.5, -2.0, 1.25]\nprint(sum(xs), min(xs), max(xs), abs(xs[1]), float(a), int(total * 7))\n",
+        );
+        no_collector_as_interpreter(
+            "f32-owned",
+            "let xs: owned list[f32] = [0.5, 0.25, 0.1]\nvar ys: owned list[f32] = [x * 2.0 for x in xs]\nys.sort()\nprint(ys, sum(ys), ys == [0.2, 0.5, 1.0])\n",
+        );
     }
 
     #[test]

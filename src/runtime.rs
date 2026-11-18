@@ -32,6 +32,8 @@ mod z {
         Missing,
         Int(i64),
         Float(f64),
+        /// An f32 (decision 41).
+        F32(f32),
         Bool(bool),
         Str(Rc<str>),
         List(Rc<RefCell<Vec<V>>>),
@@ -248,21 +250,76 @@ mod z {
     }
 
     fn is_number(v: &V) -> bool {
-        matches!(v, V::Int(_) | V::Float(_))
+        matches!(v, V::Int(_) | V::Float(_) | V::F32(_))
     }
 
     fn number(v: &V) -> f64 {
         match v {
             V::Int(n) => *n as f64,
             V::Float(x) => *x,
+            V::F32(x) => *x as f64,
             _ => 0.0,
         }
+    }
+
+    /// An f32, or an int as a float and then the nearest f32 (41.2).
+    fn single(v: &V) -> Option<f32> {
+        match v {
+            V::F32(x) => Some(*x),
+            V::Int(n) => Some(*n as f64 as f32),
+            _ => None,
+        }
+    }
+
+    /// True when some value is an f32 and every one is an f32 or an int.
+    fn all_single(values: &[V]) -> bool {
+        values.iter().any(|v| matches!(v, V::F32(_))) && values.iter().all(|v| matches!(v, V::F32(_) | V::Int(_)))
+    }
+
+    /// The float with the fewest digits that reads back as this f32.
+    fn f32_shown(x: f32) -> f64 {
+        if x.is_nan() || x == 0.0 || x.is_infinite() {
+            return x as f64;
+        }
+        for digits in 1..=9 {
+            let d: f64 = format!("{:.*e}", digits - 1, x as f64).parse().unwrap_or(0.0);
+            if d as f32 == x {
+                return d;
+            }
+        }
+        x as f64
+    }
+
+    fn f32_op(op: &str, a: &V, b: &V, line: usize) -> R {
+        let (Some(x), Some(y)) = (single(a), single(b)) else {
+            if matches!(a, V::Float(_)) || matches!(b, V::Float(_)) {
+                return fatal(format!("`{op}` between {} and {} would have to choose between 32 bits and 64. Write `f32( )` around the float to work in 32, or `float( )` around the f32 to work in 64", type_name(a), type_name(b)), line);
+            }
+            return mismatch(op, a, b, line);
+        };
+        let (wx, wy) = (V::Float(x as f64), V::Float(y as f64));
+        let r = match op {
+            "+" => x + y,
+            "-" => x - y,
+            "*" => x * y,
+            _ => {
+                let wide = match op {
+                    "/" => div(wx, wy, line)?,
+                    "//" => floordiv(wx, wy, line)?,
+                    "%" => r#mod(wx, wy, line)?,
+                    _ => pow(wx, wy, line)?,
+                };
+                number(&wide) as f32
+            }
+        };
+        Ok(V::F32(r))
     }
 
     pub fn type_name(v: &V) -> String {
         match v {
             V::Int(_) => "an int".into(),
             V::Float(_) => "a float".into(),
+            V::F32(_) => "an f32".into(),
             V::Str(_) => "a str".into(),
             V::Bool(_) => "a bool".into(),
             V::None => "none".into(),
@@ -357,6 +414,7 @@ mod z {
             V::Str(s) => s.to_string(),
             V::Int(n) => n.to_string(),
             V::Float(x) => float_text(*x),
+            V::F32(x) => float_text(f32_shown(*x)),
             V::Bool(b) => b.to_string(),
             V::None => "none".into(),
             V::Missing => "?".into(),
@@ -509,6 +567,10 @@ mod z {
     fn equal(a: &V, b: &V) -> bool {
         match (a, b) {
             (V::Int(x), V::Int(y)) => x == y,
+            (V::F32(_), _) | (_, V::F32(_)) => match (single(a), single(b)) {
+                (Some(x), Some(y)) => x == y,
+                _ => is_number(a) && is_number(b) && number(a) == number(b),
+            },
             (V::Int(_) | V::Float(_), V::Int(_) | V::Float(_)) => number(a) == number(b),
             (V::Str(x), V::Str(y)) => x == y,
             (V::Bool(x), V::Bool(y)) => x == y,
@@ -579,6 +641,9 @@ mod z {
     }
 
     pub fn add(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("+", &a, &b, line);
+        }
         match (&a, &b) {
             (V::Int(x), V::Int(y)) => x.checked_add(*y).map(V::Int).map_or_else(|| overflow(line), Ok),
             (V::Str(x), V::Str(y)) => Ok(st(format!("{x}{y}"))),
@@ -597,6 +662,9 @@ mod z {
     }
 
     pub fn sub(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("-", &a, &b, line);
+        }
         match (&a, &b) {
             (V::Int(x), V::Int(y)) => x.checked_sub(*y).map(V::Int).map_or_else(|| overflow(line), Ok),
             (V::Quantity(x, u), V::Quantity(y, w)) => match common(u, w) {
@@ -609,6 +677,9 @@ mod z {
     }
 
     pub fn mul(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("*", &a, &b, line);
+        }
         match (&a, &b) {
             (V::List(x), V::Int(times)) => {
                 if *times < 0 {
@@ -634,6 +705,9 @@ mod z {
     }
 
     pub fn div(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("/", &a, &b, line);
+        }
         if let V::Quantity(x, u) = &a {
             match &b {
                 V::Quantity(y, _) if *y == 0.0 => return by_zero(line),
@@ -662,6 +736,9 @@ mod z {
     }
 
     pub fn floordiv(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("//", &a, &b, line);
+        }
         if let (V::Int(x), V::Int(y)) = (&a, &b) {
             let (x, y) = (*x, *y);
             if y == 0 {
@@ -686,6 +763,9 @@ mod z {
     }
 
     pub fn r#mod(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("%", &a, &b, line);
+        }
         if let (V::Int(x), V::Int(y)) = (&a, &b) {
             let (x, y) = (*x, *y);
             if y == 0 {
@@ -715,6 +795,9 @@ mod z {
     }
 
     pub fn pow(a: V, b: V, line: usize) -> R {
+        if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
+            return f32_op("**", &a, &b, line);
+        }
         if let (V::Int(x), V::Int(n)) = (&a, &b) {
             let (x, n) = (*x, *n);
             if n < 0 {
@@ -810,6 +893,7 @@ mod z {
             V::Int(i64::MIN) => overflow(line),
             V::Int(x) => Ok(V::Int(-x)),
             V::Float(x) => Ok(V::Float(-x)),
+            V::F32(x) => Ok(V::F32(-x)),
             V::Quantity(x, u) => Ok(V::Quantity(-x, u)),
             other => fatal(format!("`-` does not work on {}", type_name(&other)), line),
         }
@@ -825,6 +909,13 @@ mod z {
     /// -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     fn order(op: &str, a: &V, b: &V, line: usize) -> Result<i32, Exc> {
         let (x, y) = match (a, b) {
+            (V::F32(_), _) | (_, V::F32(_)) => match (single(a), single(b)) {
+                (Some(x), Some(y)) => (x as f64, y as f64),
+                _ => {
+                    f32_op(op, a, b, line)?;
+                    return Ok(2);
+                }
+            },
             (V::Int(x), V::Int(y)) => return Ok(x.cmp(y) as i32),
             (V::Str(x), V::Str(y)) => return Ok(x.cmp(y) as i32),
             (V::Quantity(x, u), V::Quantity(y, w)) => match common(u, w) {
@@ -1427,7 +1518,10 @@ mod z {
     }
 
     fn pick(name: &str, args: Vec<V>, line: usize, smaller: bool) -> R {
-        let (values, _) = numbers(name, args, line)?;
+        let (mut values, _) = numbers(name, args, line)?;
+        if all_single(&values) {
+            values = values.iter().map(|v| V::F32(single(v).unwrap_or(0.0))).collect();
+        }
         let Some(mut best) = values.first().cloned() else {
             return raise_error("ValueError", format!("`{name}` of nothing"), line);
         };
@@ -1488,7 +1582,7 @@ mod z {
         let mut keys = Vec::new();
         for item in copy {
             let k = call(function.clone(), vec![item], line)?;
-            if !matches!(k, V::Int(_) | V::Float(_) | V::Str(_)) {
+            if !matches!(k, V::Int(_) | V::Float(_) | V::F32(_) | V::Str(_)) {
                 return fatal(format!("the function given to `sort` must return a number or text to order by, but it returned {}", type_name(&k)), line);
             }
             keys.push(k);
@@ -2151,6 +2245,8 @@ mod z {
             V::Int(n) => Ok(V::Int(*n)),
             V::Float(x) if x.is_finite() => Ok(V::Int(x.trunc() as i64)),
             V::Float(x) => raise_error("ValueError", format!("cannot turn {x} into an int"), line),
+            V::F32(x) if x.is_finite() => Ok(V::Int(x.trunc() as i64)),
+            V::F32(x) => raise_error("ValueError", format!("cannot turn {x} into an int"), line),
             V::Str(t) => match strip(t).replace('_', "").parse() {
                 Ok(n) => Ok(V::Int(n)),
                 Err(_) => raise_error("ValueError", format!("cannot turn {} into an int", quoted(t)), line),
@@ -2164,11 +2260,28 @@ mod z {
         match &args[0] {
             V::Int(n) => Ok(V::Float(*n as f64)),
             V::Float(x) => Ok(V::Float(*x)),
+            V::F32(x) => Ok(V::Float(*x as f64)),
             V::Str(t) => match strip(t).parse() {
                 Ok(x) => Ok(V::Float(x)),
                 Err(_) => raise_error("ValueError", format!("cannot turn {} into a float", quoted(t)), line),
             },
             other => wrong_type("float", "a number or a str", other, line),
+        }
+    }
+
+    pub fn b_f32(args: Vec<V>, line: usize) -> R {
+        arity("f32", &args, 1, 1, line)?;
+        match &args[0] {
+            V::F32(x) => Ok(V::F32(*x)),
+            V::Int(n) => Ok(V::F32(*n as f64 as f32)),
+            V::Float(x) => {
+                let r = *x as f32;
+                if r.is_infinite() && x.is_finite() {
+                    return raise_error("OverflowError", format!("{} does not fit in an f32, whose largest is about 3.4e38", float_text(*x)), line);
+                }
+                Ok(V::F32(r))
+            }
+            other => wrong_type("f32", "a number", other, line),
         }
     }
 
@@ -2182,6 +2295,7 @@ mod z {
         match &args[0] {
             V::Int(n) => n.checked_abs().map(V::Int).map_or_else(|| overflow(line), Ok),
             V::Float(x) => Ok(V::Float(x.abs())),
+            V::F32(x) => Ok(V::F32(x.abs())),
             V::Quantity(x, u) => Ok(V::Quantity(x.abs(), u.clone())),
             other => wrong_type("abs", "a number", other, line),
         }
@@ -2199,6 +2313,13 @@ mod z {
         let (values, unit) = numbers("sum", args, line)?;
         if unit.is_some() {
             return fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+        }
+        if all_single(&values) {
+            let mut single32: f32 = 0.0;
+            for item in &values {
+                single32 += single(item).unwrap_or(0.0);
+            }
+            return Ok(V::F32(single32));
         }
         let mut total: i64 = 0;
         let mut all_ints = true;
@@ -2594,6 +2715,7 @@ mod z {
             "range" => b_range,
             "int" => b_int,
             "float" => b_float,
+            "f32" => b_f32,
             "str" => b_str,
             "abs" => b_abs,
             "min" => b_min,
