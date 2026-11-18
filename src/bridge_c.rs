@@ -824,6 +824,21 @@ enum Part {
     Flag(String),
 }
 
+/// A path as a C compiler can be given it. On Windows `canonicalize`
+/// gives a path that begins `\\?\`, which gcc of MinGW does not read: it
+/// took `\\?\D:\a\crc.c` for `\\crc.c`. The same path without it is
+/// the same file.
+pub(crate) fn plain(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
 fn parts(words: &[String], home: &Path, span: Span) -> Result<Vec<Part>> {
     let mut out = Vec::new();
     for word in words {
@@ -848,7 +863,7 @@ fn parts(words: &[String], home: &Path, span: Span) -> Result<Vec<Part>> {
         if !path.is_file() {
             return raise("FileError", format!("there is no file `{word}`, from the folder `{}`", home.display()), span);
         }
-        out.push(Part::File(path.canonicalize().unwrap_or(path)));
+        out.push(Part::File(plain(path.canonicalize().unwrap_or(path))));
     }
     Ok(out)
 }
@@ -1026,7 +1041,21 @@ pub fn library(library: &Value, declared: &Value, span: Span) -> Result {
 /// What the C compiler said, as an error of Zeno.
 fn raise_build_error(said: &str, folder: &Path, label: &str, span: Span) -> Result {
     for line in said.lines() {
-        // GNU ld: "cannot find -lfoo"; the linker of macOS: "library
+        // The newer linker of macOS: "ld: library 'foo' not found".
+        if let Some(at) = line.find("library '") {
+            let rest = &line[at + "library '".len()..];
+            if let Some(end) = rest.find("' not found") {
+                let name = &rest[..end];
+                return raise(
+                    "FileError",
+                    format!(
+                        "C has no library `{name}`. Is it installed, with what building with it needs (on Debian and Ubuntu, its package that ends in `-dev`)?"
+                    ),
+                    span,
+                );
+            }
+        }
+        // GNU ld: "cannot find -lfoo"; the older linker of macOS: "library
         // not found for -lfoo".
         for sign in ["cannot find -l", "library not found for -l"] {
             if let Some(at) = line.find(sign) {
@@ -1111,5 +1140,18 @@ mod tests {
             let error = declarations(wrong).expect_err(wrong);
             assert!(error.contains(says), "{wrong}: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod plain_tests {
+    use super::plain;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_path_of_windows_is_given_to_c_without_its_long_prefix() {
+        assert_eq!(plain(PathBuf::from(r"\\?\D:\a\zeno\examples\crc.c")), PathBuf::from(r"D:\a\zeno\examples\crc.c"));
+        assert_eq!(plain(PathBuf::from(r"\\?\UNC\server\share\crc.c")), PathBuf::from(r"\\server\share\crc.c"));
+        assert_eq!(plain(PathBuf::from("/home/me/crc.c")), PathBuf::from("/home/me/crc.c"));
     }
 }

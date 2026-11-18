@@ -916,7 +916,7 @@ mod link {
     }
 
     pub fn program_at(path: &str) {
-        let folder = std::fs::canonicalize(path).ok().and_then(|file| file.parent().map(|folder| folder.to_path_buf()));
+        let folder = std::fs::canonicalize(path).ok().and_then(|file| file.parent().map(|folder| crate::bridge_c::plain(folder.to_path_buf())));
         if let Ok(mut home) = HOME.lock() {
             *home = folder;
         }
