@@ -58,8 +58,22 @@ pub struct Foreign {
 
 impl Drop for Foreign {
     fn drop(&mut self) {
-        link::freed(self.lang, self.id);
+        let_go(self.lang, self.id);
     }
+}
+
+// Everything below that the rest of Zeno calls is marked `#[cold]` and
+// `#[inline(never)]`. The places that call it are the ones every
+// program runs through: reading an item, comparing, letting go of a
+// value. Left to itself the compiler folds this file into them, and
+// then their code moves whenever this file changes: adding Java here
+// made a sort on the VM a tenth slower, with no line of the VM touched
+// (decision 29.11). Kept out, a program that asks for no other
+// language runs the code it ran before.
+#[cold]
+#[inline(never)]
+fn let_go(lang: Lang, id: u64) {
+    link::freed(lang, id);
 }
 
 // ----------------------------------------------------------------- The lines
@@ -396,38 +410,52 @@ impl Ask {
 }
 
 /// `python.module("json")`: the module, which stays in Python.
+#[cold]
+#[inline(never)]
 pub fn module(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "import", span).text("name", name).send()
 }
 
 /// `node.global("JSON")`: something JavaScript has without asking for
 /// a module.
+#[cold]
+#[inline(never)]
 pub fn global(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "global", span).text("name", name).send()
 }
 
 /// `java.jar("lib")`: a jar, or a folder of them, where Java then
 /// finds classes.
+#[cold]
+#[inline(never)]
 pub fn jar(path: &str, span: Span) -> Result<()> {
     Ask::new(Lang::Java, "jar", span).text("name", path).send().map(|_| ())
 }
 
 /// `thing.name`
+#[cold]
+#[inline(never)]
 pub fn field(foreign: &Foreign, name: &str, span: Span) -> Result {
     Ask::new(foreign.lang, "get", span).on(foreign).text("name", name).send()
 }
 
 /// `thing.name = value`
+#[cold]
+#[inline(never)]
 pub fn set_field(foreign: &Foreign, name: &str, value: &Value, span: Span) -> Result<()> {
     Ask::new(foreign.lang, "set", span).on(foreign).text("name", name).value("to", value)?.send().map(|_| ())
 }
 
 /// `thing(1, 2, name=3)`
+#[cold]
+#[inline(never)]
 pub fn call(foreign: &Foreign, positional: &[Value], named: &[(String, Value)], span: Span) -> Result {
     called("call", foreign, positional, named, span)
 }
 
 /// `node.new(Class, 1, 2)`: what `new Class(1, 2)` is in JavaScript.
+#[cold]
+#[inline(never)]
 pub fn new(foreign: &Foreign, positional: &[Value], span: Span) -> Result {
     called("new", foreign, positional, &[], span)
 }
@@ -458,21 +486,29 @@ fn called(op: &str, foreign: &Foreign, positional: &[Value], named: &[(String, V
 }
 
 /// `thing[index]`
+#[cold]
+#[inline(never)]
 pub fn item(foreign: &Foreign, index: &Value, span: Span) -> Result {
     Ask::new(foreign.lang, "item", span).on(foreign).value("at", index)?.send()
 }
 
 /// `thing[index] = value`
+#[cold]
+#[inline(never)]
 pub fn set_item(foreign: &Foreign, index: &Value, value: &Value, span: Span) -> Result<()> {
     Ask::new(foreign.lang, "set_item", span).on(foreign).value("at", index)?.value("to", value)?.send().map(|_| ())
 }
 
 /// `len(thing)`
+#[cold]
+#[inline(never)]
 pub fn len(foreign: &Foreign, span: Span) -> Result {
     Ask::new(foreign.lang, "len", span).on(foreign).send()
 }
 
 /// `item in thing`
+#[cold]
+#[inline(never)]
 pub fn has(foreign: &Foreign, item: &Value, span: Span) -> Result<bool> {
     match Ask::new(foreign.lang, "has", span).on(foreign).value("item", item)?.send()? {
         Value::Bool(found) => Ok(found),
@@ -481,6 +517,8 @@ pub fn has(foreign: &Foreign, item: &Value, span: Span) -> Result<bool> {
 }
 
 /// What a `for` loop steps through: every item, taken now.
+#[cold]
+#[inline(never)]
 pub fn items(foreign: &Foreign, span: Span) -> Result<Vec<Value>> {
     match Ask::new(foreign.lang, "items", span).on(foreign).send()? {
         Value::List(items) => Ok(items.borrow().clone()),
@@ -490,6 +528,8 @@ pub fn items(foreign: &Foreign, span: Span) -> Result<Vec<Value>> {
 
 /// `python.copy(thing)`: a list, a tuple or a dict of the other side as
 /// a list or a dict of Zeno, item by item.
+#[cold]
+#[inline(never)]
 pub fn copy(foreign: &Foreign, span: Span) -> Result {
     Ask::new(foreign.lang, "copy", span).on(foreign).send()
 }
@@ -497,6 +537,8 @@ pub fn copy(foreign: &Foreign, span: Span) -> Result {
 /// How `print` shows it (`repr` false), and how it is shown inside a
 /// list (`repr` true). Showing a value cannot fail, so if the other
 /// side cannot say, this says what kind of thing it is.
+#[cold]
+#[inline(never)]
 pub fn shown(foreign: &Foreign, repr: bool) -> String {
     let op = if repr { "repr" } else { "str" };
     match Ask::new(foreign.lang, op, Span { line: 0, col: 0 }).on(foreign).send() {
@@ -506,6 +548,8 @@ pub fn shown(foreign: &Foreign, repr: bool) -> String {
 }
 
 /// `==`, asked of the other side when at least one of the two is there.
+#[cold]
+#[inline(never)]
 pub fn equal(foreign: &Foreign, other: &Value) -> bool {
     if let Value::Foreign(other) = other {
         if other.lang == foreign.lang && other.id == foreign.id {

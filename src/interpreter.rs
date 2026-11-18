@@ -1953,7 +1953,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
                  try { java.type(\"java.nio.file.Files\").readString(java.type(\"java.nio.file.Path\").of(\"/zeno/no/such/file\")) } except FileError as error { print(4, error.message.starts_with(\"NoSuchFileException: \")) }\n\
                  try { java.type(\"java.util.List\").of(1).add(2) } except Error as error { print(5, error.kind, error.message) }\n\
                  try { java.type(\"zeno.no.such.Class\") } except FileError as error { print(6, error.message.starts_with(\"Java has no class `zeno.no.such.Class`\")) }\n\
-                 try { java.jar(\"/zeno/no/such.jar\") } except FileError as error { print(7, error.message) }\n\
+                 try { java.jar(\"zeno-no-such.jar\") } except FileError as error { print(7, error.message.starts_with(\"there is no jar or folder `\"), error.message.ends_with(\"zeno-no-such.jar`\")) }\n\
                  try { ArrayList().add(1, 2, 3) } except Error as error { print(8, error.message) }\n\
                  try { ArrayList().size(most=1) } except Error as error { print(9, error.message) }\n\
                  try { ArrayList().nothing } except Error as error { print(10, error.message) }\n\
@@ -1969,7 +1969,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
              4 true\n\
              5 Error UnsupportedOperationException\n\
              6 true\n\
-             7 there is no jar or folder `/zeno/no/such.jar`\n\
+             7 true true\n\
              8 Java has no `add` that takes an int, an int, an int. There is add(Object), add(int, Object)\n\
              9 Java has no named arguments, and `most` was given as one\n\
              10 a java.util.ArrayList has no field or method `nothing`\n\

@@ -515,7 +515,7 @@ file and a faster program, but no `import web` yet.
 - `import python`: Python runs beside the program, and `zeno run` is
   what starts it (decision 26.9).
 - `import node`: the same, for Node (decision 28.10).
-- `import java`: the same, for Java (decision 29.11).
+- `import java`: the same, for Java (decision 29.12).
 
 Zeno refuses such a program with a message that names the line.
 

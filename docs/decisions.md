@@ -11954,7 +11954,43 @@ has no items of its own, `thing["name"]` is `thing.name`:
 object that is not an array, a list, a map or text. For JavaScript the
 same writing is the language's own rule ([`node.md`](node.md)).
 
-### 29.11 Left for later
+### 29.11 The bridge is kept out of the functions every program runs
+
+Every function of `bridge.rs` that the rest of Zeno calls is marked
+`#[cold]` and `#[inline(never)]`, and so is what letting go of a value
+from another language calls.
+
+**What happened.** With Java added, a sort on `zeno run --vm` took a
+tenth longer than in 0.5.1 (3.63 s to 4.02 s for a million numbers,
+best of 8 rounds each), while the count of instructions was 1 % lower.
+No line of the VM had changed. The places that hand a value to the
+bridge are `ops::item`, `ops::set_item`, `ops::field` and
+`value::equal`, which every program runs through, and the compiler
+had folded the bridge into them. So their code changed, and moved,
+each time the bridge did: `ops::item` was 2170 bytes with JavaScript
+added and 2129 with Java. It is 1800 with the bridge kept out, and
+does not change when the bridge does.
+
+**Why this is the fix and not a patch.** 26.11 promises that a
+program which asks for no other language runs the code it ran before.
+The source said so already; the compiled program did not. `#[cold]`
+tells the compiler that these calls are rare, which they are in every
+program without the import and cheap beside the trip to another
+program in one with it.
+
+**After it.** The same sort is within 2 % of 0.5.1. All six
+benchmarks, both engines, timed in alternating rounds against 0.5.1,
+are between 6 % faster and 4 % slower. The 4 % is nbody on the VM
+(16.51 s to 17.08 s); about half of it was there before the bridge
+was begun, and the rest is no more than this machine gives for one
+build timed twice (24.29).
+
+**What it does not fix.** Where the compiler puts the VM's own loop
+still moves by a few bytes when code is added anywhere, and that
+alone is worth a few percent on one benchmark or another. Stable Rust
+has no way to pin it.
+
+### 29.12 Left for later
 
 - A function of Zeno given to Java: lambdas, `Comparator`, `Runnable`.
 - A class of Zeno that extends a class of Java.
