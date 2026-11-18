@@ -1,0 +1,68 @@
+# What is in a zip file: each file in it, its size, and how small the
+# zip made it.
+#
+#     zeno run examples/zipped.zeno photos.zip
+#
+# Zeno cannot read a zip by itself. Java can, with the `java.util.zip`
+# that comes with it, and `import java` lets a Zeno program use it:
+# every class that comes with Java, and any library that is a jar.
+# A `.jar` is itself a zip, so this program can look into one.
+#
+# It needs Java, 11 or later.
+
+import java
+import program
+
+# 1536 is shown as "1.5 KB".
+function as_size(bytes: int) -> str {
+    if bytes < 1024 {
+        return f"{bytes} B"
+    }
+    if bytes < 1024 * 1024 {
+        return f"{bytes / 1024:.1f} KB"
+    }
+    return f"{bytes / (1024 * 1024):.1f} MB"
+}
+
+# `ZipFile`, the zip and each entry stay in Java, and Zeno asks Java
+# for each call. A name arrives as a str and a size as an int. Calling
+# the class is what `new ZipFile(name)` is in Java. What Java can throw
+# is not known before the program runs, so the function says `raises
+# Error`: any kind.
+function show(name: str) raises Error {
+    let ZipFile = java.type("java.util.zip.ZipFile")
+    let zip = ZipFile(name)
+    var files = 0
+    var whole = 0
+    var packed = 0
+    for entry in zip.entries() {
+        if not entry.isDirectory() {
+            files += 1
+            whole += entry.getSize()
+            packed += entry.getCompressedSize()
+            print(f"{as_size(entry.getSize()):>10}  {entry.getName()}")
+        }
+    }
+    zip.close()
+    if whole > 0 {
+        let saved = 100 - packed * 100 // whole
+        print(f"{files} files, {as_size(whole)} in all, {as_size(packed)} in the zip ({saved}% smaller).")
+    } else {
+        print(f"{files} files, and nothing in them.")
+    }
+}
+
+let words = program.arguments()
+if len(words) != 1 {
+    print("usage: zeno run zipped.zeno <a zip file>")
+} else {
+    try {
+        show(words[0])
+    } except FileError as error {
+        # Java is not installed, there is no such file, or it is not a
+        # zip: what Java says about a file is a FileError.
+        print(error.message)
+    } except Error as error {
+        print(f"Java could not do it. {error.message}")
+    }
+}

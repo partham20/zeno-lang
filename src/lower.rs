@@ -948,6 +948,7 @@ impl Lowerer {
                         "board" => "The `board` module is for a program on a board: build it without `--target`",
                         "python" => "The `python` module needs Python beside the program while it runs, and `zeno run` is what starts it",
                         "node" => "The `node` module needs Node beside the program while it runs, and `zeno run` is what starts it",
+                        "java" => "The `java` module needs Java beside the program while it runs, and `zeno run` is what starts it",
                         _ => "It is not a module that comes with Zeno",
                     };
                     return Err(Error::new(format!("a program built for another language cannot use `{path}`. {why}"), statement.span));
@@ -1644,6 +1645,13 @@ mod tests {
             refused("import node\nprint(node.module(\"os\").EOL)").as_deref(),
             Some(
                 "a program built for another language cannot use `node`. The `node` module needs Node beside \
+                 the program while it runs, and `zeno run` is what starts it"
+            )
+        );
+        assert_eq!(
+            refused("import java\nprint(java.type(\"java.lang.Math\").PI)").as_deref(),
+            Some(
+                "a program built for another language cannot use `java`. The `java` module needs Java beside \
                  the program while it runs, and `zeno run` is what starts it"
             )
         );

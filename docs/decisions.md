@@ -11293,7 +11293,7 @@ rounds (24.29).
   for the whole language, and it was decided once (5.19c).
 - A loop that takes items one at a time, for what never ends.
 - `python` in a built program, and in `--target py` (26.9).
-- Java, then the rest of 26.1. JavaScript is chapter 28.
+- The rest of 26.1. JavaScript is chapter 28 and Java chapter 29.
 
 ## 27. The registry: a package by its name
 
@@ -11778,3 +11778,187 @@ This changed Python as chapter 26 first had it. It was in no release.
 - Starting two things and waiting for both (28.5).
 - `node` in a built program, and in `--target js`, as 26.9 has it for
   Python.
+
+## 29. The libraries of Java
+
+The third language of the first version (26.1): `import java`, for the
+classes that come with Java and for libraries that are jars.
+[`java.md`](java.md) is the walkthrough. Chapter 26 holds here as it
+does for JavaScript (28): Java runs beside the program, they talk over
+a socket, numbers and text cross and everything else stays, what Zeno
+gives is a copy, a value from there is not a condition, the types are
+known when the program runs, and nothing changes for a program that
+does not ask. What follows is what Java made different.
+
+### 29.1 `java.type(name)` gives a class, by its whole name
+
+```zeno
+let ArrayList = java.type("java.util.ArrayList")
+```
+
+**Why `type` and not `class`.** `class` is a word of Zeno and cannot
+follow a dot (5.19c). `type` is also what the bridges from JavaScript
+to Java call it (`Java.type` in Nashorn and GraalVM), so it is the
+word a person who has done this before looks for.
+
+**Why the whole name.** Java's own short names come from an `import`
+at the top of each file, which this program does not have. One rule,
+the name the documentation gives, is less to know than a list of
+packages that are looked in without being asked.
+
+### 29.2 Calling a class is `new`
+
+`ArrayList()` is `new ArrayList()`.
+
+**Why here and not for JavaScript (28.2).** In JavaScript a class can
+also be called without `new`, with another answer, so the two had to
+be told apart. A class of Java cannot be called at all, so the call
+has one meaning. It is also how an object is made in Zeno itself, and
+in Python.
+
+### 29.3 A dot after a class is what is `static`; a method is kept until it is called
+
+`Math.PI`, `Math.max(3, 9)`, `Thread.State.NEW`. On an object,
+`thing.name` is its public field, or its method.
+
+**What `java.type` gives is not Java's `Class` object.** That object
+has methods of its own (`getName`, `getMethods`), and `Math.max` would
+have to be looked for among them. So the helper has a value of its
+own for "the class as its name is written" (`Type`), and gives Java
+the `Class` object when a method asks for one.
+`thing.getClass()` still gives Java's.
+
+**A method not yet called is a value too** (`Bound`), because Zeno
+reads `names.add` before it calls it, and because a method can be
+kept in a name and called later, as in Zeno.
+
+**Only what is public.** A program of Java outside the class could
+use nothing else, and a library's private parts are not its promise.
+
+### 29.4 Of several methods with one name, the arguments choose
+
+Java can have `valueOf(int)`, `valueOf(double)` and `valueOf(Object)`
+side by side. Each is given a number for how well the arguments of
+this call fit what it takes, and the lowest is called.
+
+**The order is Java's own** as far as it has one: an int of Zeno is an
+`int` before a `long`, a `long` before a `double`, and a plain type
+before its boxed one; a method that takes its arguments one by one
+comes before one that gathers them (`Object...`).
+
+**Two that fit equally are an error**, which lists what there is, and
+so is none that fits. A guess would call something, and the program
+would go on with the wrong answer.
+
+**Alternatives rejected.** Saying the types in the call, as
+`thing.method["int", "Object"](1, x)`: it is exact, and it is a
+second language to learn for the few calls that need it. It can be
+added for those if they turn up. Taking the first method that fits:
+which is first is not something Java promises.
+
+### 29.5 An int that goes as an `Object` is an `Integer` if it fits
+
+A collection of Java takes anything (`Object`), so the method does not
+say which whole number it wants. An int of Zeno goes as an `Integer`
+when it fits 32 bits and as a `Long` when it does not.
+
+**Why.** It is what the number is when written in a Java program: `5`
+is an `int` there and `5000000000L` a `long`. A library compares what
+it is given with numbers of its own, and `Integer` 5 does not equal
+`Long` 5 in Java. Always `Long` would be simpler to say and would fail
+quietly inside `contains` and `get`.
+
+**Every whole number that comes back is an int**, whatever its size
+in Java, and `float` and `double` are a float. A `float` is written
+the short way it prints, `0.1`, and not with the digits it gains as a
+`double`.
+
+### 29.6 `==` is `equals`
+
+**Why not the same object, as for JavaScript (28.7).** Java has both,
+and its own `==` on objects is the one programs are told not to use
+for values: two `String`s or two `Integer`s with one value can be two
+objects. `equals` is what a class of Java says its equality is.
+
+`print` shows `toString()`. An array has none worth reading
+(`[I@1b6d3586`), so its items are shown.
+
+### 29.7 An exception of Java is an error of Zeno
+
+`IndexOutOfBoundsException` is `IndexError`,
+`IllegalArgumentException` is `ValueError`, `IOException` is
+`FileError`, each with the kinds built on it, and every other is
+`Error`. The message begins with Java's name for it.
+
+**Why these and no more.** Each of the three means in Java what the
+kind means in Zeno, by Java's own description of it. That is not so
+for `ArithmeticException`, which is both a division by zero and an
+overflow, two kinds in Zeno; it stays an `Error` (28.8 has the same
+reasoning for JavaScript).
+
+### 29.8 A library is a jar, and the program says where it is
+
+`java.jar("lib/gson.jar")`, or a folder: every jar in it.
+
+**Why the program says it.** Python and Node each have one place
+where `install` puts packages, and each finds them there by itself.
+Java has none: a jar is found only if the class path names it. So
+the program names it, at a line that can be read, with a path from
+its own folder (28.9).
+
+`CLASSPATH` is read as Java reads it, and with none the folder of the
+program is looked in for classes, which is what `java Main` does in
+that folder.
+
+**Alternatives rejected.** Every jar beside the program, without
+being asked: which jars are used would depend on what happens to lie
+in the folder. A name as Maven writes it
+(`com.google.code.gson:gson:2.11.0`), found in Maven's own folder: a
+library there usually needs others, and which ones is worked out by
+Maven from files Zeno would have to read as Maven does. A folder
+filled by Maven or by hand, and named, is whole.
+
+### 29.9 The helper is compiled once, and kept
+
+Java runs classes and not source. The helper's source is in the
+`zeno` file; the first run makes classes of it with `javac`, in the
+folder this machine has for what can be made again (the registry's,
+27), and later runs start those.
+
+**Why.** Compiling takes about a second and starting takes a fifth of
+one. Paying the second on every run would make a short program slow
+for good.
+
+**How it stays right.** The folder is named by a number worked out
+from the source, so another version of Zeno makes its own. The
+classes are made in a folder of the run's own and given their name
+when whole, so two runs at once never share half of them. They are
+compiled for Java 11, so a later Java runs them as they are.
+
+**With no `javac`**, Java is given the source, which Java 11 and
+later compile as they start. With no folder to keep them in, they are
+made in a folder of this run's own and taken away after.
+
+**Alternative rejected.** The classes inside the `zeno` file, ready
+made: building Zeno would then need Java, and Zeno is built with
+Rust and nothing else.
+
+### 29.10 A name in brackets, where a word of Zeno is in the way
+
+`System.in` does not parse (5.19c). On a class, and on an object that
+has no items of its own, `thing["name"]` is `thing.name`:
+`System["in"]`.
+
+**Why this is safe to mean two things.** It is taken so only where
+`[ ]` has no other meaning: a class has no items, and neither has an
+object that is not an array, a list, a map or text. For JavaScript the
+same writing is the language's own rule ([`node.md`](node.md)).
+
+### 29.11 Left for later
+
+- A function of Zeno given to Java: lambdas, `Comparator`, `Runnable`.
+- A class of Zeno that extends a class of Java.
+- Saying the types of a call where two methods fit equally (29.4).
+- Zeno's checker reading Java's types, which Java has.
+- `java` in a built program, and in `--target java`, as 26.9 has it
+  for Python.

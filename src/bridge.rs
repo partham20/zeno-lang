@@ -1,4 +1,5 @@
-//! Values that live in another language: `import python` (docs/python.md).
+//! Values that live in another language: `import python`, `import node`
+//! and `import java` (docs/python.md, docs/node.md, docs/java.md).
 //!
 //! Zeno starts that language's own interpreter beside the program, once,
 //! the first time it is asked for, and the two talk over a socket of this
@@ -7,9 +8,9 @@
 //! where it was made, and Zeno holds a `Foreign`: the number the other
 //! side keeps it under.
 //!
-//! Nothing here knows Python but `Lang` and the helper it names
-//! (`bridge.py`). Another language is another helper that speaks the
-//! same lines.
+//! Nothing here knows a language but `Lang` and the helper it names
+//! (`bridge.py`, `bridge.js`, `bridge.java`). Another language is
+//! another helper that speaks the same lines.
 
 use std::rc::Rc;
 
@@ -23,6 +24,7 @@ type Result<T = Value> = std::result::Result<T, Control>;
 pub enum Lang {
     Python,
     Node,
+    Java,
 }
 
 impl Lang {
@@ -31,6 +33,7 @@ impl Lang {
         match self {
             Lang::Python => "Python",
             Lang::Node => "JavaScript",
+            Lang::Java => "Java",
         }
     }
 
@@ -40,6 +43,7 @@ impl Lang {
         match self {
             Lang::Python => "Python",
             Lang::Node => "Node",
+            Lang::Java => "Java",
         }
     }
 }
@@ -402,6 +406,12 @@ pub fn global(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "global", span).text("name", name).send()
 }
 
+/// `java.jar("lib")`: a jar, or a folder of them, where Java then
+/// finds classes.
+pub fn jar(path: &str, span: Span) -> Result<()> {
+    Ask::new(Lang::Java, "jar", span).text("name", path).send().map(|_| ())
+}
+
 /// `thing.name`
 pub fn field(foreign: &Foreign, name: &str, span: Span) -> Result {
     Ask::new(foreign.lang, "get", span).on(foreign).text("name", name).send()
@@ -538,14 +548,90 @@ mod link {
 
     const PYTHON: &str = include_str!("bridge.py");
     const NODE: &str = include_str!("bridge.js");
+    const JAVA: &str = include_str!("bridge.java");
 
     /// How the helper of a language is handed to its program: the
     /// option that says "the program is the next word", and the helper.
-    fn helper(lang: Lang) -> [&'static str; 2] {
+    /// Java takes no program as a word, so its helper is a file
+    /// (`java_helper`).
+    fn helper(lang: Lang, program: &str) -> Vec<String> {
         match lang {
-            Lang::Python => ["-c", PYTHON],
-            Lang::Node => ["-e", NODE],
+            Lang::Python => vec!["-c".to_string(), PYTHON.to_string()],
+            Lang::Node => vec!["-e".to_string(), NODE.to_string()],
+            Lang::Java => java_helper(program),
         }
+    }
+
+    /// The words that start the Java helper.
+    ///
+    /// Java runs classes, which are made from the source by `javac`.
+    /// That takes about a second, so it is done once: the classes are
+    /// kept in the folder this machine has for what can be made again
+    /// (`registry::cache`), under a number worked out from the source,
+    /// and every later run starts them as they are. Where there is no
+    /// `javac`, or no such folder, Java is given the source itself,
+    /// which it compiles each time it is started (Java 11 and later).
+    fn java_helper(program: &str) -> Vec<String> {
+        let mut number: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in JAVA.bytes() {
+            number = (number ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let name = format!("java-bridge-{number:016x}");
+        let (base, shared) = match crate::registry::cache() {
+            Ok(folder) => (folder, true),
+            // A folder nobody else can have made, used this once and
+            // taken away when the program is over.
+            Err(_) => {
+                let folder = std::env::temp_dir().join(format!("zeno-{}-{}", std::process::id(), secret()));
+                SCRAPS.with(|scraps| scraps.borrow_mut().push(folder.clone()));
+                (folder, false)
+            }
+        };
+        let classes = base.join(&name);
+        let run = |folder: &std::path::Path| vec!["-cp".to_string(), folder.to_string_lossy().into_owned(), "ZenoBridge".to_string()];
+        if shared && classes.join("ZenoBridge.class").is_file() {
+            return run(&classes);
+        }
+        // The source has a place of its own, the same for every run.
+        let source = base.join(format!("{name}-source")).join("ZenoBridge.java");
+        let written = std::fs::read(&source).is_ok_and(|there| there == JAVA.as_bytes())
+            || (source.parent().is_some_and(|folder| std::fs::create_dir_all(folder).is_ok()) && std::fs::write(&source, JAVA).is_ok());
+        let as_source = vec![source.to_string_lossy().into_owned()];
+        if !written {
+            return as_source;
+        }
+        // The classes are made in a folder of this run's own, and given
+        // their name when they are whole, so that two runs at once
+        // never share half of them.
+        let making = base.join(format!("{name}.{}", std::process::id()));
+        // The `javac` that came with this `java`.
+        let javac = match std::path::Path::new(program).parent() {
+            Some(folder) if !folder.as_os_str().is_empty() => folder.join("javac").to_string_lossy().into_owned(),
+            _ => "javac".to_string(),
+        };
+        let compiled = std::fs::create_dir_all(&making).is_ok()
+            && Command::new(javac)
+                .args(["-nowarn", "--release", "11", "-encoding", "UTF-8", "-d"])
+                .arg(&making)
+                .arg(&source)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+        if !compiled {
+            let _ = std::fs::remove_dir_all(&making);
+            return as_source;
+        }
+        if std::fs::rename(&making, &classes).is_ok() {
+            return run(&classes);
+        }
+        // Another run got there first, and its classes are the same.
+        if classes.join("ZenoBridge.class").is_file() {
+            let _ = std::fs::remove_dir_all(&making);
+            return run(&classes);
+        }
+        run(&making)
     }
 
     /// The variable of the environment that names the program to use.
@@ -553,6 +639,7 @@ mod link {
         match lang {
             Lang::Python => "ZENO_PYTHON",
             Lang::Node => "ZENO_NODE",
+            Lang::Java => "ZENO_JAVA",
         }
     }
 
@@ -570,6 +657,8 @@ mod link {
         static LINKS: RefCell<Vec<(Lang, Link)>> = const { RefCell::new(Vec::new()) };
         /// What Zeno has let go of since the last line was sent.
         static FREED: RefCell<Vec<(Lang, u64)>> = const { RefCell::new(Vec::new()) };
+        /// Folders made for this run only.
+        static SCRAPS: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
     }
 
     /// The folder of the program that is run, where that is a file. It
@@ -603,6 +692,9 @@ mod link {
             drop(reader);
             let _ = child.wait();
         }
+        for folder in SCRAPS.with(|scraps| std::mem::take(&mut *scraps.borrow_mut())) {
+            let _ = std::fs::remove_dir_all(folder);
+        }
     }
 
     /// The programs to try, in order. `ZENO_PYTHON` names one, for a
@@ -613,6 +705,14 @@ mod link {
             (_, Lang::Python) if cfg!(windows) => vec!["python".to_string(), "python3".to_string(), "py".to_string()],
             (_, Lang::Python) => vec!["python3".to_string(), "python".to_string()],
             (_, Lang::Node) => vec!["node".to_string()],
+            // `JAVA_HOME` is where the tools of Java look for it.
+            (_, Lang::Java) => {
+                let mut names = vec!["java".to_string()];
+                if let Some(home) = std::env::var_os("JAVA_HOME").filter(|home| !home.is_empty()) {
+                    names.push(std::path::Path::new(&home).join("bin").join("java").to_string_lossy().into_owned());
+                }
+                names
+            }
         }
     }
 
@@ -672,7 +772,7 @@ mod link {
                 continue;
             }
             let mut command = Command::new(program);
-            command.args(helper(lang)).env("ZENO_BRIDGE", format!("{} {token} {}", address.port(), first_number()));
+            command.args(helper(lang, program)).env("ZENO_BRIDGE", format!("{} {token} {}", address.port(), first_number()));
             // Never the folder of a Zeno that started this one.
             match HOME.lock().ok().and_then(|home| home.clone()) {
                 Some(folder) => command.env("ZENO_PROGRAM", folder),

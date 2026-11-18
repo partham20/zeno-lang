@@ -92,21 +92,21 @@ the message, the file and the line:
 
 ```
 $ python3 tools/targets.py
-js: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-ts: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-py: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-php: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-lua: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-ruby: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-dart: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-kotlin: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-go: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-java: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-cs: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-cpp: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-rust: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-wasm: 338 of 338 programs print what `zeno run` prints (24 left out: they use the board, a page, manual memory, another program, Python, Node)
-html: 329 of 329 programs print what `zeno run` prints (33 left out: ...)
+js: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+ts: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+py: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+php: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+lua: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+ruby: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+dart: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+kotlin: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+go: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+java: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+cs: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+cpp: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+rust: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+wasm: 338 of 338 programs print what `zeno run` prints (25 left out: they use the board, a page, manual memory, another program, Python, Node, Java)
+html: 329 of 329 programs print what `zeno run` prints (34 left out: ...)
 ```
 
 ## How it is done
@@ -515,6 +515,7 @@ file and a faster program, but no `import web` yet.
 - `import python`: Python runs beside the program, and `zeno run` is
   what starts it (decision 26.9).
 - `import node`: the same, for Node (decision 28.10).
+- `import java`: the same, for Java (decision 29.11).
 
 Zeno refuses such a program with a message that names the line.
 

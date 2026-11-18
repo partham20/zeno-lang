@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java")
 }
 
 /// Every built-in name and what it stands for.
@@ -211,6 +211,23 @@ fn node_new(_: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
         Value::Foreign(class) if class.lang == crate::bridge::Lang::Node => crate::bridge::new(&class, &args, span),
         other => wrong_type("new", "a class of JavaScript", &other, span),
     }
+}
+
+/// `java.type("java.util.ArrayList")`: a class of Java, by its whole
+/// name. Calling it makes an object, and a dot after it is something
+/// `static`. It stays in Java, which Zeno starts beside the program the
+/// first time it is asked for (`bridge.rs`).
+fn java_type(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("type", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Java, text("type", &args[0], span)?, span)
+}
+
+/// `java.jar("lib/gson.jar")`: a jar where Java then finds classes, or
+/// a folder, which is its classes and every jar in it.
+fn java_jar(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("jar", &args, 1, 1, span)?;
+    crate::bridge::jar(text("jar", &args[0], span)?, span)?;
+    Ok(Value::None)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1155,6 +1172,14 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("module", Value::Builtin(Builtin { name: "module", call: node_module })),
                 ("global", Value::Builtin(Builtin { name: "global", call: node_global })),
                 ("new", Value::Builtin(Builtin { name: "new", call: node_new })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "java" => (
+            "java",
+            vec![
+                ("type", Value::Builtin(Builtin { name: "type", call: java_type })),
+                ("jar", Value::Builtin(Builtin { name: "jar", call: java_jar })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

@@ -1833,6 +1833,171 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         }
     }
 
+    /// Is there a Java on this machine for `import java` to start?
+    fn java_is_here() -> bool {
+        std::process::Command::new("java")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn a_class_of_java_is_used_from_zeno() {
+        if !java_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own. Calling a class
+        // makes an object, a dot after a class is what is `static`
+        // there, and of several methods with one name the one the
+        // arguments fit is called.
+        assert_eq!(
+            output(
+                "import java\n\
+                 let Math = java.type(\"java.lang.Math\")\n\
+                 print(Math.max(3, 9) + 1, Math.max(3, 2.5), Math.sqrt(16.0), Math.PI > 3.14, Math.abs(-7), Math.floorMod(-7, 3))\n\
+                 let Integer = java.type(\"java.lang.Integer\")\n\
+                 print(Integer.parseInt(\"ff\", 16), Integer.MAX_VALUE + 1, Integer.toBinaryString(5) + \"!\", java.type(\"java.lang.Long\").MAX_VALUE)\n\
+                 let String = java.type(\"java.lang.String\")\n\
+                 print(String.format(\"%s has %d and %.1f\", \"it\", 3, 2.5), String.valueOf(true), String.join(\"-\", [\"a\", \"b\"]), String.valueOf(2.5))\n\
+                 let text = java.type(\"java.lang.StringBuilder\")(\"h\u{e9}llo \u{1F600}\\t\\\"q\\\"\")\n\
+                 text.append(1).append(2.5).append(true).append('c')\n\
+                 print(text, len(text), text.toString().upper(), text.charAt(0), text.indexOf(\"llo\"))\n\
+                 let day = java.type(\"java.time.LocalDate\").of(2026, 11, 18)\n\
+                 let later = day.plusMonths\n\
+                 print(day, day.getDayOfWeek(), later(1), day.getYear() + 1, day.isLeapYear(), day == java.type(\"java.time.LocalDate\").parse(\"2026-11-18\"))\n\
+                 let big = java.type(\"java.math.BigInteger\")(\"123456789012345678901234567890\")\n\
+                 print(big.add(big), big.bitLength(), big.signum(), java.type(\"java.lang.Thread\").State.NEW, java.type(\"java.util.Map.Entry\"), big[\"not\"]().signum(), java.type(\"java.lang.System\")[\"in\"] is not none)\n\
+                 let point = java.type(\"java.awt.Point\")(1, 2)\n\
+                 point.x = 10\n\
+                 point.translate(1, 1)\n\
+                 print(point.x + point.y, point == java.type(\"java.awt.Point\")(11, 3), java.type(\"java.lang.Float\").valueOf(\"0.1\"), java.type(\"java.lang.Double\").NaN)"
+            ),
+            "10 3.0 4.0 true 7 2\n\
+             255 2147483648 101! 9223372036854775807\n\
+             it has 3 and 2.5 true a-b 2.5\n\
+             h\u{e9}llo \u{1F600}\t\"q\"12.5truec 21 H\u{e9}LLO \u{1F600}\t\"Q\"12.5TRUEC h 2\n\
+             2026-11-18 WEDNESDAY 2026-12-18 2027 false true\n\
+             246913578024691357802469135780 97 1 NEW class java.util.Map$Entry -1 true\n\
+             14 true 0.1 NaN\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_java() {
+        if !java_is_here() {
+            return;
+        }
+        // A list of Java is the one list there is. `java.copy` makes a
+        // list of Zeno of it, and a dict of a map.
+        assert_eq!(
+            output(
+                "import java\n\
+                 let items = java.type(\"java.util.ArrayList\")([0, 1, 2])\n\
+                 items.add(10)\n\
+                 items[0] = \"zero\"\n\
+                 print(items, len(items), items[3] + 1, 10 in items, 11 not in items, items.size())\n\
+                 var seen: list[str] = []\n\
+                 for item in items {\n    seen.append(str(item))\n}\n\
+                 print(seen.join(\"-\"), [items], f\"{items[0]:>6}|\")\n\
+                 let copy = java.copy(items)\n\
+                 copy.append(11)\n\
+                 print(copy, len(items), java.copy(3), items == items, items == java.type(\"java.util.ArrayList\")(items), items == 3)\n\
+                 let ages = java.type(\"java.util.LinkedHashMap\")([\"ann\": 31, \"bob\": 40])\n\
+                 ages[\"cy\"] = [1.5, none, true]\n\
+                 ages.put(7, \"seven\")\n\
+                 for name, age in java.copy(ages) {\n    print(name, age)\n}\n\
+                 for name in ages {\n    print(name)\n}\n\
+                 print(\"ann\" in ages, len(ages), ages[\"ann\"] + ages.get(\"bob\"), ages.get(\"dee\") is none, ages)\n\
+                 let fixed = java.type(\"java.util.List\").of(3, 1, 2)\n\
+                 print(fixed, fixed.size(), fixed.contains(2), fixed.indexOf(2), java.copy(java.type(\"java.util.TreeSet\")(fixed)))\n\
+                 let numbers = java.type(\"java.lang.reflect.Array\").newInstance(java.type(\"int\"), 3)\n\
+                 numbers[1] = 5\n\
+                 print(numbers, len(numbers), numbers.length, numbers[1] + 1, 5 in numbers, java.copy(numbers))\n\
+                 let Arrays = java.type(\"java.util.Arrays\")\n\
+                 print(Arrays.asList(1, \"two\", 3.5), Arrays.stream([3, 1, 2]).sorted().toArray(), Arrays.toString([\"a\", \"b\"]))\n\
+                 for part in java.type(\"java.util.StringTokenizer\")(\"a b\") {\n    print(part)\n}\n\
+                 let given = java.type(\"java.util.ArrayList\")([1, [2.5, \"x\", none], [\"k\": [true]], 2 ** 62])\n\
+                 print(given, given[1].getClass().getSimpleName(), given[3] == 2 ** 62)"
+            ),
+            "[zero, 1, 2, 10] 4 11 true true 4\n\
+             zero-1-2-10 [[zero, 1, 2, 10]]   zero|\n\
+             [\"zero\", 1, 2, 10, 11] 4 3 true true false\n\
+             ann 31\nbob 40\ncy [1.5, none, true]\n7 seven\n\
+             ann\nbob\ncy\n7\n\
+             true 4 71 true {ann=31, bob=40, cy=[1.5, null, true], 7=seven}\n\
+             [3, 1, 2] 3 true 2 [1, 2, 3]\n\
+             [0, 5, 0] 3 3 6 true [0, 5, 0]\n\
+             [1, two, 3.5] [1, 2, 3] [a, b]\n\
+             a\nb\n\
+             [1, [2.5, x, null], {k=[true]}, 4611686018427387904] ArrayList true\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_java_is_an_error_of_zeno() {
+        if !java_is_here() {
+            return;
+        }
+        // An exception has Zeno's kind where the two mean one thing, a
+        // file that cannot be used is a FileError, and every other is an
+        // `Error` that says what Java called it.
+        assert_eq!(
+            output(
+                "import java\n\
+                 let ArrayList = java.type(\"java.util.ArrayList\")\n\
+                 try { java.type(\"java.lang.Integer\").parseInt(\"x\") } except ValueError as error { print(1, error.message.starts_with(\"NumberFormatException: \")) }\n\
+                 try { ArrayList().get(2) } except IndexError as error { print(2, error.message.starts_with(\"IndexOutOfBoundsException: \")) }\n\
+                 try { ArrayList()[2] } except IndexError as error { print(3, error.message) }\n\
+                 try { java.type(\"java.nio.file.Files\").readString(java.type(\"java.nio.file.Path\").of(\"/zeno/no/such/file\")) } except FileError as error { print(4, error.message.starts_with(\"NoSuchFileException: \")) }\n\
+                 try { java.type(\"java.util.List\").of(1).add(2) } except Error as error { print(5, error.kind, error.message) }\n\
+                 try { java.type(\"zeno.no.such.Class\") } except FileError as error { print(6, error.message.starts_with(\"Java has no class `zeno.no.such.Class`\")) }\n\
+                 try { java.jar(\"/zeno/no/such.jar\") } except FileError as error { print(7, error.message) }\n\
+                 try { ArrayList().add(1, 2, 3) } except Error as error { print(8, error.message) }\n\
+                 try { ArrayList().size(most=1) } except Error as error { print(9, error.message) }\n\
+                 try { ArrayList().nothing } except Error as error { print(10, error.message) }\n\
+                 try { java.type(\"java.lang.Math\").nothing } except Error as error { print(11, error.message) }\n\
+                 try { java.type(\"java.lang.Runnable\")() } except Error as error { print(12, error.message) }\n\
+                 try { ArrayList()() } except Error as error { print(13, error.message) }\n\
+                 try { java.copy(java.type(\"java.util.HashMap\")([1: 2]).entrySet().iterator().next()) } except Error as error { print(14) }\n\
+                 try { java.copy(java.type(\"java.util.Map\").of(1.5, 2)) } except ValueError as error { print(15, error.message) }\n\
+                 print(\"still here\")"
+            ),
+            "1 true\n2 true\n\
+             3 index 2 is out of range for 0 items\n\
+             4 true\n\
+             5 Error UnsupportedOperationException\n\
+             6 true\n\
+             7 there is no jar or folder `/zeno/no/such.jar`\n\
+             8 Java has no `add` that takes an int, an int, an int. There is add(Object), add(int, Object)\n\
+             9 Java has no named arguments, and `most` was given as one\n\
+             10 a java.util.ArrayList has no field or method `nothing`\n\
+             11 the class java.lang.Math has no static field or method `nothing`\n\
+             12 `Runnable` is an interface, and no object can be made of it by calling it\n\
+             13 a java.util.ArrayList is not a method or a class, and cannot be called\n\
+             15 a dict in Zeno has keys that are str or int, and this one has the key 1.5\n\
+             still here\n"
+        );
+        assert_eq!(
+            error("import java\nfunction double(n) { return n * 2 }\njava.type(\"java.util.ArrayList\")().forEach(double)"),
+            "a function of Zeno cannot be given to Java yet"
+        );
+        assert_eq!(
+            error("import java\nif java.type(\"java.util.ArrayList\")() { print(1) }"),
+            "a condition must be true or false, but this is a Java value"
+        );
+        assert_eq!(error("import java\njava.type()"), "`type` takes 1 argument, but 0 were given");
+        assert_eq!(error("import java\njava.jar(3)"), "`jar` needs a str, but this is an int");
+        // Each stays where it was made.
+        if node_is_here() {
+            assert_eq!(
+                error("import java\nimport node\nnode.global(\"String\")(java.type(\"java.util.ArrayList\")())"),
+                "a Java value cannot be given to JavaScript. Each stays where it was made"
+            );
+        }
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -1869,7 +2034,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

@@ -1622,6 +1622,9 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("node", "global") => Ty::Builtin("node.global"),
         ("node", "new") => Ty::Builtin("node.new"),
         ("node", "copy") => Ty::Builtin("python.copy"),
+        ("java", "type") => Ty::Builtin("java.type"),
+        ("java", "jar") => Ty::Builtin("java.jar"),
+        ("java", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3311,6 +3314,7 @@ impl Checker {
                     "web" => "web",
                     "python" => "python",
                     "node" => "node",
+                    "java" => "java",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -5939,8 +5943,17 @@ impl Checker {
             // `node.module("fs")`, `node.global("JSON")`: the same for
             // JavaScript. Node may not be installed, or may not have
             // the module.
-            "node.module" | "node.global" => {
-                let short = &name["node.".len()..];
+            // `java.type("java.util.ArrayList")` is the same for Java,
+            // and `java.jar("lib")` says where its classes are found.
+            "java.jar" => {
+                if self.arity("jar", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the jar or folder given to `java.jar`", arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::None
+            }
+            "node.module" | "node.global" | "java.type" => {
+                let short = name.split('.').nth(1).unwrap_or(name);
                 if self.arity(short, arguments, 1, 1, span) {
                     let what = format!("the name given to `{name}`");
                     self.expect(&first, &Ty::Str, &what, arguments[0].span);
@@ -8034,7 +8047,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
@@ -10122,6 +10135,24 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import node\nnode.require(\"fs\")"), "module `node` has no `require`");
         assert_eq!(
             strict_error("import node\nlet os = node.module(\"os\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
+        // And Java's.
+        ok("import java\n\
+            java.jar(\"lib\")\n\
+            let ArrayList = java.type(\"java.util.ArrayList\")\n\
+            let names = ArrayList(16)\n\
+            names.add(java.type(\"java.lang.Math\").PI)\n\
+            let size: int = names.size()\n\
+            for name in java.copy(names) {\n    print(name, size, len(names), names[0])\n}");
+        ok("from java import type, jar, copy\njar(\"lib\")\nprint(copy(type(\"java.util.ArrayList\")()))");
+        assert_eq!(error("import java\njava.type(5)"), "the name given to `java.type` should be str, but this is int");
+        assert_eq!(error("import java\njava.jar(5)"), "the jar or folder given to `java.jar` should be str, but this is int");
+        assert_eq!(error("import java\njava.type()"), "`type` takes 1 argument, but 0 were given");
+        assert_eq!(error("import java\nlet nothing: int = java.jar(\"lib\")"), "`nothing` should be int, but this is none");
+        assert_eq!(error("import java\njava.new(\"x\")"), "module `java` has no `new`");
+        assert_eq!(
+            strict_error("import java\nlet list = java.type(\"java.util.ArrayList\")"),
             "strict mode: the type of this cannot be worked out before the program runs"
         );
         // Strict mode wants every type before the program runs, and
