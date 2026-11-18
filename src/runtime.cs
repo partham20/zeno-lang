@@ -186,9 +186,139 @@ static class Z
 
     static System.Exception byZero(int line) => raiseError("ZeroDivisionError", "division by zero", line);
 
-    static bool isNumber(object v) => v is long || v is double || v is float;
+    static bool isNumber(object v) => v is long || v is double || v is float || v is ulong;
 
-    static double number(object v) => v is long l ? l : v is float f ? (double)f : (double)v;
+    static double number(object v) => v is long l ? l : v is float f ? (double)f : v is ulong u ? (double)u : (double)v;
+
+    // ---- u64 (decision 42): a C# `ulong`.
+    const string U64_TOO_BIG = "the result is too big for a u64";
+
+    // A u64, or an int of 0 or more, as a ulong; null for anything else.
+    static ulong? unsigned(object v)
+    {
+        if (v is ulong u) return u;
+        if (v is long l && l >= 0) return (ulong)l;
+        return null;
+    }
+
+    static bool isU64(object a, object b) => a is ulong || b is ulong;
+
+    static int u64ShiftCount(object n, int line)
+    {
+        if (n is ulong u)
+        {
+            if (u >= 64) throw raiseError("ValueError", "cannot shift by " + u.ToString(C) + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+            return (int)u;
+        }
+        long c = (long)n;
+        if (c < 0 || c >= 64) throw raiseError("ValueError", "cannot shift by " + c.ToString(C) + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+        return (int)c;
+    }
+
+    // `a op b` where one side is a u64 (decision 42).
+    static object u64Op(string op, object a, object b, int line)
+    {
+        if ((op == "<<" || op == ">>") && a is ulong u && (b is long || b is ulong))
+        {
+            int n = u64ShiftCount(b, line);
+            if (op == ">>") return u >> n;
+            ulong shifted = u << n;
+            if (shifted >> n != u) throw raiseError("OverflowError", U64_TOO_BIG, line);
+            return shifted;
+        }
+        ulong? ux = unsigned(a), uy = unsigned(b);
+        if (ux == null || uy == null)
+        {
+            throw fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line);
+        }
+        ulong x = ux.Value, y = uy.Value;
+        switch (op)
+        {
+            case "+":
+                {
+                    ulong r = unchecked(x + y);
+                    if (r < x) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                    return r;
+                }
+            case "-":
+                if (x < y) throw raiseError("OverflowError", "the result is below 0, and a u64 never is", line);
+                return x - y;
+            case "*":
+                {
+                    ulong high = System.Math.BigMul(x, y, out ulong low);
+                    if (high != 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                    return low;
+                }
+            case "/":
+                if (y == 0) throw byZero(line);
+                return (double)x / (double)y;
+            case "//":
+                if (y == 0) throw byZero(line);
+                return x / y;
+            case "%":
+                if (y == 0) throw byZero(line);
+                return x % y;
+            case "**":
+                {
+                    if (y == 0) return (ulong)1;
+                    if (x < 2) return x;
+                    ulong r = 1;
+                    for (ulong i = 0; i < y; i++)
+                    {
+                        ulong high = System.Math.BigMul(r, x, out ulong low);
+                        if (high != 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                        r = low;
+                    }
+                    return r;
+                }
+            case "&": return x & y;
+            case "|": return x | y;
+            default: return x ^ y;
+        }
+    }
+
+    // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    static object u64Wrapping(string op, object[] args, int line)
+    {
+        arity("u64.wrap", args, 2, 2, line);
+        ulong? x = unsigned(args[0]), y = unsigned(args[1]);
+        if (op == "<<" && x != null && (args[1] is long || args[1] is ulong)) return x.Value << u64ShiftCount(args[1], line);
+        if (x == null || y == null) throw wrongType("u64.wrap", "u64s", x == null ? args[0] : args[1], line);
+        return unchecked(op == "+" ? x.Value + y.Value : op == "-" ? x.Value - y.Value : x.Value * y.Value);
+    }
+
+    public static object b_u64(object[] args, int line)
+    {
+        arity("u64", args, 1, 1, line);
+        switch (args[0])
+        {
+            case ulong u: return u;
+            case long n:
+                if (n < 0) throw raiseError("OverflowError", n.ToString(C) + " does not fit in a u64 (0 to 18446744073709551615)", line);
+                return (ulong)n;
+        }
+        throw wrongType("u64", "a whole number", args[0], line);
+    }
+
+    // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    public static object b_u64__of(object[] args, int line)
+    {
+        arity("u64.wrap", args, 1, 1, line);
+        switch (args[0])
+        {
+            case ulong u: return u;
+            case long n: return unchecked((ulong)n);
+        }
+        throw wrongType("u64.wrap", "a whole number", args[0], line);
+    }
+
+    public static object b_u64__add(object[] args, int line) => u64Wrapping("+", args, line);
+
+    public static object b_u64__sub(object[] args, int line) => u64Wrapping("-", args, line);
+
+    public static object b_u64__mul(object[] args, int line) => u64Wrapping("*", args, line);
+
+    public static object b_u64__shl(object[] args, int line) => u64Wrapping("<<", args, line);
 
     // An f32 is a `float` (decision 41).
     static double fround(double x) => (double)(float)x;
@@ -261,6 +391,7 @@ static class Z
             case long: return "an int";
             case double: return "a float";
             case float: return "an f32";
+            case ulong: return "a u64";
             case string: return "a str";
             case bool: return "a bool";
             case null: return "none";
@@ -429,6 +560,7 @@ static class Z
             case long l: return l.ToString(C);
             case double d: return showFloat(d);
             case float f: return showFloat(f32Shown(f));
+            case ulong u: return u.ToString(C);
             case bool b: return b ? "true" : "false";
             case null: return "none";
             case ZList l:
@@ -540,6 +672,11 @@ static class Z
     static bool equal(object a, object b)
     {
         if (a is long x && b is long y) return x == y;
+        if (isU64(a, b))
+        {
+            ulong? ux = unsigned(a), uy = unsigned(b);
+            return ux != null && uy != null && ux.Value == uy.Value;
+        }
         if (isF32(a, b))
         {
             double? fx = single(a), fy = single(b);
@@ -612,6 +749,7 @@ static class Z
 
     public static object add(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("+", a, b, line);
         if (isF32(a, b)) return f32Op("+", a, b, line);
         if (a is long x && b is long y) return addInt(x, y, line);
         if (a is string s && b is string t) return s + t;
@@ -634,6 +772,7 @@ static class Z
 
     public static object sub(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("-", a, b, line);
         if (isF32(a, b)) return f32Op("-", a, b, line);
         if (a is long x && b is long y)
         {
@@ -653,6 +792,7 @@ static class Z
 
     public static object mul(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("*", a, b, line);
         if (isF32(a, b)) return f32Op("*", a, b, line);
         if (a is ZList list && b is long times)
         {
@@ -675,6 +815,7 @@ static class Z
 
     public static object div(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("/", a, b, line);
         if (isF32(a, b)) return f32Op("/", a, b, line);
         if (a is Quantity q)
         {
@@ -697,6 +838,7 @@ static class Z
 
     public static object floordiv(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("//", a, b, line);
         if (isF32(a, b)) return f32Op("//", a, b, line);
         if (a is long x && b is long y)
         {
@@ -713,6 +855,7 @@ static class Z
 
     public static object mod(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("%", a, b, line);
         if (isF32(a, b)) return f32Op("%", a, b, line);
         if (a is long x && b is long y)
         {
@@ -732,6 +875,7 @@ static class Z
 
     public static object pow(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("**", a, b, line);
         if (isF32(a, b)) return f32Op("**", a, b, line);
         if (a is long x && b is long n)
         {
@@ -767,11 +911,11 @@ static class Z
         throw bitsMismatch(op, a, b, line);
     }
 
-    public static object bitand(object a, object b, int line) => whole("&", a, a, b, line) & whole("&", b, a, b, line);
+    public static object bitand(object a, object b, int line) => isU64(a, b) ? u64Op("&", a, b, line) : whole("&", a, a, b, line) & whole("&", b, a, b, line);
 
-    public static object bitor(object a, object b, int line) => whole("|", a, a, b, line) | whole("|", b, a, b, line);
+    public static object bitor(object a, object b, int line) => isU64(a, b) ? u64Op("|", a, b, line) : whole("|", a, a, b, line) | whole("|", b, a, b, line);
 
-    public static object bitxor(object a, object b, int line) => whole("^", a, a, b, line) ^ whole("^", b, a, b, line);
+    public static object bitxor(object a, object b, int line) => isU64(a, b) ? u64Op("^", a, b, line) : whole("^", a, a, b, line) ^ whole("^", b, a, b, line);
 
     static void shift(long n, int line)
     {
@@ -780,6 +924,7 @@ static class Z
 
     public static object shl(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op("<<", a, b, line);
         long x = whole("<<", a, a, b, line), n = whole("<<", b, a, b, line);
         shift(n, line);
         long s = x << (int)n;
@@ -789,6 +934,7 @@ static class Z
 
     public static object shr(object a, object b, int line)
     {
+        if (isU64(a, b)) return u64Op(">>", a, b, line);
         long x = whole(">>", a, a, b, line), n = whole(">>", b, a, b, line);
         shift(n, line);
         return x >> (int)n;
@@ -803,6 +949,7 @@ static class Z
         }
         if (v is double d) return -d;
         if (v is float f) return -f;
+        if (v is ulong) throw fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line);
         if (v is Quantity q) return new Quantity(-q.v, q.unit);
         throw fatal("`-` does not work on " + typeName(v), line);
     }
@@ -810,12 +957,19 @@ static class Z
     public static object bitnot(object v, int line)
     {
         if (v is long x) return ~x;
+        if (v is ulong u) return ~u;
         throw fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line);
     }
 
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     static int order(string op, object a, object b, int line)
     {
+        if (isU64(a, b))
+        {
+            ulong? ux = unsigned(a), uy = unsigned(b);
+            if (ux == null || uy == null) u64Op(op, a, b, line);
+            return ux.Value.CompareTo(uy.Value) switch { < 0 => -1, > 0 => 1, _ => 0 };
+        }
         if (isF32(a, b))
         {
             double? fx = single(a), fy = single(b);
@@ -1315,6 +1469,11 @@ static class Z
         for (int i = 1; i < values.Count; i++)
         {
             object item = values[i];
+            if (item is ulong ux && best is ulong uy)
+            {
+                if (smaller ? ux < uy : ux > uy) best = item;
+                continue;
+            }
             if (smaller ? amount(item) < amount(best) : amount(item) > amount(best)) best = item;
         }
         return best;
@@ -1373,7 +1532,7 @@ static class Z
         foreach (var item in new System.Collections.Generic.List<object>(l.items))
         {
             object k = call(function, new[] { item }, line);
-            if (!(k is long) && !(k is double) && !(k is float) && !(k is string))
+            if (!(k is long) && !(k is double) && !(k is float) && !(k is ulong) && !(k is string))
             {
                 throw fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
             }
@@ -1695,9 +1854,13 @@ static class Z
             if (!isNumber(v)) throw wrongType(spec, "a number", v, line);
             body = fixedPlaces(number(v), places);
         }
-        else if ((kind == null && precision == null) || (kind == "d" && precision == null && v is long))
+        else if ((kind == null && precision == null) || (kind == "d" && precision == null && (v is long || v is ulong)))
         {
             body = show(v);
+        }
+        else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is ulong u)
+        {
+            body = kind == "b" ? System.Convert.ToString(unchecked((long)u), 2) : u.ToString(kind == "X" ? "X" : "x", C);
         }
         else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is long n)
         {
@@ -2054,6 +2217,9 @@ static class Z
         switch (args[0])
         {
             case long n: return n;
+            case ulong u:
+                if (u > long.MaxValue) throw raiseError("OverflowError", u.ToString(C) + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line);
+                return (long)u;
             case double x:
                 if (double.IsNaN(x) || double.IsInfinity(x)) throw raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
                 return toInt(x);
@@ -2082,6 +2248,7 @@ static class Z
             case long n: return (double)n;
             case double x: return x;
             case float f: return (double)f;
+            case ulong u: return (double)u;
             case string s:
                 {
                     double? x = parseFloat(strip(s));
@@ -2128,6 +2295,7 @@ static class Z
                 return System.Math.Abs(n);
             case double x: return System.Math.Abs(x);
             case float f: return System.Math.Abs(f);
+            case ulong u: return u;
             case Quantity q: return new Quantity(System.Math.Abs(q.v), q.unit);
         }
         throw wrongType("abs", "a number", args[0], line);
@@ -2149,6 +2317,19 @@ static class Z
             double single32 = 0;
             foreach (var item in values) single32 = fround(single32 + single(item).Value);
             return (float)single32;
+        }
+        bool u64s = false;
+        foreach (var item in values) u64s = u64s || item is ulong;
+        if (u64s)
+        {
+            ulong sum = 0;
+            foreach (var item in values)
+            {
+                ulong r = unchecked(sum + (unsigned(item) ?? 0));
+                if (r < sum) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                sum = r;
+            }
+            return sum;
         }
         long total = 0;
         bool allInts = true;
@@ -2466,7 +2647,7 @@ static class Z
         var b = new System.Collections.Generic.Dictionary<string, BuiltinBody>
         {
             ["print"] = b_print, ["input"] = b_input, ["len"] = b_len, ["range"] = b_range, ["int"] = b_int,
-            ["float"] = b_float, ["f32"] = b_f32, ["str"] = b_str, ["abs"] = b_abs, ["min"] = b_min, ["max"] = b_max, ["sum"] = b_sum,
+            ["float"] = b_float, ["f32"] = b_f32, ["u64"] = b_u64, ["u64..of"] = b_u64__of, ["u64..add"] = b_u64__add, ["u64..sub"] = b_u64__sub, ["u64..mul"] = b_u64__mul, ["u64..shl"] = b_u64__shl, ["str"] = b_str, ["abs"] = b_abs, ["min"] = b_min, ["max"] = b_max, ["sum"] = b_sum,
             ["char"] = b_char, ["allocate"] = b_allocate, ["free"] = b_free,
             ["math.sqrt"] = b_math_sqrt, ["math.floor"] = b_math_floor, ["math.ceil"] = b_math_ceil,
             ["math.round"] = b_math_round, ["math.sin"] = b_math_sin, ["math.cos"] = b_math_cos, ["math.tan"] = b_math_tan,

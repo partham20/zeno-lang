@@ -42,6 +42,12 @@ pub fn all() -> Vec<(&'static str, Value)> {
         Builtin { name: "int", call: int },
         Builtin { name: "float", call: float },
         Builtin { name: "f32", call: f32_of },
+        Builtin { name: "u64", call: u64_of },
+        Builtin { name: "u64..of", call: u64_bits },
+        Builtin { name: "u64..add", call: u64_wrapping::<0> },
+        Builtin { name: "u64..sub", call: u64_wrapping::<1> },
+        Builtin { name: "u64..mul", call: u64_wrapping::<2> },
+        Builtin { name: "u64..shl", call: u64_wrapping::<3> },
         Builtin { name: "str", call: str },
         Builtin { name: "abs", call: abs },
         Builtin { name: "min", call: min },
@@ -422,6 +428,10 @@ fn int(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Float(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
         Value::F32(x) if x.is_finite() => Ok(Value::Int(x.trunc() as i64)),
         Value::F32(x) => raise("ValueError", format!("cannot turn {x} into an int"), span),
+        Value::U64(n) => match i64::try_from(*n) {
+            Ok(n) => Ok(Value::Int(n)),
+            Err(_) => raise("OverflowError", format!("{n} does not fit in an int ({} to {})", i64::MIN, i64::MAX), span),
+        },
         Value::Str(text) => match strip(text).replace('_', "").parse() {
             Ok(n) => Ok(Value::Int(n)),
             Err(_) => raise("ValueError", format!("cannot turn {} into an int", crate::value::quoted(text)), span),
@@ -436,6 +446,7 @@ fn float(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Int(n) => Ok(Value::Float(*n as f64)),
         Value::Float(x) => Ok(Value::Float(*x)),
         Value::F32(x) => Ok(Value::Float(*x as f64)),
+        Value::U64(n) => Ok(Value::Float(*n as f64)),
         Value::Str(text) => match strip(text).parse() {
             Ok(x) => Ok(Value::Float(x)),
             Err(_) => raise("ValueError", format!("cannot turn {} into a float", crate::value::quoted(text)), span),
@@ -459,6 +470,59 @@ fn f32_of(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     }
 }
 
+/// `u64(n)`: `n` itself if it is not below 0 (decision 42.4).
+fn u64_of(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("u64", &args, 1, 1, span)?;
+    match &args[0] {
+        Value::U64(n) => Ok(Value::U64(*n)),
+        Value::Int(n) => match u64::try_from(*n) {
+            Ok(n) => Ok(Value::U64(n)),
+            Err(_) => raise("OverflowError", format!("{n} does not fit in a u64 (0 to {})", u64::MAX), span),
+        },
+        other => wrong_type("u64", "a whole number", other, span),
+    }
+}
+
+/// `u64.wrap(n)`, which the checker names `u64..of`: the 64 bits of an
+/// int read as a u64, so -1 is the largest (decision 42.6). A u64 written
+/// out past the largest int comes here as the int with its bits.
+fn u64_bits(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("u64.wrap", &args, 1, 1, span)?;
+    match &args[0] {
+        Value::U64(n) => Ok(Value::U64(*n)),
+        Value::Int(n) => Ok(Value::U64(*n as u64)),
+        other => wrong_type("u64.wrap", "a whole number", other, span),
+    }
+}
+
+/// `+`, `-`, `*` and `<<` of u64s written straight inside `u64.wrap( )`:
+/// the answer cut to 64 bits, where it would have failed (42.6).
+fn u64_wrapping<const N: usize>(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let name = ["u64.wrap", "u64.wrap", "u64.wrap", "u64.wrap"][N];
+    arity(name, &args, 2, 2, span)?;
+    // A shift is by a count, an int or a u64, as `<<` takes (42.6).
+    if let (3, Some(a), Value::Int(_) | Value::U64(_)) = (N, args[0].unsigned(), &args[1]) {
+        let count = match &args[1] {
+            Value::Int(n) => *n as i128,
+            Value::U64(n) => *n as i128,
+            _ => 0,
+        };
+        if !(0..64).contains(&count) {
+            return raise("ValueError", format!("cannot shift by {count}. A u64 has 64 bits, so a shift is 0 to 63"), span);
+        }
+        return Ok(Value::U64(a << count));
+    }
+    let (Some(a), Some(b)) = (args[0].unsigned(), args[1].unsigned()) else {
+        return wrong_type(name, "u64s", if args[0].unsigned().is_none() { &args[0] } else { &args[1] }, span);
+    };
+    Ok(Value::U64(match N {
+        0 => a.wrapping_add(b),
+        1 => a.wrapping_sub(b),
+        2 => a.wrapping_mul(b),
+        _ => a << b.min(63),
+    }))
+}
+
 fn str(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("str", &args, 1, 1, span)?;
     Ok(Value::str(args[0].to_string()))
@@ -473,6 +537,7 @@ fn abs(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         },
         Value::Float(x) => Ok(Value::Float(x.abs())),
         Value::F32(x) => Ok(Value::F32(x.abs())),
+        Value::U64(n) => Ok(Value::U64(*n)),
         Value::Quantity(x, unit) => Ok(Value::Quantity(x.abs(), unit.clone())),
         other => wrong_type("abs", "a number", other, span),
     }
@@ -540,7 +605,14 @@ fn pick(name: &str, args: Vec<Value>, span: Span, better: fn(f64, f64) -> bool) 
         return raise("ValueError", format!("`{name}` of nothing"), span);
     };
     for item in items {
-        if better(amount(&item).unwrap(), amount(&best).unwrap()) {
+        // Two u64s are compared as they are: as floats, the large ones
+        // would be rounded and could look equal (42.2).
+        let wins = match (&item, &best) {
+            (Value::U64(a), Value::U64(b)) if name == "min" => a < b,
+            (Value::U64(a), Value::U64(b)) => a > b,
+            _ => better(amount(&item).unwrap(), amount(&best).unwrap()),
+        };
+        if wins {
             best = item;
         }
     }
@@ -573,6 +645,18 @@ fn sum(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
             };
         }
         return Ok(Value::F32(total));
+    }
+    // u64s are added as u64s, and must fit (42.2).
+    if items.iter().any(|item| matches!(item, Value::U64(_))) {
+        let mut total = 0u64;
+        for item in &items {
+            let n = item.unsigned().unwrap_or(0);
+            total = match total.checked_add(n) {
+                Some(total) => total,
+                None => return raise("OverflowError", crate::ops::TOO_BIG_FOR_U64, span),
+            };
+        }
+        return Ok(Value::U64(total));
     }
     // Stay an int while every item is an int.
     let mut int_total: Option<i64> = Some(0);
@@ -1098,7 +1182,7 @@ pub fn call_method(
                 let walked = items.borrow().clone();
                 for item in walked {
                     let key = machine.call(function.clone(), vec![item], Vec::new(), span)?;
-                    if !matches!(key, Value::Int(_) | Value::Float(_) | Value::F32(_) | Value::Str(_)) {
+                    if !matches!(key, Value::Int(_) | Value::Float(_) | Value::F32(_) | Value::U64(_) | Value::Str(_)) {
                         return fatal(
                             format!(
                                 "the function given to `sort` must return a number or text to order by, but it returned {}",
@@ -2278,7 +2362,12 @@ pub fn format(value: &Value, spec: Option<&str>, span: Span) -> Result<String> {
             Some(x) => format!("{x:.*}", precision.unwrap_or(6)),
             None => return wrong_type(spec, "a number", value, span),
         },
-        (None, None, _) | (Some('d'), None, Value::Int(_)) => value.to_string(),
+        (None, None, _) | (Some('d'), None, Value::Int(_) | Value::U64(_)) => value.to_string(),
+        (Some(kind @ ('x' | 'X' | 'b')), None, Value::U64(n)) => match kind {
+            'x' => format!("{n:x}"),
+            'X' => format!("{n:X}"),
+            _ => format!("{n:b}"),
+        },
         (Some(kind @ ('x' | 'X' | 'b')), None, Value::Int(n)) => {
             let sign = if *n < 0 { "-" } else { "" };
             let digits = match kind {

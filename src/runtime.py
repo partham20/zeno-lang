@@ -11,6 +11,7 @@
 #   int        a Python int, kept to the 64 bits of a Zeno int
 #   float      a Python float
 #   f32        an `F32`: the float it is exactly (decision 41)
+#   u64        a `U64`: a Python int from 0 to 2**64 - 1 (decision 42)
 #   str        a Python str
 #   bool       True, False
 #   none       None
@@ -122,6 +123,83 @@ def _f32_op(op, a, b, line):
     else:
         r = pow_(x, y, line)
     return F32(_fround(r))
+
+
+class U64:
+    __slots__ = ("v",)
+
+    def __init__(self, v):
+        self.v = v
+
+
+U64_MAX = (1 << 64) - 1
+_U64_TOO_BIG = "the result is too big for a u64"
+
+
+def _unsigned(v):
+    """A u64, or an int of 0 or more, as a Python int; else None."""
+    t = type(v)
+    if t is U64:
+        return v.v
+    if t is int and v >= 0:
+        return v
+    return None
+
+
+def _u64_shift_count(n, line):
+    if type(n) is U64:
+        n = n.v
+    if not 0 <= n < 64:
+        _raise("ValueError", "cannot shift by " + str(n) + ". A u64 has 64 bits, so a shift is 0 to 63", line)
+    return n
+
+
+def _u64_op(op, a, b, line):
+    """`a op b` where one side is a u64 (decision 42)."""
+    if op in ("<<", ">>") and type(a) is U64 and type(b) in (int, U64):
+        n = _u64_shift_count(b, line)
+        if op == ">>":
+            return U64(a.v >> n)
+        r = a.v << n
+        if r > U64_MAX:
+            _raise("OverflowError", _U64_TOO_BIG, line)
+        return U64(r)
+    x, y = _unsigned(a), _unsigned(b)
+    if x is None or y is None:
+        fatal("`" + op + "` between " + type_name(a) + " and " + type_name(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line)
+    if op == "+":
+        r = x + y
+    elif op == "-":
+        if y > x:
+            _raise("OverflowError", "the result is below 0, and a u64 never is", line)
+        r = x - y
+    elif op == "*":
+        r = x * y
+    elif op == "/":
+        if y == 0:
+            _by_zero(line)
+        return x / y
+    elif op in ("//", "%"):
+        if y == 0:
+            _by_zero(line)
+        r = x // y if op == "//" else x % y
+    elif op == "**":
+        if y == 0:
+            return U64(1)
+        if x < 2:
+            return U64(x)
+        if y > 64:
+            _raise("OverflowError", _U64_TOO_BIG, line)
+        r = x ** y
+    elif op == "&":
+        r = x & y
+    elif op == "|":
+        r = x | y
+    else:
+        r = x ^ y
+    if r > U64_MAX:
+        _raise("OverflowError", _U64_TOO_BIG, line)
+    return U64(r)
 
 
 class Class:
@@ -237,6 +315,8 @@ def _number(v):
         return float(v) if t is int else v
     if t is F32:
         return v.v
+    if t is U64:
+        return float(v.v)
     return None
 
 
@@ -253,6 +333,8 @@ def type_name(v):
         return "a float"
     if t is F32:
         return "an f32"
+    if t is U64:
+        return "a u64"
     if t is str:
         return "a str"
     if t is bool:
@@ -385,6 +467,8 @@ def show(v):
         return show_float(v)
     if t is F32:
         return show_float(_f32_shown(v.v))
+    if t is U64:
+        return str(v.v)
     if t is bool:
         return "true" if v else "false"
     if v is None:
@@ -493,6 +577,9 @@ def eq(a, b):
     ta, tb = type(a), type(b)
     if ta is int and tb is int:
         return a == b
+    if ta is U64 or tb is U64:
+        x, y = _unsigned(a), _unsigned(b)
+        return x is not None and x == y
     if (ta is int or ta is float) and (tb is int or tb is float):
         return float(a) == float(b)
     if ta is F32 or tb is F32:
@@ -544,6 +631,8 @@ def _mismatch(op, a, b, line):
 
 
 def add(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('+', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('+', a, b, line)
     ta, tb = type(a), type(b)
@@ -568,6 +657,8 @@ def add(a, b, line):
 
 
 def sub(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('-', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('-', a, b, line)
     ta, tb = type(a), type(b)
@@ -588,6 +679,8 @@ def sub(a, b, line):
 
 
 def mul(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('*', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('*', a, b, line)
     ta, tb = type(a), type(b)
@@ -620,6 +713,8 @@ def _fdiv(x, y):
 
 
 def div(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('/', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('/', a, b, line)
     ta, tb = type(a), type(b)
@@ -655,6 +750,8 @@ def _floor(q):
 
 
 def floordiv(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('//', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('//', a, b, line)
     if type(a) is int and type(b) is int:
@@ -670,6 +767,8 @@ def floordiv(a, b, line):
 
 
 def mod(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('%', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('%', a, b, line)
     if type(a) is int and type(b) is int:
@@ -685,6 +784,8 @@ def mod(a, b, line):
 
 
 def pow_(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('**', a, b, line)
     if type(a) is F32 or type(b) is F32:
         return _f32_op('**', a, b, line)
     if type(a) is int and type(b) is int:
@@ -726,18 +827,24 @@ def _bits_mismatch(op, a, b, line):
 
 
 def bitand(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('&', a, b, line)
     if type(a) is not int or type(b) is not int:
         _bits_mismatch("&", a, b, line)
     return a & b
 
 
 def bitor(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('|', a, b, line)
     if type(a) is not int or type(b) is not int:
         _bits_mismatch("|", a, b, line)
     return a | b
 
 
 def bitxor(a, b, line):
+    if type(a) is U64 or type(b) is U64:
+        return _u64_op('^', a, b, line)
     if type(a) is not int or type(b) is not int:
         _bits_mismatch("^", a, b, line)
     return a ^ b
@@ -749,6 +856,8 @@ def _wrap64(n):
 
 
 def shl(a, n, line):
+    if type(a) is U64 or type(n) is U64:
+        return _u64_op('<<', a, n, line)
     if type(a) is not int or type(n) is not int:
         _bits_mismatch("<<", a, n, line)
     if not 0 <= n < 64:
@@ -760,6 +869,8 @@ def shl(a, n, line):
 
 
 def shr(a, n, line):
+    if type(a) is U64 or type(n) is U64:
+        return _u64_op('>>', a, n, line)
     if type(a) is not int or type(n) is not int:
         _bits_mismatch(">>", a, n, line)
     if not 0 <= n < 64:
@@ -775,12 +886,16 @@ def neg(v, line):
         return -v
     if t is F32:
         return F32(-v.v)
+    if t is U64:
+        fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line)
     if t is Quantity:
         return Quantity(-v.v, v.unit)
     fatal("`-` does not work on " + type_name(v), line)
 
 
 def bitnot(v, line):
+    if type(v) is U64:
+        return U64(U64_MAX ^ v.v)
     if type(v) is not int:
         fatal("`~` works on the bits of a whole number, and this is " + type_name(v), line)
     return ~v
@@ -788,6 +903,11 @@ def bitnot(v, line):
 
 def _order(op, a, b, line):
     ta, tb = type(a), type(b)
+    if ta is U64 or tb is U64:
+        x, y = _unsigned(a), _unsigned(b)
+        if x is None or y is None:
+            _u64_op(op, a, b, line)
+        return -1 if x < y else (1 if x > y else 0)
     if ta is F32 or tb is F32:
         x, y = _single(a), _single(b)
         if x is None or y is None:
@@ -1272,7 +1392,11 @@ def _pick(name, args, line, better):
         values = [F32(_single(item)) for item in values]
     best = values[0]
     for item in values[1:]:
-        if better(_amount(item), _amount(best)):
+        if type(item) is U64 and type(best) is U64:
+            wins = item.v < best.v if name == "min" else item.v > best.v
+        else:
+            wins = better(_amount(item), _amount(best))
+        if wins:
             best = item
     return best
 
@@ -1320,7 +1444,7 @@ def _sort_by(xs, function, line):
     keys = []
     for item in xs[:]:
         k = call(function, [item], line)
-        if type(k) not in (int, float, str, F32):
+        if type(k) not in (int, float, str, F32, U64):
             fatal("the function given to `sort` must return a number or text to order by, but it returned " + type_name(k), line)
         keys.append(k)
     s = xs[:]
@@ -1546,8 +1670,10 @@ def format_(v, spec, line):
         if x is None:
             _wrong_type(spec, "a number", v, line)
         body = fixed(x, 6 if precision is None else precision)
-    elif (kind is None and precision is None) or (kind == "d" and precision is None and t is int):
+    elif (kind is None and precision is None) or (kind == "d" and precision is None and t in (int, U64)):
         body = show(v)
+    elif kind in ("x", "X", "b") and precision is None and t is U64:
+        body = format(v.v, kind)
     elif kind in ("x", "X", "b") and precision is None and t is int:
         digits = format(abs(v), "b" if kind == "b" else kind)
         body = ("-" if v < 0 else "") + digits
@@ -1838,6 +1964,10 @@ def _b_int(args, line):
     t = type(v)
     if t is int:
         return v
+    if t is U64:
+        if v.v > MAX:
+            _raise("OverflowError", str(v.v) + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line)
+        return v.v
     if t is F32:
         v, t = v.v, float
     if t is float:
@@ -1865,6 +1995,8 @@ def _b_float(args, line):
         return v
     if t is F32:
         return v.v
+    if t is U64:
+        return float(v.v)
     if t is str:
         x = _parse_float(_strip(v))
         if x is None:
@@ -1889,6 +2021,43 @@ def _b_f32(args, line):
     _wrong_type("f32", "a number", v, line)
 
 
+def _b_u64(args, line):
+    _arity("u64", args, 1, 1, line)
+    v = args[0]
+    if type(v) is U64:
+        return v
+    if type(v) is int:
+        if v < 0:
+            _raise("OverflowError", str(v) + " does not fit in a u64 (0 to 18446744073709551615)", line)
+        return U64(v)
+    _wrong_type("u64", "a whole number", v, line)
+
+
+def _b_u64_bits(args, line):
+    """`u64.wrap(n)`: the 64 bits of an int read with no sign (42.6)."""
+    _arity("u64.wrap", args, 1, 1, line)
+    v = args[0]
+    if type(v) is U64:
+        return v
+    if type(v) is int:
+        return U64(v & U64_MAX)
+    _wrong_type("u64.wrap", "a whole number", v, line)
+
+
+def _u64_wrapping(op):
+    def wrapping(args, line):
+        _arity("u64.wrap", args, 2, 2, line)
+        a, b = args
+        if op == "<<" and _unsigned(a) is not None and type(b) in (int, U64):
+            return U64((_unsigned(a) << _u64_shift_count(b, line)) & U64_MAX)
+        x, y = _unsigned(a), _unsigned(b)
+        if x is None or y is None:
+            _wrong_type("u64.wrap", "u64s", a if x is None else b, line)
+        r = x + y if op == "+" else (x - y if op == "-" else x * y)
+        return U64(r & U64_MAX)
+    return wrapping
+
+
 def _b_str(args, line):
     _arity("str", args, 1, 1, line)
     return show(args[0])
@@ -1904,6 +2073,8 @@ def _b_abs(args, line):
         return abs(v)
     if t is F32:
         return F32(abs(v.v))
+    if t is U64:
+        return v
     if t is Quantity:
         return Quantity(abs(v.v), v.unit)
     _wrong_type("abs", "a number", v, line)
@@ -1926,6 +2097,13 @@ def _b_sum(args, line):
         for item in values:
             single = _fround(single + _single(item))
         return F32(single)
+    if any(type(item) is U64 for item in values):
+        total = 0
+        for item in values:
+            total += _unsigned(item) or 0
+            if total > U64_MAX:
+                _raise("OverflowError", _U64_TOO_BIG, line)
+        return U64(total)
     total, all_ints, float_total = 0, True, 0.0
     for item in values:
         float_total += _number(item)
@@ -2168,6 +2346,12 @@ BUILTINS = {
     "int": _b_int,
     "float": _b_float,
     "f32": _b_f32,
+    "u64": _b_u64,
+    "u64..of": _b_u64_bits,
+    "u64..add": _u64_wrapping("+"),
+    "u64..sub": _u64_wrapping("-"),
+    "u64..mul": _u64_wrapping("*"),
+    "u64..shl": _u64_wrapping("<<"),
     "str": _b_str,
     "abs": _b_abs,
     "min": _b_min,

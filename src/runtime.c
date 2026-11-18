@@ -1835,6 +1835,17 @@ static const char *zeno_str_int(int64_t n) {
     return zeno_copy(p, (size_t)(end - p));
 }
 
+/* A u64 as text (decision 42): the same digits, with no sign. */
+static const char *zeno_str_u64(uint64_t u) {
+    char buffer[24];
+    char *end = buffer + sizeof buffer, *p = end;
+    do {
+        *--p = (char)('0' + u % 10);
+        u /= 10;
+    } while (u != 0);
+    return zeno_copy(p, (size_t)(end - p));
+}
+
 static const char *zeno_str_bool(bool b) {
     return b ? "true" : "false";
 }
@@ -2028,6 +2039,20 @@ static const char *zeno_radix(int64_t n, char kind) {
 }
 #endif /* ZENO_MINIMAL */
 
+/* `{x:x}` of a u64, which has no sign. */
+static const char *zeno_radix_u64(uint64_t n, char kind) {
+    char buffer[72];
+    char *end = buffer + 71, *p = end;
+    *end = '\0';
+    unsigned base = kind == 'b' ? 2 : 16;
+    const char *symbols = kind == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+    do {
+        *--p = symbols[n % base];
+        n /= base;
+    } while (n != 0);
+    return zeno_copy(p, (size_t)(end - p));
+}
+
 /* Pad `body` out to `width` characters. `align` is '<', '>' or '^'.
  * With `zeros`, the padding is zeros between the sign and the digits. */
 static const char *zeno_pad(const char *body, int width, char align, bool zeros) {
@@ -2102,6 +2127,141 @@ static int64_t zeno_shr(int64_t a, int64_t n, int line, int col) {
 #endif /* ZENO_MINIMAL */
     return a < 0 ? ~(~a >> n) : a >> n;
 }
+
+/* ------------------------------------------------------------- u64
+ *
+ * A whole number of 64 bits with no sign (decision 42). C's own
+ * `uint64_t` wraps round where Zeno says OverflowError, so a checked
+ * build goes through these, as an int goes through zeno_add. */
+
+static void zeno_too_big_u64(int line, int col) {
+    zeno_fail("OverflowError", "the result is too big for a u64", line, col);
+}
+
+static uint64_t zeno_add_u64(uint64_t a, uint64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
+    uint64_t result;
+    if (__builtin_add_overflow(a, b, &result)) zeno_too_big_u64(line, col);
+    return result;
+#else /* ZENO_MINIMAL */
+    return a + b;
+#endif /* ZENO_MINIMAL */
+}
+
+static uint64_t zeno_sub_u64(uint64_t a, uint64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (b > a) zeno_fail("OverflowError", "the result is below 0, and a u64 never is", line, col);
+#endif /* ZENO_MINIMAL */
+    return a - b;
+}
+
+static uint64_t zeno_mul_u64(uint64_t a, uint64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
+    uint64_t result;
+    if (__builtin_mul_overflow(a, b, &result)) zeno_too_big_u64(line, col);
+    return result;
+#else /* ZENO_MINIMAL */
+    return a * b;
+#endif /* ZENO_MINIMAL */
+}
+
+/* `//` and `%`: with no sign there is nothing to mend, only zero to
+ * look out for. */
+static uint64_t zeno_floordiv_u64(uint64_t a, uint64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (b == 0) zeno_by_zero(line, col);
+#endif /* ZENO_MINIMAL */
+    return a / b;
+}
+
+static uint64_t zeno_mod_u64(uint64_t a, uint64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (b == 0) zeno_by_zero(line, col);
+#endif /* ZENO_MINIMAL */
+    return a % b;
+}
+
+static uint64_t zeno_pow_u64(uint64_t base, uint64_t power, int line, int col) {
+    if (power == 0) return 1;
+    if (base < 2) return base;
+    uint64_t result = 1;
+#ifndef ZENO_MINIMAL
+    for (uint64_t i = 0; i < power; i++) result = zeno_mul_u64(result, base, line, col);
+#else /* ZENO_MINIMAL */
+    for (uint64_t i = 0; i < power; i++) result *= base;
+#endif /* ZENO_MINIMAL */
+    return result;
+}
+
+/* `a << n` and `a >> n` on a u64. The count is an int or a u64; `count`
+ * holds its bits, and `is_int` says which, for the message. */
+static void zeno_shift_count_u64(uint64_t count, bool is_int, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (count > 63) {
+        const char *shown = is_int ? zeno_str_int((int64_t)count) : zeno_str_u64(count);
+        zeno_fail("ValueError", zeno_join(3, "cannot shift by ", shown, ". A u64 has 64 bits, so a shift is 0 to 63"),
+                  line, col);
+    }
+#else /* ZENO_MINIMAL */
+    (void)count;
+    (void)is_int;
+#endif /* ZENO_MINIMAL */
+}
+
+static uint64_t zeno_shl_u64(uint64_t a, uint64_t count, bool is_int, int line, int col) {
+#ifndef ZENO_MINIMAL
+    zeno_shift_count_u64(count, is_int, line, col);
+    if (((a << count) >> count) != a) zeno_too_big_u64(line, col);
+#else /* ZENO_MINIMAL */
+    (void)is_int;
+#endif /* ZENO_MINIMAL */
+    return a << count;
+}
+
+static uint64_t zeno_shr_u64(uint64_t a, uint64_t count, bool is_int, int line, int col) {
+#ifndef ZENO_MINIMAL
+    zeno_shift_count_u64(count, is_int, line, col);
+#else /* ZENO_MINIMAL */
+    (void)is_int;
+#endif /* ZENO_MINIMAL */
+    return a >> count;
+}
+
+/* `u64.wrap(a << n)`: the bits that leave are let go. */
+static uint64_t zeno_shl_wrap_u64(uint64_t a, uint64_t count, bool is_int, int line, int col) {
+#ifndef ZENO_MINIMAL
+    zeno_shift_count_u64(count, is_int, line, col);
+#else /* ZENO_MINIMAL */
+    (void)is_int;
+#endif /* ZENO_MINIMAL */
+    return a << count;
+}
+
+/* `u64(n)` of an int: `n` itself unless it is below 0. */
+static uint64_t zeno_u64(int64_t n, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (n < 0) {
+        zeno_fail("OverflowError", zeno_join(2, zeno_str_int(n), " does not fit in a u64 (0 to 18446744073709551615)"),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    return (uint64_t)n;
+}
+
+/* `int(x)` of a u64: `x` itself unless it is past the largest int. */
+static int64_t zeno_int_u64(uint64_t x, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (x > (uint64_t)INT64_MAX) {
+        zeno_fail("OverflowError",
+                  zeno_join(2, zeno_str_u64(x), " does not fit in an int (-9223372036854775808 to 9223372036854775807)"),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    return (int64_t)x;
+}
+
+static uint64_t zeno_min_u64(uint64_t a, uint64_t b) { return b < a ? b : a; }
+static uint64_t zeno_max_u64(uint64_t a, uint64_t b) { return b > a ? b : a; }
 
 /* `u8(n)`: `n` itself if the size can hold it. `size` is the size in
  * words, "a u8", for the message. A sized whole number is an ordinary
@@ -2778,6 +2938,7 @@ static bool zeno_before(zeno_slot a, zeno_slot b, int kind) {
     switch (kind) {
         case 0: return a.i < b.i;
         case 1: return a.f < b.f;
+        case 3: return (uint64_t)a.i < (uint64_t)b.i; /* a u64 */
         default: return strcmp(a.s, b.s) < 0;
     }
 }
@@ -2987,6 +3148,17 @@ static float zeno_list_sum_f32(zeno_list *list) {
     return total;
 }
 
+/* `sum` of a list of u64s, each kept as the int with the same bits. */
+static uint64_t zeno_list_sum_u64(zeno_list *list, int line, int col) {
+    uint64_t total = 0;
+#ifndef ZENO_MINIMAL
+    for (int64_t i = 0; i < list->len; i++) total = zeno_add_u64(total, (uint64_t)list->items[i].i, line, col);
+#else /* ZENO_MINIMAL */
+    for (int64_t i = 0; i < list->len; i++) total += (uint64_t)list->items[i].i;
+#endif /* ZENO_MINIMAL */
+    return total;
+}
+
 static void zeno_list_not_empty(zeno_list *list, const char *name, int line, int col) {
     if (list->len == 0) zeno_fail("ValueError", zeno_join(3, "`", name, "` of nothing"), line, col);
 }
@@ -3000,6 +3172,20 @@ static int64_t zeno_list_best_int(zeno_list *list, bool smallest, const char *na
     int64_t best = list->items[0].i;
     for (int64_t i = 1; i < list->len; i++) {
         int64_t item = list->items[i].i;
+        if (smallest ? item < best : item > best) best = item;
+    }
+    return best;
+}
+
+static uint64_t zeno_list_best_u64(zeno_list *list, bool smallest, const char *name, int line, int col) {
+#ifndef ZENO_MINIMAL
+    zeno_list_not_empty(list, name, line, col);
+#else /* ZENO_MINIMAL */
+    (void)name;
+#endif /* ZENO_MINIMAL */
+    uint64_t best = (uint64_t)list->items[0].i;
+    for (int64_t i = 1; i < list->len; i++) {
+        uint64_t item = (uint64_t)list->items[i].i;
         if (smallest ? item < best : item > best) best = item;
     }
     return best;

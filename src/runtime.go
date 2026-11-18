@@ -29,6 +29,7 @@ package main
 import (
 	"bufio"
 	"math"
+	"math/bits"
 	"os"
 	"strconv"
 	"strings"
@@ -151,9 +152,184 @@ func zNumber(v ZV) (float64, bool) {
 		return x, true
 	case float32:
 		return float64(x), true
+	case uint64:
+		return float64(x), true
 	}
 	return 0, false
 }
+
+// ---- u64 (decision 42): a Go uint64.
+
+const zU64TooBig = "the result is too big for a u64"
+
+// A u64, or an int of 0 or more, as a uint64.
+func zUnsigned(v ZV) (uint64, bool) {
+	switch x := v.(type) {
+	case uint64:
+		return x, true
+	case int64:
+		if x >= 0 {
+			return uint64(x), true
+		}
+	}
+	return 0, false
+}
+
+func zIsU64(a, b ZV) bool {
+	_, x := a.(uint64)
+	_, y := b.(uint64)
+	return x || y
+}
+
+func zU64ShiftCount(n ZV, line int) uint {
+	switch c := n.(type) {
+	case uint64:
+		if c >= 64 {
+			zRaise("ValueError", "cannot shift by "+strconv.FormatUint(c, 10)+". A u64 has 64 bits, so a shift is 0 to 63", line)
+		}
+		return uint(c)
+	case int64:
+		if c < 0 || c >= 64 {
+			zRaise("ValueError", "cannot shift by "+strconv.FormatInt(c, 10)+". A u64 has 64 bits, so a shift is 0 to 63", line)
+		}
+		return uint(c)
+	}
+	return 0
+}
+
+// `a op b` where one side is a u64 (decision 42).
+func zU64Op(op string, a, b ZV, line int) ZV {
+	if x, ok := a.(uint64); ok && (op == "<<" || op == ">>") {
+		switch b.(type) {
+		case int64, uint64:
+			n := zU64ShiftCount(b, line)
+			if op == ">>" {
+				return x >> n
+			}
+			if (x<<n)>>n != x {
+				zRaise("OverflowError", zU64TooBig, line)
+			}
+			return x << n
+		}
+	}
+	x, ok1 := zUnsigned(a)
+	y, ok2 := zUnsigned(b)
+	if !ok1 || !ok2 {
+		Zfatal("`"+op+"` between "+ZtypeName(a)+" and "+ZtypeName(b)+" would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line)
+	}
+	switch op {
+	case "+":
+		r, carry := bits.Add64(x, y, 0)
+		if carry != 0 {
+			zRaise("OverflowError", zU64TooBig, line)
+		}
+		return r
+	case "-":
+		if y > x {
+			zRaise("OverflowError", "the result is below 0, and a u64 never is", line)
+		}
+		return x - y
+	case "*":
+		hi, lo := bits.Mul64(x, y)
+		if hi != 0 {
+			zRaise("OverflowError", zU64TooBig, line)
+		}
+		return lo
+	case "/":
+		if y == 0 {
+			zByZero(line)
+		}
+		return float64(x) / float64(y)
+	case "//", "%":
+		if y == 0 {
+			zByZero(line)
+		}
+		if op == "//" {
+			return x / y
+		}
+		return x % y
+	case "**":
+		if y == 0 {
+			return uint64(1)
+		}
+		if x < 2 {
+			return x
+		}
+		r := uint64(1)
+		for i := uint64(0); i < y; i++ {
+			hi, lo := bits.Mul64(r, x)
+			if hi != 0 {
+				zRaise("OverflowError", zU64TooBig, line)
+			}
+			r = lo
+		}
+		return r
+	case "&":
+		return x & y
+	case "|":
+		return x | y
+	}
+	return x ^ y
+}
+
+func Zb_u64(args []ZV, line int) ZV {
+	zArity("u64", args, 1, 1, line)
+	switch v := args[0].(type) {
+	case uint64:
+		return v
+	case int64:
+		if v < 0 {
+			zRaise("OverflowError", strconv.FormatInt(v, 10)+" does not fit in a u64 (0 to 18446744073709551615)", line)
+		}
+		return uint64(v)
+	}
+	zWrongType("u64", "a whole number", args[0], line)
+	return nil
+}
+
+// `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+func Zb_u64__of(args []ZV, line int) ZV {
+	zArity("u64.wrap", args, 1, 1, line)
+	switch v := args[0].(type) {
+	case uint64:
+		return v
+	case int64:
+		return uint64(v)
+	}
+	zWrongType("u64.wrap", "a whole number", args[0], line)
+	return nil
+}
+
+// `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+func zU64Wrapping(op string, args []ZV, line int) ZV {
+	zArity("u64.wrap", args, 2, 2, line)
+	x, ok1 := zUnsigned(args[0])
+	if op == "<<" && ok1 {
+		switch args[1].(type) {
+		case int64, uint64:
+			return x << zU64ShiftCount(args[1], line)
+		}
+	}
+	y, ok2 := zUnsigned(args[1])
+	if !ok1 {
+		zWrongType("u64.wrap", "u64s", args[0], line)
+	}
+	if !ok2 {
+		zWrongType("u64.wrap", "u64s", args[1], line)
+	}
+	switch op {
+	case "+":
+		return x + y
+	case "-":
+		return x - y
+	}
+	return x * y
+}
+
+func Zb_u64__add(args []ZV, line int) ZV { return zU64Wrapping("+", args, line) }
+func Zb_u64__sub(args []ZV, line int) ZV { return zU64Wrapping("-", args, line) }
+func Zb_u64__mul(args []ZV, line int) ZV { return zU64Wrapping("*", args, line) }
+func Zb_u64__shl(args []ZV, line int) ZV { return zU64Wrapping("<<", args, line) }
 
 // The nearest f32 to a float, as a float (decision 41).
 func zFround(x float64) float64 { return float64(float32(x)) }
@@ -229,6 +405,8 @@ func ZtypeName(v ZV) string {
 		return "a float"
 	case float32:
 		return "an f32"
+	case uint64:
+		return "a u64"
 	case string:
 		return "a str"
 	case bool:
@@ -417,6 +595,8 @@ func Zshow(v ZV) string {
 		return ZshowFloat(x)
 	case float32:
 		return ZshowFloat(zF32Shown(x))
+	case uint64:
+		return strconv.FormatUint(x, 10)
 	case bool:
 		if x {
 			return "true"
@@ -566,6 +746,11 @@ func Zunit(v ZV, name string, line int) ZV {
 // ------------------------------------------------------------ Equality
 
 func zEqual(a, b ZV) bool {
+	if zIsU64(a, b) {
+		x, ok1 := zUnsigned(a)
+		y, ok2 := zUnsigned(b)
+		return ok1 && ok2 && x == y
+	}
 	if zIsF32(a, b) {
 		x, ok1 := zSingle(a)
 		y, ok2 := zSingle(b)
@@ -699,6 +884,9 @@ func zMulInt(a, b int64, line int) int64 {
 }
 
 func Zadd(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("+", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("+", a, b, line)
 	}
@@ -735,6 +923,9 @@ func Zadd(a, b ZV, line int) ZV {
 }
 
 func Zsub(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("-", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("-", a, b, line)
 	}
@@ -761,6 +952,9 @@ func Zsub(a, b ZV, line int) ZV {
 }
 
 func Zmul(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("*", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("*", a, b, line)
 	}
@@ -803,6 +997,9 @@ func Zmul(a, b ZV, line int) ZV {
 }
 
 func Zdiv(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("/", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("/", a, b, line)
 	}
@@ -844,6 +1041,9 @@ func Zdiv(a, b ZV, line int) ZV {
 }
 
 func Zfloordiv(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("//", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("//", a, b, line)
 	}
@@ -874,6 +1074,9 @@ func Zfloordiv(a, b ZV, line int) ZV {
 }
 
 func Zmod(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("%", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("%", a, b, line)
 	}
@@ -911,6 +1114,9 @@ func Zmod(a, b ZV, line int) ZV {
 }
 
 func Zpow(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("**", a, b, line)
+	}
 	if zIsF32(a, b) {
 		return zF32Op("**", a, b, line)
 	}
@@ -979,9 +1185,29 @@ func zInts(op string, a, b ZV, line int) (int64, int64) {
 	return x, y
 }
 
-func Zbitand(a, b ZV, line int) ZV { x, y := zInts("&", a, b, line); return x & y }
-func Zbitor(a, b ZV, line int) ZV  { x, y := zInts("|", a, b, line); return x | y }
-func Zbitxor(a, b ZV, line int) ZV { x, y := zInts("^", a, b, line); return x ^ y }
+func Zbitand(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("&", a, b, line)
+	}
+	x, y := zInts("&", a, b, line)
+	return x & y
+}
+
+func Zbitor(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("|", a, b, line)
+	}
+	x, y := zInts("|", a, b, line)
+	return x | y
+}
+
+func Zbitxor(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("^", a, b, line)
+	}
+	x, y := zInts("^", a, b, line)
+	return x ^ y
+}
 
 func zShift(n int64, line int) {
 	if n < 0 || n >= 64 {
@@ -990,6 +1216,9 @@ func zShift(n int64, line int) {
 }
 
 func Zshl(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op("<<", a, b, line)
+	}
 	x, n := zInts("<<", a, b, line)
 	zShift(n, line)
 	s := x << uint(n)
@@ -1000,6 +1229,9 @@ func Zshl(a, b ZV, line int) ZV {
 }
 
 func Zshr(a, b ZV, line int) ZV {
+	if zIsU64(a, b) {
+		return zU64Op(">>", a, b, line)
+	}
 	x, n := zInts(">>", a, b, line)
 	zShift(n, line)
 	return x >> uint(n)
@@ -1016,6 +1248,8 @@ func Zneg(v ZV, line int) ZV {
 		return -x
 	case float32:
 		return -x
+	case uint64:
+		Zfatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line)
 	case *ZQuantity:
 		return &ZQuantity{-x.v, x.unit}
 	}
@@ -1024,6 +1258,9 @@ func Zneg(v ZV, line int) ZV {
 }
 
 func Zbitnot(v ZV, line int) ZV {
+	if x, ok := v.(uint64); ok {
+		return ^x
+	}
 	x, ok := v.(int64)
 	if !ok {
 		Zfatal("`~` works on the bits of a whole number, and this is "+ZtypeName(v), line)
@@ -1033,6 +1270,20 @@ func Zbitnot(v ZV, line int) ZV {
 
 // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
 func zOrder(op string, a, b ZV, line int) int {
+	if zIsU64(a, b) {
+		x, ok1 := zUnsigned(a)
+		y, ok2 := zUnsigned(b)
+		if !ok1 || !ok2 {
+			zU64Op(op, a, b, line)
+		}
+		if x < y {
+			return -1
+		}
+		if x > y {
+			return 1
+		}
+		return 0
+	}
 	if zIsF32(a, b) {
 		x, ok1 := zSingle(a)
 		y, ok2 := zSingle(b)
@@ -1706,6 +1957,14 @@ func zPick(name string, args []ZV, line int, better func(a, b float64) bool) ZV 
 	}
 	best := values[0]
 	for _, item := range values[1:] {
+		x, ok1 := item.(uint64)
+		y, ok2 := best.(uint64)
+		if ok1 && ok2 {
+			if (name == "min" && x < y) || (name != "min" && x > y) {
+				best = item
+			}
+			continue
+		}
 		if better(zAmount(item), zAmount(best)) {
 			best = item
 		}
@@ -1809,7 +2068,7 @@ func zSortBy(l *ZList, function ZV, line int) {
 	for _, item := range append([]ZV(nil), l.items...) {
 		k := Zcall(function, []ZV{item}, line)
 		switch k.(type) {
-		case int64, float64, float32, string:
+		case int64, float64, float32, uint64, string:
 		default:
 			Zfatal("the function given to `sort` must return a number or text to order by, but it returned "+ZtypeName(k), line)
 		}
@@ -2156,6 +2415,7 @@ func Zformat(v ZV, spec string, line int) ZV {
 		kind = rest
 	}
 	n, isInt := v.(int64)
+	u, isU64 := v.(uint64)
 	_, isFloat := v.(float64)
 	q, isQ := v.(*ZQuantity)
 	places := precision
@@ -2172,8 +2432,17 @@ func Zformat(v ZV, spec string, line int) ZV {
 			zWrongType(spec, "a number", v, line)
 		}
 		body = zFixed(x, places)
-	case (kind == "" && precision < 0) || (kind == "d" && precision < 0 && isInt):
+	case (kind == "" && precision < 0) || (kind == "d" && precision < 0 && (isInt || isU64)):
 		body = Zshow(v)
+	case (kind == "x" || kind == "X" || kind == "b") && precision < 0 && isU64:
+		base := 16
+		if kind == "b" {
+			base = 2
+		}
+		body = strconv.FormatUint(u, base)
+		if kind == "X" {
+			body = strings.ToUpper(body)
+		}
 	case (kind == "x" || kind == "X" || kind == "b") && precision < 0 && isInt:
 		base := 16
 		if kind == "b" {
@@ -2660,6 +2929,11 @@ func Zb_int(args []ZV, line int) ZV {
 	switch v := args[0].(type) {
 	case int64:
 		return v
+	case uint64:
+		if v > math.MaxInt64 {
+			zRaise("OverflowError", strconv.FormatUint(v, 10)+" does not fit in an int (-9223372036854775808 to 9223372036854775807)", line)
+		}
+		return int64(v)
 	case float64, float32:
 		x, _ := zNumber(v)
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -2692,6 +2966,8 @@ func Zb_float(args []ZV, line int) ZV {
 	case float64:
 		return v
 	case float32:
+		return float64(v)
+	case uint64:
 		return float64(v)
 	case string:
 		x, ok := zParseFloat(zStrip(v))
@@ -2743,6 +3019,8 @@ func Zb_abs(args []ZV, line int) ZV {
 		return math.Abs(v)
 	case float32:
 		return float32(math.Abs(float64(v)))
+	case uint64:
+		return v
 	case *ZQuantity:
 		return &ZQuantity{math.Abs(v.v), v.unit}
 	}
@@ -2780,6 +3058,23 @@ func Zb_sum(args []ZV, line int) ZV {
 			r = zFround(r + x)
 		}
 		return float32(r)
+	}
+	u64s := false
+	for _, item := range values {
+		_, isU64 := item.(uint64)
+		u64s = u64s || isU64
+	}
+	if u64s {
+		total := uint64(0)
+		for _, item := range values {
+			x, _ := zUnsigned(item)
+			r, carry := bits.Add64(total, x, 0)
+			if carry != 0 {
+				zRaise("OverflowError", zU64TooBig, line)
+			}
+			total = r
+		}
+		return total
 	}
 	total, allInts, floatTotal := int64(0), true, 0.0
 	for _, item := range values {
@@ -3149,7 +3444,7 @@ var zBuiltins map[string]func([]ZV, int) ZV
 func init() {
 	zBuiltins = map[string]func([]ZV, int) ZV{
 		"print": Zb_print, "input": Zb_input, "len": Zb_len, "range": Zb_range, "int": Zb_int,
-		"float": Zb_float, "f32": Zb_f32, "str": Zb_str, "abs": Zb_abs, "min": Zb_min, "max": Zb_max, "sum": Zb_sum,
+		"float": Zb_float, "f32": Zb_f32, "u64": Zb_u64, "u64..of": Zb_u64__of, "u64..add": Zb_u64__add, "u64..sub": Zb_u64__sub, "u64..mul": Zb_u64__mul, "u64..shl": Zb_u64__shl, "str": Zb_str, "abs": Zb_abs, "min": Zb_min, "max": Zb_max, "sum": Zb_sum,
 		"char": Zb_char, "allocate": Zb_allocate, "free": Zb_free,
 		"math.sqrt": Zb_math_sqrt, "math.floor": Zb_math_floor, "math.ceil": Zb_math_ceil,
 		"math.round": Zb_math_round, "math.sin": Zb_math_sin, "math.cos": Zb_math_cos,

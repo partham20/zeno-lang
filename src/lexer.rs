@@ -76,6 +76,9 @@ struct Lexer {
     errors: Vec<Error>,
 }
 
+/// A whole number past the largest a u64 holds (decision 42.5).
+const TOO_BIG: &str = "this number is too big. The largest whole number Zeno holds is 18446744073709551615, the largest u64";
+
 impl Lexer {
     fn new(source: &str) -> Self {
         Lexer {
@@ -236,6 +239,7 @@ impl Lexer {
             let digits = self.digits(|c| c.is_ascii_alphanumeric());
             match u64::from_str_radix(&digits, radix) {
                 Ok(n) => self.push(TokenKind::Int(n), span),
+                Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => self.error(TOO_BIG, span),
                 Err(_) => self.error(format!("invalid {name} number"), span),
             }
             return;
@@ -276,7 +280,7 @@ impl Lexer {
         } else {
             match text.parse::<u64>() {
                 Ok(n) => self.push(TokenKind::Int(n), span),
-                Err(_) => self.error("number is too large", span),
+                Err(_) => self.error(TOO_BIG, span),
             }
         }
     }
@@ -675,7 +679,10 @@ mod tests {
     fn bad_numbers_and_characters() {
         assert_eq!(errors("0xZZ")[0].0, "invalid hexadecimal number");
         assert_eq!(errors("0b102")[0].0, "invalid binary number");
-        assert_eq!(errors("99999999999999999999999")[0].0, "number is too large");
+        assert_eq!(errors("99999999999999999999999")[0].0, TOO_BIG);
+        assert_eq!(errors("18446744073709551616")[0].0, TOO_BIG);
+        assert_eq!(errors("0x1_0000_0000_0000_0000")[0].0, TOO_BIG);
+        assert!(lex("18446744073709551615").is_ok());
         assert_eq!(errors("a $ b"), vec![("unexpected character `$`".to_string(), 1, 3)]);
         assert_eq!(errors(r#""bad \q""#)[0].0, "unknown escape `\\q`");
     }

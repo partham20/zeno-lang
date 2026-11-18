@@ -46,6 +46,12 @@ class ZF32 {
   ZF32(this.v);
 }
 
+// A u64: a BigInt from 0 to 2**64 - 1 (decision 42).
+class ZU64 {
+  final BigInt v;
+  ZU64(this.v);
+}
+
 typedef ZBody = Object? Function(List<Object?> args);
 typedef ZBuiltinBody = Object? Function(List<Object?> args, int line);
 
@@ -307,9 +313,120 @@ class Z {
 
   static Never byZero(int line) => raiseError("ZeroDivisionError", "division by zero", line);
 
-  static bool isNumber(Object? v) => v is int || v is double || v is ZF32;
+  static bool isNumber(Object? v) => v is int || v is double || v is ZF32 || v is ZU64;
 
-  static double number(Object? v) => v is int ? v.toDouble() : (v is ZF32 ? v.v : v as double);
+  static double number(Object? v) => v is int ? v.toDouble() : (v is ZF32 ? v.v : (v is ZU64 ? v.v.toDouble() : v as double));
+
+  // ---- u64 (decision 42)
+
+  static final BigInt U64_MAX = (BigInt.one << 64) - BigInt.one;
+
+  static const String U64_TOO_BIG = "the result is too big for a u64";
+
+  static bool isU64(Object? a, Object? b) => a is ZU64 || b is ZU64;
+
+  // A u64, or an int of 0 or more, as a BigInt.
+  static BigInt? unsigned(Object? v) {
+    if (v is ZU64) return v.v;
+    if (v is int && v >= 0) return BigInt.from(v);
+    return null;
+  }
+
+  static int u64ShiftCount(Object? n, int line) {
+    final c = n is ZU64 ? n.v : BigInt.from(n as int);
+    if (c < BigInt.zero || c >= BigInt.from(64)) {
+      raiseError("ValueError", "cannot shift by " + c.toString() + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+    }
+    return c.toInt();
+  }
+
+  static ZU64 u64Checked(BigInt r, int line) {
+    if (r > U64_MAX) raiseError("OverflowError", U64_TOO_BIG, line);
+    if (r < BigInt.zero) raiseError("OverflowError", "the result is below 0, and a u64 never is", line);
+    return ZU64(r);
+  }
+
+  // `a op b` where one side is a u64 (decision 42).
+  static Object? u64Op(String op, Object? a, Object? b, int line) {
+    if (a is ZU64 && (op == "<<" || op == ">>") && (b is int || b is ZU64)) {
+      final n = u64ShiftCount(b, line);
+      if (op == ">>") return ZU64(a.v >> n);
+      return u64Checked(a.v << n, line);
+    }
+    final x = unsigned(a), y = unsigned(b);
+    if (x == null || y == null) {
+      fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line);
+    }
+    switch (op) {
+      case "+":
+        return u64Checked(x + y, line);
+      case "-":
+        return u64Checked(x - y, line);
+      case "*":
+        return u64Checked(x * y, line);
+      case "/":
+      case "//":
+      case "%":
+        if (y == BigInt.zero) byZero(line);
+        if (op == "/") return x.toDouble() / y.toDouble();
+        return ZU64(op == "//" ? x ~/ y : x % y);
+      case "**":
+        if (y == BigInt.zero) return ZU64(BigInt.one);
+        if (x < BigInt.two) return ZU64(x);
+        var r = BigInt.one;
+        for (var i = BigInt.zero; i < y; i += BigInt.one) {
+          r = u64Checked(r * x, line).v;
+        }
+        return ZU64(r);
+      case "&":
+        return ZU64(x & y);
+      case "|":
+        return ZU64(x | y);
+    }
+    return ZU64(x ^ y);
+  }
+
+  static Object? b_u64(List<Object?> args, int line) {
+    arity("u64", args, 1, 1, line);
+    final v = args[0];
+    if (v is ZU64) return v;
+    if (v is int) {
+      if (v < 0) raiseError("OverflowError", v.toString() + " does not fit in a u64 (0 to 18446744073709551615)", line);
+      return ZU64(BigInt.from(v));
+    }
+    wrongType("u64", "a whole number", v, line);
+  }
+
+  // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+  static Object? b_u64__of(List<Object?> args, int line) {
+    arity("u64.wrap", args, 1, 1, line);
+    final v = args[0];
+    if (v is ZU64) return v;
+    if (v is int) return ZU64(BigInt.from(v) & U64_MAX);
+    wrongType("u64.wrap", "a whole number", v, line);
+  }
+
+  // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+  static Object? u64Wrapping(String op, List<Object?> args, int line) {
+    arity("u64.wrap", args, 2, 2, line);
+    final x = unsigned(args[0]);
+    if (op == "<<" && x != null && (args[1] is int || args[1] is ZU64)) {
+      return ZU64((x << u64ShiftCount(args[1], line)) & U64_MAX);
+    }
+    final y = unsigned(args[1]);
+    if (x == null) wrongType("u64.wrap", "u64s", args[0], line);
+    if (y == null) wrongType("u64.wrap", "u64s", args[1], line);
+    final r = op == "+" ? x + y : (op == "-" ? x - y : x * y);
+    return ZU64(r & U64_MAX);
+  }
+
+  static Object? b_u64__add(List<Object?> args, int line) => u64Wrapping("+", args, line);
+
+  static Object? b_u64__sub(List<Object?> args, int line) => u64Wrapping("-", args, line);
+
+  static Object? b_u64__mul(List<Object?> args, int line) => u64Wrapping("*", args, line);
+
+  static Object? b_u64__shl(List<Object?> args, int line) => u64Wrapping("<<", args, line);
 
   static final Float32List _single32 = Float32List(1);
 
@@ -374,6 +491,7 @@ class Z {
     if (v is int) return "an int";
     if (v is double) return "a float";
     if (v is ZF32) return "an f32";
+    if (v is ZU64) return "a u64";
     if (v is String) return "a str";
     if (v is bool) return "a bool";
     if (v == null) return "none";
@@ -546,6 +664,7 @@ class Z {
     if (v is int) return v.toString();
     if (v is double) return showFloat(v);
     if (v is ZF32) return showFloat(f32Shown(v.v));
+    if (v is ZU64) return v.v.toString();
     if (v is bool) return v ? "true" : "false";
     if (v == null) return "none";
     if (v is List<Object?>) {
@@ -674,6 +793,10 @@ class Z {
 
   static bool equal(Object? a, Object? b) {
     if (a is int && b is int) return a == b;
+    if (isU64(a, b)) {
+      final x = unsigned(a), y = unsigned(b);
+      return x != null && y != null && x == y;
+    }
     if (a is ZF32 || b is ZF32) {
       final x = single(a), y = single(b);
       if (x != null && y != null) return x == y;
@@ -744,6 +867,7 @@ class Z {
   }
 
   static Object? add(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("+", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("+", a, b, line);
     if (a is int && b is int) return addInt(a, b, line);
     if (a is String && b is String) return a + b;
@@ -758,6 +882,7 @@ class Z {
   }
 
   static Object? sub(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("-", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("-", a, b, line);
     if (a is int && b is int) {
       final r = a - b;
@@ -774,6 +899,7 @@ class Z {
   }
 
   static Object? mul(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("*", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("*", a, b, line);
     if (a is List<Object?> && b is int) {
       if (b < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is $b", line);
@@ -791,6 +917,7 @@ class Z {
   }
 
   static Object? div(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("/", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("/", a, b, line);
     if (a is ZQuantity) {
       if (b is ZQuantity && b.v == 0) byZero(line);
@@ -810,6 +937,7 @@ class Z {
   }
 
   static Object? floordiv(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("//", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("//", a, b, line);
     if (a is int && b is int) {
       if (b == 0) byZero(line);
@@ -824,6 +952,7 @@ class Z {
   }
 
   static Object? mod(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("%", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("%", a, b, line);
     if (a is int && b is int) {
       if (b == 0) byZero(line);
@@ -841,6 +970,7 @@ class Z {
   }
 
   static Object? pow(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("**", a, b, line);
     if (a is ZF32 || b is ZF32) return f32Op("**", a, b, line);
     if (a is int && b is int) {
       if (b < 0) raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
@@ -874,17 +1004,27 @@ class Z {
     return v;
   }
 
-  static Object? bitand(Object? a, Object? b, int line) => whole("&", a, a, b, line) & whole("&", b, a, b, line);
+  static Object? bitand(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("&", a, b, line);
+    return whole("&", a, a, b, line) & whole("&", b, a, b, line);
+  }
 
-  static Object? bitor(Object? a, Object? b, int line) => whole("|", a, a, b, line) | whole("|", b, a, b, line);
+  static Object? bitor(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("|", a, b, line);
+    return whole("|", a, a, b, line) | whole("|", b, a, b, line);
+  }
 
-  static Object? bitxor(Object? a, Object? b, int line) => whole("^", a, a, b, line) ^ whole("^", b, a, b, line);
+  static Object? bitxor(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("^", a, b, line);
+    return whole("^", a, a, b, line) ^ whole("^", b, a, b, line);
+  }
 
   static void shift(int n, int line) {
     if (n < 0 || n >= 64) raiseError("ValueError", "cannot shift by " + n.toString() + ". An int has 64 bits, so a shift is 0 to 63", line);
   }
 
   static Object? shl(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op("<<", a, b, line);
     final x = whole("<<", a, a, b, line), n = whole("<<", b, a, b, line);
     shift(n, line);
     final s = x << n;
@@ -893,6 +1033,7 @@ class Z {
   }
 
   static Object? shr(Object? a, Object? b, int line) {
+    if (isU64(a, b)) return u64Op(">>", a, b, line);
     final x = whole(">>", a, a, b, line), n = whole(">>", b, a, b, line);
     shift(n, line);
     return x >> n;
@@ -905,17 +1046,24 @@ class Z {
     }
     if (v is double) return -v;
     if (v is ZF32) return ZF32(-v.v);
+    if (v is ZU64) fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line);
     if (v is ZQuantity) return ZQuantity(-v.v, v.unit);
     fatal("`-` does not work on " + typeName(v), line);
   }
 
   static Object? bitnot(Object? v, int line) {
+    if (v is ZU64) return ZU64(v.v ^ U64_MAX);
     if (v is! int) fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line);
     return ~v;
   }
 
   // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
   static int order(String op, Object? a, Object? b, int line) {
+    if (isU64(a, b)) {
+      final x = unsigned(a), y = unsigned(b);
+      if (x == null || y == null) u64Op(op, a, b, line);
+      return x!.compareTo(y!).sign;
+    }
     if (a is ZF32 || b is ZF32) {
       final x = single(a), y = single(b);
       if (x == null || y == null) f32Op(op, a, b, line);
@@ -1397,6 +1545,11 @@ class Z {
     var best = values[0];
     for (var i = 1; i < values.length; i++) {
       final item = values[i];
+      if (item is ZU64 && best is ZU64) {
+        final c = item.v.compareTo(best.v);
+        if (smaller ? c < 0 : c > 0) best = item;
+        continue;
+      }
       if (smaller ? amount(item) < amount(best) : amount(item) > amount(best)) best = item;
     }
     return best;
@@ -1461,7 +1614,7 @@ class Z {
     final keys = <Object?>[];
     for (final item in List<Object?>.of(l)) {
       final k = call(function, <Object?>[item], line);
-      if (k is! int && k is! double && k is! ZF32 && k is! String) {
+      if (k is! int && k is! double && k is! ZF32 && k is! ZU64 && k is! String) {
         fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
       }
       keys.add(k);
@@ -1738,8 +1891,11 @@ class Z {
     } else if (kind == "f" || (kind == null && precision != null && v is double)) {
       if (!isNumber(v)) wrongType(spec, "a number", v, line);
       body = fixed(number(v), places);
-    } else if ((kind == null && precision == null) || (kind == "d" && precision == null && v is int)) {
+    } else if ((kind == null && precision == null) || (kind == "d" && precision == null && (v is int || v is ZU64))) {
       body = show(v);
+    } else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is ZU64) {
+      body = v.v.toRadixString(kind == "b" ? 2 : 16);
+      if (kind == "X") body = body.toUpperCase();
     } else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is int) {
       String digits;
       if (v == MIN_INT) {
@@ -2024,6 +2180,10 @@ class Z {
     arity("int", args, 1, 1, line);
     final v = args[0];
     if (v is int) return v;
+    if (v is ZU64) {
+      if (v.v > BigInt.from(MAX_INT)) raiseError("OverflowError", v.v.toString() + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line);
+      return v.v.toInt();
+    }
     if (v is double || v is ZF32) {
       final x = number(v);
       if (x.isNaN || x.isInfinite) raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
@@ -2046,6 +2206,7 @@ class Z {
     if (v is int) return v.toDouble();
     if (v is double) return v;
     if (v is ZF32) return v.v;
+    if (v is ZU64) return v.v.toDouble();
     if (v is String) {
       final x = parseFloat(strip(v));
       if (x == null) raiseError("ValueError", "cannot turn " + quoted(v) + " into a float", line);
@@ -2083,6 +2244,7 @@ class Z {
     }
     if (v is double) return v.abs();
     if (v is ZF32) return ZF32(v.v.abs());
+    if (v is ZU64) return v;
     if (v is ZQuantity) return ZQuantity(v.v.abs(), v.unit);
     wrongType("abs", "a number", v, line);
   }
@@ -2095,6 +2257,13 @@ class Z {
     final values = numbers("sum", args, line);
     if (unitOfNumbers != null) {
       fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+    }
+    if (values.any((v) => v is ZU64)) {
+      var total = BigInt.zero;
+      for (final item in values) {
+        total = u64Checked(total + (unsigned(item) ?? BigInt.zero), line).v;
+      }
+      return ZU64(total);
     }
     if (allSingle(values)) {
       var single32 = 0.0;
@@ -2450,6 +2619,12 @@ class Z {
     "int": b_int,
     "float": b_float,
     "f32": b_f32,
+    "u64": b_u64,
+    "u64..of": b_u64__of,
+    "u64..add": b_u64__add,
+    "u64..sub": b_u64__sub,
+    "u64..mul": b_u64__mul,
+    "u64..shl": b_u64__shl,
     "str": b_str,
     "abs": b_abs,
     "min": b_min,

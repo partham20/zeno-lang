@@ -1,0 +1,68 @@
+# u64: a whole number of 64 bits with no sign (decision 42).
+let big: u64 = 18446744073709551615
+let mid: u64 = 9223372036854775808
+let small: u64 = 5
+print(big, mid, small, big - small, mid - 1 + mid)
+print(u8.max, u8.min, i8.min, i16.max, i32.max, u32.max, int.max, int.min, u64.max, u64.min)
+let top = u8.max
+let byte: u8 = top
+print(byte, top + 1)
+function fnv(text: str) -> u64 raises OverflowError {
+    var h: u64 = 0xcbf29ce484222325
+    for c in text {
+        h = h ^ u64(c.code())
+        h = u64.wrap(h * 0x100000001b3)
+    }
+    return h
+}
+let hash = fnv("hello")
+print(hash, f"{hash:016x} {hash:X} {small:08b} {mid:>22} {small:<4}| {big:.1f} {small:d}")
+print(big >> 60, small << 3, small << 60, big & 0xff, big | 1, big ^ 1, ~small, ~big)
+print(big // 7, big % 7, mid // 3, mid % 1000, small ** 3, u64(2) ** 63, small ** 0, big / 2, small / 2)
+print(small < big, big <= big, mid > small, small >= mid, big == u64.max, small != 5, small == 5)
+print(max([small, big, mid]), min([small, big, mid]), max(small, mid), min(small, mid, big), sum([small, small, mid]))
+print(u64(42), int(small), int(mid - 1), float(big), float(small), str(mid), abs(small))
+var xs: list[u64] = [3, 1, 2, big, mid, 0]
+xs.sort()
+print(xs, len(xs), mid in xs, 7 in xs, xs.find(big), xs[3])
+xs.sort(function(x: u64) -> u64 { return big - x })
+print(xs, xs == [big, mid, 3, 2, 1, 0])
+print(xs.map(function(x: u64) -> u64 { return x // 2 }), [x % 10 for x in xs], xs.filter(function(x: u64) -> bool { return x > 2 }))
+print(u64.wrap(-1), u64.wrap(small - 10 + 3), u64.wrap(big + big), u64.wrap(mid * 2), u64.wrap(small << 62))
+class Counter {
+    count: u64
+    name: str
+}
+let counter = Counter(mid, "packets")
+counter.count += 10
+print(counter, counter.count)
+function double(n: u64) -> u64 raises OverflowError {
+    return n * 2
+}
+print(double(small), double(mid - 1))
+var total: u64 = 0
+for i in range(10) {
+    total += u64(i) * 1000000000000000000 // 4
+}
+print(total)
+let ns = 1_000_000_007
+print(u64(ns) * u64(ns), u64(ns) * u64(ns) % 998244353)
+try { print(big + 1) } except OverflowError as e { print(e) }
+try { print(small - 6) } except OverflowError as e { print(e) }
+try { print(mid * 2) } except OverflowError as e { print(e) }
+try { print(u64(3) ** 41) } except OverflowError as e { print(e) }
+try { print(big << 1) } except OverflowError as e { print(e) }
+try { print(int(big)) } except OverflowError as e { print(e) }
+let neg = -3
+try { print(u64(neg)) } except OverflowError as e { print(e) }
+let far = 64
+try { print(small << far) } except ValueError as e { print(e) }
+try { print(u64.wrap(small << far)) } except ValueError as e { print(e) }
+let zero: u64 = 0
+try { print(small // zero) } except ZeroDivisionError as e { print(e) }
+try { print(small % zero) } except ZeroDivisionError as e { print(e) }
+try { print(small / zero) } except ZeroDivisionError as e { print(e) }
+try { print(sum([big, small])) } except OverflowError as e { print(e) }
+let empty: list[u64] = []
+try { print(max(empty)) } except ValueError as e { print(e) }
+print(sum(empty))

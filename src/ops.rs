@@ -135,6 +135,8 @@ pub fn unary(op: UnaryOp, value: Value, span: Span) -> Result {
         // Every bit turned over. For a number held in two's complement
         // that is `-n - 1`, which always fits.
         (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
+        (UnaryOp::BitNot, Value::U64(n)) => Ok(Value::U64(!n)),
+        (UnaryOp::Neg, Value::U64(_)) => fatal("`-` does not work on a u64, which is never below 0", span),
         (UnaryOp::BitNot, other) => {
             fatal(format!("`~` works on the bits of a whole number, and this is {}", other.type_name()), span)
         }
@@ -207,6 +209,13 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
     // An f32 with an f32 or an int: worked out in 32 bits (decision 41.2).
     if matches!(left, Value::F32(_)) || matches!(right, Value::F32(_)) {
         if let Some(answer) = f32_binary(op, &left, &right, span) {
+            return answer;
+        }
+    }
+
+    // A u64 with a u64 (decision 42.2).
+    if matches!(left, Value::U64(_)) || matches!(right, Value::U64(_)) {
+        if let Some(answer) = u64_binary(op, &left, &right, span) {
             return answer;
         }
     }
@@ -389,6 +398,79 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         // Handled by each engine, because they must not always work out both sides.
         And | Or => mismatch(),
     }
+}
+
+/// What is said when a u64 sum does not fit in 64 bits.
+pub const TOO_BIG_FOR_U64: &str = "the result is too big for a u64";
+/// And when it would go below 0.
+pub const BELOW_0_FOR_U64: &str = "the result is below 0, and a u64 never is";
+
+/// `a op b` where one side is a u64, or `None` for an operator that works
+/// no differently on one (`in`). Sums are checked as an int's are: one
+/// past 64 bits, or below 0, is an `OverflowError` (decision 42.2).
+fn u64_binary(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Option<Result> {
+    use BinaryOp::*;
+    let too_big = || raise("OverflowError", TOO_BIG_FOR_U64, span);
+    let by_zero = || raise("ZeroDivisionError", "division by zero", span);
+    // A shift is by a count, which is an int or a u64.
+    if let (Shl | Shr, Value::U64(a)) = (op, left) {
+        let n = match right {
+            Value::Int(n) => *n as i128,
+            Value::U64(n) => *n as i128,
+            _ => return Some(bits_mismatch(op, left, right, span)),
+        };
+        if !(0..64).contains(&n) {
+            return Some(raise("ValueError", format!("cannot shift by {n}. A u64 has 64 bits, so a shift is 0 to 63"), span));
+        }
+        let shifted = a << n;
+        return Some(match op {
+            Shr => Ok(Value::U64(a >> n)),
+            _ if shifted >> n == *a => Ok(Value::U64(shifted)),
+            _ => too_big(),
+        });
+    }
+    let (Some(a), Some(b)) = (left.unsigned(), right.unsigned()) else {
+        let sum = matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow | BitAnd | BitOr | BitXor | Shl | Shr);
+        let order = matches!(op, Lt | LtEq | Gt | GtEq);
+        if !(sum || order) {
+            return None;
+        }
+        return Some(fatal(
+            format!(
+                "`{}` between {} and {} would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them",
+                op.text(),
+                left.type_name(),
+                right.type_name()
+            ),
+            span,
+        ));
+    };
+    Some(match op {
+        Add => a.checked_add(b).map(Value::U64).map_or_else(too_big, Ok),
+        Sub => a.checked_sub(b).map(Value::U64).map_or_else(|| raise("OverflowError", BELOW_0_FOR_U64, span), Ok),
+        Mul => a.checked_mul(b).map(Value::U64).map_or_else(too_big, Ok),
+        Div if b == 0 => by_zero(),
+        Div => Ok(Value::Float(a as f64 / b as f64)),
+        FloorDiv | Mod if b == 0 => by_zero(),
+        FloorDiv => Ok(Value::U64(a / b)),
+        Mod => Ok(Value::U64(a % b)),
+        Pow => match (a, u32::try_from(b)) {
+            (0 | 1, _) if b > 0 => Ok(Value::U64(a)),
+            (_, _) if b == 0 => Ok(Value::U64(1)),
+            (_, Ok(b)) => a.checked_pow(b).map(Value::U64).map_or_else(too_big, Ok),
+            _ => too_big(),
+        },
+        BitAnd => Ok(Value::U64(a & b)),
+        BitOr => Ok(Value::U64(a | b)),
+        BitXor => Ok(Value::U64(a ^ b)),
+        Eq | Is => Ok(Value::Bool(a == b)),
+        NotEq | IsNot => Ok(Value::Bool(a != b)),
+        Lt => Ok(Value::Bool(a < b)),
+        LtEq => Ok(Value::Bool(a <= b)),
+        Gt => Ok(Value::Bool(a > b)),
+        GtEq => Ok(Value::Bool(a >= b)),
+        _ => return None,
+    })
 }
 
 /// `a op b` where one side is an f32, or `None` for an operator that

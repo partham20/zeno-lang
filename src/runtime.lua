@@ -12,6 +12,7 @@
 --              around, so each step looks for that and raises Zeno's error
 --   float      a Lua float
 --   f32        a table with the metatable `F32`: the float it is exactly (decision 41)
+--   u64        a table with the metatable `U64`: the Lua integer with the same 64 bits (decision 42)
 --   str        a Lua string, in UTF-8
 --   bool       true, false
 --   none       `Z.none`, a value of its own. Lua's `nil` cannot be kept
@@ -37,6 +38,7 @@ local ARGV = {...}
 
 local List, Dict, Quantity, Fn, Class, Instance, Enum, Case, Constructor = {}, {}, {}, {}, {}, {}, {}, {}, {}
 local F32 = {}
+local U64 = {}
 local ErrorType, Error, Module, Method, Bound = {}, {}, {}, {}, {}
 -- An error the program may catch, on its way to a `try`, and a mistake
 -- in the program, which nothing catches.
@@ -69,6 +71,7 @@ local function number(v)
   if kind == "float" then return v end
   if kind == "integer" then return v + 0.0 end
   if is(v, F32) then return v.v end
+  if is(v, U64) then return v.v >= 0 and v.v + 0.0 or ((v.v >> 1) | (v.v & 1)) * 2.0 end
   return nil
 end
 
@@ -92,6 +95,42 @@ local function f32_shown(x)
   end
   return x
 end
+-- ---- u64 (decision 42). A Lua integer has 64 bits and wraps round, so
+-- a u64 is the integer with the same bits; `math.ult` orders them with
+-- no sign, and `>>` fills with zeros.
+local U64_TOO_BIG = "the result is too big for a u64"
+local function u64(bits) return setmt({v = bits}, U64) end
+-- A u64, or an int of 0 or more, as its bits; else nil.
+local function unsigned(v)
+  if is(v, U64) then return v.v end
+  if mtype(v) == "integer" and v >= 0 then return v end
+  return nil
+end
+-- `a // b` and `a % b` with no sign; `b` is not 0.
+local function udivmod(a, b)
+  if b < 0 then
+    if math.ult(a, b) then return 0, a end
+    return 1, a - b
+  end
+  if a >= 0 then return a // b, a % b end
+  local q = ((a >> 1) // b) << 1
+  local r = a - q * b
+  if not math.ult(r, b) then q, r = q + 1, r - b end
+  return q, r
+end
+local function u64_text(a)
+  if a >= 0 then return fmt("%d", a) end
+  local q, r = udivmod(a, 10)
+  return fmt("%d", q) .. r
+end
+local function u64_shift_count(n, line)
+  if is(n, U64) then
+    if n.v < 0 or n.v >= 64 then raise_("ValueError", "cannot shift by " .. u64_text(n.v) .. ". A u64 has 64 bits, so a shift is 0 to 63", line) end
+    return n.v
+  end
+  if n < 0 or n >= 64 then raise_("ValueError", "cannot shift by " .. n .. ". A u64 has 64 bits, so a shift is 0 to 63", line) end
+  return n
+end
 local function is_negative(x) return x < 0 or (x == 0 and 1 / x < 0) end
 local function is_finite(x) return x == x and x ~= INF and x ~= -INF end
 -- The whole number at or below a float, as a float.
@@ -102,6 +141,7 @@ local function type_name(v)
   local kind = type(v)
   if kind == "number" then return mtype(v) == "integer" and "an int" or "a float" end
   if is(v, F32) then return "an f32" end
+  if is(v, U64) then return "a u64" end
   if kind == "string" then return "a str" end
   if kind == "boolean" then return "a bool" end
   if v == NONE then return "none" end
@@ -269,6 +309,7 @@ function show(v)
   if v == NONE then return "none" end
   local mt = getmt(v)
   if mt == F32 then return show_float(f32_shown(v.v)) end
+  if mt == U64 then return u64_text(v.v) end
   if mt == Quantity then
     local x = v.v
     if is_finite(x) and floor(x) == x and math.abs(x) < 1e15 then return fmt("%d", math.tointeger(x)) .. " " .. v.unit end
@@ -356,6 +397,10 @@ end
 -- ------------------------------------------------------------ Equality
 
 local function eq(a, b)
+  if is(a, U64) or is(b, U64) then
+    local x = unsigned(a)
+    return x ~= nil and x == unsigned(b)
+  end
   if is(a, F32) or is(b, F32) then
     local x, y = single(a), single(b)
     if x ~= nil and y ~= nil then return x == y end
@@ -440,7 +485,52 @@ local function met(op, a, b, line)
   return apply(to_a, a.v), apply(to_b, b.v), unit
 end
 
+-- `a op b` where one side is a u64 (decision 42).
+local function u64_op(op, a, b, line)
+  if (op == "<<" or op == ">>") and is(a, U64) and (is_int(b) or is(b, U64)) then
+    local n = u64_shift_count(b, line)
+    if op == ">>" then return u64(a.v >> n) end
+    local r = a.v << n
+    if r >> n ~= a.v then raise_("OverflowError", U64_TOO_BIG, line) end
+    return u64(r)
+  end
+  local x, y = unsigned(a), unsigned(b)
+  if x == nil or y == nil then
+    fatal("`" .. op .. "` between " .. type_name(a) .. " and " .. type_name(b) .. " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line)
+  end
+  if op == "+" then
+    local r = x + y
+    if math.ult(r, x) then raise_("OverflowError", U64_TOO_BIG, line) end
+    return u64(r)
+  elseif op == "-" then
+    if math.ult(x, y) then raise_("OverflowError", "the result is below 0, and a u64 never is", line) end
+    return u64(x - y)
+  elseif op == "*" then
+    local r = x * y
+    if x ~= 0 and (udivmod(r, x)) ~= y then raise_("OverflowError", U64_TOO_BIG, line) end
+    return u64(r)
+  elseif op == "/" then
+    if y == 0 then by_zero(line) end
+    return number(u64(x)) / number(u64(y))
+  elseif op == "//" or op == "%" then
+    if y == 0 then by_zero(line) end
+    local q, r = udivmod(x, y)
+    return u64(op == "//" and q or r)
+  elseif op == "**" then
+    if y == 0 then return u64(1) end
+    if x == 0 or x == 1 then return u64(x) end
+    if y < 0 or y > 64 then raise_("OverflowError", U64_TOO_BIG, line) end
+    local r = u64(1)
+    for _ = 1, y do r = u64_op("*", r, u64(x), line) end
+    return r
+  elseif op == "&" then return u64(x & y)
+  elseif op == "|" then return u64(x | y)
+  end
+  return u64(x ~ y)
+end
+
 function Z.add(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("+", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("+", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
@@ -464,6 +554,7 @@ function Z.add(a, b, line)
 end
 
 function Z.sub(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("-", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("-", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
@@ -487,6 +578,7 @@ local function product(a, b)
 end
 
 function Z.mul(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("*", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("*", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if is(a, List) and kb == "integer" then
@@ -512,6 +604,7 @@ function Z.mul(a, b, line)
 end
 
 function Z.div(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("/", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("/", a, b, line) end
   if is(a, Quantity) then
     if (mtype(b) and b == 0) or (is(b, Quantity) and b.v == 0) then by_zero(line) end
@@ -530,6 +623,7 @@ function Z.div(a, b, line)
 end
 
 function Z.floordiv(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("//", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("//", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
@@ -546,6 +640,7 @@ function Z.floordiv(a, b, line)
 end
 
 function Z.mod(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("%", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("%", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
@@ -560,6 +655,7 @@ function Z.mod(a, b, line)
 end
 
 function Z.pow(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("**", a, b, line) end
   if is(a, F32) or is(b, F32) then return f32_op("**", a, b, line) end
   local ka, kb = mtype(a), mtype(b)
   if ka == "integer" and kb == "integer" then
@@ -593,14 +689,17 @@ local function bits_mismatch(op, a, b, line)
 end
 
 function Z.bitand(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("&", a, b, line) end
   if not is_int(a) or not is_int(b) then bits_mismatch("&", a, b, line) end
   return a & b
 end
 function Z.bitor(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("|", a, b, line) end
   if not is_int(a) or not is_int(b) then bits_mismatch("|", a, b, line) end
   return a | b
 end
 function Z.bitxor(a, b, line)
+  if is(a, U64) or is(b, U64) then return u64_op("^", a, b, line) end
   if not is_int(a) or not is_int(b) then bits_mismatch("^", a, b, line) end
   return a ~ b
 end
@@ -611,6 +710,7 @@ local function shifted_right(a, n)
   return a // (1 << n)
 end
 local function shift(op, a, n, line)
+  if is(a, U64) or is(n, U64) then return u64_op(op, a, n, line) end
   if not is_int(a) or not is_int(n) then bits_mismatch(op, a, n, line) end
   if n < 0 or n >= 64 then raise_("ValueError", "cannot shift by " .. n .. ". An int has 64 bits, so a shift is 0 to 63", line) end
   if op == ">>" then return shifted_right(a, n) end
@@ -629,16 +729,24 @@ function Z.neg(v, line)
   end
   if kind == "float" then return -v end
   if is(v, F32) then return f32(-v.v) end
+  if is(v, U64) then fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line) end
   if is(v, Quantity) then return quantity(-v.v, v.unit) end
   fatal("`-` does not work on " .. type_name(v), line)
 end
 function Z.bitnot(v, line)
+  if is(v, U64) then return u64(~v.v) end
   if not is_int(v) then fatal("`~` works on the bits of a whole number, and this is " .. type_name(v), line) end
   return ~v
 end
 
 -- `<` and the others: -1, 0, 1, or nil for a NaN.
 local function order(op, a, b, line)
+  if is(a, U64) or is(b, U64) then
+    local x, y = unsigned(a), unsigned(b)
+    if x == nil or y == nil then u64_op(op, a, b, line) end
+    if x == y then return 0 end
+    return math.ult(x, y) and -1 or 1
+  end
   if is(a, F32) or is(b, F32) then
     local x, y = single(a), single(b)
     if x == nil or y == nil then f32_op(op, a, b, line) end
@@ -1218,8 +1326,12 @@ local function pick(name, args, line, smaller)
   end
   local best = values[1]
   for i = 1, #values do
-    local a, b = amount(values[i]), amount(best)
-    if (smaller and a < b) or (not smaller and a > b) then best = values[i] end
+    if is(values[i], U64) and is(best, U64) then
+      if (smaller and math.ult(values[i].v, best.v)) or (not smaller and math.ult(best.v, values[i].v)) then best = values[i] end
+    else
+      local a, b = amount(values[i]), amount(best)
+      if (smaller and a < b) or (not smaller and a > b) then best = values[i] end
+    end
   end
   return best
 end
@@ -1273,7 +1385,7 @@ local function sort_by(items, fn, line)
   local keys, given = {}, copied(items)
   for i = 1, #given do
     local k = call(fn, {given[i]}, line)
-    if not mtype(k) and not is(k, F32) and type(k) ~= "string" then
+    if not mtype(k) and not is(k, F32) and not is(k, U64) and type(k) ~= "string" then
       fatal("the function given to `sort` must return a number or text to order by, but it returned " .. type_name(k), line)
     end
     keys[i] = k
@@ -1558,8 +1670,20 @@ function Z.format(v, spec, line)
     local x = number(v)
     if x == nil then wrong_type(spec, "a number", v, line) end
     body = fixed(x, precision or 6)
-  elseif (kind == nil and precision == nil) or (kind == "d" and precision == nil and is_int(v)) then
+  elseif (kind == nil and precision == nil) or (kind == "d" and precision == nil and (is_int(v) or is(v, U64))) then
     body = show(v)
+  elseif whole_kind and kind ~= "d" and precision == nil and is(v, U64) then
+    -- Lua writes the bits of an integer with no sign.
+    if kind == "b" then
+      local bits, size = {}, v.v
+      repeat
+        bits[#bits + 1] = (size & 1 == 1) and "1" or "0"
+        size = size >> 1
+      until size == 0
+      body = concat(bits):reverse()
+    else
+      body = fmt(kind == "X" and "%X" or "%x", v.v)
+    end
   elseif whole_kind and kind ~= "d" and precision == nil and is_int(v) then
     -- The digits of the size of the number, with `-` before them. The
     -- smallest int has no size that fits, so its digits are read from
@@ -1583,7 +1707,7 @@ function Z.format(v, spec, line)
     bad()
   end
   local padding = math.max(0, width - str_len(body))
-  local is_number = mtype(v) ~= nil or is(v, Quantity)
+  local is_number = mtype(v) ~= nil or is(v, Quantity) or is(v, U64)
   if zero and is_number then
     local negative = body:sub(1, 1) == "-"
     return (negative and "-" or "") .. rep("0", padding) .. (negative and body:sub(2) or body)
@@ -1848,6 +1972,10 @@ end
 function Z.b_int(args, line)
   arity("int", args, 1, 1, line)
   local v = args[1]
+  if is(v, U64) then
+    if v.v < 0 then raise_("OverflowError", u64_text(v.v) .. " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line) end
+    return v.v
+  end
   if is(v, F32) then v = v.v end
   local kind = mtype(v)
   if kind == "integer" then return v end
@@ -1876,6 +2004,7 @@ function Z.b_float(args, line)
   if kind == "integer" then return v + 0.0 end
   if kind == "float" then return v end
   if is(v, F32) then return v.v end
+  if is(v, U64) then return number(v) end
   if type(v) == "string" then
     local x = parse_float(strip(v))
     if x == nil then raise_("ValueError", "cannot turn " .. quoted(v) .. " into a float", line) end
@@ -1897,6 +2026,39 @@ function Z.b_f32(args, line)
   end
   wrong_type("f32", "a number", v, line)
 end
+function Z.b_u64(args, line)
+  arity("u64", args, 1, 1, line)
+  local v = args[1]
+  if is(v, U64) then return v end
+  if is_int(v) then
+    if v < 0 then raise_("OverflowError", v .. " does not fit in a u64 (0 to 18446744073709551615)", line) end
+    return u64(v)
+  end
+  wrong_type("u64", "a whole number", v, line)
+end
+-- `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+function Z.b_u64__of(args, line)
+  arity("u64.wrap", args, 1, 1, line)
+  local v = args[1]
+  if is(v, U64) then return v end
+  if is_int(v) then return u64(v) end
+  wrong_type("u64.wrap", "a whole number", v, line)
+end
+-- `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+local function u64_wrapping(op, args, line)
+  arity("u64.wrap", args, 2, 2, line)
+  local a, b = args[1], args[2]
+  if op == "<<" and unsigned(a) ~= nil and (is_int(b) or is(b, U64)) then return u64(unsigned(a) << u64_shift_count(b, line)) end
+  local x, y = unsigned(a), unsigned(b)
+  if x == nil or y == nil then wrong_type("u64.wrap", "u64s", x == nil and a or b, line) end
+  if op == "+" then return u64(x + y) end
+  if op == "-" then return u64(x - y) end
+  return u64(x * y)
+end
+function Z.b_u64__add(args, line) return u64_wrapping("+", args, line) end
+function Z.b_u64__sub(args, line) return u64_wrapping("-", args, line) end
+function Z.b_u64__mul(args, line) return u64_wrapping("*", args, line) end
+function Z.b_u64__shl(args, line) return u64_wrapping("<<", args, line) end
 function Z.b_str(args, line)
   arity("str", args, 1, 1, line)
   return show(args[1])
@@ -1908,6 +2070,7 @@ function Z.b_abs(args, line)
   if kind == "integer" then return v < 0 and Z.neg(v, line) or v end
   if kind == "float" then return math.abs(v) end
   if is(v, F32) then return f32(math.abs(v.v)) end
+  if is(v, U64) then return v end
   if is(v, Quantity) then return quantity(math.abs(v.v), v.unit) end
   wrong_type("abs", "a number", v, line)
 end
@@ -1927,6 +2090,17 @@ function Z.b_sum(args, line)
     local single32 = 0.0
     for i = 1, #values do single32 = fround(single32 + single(values[i])) end
     return f32(single32)
+  end
+  local u64s = false
+  for i = 1, #values do u64s = u64s or is(values[i], U64) end
+  if u64s then
+    local total = 0
+    for i = 1, #values do
+      local r = total + (unsigned(values[i]) or 0)
+      if math.ult(r, total) then raise_("OverflowError", U64_TOO_BIG, line) end
+      total = r
+    end
+    return u64(total)
   end
   local total, all_ints, float_total = 0, true, 0.0
   for i = 1, #values do

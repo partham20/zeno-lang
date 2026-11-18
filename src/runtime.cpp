@@ -77,7 +77,8 @@ struct Obj {
 
 struct V {
     // An f32 is an F32, whose `f` is the float it is exactly (decision 41).
-    enum T : uint8_t { NONE, INT, FLOAT, BOOL, OBJ, MISSING, F32 } t = NONE;
+    // A u64 is a U64, whose `i` holds its 64 bits (decision 42).
+    enum T : uint8_t { NONE, INT, FLOAT, BOOL, OBJ, MISSING, F32, U64 } t = NONE;
     union {
         int64_t i;
         double f;
@@ -96,6 +97,7 @@ using Cell = std::shared_ptr<V>;
 inline V I(int64_t n) { V v; v.t = V::INT; v.i = n; return v; }
 inline V F(double x) { V v; v.t = V::FLOAT; v.f = x; return v; }
 inline V F32V(double x) { V v; v.t = V::F32; v.f = (double)(float)x; return v; }
+inline V U64V(uint64_t u) { V v; v.t = V::U64; v.i = (int64_t)u; return v; }
 inline V B(bool b) { V v; v.t = V::BOOL; v.b = b; return v; }
 inline V O(std::shared_ptr<Obj> p) { V v; v.t = V::OBJ; v.p = std::move(p); return v; }
 const V NONE_V;
@@ -261,9 +263,9 @@ struct Fatal {
 
 [[noreturn]] inline void byZero(int line) { raiseError("ZeroDivisionError", "division by zero", line); }
 
-inline bool isNumber(const V& v) { return v.t == V::INT || v.t == V::FLOAT || v.t == V::F32; }
+inline bool isNumber(const V& v) { return v.t == V::INT || v.t == V::FLOAT || v.t == V::F32 || v.t == V::U64; }
 
-inline double number(const V& v) { return v.t == V::INT ? (double)v.i : v.f; }
+inline double number(const V& v) { return v.t == V::INT ? (double)v.i : v.t == V::U64 ? (double)(uint64_t)v.i : v.f; }
 
 // The nearest f32 to a float, as a float.
 inline double fround(double x) { return (double)(float)x; }
@@ -276,6 +278,22 @@ inline bool single(const V& v, double& x) {
 }
 
 inline bool isF32(const V& a, const V& b) { return a.t == V::F32 || b.t == V::F32; }
+
+inline bool isU64(const V& a, const V& b) { return a.t == V::U64 || b.t == V::U64; }
+
+// A u64, or an int of 0 or more, as a uint64_t (decision 42).
+inline bool unsignedOf(const V& v, uint64_t& x) {
+    if (v.t == V::U64 || (v.t == V::INT && v.i >= 0)) { x = (uint64_t)v.i; return true; }
+    return false;
+}
+
+inline unsigned u64ShiftCount(const V& n, int line) {
+    if (n.t == V::U64 ? (uint64_t)n.i >= 64 : (n.i < 0 || n.i >= 64)) {
+        string count = n.t == V::U64 ? std::to_string((uint64_t)n.i) : std::to_string(n.i);
+        raiseError("ValueError", "cannot shift by " + count + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+    }
+    return (unsigned)n.i;
+}
 
 // True when some value is an f32 and every one is an f32 or an int.
 inline bool allSingle(const Args& values) {
@@ -306,6 +324,7 @@ string typeName(const V& v) {
     case V::INT: return "an int";
     case V::FLOAT: return "a float";
     case V::F32: return "an f32";
+    case V::U64: return "a u64";
     case V::BOOL: return "a bool";
     case V::NONE: return "none";
     case V::MISSING: return "a value";
@@ -495,6 +514,7 @@ string show(const V& v) {
     case V::INT: return num(v.i);
     case V::FLOAT: return showFloat(v.f);
     case V::F32: return showFloat(f32Shown(v.f));
+    case V::U64: return std::to_string((uint64_t)v.i);
     case V::BOOL: return v.b ? "true" : "false";
     case V::NONE: return "none";
     case V::MISSING: return "?";
@@ -627,6 +647,10 @@ Key keyOf(const V& k) { return k.t == V::INT ? Key{true, k.i, ""} : Key{false, 0
 
 bool equal(const V& a, const V& b) {
     if (a.t == V::INT && b.t == V::INT) return a.i == b.i;
+    if (isU64(a, b)) {
+        uint64_t x, y;
+        return unsignedOf(a, x) && unsignedOf(b, y) && x == y;
+    }
     if (isF32(a, b)) {
         double x, y;
         if (single(a, x) && single(b, y)) return x == y;
@@ -707,6 +731,56 @@ V floordiv(const V& a, const V& b, int line);
 V mod(const V& a, const V& b, int line);
 V pow(const V& a, const V& b, int line);
 
+// ---- u64 (decision 42): the bits of a uint64_t.
+
+const char* const tooBigU64 = "the result is too big for a u64";
+
+V u64Op(const string& op, const V& a, const V& b, int line) {
+    if (a.t == V::U64 && (op == "<<" || op == ">>") && (b.t == V::INT || b.t == V::U64)) {
+        uint64_t x = (uint64_t)a.i;
+        unsigned n = u64ShiftCount(b, line);
+        if (op == ">>") return U64V(x >> n);
+        if (((x << n) >> n) != x) raiseError("OverflowError", tooBigU64, line);
+        return U64V(x << n);
+    }
+    uint64_t x, y;
+    if (!unsignedOf(a, x) || !unsignedOf(b, y)) {
+        fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line);
+    }
+    uint64_t r;
+    if (op == "+") {
+        if (__builtin_add_overflow(x, y, &r)) raiseError("OverflowError", tooBigU64, line);
+        return U64V(r);
+    }
+    if (op == "-") {
+        if (y > x) raiseError("OverflowError", "the result is below 0, and a u64 never is", line);
+        return U64V(x - y);
+    }
+    if (op == "*") {
+        if (__builtin_mul_overflow(x, y, &r)) raiseError("OverflowError", tooBigU64, line);
+        return U64V(r);
+    }
+    if (op == "/") {
+        if (y == 0) byZero(line);
+        return F((double)x / (double)y);
+    }
+    if (op == "//" || op == "%") {
+        if (y == 0) byZero(line);
+        return U64V(op == "//" ? x / y : x % y);
+    }
+    if (op == "**") {
+        if (y == 0) return U64V(1);
+        if (x < 2) return U64V(x);
+        r = 1;
+        for (uint64_t i = 0; i < y; i++)
+            if (__builtin_mul_overflow(r, x, &r)) raiseError("OverflowError", tooBigU64, line);
+        return U64V(r);
+    }
+    if (op == "&") return U64V(x & y);
+    if (op == "|") return U64V(x | y);
+    return U64V(x ^ y);
+}
+
 V f32Op(const string& op, const V& a, const V& b, int line) {
     double x, y;
     if (!single(a, x) || !single(b, y)) {
@@ -727,6 +801,7 @@ V f32Op(const string& op, const V& a, const V& b, int line) {
 }
 
 V add(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("+", a, b, line);
     if (isF32(a, b)) return f32Op("+", a, b, line);
     if (a.t == V::INT && b.t == V::INT) return I(addInt(a.i, b.i, line));
     if (a.is(K::STR) && b.is(K::STR)) return S(str(a) + str(b));
@@ -746,6 +821,7 @@ V add(const V& a, const V& b, int line) {
 }
 
 V sub(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("-", a, b, line);
     if (isF32(a, b)) return f32Op("-", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t r;
@@ -763,6 +839,7 @@ V sub(const V& a, const V& b, int line) {
 }
 
 V mul(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("*", a, b, line);
     if (isF32(a, b)) return f32Op("*", a, b, line);
     if (a.is(K::LIST) && b.t == V::INT) {
         if (b.i < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + std::to_string(b.i), line);
@@ -782,6 +859,7 @@ V mul(const V& a, const V& b, int line) {
 }
 
 V div(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("/", a, b, line);
     if (isF32(a, b)) return f32Op("/", a, b, line);
     if (a.is(K::QUANTITY)) {
         Quantity& q = as<Quantity>(a);
@@ -803,6 +881,7 @@ V div(const V& a, const V& b, int line) {
 }
 
 V floordiv(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("//", a, b, line);
     if (isF32(a, b)) return f32Op("//", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, y = b.i;
@@ -818,6 +897,7 @@ V floordiv(const V& a, const V& b, int line) {
 }
 
 V mod(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("%", a, b, line);
     if (isF32(a, b)) return f32Op("%", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, y = b.i;
@@ -836,6 +916,7 @@ V mod(const V& a, const V& b, int line) {
 }
 
 V pow(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("**", a, b, line);
     if (isF32(a, b)) return f32Op("**", a, b, line);
     if (a.t == V::INT && b.t == V::INT) {
         int64_t x = a.i, n = b.i;
@@ -868,17 +949,27 @@ inline int64_t whole(const string& op, const V& v, const V& a, const V& b, int l
     bitsMismatch(op, a, b, line);
 }
 
-V bitand_(const V& a, const V& b, int line) { return I(whole("&", a, a, b, line) & whole("&", b, a, b, line)); }
+V bitand_(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("&", a, b, line);
+    return I(whole("&", a, a, b, line) & whole("&", b, a, b, line));
+}
 
-V bitor_(const V& a, const V& b, int line) { return I(whole("|", a, a, b, line) | whole("|", b, a, b, line)); }
+V bitor_(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("|", a, b, line);
+    return I(whole("|", a, a, b, line) | whole("|", b, a, b, line));
+}
 
-V bitxor_(const V& a, const V& b, int line) { return I(whole("^", a, a, b, line) ^ whole("^", b, a, b, line)); }
+V bitxor_(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("^", a, b, line);
+    return I(whole("^", a, a, b, line) ^ whole("^", b, a, b, line));
+}
 
 void shift(int64_t n, int line) {
     if (n < 0 || n >= 64) raiseError("ValueError", "cannot shift by " + num(n) + ". An int has 64 bits, so a shift is 0 to 63", line);
 }
 
 V shl(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op("<<", a, b, line);
     int64_t x = whole("<<", a, a, b, line), n = whole("<<", b, a, b, line);
     shift(n, line);
     int64_t s = (int64_t)((uint64_t)x << n);
@@ -887,6 +978,7 @@ V shl(const V& a, const V& b, int line) {
 }
 
 V shr(const V& a, const V& b, int line) {
+    if (isU64(a, b)) return u64Op(">>", a, b, line);
     int64_t x = whole(">>", a, a, b, line), n = whole(">>", b, a, b, line);
     shift(n, line);
     return I(x >> n);
@@ -899,17 +991,24 @@ V neg(const V& v, int line) {
     }
     if (v.t == V::FLOAT) return F(-v.f);
     if (v.t == V::F32) return F32V(-v.f);
+    if (v.t == V::U64) fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line);
     if (v.is(K::QUANTITY)) return Q(-as<Quantity>(v).v, as<Quantity>(v).unit);
     fatal("`-` does not work on " + typeName(v), line);
 }
 
 V bitnot(const V& v, int line) {
     if (v.t == V::INT) return I(~v.i);
+    if (v.t == V::U64) return U64V(~(uint64_t)v.i);
     fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line);
 }
 
 // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
 int order(const string& op, const V& a, const V& b, int line) {
+    if (isU64(a, b)) {
+        uint64_t x, y;
+        if (!unsignedOf(a, x) || !unsignedOf(b, y)) u64Op(op, a, b, line);
+        return x < y ? -1 : x > y ? 1 : 0;
+    }
     if (isF32(a, b)) {
         double x, y;
         if (!single(a, x) || !single(b, y)) f32Op(op, a, b, line);
@@ -1457,6 +1556,11 @@ V pick(const string& name, const Args& args, int line, bool smaller) {
     V best = values[0];
     for (size_t i = 1; i < values.size(); i++) {
         const V& item = values[i];
+        if (item.t == V::U64 && best.t == V::U64) {
+            uint64_t x = (uint64_t)item.i, y = (uint64_t)best.i;
+            if (smaller ? x < y : x > y) best = item;
+            continue;
+        }
         if (smaller ? amount(item) < amount(best) : amount(item) > amount(best)) best = item;
     }
     return best;
@@ -1530,7 +1634,7 @@ void sortBy(List& l, const V& function, int line) {
     Args copy = l.items;
     for (auto& item : copy) {
         V k = call(function, {item}, line);
-        if (k.t != V::INT && k.t != V::FLOAT && k.t != V::F32 && !k.is(K::STR)) {
+        if (k.t != V::INT && k.t != V::FLOAT && k.t != V::F32 && k.t != V::U64 && !k.is(K::STR)) {
             fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
         }
         keys.push_back(k);
@@ -1863,8 +1967,18 @@ V format(const V& v, const string& spec, int line) {
     } else if (kind == "f" || (kind.empty() && hasPrecision && v.t == V::FLOAT)) {
         if (!isNumber(v)) wrongType(spec, "a number", v, line);
         body = fixedPlaces(number(v), places);
-    } else if ((kind.empty() && !hasPrecision) || (kind == "d" && !hasPrecision && v.t == V::INT)) {
+    } else if ((kind.empty() && !hasPrecision) || (kind == "d" && !hasPrecision && (v.t == V::INT || v.t == V::U64))) {
         body = show(v);
+    } else if ((kind == "x" || kind == "X" || kind == "b") && !hasPrecision && v.t == V::U64) {
+        uint64_t mag = (uint64_t)v.i;
+        if (kind == "b") {
+            if (mag == 0) body = "0";
+            while (mag > 0) { body.insert(body.begin(), (char)('0' + (mag & 1))); mag >>= 1; }
+        } else {
+            char buf[32];
+            snprintf(buf, sizeof buf, kind == "X" ? "%llX" : "%llx", (unsigned long long)mag);
+            body = buf;
+        }
     } else if ((kind == "x" || kind == "X" || kind == "b") && !hasPrecision && v.t == V::INT) {
         int64_t x = v.i;
         uint64_t mag = x < 0 ? (uint64_t)(-(x + 1)) + 1 : (uint64_t)x;
@@ -2219,6 +2333,44 @@ V b_range(const Args& args, int line) {
     return newList(std::move(out));
 }
 
+V b_u64(const Args& args, int line) {
+    arity("u64", args, 1, 1, line);
+    const V& v = args[0];
+    if (v.t == V::U64) return v;
+    if (v.t == V::INT) {
+        if (v.i < 0) raiseError("OverflowError", num(v.i) + " does not fit in a u64 (0 to 18446744073709551615)", line);
+        return U64V((uint64_t)v.i);
+    }
+    wrongType("u64", "a whole number", v, line);
+}
+
+// `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+V b_u64__of(const Args& args, int line) {
+    arity("u64.wrap", args, 1, 1, line);
+    const V& v = args[0];
+    if (v.t == V::U64 || v.t == V::INT) return U64V((uint64_t)v.i);
+    wrongType("u64.wrap", "a whole number", v, line);
+}
+
+// `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+V u64Wrapping(const string& op, const Args& args, int line) {
+    arity("u64.wrap", args, 2, 2, line);
+    uint64_t x, y;
+    bool ok1 = unsignedOf(args[0], x);
+    if (op == "<<" && ok1 && (args[1].t == V::INT || args[1].t == V::U64)) return U64V(x << u64ShiftCount(args[1], line));
+    bool ok2 = unsignedOf(args[1], y);
+    if (!ok1) wrongType("u64.wrap", "u64s", args[0], line);
+    if (!ok2) wrongType("u64.wrap", "u64s", args[1], line);
+    if (op == "+") return U64V(x + y);
+    if (op == "-") return U64V(x - y);
+    return U64V(x * y);
+}
+
+V b_u64__add(const Args& args, int line) { return u64Wrapping("+", args, line); }
+V b_u64__sub(const Args& args, int line) { return u64Wrapping("-", args, line); }
+V b_u64__mul(const Args& args, int line) { return u64Wrapping("*", args, line); }
+V b_u64__shl(const Args& args, int line) { return u64Wrapping("<<", args, line); }
+
 // A float to an int, as Rust's `as i64` does: NaN is 0, and the ends hold.
 int64_t toInt(double x) {
     if (std::isnan(x)) return 0;
@@ -2231,6 +2383,10 @@ V b_int(const Args& args, int line) {
     arity("int", args, 1, 1, line);
     const V& v = args[0];
     if (v.t == V::INT) return v;
+    if (v.t == V::U64) {
+        if (v.i < 0) raiseError("OverflowError", std::to_string((uint64_t)v.i) + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line);
+        return I(v.i);
+    }
     if (v.t == V::FLOAT || v.t == V::F32) {
         if (std::isnan(v.f) || std::isinf(v.f)) raiseError("ValueError", "cannot turn " + showFloat(v.f) + " into an int", line);
         return I(toInt(v.f));
@@ -2259,6 +2415,7 @@ V b_float(const Args& args, int line) {
     if (v.t == V::INT) return F((double)v.i);
     if (v.t == V::FLOAT) return v;
     if (v.t == V::F32) return F(v.f);
+    if (v.t == V::U64) return F((double)(uint64_t)v.i);
     if (v.is(K::STR)) {
         double x;
         if (!parseFloat(strip(str(v)), x)) raiseError("ValueError", "cannot turn " + quoted(str(v)) + " into a float", line);
@@ -2296,6 +2453,7 @@ V b_abs(const Args& args, int line) {
     }
     if (v.t == V::FLOAT) return F(std::fabs(v.f));
     if (v.t == V::F32) return F32V(std::fabs(v.f));
+    if (v.t == V::U64) return v;
     if (v.is(K::QUANTITY)) return Q(std::fabs(as<Quantity>(v).v), as<Quantity>(v).unit);
     wrongType("abs", "a number", v, line);
 }
@@ -2309,6 +2467,17 @@ V b_sum(const Args& args, int line) {
     Args values = numbers("sum", args, line, unit);
     if (!unit.empty()) {
         fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+    }
+    bool u64s = false;
+    for (auto& item : values) u64s = u64s || item.t == V::U64;
+    if (u64s) {
+        uint64_t total = 0;
+        for (auto& item : values) {
+            uint64_t x = 0;
+            unsignedOf(item, x);
+            if (__builtin_add_overflow(total, x, &total)) raiseError("OverflowError", tooBigU64, line);
+        }
+        return U64V(total);
     }
     if (allSingle(values)) {
         double single32 = 0;
@@ -2614,7 +2783,7 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
     static const std::unordered_map<string, BuiltinBody> b = [] {
         std::unordered_map<string, BuiltinBody> b = {
             {"print", b_print}, {"input", b_input}, {"len", b_len}, {"range", b_range}, {"int", b_int},
-            {"float", b_float}, {"f32", b_f32}, {"str", b_str}, {"abs", b_abs}, {"min", b_min}, {"max", b_max}, {"sum", b_sum},
+            {"float", b_float}, {"f32", b_f32}, {"u64", b_u64}, {"u64..of", b_u64__of}, {"u64..add", b_u64__add}, {"u64..sub", b_u64__sub}, {"u64..mul", b_u64__mul}, {"u64..shl", b_u64__shl}, {"str", b_str}, {"abs", b_abs}, {"min", b_min}, {"max", b_max}, {"sum", b_sum},
             {"char", b_char}, {"allocate", b_allocate}, {"free", b_free},
             {"math.sqrt", b_math_sqrt}, {"math.floor", b_math_floor}, {"math.ceil", b_math_ceil},
             {"math.round", b_math_round}, {"math.sin", b_math_sin}, {"math.cos", b_math_cos}, {"math.tan", b_math_tan},

@@ -204,9 +204,123 @@ object Z {
 
     fun byZero(line: Int): Nothing = raiseError("ZeroDivisionError", "division by zero", line)
 
-    fun isNumber(v: Any?): Boolean = v is Long || v is Double || v is Float
+    fun isNumber(v: Any?): Boolean = v is Long || v is Double || v is Float || v is ULong
 
-    fun number(v: Any?): Double = if (v is Long) v.toDouble() else if (v is Float) v.toDouble() else v as Double
+    fun number(v: Any?): Double = if (v is Long) v.toDouble() else if (v is Float) v.toDouble() else if (v is ULong) v.toDouble() else v as Double
+
+    // ---- u64 (decision 42): a Kotlin `ULong`.
+    val U64_TOO_BIG = "the result is too big for a u64"
+
+    // A u64, or an int of 0 or more, as a ULong; null for anything else.
+    fun unsigned(v: Any?): ULong? = if (v is ULong) v else if (v is Long && v >= 0) v.toULong() else null
+
+    fun isU64(a: Any?, b: Any?): Boolean = a is ULong || b is ULong
+
+    fun u64ShiftCount(n: Any?, line: Int): Int {
+        if (n is ULong) {
+            if (n >= 64uL) raiseError("ValueError", "cannot shift by " + n + ". A u64 has 64 bits, so a shift is 0 to 63", line)
+            return n.toInt()
+        }
+        val c = n as Long
+        if (c < 0 || c >= 64) raiseError("ValueError", "cannot shift by " + c + ". A u64 has 64 bits, so a shift is 0 to 63", line)
+        return c.toInt()
+    }
+
+    // `a op b` where one side is a u64 (decision 42).
+    fun u64Op(op: String, a: Any?, b: Any?, line: Int): Any? {
+        if ((op == "<<" || op == ">>") && a is ULong && (b is Long || b is ULong)) {
+            val n = u64ShiftCount(b, line)
+            if (op == ">>") return a shr n
+            val r = a shl n
+            if ((r shr n) != a) raiseError("OverflowError", U64_TOO_BIG, line)
+            return r
+        }
+        val x = unsigned(a)
+        val y = unsigned(b)
+        if (x == null || y == null) {
+            fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line)
+        }
+        when (op) {
+            "+" -> {
+                val r = x + y
+                if (r < x) raiseError("OverflowError", U64_TOO_BIG, line)
+                return r
+            }
+            "-" -> {
+                if (x < y) raiseError("OverflowError", "the result is below 0, and a u64 never is", line)
+                return x - y
+            }
+            "*" -> {
+                val r = x * y
+                if (x != 0uL && r / x != y) raiseError("OverflowError", U64_TOO_BIG, line)
+                return r
+            }
+            "/" -> {
+                if (y == 0uL) byZero(line)
+                return x.toDouble() / y.toDouble()
+            }
+            "//" -> {
+                if (y == 0uL) byZero(line)
+                return x / y
+            }
+            "%" -> {
+                if (y == 0uL) byZero(line)
+                return x % y
+            }
+            "**" -> {
+                if (y == 0uL) return 1uL
+                if (x < 2uL) return x
+                var r: Any? = 1uL
+                var i = 0uL
+                while (i < y) {
+                    r = u64Op("*", r, x, line)
+                    i++
+                }
+                return r
+            }
+            "&" -> return x and y
+            "|" -> return x or y
+        }
+        return x xor y
+    }
+
+    // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    fun u64Wrapping(op: String, args: Array<Any?>, line: Int): Any? {
+        arity("u64.wrap", args, 2, 2, line)
+        val x = unsigned(args[0])
+        val y = unsigned(args[1])
+        if (op == "<<" && x != null && (args[1] is Long || args[1] is ULong)) return x shl u64ShiftCount(args[1], line)
+        if (x == null || y == null) wrongType("u64.wrap", "u64s", if (x == null) args[0] else args[1], line)
+        return if (op == "+") x + y else if (op == "-") x - y else x * y
+    }
+
+    fun b_u64(args: Array<Any?>, line: Int): Any? {
+        arity("u64", args, 1, 1, line)
+        val v = args[0]
+        if (v is ULong) return v
+        if (v is Long) {
+            if (v < 0) raiseError("OverflowError", v.toString() + " does not fit in a u64 (0 to 18446744073709551615)", line)
+            return v.toULong()
+        }
+        wrongType("u64", "a whole number", v, line)
+    }
+
+    // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    fun b_u64__of(args: Array<Any?>, line: Int): Any? {
+        arity("u64.wrap", args, 1, 1, line)
+        val v = args[0]
+        if (v is ULong) return v
+        if (v is Long) return v.toULong()
+        wrongType("u64.wrap", "a whole number", v, line)
+    }
+
+    fun b_u64__add(args: Array<Any?>, line: Int): Any? = u64Wrapping("+", args, line)
+
+    fun b_u64__sub(args: Array<Any?>, line: Int): Any? = u64Wrapping("-", args, line)
+
+    fun b_u64__mul(args: Array<Any?>, line: Int): Any? = u64Wrapping("*", args, line)
+
+    fun b_u64__shl(args: Array<Any?>, line: Int): Any? = u64Wrapping("<<", args, line)
 
     // An f32 is a `Float` (decision 41).
     fun fround(x: Double): Double = x.toFloat().toDouble()
@@ -253,6 +367,7 @@ object Z {
         if (v is Long) return "an int"
         if (v is Double) return "a float"
         if (v is Float) return "an f32"
+        if (v is ULong) return "a u64"
         if (v is String) return "a str"
         if (v is Boolean) return "a bool"
         if (v == null) return "none"
@@ -406,6 +521,7 @@ object Z {
         if (v is Long) return v.toString()
         if (v is Double) return showFloat(v)
         if (v is Float) return showFloat(f32Shown(v))
+        if (v is ULong) return v.toString()
         if (v is Boolean) return if (v) "true" else "false"
         if (v == null) return "none"
         if (v is ArrayList<*>) {
@@ -529,6 +645,10 @@ object Z {
 
     fun equal(a: Any?, b: Any?): Boolean {
         if (a is Long && b is Long) return a == b
+        if (isU64(a, b)) {
+            val x = unsigned(a)
+            return x != null && x == unsigned(b)
+        }
         if (isF32(a, b)) {
             val x = single(a)
             val y = single(b)
@@ -593,6 +713,7 @@ object Z {
     }
 
     fun add(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("+", a, b, line)
         if (isF32(a, b)) return f32Op("+", a, b, line)
         if (a is Long && b is Long) return addInt(a, b, line)
         if (a is String && b is String) return a + b
@@ -611,6 +732,7 @@ object Z {
     }
 
     fun sub(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("-", a, b, line)
         if (isF32(a, b)) return f32Op("-", a, b, line)
         if (a is Long && b is Long) {
             val r = a - b
@@ -626,6 +748,7 @@ object Z {
     }
 
     fun mul(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("*", a, b, line)
         if (isF32(a, b)) return f32Op("*", a, b, line)
         if (a is ArrayList<*> && b is Long) {
             if (b < 0L) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line)
@@ -645,6 +768,7 @@ object Z {
     }
 
     fun div(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("/", a, b, line)
         if (isF32(a, b)) return f32Op("/", a, b, line)
         if (a is ZQuantity) {
             if (b is ZQuantity && b.v == 0.0) byZero(line)
@@ -663,6 +787,7 @@ object Z {
     }
 
     fun floordiv(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("//", a, b, line)
         if (isF32(a, b)) return f32Op("//", a, b, line)
         if (a is Long && b is Long) {
             if (b == 0L) byZero(line)
@@ -675,6 +800,7 @@ object Z {
     }
 
     fun mod(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("%", a, b, line)
         if (isF32(a, b)) return f32Op("%", a, b, line)
         if (a is Long && b is Long) {
             if (b == 0L) byZero(line)
@@ -690,6 +816,7 @@ object Z {
     }
 
     fun pow(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("**", a, b, line)
         if (isF32(a, b)) return f32Op("**", a, b, line)
         if (a is Long && b is Long) {
             if (b < 0) raiseError("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line)
@@ -726,17 +853,18 @@ object Z {
         return v
     }
 
-    fun bitand(a: Any?, b: Any?, line: Int): Any? = whole("&", a, a, b, line) and whole("&", b, a, b, line)
+    fun bitand(a: Any?, b: Any?, line: Int): Any? = if (isU64(a, b)) u64Op("&", a, b, line) else whole("&", a, a, b, line) and whole("&", b, a, b, line)
 
-    fun bitor(a: Any?, b: Any?, line: Int): Any? = whole("|", a, a, b, line) or whole("|", b, a, b, line)
+    fun bitor(a: Any?, b: Any?, line: Int): Any? = if (isU64(a, b)) u64Op("|", a, b, line) else whole("|", a, a, b, line) or whole("|", b, a, b, line)
 
-    fun bitxor(a: Any?, b: Any?, line: Int): Any? = whole("^", a, a, b, line) xor whole("^", b, a, b, line)
+    fun bitxor(a: Any?, b: Any?, line: Int): Any? = if (isU64(a, b)) u64Op("^", a, b, line) else whole("^", a, a, b, line) xor whole("^", b, a, b, line)
 
     fun shift(n: Long, line: Int) {
         if (n < 0 || n >= 64) raiseError("ValueError", "cannot shift by " + n + ". An int has 64 bits, so a shift is 0 to 63", line)
     }
 
     fun shl(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op("<<", a, b, line)
         val x = whole("<<", a, a, b, line)
         val n = whole("<<", b, a, b, line)
         shift(n, line)
@@ -746,6 +874,7 @@ object Z {
     }
 
     fun shr(a: Any?, b: Any?, line: Int): Any? {
+        if (isU64(a, b)) return u64Op(">>", a, b, line)
         val x = whole(">>", a, a, b, line)
         val n = whole(">>", b, a, b, line)
         shift(n, line)
@@ -759,17 +888,25 @@ object Z {
         }
         if (v is Double) return -v
         if (v is Float) return -v
+        if (v is ULong) fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line)
         if (v is ZQuantity) return ZQuantity(-v.v, v.unit)
         fatal("`-` does not work on " + typeName(v), line)
     }
 
     fun bitnot(v: Any?, line: Int): Any? {
+        if (v is ULong) return v.inv()
         if (v !is Long) fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line)
         return v.inv()
     }
 
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     fun order(op: String, a: Any?, b: Any?, line: Int): Int {
+        if (isU64(a, b)) {
+            val x = unsigned(a)
+            val y = unsigned(b)
+            if (x == null || y == null) u64Op(op, a, b, line)
+            return if (x!! < y!!) -1 else if (x > y) 1 else 0
+        }
         if (isF32(a, b)) {
             val x = single(a)
             val y = single(b)
@@ -1263,6 +1400,11 @@ object Z {
         var best = values[0]
         for (i in 1 until values.size) {
             val item = values[i]
+            val top = best
+            if (item is ULong && top is ULong) {
+                if (if (smaller) item < top else item > top) best = item
+                continue
+            }
             if (if (smaller) amount(item) < amount(best) else amount(item) > amount(best)) best = item
         }
         return best
@@ -1321,7 +1463,7 @@ object Z {
         val keys = ArrayList<Any?>()
         for (item in ArrayList<Any?>(l)) {
             val k = call(function, arrayOf<Any?>(item), line)
-            if (k !is Long && k !is Double && k !is Float && k !is String) {
+            if (k !is Long && k !is Double && k !is Float && k !is ULong && k !is String) {
                 fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line)
             }
             keys.add(k)
@@ -1614,8 +1756,11 @@ object Z {
         } else if (kind == "f" || (kind == null && precision != null && v is Double)) {
             if (!isNumber(v)) wrongType(spec, "a number", v, line)
             body = fixed(number(v), places)
-        } else if ((kind == null && precision == null) || (kind == "d" && precision == null && v is Long)) {
+        } else if ((kind == null && precision == null) || (kind == "d" && precision == null && (v is Long || v is ULong))) {
             body = show(v)
+        } else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is ULong) {
+            val digits = v.toString(if (kind == "b") 2 else 16)
+            body = if (kind == "X") digits.uppercase() else digits
         } else if ((kind == "x" || kind == "X" || kind == "b") && precision == null && v is Long) {
             var digits = java.lang.Long.toUnsignedString(if (v < 0) -v else v, if (kind == "b") 2 else 16)
             if (v == Long.MIN_VALUE) digits = if (kind == "b") "1" + "0".repeat(63) else "8000000000000000"
@@ -1881,6 +2026,10 @@ object Z {
         arity("int", args, 1, 1, line)
         val v = args[0]
         if (v is Long) return v
+        if (v is ULong) {
+            if (v > Long.MAX_VALUE.toULong()) raiseError("OverflowError", v.toString() + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line)
+            return v.toLong()
+        }
         if (v is Double || v is Float) {
             val x = number(v)
             if (x.isNaN() || x.isInfinite()) raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line)
@@ -1906,6 +2055,7 @@ object Z {
         if (v is Long) return v.toDouble()
         if (v is Double) return v
         if (v is Float) return v.toDouble()
+        if (v is ULong) return v.toDouble()
         if (v is String) {
             return parseFloat(strip(v)) ?: raiseError("ValueError", "cannot turn " + quoted(v) + " into a float", line)
         }
@@ -1941,6 +2091,7 @@ object Z {
         }
         if (v is Double) return Math.abs(v)
         if (v is Float) return Math.abs(v)
+        if (v is ULong) return v
         if (v is ZQuantity) return ZQuantity(Math.abs(v.v), v.unit)
         wrongType("abs", "a number", v, line)
     }
@@ -1958,6 +2109,15 @@ object Z {
             var single = 0.0
             for (item in values) single = fround(single + single(item)!!)
             return single.toFloat()
+        }
+        if (values.any { it is ULong }) {
+            var sum = 0uL
+            for (item in values) {
+                val r = sum + (unsigned(item) ?: 0uL)
+                if (r < sum) raiseError("OverflowError", U64_TOO_BIG, line)
+                sum = r
+            }
+            return sum
         }
         var total = 0L
         var allInts = true
@@ -2290,6 +2450,12 @@ object Z {
         BUILTINS["int"] = ::b_int
         BUILTINS["float"] = ::b_float
         BUILTINS["f32"] = ::b_f32
+        BUILTINS["u64"] = ::b_u64
+        BUILTINS["u64..of"] = ::b_u64__of
+        BUILTINS["u64..add"] = ::b_u64__add
+        BUILTINS["u64..sub"] = ::b_u64__sub
+        BUILTINS["u64..mul"] = ::b_u64__mul
+        BUILTINS["u64..shl"] = ::b_u64__shl
         BUILTINS["str"] = ::b_str
         BUILTINS["abs"] = ::b_abs
         BUILTINS["min"] = ::b_min

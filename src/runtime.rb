@@ -12,6 +12,7 @@
 #              looks whether the result still fits in 64 bits
 #   float      a Ruby Float
 #   f32        a `ZF32`: the float it is exactly (decision 41)
+#   u64        a `ZU64`: an Integer from 0 to 2**64 - 1 (decision 42)
 #   str        a Ruby String, in UTF-8
 #   bool       true, false
 #   none       nil
@@ -28,6 +29,14 @@
 require "rbconfig"
 
 class ZF32
+  attr_reader :v
+
+  def initialize(v)
+    @v = v
+  end
+end
+
+class ZU64
   attr_reader :v
 
   def initialize(v)
@@ -231,7 +240,62 @@ module Z
       return v if v.is_a?(Float)
       return v.to_f if v.is_a?(Integer)
       return v.v if v.is_a?(ZF32)
+      return v.v.to_f if v.is_a?(ZU64)
       nil
+    end
+
+    U64_MAX = (1 << 64) - 1
+    U64_TOO_BIG = "the result is too big for a u64"
+
+    # A u64, or an int of 0 or more, as an Integer; else nil.
+    def unsigned(v)
+      return v.v if v.is_a?(ZU64)
+      return v if v.is_a?(Integer) && v >= 0
+      nil
+    end
+
+    def u64_shift_count(n, line)
+      n = n.v if n.is_a?(ZU64)
+      raise_("ValueError", "cannot shift by " + n.to_s + ". A u64 has 64 bits, so a shift is 0 to 63", line) if n < 0 || n >= 64
+      n
+    end
+
+    # `a op b` where one side is a u64 (decision 42).
+    def u64_op(op, a, b, line)
+      if (op == "<<" || op == ">>") && a.is_a?(ZU64) && (b.is_a?(Integer) || b.is_a?(ZU64))
+        n = u64_shift_count(b, line)
+        return ZU64.new(a.v >> n) if op == ">>"
+        raise_("OverflowError", U64_TOO_BIG, line) if (a.v << n) > U64_MAX
+        return ZU64.new(a.v << n)
+      end
+      x = unsigned(a)
+      y = unsigned(b)
+      if x.nil? || y.nil?
+        fatal("`" + op + "` between " + type_name(a) + " and " + type_name(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line)
+      end
+      r = case op
+          when "+" then x + y
+          when "-"
+            raise_("OverflowError", "the result is below 0, and a u64 never is", line) if y > x
+            x - y
+          when "*" then x * y
+          when "/"
+            by_zero(line) if y.zero?
+            return x.to_f / y.to_f
+          when "//", "%"
+            by_zero(line) if y.zero?
+            op == "//" ? x / y : x % y
+          when "**"
+            return ZU64.new(1) if y.zero?
+            return ZU64.new(x) if x < 2
+            raise_("OverflowError", U64_TOO_BIG, line) if y > 64
+            x**y
+          when "&" then x & y
+          when "|" then x | y
+          else x ^ y
+          end
+      raise_("OverflowError", U64_TOO_BIG, line) if r > U64_MAX
+      ZU64.new(r)
     end
 
     # The nearest f32 to a float, as a float.
@@ -298,6 +362,7 @@ module Z
       when Integer then "an int"
       when Float then "a float"
       when ZF32 then "an f32"
+      when ZU64 then "a u64"
       when String then "a str"
       when true, false then "a bool"
       when nil then "none"
@@ -396,6 +461,7 @@ module Z
       when Integer then v.to_s
       when Float then show_float(v)
       when ZF32 then show_float(f32_shown(v.v))
+      when ZU64 then v.v.to_s
       when true then "true"
       when false then "false"
       when nil then "none"
@@ -494,6 +560,10 @@ module Z
     end
 
     def eq(a, b)
+      if a.is_a?(ZU64) || b.is_a?(ZU64)
+        x = unsigned(a)
+        return !x.nil? && x == unsigned(b)
+      end
       if a.is_a?(ZF32) || b.is_a?(ZF32)
         x = single(a)
         y = single(b)
@@ -552,6 +622,7 @@ module Z
     end
 
     def add(a, b, line)
+      return u64_op("+", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("+", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       return fits(a + b, line) if a.is_a?(Integer) && b.is_a?(Integer)
       return a + b if a.is_a?(String) && b.is_a?(String)
@@ -567,6 +638,7 @@ module Z
     end
 
     def sub(a, b, line)
+      return u64_op("-", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("-", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       return fits(a - b, line) if a.is_a?(Integer) && b.is_a?(Integer)
       if a.is_a?(ZQuantity) && b.is_a?(ZQuantity)
@@ -580,6 +652,7 @@ module Z
     end
 
     def mul(a, b, line)
+      return u64_op("*", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("*", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Array) && b.is_a?(Integer)
         raise_("ValueError", "`*` repeats a list 0 or more times, and this is #{b}", line) if b < 0
@@ -599,6 +672,7 @@ module Z
     end
 
     def div(a, b, line)
+      return u64_op("/", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("/", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(ZQuantity)
         by_zero(line) if ((b.is_a?(Integer) || b.is_a?(Float)) && b == 0) || (b.is_a?(ZQuantity) && b.v == 0)
@@ -618,6 +692,7 @@ module Z
     end
 
     def floordiv(a, b, line)
+      return u64_op("//", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("//", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         by_zero(line) if b == 0
@@ -631,6 +706,7 @@ module Z
     end
 
     def mod(a, b, line)
+      return u64_op("%", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("%", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         by_zero(line) if b == 0
@@ -644,6 +720,7 @@ module Z
     end
 
     def pow(a, b, line)
+      return u64_op("**", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       return f32_op("**", a, b, line) if a.is_a?(ZF32) || b.is_a?(ZF32)
       if a.is_a?(Integer) && b.is_a?(Integer)
         raise_("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line) if b < 0
@@ -677,21 +754,25 @@ module Z
     end
 
     def bitand(a, b, line)
+      return u64_op("&", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       bits_mismatch("&", a, b, line) unless a.is_a?(Integer) && b.is_a?(Integer)
       a & b
     end
 
     def bitor(a, b, line)
+      return u64_op("|", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       bits_mismatch("|", a, b, line) unless a.is_a?(Integer) && b.is_a?(Integer)
       a | b
     end
 
     def bitxor(a, b, line)
+      return u64_op("^", a, b, line) if a.is_a?(ZU64) || b.is_a?(ZU64)
       bits_mismatch("^", a, b, line) unless a.is_a?(Integer) && b.is_a?(Integer)
       a ^ b
     end
 
     def shift(op, a, n, line)
+      return u64_op(op, a, n, line) if a.is_a?(ZU64) || n.is_a?(ZU64)
       bits_mismatch(op, a, n, line) unless a.is_a?(Integer) && n.is_a?(Integer)
       raise_("ValueError", "cannot shift by " + n.to_s + ". An int has 64 bits, so a shift is 0 to 63", line) if n < 0 || n >= 64
       op == ">>" ? a >> n : fits(a << n, line)
@@ -709,17 +790,25 @@ module Z
       return fits(-v, line) if v.is_a?(Integer)
       return -v if v.is_a?(Float)
       return ZF32.new(-v.v) if v.is_a?(ZF32)
+      fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line) if v.is_a?(ZU64)
       return ZQuantity.new(-v.v, v.unit) if v.is_a?(ZQuantity)
       fatal("`-` does not work on " + type_name(v), line)
     end
 
     def bitnot(v, line)
+      return ZU64.new(U64_MAX ^ v.v) if v.is_a?(ZU64)
       fatal("`~` works on the bits of a whole number, and this is " + type_name(v), line) unless v.is_a?(Integer)
       ~v
     end
 
     # `<` and the others: -1, 0, 1, or nil for a NaN.
     def order(op, a, b, line)
+      if a.is_a?(ZU64) || b.is_a?(ZU64)
+        x = unsigned(a)
+        y = unsigned(b)
+        u64_op(op, a, b, line) if x.nil? || y.nil?
+        return x <=> y
+      end
       if a.is_a?(ZF32) || b.is_a?(ZF32)
         x = single(a)
         y = single(b)
@@ -1277,6 +1366,10 @@ module Z
       end
       best = values[0]
       values.each do |item|
+        if item.is_a?(ZU64) && best.is_a?(ZU64)
+          best = item if smaller ? item.v < best.v : item.v > best.v
+          next
+        end
         a = amount(item)
         b = amount(best)
         best = item if smaller ? a < b : a > b
@@ -1337,7 +1430,7 @@ module Z
       i = 0
       while i < given.length
         k = call(fn, [given[i]], line)
-        unless k.is_a?(Integer) || k.is_a?(Float) || k.is_a?(ZF32) || k.is_a?(String)
+        unless k.is_a?(Integer) || k.is_a?(Float) || k.is_a?(ZF32) || k.is_a?(ZU64) || k.is_a?(String)
           fatal("the function given to `sort` must return a number or text to order by, but it returned " + type_name(k), line)
         end
         keys << k
@@ -1584,8 +1677,11 @@ module Z
           x = number(v)
           wrong_type(spec, "a number", v, line) if x.nil?
           fixed(x, precision || 6)
-        elsif (kind.nil? && precision.nil?) || (kind == "d" && precision.nil? && v.is_a?(Integer))
+        elsif (kind.nil? && precision.nil?) || (kind == "d" && precision.nil? && (v.is_a?(Integer) || v.is_a?(ZU64)))
           show(v)
+        elsif %w[x X b].include?(kind) && precision.nil? && v.is_a?(ZU64)
+          digits = v.v.to_s(kind == "b" ? 2 : 16)
+          kind == "X" ? digits.upcase : digits
         elsif %w[x X b].include?(kind) && precision.nil? && v.is_a?(Integer)
           # The digits of the size of the number, with `-` before them.
           digits = v.abs.to_s(kind == "b" ? 2 : 16)
@@ -1597,7 +1693,7 @@ module Z
           fatal(bad, line)
         end
       padding = [0, width - body.length].max
-      is_number = v.is_a?(Integer) || v.is_a?(Float) || v.is_a?(ZQuantity)
+      is_number = v.is_a?(Integer) || v.is_a?(Float) || v.is_a?(ZQuantity) || v.is_a?(ZU64)
       if zero && is_number
         negative = body.start_with?("-")
         return (negative ? "-" : "") + "0" * padding + (negative ? body[1..] : body)
@@ -1863,6 +1959,10 @@ module Z
       arity("int", args, 1, 1, line)
       v = args[0]
       return v if v.is_a?(Integer)
+      if v.is_a?(ZU64)
+        raise_("OverflowError", v.v.to_s + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line) if v.v > MAX_INT
+        return v.v
+      end
       v = v.v if v.is_a?(ZF32)
       if v.is_a?(Float)
         raise_("ValueError", "cannot turn " + show_float(v) + " into an int", line) unless v.finite?
@@ -1885,6 +1985,7 @@ module Z
       return v.to_f if v.is_a?(Integer)
       return v if v.is_a?(Float)
       return v.v if v.is_a?(ZF32)
+      return v.v.to_f if v.is_a?(ZU64)
       if v.is_a?(String)
         x = parse_float(strip(v))
         raise_("ValueError", "cannot turn " + quoted(v) + " into a float", line) if x.nil?
@@ -1908,6 +2009,60 @@ module Z
       wrong_type("f32", "a number", v, line)
     end
 
+    def b_u64(args, line)
+      arity("u64", args, 1, 1, line)
+      v = args[0]
+      return v if v.is_a?(ZU64)
+      if v.is_a?(Integer)
+        raise_("OverflowError", v.to_s + " does not fit in a u64 (0 to 18446744073709551615)", line) if v < 0
+        return ZU64.new(v)
+      end
+      wrong_type("u64", "a whole number", v, line)
+    end
+
+    # `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    def b_u64__of(args, line)
+      arity("u64.wrap", args, 1, 1, line)
+      v = args[0]
+      return v if v.is_a?(ZU64)
+      return ZU64.new(v & U64_MAX) if v.is_a?(Integer)
+      wrong_type("u64.wrap", "a whole number", v, line)
+    end
+
+    # `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    def u64_wrapping(op, args, line)
+      arity("u64.wrap", args, 2, 2, line)
+      a, b = args
+      if op == "<<" && !unsigned(a).nil? && (b.is_a?(Integer) || b.is_a?(ZU64))
+        return ZU64.new((unsigned(a) << u64_shift_count(b, line)) & U64_MAX)
+      end
+      x = unsigned(a)
+      y = unsigned(b)
+      wrong_type("u64.wrap", "u64s", x.nil? ? a : b, line) if x.nil? || y.nil?
+      r = case op
+          when "+" then x + y
+          when "-" then x - y
+          else x * y
+          end
+      ZU64.new(r & U64_MAX)
+    end
+
+    def b_u64__add(args, line)
+      u64_wrapping("+", args, line)
+    end
+
+    def b_u64__sub(args, line)
+      u64_wrapping("-", args, line)
+    end
+
+    def b_u64__mul(args, line)
+      u64_wrapping("*", args, line)
+    end
+
+    def b_u64__shl(args, line)
+      u64_wrapping("<<", args, line)
+    end
+
     def b_str(args, line)
       arity("str", args, 1, 1, line)
       show(args[0])
@@ -1919,6 +2074,7 @@ module Z
       return v < 0 ? neg(v, line) : v if v.is_a?(Integer)
       return v.abs if v.is_a?(Float)
       return ZF32.new(v.v.abs) if v.is_a?(ZF32)
+      return v if v.is_a?(ZU64)
       return ZQuantity.new(v.v.abs, v.unit) if v.is_a?(ZQuantity)
       wrong_type("abs", "a number", v, line)
     end
@@ -1940,6 +2096,14 @@ module Z
         single32 = 0.0
         values.each { |item| single32 = fround(single32 + single(item)) }
         return ZF32.new(single32)
+      end
+      if values.any? { |item| item.is_a?(ZU64) }
+        total = 0
+        values.each do |item|
+          total += unsigned(item) || 0
+          raise_("OverflowError", U64_TOO_BIG, line) if total > U64_MAX
+        end
+        return ZU64.new(total)
       end
       total = 0
       all_ints = true

@@ -127,7 +127,7 @@
       "patterns": [
         {
           "name": "support.type.zeno",
-          "match": "\\b(int|float|bool|str|list|dict|pointer|u8|u16|u32|i8|i16|i32|f32)\\b"
+          "match": "\\b(int|float|bool|str|list|dict|pointer|u8|u16|u32|u64|i8|i16|i32|f32)\\b"
         },
         { "name": "entity.name.type.zeno", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
       ]

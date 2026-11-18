@@ -110,6 +110,66 @@ impl Program {
         self
     }
 
+    /// The places where a u64 is written or worked out in a way that
+    /// every engine should meet as a plain call (decision 42):
+    ///
+    /// - a whole number written where a u64 is wanted becomes
+    ///   `u64..of(n)`, and one past the largest int is written as the int
+    ///   with the same 64 bits: `18446744073709551615` is `u64..of(-1)`;
+    /// - `a * b` straight inside `u64.wrap( )` becomes `u64..mul(a, b)`,
+    ///   and so do `+`, `-` and `<<`, found by where their right side is;
+    /// - `u8.max` becomes `u8(255)`, `u64.wrap` becomes `u64..of`.
+    ///
+    /// No name a program writes has two dots in a row.
+    pub fn with_u64s(
+        mut self,
+        mut wholes: HashSet<(usize, usize)>,
+        mut wrapping: HashMap<(usize, usize), &'static str>,
+        mut limits: HashMap<(usize, usize), Expr>,
+    ) -> Program {
+        let mut visit = |node: Node| {
+            let Node::Expr(expr) = node else { return };
+            let span = expr.span;
+            let key = (span.line, span.col);
+            match &mut expr.kind {
+                ExprKind::Int(n) if wholes.remove(&key) => {
+                    let n = *n;
+                    let number = |n: u64| Expr { kind: ExprKind::Int(n), span };
+                    let negative = |n: u64| Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(number(n)) }, span };
+                    let bits = if n <= i64::MAX as u64 {
+                        number(n)
+                    } else if n > 1 << 63 {
+                        negative(n.wrapping_neg())
+                    } else {
+                        // 2 to the 63rd: the smallest int, written as the
+                        // largest, negated, less one.
+                        let left = Box::new(negative(i64::MAX as u64));
+                        Expr { kind: ExprKind::Binary { op: BinaryOp::Sub, left, right: Box::new(number(1)) }, span }
+                    };
+                    let callee = Box::new(Expr { kind: ExprKind::Name("u64..of".to_string()), span });
+                    expr.kind = ExprKind::Call { callee, args: vec![Arg { name: None, value: bits }] };
+                }
+                ExprKind::Binary { right, .. } if wrapping.contains_key(&(right.span.line, right.span.col)) => {
+                    let function = wrapping.remove(&(right.span.line, right.span.col)).unwrap_or("u64..add");
+                    let ExprKind::Binary { left, right, .. } = std::mem::replace(&mut expr.kind, ExprKind::None) else {
+                        return;
+                    };
+                    let callee = Box::new(Expr { kind: ExprKind::Name(function.to_string()), span });
+                    let args = vec![Arg { name: None, value: *left }, Arg { name: None, value: *right }];
+                    expr.kind = ExprKind::Call { callee, args };
+                }
+                ExprKind::Field { .. } => {
+                    if let Some(value) = limits.remove(&key) {
+                        *expr = value;
+                    }
+                }
+                _ => {}
+            }
+        };
+        fresh_block(&mut self.statements, &mut visit);
+        self
+    }
+
     /// `int(Ack)` and `Reply(6)`, for an enum whose cases have numbers
     /// (decision 35.2). The checker says where each such call is, and
     /// which enums they use. Each of those enums gets two functions,

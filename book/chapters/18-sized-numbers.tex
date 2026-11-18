@@ -128,6 +128,11 @@ Type & Bits & Holds \\
 \end{tabular}
 \end{center}
 
+Each type, and \verb|int|, knows its ends: \verb|u8.max| is 255,
+\verb|i16.min| is $-32\,768$, and \verb|int.max| is
+9\,223\,372\,036\,854\,775\,807. Each is a number of its type, so
+\verb|let top: u8 = u8.max| needs nothing more.
+
 They are for where the size is real: a byte in a frame, a field of an
 object on a board with 2\,KB of memory, a register. With the size in
 the type, the checker knows that a \verb|u8| is never handed 300, and
@@ -264,9 +269,9 @@ megabyte in memory. Nothing has to be asked for, and nothing in the
 program changes. Lists of the other sized types still take eight bytes
 an item. (Decision 36.2.)
 
-There is no \verb|u64|. An \verb|int| is 64 bits with a sign, so half
-the values of a \verb|u64| would not fit in one, and "arithmetic gives
-an \verb|int|" would stop being true. (Decision 2.8d.)
+A \verb|u64| is the one sized type whose sums are not \verb|int|s,
+because half of its values would not fit in one. It has a section of
+its own, after \verb|f32|.
 
 \section{A float of 32 bits: f32}
 
@@ -317,6 +322,56 @@ C picks 64 bits when a \verb|float| meets a \verb|double|, so one
 software sums, and nothing says so. Picking 32 bits would throw away
 digits instead. Either guess can be the wrong one, so Zeno asks.
 (Decision 41.)
+\end{why}
+
+\section{A whole number of 64 bits with no sign: u64}
+
+A hash, a random generator, a 64-bit register or a count of
+microseconds since the board started wants all 64 bits and no sign.
+An \verb|int| has a sign, so it stops at about $9.2 \times 10^{18}$.
+\verb|u64| holds 0 to 18\,446\,744\,073\,709\,551\,615, as C's
+\verb|uint64_t|.
+
+\begin{zeno}
+function fnv(text: str) -> u64 raises OverflowError {
+    var h: u64 = 0xcbf29ce484222325
+    for c in text {
+        h = h ^ u64(c.code())
+        h = u64.wrap(h * 0x100000001b3)
+    }
+    return h
+}
+let hash = fnv("hello")
+print(f"{hash:016x}")      # a430d84680aabd0b
+print(hash, u64.max)
+\end{zeno}
+
+A sum of \verb|u64|s is a \verb|u64|, and it is checked: past the
+largest, or below 0, it is an \verb|OverflowError|. \verb|u64.wrap|
+around a sum cuts it to 64 bits instead, which is what a hash means.
+\verb|u64(n)| makes one from an \verb|int| and fails when the
+\verb|int| is below 0, which is why \verb|fnv| says
+\verb|raises OverflowError|; \verb|int(x)| goes back and fails past
+\verb|int.max|.
+
+A number written beside a \verb|u64|, as in \verb|h * 3| or
+\verb|h > 1000|, becomes one. An \verb|int| value beside it is
+refused:
+
+\begin{zeno}[fails=yes]
+let count: u64 = 5
+let step = -3
+print(count + step)
+\end{zeno}
+
+The message says to write \verb|u64(step)| or \verb|int(count)|.
+
+\begin{why}
+C makes both unsigned when they meet, so \verb|-1 < x| is false for
+every unsigned \verb|x|. Making both signed fails for half the
+\verb|u64|s. Either guess can be wrong, so Zeno asks. A \verb|u64|
+is not an \verb|int| for free, as a \verb|u8| is, for the same
+reason. (Decision 42.)
 \end{why}
 
 \section{A worked example: a frame from a sensor}
@@ -373,6 +428,10 @@ an \verb|int|; \verb|u8(n)| puts it back with a check, and
 the other way is written. \verb|f32| is a float of 32 bits whose sums
 stay \verb|f32|; it goes where a \verb|float| is wanted, and never
 meets a \verb|float| value without \verb|f32( )| or \verb|float( )|.
+\verb|u64| holds 64 bits with no sign; its sums stay \verb|u64| and
+are checked, \verb|u64.wrap| cuts them instead, and it meets only a
+\verb|u64| or a written number. \verb|u8.max|, \verb|int.min| and
+the rest are the ends of each type.
 \end{summary}
 
 \begin{tryit}

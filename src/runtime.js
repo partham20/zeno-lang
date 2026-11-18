@@ -12,6 +12,7 @@
 //              and a BigInt beyond that, up to the 64 bits of a Zeno int
 //   float      a `Float`: a number in a box, so that 3.0 is not taken for 3
 //   f32        an `F32`: the float it is exactly, in a box (decision 41)
+//   u64        a `U64`: a BigInt from 0 to 2**64 - 1, in a box (decision 42)
 //   str        a JS string
 //   bool       true, false
 //   none       null
@@ -83,6 +84,7 @@ const Z = (function () {
     if (typeof v === "number") return v;
     if (v instanceof Float) return v.v;
     if (v instanceof F32) return v.v;
+    if (v instanceof U64) return Number(v.v);
     if (typeof v === "bigint") return Number(v);
     return null;
   }
@@ -122,10 +124,59 @@ const Z = (function () {
     return f32(Math.fround(r));
   }
 
+  class U64 { constructor(v) { this.v = v; } }
+  const U64_MAX = 18446744073709551615n;
+  const U64_TOO_BIG = "the result is too big for a u64";
+  // A u64, or an int of 0 or more, as a BigInt; else null.
+  function unsigned(v) {
+    if (v instanceof U64) return v.v;
+    if (isInt(v) && v >= 0) return big(v);
+    return null;
+  }
+  function u64ShiftCount(n, line) {
+    const c = n instanceof U64 ? n.v : big(n);
+    if (c < 0n || c >= 64n) raise("ValueError", "cannot shift by " + c + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+    return c;
+  }
+  // `a op b` where one side is a u64 (decision 42).
+  function u64Op(op, a, b, line) {
+    if ((op === "<<" || op === ">>") && a instanceof U64 && (isInt(b) || b instanceof U64)) {
+      const n = u64ShiftCount(b, line);
+      if (op === ">>") return new U64(a.v >> n);
+      if (a.v << n > U64_MAX) raise("OverflowError", U64_TOO_BIG, line);
+      return new U64(a.v << n);
+    }
+    const x = unsigned(a), y = unsigned(b);
+    if (x === null || y === null) fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line);
+    let r;
+    if (op === "+") r = x + y;
+    else if (op === "-") {
+      if (y > x) raise("OverflowError", "the result is below 0, and a u64 never is", line);
+      r = x - y;
+    } else if (op === "*") r = x * y;
+    else if (op === "/") {
+      if (y === 0n) byZero(line);
+      return float(Number(x) / Number(y));
+    } else if (op === "//" || op === "%") {
+      if (y === 0n) byZero(line);
+      r = op === "//" ? x / y : x % y;
+    } else if (op === "**") {
+      if (y === 0n) return new U64(1n);
+      if (x < 2n) return new U64(x);
+      if (y > 64n) raise("OverflowError", U64_TOO_BIG, line);
+      r = x ** y;
+    } else if (op === "&") r = x & y;
+    else if (op === "|") r = x | y;
+    else r = x ^ y;
+    if (r > U64_MAX) raise("OverflowError", U64_TOO_BIG, line);
+    return new U64(r);
+  }
+
   function typeName(v) {
     if (isInt(v)) return "an int";
     if (v instanceof Float) return "a float";
     if (v instanceof F32) return "an f32";
+    if (v instanceof U64) return "a u64";
     if (typeof v === "string") return "a str";
     if (typeof v === "boolean") return "a bool";
     if (v === null) return "none";
@@ -226,6 +277,7 @@ const Z = (function () {
     if (typeof v === "string") return v;
     if (v instanceof Float) return showFloat(v.v);
     if (v instanceof F32) return showFloat(f32Shown(v.v));
+    if (v instanceof U64) return String(v.v);
     if (typeof v === "boolean") return v ? "true" : "false";
     if (v === null) return "none";
     if (v instanceof Quantity) {
@@ -309,6 +361,10 @@ const Z = (function () {
 
   function equal(a, b) {
     if (a === b) return !(a instanceof Float || a instanceof F32) || a.v === a.v;
+    if (a instanceof U64 || b instanceof U64) {
+      const x = unsigned(a), y = unsigned(b);
+      return x !== null && x === y;
+    }
     if (a instanceof F32 || b instanceof F32) {
       const x = single(a), y = single(b);
       if (x !== null && y !== null) return x === y;
@@ -370,6 +426,7 @@ const Z = (function () {
   }
 
   function add(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("+", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('+', a, b, line);
     if (typeof a === "number" && typeof b === "number") {
       const r = a + b;
@@ -389,6 +446,7 @@ const Z = (function () {
   }
 
   function sub(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("-", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('-', a, b, line);
     if (typeof a === "number" && typeof b === "number") {
       const r = a - b;
@@ -406,6 +464,7 @@ const Z = (function () {
   }
 
   function mul(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("*", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('*', a, b, line);
     if (Array.isArray(a) && isInt(b)) {
       if (b < 0) raise("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line);
@@ -430,6 +489,7 @@ const Z = (function () {
   }
 
   function div(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("/", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('/', a, b, line);
     if (a instanceof Quantity) {
       if ((b instanceof Quantity || b instanceof Float) && b.v === 0) byZero(line);
@@ -450,6 +510,7 @@ const Z = (function () {
   }
 
   function floordiv(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("//", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('//', a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b == 0) byZero(line);
@@ -472,6 +533,7 @@ const Z = (function () {
   }
 
   function mod(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("%", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op("%", a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b == 0) byZero(line);
@@ -490,6 +552,7 @@ const Z = (function () {
   }
 
   function pow(a, b, line) {
+    if (a instanceof U64 || b instanceof U64) return u64Op("**", a, b, line);
     if (a instanceof F32 || b instanceof F32) return f32Op('**', a, b, line);
     if (isInt(a) && isInt(b)) {
       if (b < 0) raise("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", line);
@@ -518,10 +581,11 @@ const Z = (function () {
     fatal("`" + op + "` works on the bits of whole numbers, and these are " + typeName(a) + " and " + typeName(b) + hint, line);
   }
 
-  function bitand(a, b, line) { if (!isInt(a) || !isInt(b)) bitsMismatch("&", a, b, line); return int(big(a) & big(b), line); }
-  function bitor(a, b, line) { if (!isInt(a) || !isInt(b)) bitsMismatch("|", a, b, line); return int(big(a) | big(b), line); }
-  function bitxor(a, b, line) { if (!isInt(a) || !isInt(b)) bitsMismatch("^", a, b, line); return int(big(a) ^ big(b), line); }
+  function bitand(a, b, line) { if (a instanceof U64 || b instanceof U64) return u64Op("&", a, b, line); if (!isInt(a) || !isInt(b)) bitsMismatch("&", a, b, line); return int(big(a) & big(b), line); }
+  function bitor(a, b, line) { if (a instanceof U64 || b instanceof U64) return u64Op("|", a, b, line); if (!isInt(a) || !isInt(b)) bitsMismatch("|", a, b, line); return int(big(a) | big(b), line); }
+  function bitxor(a, b, line) { if (a instanceof U64 || b instanceof U64) return u64Op("^", a, b, line); if (!isInt(a) || !isInt(b)) bitsMismatch("^", a, b, line); return int(big(a) ^ big(b), line); }
   function shift(op, a, n, line) {
+    if (a instanceof U64 || n instanceof U64) return u64Op(op, a, n, line);
     if (!isInt(a) || !isInt(n)) bitsMismatch(op, a, n, line);
     if (n < 0 || n >= 64) raise("ValueError", "cannot shift by " + n + ". An int has 64 bits, so a shift is 0 to 63", line);
     if (op === ">>") return int(big(a) >> big(n), line);
@@ -537,16 +601,23 @@ const Z = (function () {
     if (typeof v === "bigint") return int(-v, line);
     if (v instanceof Float) return float(-v.v);
     if (v instanceof F32) return f32(-v.v);
+    if (v instanceof U64) fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line);
     if (v instanceof Quantity) return new Quantity(-v.v, v.unit);
     fatal("`-` does not work on " + typeName(v), line);
   }
   function bitnot(v, line) {
+    if (v instanceof U64) return new U64(U64_MAX ^ v.v);
     if (!isInt(v)) fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line);
     return int(~big(v), line);
   }
 
   // `<` and the others: -1, 0, 1, or null for a NaN.
   function order(op, a, b, line) {
+    if (a instanceof U64 || b instanceof U64) {
+      const x = unsigned(a), y = unsigned(b);
+      if (x === null || y === null) u64Op(op, a, b, line);
+      return x < y ? -1 : x > y ? 1 : 0;
+    }
     if (a instanceof F32 || b instanceof F32) {
       const x = single(a), y = single(b);
       if (x === null || y === null) f32Op(op, a, b, line);
@@ -944,7 +1015,10 @@ const Z = (function () {
     if (values.length === 0) raise("ValueError", "`" + name + "` of nothing", line);
     if (values.some((item) => item instanceof F32) && values.every((item) => item instanceof F32 || isInt(item))) values = values.map((item) => f32(single(item)));
     let best = values[0];
-    for (const item of values.slice(1)) if (better(amount(item), amount(best))) best = item;
+    for (const item of values.slice(1)) {
+      const wins = item instanceof U64 && best instanceof U64 ? (name === "min" ? item.v < best.v : item.v > best.v) : better(amount(item), amount(best));
+      if (wins) best = item;
+    }
     return best;
   }
 
@@ -989,7 +1063,7 @@ const Z = (function () {
     const keys = [];
     for (const item of items.slice()) {
       const k = call(fn, [item], line);
-      if (!isInt(k) && !(k instanceof Float) && !(k instanceof F32) && typeof k !== "string") fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
+      if (!isInt(k) && !(k instanceof Float) && !(k instanceof F32) && !(k instanceof U64) && typeof k !== "string") fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
       keys.push(k);
     }
     const sorted = items.slice();
@@ -1193,8 +1267,11 @@ const Z = (function () {
       const x = number(v);
       if (x === null) wrongType(spec, "a number", v, line);
       body = fixed(x, precision === null ? 6 : precision);
-    } else if ((kind === undefined && precision === null) || (kind === "d" && precision === null && isInt(v))) {
+    } else if ((kind === undefined && precision === null) || (kind === "d" && precision === null && (isInt(v) || v instanceof U64))) {
       body = show(v);
+    } else if ((kind === "x" || kind === "X" || kind === "b") && precision === null && v instanceof U64) {
+      body = v.v.toString(kind === "b" ? 2 : 16);
+      if (kind === "X") body = body.toUpperCase();
     } else if ((kind === "x" || kind === "X" || kind === "b") && precision === null && isInt(v)) {
       const n = big(v);
       const magnitude = n < 0n ? -n : n;
@@ -1382,6 +1459,16 @@ const Z = (function () {
 
   // ------------------------------------------------- The built-in table
 
+  // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+  function u64Wrapping(op, args, line) {
+    arity("u64.wrap", args, 2, 2, line);
+    const [a, b] = args;
+    if (op === "<<" && unsigned(a) !== null && (isInt(b) || b instanceof U64)) return new U64(BigInt.asUintN(64, (unsigned(a) << u64ShiftCount(b, line))));
+    const x = unsigned(a), y = unsigned(b);
+    if (x === null || y === null) wrongType("u64.wrap", "u64s", x === null ? a : b, line);
+    return new U64(BigInt.asUintN(64, (op === "+" ? x + y : op === "-" ? x - y : x * y)));
+  }
+
   const BUILTINS = {
     print(args) { write(args.map(show).join(" ") + "\n"); return null; },
     input(args, line) {
@@ -1435,6 +1522,10 @@ const Z = (function () {
       const v = args[0];
       if (isInt(v)) return v;
       if (v instanceof F32) return BUILTINS.int([float(v.v)], line);
+      if (v instanceof U64) {
+        if (v.v > MAX) raise("OverflowError", v.v + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line);
+        return int(v.v, line);
+      }
       if (v instanceof Float) {
         if (!Number.isFinite(v.v)) raise("ValueError", "cannot turn " + (Number.isNaN(v.v) ? "NaN" : v.v > 0 ? "inf" : "-inf") + " into an int", line);
         const t = Math.trunc(v.v);
@@ -1458,6 +1549,7 @@ const Z = (function () {
       if (isInt(v)) return float(Number(v));
       if (v instanceof Float) return v;
       if (v instanceof F32) return float(v.v);
+      if (v instanceof U64) return float(Number(v.v));
       if (typeof v === "string") {
         const x = parseFloatText(strip(v));
         if (x === null) raise("ValueError", "cannot turn " + quoted(v) + " into a float", line);
@@ -1477,6 +1569,28 @@ const Z = (function () {
       }
       wrongType("f32", "a number", v, line);
     },
+    u64(args, line) {
+      arity("u64", args, 1, 1, line);
+      const v = args[0];
+      if (v instanceof U64) return v;
+      if (isInt(v)) {
+        if (v < 0) raise("OverflowError", v + " does not fit in a u64 (0 to 18446744073709551615)", line);
+        return new U64(big(v));
+      }
+      wrongType("u64", "a whole number", v, line);
+    },
+    // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    "u64..of"(args, line) {
+      arity("u64.wrap", args, 1, 1, line);
+      const v = args[0];
+      if (v instanceof U64) return v;
+      if (isInt(v)) return new U64(BigInt.asUintN(64, big(v)));
+      wrongType("u64.wrap", "a whole number", v, line);
+    },
+    "u64..add"(args, line) { return u64Wrapping("+", args, line); },
+    "u64..sub"(args, line) { return u64Wrapping("-", args, line); },
+    "u64..mul"(args, line) { return u64Wrapping("*", args, line); },
+    "u64..shl"(args, line) { return u64Wrapping("<<", args, line); },
     str(args, line) { arity("str", args, 1, 1, line); return show(args[0]); },
     abs(args, line) {
       arity("abs", args, 1, 1, line);
@@ -1484,6 +1598,7 @@ const Z = (function () {
       if (isInt(v)) return v < 0 ? neg(v, line) : v;
       if (v instanceof Float) return float(Math.abs(v.v));
       if (v instanceof F32) return f32(Math.abs(v.v));
+      if (v instanceof U64) return v;
       if (v instanceof Quantity) return new Quantity(Math.abs(v.v), v.unit);
       wrongType("abs", "a number", v, line);
     },
@@ -1496,6 +1611,14 @@ const Z = (function () {
         let single32 = 0;
         for (const item of values) single32 = Math.fround(single32 + single(item));
         return f32(single32);
+      }
+      if (values.some((item) => item instanceof U64)) {
+        let total = 0n;
+        for (const item of values) {
+          total += unsigned(item) ?? 0n;
+          if (total > U64_MAX) raise("OverflowError", U64_TOO_BIG, line);
+        }
+        return new U64(total);
       }
       let total = 0, allInts = true, floatTotal = 0;
       for (const item of values) {
@@ -1786,6 +1909,6 @@ const Z = (function () {
     show, repr,
     start, flush, setPage: (f) => { writePage = f; },
     // The built-in functions, by name, with `_` for the `.` of a module: Z.b.math_sqrt
-    b: Object.fromEntries(Object.entries(BUILTINS).map(([name, fn]) => [name.replace(".", "_"), fn])),
+    b: Object.fromEntries(Object.entries(BUILTINS).map(([name, fn]) => [name.replace(/\./g, "_"), fn])),
   };
 })();

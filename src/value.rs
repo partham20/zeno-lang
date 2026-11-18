@@ -24,6 +24,8 @@ pub enum Value {
     Float(f64),
     /// A float of 32 bits (decision 41).
     F32(f32),
+    /// A whole number of 64 bits with no sign (decision 42).
+    U64(u64),
     Str(Rc<str>),
     Bool(bool),
     None,
@@ -613,6 +615,19 @@ impl Value {
             Value::Int(n) => Some(*n as f64),
             Value::Float(x) => Some(*x),
             Value::F32(x) => Some(*x as f64),
+            Value::U64(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// A u64, or an int that is not below 0, as a u64: what a u64 meets
+    /// in a sum (decision 42.3). The checker lets only a u64 through;
+    /// an int can still arrive where the program could not say which,
+    /// such as the `sum` of an empty list.
+    pub fn unsigned(&self) -> Option<u64> {
+        match self {
+            Value::U64(n) => Some(*n),
+            Value::Int(n) => u64::try_from(*n).ok(),
             _ => None,
         }
     }
@@ -623,6 +638,7 @@ impl Value {
             Value::Int(_) => "an int".to_string(),
             Value::Float(_) => "a float".to_string(),
             Value::F32(_) => "an f32".to_string(),
+            Value::U64(_) => "a u64".to_string(),
             Value::Str(_) => "a str".to_string(),
             Value::Bool(_) => "a bool".to_string(),
             Value::None => "none".to_string(),
@@ -763,6 +779,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
     use Value::*;
     match (a, b) {
         (Int(a), Int(b)) => a == b,
+        (U64(_), _) | (_, U64(_)) => matches!((a.unsigned(), b.unsigned()), (Some(x), Some(y)) if x == y),
         (Int(_) | Float(_) | F32(_), Int(_) | Float(_) | F32(_)) => a.number() == b.number(),
         (Str(a), Str(b)) => a == b,
         (Bool(a), Bool(b)) => a == b,
@@ -825,6 +842,7 @@ impl fmt::Display for Value {
             // {:?} keeps the ".0" on whole floats, so 3.0 does not print as 3.
             Value::Float(x) => f.write_str(&float_text(*x)),
             Value::F32(x) => f.write_str(&f32_text(*x)),
+            Value::U64(n) => write!(f, "{n}"),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::None => write!(f, "none"),

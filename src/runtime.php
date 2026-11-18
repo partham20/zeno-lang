@@ -12,6 +12,7 @@
 //              does not fit into a float, which is how a step sees it
 //   float      a PHP float
 //   f32        a `ZF32`: the float it is exactly (decision 41)
+//   u64        a `ZU64`: the PHP int with the same 64 bits (decision 42)
 //   str        a PHP string, in UTF-8
 //   bool       true, false
 //   none       null
@@ -30,6 +31,7 @@
 final class ZList { public $v; function __construct(array $v) { $this->v = $v; } }
 final class ZDict { public $map = []; }
 final class ZF32 { public $v; function __construct(float $v) { $this->v = $v; } }
+final class ZU64 { public $v; function __construct(int $v) { $this->v = $v; } }
 final class ZQuantity { public $v; public $unit; function __construct(float $v, string $unit) { $this->v = $v; $this->unit = $unit; } }
 final class ZFn {
     public $name; public $params; public $defaults; public $fn; public $builtin;
@@ -86,8 +88,154 @@ final class Z {
         if (is_float($v)) return $v;
         if (is_int($v)) return (float)$v;
         if ($v instanceof ZF32) return $v->v;
+        if ($v instanceof ZU64) return self::uFloat($v->v);
         return null;
     }
+    // ---- u64 (decision 42). A PHP int has 64 bits and a sign, and a sum
+    // past its largest becomes a float, so a u64 is the int with the same
+    // bits and its arithmetic is done in pieces that cannot spill over.
+    const U64_TOO_BIG = "the result is too big for a u64";
+    // A u64, or an int of 0 or more, as its bits; else null.
+    static function unsigned($v): ?int {
+        if ($v instanceof ZU64) return $v->v;
+        if (is_int($v) && $v >= 0) return $v;
+        return null;
+    }
+    // `a < b` with no sign: the top bit turned over makes the signed
+    // order the unsigned one.
+    static function uLess(int $a, int $b): bool { return ($a ^ PHP_INT_MIN) < ($b ^ PHP_INT_MIN); }
+    // The bits moved down, with zeros coming in at the top.
+    static function uDown(int $a, int $n): int { return $n === 0 ? $a : (($a >> $n) & (PHP_INT_MAX >> ($n - 1))); }
+    // `a + b` cut to 64 bits, and whether it was cut.
+    static function uAdd(int $a, int $b): array {
+        $lo = ($a & 0xFFFFFFFF) + ($b & 0xFFFFFFFF);
+        $hi = (($a >> 32) & 0xFFFFFFFF) + (($b >> 32) & 0xFFFFFFFF) + ($lo >> 32);
+        return [(($hi & 0xFFFFFFFF) << 32) | ($lo & 0xFFFFFFFF), ($hi >> 32) !== 0];
+    }
+    // `a * b` cut to 64 bits, and whether it was cut: four pieces of 16
+    // bits each side, as on paper.
+    static function uMul(int $a, int $b): array {
+        $x = []; $y = [];
+        for ($i = 0; $i < 4; $i++) { $x[] = ($a >> (16 * $i)) & 0xFFFF; $y[] = ($b >> (16 * $i)) & 0xFFFF; }
+        $out = array_fill(0, 8, 0);
+        for ($i = 0; $i < 4; $i++) {
+            $carry = 0;
+            for ($j = 0; $j < 4; $j++) {
+                $t = $out[$i + $j] + $x[$i] * $y[$j] + $carry;
+                $out[$i + $j] = $t & 0xFFFF;
+                $carry = $t >> 16;
+            }
+            $out[$i + 4] += $carry;
+        }
+        $r = $out[0] | ($out[1] << 16) | ($out[2] << 32) | ($out[3] << 48);
+        return [$r, ($out[4] | $out[5] | $out[6] | $out[7]) !== 0];
+    }
+    // `a // b` and `a % b` with no sign; `b` is not 0.
+    static function uDivMod(int $a, int $b): array {
+        if ($b < 0) return self::uLess($a, $b) ? [0, $a] : [1, self::uAdd($a, self::uAdd(~$b, 1)[0])[0]];
+        if ($a >= 0) return [intdiv($a, $b), $a % $b];
+        $q = intdiv(self::uDown($a, 1), $b) << 1;
+        $r = self::uAdd($a, self::uAdd(~self::uMul($q, $b)[0], 1)[0])[0];
+        if (!self::uLess($r, $b)) { $q += 1; $r = self::uAdd($r, self::uAdd(~$b, 1)[0])[0]; }
+        return [$q, $r];
+    }
+    static function uText(int $a): string {
+        if ($a >= 0) return (string)$a;
+        [$q, $r] = self::uDivMod($a, 10);
+        return $q . $r;
+    }
+    // The nearest float, as Rust's `as f64` makes it.
+    static function uFloat(int $a): float {
+        if ($a >= 0) return (float)$a;
+        return (float)(self::uDown($a, 1) | ($a & 1)) * 2.0;
+    }
+    static function u64ShiftCount($n, int $line): int {
+        if ($n instanceof ZU64) {
+            if ($n->v < 0 || $n->v >= 64) self::raise_("ValueError", "cannot shift by " . self::uText($n->v) . ". A u64 has 64 bits, so a shift is 0 to 63", $line);
+            return $n->v;
+        }
+        if ($n < 0 || $n >= 64) self::raise_("ValueError", "cannot shift by " . $n . ". A u64 has 64 bits, so a shift is 0 to 63", $line);
+        return $n;
+    }
+    // `a op b` where one side is a u64 (decision 42).
+    static function u64Op(string $op, $a, $b, int $line) {
+        if (($op === "<<" || $op === ">>") && $a instanceof ZU64 && (is_int($b) || $b instanceof ZU64)) {
+            $n = self::u64ShiftCount($b, $line);
+            if ($op === ">>") return new ZU64(self::uDown($a->v, $n));
+            $r = $a->v << $n;
+            if (self::uDown($r, $n) !== $a->v) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+            return new ZU64($r);
+        }
+        $x = self::unsigned($a); $y = self::unsigned($b);
+        if ($x === null || $y === null) self::fatal("`" . $op . "` between " . self::typeName($a) . " and " . self::typeName($b) . " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", $line);
+        switch ($op) {
+            case "+":
+                [$r, $cut] = self::uAdd($x, $y);
+                if ($cut) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+                return new ZU64($r);
+            case "-":
+                if (self::uLess($x, $y)) self::raise_("OverflowError", "the result is below 0, and a u64 never is", $line);
+                return new ZU64(self::uAdd($x, self::uAdd(~$y, 1)[0])[0]);
+            case "*":
+                [$r, $cut] = self::uMul($x, $y);
+                if ($cut) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+                return new ZU64($r);
+            case "/":
+                if ($y === 0) self::byZero($line);
+                return self::uFloat($x) / self::uFloat($y);
+            case "//":
+            case "%":
+                if ($y === 0) self::byZero($line);
+                return new ZU64(self::uDivMod($x, $y)[$op === "//" ? 0 : 1]);
+            case "**":
+                if ($y === 0) return new ZU64(1);
+                if ($x === 0 || $x === 1) return new ZU64($x);
+                if ($y < 0 || $y > 64) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+                $r = 1;
+                for ($i = 0; $i < $y; $i++) {
+                    [$r, $cut] = self::uMul($r, $x);
+                    if ($cut) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+                }
+                return new ZU64($r);
+            case "&": return new ZU64($x & $y);
+            case "|": return new ZU64($x | $y);
+            default: return new ZU64($x ^ $y);
+        }
+    }
+    // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    static function u64Wrapping(string $op, array $args, int $line): ZU64 {
+        self::arity("u64.wrap", $args, 2, 2, $line);
+        [$a, $b] = $args;
+        if ($op === "<<" && self::unsigned($a) !== null && (is_int($b) || $b instanceof ZU64)) return new ZU64(self::unsigned($a) << self::u64ShiftCount($b, $line));
+        $x = self::unsigned($a); $y = self::unsigned($b);
+        if ($x === null || $y === null) self::wrongType("u64.wrap", "u64s", $x === null ? $a : $b, $line);
+        if ($op === "+") return new ZU64(self::uAdd($x, $y)[0]);
+        if ($op === "-") return new ZU64(self::uAdd($x, self::uAdd(~$y, 1)[0])[0]);
+        return new ZU64(self::uMul($x, $y)[0]);
+    }
+    static function b_u64(array $args, int $line) {
+        self::arity("u64", $args, 1, 1, $line);
+        $v = $args[0];
+        if ($v instanceof ZU64) return $v;
+        if (is_int($v)) {
+            if ($v < 0) self::raise_("OverflowError", $v . " does not fit in a u64 (0 to 18446744073709551615)", $line);
+            return new ZU64($v);
+        }
+        self::wrongType("u64", "a whole number", $v, $line);
+    }
+    // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    static function b_u64__of(array $args, int $line) {
+        self::arity("u64.wrap", $args, 1, 1, $line);
+        $v = $args[0];
+        if ($v instanceof ZU64) return $v;
+        if (is_int($v)) return new ZU64($v);
+        self::wrongType("u64.wrap", "a whole number", $v, $line);
+    }
+    static function b_u64__add(array $args, int $line) { return self::u64Wrapping("+", $args, $line); }
+    static function b_u64__sub(array $args, int $line) { return self::u64Wrapping("-", $args, $line); }
+    static function b_u64__mul(array $args, int $line) { return self::u64Wrapping("*", $args, $line); }
+    static function b_u64__shl(array $args, int $line) { return self::u64Wrapping("<<", $args, $line); }
+
     // The nearest f32 to a float, as a float.
     static function fround(float $x): float { return unpack("g", pack("g", $x))[1]; }
     // An f32, or an int as a float and then the nearest f32 (41.2).
@@ -129,6 +277,7 @@ final class Z {
         if (is_int($v)) return "an int";
         if (is_float($v)) return "a float";
         if ($v instanceof ZF32) return "an f32";
+        if ($v instanceof ZU64) return "a u64";
         if (is_string($v)) return "a str";
         if (is_bool($v)) return "a bool";
         if ($v === null) return "none";
@@ -290,6 +439,7 @@ final class Z {
         if (is_int($v)) return (string)$v;
         if (is_float($v)) return self::showFloat($v);
         if ($v instanceof ZF32) return self::showFloat(self::f32Shown($v->v));
+        if ($v instanceof ZU64) return self::uText($v->v);
         if (is_bool($v)) return $v ? "true" : "false";
         if ($v === null) return "none";
         if ($v instanceof ZQuantity) {
@@ -380,6 +530,10 @@ final class Z {
     // ------------------------------------------------------------ Equality
 
     static function eq($a, $b): bool {
+        if ($a instanceof ZU64 || $b instanceof ZU64) {
+            $x = self::unsigned($a);
+            return $x !== null && $x === self::unsigned($b);
+        }
         if ($a instanceof ZF32 || $b instanceof ZF32) {
             $x = self::single($a); $y = self::single($b);
             if ($x !== null && $y !== null) return $x === $y;
@@ -429,6 +583,7 @@ final class Z {
     }
 
     static function add($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("+", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("+", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             // A sum too big for an int is a float in PHP.
@@ -449,6 +604,7 @@ final class Z {
     }
 
     static function sub($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("-", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("-", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             $r = $a - $b;
@@ -466,6 +622,7 @@ final class Z {
     }
 
     static function mul($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("*", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("*", $a, $b, $line);
         if ($a instanceof ZList && is_int($b)) {
             if ($b < 0) self::raise_("ValueError", "`*` repeats a list 0 or more times, and this is " . $b, $line);
@@ -490,6 +647,7 @@ final class Z {
     }
 
     static function div($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("/", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("/", $a, $b, $line);
         if ($a instanceof ZQuantity) {
             if ($b === 0 || $b === 0.0 || ($b instanceof ZQuantity && $b->v == 0)) self::byZero($line);
@@ -509,6 +667,7 @@ final class Z {
     }
 
     static function floordiv($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("//", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("//", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b === 0) self::byZero($line);
@@ -528,6 +687,7 @@ final class Z {
     }
 
     static function mod($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("%", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("%", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b === 0) self::byZero($line);
@@ -542,6 +702,7 @@ final class Z {
     }
 
     static function pow($a, $b, int $line) {
+        if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("**", $a, $b, $line);
         if ($a instanceof ZF32 || $b instanceof ZF32) return self::f32Op("**", $a, $b, $line);
         if (is_int($a) && is_int($b)) {
             if ($b < 0) self::raise_("ValueError", "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`", $line);
@@ -579,10 +740,11 @@ final class Z {
         self::fatal("`" . $op . "` works on the bits of whole numbers, and these are " . self::typeName($a) . " and " . self::typeName($b) . $hint, $line);
     }
 
-    static function bitand($a, $b, int $line) { if (!is_int($a) || !is_int($b)) self::bitsMismatch("&", $a, $b, $line); return $a & $b; }
-    static function bitor($a, $b, int $line) { if (!is_int($a) || !is_int($b)) self::bitsMismatch("|", $a, $b, $line); return $a | $b; }
-    static function bitxor($a, $b, int $line) { if (!is_int($a) || !is_int($b)) self::bitsMismatch("^", $a, $b, $line); return $a ^ $b; }
+    static function bitand($a, $b, int $line) { if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("&", $a, $b, $line); if (!is_int($a) || !is_int($b)) self::bitsMismatch("&", $a, $b, $line); return $a & $b; }
+    static function bitor($a, $b, int $line) { if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("|", $a, $b, $line); if (!is_int($a) || !is_int($b)) self::bitsMismatch("|", $a, $b, $line); return $a | $b; }
+    static function bitxor($a, $b, int $line) { if ($a instanceof ZU64 || $b instanceof ZU64) return self::u64Op("^", $a, $b, $line); if (!is_int($a) || !is_int($b)) self::bitsMismatch("^", $a, $b, $line); return $a ^ $b; }
     static function shift(string $op, $a, $n, int $line) {
+        if ($a instanceof ZU64 || $n instanceof ZU64) return self::u64Op($op, $a, $n, $line);
         if (!is_int($a) || !is_int($n)) self::bitsMismatch($op, $a, $n, $line);
         if ($n < 0 || $n >= 64) self::raise_("ValueError", "cannot shift by " . $n . ". An int has 64 bits, so a shift is 0 to 63", $line);
         if ($op === ">>") return $a >> $n;
@@ -601,16 +763,23 @@ final class Z {
         }
         if (is_float($v)) return -$v;
         if ($v instanceof ZF32) return new ZF32(-$v->v);
+        if ($v instanceof ZU64) self::fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", $line);
         if ($v instanceof ZQuantity) return new ZQuantity(-$v->v, $v->unit);
         self::fatal("`-` does not work on " . self::typeName($v), $line);
     }
     static function bitnot($v, int $line) {
+        if ($v instanceof ZU64) return new ZU64(~$v->v);
         if (!is_int($v)) self::fatal("`~` works on the bits of a whole number, and this is " . self::typeName($v), $line);
         return ~$v;
     }
 
     // `<` and the others: -1, 0, 1, or null for a NaN.
     static function order(string $op, $a, $b, int $line): ?int {
+        if ($a instanceof ZU64 || $b instanceof ZU64) {
+            $x = self::unsigned($a); $y = self::unsigned($b);
+            if ($x === null || $y === null) self::u64Op($op, $a, $b, $line);
+            return $x === $y ? 0 : (self::uLess($x, $y) ? -1 : 1);
+        }
         if ($a instanceof ZF32 || $b instanceof ZF32) {
             $x = self::single($a); $y = self::single($b);
             if ($x === null || $y === null) self::f32Op($op, $a, $b, $line);
@@ -1010,6 +1179,10 @@ final class Z {
         if ($singles) $values = array_map(fn($item) => new ZF32(self::single($item)), $values);
         $best = $values[0];
         foreach ($values as $item) {
+            if ($item instanceof ZU64 && $best instanceof ZU64) {
+                if ($smaller ? self::uLess($item->v, $best->v) : self::uLess($best->v, $item->v)) $best = $item;
+                continue;
+            }
             $a = self::amount($item); $b = self::amount($best);
             if ($smaller ? $a < $b : $a > $b) $best = $item;
         }
@@ -1055,7 +1228,7 @@ final class Z {
         $keys = [];
         foreach ($items->v as $item) {
             $k = self::call($fn, [$item], $line);
-            if (!is_int($k) && !is_float($k) && !($k instanceof ZF32) && !is_string($k)) self::fatal("the function given to `sort` must return a number or text to order by, but it returned " . self::typeName($k), $line);
+            if (!is_int($k) && !is_float($k) && !($k instanceof ZF32) && !($k instanceof ZU64) && !is_string($k)) self::fatal("the function given to `sort` must return a number or text to order by, but it returned " . self::typeName($k), $line);
             $keys[] = $k;
         }
         $sorted = $items->v;
@@ -1283,8 +1456,12 @@ final class Z {
             $x = self::number($v);
             if ($x === null) self::wrongType($spec, "a number", $v, $line);
             $body = self::fixed($x, $precision === null ? 6 : $precision);
-        } else if (($kind === null && $precision === null) || ($kind === "d" && $precision === null && is_int($v))) {
+        } else if (($kind === null && $precision === null) || ($kind === "d" && $precision === null && (is_int($v) || $v instanceof ZU64))) {
             $body = self::show($v);
+        } else if (($kind === "x" || $kind === "X" || $kind === "b") && $precision === null && $v instanceof ZU64) {
+            // PHP writes the bits of an int with no sign.
+            $body = $kind === "b" ? decbin($v->v) : dechex($v->v);
+            if ($kind === "X") $body = strtoupper($body);
         } else if (($kind === "x" || $kind === "X" || $kind === "b") && $precision === null && is_int($v)) {
             // The digits of the size of the number, with `-` before them.
             // The smallest int has no size that fits, so its digits are
@@ -1299,7 +1476,7 @@ final class Z {
             $bad();
         }
         $padding = max(0, $width - self::strLen($body));
-        $isNumber = is_int($v) || is_float($v) || $v instanceof ZQuantity;
+        $isNumber = is_int($v) || is_float($v) || $v instanceof ZQuantity || $v instanceof ZU64;
         if ($zero && $isNumber) {
             $negative = $body !== "" && $body[0] === "-";
             return ($negative ? "-" : "") . str_repeat("0", $padding) . ($negative ? substr($body, 1) : $body);
@@ -1545,6 +1722,10 @@ final class Z {
         self::arity("int", $args, 1, 1, $line);
         $v = $args[0];
         if (is_int($v)) return $v;
+        if ($v instanceof ZU64) {
+            if ($v->v < 0) self::raise_("OverflowError", self::uText($v->v) . " does not fit in an int (-9223372036854775808 to 9223372036854775807)", $line);
+            return $v->v;
+        }
         if ($v instanceof ZF32) $v = $v->v;
         if (is_float($v)) {
             if (!is_finite($v)) self::raise_("ValueError", "cannot turn " . (is_nan($v) ? "NaN" : ($v > 0 ? "inf" : "-inf")) . " into an int", $line);
@@ -1569,6 +1750,7 @@ final class Z {
         if (is_int($v)) return (float)$v;
         if (is_float($v)) return $v;
         if ($v instanceof ZF32) return $v->v;
+        if ($v instanceof ZU64) return self::uFloat($v->v);
         if (is_string($v)) {
             $x = self::parseFloatText(self::strip($v));
             if ($x === null) self::raise_("ValueError", "cannot turn " . self::quoted($v) . " into a float", $line);
@@ -1595,6 +1777,7 @@ final class Z {
         if (is_int($v)) return $v < 0 ? self::neg($v, $line) : $v;
         if (is_float($v)) return abs($v);
         if ($v instanceof ZF32) return new ZF32(abs($v->v));
+        if ($v instanceof ZU64) return $v;
         if ($v instanceof ZQuantity) return new ZQuantity(abs($v->v), $v->unit);
         self::wrongType("abs", "a number", $v, $line);
     }
@@ -1610,6 +1793,16 @@ final class Z {
             $single = 0.0;
             foreach ($values as $item) $single = self::fround($single + self::single($item));
             return new ZF32($single);
+        }
+        $u64s = false;
+        foreach ($values as $item) $u64s = $u64s || $item instanceof ZU64;
+        if ($u64s) {
+            $total = 0;
+            foreach ($values as $item) {
+                [$total, $cut] = self::uAdd($total, self::unsigned($item) ?? 0);
+                if ($cut) self::raise_("OverflowError", self::U64_TOO_BIG, $line);
+            }
+            return new ZU64($total);
         }
         $total = 0; $allInts = true; $floatTotal = 0.0;
         foreach ($values as $item) {

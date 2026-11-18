@@ -34,6 +34,8 @@ mod z {
         Float(f64),
         /// An f32 (decision 41).
         F32(f32),
+        /// A u64 (decision 42).
+        U64(u64),
         Bool(bool),
         Str(Rc<str>),
         List(Rc<RefCell<Vec<V>>>),
@@ -250,7 +252,7 @@ mod z {
     }
 
     fn is_number(v: &V) -> bool {
-        matches!(v, V::Int(_) | V::Float(_) | V::F32(_))
+        matches!(v, V::Int(_) | V::Float(_) | V::F32(_) | V::U64(_))
     }
 
     fn number(v: &V) -> f64 {
@@ -258,6 +260,7 @@ mod z {
             V::Int(n) => *n as f64,
             V::Float(x) => *x,
             V::F32(x) => *x as f64,
+            V::U64(x) => *x as f64,
             _ => 0.0,
         }
     }
@@ -290,6 +293,144 @@ mod z {
         x as f64
     }
 
+    // ---- u64 (decision 42): a Rust u64.
+
+    const U64_TOO_BIG: &str = "the result is too big for a u64";
+
+    fn is_u64(a: &V, b: &V) -> bool {
+        matches!(a, V::U64(_)) || matches!(b, V::U64(_))
+    }
+
+    /// A u64, or an int of 0 or more, as a u64.
+    fn unsigned(v: &V) -> Option<u64> {
+        match v {
+            V::U64(x) => Some(*x),
+            V::Int(n) if *n >= 0 => Some(*n as u64),
+            _ => None,
+        }
+    }
+
+    fn u64_shift_count(n: &V, line: usize) -> Result<u32, Exc> {
+        let (ok, text) = match n {
+            V::U64(c) => (*c < 64, c.to_string()),
+            V::Int(c) => ((0..64).contains(c), c.to_string()),
+            _ => (true, String::new()),
+        };
+        if !ok {
+            return raise_error("ValueError", format!("cannot shift by {text}. A u64 has 64 bits, so a shift is 0 to 63"), line);
+        }
+        Ok(match n {
+            V::U64(c) => *c as u32,
+            V::Int(c) => *c as u32,
+            _ => 0,
+        })
+    }
+
+    /// `a op b` where one side is a u64 (decision 42).
+    fn u64_op(op: &str, a: &V, b: &V, line: usize) -> R {
+        if let (V::U64(x), V::Int(_) | V::U64(_), "<<" | ">>") = (a, b, op) {
+            let n = u64_shift_count(b, line)?;
+            if op == ">>" {
+                return Ok(V::U64(x >> n));
+            }
+            if (x << n) >> n != *x {
+                return raise_error("OverflowError", U64_TOO_BIG, line);
+            }
+            return Ok(V::U64(x << n));
+        }
+        let (Some(x), Some(y)) = (unsigned(a), unsigned(b)) else {
+            return fatal(format!("`{op}` between {} and {} would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", type_name(a), type_name(b)), line);
+        };
+        let too_big = || raise_error("OverflowError", U64_TOO_BIG, line);
+        match op {
+            "+" => x.checked_add(y).map(V::U64).map_or_else(too_big, Ok),
+            "-" => match x.checked_sub(y) {
+                Some(r) => Ok(V::U64(r)),
+                None => raise_error("OverflowError", "the result is below 0, and a u64 never is", line),
+            },
+            "*" => x.checked_mul(y).map(V::U64).map_or_else(too_big, Ok),
+            "/" | "//" | "%" if y == 0 => by_zero(line),
+            "/" => Ok(V::Float(x as f64 / y as f64)),
+            "//" => Ok(V::U64(x / y)),
+            "%" => Ok(V::U64(x % y)),
+            "**" => {
+                if y == 0 {
+                    return Ok(V::U64(1));
+                }
+                if x < 2 {
+                    return Ok(V::U64(x));
+                }
+                let mut r: u64 = 1;
+                for _ in 0..y {
+                    r = match r.checked_mul(x) {
+                        Some(r) => r,
+                        None => return too_big(),
+                    };
+                }
+                Ok(V::U64(r))
+            }
+            "&" => Ok(V::U64(x & y)),
+            "|" => Ok(V::U64(x | y)),
+            _ => Ok(V::U64(x ^ y)),
+        }
+    }
+
+    pub fn b_u64(args: Vec<V>, line: usize) -> R {
+        arity("u64", &args, 1, 1, line)?;
+        match &args[0] {
+            V::U64(x) => Ok(V::U64(*x)),
+            V::Int(n) if *n < 0 => raise_error("OverflowError", format!("{n} does not fit in a u64 (0 to 18446744073709551615)"), line),
+            V::Int(n) => Ok(V::U64(*n as u64)),
+            other => wrong_type("u64", "a whole number", other, line),
+        }
+    }
+
+    /// `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    pub fn b_u64__of(args: Vec<V>, line: usize) -> R {
+        arity("u64.wrap", &args, 1, 1, line)?;
+        match &args[0] {
+            V::U64(x) => Ok(V::U64(*x)),
+            V::Int(n) => Ok(V::U64(*n as u64)),
+            other => wrong_type("u64.wrap", "a whole number", other, line),
+        }
+    }
+
+    /// `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    fn u64_wrapping(op: &str, args: Vec<V>, line: usize) -> R {
+        arity("u64.wrap", &args, 2, 2, line)?;
+        let x = unsigned(&args[0]);
+        if let (Some(x), V::Int(_) | V::U64(_), "<<") = (x, &args[1], op) {
+            return Ok(V::U64(x << u64_shift_count(&args[1], line)?));
+        }
+        let Some(x) = x else {
+            return wrong_type("u64.wrap", "u64s", &args[0], line);
+        };
+        let Some(y) = unsigned(&args[1]) else {
+            return wrong_type("u64.wrap", "u64s", &args[1], line);
+        };
+        Ok(V::U64(match op {
+            "+" => x.wrapping_add(y),
+            "-" => x.wrapping_sub(y),
+            _ => x.wrapping_mul(y),
+        }))
+    }
+
+    pub fn b_u64__add(args: Vec<V>, line: usize) -> R {
+        u64_wrapping("+", args, line)
+    }
+
+    pub fn b_u64__sub(args: Vec<V>, line: usize) -> R {
+        u64_wrapping("-", args, line)
+    }
+
+    pub fn b_u64__mul(args: Vec<V>, line: usize) -> R {
+        u64_wrapping("*", args, line)
+    }
+
+    pub fn b_u64__shl(args: Vec<V>, line: usize) -> R {
+        u64_wrapping("<<", args, line)
+    }
+
     fn f32_op(op: &str, a: &V, b: &V, line: usize) -> R {
         let (Some(x), Some(y)) = (single(a), single(b)) else {
             if matches!(a, V::Float(_)) || matches!(b, V::Float(_)) {
@@ -320,6 +461,7 @@ mod z {
             V::Int(_) => "an int".into(),
             V::Float(_) => "a float".into(),
             V::F32(_) => "an f32".into(),
+            V::U64(_) => "a u64".into(),
             V::Str(_) => "a str".into(),
             V::Bool(_) => "a bool".into(),
             V::None => "none".into(),
@@ -415,6 +557,7 @@ mod z {
             V::Int(n) => n.to_string(),
             V::Float(x) => float_text(*x),
             V::F32(x) => float_text(f32_shown(*x)),
+            V::U64(x) => x.to_string(),
             V::Bool(b) => b.to_string(),
             V::None => "none".into(),
             V::Missing => "?".into(),
@@ -567,6 +710,7 @@ mod z {
     fn equal(a: &V, b: &V) -> bool {
         match (a, b) {
             (V::Int(x), V::Int(y)) => x == y,
+            (V::U64(_), _) | (_, V::U64(_)) => matches!((unsigned(a), unsigned(b)), (Some(x), Some(y)) if x == y),
             (V::F32(_), _) | (_, V::F32(_)) => match (single(a), single(b)) {
                 (Some(x), Some(y)) => x == y,
                 _ => is_number(a) && is_number(b) && number(a) == number(b),
@@ -641,6 +785,9 @@ mod z {
     }
 
     pub fn add(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("+", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("+", &a, &b, line);
         }
@@ -662,6 +809,9 @@ mod z {
     }
 
     pub fn sub(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("-", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("-", &a, &b, line);
         }
@@ -677,6 +827,9 @@ mod z {
     }
 
     pub fn mul(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("*", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("*", &a, &b, line);
         }
@@ -705,6 +858,9 @@ mod z {
     }
 
     pub fn div(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("/", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("/", &a, &b, line);
         }
@@ -736,6 +892,9 @@ mod z {
     }
 
     pub fn floordiv(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("//", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("//", &a, &b, line);
         }
@@ -763,6 +922,9 @@ mod z {
     }
 
     pub fn r#mod(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("%", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("%", &a, &b, line);
         }
@@ -795,6 +957,9 @@ mod z {
     }
 
     pub fn pow(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("**", &a, &b, line);
+        }
         if matches!(a, V::F32(_)) || matches!(b, V::F32(_)) {
             return f32_op("**", &a, &b, line);
         }
@@ -851,16 +1016,25 @@ mod z {
     }
 
     pub fn bitand(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("&", &a, &b, line);
+        }
         let (x, y) = whole("&", &a, &b, line)?;
         Ok(V::Int(x & y))
     }
 
     pub fn bitor(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("|", &a, &b, line);
+        }
         let (x, y) = whole("|", &a, &b, line)?;
         Ok(V::Int(x | y))
     }
 
     pub fn bitxor(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("^", &a, &b, line);
+        }
         let (x, y) = whole("^", &a, &b, line)?;
         Ok(V::Int(x ^ y))
     }
@@ -873,6 +1047,9 @@ mod z {
     }
 
     pub fn shl(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op("<<", &a, &b, line);
+        }
         let (x, n) = whole("<<", &a, &b, line)?;
         shift(n, line)?;
         let s = ((x as u64) << n) as i64;
@@ -883,6 +1060,9 @@ mod z {
     }
 
     pub fn shr(a: V, b: V, line: usize) -> R {
+        if is_u64(&a, &b) {
+            return u64_op(">>", &a, &b, line);
+        }
         let (x, n) = whole(">>", &a, &b, line)?;
         shift(n, line)?;
         Ok(V::Int(x >> n))
@@ -894,6 +1074,7 @@ mod z {
             V::Int(x) => Ok(V::Int(-x)),
             V::Float(x) => Ok(V::Float(-x)),
             V::F32(x) => Ok(V::F32(-x)),
+            V::U64(_) => fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line),
             V::Quantity(x, u) => Ok(V::Quantity(-x, u)),
             other => fatal(format!("`-` does not work on {}", type_name(&other)), line),
         }
@@ -902,12 +1083,22 @@ mod z {
     pub fn bitnot(v: V, line: usize) -> R {
         match v {
             V::Int(x) => Ok(V::Int(!x)),
+            V::U64(x) => Ok(V::U64(!x)),
             other => fatal(format!("`~` works on the bits of a whole number, and this is {}", type_name(&other)), line),
         }
     }
 
     /// -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     fn order(op: &str, a: &V, b: &V, line: usize) -> Result<i32, Exc> {
+        if is_u64(a, b) {
+            return match (unsigned(a), unsigned(b)) {
+                (Some(x), Some(y)) => Ok(x.cmp(&y) as i32),
+                _ => {
+                    u64_op(op, a, b, line)?;
+                    Ok(2)
+                }
+            };
+        }
         let (x, y) = match (a, b) {
             (V::F32(_), _) | (_, V::F32(_)) => match (single(a), single(b)) {
                 (Some(x), Some(y)) => (x as f64, y as f64),
@@ -1526,6 +1717,12 @@ mod z {
             return raise_error("ValueError", format!("`{name}` of nothing"), line);
         };
         for item in &values[1..] {
+            if let (V::U64(x), V::U64(y)) = (item, &best) {
+                if if smaller { x < y } else { x > y } {
+                    best = item.clone();
+                }
+                continue;
+            }
             if if smaller { amount(item) < amount(&best) } else { amount(item) > amount(&best) } {
                 best = item.clone();
             }
@@ -1582,7 +1779,7 @@ mod z {
         let mut keys = Vec::new();
         for item in copy {
             let k = call(function.clone(), vec![item], line)?;
-            if !matches!(k, V::Int(_) | V::Float(_) | V::F32(_) | V::Str(_)) {
+            if !matches!(k, V::Int(_) | V::Float(_) | V::F32(_) | V::U64(_) | V::Str(_)) {
                 return fatal(format!("the function given to `sort` must return a number or text to order by, but it returned {}", type_name(&k)), line);
             }
             keys.push(k);
@@ -1925,7 +2122,10 @@ mod z {
                 }
                 format!("{:.places$}", number(&v))
             }
-            (None, None, _) | (Some('d'), None, V::Int(_)) => show(&v),
+            (None, None, _) | (Some('d'), None, V::Int(_) | V::U64(_)) => show(&v),
+            (Some('x'), None, V::U64(n)) => format!("{n:x}"),
+            (Some('X'), None, V::U64(n)) => format!("{n:X}"),
+            (Some('b'), None, V::U64(n)) => format!("{n:b}"),
             (Some('x'), None, V::Int(n)) => format!("{}{:x}", if *n < 0 { "-" } else { "" }, n.unsigned_abs()),
             (Some('X'), None, V::Int(n)) => format!("{}{:X}", if *n < 0 { "-" } else { "" }, n.unsigned_abs()),
             (Some('b'), None, V::Int(n)) => format!("{}{:b}", if *n < 0 { "-" } else { "" }, n.unsigned_abs()),
@@ -2243,6 +2443,8 @@ mod z {
         arity("int", &args, 1, 1, line)?;
         match &args[0] {
             V::Int(n) => Ok(V::Int(*n)),
+            V::U64(x) if *x > i64::MAX as u64 => raise_error("OverflowError", format!("{x} does not fit in an int (-9223372036854775808 to 9223372036854775807)"), line),
+            V::U64(x) => Ok(V::Int(*x as i64)),
             V::Float(x) if x.is_finite() => Ok(V::Int(x.trunc() as i64)),
             V::Float(x) => raise_error("ValueError", format!("cannot turn {x} into an int"), line),
             V::F32(x) if x.is_finite() => Ok(V::Int(x.trunc() as i64)),
@@ -2261,6 +2463,7 @@ mod z {
             V::Int(n) => Ok(V::Float(*n as f64)),
             V::Float(x) => Ok(V::Float(*x)),
             V::F32(x) => Ok(V::Float(*x as f64)),
+            V::U64(x) => Ok(V::Float(*x as f64)),
             V::Str(t) => match strip(t).parse() {
                 Ok(x) => Ok(V::Float(x)),
                 Err(_) => raise_error("ValueError", format!("cannot turn {} into a float", quoted(t)), line),
@@ -2296,6 +2499,7 @@ mod z {
             V::Int(n) => n.checked_abs().map(V::Int).map_or_else(|| overflow(line), Ok),
             V::Float(x) => Ok(V::Float(x.abs())),
             V::F32(x) => Ok(V::F32(x.abs())),
+            V::U64(x) => Ok(V::U64(*x)),
             V::Quantity(x, u) => Ok(V::Quantity(x.abs(), u.clone())),
             other => wrong_type("abs", "a number", other, line),
         }
@@ -2313,6 +2517,16 @@ mod z {
         let (values, unit) = numbers("sum", args, line)?;
         if unit.is_some() {
             return fatal("`sum` works on plain numbers, and these have a unit. Add quantities with `+`, which keeps the unit: start from `var total = 0 V` and add each in a loop", line);
+        }
+        if values.iter().any(|v| matches!(v, V::U64(_))) {
+            let mut total: u64 = 0;
+            for item in &values {
+                total = match total.checked_add(unsigned(item).unwrap_or(0)) {
+                    Some(t) => t,
+                    None => return raise_error("OverflowError", U64_TOO_BIG, line),
+                };
+            }
+            return Ok(V::U64(total));
         }
         if all_single(&values) {
             let mut single32: f32 = 0.0;
@@ -2716,6 +2930,12 @@ mod z {
             "int" => b_int,
             "float" => b_float,
             "f32" => b_f32,
+            "u64" => b_u64,
+            "u64..of" => b_u64__of,
+            "u64..add" => b_u64__add,
+            "u64..sub" => b_u64__sub,
+            "u64..mul" => b_u64__mul,
+            "u64..shl" => b_u64__shl,
             "str" => b_str,
             "abs" => b_abs,
             "min" => b_min,

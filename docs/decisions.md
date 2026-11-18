@@ -13889,3 +13889,193 @@ shows every digit of the float it is, for when that matters.
 - An f32 field in LLVM takes eight bytes, where C takes four.
 - A generic function copied for `T = f32` that changes a number written
   once in it rounds it for every copy.
+
+## 42. `u64`: a whole number of 64 bits with no sign
+
+```zeno
+function fnv(text: str) -> u64 raises OverflowError {
+    var h: u64 = 0xcbf29ce484222325
+    for c in text {
+        h = h ^ u64(c.code())
+        h = u64.wrap(h * 0x100000001b3)
+    }
+    return h
+}
+let hash = fnv("hello")
+print(f"{hash:016x}")             # a430d84680aabd0b
+print(u8.max, i16.min, u64.max)   # 255 -32768 18446744073709551615
+```
+
+A hash (FNV, CRC-64, xxHash), a random generator (xorshift, PCG), a
+counter of microseconds since boot, a 64-bit register, a file offset
+past 8 exabytes: each is a whole number of 64 bits with no sign, and
+Zeno's `int` has a sign. `u64` is that number, as C's `uint64_t`, Rust's
+`u64` and Go's `uint64`. With it come the limits of every whole type,
+`u8.max` to `u64.max`, which Rust spells `u8::MAX`. It is the sixth
+item of [`missing.md`](missing.md). Walkthrough: [`u64.md`](u64.md).
+
+### 42.1 The name is `u64`, and there is no `i64`
+
+**`u64`, beside `u8`, `u16` and `u32`.** The pattern of 2.8 names a
+whole type by its sign and its bits. Rust and Zig spell it the same.
+**Turned down: `uint64`** (Go), longer and outside the pattern, and
+**`ulong`** (C#), which says nothing of the size.
+
+**There is no `i64`.** It would be a second name for `int`, which is
+already a signed number of 64 bits, and two names for one type is two
+meanings (4): a reader would ask how they differ. `int.max` and
+`int.min` are its limits.
+
+### 42.2 A sum of `u64`s is a `u64`, checked
+
+**`+ - * // % **` between two u64s give a u64**, and a result past
+18446744073709551615 or below 0 is an `OverflowError`, as an `int` sum
+past its end is (2.4):
+
+```
+the result is too big for a u64
+the result is below 0, and a u64 never is
+```
+
+`/` gives a float, as it does for ints. `& | ^ ~ << >>` work on the
+bits; a shift is 0 to 63, and `<<` that pushes a 1 off the top is an
+`OverflowError`, as for an int.
+
+**Why not "arithmetic gives an int" (2.8a)?** That rule makes `u8 + u8`
+an `int` so that the sum cannot wrap. An `int` cannot hold half the
+numbers a `u64` holds, so the sum would fail where the u64 did not.
+The answer stays a u64 and is checked instead.
+
+**Why checked, when C and Go wrap?** For the reason ints are (2.4): a
+silent wrap is a wrong number that looks right. A program that wants
+the wrap says so with `u64.wrap` (42.6), and a reader sees it.
+
+### 42.3 A `u64` meets only a `u64` or a written number
+
+**A u64 with an int value, a float, or any other type is refused before
+the program runs**, with a message that says what to write:
+
+```
+error: `+` between u64 and int would have to choose between a u64 and an int. Write `u64( )` around the int to work in u64s, or `int( )` around the u64
+```
+
+Either guess can be wrong. Making it a u64 fails when the int is
+below 0; making it an int fails when the u64 is past `int.max`. C picks
+unsigned silently, so `-1 < x` is false for every unsigned `x`, one of
+its best known traps. The principle is "one meaning" (4), and here the
+program says which.
+
+**A written number adapts**, as it does for f32 (41.4): `h * 3`,
+`h == 0`, `h > 1000` and `[h, 7, 8]` need nothing more, and the list is
+a `list[u64]`. A written number below 0 beside a u64 is an error before
+the program runs (`-1 does not fit in a u64`).
+
+A u8, u16 or u32 does not mix with a u64 by itself either, because
+their sums are ints (2.8a). `u64(x)` never fails for one, and the
+message says so.
+
+### 42.4 Conversions say what they check
+
+| Write | Gives | Fails when |
+|---|---|---|
+| `u64(n)` | a u64 | `n` is below 0: `OverflowError` |
+| `int(x)` | an int | `x` is past `int.max`: `OverflowError` |
+| `u8(int(x))` and the like | that type | it does not fit |
+| `float(x)` | the nearest float | never |
+| `str(x)` | its digits | never |
+
+**A u64 does not go where an int is wanted by itself**, though a u8
+does (2.8c): every u8 is an int, and half of the u64s are not. The
+message names the conversion. **A u64 does not go where a float is
+wanted** either: a float holds 53 bits exactly, so most u64s past 2**53
+would change, and the program should show the step.
+
+### 42.5 A written number past `int.max` is a u64
+
+**`let x: u64 = 18446744073709551615` is written as it reads.** The
+lexer reads a whole number up to the largest u64, and the checker
+accepts one past `int.max` only where a u64 is wanted:
+
+```
+error: 18446744073709551615 is too big for an int (-9223372036854775808 to 9223372036854775807). Only a u64 holds it: write it where a u64 is wanted, as in `let x: u64 = 18446744073709551615`
+```
+
+A number past the largest u64 says so, in decimal or hex:
+`this number is too big. The largest whole number Zeno holds is
+18446744073709551615, the largest u64`. This replaces the lexer's old
+"number is too large", which said nothing of where the end is.
+**Turned down: a mark such as Rust's `5u64` or C's `5ULL`**, a mark on
+each number that says nothing the type does not.
+
+### 42.6 `u64.wrap` keeps the low 64 bits
+
+**`u64.wrap(h * 0x100000001b3)` is the multiplication cut to 64
+bits**, which is what a hash or a random generator means; `u64.wrap(a +
+b)`, `u64.wrap(a - b)` and `u64.wrap(a << n)` are the same for those
+operators. **`u64.wrap(n)` of an int keeps its 64 bits read with no
+sign**: `u64.wrap(-1)` is `u64.max`. This is the rule of `u8.wrap`
+(2.8b), the same word for the same idea, and Rust's `wrapping_mul`.
+
+**Why a wrapper around the sum, and not a function `wrapping_mul(a,
+b)`?** The sum reads as a sum, and the one word at the front says
+everything inside wraps. **Turned down: Go's and C's silent wrap**
+(42.2), and a separate type that always wraps (Rust's `Wrapping<u64>`),
+which hides the wrap at each use.
+
+### 42.7 Every whole type has `.max` and `.min`
+
+**`u8.max`, `u8.min`, `i8.max` ... `u32.max`, `int.max`, `int.min`,
+`u64.max` and `u64.min`.** Each is the number of its type: `u8.max` is
+a u8 of 255, and `u8.max + 1` is the int 256 by 2.8a. Before this, a
+program wrote 255 or 2147483647 by hand, and a digit wrong in one is
+hard to see. Rust spells it `u8::MAX`; Zeno
+already reads `.` as "of", and `max` and `min` are the words Zeno uses
+for the larger and smaller (`max(a, b)`). **Turned down: C's
+`UINT8_MAX`**, a name in capitals for each type, and Java's
+`Integer.MAX_VALUE`.
+
+The floats have no `.max` yet (42.10).
+
+### 42.8 What a build writes
+
+**C writes `uint64_t`.** `+ - *` are checked with the compiler's
+`__builtin_add_overflow` and its two friends, which are one instruction
+and a branch. `--release`, `--fast` and `--minimal` drop the checks and
+wrap, as they do for ints, so the C there is C's own `+`. `--firmware`
+carries the `OverflowError` as a value, as for every error.
+
+**LLVM keeps a u64 in an `i64`**, which has no sign of its own, and
+uses the unsigned instructions: `udiv`, `urem`, `icmp ult`, `lshr`,
+`uitofp`. The checks call the same runtime functions as C.
+
+**Every target language** has a u64 in its runtime: Go's `uint64`,
+Rust's `u64`, C#'s `ulong`, Kotlin's `ULong`, C++'s own tag over
+`uint64_t`; Java's `long` with its unsigned methods
+(`Long.compareUnsigned`, `Math.unsignedMultiplyHigh`); a small class
+over a big whole number in Python, Ruby, JavaScript, TypeScript (a
+`BigInt`) and Dart (a `BigInt`); and a class over the 64 bits in PHP
+and Lua, which have only signed ints and do the unsigned steps by hand
+(Lua's `math.ult`, PHP's sums in pieces of 32 and 16 bits). `tools/targets/
+edge-u64.zeno` holds them all to `zeno run`.
+
+### 42.9 A u64 prints its digits, and `x` its bits
+
+**`print(h)` shows the decimal digits**, all twenty of
+`18446744073709551615` when it is the largest. `{h:x}`, `{h:X}` and
+`{h:b}` show the bits with no sign, so `{u64.wrap(-1):x}` is
+`ffffffffffffffff`; `{h:016x}` pads with zeros, as a hash is shown.
+`{h:d}`, a width, `<` `>` `^` and `{h:.2f}` work as for an int.
+
+### 42.10 Left for later
+
+- A u64 as a key of a dict, in `range( )`, or as an index. Each is
+  refused before the program runs today; `int( )` makes one an int.
+- `pointer[u64]` and a register of 64 bits.
+- `json.write` of a u64 (a `ValueError` today), and `u64("123")`.
+- A u8, u16 or u32 going where a u64 is wanted by itself. Each fits,
+  so this is safe; it needs the sized types' sums to have a type
+  first.
+- `float.max`, `float.min` and `f32.max`.
+- `u8(x)` and `u8.wrap(x)` straight from a u64, without `int( )` between.
+- A u64 field in a firmware struct is 8 bytes in C; packed layouts of
+  registers are item 9 of [`missing.md`](missing.md).

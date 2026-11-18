@@ -170,10 +170,11 @@ final class Z {
 
     static Raise byZero(int line) { return raiseError("ZeroDivisionError", "division by zero", line); }
 
-    static boolean isNumber(Object v) { return v instanceof Long || v instanceof Double || v instanceof Float; }
+    static boolean isNumber(Object v) { return v instanceof Long || v instanceof Double || v instanceof Float || v instanceof U64; }
 
     static double number(Object v) {
         if (v instanceof Long l) return (double) (long) l;
+        if (v instanceof U64 u) return u64Float(u.v());
         if (v instanceof Float f) return (double) (float) f;
         return (Double) v;
     }
@@ -199,6 +200,121 @@ final class Z {
         }
         return x;
     }
+
+    // ---- u64 (decision 42): the long with the same 64 bits, which the
+    // unsigned methods of `Long` read with no sign.
+    record U64(long v) {}
+
+    static final String U64_TOO_BIG = "the result is too big for a u64";
+
+    // A u64, or an int of 0 or more, as its bits; null for anything else.
+    static Long unsigned(Object v) {
+        if (v instanceof U64 u) return u.v();
+        if (v instanceof Long l && l >= 0) return l;
+        return null;
+    }
+
+    static boolean isU64(Object a, Object b) { return a instanceof U64 || b instanceof U64; }
+
+    // The nearest float, as Rust's `as f64` makes it.
+    static double u64Float(long x) { return x >= 0 ? (double) x : (double) ((x >>> 1) | (x & 1)) * 2.0; }
+
+    static int u64ShiftCount(Object n, int line) {
+        if (n instanceof U64 u) {
+            if (Long.compareUnsigned(u.v(), 64) >= 0) throw raiseError("ValueError", "cannot shift by " + Long.toUnsignedString(u.v()) + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+            return (int) u.v();
+        }
+        long c = (Long) n;
+        if (c < 0 || c >= 64) throw raiseError("ValueError", "cannot shift by " + c + ". A u64 has 64 bits, so a shift is 0 to 63", line);
+        return (int) c;
+    }
+
+    // `a op b` where one side is a u64 (decision 42).
+    static Object u64Op(String op, Object a, Object b, int line) {
+        if ((op.equals("<<") || op.equals(">>")) && a instanceof U64 u && (b instanceof Long || b instanceof U64)) {
+            int n = u64ShiftCount(b, line);
+            if (op.equals(">>")) return new U64(u.v() >>> n);
+            long r = u.v() << n;
+            if (r >>> n != u.v()) throw raiseError("OverflowError", U64_TOO_BIG, line);
+            return new U64(r);
+        }
+        Long x = unsigned(a), y = unsigned(b);
+        if (x == null || y == null) {
+            throw fatal("`" + op + "` between " + typeName(a) + " and " + typeName(b) + " would have to choose between a u64 and something else. Write `u64( )` or `int( )` around one of them", line);
+        }
+        switch (op) {
+            case "+": {
+                long r = x + y;
+                if (Long.compareUnsigned(r, x) < 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                return new U64(r);
+            }
+            case "-":
+                if (Long.compareUnsigned(x, y) < 0) throw raiseError("OverflowError", "the result is below 0, and a u64 never is", line);
+                return new U64(x - y);
+            case "*":
+                if (Math.unsignedMultiplyHigh(x, y) != 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                return new U64(x * y);
+            case "/":
+                if (y == 0) throw byZero(line);
+                return u64Float(x) / u64Float(y);
+            case "//":
+                if (y == 0) throw byZero(line);
+                return new U64(Long.divideUnsigned(x, y));
+            case "%":
+                if (y == 0) throw byZero(line);
+                return new U64(Long.remainderUnsigned(x, y));
+            case "**": {
+                if (y == 0) return new U64(1);
+                if (x == 0 || x == 1) return new U64(x);
+                long r = 1;
+                for (long i = 0; Long.compareUnsigned(i, y) < 0; i++) {
+                    if (Math.unsignedMultiplyHigh(r, x) != 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                    r *= x;
+                }
+                return new U64(r);
+            }
+            case "&": return new U64(x & y);
+            case "|": return new U64(x | y);
+            default: return new U64(x ^ y);
+        }
+    }
+
+    // `u64.wrap(a + b)`: the answer cut to 64 bits (42.6).
+    static Object u64Wrapping(String op, Object[] args, int line) {
+        arity("u64.wrap", args, 2, 2, line);
+        Long x = unsigned(args[0]), y = unsigned(args[1]);
+        if (op.equals("<<") && x != null && (args[1] instanceof Long || args[1] instanceof U64)) return new U64(x << u64ShiftCount(args[1], line));
+        if (x == null || y == null) throw wrongType("u64.wrap", "u64s", x == null ? args[0] : args[1], line);
+        return new U64(op.equals("+") ? x + y : op.equals("-") ? x - y : x * y);
+    }
+
+    static Object b_u64(Object[] args, int line) {
+        arity("u64", args, 1, 1, line);
+        Object v = args[0];
+        if (v instanceof U64) return v;
+        if (v instanceof Long n) {
+            if (n < 0) throw raiseError("OverflowError", n + " does not fit in a u64 (0 to 18446744073709551615)", line);
+            return new U64(n);
+        }
+        throw wrongType("u64", "a whole number", v, line);
+    }
+
+    // `u64.wrap(n)`: the 64 bits of an int read with no sign (42.6).
+    static Object b_u64__of(Object[] args, int line) {
+        arity("u64.wrap", args, 1, 1, line);
+        Object v = args[0];
+        if (v instanceof U64) return v;
+        if (v instanceof Long n) return new U64(n);
+        throw wrongType("u64.wrap", "a whole number", v, line);
+    }
+
+    static Object b_u64__add(Object[] args, int line) { return u64Wrapping("+", args, line); }
+
+    static Object b_u64__sub(Object[] args, int line) { return u64Wrapping("-", args, line); }
+
+    static Object b_u64__mul(Object[] args, int line) { return u64Wrapping("*", args, line); }
+
+    static Object b_u64__shl(Object[] args, int line) { return u64Wrapping("<<", args, line); }
 
     static boolean isF32(Object a, Object b) { return a instanceof Float || b instanceof Float; }
 
@@ -227,6 +343,7 @@ final class Z {
         if (v instanceof Long) return "an int";
         if (v instanceof Double) return "a float";
         if (v instanceof Float) return "an f32";
+        if (v instanceof U64) return "a u64";
         if (v instanceof String) return "a str";
         if (v instanceof Boolean) return "a bool";
         if (v == null) return "none";
@@ -353,6 +470,7 @@ final class Z {
         if (v instanceof Long l) return Long.toString(l);
         if (v instanceof Double d) return showFloat(d);
         if (v instanceof Float f) return showFloat(f32Shown(f));
+        if (v instanceof U64 u) return Long.toUnsignedString(u.v());
         if (v instanceof Boolean b) return b ? "true" : "false";
         if (v == null) return "none";
         if (v instanceof ZList l) {
@@ -469,6 +587,10 @@ final class Z {
 
     static boolean equal(Object a, Object b) {
         if (a instanceof Long x && b instanceof Long y) return (long) x == (long) y;
+        if (isU64(a, b)) {
+            Long x = unsigned(a), y = unsigned(b);
+            return x != null && y != null && (long) x == (long) y;
+        }
         if (isF32(a, b)) {
             Double x = single(a), y = single(b);
             if (x != null && y != null) return (double) x == (double) y;
@@ -532,6 +654,7 @@ final class Z {
     }
 
     static Object add(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("+", a, b, line);
         if (isF32(a, b)) return f32Op("+", a, b, line);
         if (a instanceof Long x && b instanceof Long y) return addInt(x, y, line);
         if (a instanceof String x && b instanceof String y) return x.concat(y);
@@ -551,6 +674,7 @@ final class Z {
     }
 
     static Object sub(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("-", a, b, line);
         if (isF32(a, b)) return f32Op("-", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             long r = x - y;
@@ -567,6 +691,7 @@ final class Z {
     }
 
     static Object mul(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("*", a, b, line);
         if (isF32(a, b)) return f32Op("*", a, b, line);
         if (a instanceof ZList list && b instanceof Long times) {
             if (times < 0) throw raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + times, line);
@@ -586,6 +711,7 @@ final class Z {
     }
 
     static Object div(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("/", a, b, line);
         if (isF32(a, b)) return f32Op("/", a, b, line);
         if (a instanceof Quantity q) {
             if (b instanceof Quantity y && y.v == 0) throw byZero(line);
@@ -605,6 +731,7 @@ final class Z {
     }
 
     static Object floordiv(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("//", a, b, line);
         if (isF32(a, b)) return f32Op("//", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             if (y == 0) throw byZero(line);
@@ -617,6 +744,7 @@ final class Z {
     }
 
     static Object mod(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("%", a, b, line);
         if (isF32(a, b)) return f32Op("%", a, b, line);
         if (a instanceof Long x && b instanceof Long y) {
             if (y == 0) throw byZero(line);
@@ -631,6 +759,7 @@ final class Z {
     }
 
     static Object pow(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("**", a, b, line);
         if (isF32(a, b)) return f32Op("**", a, b, line);
         if (a instanceof Long xl && b instanceof Long nl) {
             long x = xl, n = nl;
@@ -663,17 +792,18 @@ final class Z {
         return l;
     }
 
-    static Object bitand(Object a, Object b, int line) { return whole("&", a, a, b, line) & whole("&", b, a, b, line); }
+    static Object bitand(Object a, Object b, int line) { if (isU64(a, b)) return u64Op("&", a, b, line); return whole("&", a, a, b, line) & whole("&", b, a, b, line); }
 
-    static Object bitor(Object a, Object b, int line) { return whole("|", a, a, b, line) | whole("|", b, a, b, line); }
+    static Object bitor(Object a, Object b, int line) { if (isU64(a, b)) return u64Op("|", a, b, line); return whole("|", a, a, b, line) | whole("|", b, a, b, line); }
 
-    static Object bitxor(Object a, Object b, int line) { return whole("^", a, a, b, line) ^ whole("^", b, a, b, line); }
+    static Object bitxor(Object a, Object b, int line) { if (isU64(a, b)) return u64Op("^", a, b, line); return whole("^", a, a, b, line) ^ whole("^", b, a, b, line); }
 
     static void shift(long n, int line) {
         if (n < 0 || n >= 64) throw raiseError("ValueError", "cannot shift by " + n + ". An int has 64 bits, so a shift is 0 to 63", line);
     }
 
     static Object shl(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op("<<", a, b, line);
         long x = whole("<<", a, a, b, line), n = whole("<<", b, a, b, line);
         shift(n, line);
         long s = x << n;
@@ -682,6 +812,7 @@ final class Z {
     }
 
     static Object shr(Object a, Object b, int line) {
+        if (isU64(a, b)) return u64Op(">>", a, b, line);
         long x = whole(">>", a, a, b, line), n = whole(">>", b, a, b, line);
         shift(n, line);
         return x >> n;
@@ -694,17 +825,24 @@ final class Z {
         }
         if (v instanceof Double x) return -x;
         if (v instanceof Float x) return -x;
+        if (v instanceof U64) throw fatal("`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`", line);
         if (v instanceof Quantity q) return new Quantity(-q.v, q.unit);
         throw fatal("`-` does not work on " + typeName(v), line);
     }
 
     static Object bitnot(Object v, int line) {
+        if (v instanceof U64 u) return new U64(~u.v());
         if (!(v instanceof Long x)) throw fatal("`~` works on the bits of a whole number, and this is " + typeName(v), line);
         return ~x;
     }
 
     // -1, 0 or 1, or 2 when the two cannot be ordered (a NaN).
     static int order(String op, Object a, Object b, int line) {
+        if (isU64(a, b)) {
+            Long x = unsigned(a), y = unsigned(b);
+            if (x == null || y == null) u64Op(op, a, b, line);
+            return Integer.signum(Long.compareUnsigned(x, y));
+        }
         if (isF32(a, b)) {
             Double x = single(a), y = single(b);
             if (x == null || y == null) f32Op(op, a, b, line);
@@ -1171,6 +1309,11 @@ final class Z {
         Object best = values.get(0);
         for (int i = 1; i < values.size(); i++) {
             Object item = values.get(i);
+            if (item instanceof U64 x && best instanceof U64 y) {
+                int c = Long.compareUnsigned(x.v(), y.v());
+                if (smaller ? c < 0 : c > 0) best = item;
+                continue;
+            }
             if (smaller ? amount(item) < amount(best) : amount(item) > amount(best)) best = item;
         }
         return best;
@@ -1224,7 +1367,7 @@ final class Z {
         var keys = new java.util.ArrayList<Object>();
         for (Object item : new java.util.ArrayList<>(l.items)) {
             Object k = call(function, new Object[] {item}, line);
-            if (!(k instanceof Long) && !(k instanceof Double) && !(k instanceof Float) && !(k instanceof String)) {
+            if (!(k instanceof Long) && !(k instanceof Double) && !(k instanceof Float) && !(k instanceof U64) && !(k instanceof String)) {
                 throw fatal("the function given to `sort` must return a number or text to order by, but it returned " + typeName(k), line);
             }
             keys.add(k);
@@ -1502,8 +1645,11 @@ final class Z {
         } else if ("f".equals(kind) || (kind == null && precision != null && v instanceof Double)) {
             if (!isNumber(v)) throw wrongType(spec, "a number", v, line);
             body = fixed(number(v), places);
-        } else if ((kind == null && precision == null) || ("d".equals(kind) && precision == null && v instanceof Long)) {
+        } else if ((kind == null && precision == null) || ("d".equals(kind) && precision == null && (v instanceof Long || v instanceof U64))) {
             body = show(v);
+        } else if (("x".equals(kind) || "X".equals(kind) || "b".equals(kind)) && precision == null && v instanceof U64 u) {
+            body = "b".equals(kind) ? Long.toBinaryString(u.v()) : Long.toHexString(u.v());
+            if ("X".equals(kind)) body = body.toUpperCase();
         } else if (("x".equals(kind) || "X".equals(kind) || "b".equals(kind)) && precision == null && v instanceof Long n) {
             String digits = Long.toUnsignedString(n < 0 ? -n : n, "b".equals(kind) ? 2 : 16);
             if (n == Long.MIN_VALUE) digits = "b".equals(kind) ? "1" + "0".repeat(63) : "8000000000000000";
@@ -1834,6 +1980,10 @@ final class Z {
         arity("int", args, 1, 1, line);
         Object v = args[0];
         if (v instanceof Long) return v;
+        if (v instanceof U64 u) {
+            if (u.v() < 0) throw raiseError("OverflowError", Long.toUnsignedString(u.v()) + " does not fit in an int (-9223372036854775808 to 9223372036854775807)", line);
+            return u.v();
+        }
         if (v instanceof Double || v instanceof Float) {
             double x = number(v);
             if (Double.isNaN(x) || Double.isInfinite(x)) throw raiseError("ValueError", "cannot turn " + showFloat(x) + " into an int", line);
@@ -1859,6 +2009,7 @@ final class Z {
         if (v instanceof Long n) return (double) n;
         if (v instanceof Double) return v;
         if (v instanceof Float f) return (double) (float) f;
+        if (v instanceof U64 u) return u64Float(u.v());
         if (v instanceof String s) {
             Double x = parseFloat(strip(s));
             if (x == null) throw raiseError("ValueError", "cannot turn " + quoted(s) + " into a float", line);
@@ -1896,6 +2047,7 @@ final class Z {
         }
         if (v instanceof Double x) return Math.abs(x);
         if (v instanceof Float x) return Math.abs(x);
+        if (v instanceof U64) return v;
         if (v instanceof Quantity q) return new Quantity(Math.abs(q.v), q.unit);
         throw wrongType("abs", "a number", v, line);
     }
@@ -1914,6 +2066,16 @@ final class Z {
             double single = 0;
             for (Object item : values) single = fround(single + single(item));
             return (float) single;
+        }
+        if (values.stream().anyMatch(v -> v instanceof U64)) {
+            long sum = 0;
+            for (Object item : values) {
+                Long n = unsigned(item);
+                long r = sum + (n == null ? 0 : n);
+                if (Long.compareUnsigned(r, sum) < 0) throw raiseError("OverflowError", U64_TOO_BIG, line);
+                sum = r;
+            }
+            return new U64(sum);
         }
         long total = 0;
         boolean allInts = true;
@@ -2226,6 +2388,12 @@ final class Z {
         BUILTINS.put("int", Z::b_int);
         BUILTINS.put("float", Z::b_float);
         BUILTINS.put("f32", Z::b_f32);
+        BUILTINS.put("u64", Z::b_u64);
+        BUILTINS.put("u64..of", Z::b_u64__of);
+        BUILTINS.put("u64..add", Z::b_u64__add);
+        BUILTINS.put("u64..sub", Z::b_u64__sub);
+        BUILTINS.put("u64..mul", Z::b_u64__mul);
+        BUILTINS.put("u64..shl", Z::b_u64__shl);
         BUILTINS.put("str", Z::b_str);
         BUILTINS.put("abs", Z::b_abs);
         BUILTINS.put("min", Z::b_min);

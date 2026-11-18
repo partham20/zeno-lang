@@ -69,6 +69,9 @@ pub enum Kind {
     Float,
     /// A float of 32 bits (decision 41). C keeps it in a `float`.
     F32,
+    /// A whole number of 64 bits with no sign (decision 42). C keeps it
+    /// in a `uint64_t`.
+    U64,
     Str,
     Bool,
     None,
@@ -275,6 +278,19 @@ pub struct Types {
     /// `checked` makes each `float(...)`, so that a float holds a float
     /// in every engine, and prints as one (decision 41.3).
     widened: HashSet<(usize, usize)>,
+    /// Each whole number written out where a u64 is wanted, by where it
+    /// starts. `checked` makes each `u64..of(n)` (decision 42.5): a u64
+    /// past the largest int is written as the int with the same bits.
+    pub u64s: HashSet<(usize, usize)>,
+    /// Each `+`, `-`, `*` and `<<` of u64s written straight inside
+    /// `u64.wrap( )`, by where its right side starts, and the function
+    /// `checked` makes it a call of, which cuts the answer to 64 bits
+    /// where it would have failed (decision 42.6).
+    pub wrapping: HashMap<(usize, usize), &'static str>,
+    /// Each `u8.max`, `int.min` and the like by where it starts, and the
+    /// value `checked` puts there; and `u64.wrap`, which becomes
+    /// `u64..of` (decision 42.7).
+    pub limits: HashMap<(usize, usize), Expr>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -481,6 +497,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Int | Ty::Sized(_) => Kind::Int,
         Ty::Float => Kind::Float,
         Ty::F32 => Kind::F32,
+        Ty::U64 => Kind::U64,
         Ty::Str => Kind::Str,
         Ty::Bool => Kind::Bool,
         Ty::Pin => Kind::Pin,
@@ -513,12 +530,22 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
 pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
     let (errors, types) = check_by(&program, rules);
     if !errors.is_empty()
-        || (types.fits.is_empty() && types.numbered.is_empty() && types.f32s.is_empty() && types.widened.is_empty())
+        || (types.fits.is_empty()
+            && types.numbered.is_empty()
+            && types.f32s.is_empty()
+            && types.widened.is_empty()
+            && types.u64s.is_empty()
+            && types.wrapping.is_empty()
+            && types.limits.is_empty())
     {
         return (program, errors, types);
     }
-    let Types { fits, numbered, numbered_enums, f32s, widened, .. } = types;
-    let program = program.with_fits(&fits).with_numbers(numbered, &numbered_enums).with_f32s(f32s, widened);
+    let Types { fits, numbered, numbered_enums, f32s, widened, u64s, wrapping, limits, .. } = types;
+    let program = program
+        .with_u64s(u64s, wrapping, limits)
+        .with_fits(&fits)
+        .with_numbers(numbered, &numbered_enums)
+        .with_f32s(f32s, widened);
     let (errors, types) = check_by(&program, rules);
     (program, errors, types)
 }
@@ -588,6 +615,15 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     checker.known_origins = origins;
     checker.run(program);
     let mut errors = checker.errors;
+    // A number past the largest int, written where no u64 is wanted.
+    for (span, n) in &checker.big_numbers {
+        if !checker.types.u64s.contains(&(span.line, span.col)) {
+            errors.push(Error::new(
+                format!("{n} is too big for an int ({} to {}). Only a u64 holds it: write it where a u64 is wanted, as in `let x: u64 = {n}`", i64::MIN, i64::MAX),
+                *span,
+            ));
+        }
+    }
     // A file that asks for the collector, in a program built with none.
     if one_owner {
         let files = std::iter::once(program.memory).chain(program.modules.iter().map(|module| module.memory));
@@ -625,6 +661,9 @@ enum Ty {
     /// A float of 32 bits: `f32` (decision 41). Its sums are done in 32
     /// bits, and it goes where a float is wanted.
     F32,
+    /// A whole number of 64 bits with no sign: `u64` (decision 42). It
+    /// meets only another u64 or a number written out.
+    U64,
     Str,
     Bool,
     None,
@@ -1068,6 +1107,7 @@ impl fmt::Display for Ty {
             Ty::Int => write!(f, "int"),
             Ty::Float => write!(f, "float"),
             Ty::F32 => write!(f, "f32"),
+            Ty::U64 => write!(f, "u64"),
             Ty::Str => write!(f, "str"),
             Ty::Bool => write!(f, "bool"),
             Ty::Pin => write!(f, "Pin"),
@@ -1179,7 +1219,7 @@ fn as_parameter(ty: &Ty) -> String {
 /// those `or none`. What is not known yet is not ruled out.
 fn takes_a_number(ty: &Ty) -> bool {
     match ty {
-        Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Quantity(_) | Ty::Dynamic | Ty::Invalid | Ty::Param(_) => true,
+        Ty::Int | Ty::Float | Ty::F32 | Ty::U64 | Ty::Sized(_) | Ty::Quantity(_) | Ty::Dynamic | Ty::Invalid | Ty::Param(_) => true,
         Ty::Optional(inner) => takes_a_number(inner),
         _ => false,
     }
@@ -1191,6 +1231,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         (Ty::Int, Ty::Int)
         | (Ty::Float, Ty::Float)
         | (Ty::F32, Ty::F32)
+        | (Ty::U64, Ty::U64)
         | (Ty::Str, Ty::Str)
         | (Ty::Bool, Ty::Bool)
         | (Ty::Pin, Ty::Pin)
@@ -1360,7 +1401,8 @@ fn sized_into_int(from: &Ty, to: &Ty) -> bool {
 /// = 7` is checked here, once, and costs nothing when the program runs.
 #[derive(Clone)]
 enum Written {
-    Number(i128),
+    /// A whole number written out, and where the number itself starts.
+    Number(i128, Span),
     /// A float written out, and where the number itself starts. It can
     /// be an f32 where one is wanted (decision 41.4).
     Real(f64, Span),
@@ -1372,10 +1414,10 @@ enum Written {
 
 fn written(expr: &Expr) -> Option<Written> {
     match &expr.kind {
-        ExprKind::Int(n) => Some(Written::Number(*n as i128)),
+        ExprKind::Int(n) => Some(Written::Number(*n as i128, expr.span)),
         ExprKind::Float(x) => Some(Written::Real(*x, expr.span)),
         ExprKind::Unary { op: UnaryOp::Neg, operand } => match written(operand)? {
-            Written::Number(n) => Some(Written::Number(-n)),
+            Written::Number(n, at) => Some(Written::Number(-n, at)),
             Written::Real(x, at) => Some(Written::Real(-x, at)),
             Written::List(_) | Written::Repeat { .. } => None,
         },
@@ -1399,10 +1441,11 @@ fn written(expr: &Expr) -> Option<Written> {
 /// yes, or the message for the first number that is too big.
 fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
     match (written, to) {
-        (Written::Number(n), Ty::Sized(width)) => {
+        (Written::Number(n, _), Ty::Sized(width)) => {
             let fits = i64::try_from(*n).is_ok_and(|n| width.holds(n));
             Some(if fits { Ok(()) } else { Err(width.does_not_fit(n)) })
         }
+        (Written::Number(n, _), Ty::U64) => Some(u64_holds(*n)),
         (Written::Real(x, _), Ty::F32) => Some(f32_holds(*x)),
         (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => written_fits(written, inner),
         (Written::Repeat { list, .. }, _) => written_fits(list, to),
@@ -1425,6 +1468,63 @@ fn f32_holds(x: f64) -> Result<(), String> {
         return Err(crate::value::too_big_for_f32(x));
     }
     Ok(())
+}
+
+/// Can a whole number written out be a u64 (decision 42.5)?
+fn u64_holds(n: i128) -> Result<(), String> {
+    if (0..=u64::MAX as i128).contains(&n) {
+        return Ok(());
+    }
+    Err(format!("{n} does not fit in a u64 (0 to {})", u64::MAX))
+}
+
+/// Where each whole number written out begins that becomes a u64 where a
+/// `to` is wanted: `7`, or the items of `[1, 2]` for a `list[u64]`.
+fn numbers_into_u64(written: &Written, to: &Ty, out: &mut Vec<Span>) {
+    match (written, to) {
+        (Written::Number(_, at), Ty::U64) => out.push(*at),
+        (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => numbers_into_u64(written, inner, out),
+        (Written::Repeat { list, .. }, _) => numbers_into_u64(list, to, out),
+        (Written::List(items), Ty::List(item) | Ty::Fixed(item, _)) => {
+            items.iter().for_each(|written| numbers_into_u64(written, item, out))
+        }
+        _ => {}
+    }
+}
+
+/// `u8.max`, `int.min`, `u64.max`: the number, written as a value of
+/// that type, which `checked` puts in its place (decision 42.7).
+fn limit_of(type_name: &str, name: &str, span: Span) -> Option<Expr> {
+    let number = |n: u64| Expr { kind: ExprKind::Int(n), span };
+    let negative = |n: u64| Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(number(n)) }, span };
+    let call = |callee: &str, value: Expr| Expr {
+        kind: ExprKind::Call {
+            callee: Box::new(Expr { kind: ExprKind::Name(callee.to_string()), span }),
+            args: vec![ast::Arg { name: None, value }],
+        },
+        span,
+    };
+    let max = name == "max";
+    if !max && name != "min" {
+        return None;
+    }
+    Some(match type_name {
+        "int" if max => number(i64::MAX as u64),
+        // -9223372036854775808 is past the largest int written out, so
+        // it is written as the int it is: the largest, negated, less one.
+        "int" => Expr {
+            kind: ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(negative(i64::MAX as u64)), right: Box::new(number(1)) },
+            span,
+        },
+        "u64" if max => call("u64..of", negative(1)),
+        "u64" => call("u64..of", number(0)),
+        _ => {
+            let width = ints::width(type_name)?;
+            let n = if max { width.max() } else { width.min() };
+            let value = if n < 0 { negative(n.unsigned_abs()) } else { number(n as u64) };
+            call(width.name, value)
+        }
+    })
 }
 
 /// Where each float written out begins that becomes an f32 where a `to`
@@ -1479,6 +1579,7 @@ fn sized_as(from: &Ty, to: &Ty) -> Ty {
     match (from, to) {
         (Ty::Int, Ty::Sized(_)) => to.clone(),
         (Ty::Float, Ty::F32) => Ty::F32,
+        (Ty::Int, Ty::U64) => Ty::U64,
         (Ty::List(from), Ty::List(to) | Ty::Fixed(to, _)) => Ty::list(sized_as(from, to)),
         (Ty::Owned(from), Ty::Owned(to)) => Ty::Owned(Box::new(sized_as(from, to))),
         (from, Ty::Optional(to) | Ty::Borrowed(to) | Ty::Owned(to)) => sized_as(from, to),
@@ -1718,6 +1819,12 @@ fn globals() -> Env {
     }
     // `f32(x)` converts, and `f32` is also a type (decision 41).
     env.declare("f32", Ty::Builtin("f32"), false);
+    // `u64(n)` converts, and `u64` is a type (decision 42). The names
+    // with two dots are the ones `checked` writes for `u64.wrap` and a
+    // u64 written out (42.5, 42.6); no program can write them.
+    for name in ["u64", "u64..of", "u64..add", "u64..sub", "u64..mul", "u64..shl"] {
+        env.declare(name, Ty::Builtin(name), false);
+    }
     for kind in crate::builtins::ERROR_TYPES {
         env.declare(kind, Ty::ErrorType(Rc::from(*kind)), false);
     }
@@ -1849,6 +1956,13 @@ struct Argument {
 }
 
 struct Checker {
+    /// Set while the argument of `u64.wrap( )` is about to be looked
+    /// at, and kept down through `+`, `-`, `*` and `<<`: those sums cut
+    /// their answer to 64 bits (decision 42.6).
+    wrap_mode: bool,
+    /// Each whole number written out past the largest int. It is only
+    /// right where a u64 is wanted, which is known once it is checked.
+    big_numbers: Vec<(Span, u64)>,
     /// The uses of a name that mean a function: the place in
     /// `Types::used`, and the function. What a function takes and gives
     /// back may not be known yet where it is used, so it is written into
@@ -1981,6 +2095,8 @@ type Moved = HashMap<usize, (String, Span)>;
 impl Checker {
     fn new(strict: bool, last_round: bool, known: HashMap<SlotId, Key>, open: HashSet<SlotId>) -> Checker {
         Checker {
+            wrap_mode: false,
+            big_numbers: Vec::new(),
             strict,
             strict_files: Vec::new(),
             one_owner: false,
@@ -2215,6 +2331,18 @@ impl Checker {
                 (Ty::Int | Ty::Sized(_), Ty::F32) => {
                     message += ". Write a number with a decimal point, as in `1.0`, and convert a value with `f32( )`"
                 }
+                (Ty::Sized(width), Ty::U64) if !width.signed => {
+                    message += &format!(". Convert it with `u64( )`, which never fails for a {from}")
+                }
+                (Ty::Int | Ty::Sized(_), Ty::U64) => {
+                    message += &format!(". An {from} can be below 0, and a u64 never is. Convert it with `u64( )`, which checks that it fits")
+                }
+                (Ty::U64, Ty::Sized(_)) => message += &format!(". Convert it with `{to}(int( ))`, which checks that it fits"),
+                (Ty::U64, Ty::Int) => {
+                    message += ". Half the numbers a u64 holds are past the largest int. \
+                                Convert it with `int( )`, which checks that it fits"
+                }
+                (Ty::U64, Ty::Float) => message += ". Convert it with `float( )`",
                 (Ty::Float, Ty::F32) => {
                     message += ". An f32 holds about 7 digits and a float about 16, so most floats are not one. \
                                 Convert it with `f32( )`, which rounds it to the nearest f32"
@@ -2286,6 +2414,9 @@ impl Checker {
                 let mut reals = Vec::new();
                 reals_into_f32(&written, wanted, &mut reals);
                 self.types.f32s.extend(reals.iter().map(|at| (at.line, at.col)));
+                let mut wholes = Vec::new();
+                numbers_into_u64(&written, wanted, &mut wholes);
+                self.types.u64s.extend(wholes.iter().map(|at| (at.line, at.col)));
                 sized_as(&given, wanted)
             }
             Some(Err(message)) => self.error(message, span),
@@ -2699,6 +2830,7 @@ impl Checker {
                     ("int", []) => Ty::Int,
                     ("float", []) => Ty::Float,
                     ("f32", []) => Ty::F32,
+                    ("u64", []) => Ty::U64,
                     ("str", []) => Ty::Str,
                     ("bool", []) => Ty::Bool,
                     ("list", [item]) => {
@@ -2861,12 +2993,11 @@ impl Checker {
                         _ if name == "Register" => {
                             return self.error("`Register` needs the size of the register, as in `Register[u32]`", span)
                         }
-                        _ if name == "i64" || name == "u64" => {
+                        // 42.1: `int` is the one name for it.
+                        _ if name == "i64" => {
                             return self.error(
-                                format!(
-                                    "there is no type called `{name}`. An `int` is 64 bits with a sign, \
-                                     and the sized whole numbers are u8, u16, u32, i8, i16 and i32"
-                                ),
+                                "there is no type called `i64`. An `int` is 64 bits with a sign, so write `int`. \
+                                 The sized whole numbers are u8, u16, u32, u64, i8, i16 and i32",
                                 span,
                             )
                         }
@@ -4850,7 +4981,7 @@ impl Checker {
     /// `buffer[64]` on a `list[u8, 64]`: a position written as a number
     /// is checked before the program runs.
     fn index_inside(&mut self, index: &Expr, length: Option<u64>) {
-        if let (Some(length), Some(Written::Number(at))) = (length, written(index)) {
+        if let (Some(length), Some(Written::Number(at, _))) = (length, written(index)) {
             if at >= length as i128 || at < 0 {
                 self.error(
                     format!("{at} is outside a list of {length} items, whose positions are 0 to {}", length - 1),
@@ -4938,7 +5069,7 @@ impl Checker {
             // that list are kept another way than they say themselves.
             Ty::BuiltinMethod(receiver, name) if &**name == "append" => match &**receiver {
                 // A float written out goes into a list of f32s as one.
-                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32) => {
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) => {
                     Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
@@ -4949,14 +5080,14 @@ impl Checker {
                 Ty::List(item) if item.is_owned() => {
                     Some(vec![Slot { name: "item".to_string(), ty: lent(item), has_default: false, id: None }])
                 }
-                Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32) => {
-                    Some(vec![Slot { name: "item".to_string(), ty: Ty::F32, has_default: false, id: None }])
+                Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32 | Ty::U64) => {
+                    Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
             },
             // So does `insert`, after the position.
             Ty::BuiltinMethod(receiver, name) if &**name == "insert" => match &**receiver {
-                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32) => Some(vec![
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) => Some(vec![
                     Slot { name: "position".to_string(), ty: Ty::Int, has_default: false, id: None },
                     Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None },
                 ]),
@@ -5303,9 +5434,15 @@ impl Checker {
 
     fn expr_inner(&mut self, expr: &Expr, env: &Env) -> Ty {
         let span = expr.span;
+        let wrap_mode = std::mem::take(&mut self.wrap_mode);
 
         match &expr.kind {
-            ExprKind::Int(_) => Ty::Int,
+            ExprKind::Int(n) => {
+                if *n > i64::MAX as u64 {
+                    self.big_numbers.push((span, *n));
+                }
+                Ty::Int
+            }
             ExprKind::Float(_) => Ty::Float,
             ExprKind::Str(_) => Ty::Str,
             ExprKind::Bool(_) => Ty::Bool,
@@ -5400,8 +5537,34 @@ impl Checker {
                     Ty::list(wanted_item)
                 } else {
                     let types: Vec<Ty> = items.iter().map(|item| self.item(item, env)).collect();
-                    // An empty list holds nothing yet, so its item type is open.
-                    Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
+                    // `[big, 3, 2]`: whole numbers written out beside a
+                    // u64 are u64s too (decision 42.3), so the list is a
+                    // list of u64s.
+                    let beside_u64 = types.iter().any(|ty| matches!(ty.widened(), Ty::U64))
+                        && types.iter().zip(items).all(|(ty, item)| {
+                            matches!(ty.widened(), Ty::U64) || matches!(written(item), Some(Written::Number(..)))
+                        });
+                    if beside_u64 {
+                        for (ty, item) in types.iter().zip(items) {
+                            if matches!(ty.widened(), Ty::U64) {
+                                continue;
+                            }
+                            if let Some(Written::Number(n, at)) = written(item) {
+                                match u64_holds(n) {
+                                    Ok(()) => {
+                                        self.types.u64s.insert((at.line, at.col));
+                                    }
+                                    Err(message) => {
+                                        self.error(message, item.span);
+                                    }
+                                }
+                            }
+                        }
+                        Ty::list(Ty::U64)
+                    } else {
+                        // An empty list holds nothing yet, so its item type is open.
+                        Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
+                    }
                 }
             }
             ExprKind::Dict(entries) => self.dict_written(expr, entries, env),
@@ -5430,6 +5593,11 @@ impl Checker {
                     (UnaryOp::Neg, Ty::Int | Ty::Float | Ty::F32 | Ty::Quantity(_)) => ty,
                     (UnaryOp::Not, Ty::Bool) => Ty::Bool,
                     (UnaryOp::BitNot, Ty::Int) => Ty::Int,
+                    (UnaryOp::BitNot, Ty::U64) => Ty::U64,
+                    (UnaryOp::Neg, Ty::U64) => self.error(
+                        "`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`",
+                        span,
+                    ),
                     (UnaryOp::BitNot, _) => {
                         self.error(format!("`~` works on the bits of a whole number, and this is {ty}"), span)
                     }
@@ -5457,8 +5625,14 @@ impl Checker {
             }
             ExprKind::Binary { op, left, right } => {
                 let (tested, right_side) = (left, right);
+                // Straight inside `u64.wrap( )`, these four cut their
+                // answer to 64 bits, and so do the same four inside them.
+                let wraps = wrap_mode && matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Shl);
+                self.wrap_mode = wraps;
                 let left_type = self.look(left, env);
+                self.wrap_mode = wraps;
                 let right_type = self.look(right, env);
+                self.wrap_mode = false;
                 // `0.5 in readings`: the 0.5 is beside the items.
                 let beside_left = match (op, right_type.clone().widened().looked_at()) {
                     (BinaryOp::In | BinaryOp::NotIn, Ty::List(item) | Ty::Fixed(item, _)) => *item,
@@ -5481,6 +5655,15 @@ impl Checker {
                     self.maybe_fields.entry((span.line, span.col)).or_insert(field);
                 }
                 let ty = self.binary(*op, &left, &right, span);
+                if wraps && matches!(ty, Ty::U64) {
+                    let function = match op {
+                        BinaryOp::Add => "u64..add",
+                        BinaryOp::Sub => "u64..sub",
+                        BinaryOp::Mul => "u64..mul",
+                        _ => "u64..shl",
+                    };
+                    self.types.wrapping.insert((right_side.span.line, right_side.span.col), function);
+                }
                 if *op == BinaryOp::Add && owns_items(&ty) {
                     return self.error(
                         "`+` would put each item of these lists in a second list, and each has one owner. \
@@ -5647,6 +5830,8 @@ impl Checker {
                         None => slots.get(position),
                         Some(name) => slots.iter().find(|slot| slot.name == *name),
                     });
+                    // `u64.wrap(h * prime)`: the product is cut to 64 bits.
+                    self.wrap_mode = matches!(callee, Ty::Builtin("u64..of"));
                     let ty = match slot {
                         // A parameter that takes an owned value keeps it:
                         // the caller's variable gives it up.
@@ -5866,6 +6051,24 @@ impl Checker {
                 Some(ty) => ty,
                 None => self.error(no_member(module, name), span),
             },
+            // `u8.max`, `int.min`, `u64.max`: the number itself (42.7).
+            Ty::Builtin(of) if matches!(name, "max" | "min") && limit_of(of, name, span).is_some() => {
+                let value = limit_of(of, name, span).unwrap_or(Expr { kind: ExprKind::None, span });
+                self.types.limits.insert((span.line, span.col), value);
+                match *of {
+                    "int" => Ty::Int,
+                    "u64" => Ty::U64,
+                    sized => ints::width(sized).map_or(Ty::Invalid, Ty::Sized),
+                }
+            }
+            // `u64.wrap`: the 64 bits of an int, or a u64 sum cut to 64
+            // bits (42.6). It becomes `u64..of`, a name only `checked`
+            // writes, so that no engine needs a field of a function.
+            Ty::Builtin("u64") if name == "wrap" => {
+                let callee = Expr { kind: ExprKind::Name("u64..of".to_string()), span };
+                self.types.limits.insert((span.line, span.col), callee);
+                Ty::Builtin("u64..of")
+            }
             // `u8.wrap`: the conversion that keeps the low bits.
             Ty::Builtin(sized) if name == "wrap" && ints::width(sized).is_some() => {
                 ints::width(sized).map_or(Ty::Invalid, |width| Ty::Builtin(width.wrap))
@@ -6411,6 +6614,9 @@ impl Checker {
                 if self.arity(name, arguments, 1, 1, span) {
                     match first {
                         Ty::Int | Ty::Float | Ty::F32 => {}
+                        // Half the u64s are past the largest int.
+                        Ty::U64 if name == "int" => self.can_raise("OverflowError", span),
+                        Ty::U64 => {}
                         // Text from outside may not be a number at all.
                         Ty::Str | Ty::Dynamic => self.can_raise("ValueError", span),
                         Ty::Invalid => {}
@@ -6588,7 +6794,7 @@ impl Checker {
             "program.exit" => {
                 if self.arity("exit", arguments, 1, 1, span) {
                     self.expect(&first, &Ty::Int, "the number `program.exit` ends the program with", arguments[0].span);
-                    if let Some(Written::Number(code)) = &arguments[0].written {
+                    if let Some(Written::Number(code, _)) = &arguments[0].written {
                         if !(0..=255).contains(code) {
                             self.error(
                                 format!("a program ends with a number from 0 to 255, not {code}"),
@@ -6653,7 +6859,7 @@ impl Checker {
                     return Ty::Invalid;
                 }
                 match first {
-                    Ty::Int | Ty::Float | Ty::F32 | Ty::Quantity(_) => first,
+                    Ty::Int | Ty::Float | Ty::F32 | Ty::U64 | Ty::Quantity(_) => first,
                     ty if ty.is_loose() => ty,
                     _ => wrong(self, "a number"),
                 }
@@ -6694,6 +6900,19 @@ impl Checker {
                 // f32s, perhaps with ints: the answer is an f32.
                 if types.iter().any(|ty| matches!(ty, Ty::F32)) && types.iter().all(|ty| matches!(ty, Ty::F32 | Ty::Int)) {
                     return Ty::F32;
+                }
+                // u64s: the answer is a u64, and `sum` checks that it fits.
+                if types.iter().any(|ty| matches!(ty, Ty::U64)) {
+                    if let Some(other) = types.iter().find(|ty| !matches!(ty, Ty::U64) && !ty.is_loose()) {
+                        return self.error(
+                            format!("`{name}` of u64s and {other} would have to choose between them. Make them all u64s with `u64( )`"),
+                            span,
+                        );
+                    }
+                    if name == "sum" {
+                        self.can_raise("OverflowError", span);
+                    }
+                    return Ty::U64;
                 }
                 let joined = self.join_all(&types).unwrap_or(Ty::Int);
                 if !joined.is_number() && !joined.is_loose() {
@@ -6755,6 +6974,41 @@ impl Checker {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::Quantity(Rc::from("ms"))
             }
+            // `u64(n)` checks that `n` is not below 0 (42.4); `u64.wrap(n)`,
+            // which `checked` names `u64..of`, keeps its 64 bits (42.6).
+            "u64" | "u64..of" => {
+                let shown = if name == "u64" { "u64" } else { "u64.wrap" };
+                if !self.arity(shown, arguments, 1, 1, span) {
+                    return Ty::Invalid;
+                }
+                if !matches!(first, Ty::Int | Ty::U64) && !first.is_loose() {
+                    let hint = if matches!(first, Ty::Float) { ". Make it one with `int( )` first" } else { "" };
+                    return self.error(format!("`{shown}` needs a whole number, but this is {first}{hint}"), span);
+                }
+                if let Some(Written::Number(n, at)) = &arguments[0].written {
+                    if name == "u64" {
+                        if let Err(message) = u64_holds(*n) {
+                            return self.error(message, arguments[0].span);
+                        }
+                    }
+                    // `u64(18446744073709551615)`: past the largest int,
+                    // so it is written as a u64 straight away.
+                    if *n > i64::MAX as i128 {
+                        self.types.u64s.insert((at.line, at.col));
+                    }
+                } else if name == "u64" && !matches!(first, Ty::U64) {
+                    // A u8, a u16 or a u32 is never below 0.
+                    let unsigned = matches!(arguments[0].ty.clone().looked_at(), Ty::Sized(width) if !width.signed);
+                    if !unsigned {
+                        self.can_raise("OverflowError", span);
+                    }
+                }
+                Ty::U64
+            }
+            "u64..add" | "u64..sub" | "u64..mul" | "u64..shl" => {
+                self.arity("u64.wrap", arguments, 2, 2, span);
+                Ty::U64
+            }
             // `u8(n)` checks that `n` fits when the program runs, and
             // `u8.wrap(n)` keeps its low bits. Either way the answer is a u8.
             _ if ints::width(name).or(ints::wrapping(name)).is_some() => {
@@ -6762,13 +7016,17 @@ impl Checker {
                 if !self.arity(name, arguments, 1, 1, span) {
                     return Ty::Invalid;
                 }
+                if matches!(first, Ty::U64) {
+                    // 42.10: not yet straight from a u64.
+                    return self.error(format!("`{name}` takes an int, and this is a u64. Make it an int first, as in `{name}(int(x))`"), span);
+                }
                 if !matches!(first, Ty::Int) && !first.is_loose() {
                     let hint = if matches!(first, Ty::Float) { ". Make it one with `int( )` first" } else { "" };
                     return self.error(format!("`{name}` needs a whole number, but this is {first}{hint}"), span);
                 }
                 // A number written out is checked now. Only `u8( )`
                 // refuses one: `u8.wrap(300)` is asking for the 44.
-                if let (Some(Written::Number(n)), true) = (&arguments[0].written, ints::width(name).is_some()) {
+                if let (Some(Written::Number(n, _)), true) = (&arguments[0].written, ints::width(name).is_some()) {
                     if !i64::try_from(*n).is_ok_and(|n| width.holds(n)) {
                         return self.error(width.does_not_fit(n), arguments[0].span);
                     }
@@ -7091,7 +7349,7 @@ impl Checker {
                     );
                 }
                 let key = apply(self, &arguments[0], vec![each(item)]);
-                if !matches!(key, Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Str | Ty::Invalid) && !key.is_loose() {
+                if !matches!(key, Ty::Int | Ty::Float | Ty::F32 | Ty::U64 | Ty::Sized(_) | Ty::Str | Ty::Invalid) && !key.is_loose() {
                     return self.error(
                         format!(
                             "the function given to `sort` says what each item is ordered by, a number or text, \
@@ -7104,7 +7362,7 @@ impl Checker {
             }
             (Ty::List(item), "sort") => {
                 self.arity(name, arguments, 0, 1, span);
-                if !matches!(**item, Ty::Int | Ty::Float | Ty::F32 | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
+                if !matches!(**item, Ty::Int | Ty::Float | Ty::F32 | Ty::U64 | Ty::Sized(_) | Ty::Str) && !item.is_loose() {
                     return self.error(
                         format!(
                             "`sort` puts numbers or text in order, smallest first, and this is {receiver}. \
@@ -7813,8 +8071,8 @@ impl Checker {
     fn real_beside(&mut self, ty: Ty, other: &Ty, expr: &Expr) -> Ty {
         let other = other.widened().looked_at();
         let wanted = match &other {
-            Ty::F32 => other.clone(),
-            Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32) => Ty::list(Ty::F32),
+            Ty::F32 | Ty::U64 => other.clone(),
+            Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32 | Ty::U64) => Ty::list((**item).clone()),
             _ => return ty,
         };
         let Some(written) = written(expr) else { return ty };
@@ -7825,10 +8083,15 @@ impl Checker {
         }
         let mut reals = Vec::new();
         reals_into_f32(&written, &wanted, &mut reals);
+        numbers_into_u64(&written, &wanted, &mut reals);
         if reals.is_empty() {
             return ty;
         }
-        self.types.f32s.extend(reals.iter().map(|at| (at.line, at.col)));
+        if matches!(wanted, Ty::U64) || matches!(&wanted, Ty::List(item) if matches!(**item, Ty::U64)) {
+            self.types.u64s.extend(reals.iter().map(|at| (at.line, at.col)));
+        } else {
+            self.types.f32s.extend(reals.iter().map(|at| (at.line, at.col)));
+        }
         sized_as(&ty, &wanted)
     }
 
@@ -7870,6 +8133,39 @@ impl Checker {
                         ),
                         span,
                     );
+                    return if order { Ty::Bool } else { Ty::Invalid };
+                }
+                _ => {}
+            }
+        }
+
+        // A u64 meets another u64, or a number written out, which has
+        // become one by now. Next to an int, which of the two is meant is
+        // not clear, and the program says (decision 42.3). A shift is by
+        // a count, which may be either.
+        if matches!(left, Ty::U64) || matches!(right, Ty::U64) {
+            let other = if matches!(left, Ty::U64) { right } else { left };
+            let sum = matches!(op, Add | Sub | Mul | FloorDiv | Mod | Pow | BitAnd | BitOr | BitXor);
+            let order = matches!(op, Eq | NotEq | Lt | LtEq | Gt | GtEq);
+            match (op, left, other) {
+                (Shl | Shr, Ty::U64, Ty::U64 | Ty::Int) => return Ty::U64,
+                (_, _, Ty::U64) if sum => return Ty::U64,
+                (Div, _, Ty::U64) => return Ty::Float,
+                (_, _, Ty::U64) if order => return Ty::Bool,
+                (_, _, Ty::Int | Ty::Float | Ty::F32) if sum || order || matches!(op, Div | Shl | Shr) => {
+                    let message = match other {
+                        Ty::Int => format!(
+                            "`{}` between {left} and {right} would have to choose between a u64 and an int. \
+                             Write `u64( )` around the int to work in u64s, or `int( )` around the u64",
+                            op.text()
+                        ),
+                        _ => format!(
+                            "`{}` between {left} and {right} would have to choose between a u64 and a float. \
+                             Write `float( )` around the u64 to work in floats",
+                            op.text()
+                        ),
+                    };
+                    self.error(message, span);
                     return if order { Ty::Bool } else { Ty::Invalid };
                 }
                 _ => {}
@@ -9057,9 +9353,9 @@ mod tests {
         assert_eq!(error("let a = u8.wrap(\"x\")"), "`u8.wrap` needs a whole number, but this is str");
         assert_eq!(error("let a = u8(1, 2)"), "`u8` takes 1 argument, but 2 were given");
         assert_eq!(
-            error("let a: u64 = 1"),
-            "there is no type called `u64`. An `int` is 64 bits with a sign, \
-             and the sized whole numbers are u8, u16, u32, i8, i16 and i32"
+            error("let a: i64 = 1"),
+            "there is no type called `i64`. An `int` is 64 bits with a sign, so write `int`. \
+             The sized whole numbers are u8, u16, u32, u64, i8, i16 and i32"
         );
     }
 
@@ -11583,6 +11879,45 @@ function total(xs: owned list[int]) -> int { return len(xs) }
                 "let a: list[f32] = [0.5]\nlet b: list[float] = a",
                 "`b` should be list[float], but this is list[f32]. The list could then be given a float that is not an f32. Make a list of floats from it with `[float(x) for x in ...]`",
             ),
+        ] {
+            assert_eq!(error(source), message, "\n{source}");
+        }
+    }
+
+    #[test]
+    fn a_u64_meets_only_a_u64_or_a_written_number() {
+        // Decision 42: a written number fits a u64 when it is 0 or more,
+        // a list of them beside a u64 is a list[u64], and the limits of
+        // every whole type are names.
+        ok("let a: u64 = 18446744073709551615\nlet b = a - 5\nlet c = a > 3 and b == 7\nlet xs = [a, 7, 8]\nlet ys: list[u64] = xs\nprint(c, ys)");
+        ok("let a = u8.max + i8.min + u16.max + i32.min + u32.max\nlet b: u64 = u64.max\nlet c: int = int.min\nprint(a, b, c, u64.wrap(-1), u64.wrap(b * 3))");
+        for (source, message) in [
+            (
+                "let a: u64 = 5\nlet b = -3\nprint(a + b)",
+                "`+` between u64 and int would have to choose between a u64 and an int. Write `u64( )` around the int to work in u64s, or `int( )` around the u64",
+            ),
+            (
+                "let a: u64 = 5\nprint(a + 1.5)",
+                "`+` between u64 and float would have to choose between a u64 and a float. Write `float( )` around the u64 to work in floats",
+            ),
+            ("let a: u64 = -1", "-1 does not fit in a u64 (0 to 18446744073709551615)"),
+            ("let a: u64 = 5\nprint(-a)", "`-` does not work on a u64, which is never below 0. Make it an int first with `int( )`"),
+            (
+                "let n = 3\nlet a: u64 = n",
+                "`a` should be u64, but this is int. An int can be below 0, and a u64 never is. Convert it with `u64( )`, which checks that it fits",
+            ),
+            (
+                "let a: u64 = 5\nlet b: int = a",
+                "`b` should be int, but this is u64. Half the numbers a u64 holds are past the largest int. Convert it with `int( )`, which checks that it fits",
+            ),
+            ("print(u64.wrap(1.5))", "`u64.wrap` needs a whole number, but this is float. Make it one with `int( )` first"),
+            ("let a: u8 = 5\nlet b: u64 = a", "`b` should be u64, but this is u8. Convert it with `u64( )`, which never fails for a u8"),
+            (
+                "let a: i16 = 5\nlet b: u64 = a",
+                "`b` should be u64, but this is i16. An i16 can be below 0, and a u64 never is. Convert it with `u64( )`, which checks that it fits",
+            ),
+            ("let a: u64 = 5\nlet b: u8 = a", "`b` should be u8, but this is u64. Convert it with `u8(int( ))`, which checks that it fits"),
+            ("let a: u64 = 5\nlet b = u8(a)", "`u8` takes an int, and this is a u64. Make it an int first, as in `u8(int(x))`"),
         ] {
             assert_eq!(error(source), message, "\n{source}");
         }

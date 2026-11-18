@@ -724,6 +724,15 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     target languages.
     See [`docs/f32.md`](docs/f32.md) and chapter 41 of
     [`docs/decisions.md`](docs/decisions.md))
+41. `u64`, a whole number of 64 bits with no sign (done, after 0.5.2
+    and not yet released: `let h: u64 = 0xcbf29ce484222325`, sums
+    that stay `u64` and are checked, `u64.wrap( )` to cut them to 64
+    bits as a hash does, and a `u64` beside an `int` value refused
+    with a message that says which to write. `u8.max`, `int.min` and
+    the ends of every whole type. C writes `uint64_t`. In every
+    engine, every build and all fifteen target languages.
+    See [`docs/u64.md`](docs/u64.md) and chapter 42 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
