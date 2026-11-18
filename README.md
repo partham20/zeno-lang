@@ -664,6 +664,9 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     See [`docs/minimal.md`](docs/minimal.md) and chapter 30 of
     [`docs/decisions.md`](docs/decisions.md))
 
+What Zeno still does not have, in the order it will be built, with
+the reason for each: [`docs/missing.md`](docs/missing.md).
+
 ## Layout
 
 ```

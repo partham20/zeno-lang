@@ -81,6 +81,9 @@ changing what any program written now means.
   tests by name, and tests of a compiled program. (Hover on a field
   and `zeno test --only` came in 0.2: decisions 17.4 and 17.5.)
 
+What is still left out today, with what the other languages have
+that this list never mentioned, is in [`missing.md`](missing.md).
+
 And three things are not limits, because they are decided: Zeno has
 no inheritance, no second way to write a function, and no second name
 for a module.
