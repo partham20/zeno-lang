@@ -946,6 +946,7 @@ impl Lowerer {
                     let why = match path.as_str() {
                         "web" => "The `web` module is for a page: build it with `--web`, or with `--target html`",
                         "board" => "The `board` module is for a program on a board: build it without `--target`",
+                        "python" => "The `python` module needs Python beside the program while it runs, and `zeno run` is what starts it",
                         _ => "It is not a module that comes with Zeno",
                     };
                     return Err(Error::new(format!("a program built for another language cannot use `{path}`. {why}"), statement.span));
@@ -1631,6 +1632,13 @@ mod tests {
         assert_eq!(refused("import program\nprint(program.run(\"ls\", []))").as_deref(), Some(message));
         assert_eq!(refused("from program import run\nprint(run(\"ls\", []))").as_deref(), Some(message));
         assert_eq!(refused("import program\nlet start = program.run\nprint(start(\"ls\", []))").as_deref(), Some(message));
+        assert_eq!(
+            refused("import python\nprint(python.module(\"math\").pi)").as_deref(),
+            Some(
+                "a program built for another language cannot use `python`. The `python` module needs Python beside \
+                 the program while it runs, and `zeno run` is what starts it"
+            )
+        );
         // The rest of the module is there as before.
         assert_eq!(refused("import program\nprint(program.arguments())"), None);
     }

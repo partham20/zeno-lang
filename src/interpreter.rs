@@ -1041,6 +1041,9 @@ impl Interpreter {
             }
             Value::CaseConstructor(def, index) => ops::new_case(&def, index, positional, named, span),
             Value::ErrorType(kind) => ops::new_error(&kind, positional, named, span),
+            // A function, a class or a method of Python: called there,
+            // and a named argument is one of its keyword arguments.
+            Value::Foreign(foreign) => crate::bridge::call(&foreign, &positional, &named, span),
             other => fatal(format!("{} cannot be called", other.type_name()), span),
         }
     }
@@ -1539,6 +1542,144 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import program\nprint(program.run(\"sh\", [\"-c\", \"kill -9 $$\"]))"), "137\n");
     }
 
+    /// Is there a Python on this machine for `import python` to start?
+    /// A test that needs one says nothing where there is none, as the
+    /// tests of the C backend do where there is no C compiler.
+    fn python_is_here() -> bool {
+        let names: &[&str] = if cfg!(windows) { &["python", "python3", "py"] } else { &["python3", "python"] };
+        names.iter().any(|name| {
+            std::process::Command::new(name)
+                .args(["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    }
+
+    #[test]
+    fn a_module_of_python_is_used_from_zeno() {
+        if !python_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own, and can be used
+        // as such at once. A named argument is a keyword argument.
+        assert_eq!(
+            output(
+                "import python\n\
+                 let math = python.module(\"math\")\n\
+                 print(math.sqrt(16.0) + 1, math.floor(2.5) + 1, math.pi > 3.14, math.isnan(math.nan))\n\
+                 let builtins = python.module(\"builtins\")\n\
+                 print(builtins.int(\"ff\", base=16), builtins.str(2.5) + \"!\", builtins.round(2.567, ndigits=1))\n\
+                 print(builtins.len(\"h\u{e9}llo \u{1F600}\"), builtins.str.upper(\"tab\\there \\\"q\\\"\"), builtins.max([3, 9, 4]))\n\
+                 print(builtins.abs(-1), builtins.divmod(7, 2), 2.0 == builtins.float(2), builtins.print is none)"
+            ),
+            "5.0 3 true true\n255 2.5! 2.6\n7 TAB\tHERE \"Q\" 9\n1 (3, 1) true false\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_python() {
+        if !python_is_here() {
+            return;
+        }
+        // A list of Python is the one list there is: Zeno adds to it,
+        // reads it, loops over it and asks what is in it, and Python
+        // sees every change. `python.copy` makes a list of Zeno of it.
+        assert_eq!(
+            output(
+                "import python\n\
+                 let builtins = python.module(\"builtins\")\n\
+                 let items = builtins.list(builtins.range(3))\n\
+                 items.append(10)\n\
+                 items[0] = \"zero\"\n\
+                 print(items, len(items), items[3] + 1, 10 in items, 11 not in items)\n\
+                 var seen: list[str] = []\n\
+                 for item in items {\n    seen.append(str(item))\n}\n\
+                 print(seen.join(\"-\"), [items], f\"{items[0]:>6}|\")\n\
+                 let copy = python.copy(items)\n\
+                 copy.append(11)\n\
+                 print(copy, len(items), python.copy(3), items == items, items == builtins.list(items), items == 3)\n\
+                 let ages = builtins.dict(ann=31, bob=40)\n\
+                 ages[\"cy\"] = [1.5, none, true]\n\
+                 for name, age in python.copy(ages) {\n    print(name, age)\n}\n\
+                 print(\"ann\" in ages, len(ages), ages.get(\"dee\", 0), ages)\n\
+                 let fractions = python.module(\"fractions\")\n\
+                 let half = fractions.Fraction(1, 2)\n\
+                 let box = python.module(\"types\").SimpleNamespace(size=2)\n\
+                 box.note = \"kept in Python\"\n\
+                 box.size += 1\n\
+                 print(half, half.numerator, half == fractions.Fraction(2, 4), half == 0.5, box.note, box.size)\n\
+                 let given = builtins.list([1, [2.5, \"x\", none], [\"k\": [true], \"j\": [false]], half])\n\
+                 print(given, builtins.type(given[2]).__name__)"
+            ),
+            "['zero', 1, 2, 10] 4 11 true true\n\
+             zero-1-2-10 [['zero', 1, 2, 10]]   zero|\n\
+             [\"zero\", 1, 2, 10, 11] 4 3 true true false\n\
+             ann 31\nbob 40\ncy [1.5, none, true]\n\
+             true 3 0 {'ann': 31, 'bob': 40, 'cy': [1.5, None, True]}\n\
+             1/2 1 true true kept in Python 3\n\
+             [1, [2.5, 'x', None], {'k': [True], 'j': [False]}, Fraction(1, 2)] dict\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_python_is_an_error_of_zeno() {
+        if !python_is_here() {
+            return;
+        }
+        // Python's error has Zeno's kind where the two have one name, a
+        // file that cannot be used is a FileError, and every other is an
+        // `Error` that says what Python called it.
+        assert_eq!(
+            output(
+                "import python\n\
+                 let builtins = python.module(\"builtins\")\n\
+                 try { builtins.int(\"x\") } except ValueError as error { print(1, error.message) }\n\
+                 try { builtins.list()[2] } except IndexError as error { print(2, error.message) }\n\
+                 try { builtins.dict()[\"k\"] } except KeyError as error { print(3, error.message) }\n\
+                 try { builtins.divmod(1, 0) } except ZeroDivisionError as error { print(4, error.message) }\n\
+                 try { python.module(\"math\").exp(1000.0) } except OverflowError as error { print(5, error.message) }\n\
+                 try { builtins.open(\"/zeno/no/such/file\") } except FileError as error { print(6, error.message.starts_with(\"FileNotFoundError: \")) }\n\
+                 try { builtins.len(5) } except Error as error { print(7, error.kind, error.message) }\n\
+                 try { python.module(\"zeno_no_such_module\") } except FileError as error { print(8, error.message.starts_with(\"Python has no module `zeno_no_such_module`\")) }\n\
+                 try { python.module(\"json\").loads(\"{\") } except ValueError as error { print(9, error.message.starts_with(\"JSONDecodeError: \")) }\n\
+                 try { python.copy(builtins.dict([[1.5, 2]])) } except ValueError as error { print(10, error.message) }\n\
+                 print(builtins.pow(2, 70), \"still here\")"
+            ),
+            "1 invalid literal for int() with base 10: 'x'\n\
+             2 list index out of range\n\
+             3 there is no key 'k'\n\
+             4 integer division or modulo by zero\n\
+             5 math range error\n\
+             6 true\n\
+             7 Error TypeError: object of type 'int' has no len()\n\
+             8 true\n\
+             9 true\n\
+             10 a dict in Zeno has keys that are str or int, and this one has the key 1.5\n\
+             1180591620717411303424 still here\n"
+        );
+        assert_eq!(
+            error("import python\npython.module(\"builtins\").int(\"x\")"),
+            "uncaught ValueError: invalid literal for int() with base 10: 'x'"
+        );
+        // What Zeno cannot hand over is said before anything is sent.
+        assert_eq!(
+            error("import python\nfunction double(n) { return n * 2 }\npython.module(\"builtins\").map(double, [1])"),
+            "a function of Zeno cannot be given to Python yet"
+        );
+        assert_eq!(
+            error("import python\npython.module(\"builtins\").str(3 s)"),
+            "a quantity in s cannot be given to Python"
+        );
+        assert_eq!(
+            error("import python\nlet xs = python.module(\"builtins\").list()\nif xs { print(1) }"),
+            "a condition must be true or false, but this is a Python value"
+        );
+        assert_eq!(error("import python\npython.module()"), "`module` takes 1 argument, but 0 were given");
+        assert_eq!(error("import python\npython.module(3)"), "`module` needs a str, but this is an int");
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -1575,7 +1716,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

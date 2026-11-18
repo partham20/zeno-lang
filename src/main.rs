@@ -14,6 +14,7 @@
 
 mod ast;
 mod board;
+mod bridge;
 mod builtins;
 mod bytecode;
 mod checker;
@@ -392,6 +393,7 @@ fn test(path: &str, strict: bool, asked: bool, only: Option<&str>) -> Option<Tal
     }
     value::print_line(path);
     let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()).with_page(own_page(path)), only);
+    bridge::close();
     let tested = match tested {
         Ok(tested) => tested,
         Err(error) => {
@@ -484,6 +486,8 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>, owned: boo
         true => vm::run_with(&program, false, outside),
         false => interpreter::run_with(&program, false, outside),
     };
+    // A Python that `import python` started is told the program is over.
+    bridge::close();
     match result {
         Ok(()) => Some(()),
         Err(error) => {

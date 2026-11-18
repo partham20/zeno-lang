@@ -47,6 +47,9 @@ pub enum Value {
     /// What `web.after` and `web.every` give: the call that is waiting,
     /// by the number the page knows it by. `timer.stop()` calls it off.
     Timer(u32),
+    /// A value that stays in another language, for `import python`: the
+    /// number that language's side keeps it under (`bridge.rs`).
+    Foreign(Rc<crate::bridge::Foreign>),
 
     /// A function written in Zeno.
     Function(Rc<Closure>),
@@ -546,6 +549,7 @@ impl Value {
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
             Value::Timer(_) => "a Timer".to_string(),
+            Value::Foreign(foreign) => format!("a {} value", foreign.lang.name()),
             Value::Pointer(..) => "a pointer".to_string(),
             Value::Register(..) => "a register".to_string(),
             Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
@@ -566,6 +570,8 @@ impl Value {
     pub fn repr(&self) -> String {
         match self {
             Value::Str(s) => quoted(s),
+            // Inside a list a Python value is shown as Python writes it.
+            Value::Foreign(foreign) => crate::bridge::shown(foreign, true),
             other => other.to_string(),
         }
     }
@@ -647,6 +653,8 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Event(a), Event(b)) => Rc::ptr_eq(a, b),
         // Two timers are equal when they are one call that waits.
         (Timer(a), Timer(b)) => a == b,
+        // A value that stays in Python is compared there, by Python's `==`.
+        (Foreign(a), b) | (b, Foreign(a)) => crate::bridge::equal(a, b),
         // Two pointers are equal when they point at the same item.
         (Pointer(a, at_a), Pointer(b, at_b)) => Rc::ptr_eq(a, b) && at_a == at_b,
         (Register(a, size_a), Register(b, size_b)) => a == b && size_a == size_b,
@@ -721,6 +729,8 @@ impl fmt::Display for Value {
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),
             Value::Timer(_) => write!(f, "Timer"),
+            // A value of Python is shown as Python shows it.
+            Value::Foreign(foreign) => write!(f, "{}", crate::bridge::shown(foreign, false)),
             // Where a pointer points is different on every run, so it is
             // not shown.
             Value::Pointer(memory, _) => write!(f, "<pointer[{}]>", memory.pointee.name()),

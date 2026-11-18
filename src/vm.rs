@@ -807,6 +807,9 @@ impl Vm {
                 return Ok(Called::Done(ops::new_case(def, *index, positional, named, span)?));
             }
             Value::ErrorType(kind) => return Ok(Called::Done(ops::new_error(kind, positional, named, span)?)),
+            // A function, a class or a method of Python: called there,
+            // and a named argument is one of its keyword arguments.
+            Value::Foreign(foreign) => return Ok(Called::Done(crate::bridge::call(foreign, &positional, &named, span)?)),
             other => return fatal(format!("{} cannot be called", other.type_name()), span),
         };
 
@@ -1420,7 +1423,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {

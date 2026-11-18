@@ -358,6 +358,7 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
                     None => return mismatch(),
                 },
                 (Str(part), Str(text)) => text.contains(&**part),
+                (item, Value::Foreign(foreign)) => crate::bridge::has(foreign, item, span)?,
                 _ => return mismatch(),
             };
             Ok(Bool(found == (op == In)))
@@ -393,6 +394,8 @@ pub fn items(value: &Value, span: Span) -> Result<Vec<Value>> {
         // were there when it started.
         Value::Dict(dict) => Ok(dict.borrow().entries().iter().map(|(key, _)| key.clone()).collect()),
         Value::Str(text) => Ok(text.chars().map(|c| Value::str(c.to_string())).collect()),
+        // Whatever Python can loop over, taken now, all of it.
+        Value::Foreign(foreign) => crate::bridge::items(foreign, span),
         other => fatal(format!("cannot loop over {}", other.type_name()), span),
     }
 }
@@ -423,6 +426,7 @@ pub fn position(index: &Value, len: usize, what: &str, span: Span) -> Result<usi
 /// `object[index]`
 pub fn item(object: &Value, index: &Value, span: Span) -> Result {
     match object {
+        Value::Foreign(foreign) => crate::bridge::item(foreign, index, span),
         Value::List(items) => {
             let items = items.borrow();
             let i = position(index, items.len(), "list", span)?;
@@ -482,6 +486,7 @@ fn pointed_at(memory: &Memory, at: i64, index: &Value, does: &str, span: Span) -
 /// `object[index] = value`
 pub fn set_item(object: Value, index: &Value, value: Value, span: Span) -> Result<()> {
     match object {
+        Value::Foreign(foreign) => crate::bridge::set_item(&foreign, index, &value, span),
         Value::List(items) => {
             let len = items.borrow().len();
             let i = position(index, len, "list", span)?;
@@ -520,6 +525,7 @@ pub fn set_item(object: Value, index: &Value, value: Value, span: Span) -> Resul
 /// `object.name`
 pub fn field(object: Value, name: &str, span: Span) -> Result {
     match &object {
+        Value::Foreign(foreign) => crate::bridge::field(foreign, name, span),
         Value::Instance(instance) => {
             if let Some(value) = instance.get(name) {
                 return Ok(value);
@@ -582,6 +588,7 @@ pub fn set_field(object: Value, name: &str, value: Value, span: Span) -> Result<
             }
             Ok(())
         }
+        Value::Foreign(foreign) => crate::bridge::set_field(&foreign, name, &value, span),
         other => fatal(format!("cannot set a field on {}", other.type_name()), span),
     }
 }

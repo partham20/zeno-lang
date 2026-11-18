@@ -1616,6 +1616,8 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
         ("program", "run") => Ty::Builtin("program.run"),
+        ("python", "module") => Ty::Builtin("python.module"),
+        ("python", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3303,6 +3305,7 @@ impl Checker {
                     "program" => "program",
                     "json" => "json",
                     "web" => "web",
+                    "python" => "python",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -5914,6 +5917,20 @@ impl Checker {
                 self.arity("write", arguments, 1, 1, span);
                 Ty::Str
             }
+            // `python.module("yt_dlp")`: a module of Python. What it has
+            // is known when the program runs, as for `json.parse` (18.1).
+            // Python may not be installed, or may not have the module.
+            "python.module" => {
+                if self.arity("module", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the name given to `python.module`", arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::Dynamic
+            }
+            "python.copy" => {
+                self.arity("copy", arguments, 1, 1, span);
+                Ty::Dynamic
+            }
             // `program.arguments()`: the words the program was started
             // with, as a new list.
             "program.arguments" => {
@@ -7992,7 +8009,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
@@ -10046,6 +10063,29 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "the words `program.run` gives the program should be list[str], but this is list[int]"
         );
         assert_eq!(error("import program\nlet text: str = program.run(\"ls\", [])"), "`text` should be str, but this is int");
+    }
+
+    #[test]
+    fn a_module_of_python_is_checked_when_the_program_runs() {
+        // What Python has is known when it is asked, so everything is
+        // let through: a field, a call with a named argument, an item.
+        ok("import python\n\
+            let yt = python.module(\"yt_dlp\")\n\
+            let downloader = yt.YoutubeDL(yt.parse_options()[1], auto_init=true)\n\
+            downloader.params[\"quiet\"] = true\n\
+            let title: str = downloader.extract_info(\"x\", download=false)[\"title\"]\n\
+            for entry in python.copy(downloader.cache) {\n    print(entry, title, len(downloader.params))\n}");
+        ok("from python import module, copy\nprint(copy(module(\"math\").pi))");
+        assert_eq!(error("import python\npython.module(5)"), "the name given to `python.module` should be str, but this is int");
+        assert_eq!(error("import python\npython.module()"), "`module` takes 1 argument, but 0 were given");
+        assert_eq!(error("import python\npython.copy()"), "`copy` takes 1 argument, but 0 were given");
+        assert_eq!(error("import python\npython.eval(\"1\")"), "module `python` has no `eval`");
+        // Strict mode wants every type before the program runs, and
+        // Python's are not known then: the same as for `json.parse`.
+        assert_eq!(
+            strict_error("import python\nlet math = python.module(\"math\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
         // A line may not be there, so it is tested before it is used.
         assert_eq!(
             error("print(input().upper())"),

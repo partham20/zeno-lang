@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json` and `web`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python")
 }
 
 /// Every built-in name and what it stands for.
@@ -167,6 +167,25 @@ fn program_run(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     }
 }
 
+/// `python.module("yt_dlp")`: a module of Python, as `import yt_dlp`
+/// gives it there. It stays in Python, which Zeno starts beside the
+/// program the first time one is asked for (`bridge.rs`).
+fn python_module(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("module", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Python, text("module", &args[0], span)?, span)
+}
+
+/// `python.copy(thing)`: a list, a tuple or a dict of Python as a list
+/// or a dict of Zeno, with everything in it. A value that is one of
+/// Zeno's already is given back as it is.
+fn python_copy(_: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    arity("copy", &args, 1, 1, span)?;
+    match args.remove(0) {
+        Value::Foreign(foreign) => crate::bridge::copy(&foreign, span),
+        other => Ok(other),
+    }
+}
+
 /// The number a program ended with. One that was stopped from outside
 /// (Ctrl-C, `kill`) has no number of its own: it gets 128 plus the
 /// number of the signal that stopped it, which is what a shell says.
@@ -191,6 +210,7 @@ fn len(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         Value::Str(text) => Ok(Value::Int(text.chars().count() as i64)),
         Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
         Value::Dict(dict) => Ok(Value::Int(dict.borrow().len() as i64)),
+        Value::Foreign(foreign) => crate::bridge::len(foreign, span),
         other => wrong_type("len", "a str, a list or a dict", other, span),
     }
 }
@@ -1093,6 +1113,13 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             vec![
                 ("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments })),
                 ("run", Value::Builtin(Builtin { name: "run", call: program_run })),
+            ],
+        ),
+        "python" => (
+            "python",
+            vec![
+                ("module", Value::Builtin(Builtin { name: "module", call: python_module })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),
         "json" => (
