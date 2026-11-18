@@ -1,0 +1,63 @@
+# noise.zeno: a sensor that is never quite still, and what to do about it.
+#
+# A 10-bit converter gives a whole number from 0 to 1023. A real one
+# never gives the same number twice running, so this program adds a
+# little noise to a steady reading, keeps what comes out inside the
+# converter's range with `math.clamp`, and smooths it with an average.
+# Then it says how far a joystick is from its middle with `math.hypot`.
+#
+# `random`, `math.clamp` and `math.hypot` are written in Zeno itself
+# (docs/library-in-zeno.md), so this prints the same under `zeno run`,
+# in a build for a board, and in every language `zeno build --target`
+# writes. It prints the same on every run, too: a program that does
+# not call `random.seed` gets the numbers of `random.seed(0)`.
+#
+#     zeno run examples/noise.zeno
+#     zeno build --firmware --no-collector examples/noise.zeno
+
+import math
+import random
+
+const TOP = 1023
+
+# What the converter says for a pin held at `level`: the level, give or
+# take `noise`, and never outside what ten bits can say.
+function sample(level: int, noise: int) -> int {
+    return math.clamp(level + random.between(-noise, noise), 0, TOP)
+}
+
+# The average of `count` samples, to the nearest whole number.
+function smoothed(level: int, noise: int, count: int) -> int {
+    var total = 0
+    for taken in range(count) {
+        total += sample(level, noise)
+    }
+    return (total + count // 2) // count
+}
+
+print("A steady 512, with noise of 40 either way:")
+var line = ""
+for taken in range(8) {
+    line += f"{sample(512, 40):5}"
+}
+print(line)
+print(f"one sample {sample(512, 40)}, the average of 64 samples {smoothed(512, 40, 64)}")
+
+print("Near the top of the range, nothing goes past 1023:")
+line = ""
+for taken in range(8) {
+    line += f"{sample(1010, 40):5}"
+}
+print(line)
+
+# A joystick is two converters. Its middle is (512, 512).
+function pushed(x: int, y: int) -> float {
+    return math.hypot(float(x - 512), float(y - 512))
+}
+
+print("How far the stick is pushed, out of 512:")
+for position in [[512, 512], [812, 912], [0, 512], [1023, 1023]] {
+    let x = position[0]
+    let y = position[1]
+    print(f"  ({x:4}, {y:4})  {pushed(x, y):6.1f}")
+}

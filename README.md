@@ -74,6 +74,7 @@ Samples, none of them final:
 - [`examples/video.zeno`](examples/video.zeno): the same job with yt-dlp as a library. `import python` lets a Zeno program use any package of Python that is installed: `python.module("yt_dlp")` is the module, and its answers come back as values of Zeno, so the program can say what a video is called and how long it is before it saves anything. Run it with `zeno run`.
 - [`examples/checksum.zeno`](examples/checksum.zeno): the SHA-256 of a file, the number a download page shows beside it. Zeno has none of its own, and `import node` lets a program use the `crypto` that comes with Node, or any package that `npm install` put beside the program. Run it with `zeno run`.
 - [`examples/zipped.zeno`](examples/zipped.zeno): what is in a zip file, with each file's size and how much smaller the zip made it. `import java` lets a program use every class that comes with Java, here `java.util.zip`, and any library that is a jar. Run it with `zeno run`.
+- [`examples/noise.zeno`](examples/noise.zeno): a converter's reading with noise on it, kept in range and smoothed, and how far a joystick is pushed. `random`, `math.clamp` and `math.hypot` are written in Zeno itself, so every engine and every target gives the same numbers.
 - [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/faults.zeno`](examples/faults.zeno): fault codes counted and looked up in a dict: `["mode": "auto"]`, `get`, `in`, `pop` and a loop over the keys.
 - [`examples/channels.zeno`](examples/channels.zeno): a dict that holds lists and objects. The readings of each channel are a list under its name, and `for channel, values in readings` is given each key and what is under it.
@@ -663,6 +664,18 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     checked build on 363 programs.
     See [`docs/minimal.md`](docs/minimal.md) and chapter 30 of
     [`docs/decisions.md`](docs/decisions.md))
+
+34. A library written in Zeno (done, after 0.5.1 and not yet
+    released: a module that comes with Zeno may have a part that is a
+    file of Zeno, kept inside `zeno` and joined to a program as a file
+    of the program is. Only the functions a program reaches are put
+    into it, and a program that uses none is unchanged. The first
+    ones: `math.hypot`, `sinh`, `cosh`, `tanh`, `gcd` and `clamp`, and
+    the module `random`, with `between`, `number`, `pick` and `seed`.
+    Each is written once, and is the same in every engine, every
+    build and every target.
+    See [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and
+    chapter 33 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

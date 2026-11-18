@@ -12367,3 +12367,274 @@ every build.
 their own way, so those keep the macro. The trial workflow now builds
 six programs with `--minimal` on the machine it tries, and says where
 one that fails stopped.
+
+## 33. A library written in Zeno
+
+6.10 said of the methods of text and lists: "Once modules exist, what
+can be written in Zeno will be." Modules have existed since chapter 7,
+and since then Zeno has gained a VM, a second compiler and fifteen
+other languages to write a program in. A function of the library was
+by now written once for each: `math.log2` is in `builtins.rs`, in
+`runtime.c`, and in thirteen other runtimes. That is why
+[`missing.md`](missing.md) puts this first: every small gap of the
+library costs that much, until the library can be written in Zeno.
+
+This chapter is the way to do it, the first functions written that
+way (6.21 had left them out "until something needs it"), and two
+mistakes that it found. [`library-in-zeno.md`](library-in-zeno.md)
+walks through the code.
+
+### 33.1 A module that comes with Zeno may have a part written in Zeno
+
+The folder `library/` holds one `.zeno` file for each such module:
+`library/math.zeno`, `library/random.zeno`. The files are kept inside
+the `zeno` program (`src/library.rs`), so there is nothing to install
+beside it and nothing to find when a program runs.
+
+`math` has both kinds of part. `math.sqrt` is built in, as before, and
+`math.hypot` is written in Zeno. A program does not see the
+difference: `import math`, then `math.sqrt(x)` and `math.hypot(x, y)`,
+or `from math import sqrt, hypot`.
+
+**Why inside `zeno`, and not a folder beside it.** A folder that has
+to be found is a way for it not to be found: a `zeno` that was copied
+to another machine, a folder of an older version. Every installer
+would have had to carry it. The files are small text.
+
+**Why one module can have both kinds.** `hypot` belongs with `sqrt`.
+A second module, `math2` or `mathx`, would make the reader learn
+which function lives where, for a reason that is about how Zeno is
+built and not about mathematics.
+
+**Turned down: writing these in Rust and C like the rest.** `hypot`
+is one line of C. It is also a line in each of fifteen other
+runtimes, each with its own test, and the answers would differ in
+the last digit, because each language has its own `hypot`. Written in
+Zeno it is the same arithmetic everywhere, so it prints the same
+everywhere, and that is checked by the tests there already are.
+
+### 33.2 The part is joined like a file of the program
+
+`modules.rs` reads the part when a file of the program imports its
+module, gives its names the module's name in front (`math.hypot`),
+and puts its statements ahead of the program's own. From there on it
+is a file like `shapes.zeno`: the checker checks it, the interpreter
+and the VM run it, both compilers and every target compile it, and
+none of them was changed for it.
+
+The part begins with `strict`, so every type in it is written, as
+every kind of build asks. It may keep things to itself with `private`.
+It imports the built-in part of its own module (`import math`, for
+`math.sqrt`), and nothing else.
+
+In a message it is named `library/math.zeno`, with its own line
+numbers, like any file. `zeno join` shows it, which is a way to read
+the library.
+
+**Why last among the files, and first among the statements.** A place
+in a message is a file's number and a line. The parts are read after
+every file of the program, so the program's files keep the numbers
+they would have had. Their statements still go first: a part uses
+nothing of the program's, and the top of any file may use the part.
+
+### 33.3 Only what the program reaches is joined
+
+Of a part's functions, the program gets the ones its files name, the
+ones those name, and so on. A program that calls `math.gcd` has
+`math.gcd` in it, and not `hypot`, `sinh` or `clamp`.
+
+What is not a function comes whole when anything of the part is
+reached: the four numbers of `random`.
+
+**Why.** A program for a board pays for every function in it. A
+library that came whole would be a reason to avoid it there, and
+firmware is what Zeno is for. The C compiler would drop most unused
+functions if asked, but the fifteen targets would not, and `zeno
+build` shows its C to be read.
+
+**How.** The stage that gives names their full names already visits
+every use of a name. It now also notes which full names each function
+of a part uses, and `Loader::join` follows those from what the
+program's own files name.
+
+### 33.4 A program that names nothing of a part is the program it was
+
+A file that spells none of the names a part offers cannot be using
+it, and the part is then not read at all. If a file does spell one
+(`let clamp = 3`) and turns out not to mean the part's, the part is
+taken off the end of the files again. Either way the joined program
+is, to the last statement, what it was before parts existed.
+
+**Why it matters.** "Nothing existing may change" is how every
+feature since 0.1 has been added. Here it holds by construction for
+every program that was accepted before: `math.hypot` and `import
+random` were both refused. `tools/minimal.py` and the test
+`a_program_that_names_nothing_of_a_part_is_the_program_it_was` hold
+it there.
+
+**The one thing that does change**, as for `json`, `web` and `python`
+before it (26.11): `random` is now the name of a module that comes
+with Zeno, so a file of a program called `random.zeno` can no longer
+be imported under that name.
+
+### 33.5 A part means the names that come with Zeno
+
+A program may give `abs`, `len` or `max` a meaning of its own: they
+are names, and not words of the language. Joined to such a program,
+a part that says `abs(x)` would call the program's `abs`. What
+`math.hypot` does would then depend on who calls it.
+
+Two things keep that from happening.
+
+1. **A part uses no such name where it can do without.** The part of
+   `math` has its own private `size` in place of `abs`. `random`
+   keeps its four numbers as plain whole numbers and cuts them to 32
+   bits with `& 4294967295`, so it needs no `u32.wrap`.
+2. **Where it cannot, the program is told.** `random.pick` needs the
+   length of a list, and `len` is the only way to ask. A program that
+   has a `len` of its own and reaches `pick` is refused, at its `len`:
+   "this program uses `random.pick`, which is written in Zeno and uses
+   the `len` that comes with Zeno. So the program cannot give `len` a
+   meaning of its own here. Give this one another name". A program
+   that does not reach `pick` keeps its `len`.
+
+**Why a refusal, and not a fix.** The fix is a way for a part to say
+"the `len` that comes with Zeno" that nothing can hide. That is a
+change to how every engine looks a name up, and it is worth making
+once, for the files of a program as well: an imported file has the
+same trouble today, and is refused the same way (7.7). Until then
+the refusal is honest, rare, and can be lifted without changing any
+program.
+
+### 33.6 `import random` goes at the top of a file
+
+A module that comes with Zeno can be imported inside a function,
+where the import of a file cannot (7.5). A part written in Zeno is joined to the file, as a file of the
+program is, so its import belongs where theirs do. `import random`
+inside a function is refused with a message that says so. `import
+math` inside a function still gives the built-in part, and
+`math.hypot` there says to move the import to the top.
+
+### 33.7 What `math` gained
+
+| | What it is |
+|---|---|
+| `math.hypot(x, y)` | the distance of the point (x, y) from (0, 0) |
+| `math.sinh(x)`, `math.cosh(x)`, `math.tanh(x)` | the hyperbolic functions |
+| `math.gcd(a, b)` | the greatest whole number that divides both |
+| `math.clamp(value, low, high)` | the value, kept between the two |
+
+**`hypot` takes floats.** `math.hypot(3, 4)` is refused, with the
+message every function written in Zeno gives: write `3.0`. `math.sqrt`
+takes a whole number because the checker has a rule for it by name. A
+function written in Zeno has the rules of the language and no others,
+and "an int does not become a float by itself" is one of them.
+
+**`hypot` is the root of the sum of the squares, and exact where that
+is.** `math.hypot(3.0, 4.0)` is `5.0`. Sides whose squares would not
+fit in a float are first multiplied by 2**-600, and tiny ones by
+2**600, which changes no digit of a float. *Turned down:* dividing
+by the longer side, which is the usual way and gives 13.000000000000002
+for (5.0, 12.0).
+
+**`sinh` near zero is a series.** `(e**x - e**-x) / 2` takes one
+number from another that is nearly equal, and loses most of its
+digits. Below 0.25 the first six terms of the series are used. The
+three functions are made from `math.exp`, so their last digit is the
+machine's `exp`'s, as `exp`'s own is.
+
+**`gcd` is never negative, and `gcd(0, 0)` is 0**, as in Python, C++
+and Go.
+
+**`clamp` is written once for every type that `<` compares**: whole
+numbers, floats, quantities in one unit, text. The three are of one
+type. The value is held against `low` first, so with `low` above
+`high`, which is a mistake in the program, the answer is `low` for a
+value below it and `high` otherwise. *Turned down:* an error for that
+case, as Rust and Java give. A function written in Zeno that raises
+must say `raises`, and then every `clamp` in every program would need
+a `try`.
+
+### 33.8 `random`
+
+| | What it gives |
+|---|---|
+| `random.between(low, high)` | a whole number from `low` to `high`, both included |
+| `random.number()` | a float from 0.0 up to 1.0, never 1.0 |
+| `random.pick(items)` | one of the items of a list |
+| `random.seed(n)` | starts the numbers again from `n` |
+
+**The same numbers on every run, until the program seeds.** A program
+that never calls `seed` gets the numbers of `random.seed(0)`.
+
+*Why.* A test that fails must fail again when it is run again. A
+simulation is compared with yesterday's. A board has nothing to make
+a first number from. And it is one rule for `zeno run`, a compiled
+program and every target, where "different each time" would be
+fifteen ways of asking a machine for something unpredictable. C does
+the same. Python, JavaScript and Go do not, and a game written in
+Zeno has to seed itself. It has nothing to seed from yet: the time of
+day is in [`missing.md`](missing.md), and `random.seed` of it will be
+the line to write.
+
+*This cannot be changed later* without changing what programs print,
+so it is decided now and not left open.
+
+**Why sfc32.** It needs four whole numbers of 32 bits, additions,
+shifts and one `^`: no multiplication and no division, so it is quick
+on a processor that has neither. It passes the usual tests of
+randomness, which the short generators that C libraries use do not.
+It is written with nothing but operators, so it is the same on every
+engine. It is not for keys or passwords, and the file says so.
+
+**`between` includes both ends**, so a die is `between(1, 6)`. The
+ends can be given in either order. Every number is as likely as any
+other: bits are drawn under a mask that just covers the span, and a
+draw above it is thrown away, where the short way (`bits % span`)
+makes the low numbers come up a little more often. `high - low` must
+fit in an int, or the subtraction is an OverflowError like any other.
+
+**`number` has 53 bits**, made from two draws as Python makes it, so
+every float it can give is as likely as any other.
+
+**`pick` of an empty list is an IndexError**: there is no item to
+give.
+
+**Left out for now.** `shuffle`, which takes items out of a list it
+was only lent (5.15e). A seed from the machine. Numbers that follow
+a bell curve.
+
+### 33.9 Two mistakes this found
+
+**Two files could not both import a module that comes with Zeno.**
+`main.zeno` and `shapes.zeno` each say `import math`. Joined, the
+program said it twice, and the checker answered "`math` is already
+declared in this block". No example had two such files. Now, as the
+files are joined, an import that an earlier file already made is
+left out. Twice in one file is still refused. The part of `math`
+imports `math` itself, so every program that used it would have met
+this.
+
+**A function of an imported file, used as a value, did not build.**
+`let f = shapes.area` ran under `zeno run`, and `zeno build` wrote
+`zeno_wrap_shapes.area`, which is not a name in C. The wrapper is now
+named from the function's name in C, `zeno_wrap_z_shapes_area`. A
+function of the first file keeps the name it had, so the C of every
+program that built before is unchanged. `[1.0, 2.0].map(math.sinh)`
+is how it was found.
+
+**One thing seen and left.** A file can use `math` without importing
+it, when another file of the program does: the joined program has
+one set of names. It is the other side of the first mistake, and
+mending it means the checker knowing which file a line is in.
+
+### 33.10 What can be written this way next
+
+What is only arithmetic and control: `factorial`, a search in a
+sorted list, a queue. JSON in a compiled program (18.5) is text and
+lists, and can be.
+
+What cannot: anything that asks the machine. `program.exit`, the
+environment and the time of day need each engine. And the methods of
+text and lists stay built in, for the reason of 6.10: they are called
+as `xs.insert(...)`, and they take items out of a list they were lent.

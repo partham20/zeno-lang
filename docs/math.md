@@ -301,7 +301,9 @@ There are 377 tests in all.
   It can now: `f"{heading:10.1f}"` prints the same ten characters,
   number and unit (decision 10.29).
 - `atan2` takes plain numbers, not two lengths or two voltages (6.24).
-- No `hypot`, hyperbolic functions, `gcd`, or random numbers yet (6.21).
+- `hypot`, the hyperbolic functions, `gcd`, `clamp` and random numbers
+  came later, written in Zeno itself:
+  [`library-in-zeno.md`](library-in-zeno.md).
 
 ## Things to try
 
@@ -338,7 +340,9 @@ There are 377 tests in all.
    `common` and print `90 deg + 1 rad` and `1 rad + 90 deg`. Why is
    that worse than an error? Put it back and run `cargo test`.
 
-7. Add `math.hypot(x, y)`, the length of the line from (0, 0) to
-   (x, y). The C library has `hypot`. Follow `atan2` through
-   `builtins.rs`, `checker.rs`, `emit_c.rs` and `emit_llvm.rs`. Which
-   test tells you if you forgot one of them?
+7. `math.hypot(x, y)` is not in `builtins.rs` at all: it is written
+   in Zeno, in `library/math.zeno`
+   ([`library-in-zeno.md`](library-in-zeno.md)). Add `math.lcm(a, b)`
+   there, the least whole number that both divide, from `gcd`. Which
+   of `builtins.rs`, `checker.rs`, `emit_c.rs` and `emit_llvm.rs` did
+   you have to open? Which one test told you what you forgot?

@@ -39,8 +39,8 @@ release ([`release.md`](release.md)).
 
 | | What | Size | Why here |
 |---|---|---|---|
-| 1 | A library written in Zeno | medium | Every later library function is then written once, and not once for each engine and each target |
-| 2 | The small library gaps: `hypot`, `sinh` and the rest, `gcd`, `clamp`, random numbers, `program.exit`, the environment | small | First use of 1. Every one is asked for by ordinary programs |
+| 1 | A library written in Zeno. **Done** ([`library-in-zeno.md`](library-in-zeno.md)) | medium | Every later library function is then written once, and not once for each engine and each target |
+| 2 | The small library gaps. **Done:** `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp` and random numbers. **Left:** `program.exit`, the environment, the error stream | small | First use of 1. Every one is asked for by ordinary programs |
 | 3 | An enum case with a number: `Ack = 6` | medium | Every protocol and every register field is a number with a name |
 | 4 | Bytes: a packed `list[u8]`, a list of a fixed length, bytes from and to a file | large | "The first thing a real driver will ask for" (5.13a) |
 | 5 | `u64` and `f32` | medium | Counters and timestamps; a board whose float unit is 32 bits |
@@ -119,9 +119,10 @@ C.
 
 | Missing | Recommendation |
 |---|---|
-| **A library written in Zeno** (6.10). Every function of the library is written once in Rust and once in C, and again for each target | Build first. A module that comes with Zeno may be a `.zeno` file kept inside the `zeno` program, joined in only when a program names something from it. Every engine and every target then has the function with no more work |
-| **`hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`** (6.21) | Build as the first functions written in Zeno |
-| **Random numbers** (6.21) | Build in Zeno: a module `random`, with a seed the program can set so that a test gives the same numbers each time |
+| ~~A library written in Zeno~~ (6.10) | **Done** (chapter 33). A module that comes with Zeno may have a part that is a `.zeno` file kept inside the `zeno` program, joined in only when a program names something from it |
+| ~~`hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`~~ (6.21) | **Done**, as the first functions written in Zeno |
+| ~~Random numbers~~ (6.21) | **Done**: the module `random`. What is left is a seed from the machine, which waits for the time of day |
+| **The methods of text and lists in Zeno** (6.10) | Leave. They are called as `xs.insert(...)` and take items out of a list they were lent, which a function written in Zeno may not |
 | **`program.exit(code)` and the environment** (6.19) | Build. These two need each engine, because Zeno cannot write them itself |
 | **Writing to the error stream** | Build with `program.exit` |
 | **A file read in pieces** (6.12, 6.20) | After cleaning up at the end of a block |
@@ -218,6 +219,9 @@ tuple, `-> (int, str)`, `a, b = b, a`, an enum case with `= 1`,
 `defer`, `finally`, `async`, a set, `u8.max`, the address of a
 variable, an enum case as a key, `"ab" * 3`, `xs[-1]`, text between
 three quotes, `x if c else y`.
+
+Since this page was written, `math.hypot`, `math.sinh`, `math.clamp`
+and `import random` are no longer refused: see part 4.
 
 Two lines of the book's appendix are no longer the whole story.
 `sort` by a function came in 0.3. And a compiled page exists since

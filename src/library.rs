@@ -15,7 +15,7 @@
 //! program that names nothing from this part is, to every stage after
 //! `modules.rs`, the program it was before there was such a part.
 //!
-//! See docs/library-in-zeno.md, and chapter 32 of docs/decisions.md.
+//! See docs/library-in-zeno.md, and chapter 33 of docs/decisions.md.
 
 /// One module's part written in Zeno.
 pub struct Part {
