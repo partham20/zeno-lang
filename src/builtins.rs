@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php" | "lua")
 }
 
 /// Every built-in name and what it stands for.
@@ -317,6 +317,21 @@ fn php_require(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 fn php_variable(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("variable", &args, 0, 1, span)?;
     crate::bridge::variable(crate::bridge::Lang::Php, args.first().unwrap_or(&Value::None), span)
+}
+
+/// `lua.require("lpeg")`: a module of Lua, as `require` gives it
+/// there. Lua is started beside the program the first time it is
+/// asked for (`bridge.rs`).
+fn lua_require(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("require", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Lua, text("require", &args[0], span)?, span)
+}
+
+/// `lua.global("string")`: what Lua has under that name with no
+/// module asked for: `string`, `table`, `math`, `os`, `io`.
+fn lua_global(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("global", &args, 1, 1, span)?;
+    crate::bridge::global(crate::bridge::Lang::Lua, text("global", &args[0], span)?, span)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1294,6 +1309,14 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("constant", Value::Builtin(Builtin { name: "constant", call: php_constant })),
                 ("require", Value::Builtin(Builtin { name: "require", call: php_require })),
                 ("variable", Value::Builtin(Builtin { name: "variable", call: php_variable })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "lua" => (
+            "lua",
+            vec![
+                ("require", Value::Builtin(Builtin { name: "require", call: lua_require })),
+                ("global", Value::Builtin(Builtin { name: "global", call: lua_global })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

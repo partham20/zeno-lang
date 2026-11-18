@@ -13341,3 +13341,135 @@ helper from starting. Every function of the helper begins with
   for Python.
 - Only PHP 8.3 is tested. PHP 7.4 would run all but named arguments,
   and is not tried.
+
+## 36. The libraries of Lua
+
+The third language of the second version (26.1): `import lua`, for
+Lua's own library and for modules from LuaRocks. [`lua.md`](lua.md)
+is the walkthrough. Chapter 26 holds here as it does for the others
+(28, 29, 34, 35). What follows is what Lua made different.
+
+### 36.1 `lua.require` and `lua.global`
+
+`lua.require(name)` is Lua's `require`, which gives the module, as
+Python's `import` does. So unlike Ruby's (34.1) it gives what was
+loaded. `lua.global(name)` is what every program of Lua has without a
+`require`, `string`, `table`, `os`, and is named as Node's (28.2),
+which is the same thing.
+
+### 36.2 Lua is talked to over named pipes
+
+Every other helper connects back over a socket of this machine. Lua
+comes with no sockets, and the one library that gives them, LuaSocket,
+is written in C and has to be built for each Lua. What Lua does have
+is `io.open`, and on Linux and macOS a named pipe is a file it can
+open. So Zeno makes two pipes with `mkfifo`, in a folder only this
+user can open, and Lua opens them as files: one Lua writes and Zeno
+reads, one the other way. The names are removed as soon as both ends
+are open, so once Lua has started there is nothing to clean up.
+
+**Why not stdin and stdout, which every Lua has.** The helper leaves
+the screen and the keyboard to Lua (26.3): a library that prints, or
+asks, works as it would in a program of Lua. On stdout the lines
+would be mixed with what Lua prints, and a module written in C prints
+around anything the helper could put in the way.
+
+**Windows has no such pipe.** Its named pipes are not files that
+`io.open` can make, so there the helper uses LuaSocket if it is
+installed, and says so if it is not. The same is done where `mkfifo`
+is not there. The rest of the bridge does not know which it is: a
+link is something to read lines from and something to write them to.
+
+### 36.3 A function gets `self` when it is a method
+
+Lua writes `object:name(x)` and `module.name(x)`, and only the colon
+gives the function its object. Zeno has one dot, and the call cannot
+say which is meant. The function can: one written
+`function Class:name()` has a first parameter called `self`, and Lua
+5.2 and later say what a function's parameters are called. A function
+read from a table is given the table when its first parameter is
+`self`.
+
+Lua 5.1 cannot say, and neither can a function written in C. For
+those, a function that the table has from its metatable is a method,
+and one the table holds itself is not. This is how Lua makes an
+object: its methods are in the class, which is the metatable's
+`__index`, while a module is a plain table that holds its functions.
+A function read from a userdata, a file or a socket, is always given
+it, as their methods are all called with a colon.
+
+**When the rule is wrong**, the name in brackets is Lua's own
+`t["name"]`, which gives the function as it is, and the program
+passes the object itself: `p["length"](p)`.
+
+**Why not a second way to write a call, such as `p.call("length")`.**
+Zeno's dot already means the method of an object for every other
+language, and almost every call of a library is told apart by the
+rule. A second form would have to be written at each of those calls,
+for the few the rule gets wrong.
+
+### 36.4 Several values are a list
+
+A function of Lua gives any number of values. None is `none`, one is
+that value, and several are a list of Zeno with all of them:
+`string.find("hello", "l")` is `[3, 3]`.
+
+**Why not the first only, as Lua does in an expression.** What comes
+second is often what the call was for: the count of `gsub`, the
+captures of `find`, the next position of `string.unpack`. Lua's own
+`local a, b = f()` takes them all, and Zeno has no such assignment.
+
+**`nil` and a message is an error.** This is how most functions of
+Lua say they failed (`io.open`, `os.rename`, `load`), and what a
+program of Lua passes to `assert`. Given back as `[none, "message"]`,
+it would be a list, which is not `none`, and a program that tested the
+result would go on. When the first of two or more values is `nil` and
+the second a string, the call raises `Error` with that message, and
+`FileError` when a number comes third, which is the number of the
+system that Lua's file functions give. A single `nil` is still `none`:
+`string.find` with no match.
+
+### 36.5 A table stays in Lua, and counts from 1
+
+A table is shared in Lua, as a list of Python is, so it stays (26.5).
+Its items are where Lua has them, and `t[1]` is the first. `lua.copy`
+makes a list of a table whose keys are 1 to its length, and a dict of
+any other.
+
+**Why not shift the index by one.** `t[1]` in Zeno would then be
+`t[2]` in Lua, and a key that is a number would mean one thing in a
+table that is a list and another in one that is not. Everything a
+program reads about Lua says `t[1]`. The list that `lua.copy` makes is
+Zeno's, and counts from 0 as every list does.
+
+**`for` over a table** gives the items of a list and the keys of any
+other, as Zeno's own `for` does for a list and a dict. **Over a
+function** it is Lua's generic `for`: the function is called until it
+gives `nil`, which is what `string.gmatch` and `io.lines` give.
+
+### 36.6 Numbers
+
+Lua 5.3 and later know whether a number is an integer, and it arrives
+as what it is. Before 5.3, and in LuaJIT, every number is a float, and
+a whole one within 2^53 arrives as an int, as in JavaScript (28.3).
+
+### 36.7 Named arguments are a table of options
+
+As for JavaScript (28.4): Lua has no named arguments, and a library
+takes a table of options last instead. `f(1, loud=true)` is
+`f(1, {loud = true})`.
+
+### 36.8 An error of Lua is an `Error`
+
+Lua's errors are values with no kind, usually a string, so every
+error of Lua is an `Error` with the value as its message. The
+position that Lua puts in front of a message names the helper when an
+error is raised from a function of Lua's library, so that position is
+taken off. The one other kind is the `FileError` of 36.4.
+
+### 36.9 Left for later
+
+- A function of Zeno given to Lua: `table.sort(t, f)`, callbacks.
+- Windows, which needs LuaSocket and was not tried.
+- `lua` in a built program, and in `--target lua`, as 26.9 has it for
+  Python.

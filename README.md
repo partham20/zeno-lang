@@ -77,6 +77,7 @@ Samples, none of them final:
 - [`examples/noise.zeno`](examples/noise.zeno): a converter's reading with noise on it, kept in range and smoothed, and how far a joystick is pushed. `random`, `math.clamp` and `math.hypot` are written in Zeno itself, so every engine and every target gives the same numbers.
 - [`examples/settings.zeno`](examples/settings.zeno): a settings file written in YAML, printed as JSON. Zeno reads JSON and not YAML, and `import ruby` lets a program use the `yaml` that comes with Ruby, or any gem that is installed. Run it with `zeno run`.
 - [`examples/find.zeno`](examples/find.zeno): every line of a file that a pattern is found in, and what was found. Zeno has no patterns for text, and `import php` lets a program use PHP's `preg_match_all`, or any package that `composer require` put beside the program. Run it with `zeno run`.
+- [`examples/records.zeno`](examples/records.zeno): the records of a binary file, field by field, as a logger or a radio wrote them. Zeno reads text, and `import lua` lets a program use Lua's `string.unpack`, or any module that `luarocks install` put on the computer. Run it with `zeno run`.
 - [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/faults.zeno`](examples/faults.zeno): fault codes counted and looked up in a dict: `["mode": "auto"]`, `get`, `in`, `pop` and a loop over the keys.
 - [`examples/channels.zeno`](examples/channels.zeno): a dict that holds lists and objects. The readings of each channel are a list under its name, and `for channel, values in readings` is given each key and what is under it.
@@ -104,7 +105,7 @@ piece of the compiler:
 | Microcontrollers and firmware | Compile to C, no heap required |
 | Command-line tools, desktop, servers | Native code through C or LLVM |
 | Calling existing C libraries | C interop, in both directions |
-| Using the libraries of other languages | `import python` starts the Python that is installed beside the program, and any package of it is used as it is ([`docs/python.md`](docs/python.md)). `import node` does the same for JavaScript: the library of Node and the packages of npm ([`docs/node.md`](docs/node.md)). `import java` does it for Java: its own classes and any jar ([`docs/java.md`](docs/java.md)). `import ruby` does it for Ruby: its own library and any gem ([`docs/ruby.md`](docs/ruby.md)). `import php` does it for PHP: its own functions and classes and any Composer package ([`docs/php.md`](docs/php.md)) |
+| Using the libraries of other languages | `import python` starts the Python that is installed beside the program, and any package of it is used as it is ([`docs/python.md`](docs/python.md)). `import node` does the same for JavaScript: the library of Node and the packages of npm ([`docs/node.md`](docs/node.md)). `import java` does it for Java: its own classes and any jar ([`docs/java.md`](docs/java.md)). `import ruby` does it for Ruby: its own library and any gem ([`docs/ruby.md`](docs/ruby.md)). `import php` does it for PHP: its own functions and classes and any Composer package ([`docs/php.md`](docs/php.md)). `import lua` does it for Lua: its own library and any module of LuaRocks ([`docs/lua.md`](docs/lua.md)) |
 | Web front ends | Zeno itself built for WebAssembly, and the `web` module (`zeno build --web`); the program compiled to JavaScript (`--target js`, `--target html`) |
 | Web back ends, networking | `async` / `await` and a standard library |
 | Data and numerics | Fast arrays and operator overloading |
@@ -376,7 +377,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/running-programs.md`](docs/running-programs.md),
   [`docs/python.md`](docs/python.md), [`docs/node.md`](docs/node.md),
   [`docs/java.md`](docs/java.md), [`docs/ruby.md`](docs/ruby.md),
-  [`docs/php.md`](docs/php.md),
+  [`docs/php.md`](docs/php.md), [`docs/lua.md`](docs/lua.md),
   [`docs/math.md`](docs/math.md), [`docs/dict.md`](docs/dict.md),
   [`docs/modules.md`](docs/modules.md), [`docs/using-packages.md`](docs/using-packages.md),
   [`docs/registry.md`](docs/registry.md), [`docs/packages.md`](docs/packages.md),

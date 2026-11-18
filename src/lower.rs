@@ -951,6 +951,7 @@ impl Lowerer {
                         "java" => "The `java` module needs Java beside the program while it runs, and `zeno run` is what starts it",
                         "ruby" => "The `ruby` module needs Ruby beside the program while it runs, and `zeno run` is what starts it",
                         "php" => "The `php` module needs PHP beside the program while it runs, and `zeno run` is what starts it",
+                        "lua" => "The `lua` module needs Lua beside the program while it runs, and `zeno run` is what starts it",
                         _ => "It is not a module that comes with Zeno",
                     };
                     return Err(Error::new(format!("a program built for another language cannot use `{path}`. {why}"), statement.span));
@@ -1668,6 +1669,13 @@ mod tests {
             refused("import php\nprint(php.constant(\"M_PI\"))").as_deref(),
             Some(
                 "a program built for another language cannot use `php`. The `php` module needs PHP beside \
+                 the program while it runs, and `zeno run` is what starts it"
+            )
+        );
+        assert_eq!(
+            refused("import lua\nprint(lua.global(\"math\").pi)").as_deref(),
+            Some(
+                "a program built for another language cannot use `lua`. The `lua` module needs Lua beside \
                  the program while it runs, and `zeno run` is what starts it"
             )
         );

@@ -1,17 +1,20 @@
 //! Values that live in another language: `import python`, `import node`,
-//! `import java`, `import ruby` and `import php` (docs/python.md,
-//! docs/node.md, docs/java.md, docs/ruby.md, docs/php.md).
+//! `import java`, `import ruby`, `import php` and `import lua`
+//! (docs/python.md, docs/node.md, docs/java.md, docs/ruby.md,
+//! docs/php.md, docs/lua.md).
 //!
 //! Zeno starts that language's own interpreter beside the program, once,
 //! the first time it is asked for, and the two talk over a socket of this
-//! machine: one line of JSON asks, one line answers. `none`, a bool, an
+//! machine (for Lua, two named pipes): one line of JSON asks, one line
+//! answers. `none`, a bool, an
 //! int, a float and a str go across as themselves. Anything else stays
 //! where it was made, and Zeno holds a `Foreign`: the number the other
 //! side keeps it under.
 //!
 //! Nothing here knows a language but `Lang` and the helper it names
-//! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`, `bridge.php`). Another language is
-//! another helper that speaks the same lines.
+//! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`, `bridge.php`,
+//! `bridge.lua`). Another language is another helper that speaks the
+//! same lines.
 
 use std::rc::Rc;
 
@@ -28,6 +31,7 @@ pub enum Lang {
     Java,
     Ruby,
     Php,
+    Lua,
 }
 
 impl Lang {
@@ -39,6 +43,7 @@ impl Lang {
             Lang::Java => "Java",
             Lang::Ruby => "Ruby",
             Lang::Php => "PHP",
+            Lang::Lua => "Lua",
         }
     }
 
@@ -51,6 +56,7 @@ impl Lang {
             Lang::Java => "Java",
             Lang::Ruby => "Ruby",
             Lang::Php => "PHP",
+            Lang::Lua => "Lua",
         }
     }
 }
@@ -612,7 +618,7 @@ pub fn program_at(path: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 mod link {
     use std::cell::RefCell;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
@@ -626,6 +632,7 @@ mod link {
     const JAVA: &str = include_str!("bridge.java");
     const RUBY: &str = include_str!("bridge.rb");
     const PHP: &str = include_str!("bridge.php");
+    const LUA: &str = include_str!("bridge.lua");
 
     /// How the helper of a language is handed to its program: the
     /// option that says "the program is the next word", and the helper.
@@ -639,6 +646,8 @@ mod link {
             Lang::Ruby => vec!["-e".to_string(), RUBY.to_string()],
             // `-r` takes the program without the `<?php` a file begins with.
             Lang::Php => vec!["-r".to_string(), PHP.trim_start_matches("<?php").to_string()],
+            // Lua takes no program that begins with `-`, as a comment does.
+            Lang::Lua => vec!["-e".to_string(), format!(" {LUA}")],
         }
     }
 
@@ -722,6 +731,7 @@ mod link {
             Lang::Java => "ZENO_JAVA",
             Lang::Ruby => "ZENO_RUBY",
             Lang::Php => "ZENO_PHP",
+            Lang::Lua => "ZENO_LUA",
         }
     }
 
@@ -730,8 +740,10 @@ mod link {
 
     struct Link {
         child: Child,
-        reader: BufReader<TcpStream>,
-        writer: TcpStream,
+        reader: BufReader<Box<dyn Read>>,
+        writer: Box<dyn Write>,
+        /// The socket the two ends are, where they are one.
+        socket: Option<TcpStream>,
     }
 
     thread_local! {
@@ -768,9 +780,12 @@ mod link {
     pub fn close() {
         let links = LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()));
         for (_, link) in links {
-            let Link { mut child, reader, writer } = link;
+            let Link { mut child, reader, writer, socket } = link;
             // The end of the lines is how the helper knows.
-            let _ = writer.shutdown(std::net::Shutdown::Both);
+            if let Some(socket) = socket {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            drop(writer);
             drop(reader);
             let _ = child.wait();
         }
@@ -789,6 +804,8 @@ mod link {
             (_, Lang::Node) => vec!["node".to_string()],
             (_, Lang::Ruby) => vec!["ruby".to_string()],
             (_, Lang::Php) => vec!["php".to_string()],
+            // Some systems name Lua by its version only.
+            (_, Lang::Lua) => vec!["lua".to_string(), "lua5.4".to_string(), "luajit".to_string()],
             // `JAVA_HOME` is where the tools of Java look for it.
             (_, Lang::Java) => {
                 let mut names = vec!["java".to_string()];
@@ -843,6 +860,10 @@ mod link {
 
     fn start(lang: Lang, span: Span) -> Result<Link> {
         let cannot = |why: String| raise("FileError", format!("cannot start {}: {why}", lang.runtime()), span);
+        // Lua comes with no sockets, and opens a named pipe as a file.
+        // Windows has no named pipes that a file can be, and there, or
+        // where no pipe can be made, Lua needs LuaSocket.
+        let piped = lang == Lang::Lua && cfg!(unix);
         let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
             return cannot("this machine gave no socket to talk to it over".to_string());
         };
@@ -855,8 +876,13 @@ mod link {
             if lang == Lang::Python && !is_python_3(program) {
                 continue;
             }
+            let pipes = if piped { Pipes::make() } else { None };
+            let place = match &pipes {
+                Some(pipes) => format!("pipe {}|{}", pipes.to_zeno.display(), pipes.from_zeno.display()),
+                None => address.port().to_string(),
+            };
             let mut command = Command::new(program);
-            command.args(helper(lang, program)).env("ZENO_BRIDGE", format!("{} {token} {}", address.port(), first_number()));
+            command.args(helper(lang, program)).env("ZENO_BRIDGE", format!("{place} {token} {}", first_number()));
             // Never the folder of a Zeno that started this one.
             match HOME.lock().ok().and_then(|home| home.clone()) {
                 Some(folder) => command.env("ZENO_PROGRAM", folder),
@@ -867,15 +893,28 @@ mod link {
                 Ok(child) => child,
                 Err(_) => continue,
             };
+            if let Some(pipes) = pipes {
+                match pipes.open(&mut child, &token) {
+                    Opened::Linked(reader, writer) => return Ok(Link { child, reader, writer, socket: None }),
+                    Opened::Gone => continue,
+                    Opened::Silent => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return cannot(format!("`{program}` did not answer"));
+                    }
+                }
+            }
             // Wait for it to connect and say the word. A program that
             // ends first was not Python (or not one that works), and
             // the next is tried.
             let began = Instant::now();
             loop {
                 if let Ok((stream, _)) = listener.accept() {
-                    if let Some(link) = greeted(stream, &token) {
-                        let (reader, writer) = link;
-                        return Ok(Link { child, reader, writer });
+                    if let Some(socket) = greeted(stream, &token) {
+                        if let (Ok(reading), Ok(writing)) = (socket.try_clone(), socket.try_clone()) {
+                            let reader = BufReader::new(Box::new(reading) as Box<dyn Read>);
+                            return Ok(Link { child, reader, writer: Box::new(writing), socket: Some(socket) });
+                        }
                     }
                     continue;
                 }
@@ -907,21 +946,116 @@ mod link {
         }
     }
 
-    /// The first line of a helper is the word it was given.
-    fn greeted(stream: TcpStream, token: &str) -> Option<(BufReader<TcpStream>, TcpStream)> {
+    /// Is this the first line of the helper, with the word it was given?
+    fn says_hello(line: &str, token: &str) -> bool {
+        let Some(Wire::Object(members)) = parse(line) else { return false };
+        let said = members.iter().find(|(name, _)| name == "hello").map(|(_, value)| value);
+        said == Some(&Wire::Text(token.to_string()))
+    }
+
+    /// The socket a helper connected over, once it said the word.
+    fn greeted(stream: TcpStream, token: &str) -> Option<TcpStream> {
         stream.set_nonblocking(false).ok()?;
         stream.set_nodelay(true).ok()?;
         stream.set_read_timeout(Some(PATIENCE)).ok()?;
-        let mut reader = BufReader::new(stream.try_clone().ok()?);
         let mut line = String::new();
-        reader.read_line(&mut line).ok()?;
-        let Wire::Object(members) = parse(&line)? else { return None };
-        let said = members.iter().find(|(name, _)| name == "hello").map(|(_, value)| value);
-        if said != Some(&Wire::Text(token.to_string())) {
+        BufReader::new(&stream).read_line(&mut line).ok()?;
+        if !says_hello(&line, token) {
             return None;
         }
         stream.set_read_timeout(None).ok()?;
-        Some((reader, stream))
+        Some(stream)
+    }
+
+    /// Two named pipes in a folder made for them: one the helper
+    /// writes to Zeno, one Zeno writes to the helper. They are files
+    /// only until both ends have them open.
+    struct Pipes {
+        folder: std::path::PathBuf,
+        to_zeno: std::path::PathBuf,
+        from_zeno: std::path::PathBuf,
+    }
+
+    enum Opened {
+        Linked(BufReader<Box<dyn Read>>, Box<dyn Write>),
+        /// The helper ended before it opened both, or said no word.
+        Gone,
+        /// It is still there and has opened nothing.
+        Silent,
+    }
+
+    /// The folder goes with them, whatever happened.
+    impl Drop for Pipes {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.folder);
+        }
+    }
+
+    impl Pipes {
+        fn make() -> Option<Pipes> {
+            thread_local! {
+                static MADE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+            }
+            let number = MADE.with(|made| {
+                made.set(made.get() + 1);
+                made.get()
+            });
+            let folder = std::env::temp_dir().join(format!("zeno-{}-{number}-{}", std::process::id(), &secret()[..8]));
+            std::fs::create_dir(&folder).ok()?;
+            let pipes = Pipes { to_zeno: folder.join("to-zeno"), from_zeno: folder.join("from-zeno"), folder };
+            // Only this user may open them.
+            let made = Command::new("mkfifo")
+                .arg("-m")
+                .arg("600")
+                .arg(&pipes.to_zeno)
+                .arg(&pipes.from_zeno)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            // Made or not, a `Pipes` that is dropped takes its folder.
+            made.then_some(pipes)
+        }
+
+        /// Open Zeno's ends, which waits for the helper to open its
+        /// own: the pipe to Zeno first, then the other, as the helper
+        /// does. The opening is done on a thread of its own, so that
+        /// a helper that ends first is seen.
+        fn open(self, child: &mut Child, token: &str) -> Opened {
+            let (to_zeno, from_zeno) = (self.to_zeno.clone(), self.from_zeno.clone());
+            let (told, waiting) = std::sync::mpsc::channel();
+            let opener = std::thread::spawn(move || {
+                let reading = std::fs::File::open(&to_zeno);
+                let writing = std::fs::OpenOptions::new().write(true).open(&from_zeno);
+                let _ = told.send((reading, writing));
+            });
+            let began = Instant::now();
+            let opened = loop {
+                if let Ok(opened) = waiting.recv_timeout(Duration::from_millis(2)) {
+                    break Some(opened);
+                }
+                let ended = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+                if ended || began.elapsed() > PATIENCE {
+                    // Open the helper's ends here, which lets the
+                    // thread's opens finish.
+                    let _ = std::fs::OpenOptions::new().write(true).open(&self.to_zeno);
+                    let _ = std::fs::File::open(&self.from_zeno);
+                    let _ = opener.join();
+                    return if ended { Opened::Gone } else { Opened::Silent };
+                }
+            };
+            let _ = opener.join();
+            // Both ends are open, and the names are not needed.
+            drop(self);
+            let Some((Ok(reading), Ok(writing))) = opened else { return Opened::Gone };
+            let mut reader = BufReader::new(Box::new(reading) as Box<dyn Read>);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || !says_hello(&line, token) {
+                return Opened::Gone;
+            }
+            Opened::Linked(reader, Box::new(writing))
+        }
     }
 
     /// Send one line and read the answer.

@@ -1675,6 +1675,9 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("php", "require") => Ty::Builtin("php.require"),
         ("php", "variable") => Ty::Builtin("php.variable"),
         ("php", "copy") => Ty::Builtin("python.copy"),
+        ("lua", "require") => Ty::Builtin("lua.require"),
+        ("lua", "global") => Ty::Builtin("lua.global"),
+        ("lua", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3391,6 +3394,7 @@ impl Checker {
                     "java" => "java",
                     "ruby" => "ruby",
                     "php" => "php",
+                    "lua" => "lua",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -6196,7 +6200,7 @@ impl Checker {
                 self.arity("variable", arguments, 0, 1, span);
                 Ty::Dynamic
             }
-            "node.module" | "node.global" | "java.type" | "ruby.constant" | "php.type" | "php.callable" | "php.constant" => {
+            "node.module" | "node.global" | "java.type" | "ruby.constant" | "php.type" | "php.callable" | "php.constant" | "lua.require" | "lua.global" => {
                 let short = name.split('.').nth(1).unwrap_or(name);
                 if self.arity(short, arguments, 1, 1, span) {
                     let what = format!("the name given to `{name}`");
@@ -8330,7 +8334,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         // A name of the part of `math` that is written in Zeno, which
@@ -10485,6 +10489,22 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import php\nphp.module(\"date\")"), "module `php` has no `module`");
         assert_eq!(
             strict_error("import php\nlet date = php.type(\"DateTime\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
+        // And Lua's.
+        ok("import lua\n\
+            let string = lua.global(\"string\")\n\
+            let json = lua.require(\"dkjson\")\n\
+            let size: int = string.len(\"abc\")\n\
+            let parts = string.byte(\"abc\", 1, 3)\n\
+            for one in lua.copy(json.decode(\"[1]\")) {\n    print(one, size, len(parts), parts[0], json.encode([1], indent=true))\n}");
+        ok("from lua import require, global, copy\nprint(copy(global(\"table\")), require(\"lpeg\"))");
+        assert_eq!(error("import lua\nlua.require(5)"), "the name given to `lua.require` should be str, but this is int");
+        assert_eq!(error("import lua\nlua.global(5)"), "the name given to `lua.global` should be str, but this is int");
+        assert_eq!(error("import lua\nlua.global()"), "`global` takes 1 argument, but 0 were given");
+        assert_eq!(error("import lua\nlua.module(\"lpeg\")"), "module `lua` has no `module`");
+        assert_eq!(
+            strict_error("import lua\nlet string = lua.global(\"string\")"),
             "strict mode: the type of this cannot be worked out before the program runs"
         );
         // Strict mode wants every type before the program runs, and

@@ -2550,6 +2550,215 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         }
     }
 
+    /// Is there a Lua on this machine for `import lua` to start? The
+    /// first of the names Zeno tries is the one the tests use.
+    fn lua_is_here() -> bool {
+        std::process::Command::new("lua")
+            .args(["-e", "os.exit(0)"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// A program that uses `helper.lua`, a module of Lua written for the
+    /// tests, which is put in a folder of its own.
+    fn with_lua_helper(source: &str) -> String {
+        let folder = std::env::temp_dir().join(format!("zeno-lua-tests-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&folder);
+        let helper = "local M = {}\n\
+              M.version = \"1.0\"\n\
+              local Point = {}\n\
+              Point.__index = Point\n\
+              function M.Point(x, y) return setmetatable({ x = x, y = y }, Point) end\n\
+              function Point:length() return math.sqrt(self.x * self.x + self.y * self.y) end\n\
+              function Point:moved(dx, dy) return M.Point(self.x + dx, self.y + dy) end\n\
+              Point.__tostring = function (p) return \"Point(\" .. p.x .. \", \" .. p.y .. \")\" end\n\
+              Point.__eq = function (a, b) return a.x == b.x and a.y == b.y end\n\
+              function M.greet(name, options)\n\
+                options = options or {}\n\
+                local parts = {}\n\
+                for i = 1, options.times or 1 do parts[i] = \"hello \" .. name end\n\
+                local text = table.concat(parts, \", \")\n\
+                if options.loud then text = text:upper() end\n\
+                return text\n\
+              end\n\
+              function M.fail() error(\"it broke\") end\n\
+              function M.fail_table() error({ code = 7 }) end\n\
+              function M.nothing() end\n\
+              function M.many() return 1, \"two\", nil end\n\
+              function M.bytes() return \"\\255\\0ab\" end\n\
+              function M.sum(list) local s = 0 for _, v in ipairs(list) do s = s + v end return s end\n\
+              function M.list() return { 3, 1, 2 } end\n\
+              function M.ages() return { ann = 31, bob = 40 } end\n\
+              function M.echo(t) return t end\n\
+              function M.odd() return { [1.5] = 2 } end\n\
+              return M\n";
+        std::fs::write(folder.join("helper.lua"), helper).expect("the folder of the tests can be written");
+        source.replace("{folder}", &folder.to_string_lossy().replace('\\', "/"))
+    }
+
+    #[test]
+    fn a_module_of_lua_is_used_from_zeno() {
+        if !lua_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own. A function read from
+        // an object is called with the object as `self`, as `object:name()`
+        // is in Lua, and one read from a module is not. Several values
+        // given back are a list, and named arguments are the table of
+        // options that Lua takes last.
+        assert_eq!(
+            output(&with_lua_helper(
+                "import lua\n\
+                 let package = lua.global(\"package\")\n\
+                 package.path = \"{folder}/?.lua;\" + package.path\n\
+                 let string = lua.global(\"string\")\n\
+                 let math = lua.global(\"math\")\n\
+                 print(string.format(\"%5.1f|%s|%d\", 3.14159, \"h\u{e9}llo \u{1f600}\\t\\\"q\\\"\", 42), string.rep(\"ab\", 3), string.upper(\"zeno\"), string.len(\"h\u{e9}llo\"))\n\
+                 print(math.pi > 3.14, math.floor(2.5), math.sqrt(2.0) > 1.41, math.huge, -math.huge, math.max(1, 7, 3), math.abs(-2 ** 40))\n\
+                 print(string.byte(\"abc\", 1, 3), string.find(\"hello\", \"l\"), string.gsub(\"hello\", \"l\", \"L\")[0], string[\"match\"](\"key=value\", \"(%w+)=(%w+)\"), string.find(\"hello\", \"z\"))\n\
+                 let helper = lua.require(\"helper\")\n\
+                 print(helper.version, helper.greet(\"ann\"), helper.greet(\"bob\", times=2, loud=true), helper.sum([1, 2, 3.5]), helper.nothing(), helper.many())\n\
+                 let p = helper.Point(3, 4)\n\
+                 print(p, p.length() == 5, p.x + p.y, p.moved(1, 1), p == helper.Point(3, 4), p == helper.Point(0, 0), p == 3, p[\"length\"](p) == 5)\n\
+                 p.x = 6\n\
+                 p[\"y\"] = 8\n\
+                 print(p.length() == 10, p.x, p[\"y\"], lua.copy(p)[\"x\"])\n\
+                 let later = p.moved\n\
+                 print(later(1, 2), later)\n\
+                 let os = lua.global(\"os\")\n\
+                 print(os.time() > 0, os.getenv(\"HOME\") != none, lua.global(\"_VERSION\").starts_with(\"Lua\"), lua.global(\"type\")(p), lua.global(\"tostring\")(12))"
+            )),
+            "  3.1|h\u{e9}llo \u{1f600}\t\"q\"|42 ababab ZENO 6\n\
+             true 2 true inf -inf 7 1099511627776\n\
+             [97, 98, 99] [3, 3] heLLo [\"key\", \"value\"] none\n\
+             1.0 hello ann HELLO BOB, HELLO BOB 6.5 none [1, \"two\"]\n\
+             Point(3, 4) true 7 Point(4, 5) true false false true\n\
+             true 6 8 6\n\
+             Point(7, 10) method `moved` of a table\n\
+             true true true table 12\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_lua() {
+        if !lua_is_here() {
+            return;
+        }
+        // A table of Lua is the one table there is: its items are counted
+        // from 1, as Lua counts them. `lua.copy` makes a list of a table
+        // whose keys are 1, 2, ... n, and a dict of any other. Bytes that are
+        // not text stay in Lua.
+        assert_eq!(
+            output(&with_lua_helper(
+                "import lua\n\
+                 let package = lua.global(\"package\")\n\
+                 package.path = \"{folder}/?.lua;\" + package.path\n\
+                 let table = lua.global(\"table\")\n\
+                 let helper = lua.require(\"helper\")\n\
+                 let list = helper.list()\n\
+                 table.insert(list, 9)\n\
+                 table.sort(list)\n\
+                 print(len(list), list[1], list[4], 9 in list, 5 in list, lua.copy(list), table.concat(list, \"-\"), list)\n\
+                 var total = 0\n\
+                 for item in list { total = total + item }\n\
+                 print(total)\n\
+                 list[1] = \"x\"\n\
+                 print(list[1], lua.copy(list))\n\
+                 let ages = helper.ages()\n\
+                 ages[\"cy\"] = [1, [2.5, \"x\"], [\"k\": [true]]]\n\
+                 print(len(ages), ages[\"ann\"], \"ann\" in ages, \"zed\" in ages, ages[\"zed\"], ages[\"cy\"][2][2], ages.cy[3][\"k\"][1])\n\
+                 var keys = 0\n\
+                 for key in ages { keys = keys + 1 }\n\
+                 print(keys)\n\
+                 for name, age in lua.copy(ages) { if name == \"ann\" { print(name, age) } }\n\
+                 let given = helper.echo\n\
+                 print(lua.copy(given([1, none, 3])), lua.copy(given([\"a\": 1])), given([]), lua.copy(given([])), lua.copy(3), lua.copy(\"as it is\"))\n\
+                 let bytes = helper.bytes()\n\
+                 var sum = 0\n\
+                 for byte in bytes { sum = sum + byte }\n\
+                 print(len(bytes), sum, bytes, lua.global(\"string\").byte(bytes, 1), bytes == helper.bytes())\n\
+                 print(lua.global(\"math\").pow(2, 63) > 9.2e18, 2 ** 62, helper.sum([2 ** 52, 1]))"
+            )),
+            "4 1 9 true false [1, 2, 3, 9] 1-2-3-9 {1, 2, 3, 9}\n\
+             15\n\
+             x [\"x\", 2, 3, 9]\n\
+             0 31 true false none x true\n\
+             3\n\
+             ann 31\n\
+             [1] [\"a\": 1] {} [] 3 as it is\n\
+             4 450 \"\\xFF\\x00ab\" 255 true\n\
+             true 4611686018427387904 4503599627370497\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_lua_is_an_error_of_zeno() {
+        if !lua_is_here() {
+            return;
+        }
+        // Lua has no kinds of error, so an error of Lua is an `Error` that says
+        // what Lua said. `nil` and a message, which is how most functions of
+        // Lua say they failed, is one too, and a `FileError` where a number of
+        // the system comes with them.
+        assert_eq!(
+            output(&with_lua_helper(
+                "import lua\n\
+                 let package = lua.global(\"package\")\n\
+                 package.path = \"{folder}/?.lua;\" + package.path\n\
+                 let helper = lua.require(\"helper\")\n\
+                 try { helper.fail() } except Error as error { print(1, error.kind, error.message.ends_with(\"it broke\")) }\n\
+                 try { helper.fail_table() } except Error as error { print(2, error.message.starts_with(\"table\")) }\n\
+                 try { lua.global(\"io\").open(\"/zeno/no/such/file\") } except FileError as error { print(3, error.message.starts_with(\"/zeno/no/such/file: \")) }\n\
+                 try { lua.global(\"os\").rename(\"/zeno/no/such/a\", \"/zeno/no/such/b\") } except FileError as error { print(4, error.message != \"\") }\n\
+                 try { lua.global(\"error\")(\"plain\") } except Error as error { print(5, error.message) }\n\
+                 try { lua.require(\"zeno_no_such\") } except FileError as error { print(6, error.message.starts_with(\"Lua has no module `zeno_no_such`. Is it installed for this Lua (`luarocks install`)? It is Lua\")) }\n\
+                 try { lua.global(\"zeno_no_such\") } except Error as error { print(7, error.message) }\n\
+                 try { helper.nothing.x } except Error as error { print(8, error.message) }\n\
+                 try { helper() } except Error as error { print(10, error.message) }\n\
+                 try { len(helper.fail) } except Error as error { print(11, error.message) }\n\
+                 try { for x in lua.global(\"io\").stdout { print(x) } } except Error as error { print(12, error.message) }\n\
+                 try { print(1 in helper.fail) } except Error as error { print(13, error.message) }\n\
+                 try { lua.copy(helper.odd()) } except ValueError as error { print(14, error.message) }\n\
+                 try { lua.global(\"string\").rep() } except Error as error { print(15, error.message.starts_with(\"bad argument #1 to \")) }\n\
+                 print(helper.nothing() == none, \"still here\")"
+            )),
+            "1 Error true\n\
+             2 true\n\
+             3 true\n\
+             4 true\n\
+             5 plain\n\
+             6 true\n\
+             7 Lua has no global `zeno_no_such`\n\
+             8 a function has no field `x`\n\
+             10 a table is not a function, and cannot be called\n\
+             11 a function has no length\n\
+             12 a file cannot be gone through with `for`\n\
+             13 a function cannot be asked what is `in` it\n\
+             14 a dict in Zeno has keys that are str or int, and this one has the key 1.5\n\
+             15 true\n\
+             true still here\n"
+        );
+        assert_eq!(
+            error("import lua\nfunction double(n) { return n * 2 }\nlua.global(\"table\").sort(lua.global(\"package\").loaded, double)"),
+            "a function of Zeno cannot be given to Lua yet"
+        );
+        assert_eq!(
+            error("import lua\nif lua.global(\"table\") { print(1) }"),
+            "a condition must be true or false, but this is a Lua value"
+        );
+        assert_eq!(error("import lua\nlua.require()"), "`require` takes 1 argument, but 0 were given");
+        assert_eq!(error("import lua\nlua.global(3)"), "`global` needs a str, but this is an int");
+        // Each stays where it was made.
+        if python_is_here() {
+            assert_eq!(
+                error("import lua\nimport python\npython.module(\"json\").dumps(lua.global(\"table\"))"),
+                "a Lua value cannot be given to Python. Each stays where it was made"
+            );
+        }
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -2586,7 +2795,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

@@ -1,0 +1,70 @@
+# The records of a binary file, field by field: what a logger, a
+# sensor or a radio wrote, one record after another, each the same
+# size.
+#
+#     zeno run examples/records.zeno log.bin "<I4 i2 i2 B"
+#     zeno run examples/records.zeno log.bin "<I4 i2 i2 B" 10
+#
+# The second word says what one record holds, as Lua's `string.unpack`
+# reads it: `<` little-endian (`>` big-endian), `I4` an unsigned whole
+# number of 4 bytes, `i2` a signed one of 2, `B` one byte, `f` a float
+# of 4 bytes, `d` one of 8. The third word, if there is one, is how
+# many records to show.
+#
+# Zeno reads text files. Lua reads bytes, with the `string.unpack`
+# that comes with it, and `import lua` lets a Zeno program use it:
+# everything that comes with Lua, and any module that `luarocks
+# install` put on the computer.
+#
+# It needs Lua 5.3 or later, which has `string.unpack`.
+
+import lua
+import program
+
+# The file and its bytes stay in Lua: they are not text, so they cannot
+# be a str of Zeno. `string.unpack` gives every field of the record and
+# then where the next record begins, all as a list of Zeno. Lua counts
+# from 1, so the first record is at 1. What Lua can raise is not known
+# before the program runs, so the function says `raises Error`: any
+# kind.
+function show(name: str, layout: str, most: int) raises Error {
+    let string = lua.global("string")
+    if string.unpack is none {
+        print(f"This Lua has no string.unpack. It needs Lua 5.3 or later, and it is {lua.global(\"_VERSION\")}.")
+        return
+    }
+    let size = string.packsize(layout)
+    let file = lua.global("io").open(name, "rb")
+    let bytes = file.read("a")
+    file.close()
+    # Bytes that happen to read as text arrive as a str, and `len` of a
+    # str counts letters. Lua's `string.len` counts bytes either way.
+    let total = string.len(bytes)
+    print(f"{name}: {total} bytes, {total // size} records of {size} bytes")
+    var at = 1
+    var shown = 0
+    while at + size - 1 <= total and shown < most {
+        let fields = string.unpack(layout, bytes, at)
+        at = fields.pop()
+        shown += 1
+        print(f"{shown}:", fields)
+    }
+}
+
+let words = program.arguments()
+if len(words) < 2 or len(words) > 3 {
+    print("usage: zeno run records.zeno <file> <layout> [how many]")
+} else {
+    var most = 1000000
+    if len(words) == 3 {
+        most = int(words[2])
+    }
+    try {
+        show(words[0], words[1], most)
+    } except FileError as error {
+        # Lua is not installed, or there is no such file.
+        print(error.message)
+    } except Error as error {
+        print(f"Lua could not do it. {error.message}")
+    }
+}

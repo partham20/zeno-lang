@@ -92,21 +92,21 @@ the message, the file and the line:
 
 ```
 $ python3 tools/targets.py
-js: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-ts: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-py: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-php: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-lua: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-ruby: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-dart: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-kotlin: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-go: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-java: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-cs: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-cpp: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-rust: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-wasm: 338 of 338 programs print what `zeno run` prints (27 left out: they use the board, a page, manual memory, another program, the libraries of another language)
-html: 329 of 329 programs print what `zeno run` prints (36 left out: ...)
+js: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+ts: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+py: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+php: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+lua: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+ruby: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+dart: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+kotlin: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+go: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+java: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+cs: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+cpp: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+rust: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+wasm: 338 of 338 programs print what `zeno run` prints (28 left out: they use the board, a page, manual memory, another program, the libraries of another language)
+html: 329 of 329 programs print what `zeno run` prints (37 left out: ...)
 ```
 
 ## How it is done
@@ -518,6 +518,7 @@ file and a faster program, but no `import web` yet.
 - `import java`: the same, for Java (decision 29.12).
 - `import ruby`: the same, for Ruby (decision 34.9).
 - `import php`: the same, for PHP (decision 35.9).
+- `import lua`: the same, for Lua (decision 36.9).
 
 Zeno refuses such a program with a message that names the line.
 
