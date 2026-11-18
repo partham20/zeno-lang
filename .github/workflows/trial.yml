@@ -158,5 +158,11 @@ jobs:
             echo "::notice title=The first failures::$(tr '\r\n' ' |' < first.txt | cut -c1-2400)"
             # Every failure, where the log can be read.
             grep -A 12 'panicked at' tests.txt | cut -c1-700 | head -n 240 || true
+            # What another language's own program said as it stopped.
+            grep -n -m 30 -e '^-e:' -e 'ruby' tests.txt | cut -c1-500 || true
+            command -v ruby || true
+            ruby -v || true
+            printf 'import ruby\nprint(ruby.constant("RUBY_VERSION"))\n' > probe.zeno
+            target/release/zeno run probe.zeno 2>&1 | cut -c1-500 | head -n 40 || true
           fi
           exit $status
