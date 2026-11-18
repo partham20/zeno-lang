@@ -27,7 +27,7 @@ and Lua ([`ruby.md`](ruby.md), [`php.md`](php.md), [`lua.md`](lua.md)),
 and it works as the others do ([`python.md`](python.md) has the whole
 story, and [`java.md`](java.md) the one closest to this). Nothing
 changes for a program that does not say `import csharp`. The decisions
-behind it are chapter 37 of [`decisions.md`](decisions.md).
+behind it are chapter 40 of [`decisions.md`](decisions.md).
 
 | Written | Gives |
 |---|---|

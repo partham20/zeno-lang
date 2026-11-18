@@ -13023,7 +13023,7 @@ log of records, the same. **A file read in pieces**, for a file too big
 to hold, waits for cleaning up at the end of a block, as it does for
 text.
 
-## 34. The libraries of Ruby
+## 37. The libraries of Ruby
 
 The first language of the second version (26.1): `import ruby`, for
 the library that comes with Ruby and for gems. [`ruby.md`](ruby.md)
@@ -13034,7 +13034,7 @@ gives is a copy, a value from there is not a condition, the types are
 known when the program runs, and nothing changes for a program that
 does not ask. What follows is what Ruby made different.
 
-### 34.1 `ruby.require` loads, and `ruby.constant` names
+### 37.1 `ruby.require` loads, and `ruby.constant` names
 
 ```zeno
 ruby.require("date")
@@ -13060,7 +13060,7 @@ it, `"Net::HTTP"`.
 **`require` gives none.** Ruby's gives `true` the first time and
 `false` after, which says nothing a program of Zeno needs.
 
-### 34.2 A call has brackets
+### 37.2 A call has brackets
 
 In Ruby `day.year` is a call. In Zeno `thing.name` with no brackets
 is the method itself, to be called later, as it is for a value of
@@ -13077,7 +13077,7 @@ already agree with Zeno here, so Ruby is the one that bends.
 The method not called yet prints as a sentence that says so, since
 the commonest mistake is to leave the brackets off as Ruby allows.
 
-### 34.3 `send` for the names Zeno cannot write
+### 37.3 `send` for the names Zeno cannot write
 
 `empty?`, `sort!`, `+`, `class` and `raise` cannot follow a dot in
 Zeno. They are reached through `send`, which is Ruby's own method for
@@ -13097,7 +13097,7 @@ everything has `[]`: an Array, a Hash, a String, a Struct, a class
 Where a name has no method and the same name with `?` or `!` has, the
 error says how to write it.
 
-### 34.4 A symbol stays in Ruby; `ruby.symbol` makes one
+### 37.4 A symbol stays in Ruby; `ruby.symbol` makes one
 
 `:up` and `"up"` are different values in Ruby, and a Hash keeps them
 apart. If a symbol arrived as a str, the program could not give it
@@ -13115,7 +13115,7 @@ the same way, so that one rule covers both.
 A Hash can hold both keys, and then which one was meant would be a
 guess.
 
-### 34.5 Text and bytes are one String
+### 37.5 Text and bytes are one String
 
 Ruby has one class for both. A String comes across as a str when it
 is text: as it is when Ruby has it in UTF-8, turned into UTF-8 when
@@ -13139,7 +13139,7 @@ same bytes. A program that must have bytes whatever they are reads
 them through something that stays in Ruby: `File.open(name, "rb")`,
 and its `each_byte()`.
 
-### 34.6 An exception of Ruby is an error of Zeno
+### 37.6 An exception of Ruby is an error of Zeno
 
 `ZeroDivisionError` and `KeyError` have Zeno's kinds of the same
 name. `IndexError` and `StopIteration` are `IndexError`,
@@ -13154,7 +13154,7 @@ name says nothing, so the message is the text alone, as for a plain
 arguments. That is a mistake in the program and not a value, but Ruby
 does not tell the two apart, so neither can Zeno.
 
-### 34.7 A loop goes through what `each` gives
+### 37.7 A loop goes through what `each` gives
 
 `for item in thing` takes everything `thing.each` gives, as Ruby's
 own `for` does, and of a Hash its keys, as for a dict.
@@ -13168,7 +13168,7 @@ through forever before the loop began (26.12). A Range with no end and
 anything whose size is infinite raise `ValueError` and say what to
 write (`first(n)`).
 
-### 34.8 A library is looked for from the folder of the program
+### 37.8 A library is looked for from the folder of the program
 
 As for Python and JavaScript (28.9): the folder of the `.zeno` file
 is the first place `require` looks, so a `helper.rb` beside the
@@ -13182,7 +13182,7 @@ Bundler every gem that the `Gemfile` does not name is hidden. A
 program of Ruby says `require "bundler/setup"` when it wants that,
 and so does a program of Zeno.
 
-### 34.9 Left for later
+### 37.9 Left for later
 
 - A block: a function of Zeno given to `map`, `each`, `File.open`.
   It is the callback that 26.12 leaves, and Ruby needs it more than
@@ -13196,18 +13196,18 @@ and so does a program of Zeno.
 - Rubies before 3.1 and other Rubies (JRuby, TruffleRuby) are not
   tested. The helper uses nothing newer than Ruby 2.6.
 
-## 35. The libraries of PHP
+## 38. The libraries of PHP
 
 The second language of the second version (26.1): `import php`, for
 what comes with PHP and for Composer packages. [`php.md`](php.md) is
 the walkthrough. Chapter 26 holds here as it does for the others (28,
-29, 34): PHP runs beside the program, they talk over a socket,
+29, 37): PHP runs beside the program, they talk over a socket,
 numbers and text cross and objects stay, what Zeno gives is a copy, a
 value from there is not a condition, the types are known when the
 program runs, and nothing changes for a program that does not ask.
 What follows is what PHP made different.
 
-### 35.1 `php.type`, `php.callable` and `php.constant`, because PHP keeps the three apart
+### 38.1 `php.type`, `php.callable` and `php.constant`, because PHP keeps the three apart
 
 In Python everything a module has is reached with a dot from the
 module. PHP has no value for a module, a class or a function: a class
@@ -13226,9 +13226,9 @@ writes it, with its namespace: `"Carbon\\Carbon"`, `"Shop\\total"`,
 
 **`php.require(path)`** reads a file of PHP that is not in a package,
 from the folder of the program, as `require_once` does. It gives
-none, as Ruby's (34.1).
+none, as Ruby's (37.1).
 
-### 35.2 An array of PHP crosses whole
+### 38.2 An array of PHP crosses whole
 
 An array of PHP is a value and not an object: given to a function it
 is copied, as a list of Zeno is not. It is what a list and a dict are
@@ -13248,7 +13248,7 @@ nearly all of which are arrays, go back to PHP for each item.
 A list is the commoner, and an empty list and an empty dict print
 differently but are both empty.
 
-### 35.3 A function that changes its argument is given a variable
+### 38.3 A function that changes its argument is given a variable
 
 `sort(&$array)` and `preg_match($p, $text, &$matches)` change what
 they are given and give back something else. Given a list of Zeno,
@@ -13266,7 +13266,7 @@ to say which argument came back changed, for every call to every
 function, and write it into a list the program may not expect to
 change. `php.variable` says it at the line.
 
-### 35.4 Classes, functions and methods are values the helper makes up
+### 38.4 Classes, functions and methods are values the helper makes up
 
 `php.type("DateTime")` gives a value that the helper made for the
 class, since PHP has none. Calling it is `new`. A dot after it is
@@ -13286,13 +13286,13 @@ brackets reaches them: `Size["from"]("l")`. An object of a class
 that has items of its own (`ArrayAccess`) keeps its brackets for
 them.
 
-### 35.5 Named arguments are PHP's
+### 38.5 Named arguments are PHP's
 
 `name=value` is PHP 8's `name: value`, by the name of the parameter.
 This is why PHP 8 is the oldest PHP the module says it works with:
 the rest of the helper would run on 7.4.
 
-### 35.6 A warning of PHP is an error of Zeno
+### 38.6 A warning of PHP is an error of Zeno
 
 PHP reports most of what goes wrong in its functions by a warning on
 the screen and a value of `false`: `file_get_contents` of a file that
@@ -13317,14 +13317,14 @@ from its text: "Failed to open stream", "No such file or directory",
 "Permission denied" and a few others. These are the system's words,
 which PHP passes on, and are the same in every PHP 8.
 
-### 35.7 Bytes that are not text stay in PHP
+### 38.7 Bytes that are not text stay in PHP
 
 A string of PHP is bytes. Where they read as UTF-8 they are a str,
-as for Ruby (34.5), and bytes that do not stay in PHP. There an item
+as for Ruby (37.5), and bytes that do not stay in PHP. There an item
 is a byte as an int, `len` is how many, and `for` goes through them,
 since a program that kept bytes wants them as numbers.
 
-### 35.8 The helper's names begin with `zeno_` and `Zeno`
+### 38.8 The helper's names begin with `zeno_` and `Zeno`
 
 A Composer package puts its functions and classes into the one
 program PHP runs, beside the helper's. PHP refuses a second function
@@ -13332,7 +13332,7 @@ of one name, so a package with a `keep` or a `back` would stop the
 helper from starting. Every function of the helper begins with
 `zeno_`, and every class with `Zeno`.
 
-### 35.9 Left for later
+### 38.9 Left for later
 
 - A function of Zeno given to PHP: `array_map`, `usort`,
   `preg_replace_callback`. It is the callback that 26.12 leaves.
@@ -13342,22 +13342,22 @@ helper from starting. Every function of the helper begins with
 - Only PHP 8.3 is tested. PHP 7.4 would run all but named arguments,
   and is not tried.
 
-## 36. The libraries of Lua
+## 39. The libraries of Lua
 
 The third language of the second version (26.1): `import lua`, for
 Lua's own library and for modules from LuaRocks. [`lua.md`](lua.md)
 is the walkthrough. Chapter 26 holds here as it does for the others
-(28, 29, 34, 35). What follows is what Lua made different.
+(28, 29, 37, 38). What follows is what Lua made different.
 
-### 36.1 `lua.require` and `lua.global`
+### 39.1 `lua.require` and `lua.global`
 
 `lua.require(name)` is Lua's `require`, which gives the module, as
-Python's `import` does. So unlike Ruby's (34.1) it gives what was
+Python's `import` does. So unlike Ruby's (37.1) it gives what was
 loaded. `lua.global(name)` is what every program of Lua has without a
 `require`, `string`, `table`, `os`, and is named as Node's (28.2),
 which is the same thing.
 
-### 36.2 Lua is talked to over named pipes
+### 39.2 Lua is talked to over named pipes
 
 Every other helper connects back over a socket of this machine. Lua
 comes with no sockets, and the one library that gives them, LuaSocket,
@@ -13380,7 +13380,7 @@ installed, and says so if it is not. The same is done where `mkfifo`
 is not there. The rest of the bridge does not know which it is: a
 link is something to read lines from and something to write them to.
 
-### 36.3 A function gets `self` when it is a method
+### 39.3 A function gets `self` when it is a method
 
 Lua writes `object:name(x)` and `module.name(x)`, and only the colon
 gives the function its object. Zeno has one dot, and the call cannot
@@ -13408,7 +13408,7 @@ language, and almost every call of a library is told apart by the
 rule. A second form would have to be written at each of those calls,
 for the few the rule gets wrong.
 
-### 36.4 Several values are a list
+### 39.4 Several values are a list
 
 A function of Lua gives any number of values. None is `none`, one is
 that value, and several are a list of Zeno with all of them:
@@ -13429,7 +13429,7 @@ the second a string, the call raises `Error` with that message, and
 system that Lua's file functions give. A single `nil` is still `none`:
 `string.find` with no match.
 
-### 36.5 A table stays in Lua, and counts from 1
+### 39.5 A table stays in Lua, and counts from 1
 
 A table is shared in Lua, as a list of Python is, so it stays (26.5).
 Its items are where Lua has them, and `t[1]` is the first. `lua.copy`
@@ -13447,34 +13447,34 @@ other, as Zeno's own `for` does for a list and a dict. **Over a
 function** it is Lua's generic `for`: the function is called until it
 gives `nil`, which is what `string.gmatch` and `io.lines` give.
 
-### 36.6 Numbers
+### 39.6 Numbers
 
 Lua 5.3 and later know whether a number is an integer, and it arrives
 as what it is. Before 5.3, and in LuaJIT, every number is a float, and
 a whole one within 2^53 arrives as an int, as in JavaScript (28.3).
 
-### 36.7 Named arguments are a table of options
+### 39.7 Named arguments are a table of options
 
 As for JavaScript (28.4): Lua has no named arguments, and a library
 takes a table of options last instead. `f(1, loud=true)` is
 `f(1, {loud = true})`.
 
-### 36.8 An error of Lua is an `Error`
+### 39.8 An error of Lua is an `Error`
 
 Lua's errors are values with no kind, usually a string, so every
 error of Lua is an `Error` with the value as its message. The
 position that Lua puts in front of a message names the helper when an
 error is raised from a function of Lua's library, so that position is
-taken off. The one other kind is the `FileError` of 36.4.
+taken off. The one other kind is the `FileError` of 39.4.
 
-### 36.9 Left for later
+### 39.9 Left for later
 
 - A function of Zeno given to Lua: `table.sort(t, f)`, callbacks.
 - Windows, which needs LuaSocket and was not tried.
 - `lua` in a built program, and in `--target lua`, as 26.9 has it for
   Python.
 
-## 37. The libraries of C# and .NET
+## 40. The libraries of C# and .NET
 
 The fourth language of the second version (26.1): `import csharp`, for
 the types that come with .NET and for packages of NuGet.
@@ -13484,7 +13484,7 @@ methods of one name that take different things, a helper that has to
 be compiled. Where Java decided a question the same way, 29 has the
 reason, and what follows is what .NET made different.
 
-### 37.1 The module is `csharp`
+### 40.1 The module is `csharp`
 
 **Why not `dotnet`, which is the runtime and the command.** Every
 other module is named for the language its libraries are written in,
@@ -13499,7 +13499,7 @@ wrong word for using a library.
 `new` (29.2). `csharp.assembly(path)` is Java's `java.jar`: an
 assembly is what .NET calls a .dll.
 
-### 37.2 A type is named as C# writes it
+### 40.2 A type is named as C# writes it
 
 `"List<int>"`, `"Dictionary<string, List<int>>"`, `"int[]"`, `"int?"`,
 and `"string"` for `System.String`. .NET's own way to write a
@@ -13519,7 +13519,7 @@ writes C# already writes `File`, `Math` and `List<int>` with no
 namespace. A name that is not found with its namespace is tried there
 only after, so a whole name always means what it says.
 
-### 37.3 Of several methods, the arguments choose, and a named argument is a parameter
+### 40.3 Of several methods, the arguments choose, and a named argument is a parameter
 
 The choice is Java's (29.4), with C#'s order: an int of Zeno fits an
 `int` before a `long` and both before a `double`; a list fits an array
@@ -13529,7 +13529,7 @@ as well are an error that lists both.
 
 **A named argument is given to the parameter of that name**,
 `Math.Round(2.567, digits=1)`. C# has named arguments of its own,
-unlike Java (29) and Lua (36.7), so `name=value` means in Zeno what
+unlike Java (29) and Lua (39.7), so `name=value` means in Zeno what
 `name: value` means in C#. The message that says no method fits lists
 each with the names of its parameters, so the names can be found.
 
@@ -13542,7 +13542,7 @@ arguments, and C# calls the first on a `JObject`.
 argument says is `object`. Writing the types in the call, as C# can,
 is the rejected alternative of 29.4.
 
-### 37.4 A `Task` is waited for
+### 40.4 A `Task` is waited for
 
 A method that takes time, such as one that reads the network, gives a
 `Task`, and C# writes `await` before the call. Zeno waits for it, and
@@ -13554,7 +13554,7 @@ while the program goes on, or not at all if the program ends first.
 Every library of .NET that reads a file or the network has methods
 that end in `Async`, and each would need a second call to be of use.
 
-### 37.5 Numbers go as `long`, and are made what the parameter is
+### 40.5 Numbers go as `long`, and are made what the parameter is
 
 Every whole number of Zeno arrives as a `long`, and becomes `int`,
 `short`, `byte` or an enum when the method takes one and it fits, as
@@ -13567,7 +13567,7 @@ would change it.
 collection that takes `Object`. A collection of .NET says its type
 (`List<int>`), and the number is made that type when it is given.
 
-### 37.6 A package is found from the project beside the program
+### 40.6 A package is found from the project beside the program
 
 .NET has no folder that every package goes to, as pip and npm have,
 and NuGet installs a package only into a project. So the program uses
@@ -13590,7 +13590,7 @@ of C# beside the program is built into it (`csharp.assembly` of its
 anything (26), and a program that fetches from the network when it is
 run is a program that does something it does not say.
 
-### 37.7 The helper is built once with `dotnet build`, and kept
+### 40.7 The helper is built once with `dotnet build`, and kept
 
 As Java's (29.9): the source is in the `zeno` file, the first run
 builds it in the folder for what can be made again, under a number
@@ -13603,7 +13603,7 @@ takes some seconds where `javac` takes one, so this matters more.
 where it cannot be built `dotnet run` is started instead, which says
 why: there is no SDK, only the runtime.
 
-### 37.8 An exception of .NET is an error of Zeno
+### 40.8 An exception of .NET is an error of Zeno
 
 `IOException` and those under it, and `UnauthorizedAccessException`,
 are `FileError`; `KeyNotFoundException` is `KeyError`;
@@ -13617,7 +13617,7 @@ message begins with .NET's name for it, as Java's does (29.7).
 each of these, where Java's `ArithmeticException` was two kinds. Each
 means in .NET what the kind means in Zeno, by .NET's own description.
 
-### 37.9 Left for later
+### 40.9 Left for later
 
 - A function of Zeno given to .NET: an event, a `Func<T>`, the
   lambdas of LINQ.

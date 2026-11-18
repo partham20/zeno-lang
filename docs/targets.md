@@ -516,10 +516,10 @@ file and a faster program, but no `import web` yet.
   what starts it (decision 26.9).
 - `import node`: the same, for Node (decision 28.10).
 - `import java`: the same, for Java (decision 29.12).
-- `import ruby`: the same, for Ruby (decision 34.9).
-- `import php`: the same, for PHP (decision 35.9).
-- `import lua`: the same, for Lua (decision 36.9).
-- `import csharp`: the same, for .NET (decision 37.9).
+- `import ruby`: the same, for Ruby (decision 37.9).
+- `import php`: the same, for PHP (decision 38.9).
+- `import lua`: the same, for Lua (decision 39.9).
+- `import csharp`: the same, for .NET (decision 40.9).
 
 Zeno refuses such a program with a message that names the line.
 

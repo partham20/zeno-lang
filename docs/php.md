@@ -26,7 +26,7 @@ This is the second language of the second version, after Ruby
 ([`ruby.md`](ruby.md)), and it works as the others do
 ([`python.md`](python.md) has the whole story). Nothing changes for a
 program that does not say `import php`. The decisions behind it are
-chapter 35 of [`decisions.md`](decisions.md).
+chapter 38 of [`decisions.md`](decisions.md).
 
 | Written | Gives |
 |---|---|

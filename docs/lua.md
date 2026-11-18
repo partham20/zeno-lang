@@ -24,7 +24,7 @@ This is the third language of the second version, after Ruby and PHP
 ([`ruby.md`](ruby.md), [`php.md`](php.md)), and it works as the others
 do ([`python.md`](python.md) has the whole story). Nothing changes for
 a program that does not say `import lua`. The decisions behind it are
-chapter 36 of [`decisions.md`](decisions.md).
+chapter 39 of [`decisions.md`](decisions.md).
 
 | Written | Gives |
 |---|---|

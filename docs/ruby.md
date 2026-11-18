@@ -27,7 +27,7 @@ This is the first language of the second version. Python, JavaScript
 and Java were the first ([`python.md`](python.md),
 [`node.md`](node.md), [`java.md`](java.md)), and Ruby works the same
 way. Nothing changes for a program that does not say `import ruby`.
-The decisions behind it are chapter 34 of
+The decisions behind it are chapter 37 of
 [`decisions.md`](decisions.md).
 
 | Written | Gives |
