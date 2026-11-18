@@ -83,6 +83,10 @@ GIVEN_BACK_TWICE = "a block of memory was given back twice"
 # not defined in any build, and two builds need not do the same.
 UNDEFINED = {
     "book/33-unsafe#4": "reads memory after it was given back",
+    # `--owned` and `--no-collector` look for this, and then it is "at a
+    # check". With the collector the memory is the C library's, and what
+    # its `free` does the second time differs from one system to the next.
+    "book/33-unsafe#5": "gives memory back twice",
 }
 # Put in front of the checked build's C: the mark, written with nothing
 # of the C library's that the program could have changed.

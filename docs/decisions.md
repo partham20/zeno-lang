@@ -12197,8 +12197,8 @@ the same, end the same way, and stop with the same message. A program
 that a check stops has no defined result in a minimal build, so it is
 found and left out: the C of the checked build is given a line that
 writes a mark in `zeno_fail` and `zeno_bug`, where every check ends.
-On 2026-11-18: 213, 192, 192 and 210 programs for the four kinds, all
-the same, and 16 to 19 left out for each. It runs on GitHub on a push
+On 2026-11-18: 212, 192, 192 and 209 programs for the four kinds, all
+the same, and 17 to 20 left out for each. It runs on GitHub on a push
 that changes the C backend (.github/workflows/minimal.yml), on Linux
 with gcc and on macOS with clang.
 
