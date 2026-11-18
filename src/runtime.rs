@@ -2757,7 +2757,18 @@ mod z {
         let seconds = apply(scale, *x);
         if seconds > 0.0 {
             flush();
-            std::thread::sleep(std::time::Duration::from_secs_f64(seconds.min(1e7)));
+            // Until the clock `now` reads says the time has passed: a host
+            // may wake a program a little early (Node's WASI does, by a
+            // fraction of a millisecond), and `now() - start` after
+            // `sleep(20 ms)` must be at least 20 ms, as in `zeno run`.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds.min(1e7));
+            loop {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::sleep(deadline - now);
+            }
         }
         Ok(V::None)
     }
