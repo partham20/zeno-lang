@@ -43,6 +43,7 @@ mod ints;
 mod lexer;
 mod lower;
 mod lsp;
+mod minimal;
 mod modules;
 mod ops;
 mod package;
@@ -168,6 +169,14 @@ fn usage() {
     println!("                           below zero, and overflow, which has no defined");
     println!("                           result here (--release wraps round).");
     println!("                           As fast as C, and as unforgiving");
+    println!("  --minimal                with build: the least C that runs the program.");
+    println!("                           No check of any kind (an index, an overflow, a");
+    println!("                           division by zero), only the parts of Zeno's");
+    println!("                           runtime the program uses, and `print` as C's");
+    println!("                           own printf. A mistake does whatever the C");
+    println!("                           does, as in C. It goes with --firmware,");
+    println!("                           --no-collector, --owned, --fast and --memory");
+    println!("                           (docs/minimal.md)");
     println!("  --llvm                   with build: compile to LLVM IR in place of C,");
     println!("                           and hand that to clang. It goes with");
     println!("                           --firmware, --no-collector and --memory");
@@ -535,7 +544,7 @@ fn how_built(
         (false, _, true) => (emit_c::Build::Firmware, false),
         (false, _, false) => (emit_c::Build::Ordinary, false),
     };
-    (kind, emit_c::Options { release: release || fast, grows, fast })
+    (kind, emit_c::Options { release: release || fast, grows, fast, ..Default::default() })
 }
 
 /// `zeno build <file>`: compile the program to C, then hand the C to the
@@ -586,9 +595,10 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
     let program_file = emit_c::program_file(name);
     for compiler in &compilers {
         let mut command = Command::new(compiler);
-        if memory_report {
+        if memory_report && !options.minimal {
             // Turns on a few lines in the runtime that say, as the program
             // ends, how much memory it used and how often the collector ran.
+            // (A minimal build has those lines written in or left out.)
             command.arg("-DZENO_MEMORY_REPORT");
         }
         match command.args(optimise(options)).args(["-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
@@ -617,9 +627,14 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
 /// How hard the C compiler (or clang, for IR) is asked to work. `--fast`
 /// asks for `-O3`, and says that no line reads `errno` after a function
 /// of maths, so `sqrt` can be the one instruction the processor has
-/// (decision 23.1).
+/// (decision 23.1). `--minimal` asks for the smallest program, `-Os`,
+/// unless `--fast` is there too (decision 30.8).
 fn optimise(options: emit_c::Options) -> &'static [&'static str] {
-    if options.fast { &["-O3", "-fno-math-errno"] } else { &["-O2"] }
+    match (options.fast, options.minimal) {
+        (true, _) => &["-O3", "-fno-math-errno"],
+        (false, true) => &["-Os"],
+        (false, false) => &["-O2"],
+    }
 }
 
 /// What to type to run the program a build made, in the folder it is in.
@@ -1170,6 +1185,10 @@ fn main() -> ExitCode {
     // never fails left out too, and the C compiler asked to try harder.
     let fast = args.iter().any(|arg| arg == "--fast");
     args.retain(|arg| arg != "--fast");
+    // `--minimal` writes the least C that runs the program: no checks,
+    // and only the parts of the runtime the program uses.
+    let minimal = args.iter().any(|arg| arg == "--minimal");
+    args.retain(|arg| arg != "--minimal");
     if owned && collector {
         eprintln!("zeno: `--owned` and `--collector` are two ways to free memory. Choose one");
         return ExitCode::FAILURE;
@@ -1184,7 +1203,10 @@ fn main() -> ExitCode {
         (_, true) => Some(package::Memory::Collector),
         _ => package_memory(path).or_else(|| files_memory(path)),
     };
-    let built = |path: &str| how_built(no_collector, firmware, release, fast, memory(path));
+    let built = |path: &str| {
+        let (kind, options) = how_built(no_collector, firmware, release, fast, memory(path));
+        (kind, emit_c::Options { minimal, memory_report: minimal && memory_report, ..options })
+    };
 
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -1395,17 +1417,23 @@ fn main() -> ExitCode {
             };
             // A page is not compiled, so the options that say how to
             // compile have nothing to say about it.
-            if web && (llvm || memory_report || firmware || no_collector || owned || release || fast) {
+            if web && (llvm || memory_report || firmware || no_collector || owned || release || fast || minimal) {
                 eprintln!("zeno: `build --web` writes a page, which the browser runs as `zeno run` would.");
-                eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast` and `--memory`");
-                eprintln!("      are for a compiled program");
+                eprintln!("      `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast`, `--minimal` and");
+                eprintln!("      `--memory` are for a compiled program");
+                return ExitCode::FAILURE;
+            }
+            // The least C is C: LLVM IR has no part in it.
+            if minimal && llvm {
+                eprintln!("zeno: `--minimal` writes the least C that runs the program, and `--llvm` writes LLVM IR");
+                eprintln!("      in place of C. Choose one");
                 return ExitCode::FAILURE;
             }
             if let Some(target) = &target {
-                if web || llvm || memory_report || firmware || no_collector || owned || release || fast {
+                if web || llvm || memory_report || firmware || no_collector || owned || release || fast || minimal {
                     eprintln!("zeno: `--target` writes the program in another language, which builds and runs it.");
-                    eprintln!("      `--web`, `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast` and");
-                    eprintln!("      `--memory` are for a program compiled to machine code");
+                    eprintln!("      `--web`, `--llvm`, `--firmware`, `--no-collector`, `--owned`, `--release`, `--fast`,");
+                    eprintln!("      `--minimal` and `--memory` are for a program compiled to machine code");
                     return ExitCode::FAILURE;
                 }
                 return match build_target(path, target) {

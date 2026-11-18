@@ -6916,7 +6916,7 @@ pub(crate) mod tests {
         let source = "var n = 9223372036854775807\nn += 1\nprint(n)\nprint(n - 1)\nprint(-n)\nlet k = 4611686018427387904\nprint(k * 4)";
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_with_types(&program, true);
-        let options = emit_c::Options { release: true, grows: false, fast: false };
+        let options = emit_c::Options { release: true, grows: false, fast: false, ..Default::default() };
         let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, options).expect("it builds");
         assert!(!ir.contains("with.overflow"), "{ir}");
         let Some((printed, errors, finished)) = build_and_run_as("release", &ir, Build::Ordinary, &[]) else { return };
@@ -6929,7 +6929,7 @@ pub(crate) mod tests {
         let source = "import math\nlet xs = [1.5, 2.5, 4.0]\nlet i = 2\nlet z = 0.0\nprint(xs[i] / 2.0, xs[0] / z, math.sqrt(xs[2]), math.sqrt(-1.0))";
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_with_types(&program, true);
-        let options = emit_c::Options { release: true, grows: false, fast: true };
+        let options = emit_c::Options { release: true, grows: false, fast: true, ..Default::default() };
         let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, options).expect("it builds");
         assert!(!ir.contains("zeno_list_at") && !ir.contains("@zeno.div") && !ir.contains("@zeno.sqrt"), "{ir}");
         assert!(ir.contains("fdiv double") && ir.contains("@llvm.sqrt.f64("), "{ir}");
@@ -6946,11 +6946,11 @@ pub(crate) mod tests {
         let source = "function sum(n: int) -> int {\n    var total = 0\n    var i = 0\n    while i < n {\n        total += (i * i) % 7 - i\n        i += 1\n    }\n    return -total\n}\nprint(sum(1000), sum(0), 3 - 5 * 4)";
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_with_types(&program, true);
-        let fast = emit_c::Options { release: true, grows: false, fast: true };
+        let fast = emit_c::Options { release: true, grows: false, fast: true, ..Default::default() };
         let ir = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, fast).expect("it builds");
         assert!(ir.contains("add nsw i64") && ir.contains("mul nsw i64") && ir.contains("sub nsw i64"), "{ir}");
         assert!(!ir.contains("with.overflow"), "{ir}");
-        let release = emit_c::Options { release: true, grows: false, fast: false };
+        let release = emit_c::Options { release: true, grows: false, fast: false, ..Default::default() };
         let wraps = emit_with(&program, &types, "test.zeno", Build::Ordinary, false, release).expect("it builds");
         assert!(!wraps.contains(" nsw "), "{wraps}");
         let Some((printed, errors, finished)) = build_and_run_as("fast-sums", &ir, Build::Ordinary, &["-DZENO_UNCHECKED", "-O3"]) else { return };

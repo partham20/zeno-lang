@@ -8,6 +8,38 @@
  * numbers that report overflow, division that reports a zero, floats that
  * print the way `zeno run` prints them.
  */
+#ifdef ZENO_MINIMAL
+/* About `ZENO_MINIMAL`, which marks parts of this file.
+ *
+ * `zeno build --minimal` writes the least C that runs the program
+ * (docs/minimal.md, decisions chapter 30). Three things are done to this
+ * file for it, by `runtime_of` in src/emit_c.rs and by src/minimal.rs:
+ *
+ *   1. What is between `#ifndef ZENO_MINIMAL` and its `#endif` is left
+ *      out, or changed for what follows `#else`. Those parts are the
+ *      checks a correct program never fails: an index out of range, an
+ *      overflow, a division by zero, a key a dict does not have. With
+ *      them gone such a mistake does whatever the C does, as in C.
+ *   2. Nothing is told where in the Zeno source it was called from: the
+ *      `int line, int col` at the end of a function's parameters, and the
+ *      `line, col` at the end of a call, are taken out.
+ *   3. Every function, type and variable the program does not use is
+ *      left out, and so are the comments.
+ *
+ * And one thing is added. `print` there is C's `printf`, which shows a
+ * whole number by itself but not a float the way Zeno writes one. So
+ * `zeno_str_float` is in two pieces there: `zeno_float_text` writes the
+ * float into sixty-four bytes it is handed, with no memory asked for,
+ * and `zeno_quantity_text` does the same for the number of a quantity.
+ * `zeno_radix` is in two pieces in the same way, for `{n:x}` and
+ * `{reg:08b}`: `zeno_radix_text` writes into bytes it is handed.
+ *
+ * Every other build has these marks taken out and what is between them
+ * kept, so its C is the same as before there was such a thing. A mark
+ * has to be written exactly as the others are, on a line of its own:
+ * the `#else` and the `#endif` name ZENO_MINIMAL in a comment after
+ * them, as those of ZENO_FIRMWARE do. */
+#endif /* ZENO_MINIMAL */
 
 /* Microsoft's C library marks `fopen`, `strcpy` and their like as unsafe
  * and offers its own in their place, which no other system has. The
@@ -1026,11 +1058,13 @@ static void zeno_rows_free(zeno_spare *block) {
 static void zeno_free(void *memory) {
     if (memory == NULL) return;
     zeno_spare *block = (zeno_spare *)((char *)memory - sizeof(zeno_head));
+#ifndef ZENO_MINIMAL
     if (block->head.asked == 0) {
         fflush(stdout);
         fprintf(stderr, "error: a block of memory was given back twice\n");
         exit(1);
     }
+#endif /* ZENO_MINIMAL */
 #ifdef ZENO_HEAP
     if (block->head.step == ZENO_FROM_SYSTEM) {
         zeno_rows_free(block);
@@ -1392,14 +1426,20 @@ static bool zeno_error_same(zeno_error *a, zeno_error *b) {
 
 /* The error on its way to an `except`, and where it was raised. */
 static zeno_error *zeno_raised = NULL;
+#ifndef ZENO_MINIMAL
 static int zeno_raised_line = 0;
 static int zeno_raised_col = 0;
+#endif /* ZENO_MINIMAL */
 
 /* Nobody caught it: print what `zeno run` prints, and stop. */
 __attribute__((noreturn)) static void zeno_uncaught(void) {
     fflush(stdout);
+#ifndef ZENO_MINIMAL
     fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message,
             zeno_file_of(zeno_raised_line), zeno_line_of(zeno_raised_line), zeno_raised_col);
+#else /* ZENO_MINIMAL */
+    fprintf(stderr, "error: uncaught %s: %s\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message);
+#endif /* ZENO_MINIMAL */
     exit(1);
 }
 
@@ -1425,8 +1465,10 @@ static zeno_try *zeno_trying = NULL;
  * nobody can catch it. */
 __attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, int col) {
     zeno_raised = error;
+#ifndef ZENO_MINIMAL
     zeno_raised_line = line;
     zeno_raised_col = col;
+#endif /* ZENO_MINIMAL */
     if (zeno_trying == NULL) zeno_uncaught();
     zeno_try *handler = zeno_trying;
     zeno_trying = handler->outer; /* that `try` is over, whatever happens next */
@@ -1435,7 +1477,11 @@ __attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, in
 
 /* No `except` of this `try` wanted the error: pass it outward unchanged. */
 __attribute__((noreturn)) static void zeno_raise_again(void) {
+#ifndef ZENO_MINIMAL
     zeno_raise(zeno_raised, zeno_raised_line, zeno_raised_col);
+#else /* ZENO_MINIMAL */
+    zeno_raise(zeno_raised);
+#endif /* ZENO_MINIMAL */
 }
 
 /* Does `except Kind` catch the error on its way? */
@@ -1460,8 +1506,10 @@ __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *me
  * and either goes to its own `except` or returns `false` in its turn. */
 static void zeno_note(zeno_error *error, int line, int col) {
     zeno_raised = error;
+#ifndef ZENO_MINIMAL
     zeno_raised_line = line;
     zeno_raised_col = col;
+#endif /* ZENO_MINIMAL */
 }
 
 /* Does `except Kind` catch this error? */
@@ -1484,11 +1532,13 @@ __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *me
 /* A mistake in the program itself, which `try` does not catch (see
  * decisions.md 4.1). The checker finds nearly all of these before the
  * program is built, so there is very little left to report here. */
+#ifndef ZENO_MINIMAL
 __attribute__((noreturn)) static void zeno_bug(const char *message, int line, int col) {
     fflush(stdout);
     fprintf(stderr, "error: %s\n --> %s:%d:%d\n", message, zeno_file_of(line), zeno_line_of(line), col);
     exit(1);
 }
+#endif /* ZENO_MINIMAL */
 
 static void zeno_overflow(int line, int col) {
     zeno_fail("OverflowError", "the result is too big for an int", line, col);
@@ -1507,36 +1557,58 @@ static void zeno_by_zero(int line, int col) {
  */
 
 static int64_t zeno_add(int64_t a, int64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
     int64_t result;
     if (__builtin_add_overflow(a, b, &result)) zeno_overflow(line, col);
     return result;
+#else /* ZENO_MINIMAL */
+    return a + b;
+#endif /* ZENO_MINIMAL */
 }
 
 static int64_t zeno_sub(int64_t a, int64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
     int64_t result;
     if (__builtin_sub_overflow(a, b, &result)) zeno_overflow(line, col);
     return result;
+#else /* ZENO_MINIMAL */
+    return a - b;
+#endif /* ZENO_MINIMAL */
 }
 
 static int64_t zeno_mul(int64_t a, int64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
     int64_t result;
     if (__builtin_mul_overflow(a, b, &result)) zeno_overflow(line, col);
     return result;
+#else /* ZENO_MINIMAL */
+    return a * b;
+#endif /* ZENO_MINIMAL */
 }
 
 static int64_t zeno_neg(int64_t a, int line, int col) {
+#ifndef ZENO_MINIMAL
     return zeno_sub(0, a, line, col);
+#else /* ZENO_MINIMAL */
+    return -a;
+#endif /* ZENO_MINIMAL */
 }
 
 static int64_t zeno_abs(int64_t a, int line, int col) {
+#ifndef ZENO_MINIMAL
     return a < 0 ? zeno_neg(a, line, col) : a;
+#else /* ZENO_MINIMAL */
+    return a < 0 ? -a : a;
+#endif /* ZENO_MINIMAL */
 }
 
 /* `//` rounds down. C rounds toward zero, so step down once more when the
  * signs differ and the division was not exact. */
 static int64_t zeno_floordiv(int64_t a, int64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (b == 0) zeno_by_zero(line, col);
     if (a == INT64_MIN && b == -1) zeno_overflow(line, col);
+#endif /* ZENO_MINIMAL */
     int64_t q = a / b;
     if ((a ^ b) < 0 && a % b != 0) q -= 1;
     return q;
@@ -1552,8 +1624,12 @@ static int64_t zeno_halved(int64_t a, int by) {
 
 /* `%` takes the sign of the right side, to pair with `//`. */
 static int64_t zeno_mod(int64_t a, int64_t b, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (b == 0) zeno_by_zero(line, col);
     if (b == -1) return 0; /* also avoids INT64_MIN % -1, which C leaves undefined */
+#else /* ZENO_MINIMAL */
+    if (b == -1) return 0; /* INT64_MIN % -1 is one C leaves undefined */
+#endif /* ZENO_MINIMAL */
     int64_t r = a % b;
     /* Signs first: a branch on them is almost always guessed right,
        while one on `r != 0` is not (decision 23.5). */
@@ -1562,24 +1638,32 @@ static int64_t zeno_mod(int64_t a, int64_t b, int line, int col) {
 }
 
 static int64_t zeno_pow(int64_t base, int64_t power, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (power < 0) {
         zeno_fail("ValueError",
                   "a whole number cannot be raised to a negative power. Use a float, as in `2.0 ** -1`",
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
     /* These never overflow, however big the power, so answer them directly
      * instead of looping. */
     if (base == 1 || power == 0) return 1;
     if (base == 0) return 0;
     if (base == -1) return power % 2 == 0 ? 1 : -1;
     int64_t result = 1;
+#ifndef ZENO_MINIMAL
     for (int64_t i = 0; i < power; i++) result = zeno_mul(result, base, line, col);
+#else /* ZENO_MINIMAL */
+    for (int64_t i = 0; i < power; i++) result *= base;
+#endif /* ZENO_MINIMAL */
     return result;
 }
 
 /* How many numbers `range(start, stop, step)` holds. */
 static int64_t zeno_range_count(int64_t start, int64_t stop, int64_t step, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (step == 0) zeno_fail("ValueError", "the step of a range cannot be 0", line, col);
+#endif /* ZENO_MINIMAL */
     if (step > 0 && start < stop) {
         return (int64_t)(((uint64_t)stop - (uint64_t)start - 1) / (uint64_t)step) + 1;
     }
@@ -1608,11 +1692,17 @@ static double zeno_div(double a, double b, int line, int col) {
 }
 
 static double zeno_floordiv_float(double a, double b, int line, int col) {
+#ifndef ZENO_MINIMAL
     return floor(zeno_div(a, b, line, col));
+#else /* ZENO_MINIMAL */
+    return floor(a / b);
+#endif /* ZENO_MINIMAL */
 }
 
 static double zeno_mod_float(double a, double b, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (b == 0.0) zeno_by_zero(line, col);
+#endif /* ZENO_MINIMAL */
     return a - b * floor(a / b);
 }
 
@@ -1740,7 +1830,11 @@ static const char *zeno_str_bool(bool b) {
 /* A float as text: the fewest digits that read back as the same float, and
  * always with a `.0` or an exponent so it cannot be mistaken for an int.
  * 0.1 + 0.2 prints as 0.30000000000000004, and 3.0 as 3.0. */
+#ifndef ZENO_MINIMAL
 static const char *zeno_str_float(double x) {
+#else /* ZENO_MINIMAL */
+static const char *zeno_float_text(double x, char out[64]) {
+#endif /* ZENO_MINIMAL */
     if (x != x) return "NaN";
     if (x == INFINITY) return "inf";
     if (x == -INFINITY) return "-inf";
@@ -1766,7 +1860,9 @@ static const char *zeno_str_float(double x) {
     int exponent = atoi(p + 1);
     while (count > 1 && mantissa[count - 1] == '0') count--; /* 1.50 is 1.5 */
 
+#ifndef ZENO_MINIMAL
     char out[64];
+#endif /* ZENO_MINIMAL */
     char *o = out;
     if (negative) *o++ = '-';
     double size = fabs(x);
@@ -1791,8 +1887,28 @@ static const char *zeno_str_float(double x) {
         if (count <= exponent + 1) *o++ = '0';
         for (int i = exponent + 1; i < count; i++) *o++ = mantissa[i];
     }
+#ifndef ZENO_MINIMAL
     return zeno_copy(out, (size_t)(o - out));
 }
+#else /* ZENO_MINIMAL */
+    *o = '\0';
+    return out;
+}
+
+static const char *zeno_str_float(double x) {
+    char out[64];
+    const char *text = zeno_float_text(x, out);
+    return text == out ? zeno_copy(out, strlen(out)) : text;
+}
+
+static const char *zeno_quantity_text(double x, char out[64]) {
+    if (x == floor(x) && fabs(x) < 1e15) {
+        snprintf(out, 64, "%lld", (long long)x);
+        return out;
+    }
+    return zeno_float_text(x, out);
+}
+#endif /* ZENO_MINIMAL */
 
 /* `500 ms`. A whole quantity prints without a decimal point. */
 static const char *zeno_str_quantity(double x, const char *unit) {
@@ -1823,9 +1939,15 @@ static const char *zeno_fixed_quantity(double x, int decimals, const char *unit)
 }
 
 /* `{n:x}`, `{n:X}`, `{n:b}`: hexadecimal or binary. */
+#ifndef ZENO_MINIMAL
 static const char *zeno_radix(int64_t n, char kind) {
     char buffer[72];
     char *end = buffer + sizeof buffer;
+#else /* ZENO_MINIMAL */
+static const char *zeno_radix_text(int64_t n, char kind, int zeros, char buffer[72]) {
+    char *end = buffer + 71;
+    *end = '\0';
+#endif /* ZENO_MINIMAL */
     char *p = end;
     uint64_t size = n < 0 ? 0 - (uint64_t)n : (uint64_t)n;
     unsigned base = kind == 'b' ? 2 : 16;
@@ -1834,9 +1956,22 @@ static const char *zeno_radix(int64_t n, char kind) {
         *--p = symbols[size % base];
         size /= base;
     } while (size != 0);
+#ifndef ZENO_MINIMAL
     if (n < 0) *--p = '-';
     return zeno_copy(p, (size_t)(end - p));
 }
+#else /* ZENO_MINIMAL */
+    while (end - p < zeros - (n < 0)) *--p = '0';
+    if (n < 0) *--p = '-';
+    return p;
+}
+
+static const char *zeno_radix(int64_t n, char kind) {
+    char buffer[72];
+    const char *text = zeno_radix_text(n, kind, 0, buffer);
+    return zeno_copy(text, strlen(text));
+}
+#endif /* ZENO_MINIMAL */
 
 /* Pad `body` out to `width` characters. `align` is '<', '>' or '^'.
  * With `zeros`, the padding is zeros between the sign and the digits. */
@@ -1880,28 +2015,36 @@ static void zeno_print(int count, ...) {
 
 /* `a << n` and `a >> n`. An int has 64 bits, so `n` is 0 to 63. */
 static void zeno_shift_count(int64_t n, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (n < 0 || n > 63) {
         zeno_fail("ValueError",
                   zeno_join(3, "cannot shift by ", zeno_str_int(n), ". An int has 64 bits, so a shift is 0 to 63"),
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
 }
 
 /* `a << n` is `a` times two, `n` times, and like `*` it must fit. The
  * shift is done on the unsigned number, where C says what happens to the
  * bits that leave. Shifting back gives `a` again unless some did. */
 static int64_t zeno_shl(int64_t a, int64_t n, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_shift_count(n, line, col);
     int64_t shifted = (int64_t)((uint64_t)a << n);
     if ((shifted < 0 ? ~(~shifted >> n) : shifted >> n) != a) zeno_overflow(line, col);
     return shifted;
+#else /* ZENO_MINIMAL */
+    return (int64_t)((uint64_t)a << n);
+#endif /* ZENO_MINIMAL */
 }
 
 /* `a >> n` halves `a`, `n` times, rounding down as `//` does. C leaves
  * `>>` on a negative number to the compiler, so that case is done on the
  * number with every bit turned over, which is not negative. */
 static int64_t zeno_shr(int64_t a, int64_t n, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_shift_count(n, line, col);
+#endif /* ZENO_MINIMAL */
     return a < 0 ? ~(~a >> n) : a >> n;
 }
 
@@ -1909,12 +2052,14 @@ static int64_t zeno_shr(int64_t a, int64_t n, int line, int col) {
  * words, "a u8", for the message. A sized whole number is an ordinary
  * int64_t that has been through here, or through zeno_wrap. */
 static int64_t zeno_fit(int64_t n, int64_t min, int64_t max, const char *size, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (n < min || n > max) {
         zeno_fail("OverflowError",
                   zeno_join(8, zeno_str_int(n), " does not fit in ", size, " (", zeno_str_int(min), " to ",
                             zeno_str_int(max), ")"),
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
     return n;
 }
 
@@ -1942,28 +2087,36 @@ static double zeno_sqrt(double x, int line, int col) {
 /* A logarithm is of a number above zero. `base` is 2 or 10, or 0 for
  * the natural one. */
 static double zeno_log(double x, int base, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (x <= 0.0) {
         zeno_fail("ValueError", zeno_join(2, "cannot take the logarithm of ", zeno_str_float(x)), line, col);
     }
+#endif /* ZENO_MINIMAL */
     return base == 2 ? log2(x) : base == 10 ? log10(x) : log(x);
 }
 
 /* `asin` and `acos` are given the sine or cosine of some angle, which
  * lies from -1 to 1. */
 static void zeno_ratio(const char *name, double x, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (x < -1.0 || x > 1.0) {
         zeno_fail("ValueError",
                   zeno_join(4, "`", name, "` needs a number from -1 to 1, and this is ", zeno_str_float(x)), line, col);
     }
+#endif /* ZENO_MINIMAL */
 }
 
 static double zeno_asin(double x, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_ratio("asin", x, line, col);
+#endif /* ZENO_MINIMAL */
     return asin(x);
 }
 
 static double zeno_acos(double x, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_ratio("acos", x, line, col);
+#endif /* ZENO_MINIMAL */
     return acos(x);
 }
 
@@ -2162,14 +2315,20 @@ static const char *zeno_str_register(int64_t address) {
  * program is an address and nothing more, as in C. `zeno run` is where a
  * read past the end or a use after `free` is caught. */
 static void *zeno_allocate(int64_t count, size_t size, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (count < 1) {
         zeno_bug(zeno_join(2, "`allocate` needs at least one item, and this asks for ", zeno_str_int(count)), line, col);
     }
+#endif /* ZENO_MINIMAL */
 #ifdef ZENO_NO_COLLECTOR
     return zeno_alloc((size_t)count * size);
 #else /* ZENO_NO_COLLECTOR */
     void *memory = calloc((size_t)count, size);
+#ifndef ZENO_MINIMAL
     if (memory == NULL) zeno_bug("there is no memory left for this `allocate`", line, col);
+#else /* ZENO_MINIMAL */
+    if (memory == NULL) zeno_out_of_memory();
+#endif /* ZENO_MINIMAL */
     zeno_by_hand_made++;
     return memory;
 #endif /* ZENO_NO_COLLECTOR */
@@ -2187,12 +2346,14 @@ static void zeno_release(void *memory) {
 
 /* `pin(7)`: the pin with that number, if the board has one. */
 static int64_t zeno_pin(int64_t number, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (number < 0 || number >= ZENO_PINS) {
         zeno_fail("ValueError",
                   zeno_join(4, "this board has no pin ", zeno_str_int(number), ". Its pins are 0 to ",
                             zeno_str_int(ZENO_PINS - 1)),
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
     return number;
 }
 
@@ -2222,9 +2383,11 @@ static double zeno_now(void) {
 
 /* `int(x)` on a float drops the fraction. Infinity has no int to become. */
 static int64_t zeno_int(double x, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (x != x || x == INFINITY || x == -INFINITY) {
         zeno_fail("ValueError", zeno_join(3, "cannot turn ", zeno_str_float(x), " into an int"), line, col);
     }
+#endif /* ZENO_MINIMAL */
     return zeno_whole(x);
 }
 
@@ -2393,7 +2556,9 @@ static zeno_slot *zeno_list_at(zeno_list *list, int64_t i, int line, int col) {
 }
 
 static zeno_slot zeno_list_pop(zeno_list *list, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (list->len == 0) zeno_fail("IndexError", "cannot pop from an empty list", line, col);
+#endif /* ZENO_MINIMAL */
     zeno_slot item = list->items[--list->len];
     /* Wipe the place it was in, or the collector would go on thinking the
      * list holds it. */
@@ -2475,12 +2640,14 @@ static int64_t zeno_list_find(zeno_list *list, zeno_slot item, bool (*same)(zeno
  * from there on moves up one place. `at` may be the length of the list,
  * which puts the item at the end. */
 static void zeno_list_insert(zeno_list *list, int64_t at, zeno_slot item, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (at < 0 || at > list->len) {
         zeno_fail("IndexError",
                   zeno_join(4, "cannot insert at ", zeno_str_int(at), " in a list of length ",
                             zeno_str_int(list->len)),
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
     /* Putting it at the end first makes the room, if room is needed. */
     zeno_list_append(list, item);
     for (int64_t i = list->len - 1; i > at; i--) list->items[i] = list->items[i - 1];
@@ -2596,9 +2763,11 @@ static void zeno_sift_by(zeno_slot *items, zeno_slot *keys, zeno_slot *places, i
 }
 
 static void zeno_list_sort_by(zeno_list *list, zeno_list *keys, int kind, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (keys->len != list->len) {
         zeno_fail("ValueError", "the function given to `sort` changed how many items the list has", line, col);
     }
+#endif /* ZENO_MINIMAL */
     zeno_list *places = zeno_list_new(list->len);
     for (int64_t i = 0; i < list->len; i++) places->items[i].i = i;
     places->len = list->len;
@@ -2620,12 +2789,16 @@ static void zeno_list_sort_by(zeno_list *list, zeno_list *keys, int kind, int li
 static void zeno_slice_ends(int64_t from, int64_t *to, bool to_end, int64_t length, const char *what, int line,
                             int col) {
     if (to_end) *to = length;
+#ifndef ZENO_MINIMAL
     if (from < 0 || *to < from || *to > length) {
         zeno_fail("IndexError",
                   zeno_join(8, "slice ", zeno_str_int(from), " to ", zeno_str_int(*to), " is out of range for a ",
                             what, " of length ", zeno_str_int(length)),
                   line, col);
     }
+#else /* ZENO_MINIMAL */
+    (void)what;
+#endif /* ZENO_MINIMAL */
 }
 
 /* A new list with a copy of each slot. The items themselves are shared
@@ -2674,10 +2847,14 @@ static const char *zeno_char_at(const char *text, int64_t i, int line, int col) 
     for (const char *p = text; *p != '\0' && i >= 0; p += zeno_char_size(p), position++) {
         if (position == i) return zeno_copy(p, zeno_char_size(p));
     }
+#ifndef ZENO_MINIMAL
     zeno_fail("IndexError",
               zeno_join(4, "index ", zeno_str_int(i), " is out of range for a str of length ",
                         zeno_str_int(zeno_len(text))),
               line, col);
+#else /* ZENO_MINIMAL */
+    return "";
+#endif /* ZENO_MINIMAL */
 }
 
 /* `for ch in text`, walked where the text is: the character that starts
@@ -2711,7 +2888,11 @@ static zeno_list *zeno_chars(const char *text) {
 
 static int64_t zeno_list_sum_int(zeno_list *list, int line, int col) {
     int64_t total = 0;
+#ifndef ZENO_MINIMAL
     for (int64_t i = 0; i < list->len; i++) total = zeno_add(total, list->items[i].i, line, col);
+#else /* ZENO_MINIMAL */
+    for (int64_t i = 0; i < list->len; i++) total += list->items[i].i;
+#endif /* ZENO_MINIMAL */
     return total;
 }
 
@@ -2726,7 +2907,11 @@ static void zeno_list_not_empty(zeno_list *list, const char *name, int line, int
 }
 
 static int64_t zeno_list_best_int(zeno_list *list, bool smallest, const char *name, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_list_not_empty(list, name, line, col);
+#else /* ZENO_MINIMAL */
+    (void)name;
+#endif /* ZENO_MINIMAL */
     int64_t best = list->items[0].i;
     for (int64_t i = 1; i < list->len; i++) {
         int64_t item = list->items[i].i;
@@ -2736,7 +2921,11 @@ static int64_t zeno_list_best_int(zeno_list *list, bool smallest, const char *na
 }
 
 static double zeno_list_best_float(zeno_list *list, bool smallest, const char *name, int line, int col) {
+#ifndef ZENO_MINIMAL
     zeno_list_not_empty(list, name, line, col);
+#else /* ZENO_MINIMAL */
+    (void)name;
+#endif /* ZENO_MINIMAL */
     double best = list->items[0].f;
     for (int64_t i = 1; i < list->len; i++) {
         double item = list->items[i].f;
@@ -2881,7 +3070,9 @@ static zeno_list *zeno_split_blanks(const char *text) {
 /* `text.split(",")`: the pieces of `text` between each `separator`. */
 static zeno_list *zeno_split(const char *text, const char *separator, int line, int col) {
     size_t step = strlen(separator);
+#ifndef ZENO_MINIMAL
     if (step == 0) zeno_fail("ValueError", "cannot split on an empty str", line, col);
+#endif /* ZENO_MINIMAL */
     zeno_list *parts = zeno_list_new(0);
     const char *start = text;
     for (;;) {
@@ -2968,12 +3159,14 @@ static const char *zeno_slice(const char *text, int64_t from, int64_t to, bool t
  *     11110xxx 10xxxxxx 10xxxxxx 10xxxxxx   the rest
  */
 static int64_t zeno_char_code(const char *text, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (zeno_len(text) != 1) {
         zeno_fail("ValueError",
                   zeno_join(2, "`code` needs a str of exactly one character, and this one has ",
                             zeno_str_int(zeno_len(text))),
                   line, col);
     }
+#endif /* ZENO_MINIMAL */
     const unsigned char *p = (const unsigned char *)text;
     if (p[0] < 0x80) return p[0];
     if (p[0] < 0xE0) return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
@@ -2986,9 +3179,11 @@ static int64_t zeno_char_code(const char *text, int line, int col) {
  * where text ends. So are the numbers from 0xD800 to 0xDFFF, which
  * Unicode keeps free, and anything above its last character. */
 static const char *zeno_char(int64_t code, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (code < 1 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
         zeno_fail("ValueError", zeno_join(2, zeno_str_int(code), " is not the code of a character"), line, col);
     }
+#endif /* ZENO_MINIMAL */
     char bytes[4];
     size_t size;
     if (code < 0x80) {
@@ -3565,7 +3760,9 @@ __attribute__((noreturn)) static void zeno_dict_no_key(zeno_dict *dict, zeno_slo
  * position that is not in a list is an IndexError. */
 static zeno_slot zeno_dict_at(zeno_dict *dict, zeno_slot key, int line, int col) {
     int64_t at = zeno_dict_find(dict, key);
+#ifndef ZENO_MINIMAL
     if (at < 0) zeno_dict_no_key(dict, key, line, col);
+#endif /* ZENO_MINIMAL */
     return dict->values->items[at];
 }
 
@@ -3612,7 +3809,9 @@ static const char *zeno_dict_get_str(zeno_dict *dict, zeno_slot key) {
  * whoever asked (the compiled program wraps this in zeno_text_take). */
 static zeno_slot zeno_dict_pop(zeno_dict *dict, zeno_slot key, int line, int col) {
     int64_t at = zeno_dict_find(dict, key);
+#ifndef ZENO_MINIMAL
     if (at < 0) zeno_dict_no_key(dict, key, line, col);
+#endif /* ZENO_MINIMAL */
     zeno_slot gone = zeno_list_pop_at(dict->keys, at, line, col);
     zeno_slot value = zeno_list_pop_at(dict->values, at, line, col);
 #ifdef ZENO_NO_COLLECTOR
@@ -3735,27 +3934,37 @@ static bool zeno_dict_eq_with(zeno_dict *a, zeno_dict *b, bool (*same_value)(zen
 
 /* A variable that other code can change may have become `none` again since
  * it was checked. These look once more before the value is used. */
+#ifndef ZENO_MINIMAL
 __attribute__((noreturn)) static void zeno_gone(int line, int col) {
     zeno_bug("this was checked with `is not none`, but it has been set to `none` since", line, col);
 }
+#endif /* ZENO_MINIMAL */
 
 static void *zeno_still(const void *pointer, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (pointer == NULL) zeno_gone(line, col);
+#endif /* ZENO_MINIMAL */
     return (void *)pointer;
 }
 
 static int64_t zeno_still_int(zeno_opt_int value, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (!value.present) zeno_gone(line, col);
+#endif /* ZENO_MINIMAL */
     return value.value;
 }
 
 static double zeno_still_float(zeno_opt_float value, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (!value.present) zeno_gone(line, col);
+#endif /* ZENO_MINIMAL */
     return value.value;
 }
 
 static bool zeno_still_bool(zeno_opt_bool value, int line, int col) {
+#ifndef ZENO_MINIMAL
     if (!value.present) zeno_gone(line, col);
+#endif /* ZENO_MINIMAL */
     return value.value;
 }
 

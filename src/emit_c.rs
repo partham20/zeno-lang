@@ -84,6 +84,12 @@ pub fn runtime(firmware: bool, collector: bool) -> String {
 /// with no collector grow (`memory owned` on a computer, marked `#ifdef
 /// ZENO_HEAP`) or are fixed arrays (`--no-collector`, for a chip).
 pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
+    runtime_of(firmware, collector, grows, false)
+}
+
+/// The same, saying also whether it is for `zeno build --minimal`, which
+/// leaves the checks out (marked `#ifndef ZENO_MINIMAL`).
+fn runtime_of(firmware: bool, collector: bool, grows: bool, minimal: bool) -> String {
     let mut text = String::new();
     // One entry for each marked part the line is inside: is it being kept?
     let mut keeping: Vec<bool> = Vec::new();
@@ -95,12 +101,19 @@ pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
             "#ifndef ZENO_NO_COLLECTOR" => keeping.push(collector),
             "#ifdef ZENO_HEAP" => keeping.push(grows),
             "#ifndef ZENO_HEAP" => keeping.push(!grows),
-            "#else /* ZENO_FIRMWARE */" | "#else /* ZENO_NO_COLLECTOR */" | "#else /* ZENO_HEAP */" => {
+            // What only `zeno build --minimal` leaves out or changes
+            // (src/minimal.rs). Here it is kept as it always was.
+            "#ifdef ZENO_MINIMAL" => keeping.push(minimal),
+            "#ifndef ZENO_MINIMAL" => keeping.push(!minimal),
+            "#else /* ZENO_FIRMWARE */" | "#else /* ZENO_NO_COLLECTOR */" | "#else /* ZENO_HEAP */" | "#else /* ZENO_MINIMAL */" => {
                 if let Some(kept) = keeping.last_mut() {
                     *kept = !*kept;
                 }
             }
-            "#endif /* ZENO_FIRMWARE */" | "#endif /* ZENO_NO_COLLECTOR */" | "#endif /* ZENO_HEAP */" => {
+            "#endif /* ZENO_FIRMWARE */"
+            | "#endif /* ZENO_NO_COLLECTOR */"
+            | "#endif /* ZENO_HEAP */"
+            | "#endif /* ZENO_MINIMAL */" => {
                 keeping.pop();
             }
             _ if keeping.iter().all(|kept| *kept) => {
@@ -154,6 +167,17 @@ pub struct Options {
     /// ones, which tell the C compiler that they do not overflow
     /// (decision 23.6).
     pub fast: bool,
+    /// `--minimal`: the least C that runs the program (decisions chapter
+    /// 30, src/minimal.rs). No check of any kind is written, nothing is
+    /// told where in the source it is, only the parts of the runtime
+    /// that the program uses are in the file, and `print` is C's own
+    /// `printf` where it can be.
+    pub minimal: bool,
+    /// `--memory`, which a minimal build has to know of when the C is
+    /// written: it leaves out the lines that count memory unless they
+    /// are asked for. Every other build writes them behind
+    /// `#ifdef ZENO_MEMORY_REPORT` and lets the C compiler choose.
+    pub memory_report: bool,
 }
 
 /// `emit`, with the options of `Options`.
@@ -161,8 +185,9 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     let firmware = build != Build::Ordinary;
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
-        release: options.release || options.fast,
-        fast: options.fast,
+        release: options.release || options.fast || options.minimal,
+        fast: options.fast || options.minimal,
+        minimal: options.minimal,
         in_place: false,
         text_stays: false,
         once: None,
@@ -314,6 +339,31 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     }
 
     emitter.write_drops(Span { line: 0, col: 0 })?;
+
+    // A minimal build is put together from the same pieces another way:
+    // only what the program uses is written (src/minimal.rs).
+    if options.minimal {
+        // The mark that stood for a place in the source goes, with the
+        // comma before it. See `Emitter::at`.
+        let bare = |text: &String| text.replace(&format!(", {NO_PLACE}"), "");
+        // And each statement is written the short way. See `tidy`.
+        let tidied = |text: &String| bare(text).lines().map(|line| tidy(line) + "\n").collect::<String>();
+        let declarations: Vec<String> = emitter.typedefs.iter().chain(&emitter.structs).chain(&emitter.globals).map(bare).collect();
+        let definitions: Vec<String> = emitter.definitions.iter().map(tidied).collect();
+        let program = tidied(&render(&main));
+        let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
+        return Ok(crate::minimal::assemble(crate::minimal::Parts {
+            source,
+            runtime: &runtime_of(firmware, collector, options.grows && !collector, true),
+            declarations: declarations.iter().map(String::as_str).collect(),
+            functions: definitions.iter().map(String::as_str).collect(),
+            program: &program,
+            collector,
+            roots: &emitter.roots,
+            arguments: emitter.arguments,
+            memory_report: options.memory_report,
+        }));
+    }
 
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
@@ -467,6 +517,16 @@ impl Val {
 
     fn failing(mut self) -> Val {
         self.fails = true;
+        self
+    }
+
+    /// `failing`, for a value that only one of the runtime's own checks
+    /// can stop the program at: an index, a division. A minimal build has
+    /// none of those checks (`checked` is false there), so nothing has to
+    /// be worked out ahead of the value to keep two errors in order, and
+    /// the C stays one expression.
+    fn failing_if(mut self, checked: bool) -> Val {
+        self.fails |= checked;
         self
     }
 
@@ -805,6 +865,9 @@ struct Emitter<'a> {
     /// `--fast`: they are C's signed `+`, `-` and `*`, which the C
     /// compiler may take never to overflow (decision 23.6).
     fast: bool,
+    /// `--minimal`: no checks at all, and C as a person would write it
+    /// where that can be done (decisions chapter 30).
+    minimal: bool,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
@@ -1259,10 +1322,9 @@ fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     }
 }
 
-/// `line, col` as the last two arguments of a runtime call that can fail.
-fn at(span: Span) -> String {
-    format!("{}, {}", span.line, span.col)
-}
+/// What stands for the place in the source in a minimal build, until
+/// the C is put together. See `Emitter::at`.
+const NO_PLACE: &str = "\u{1}";
 
 /// A Zeno string as a C string literal.
 fn c_string(text: &str) -> String {
@@ -1290,6 +1352,49 @@ impl Emitter<'_> {
 
     fn line(&mut self, text: impl Into<String>) {
         self.lines.push((self.indent, text.into()));
+    }
+
+    /// `line, col` as the last two arguments of a runtime call that can
+    /// fail, for its error message.
+    ///
+    /// A minimal build has no error messages, and its runtime takes no
+    /// such arguments. There this gives a mark that no C has in it, and
+    /// when the file is put together the mark goes, with the comma
+    /// before it: `zeno_mod(a, b, 16, 12)` is written `zeno_mod(a, b)`.
+    fn at(&self, span: Span) -> String {
+        match self.minimal {
+            true => NO_PLACE.to_string(),
+            false => format!("{}, {}", span.line, span.col),
+        }
+    }
+
+    /// C for the slot of a list at an index: something that can be read,
+    /// assigned to, or have its address taken.
+    ///
+    /// The runtime's `zeno_list_at` checks the index first. A minimal
+    /// build has no check, so there it is C's own `[ ]`.
+    fn slot_at(&self, list: &str, index: &str, span: Span) -> String {
+        match self.minimal {
+            true => format!("{list}->items[{index}]"),
+            false => format!("*zeno_list_at({list}, {index}, {})", self.at(span)),
+        }
+    }
+
+    /// Where that slot is, as a C pointer to it.
+    fn slot_address(&self, list: &str, index: &str, span: Span) -> String {
+        match self.minimal {
+            true => format!("&{list}->items[{index}]"),
+            false => format!("zeno_list_at({list}, {index}, {})", self.at(span)),
+        }
+    }
+
+    /// C for one float divided by another. The runtime's `zeno_div`
+    /// refuses to divide by zero; a minimal build divides as C does.
+    fn divided(&self, left: &str, right: &str, span: Span) -> String {
+        match self.minimal {
+            true => format!("({left} / {right})"),
+            false => format!("zeno_div({left}, {right}, {})", self.at(span)),
+        }
     }
 
     fn new_temp(&mut self) -> String {
@@ -2520,7 +2625,7 @@ impl Emitter<'_> {
                     _ => return Err(cannot("`raise` with anything but an error or an object", span)),
                 };
                 let leave = self.failed(&[kind], span)?;
-                self.line(format!("zeno_note({error}, {});", at(span)));
+                self.line(format!("zeno_note({error}, {});", self.at(span)));
                 // The error has its own copy of its message by now.
                 if let Some(release) = self.text_end(begin) {
                     self.line(release);
@@ -2551,7 +2656,7 @@ impl Emitter<'_> {
                     _ => return Err(cannot("`raise` with anything but an error or an object", span)),
                 };
                 frees.into_iter().for_each(|line| self.line(line));
-                self.line(format!("zeno_raise({error}, {});", at(span)));
+                self.line(format!("zeno_raise({error}, {});", self.at(span)));
             }
         }
         Ok(())
@@ -3078,17 +3183,17 @@ impl Emitter<'_> {
                     // The item that was there is freed, as a field's
                     // old value is, and the new one takes its place.
                     let place = self.new_temp();
-                    self.line(format!("zeno_slot *{place} = zeno_list_at({}, {}, {});", object.code, index.code, at(span)));
+                    self.line(format!("zeno_slot *{place} = {};", self.slot_address(&object.code, &index.code, span)));
                     self.line(self.drops.code(&item, &from_slot(&item, &format!("(*{place})"), span)?));
                     self.line(format!("*{place} = {slot};"));
                 } else if !self.collector && is_text(&val.kind) {
                     // The list is done with the text it held there.
                     let place = self.new_temp();
-                    self.line(format!("zeno_slot *{place} = zeno_list_at({}, {}, {});", object.code, index.code, at(span)));
+                    self.line(format!("zeno_slot *{place} = {};", self.slot_address(&object.code, &index.code, span)));
                     self.line(format!("zeno_text_drop({place}->s);"));
                     self.line(format!("*{place} = {slot};"));
                 } else {
-                    self.line(format!("*zeno_list_at({}, {}, {}) = {slot};", object.code, index.code, at(span)));
+                    self.line(format!("{} = {slot};", self.slot_at(&object.code, &index.code, span)));
                 }
             }
             _ => return Err(cannot("an assignment to this", target.span)),
@@ -3320,7 +3425,7 @@ impl Emitter<'_> {
                 let trip = self.new_temp();
                 self.line(format!(
                     "int64_t {count} = zeno_range_count({start}, {stop}, {step}, {});",
-                    at(span)
+                    self.at(span)
                 ));
                 self.line(format!("for (int64_t {trip} = 0; {trip} < {count}; {trip}++) {{"));
                 self.indent += 1;
@@ -3708,7 +3813,7 @@ impl Emitter<'_> {
                         Ok(Val::from(format!("((int64_t)(0 - (uint64_t)({})))", val.code), Kind::Int, &[&val]))
                     }
                     Kind::Int => {
-                        Ok(Val::from(format!("zeno_neg({}, {})", val.code, at(span)), Kind::Int, &[&val]).failing())
+                        Ok(Val::from(format!("zeno_neg({}, {})", val.code, self.at(span)), Kind::Int, &[&val]).failing_if(!self.minimal))
                     }
                     Kind::Float | Kind::Quantity(_) => {
                         Ok(Val::from(format!("(-{})", val.code), val.kind.clone(), &[&val]))
@@ -3783,8 +3888,8 @@ impl Emitter<'_> {
                 let index = vals.pop().expect("two values");
                 let list = vals.pop().expect("two values");
                 if list.kind == Kind::Str {
-                    let code = format!("zeno_char_at({}, {}, {})", list.code, index.code, at(span));
-                    return Ok(Val::from(code, Kind::Str, &[&list, &index]).failing());
+                    let code = format!("zeno_char_at({}, {}, {})", list.code, index.code, self.at(span));
+                    return Ok(Val::from(code, Kind::Str, &[&list, &index]).failing_if(!self.minimal));
                 }
                 // Through a pointer it is C's own `[ ]`, with no check. A
                 // sized item is made wide again, like a field.
@@ -3804,17 +3909,20 @@ impl Emitter<'_> {
                         "zeno_dict_at({}, {}, {})",
                         list.code,
                         to_slot(key, &index.code, span)?,
-                        at(span)
+                        self.at(span)
                     );
-                    let mut val = Val::from(from_slot(value, &slot, span)?, (**value).clone(), &[&list, &index]).failing();
+                    let mut val = Val::from(from_slot(value, &slot, span)?, (**value).clone(), &[&list, &index]).failing_if(!self.minimal);
                     val.reads = true;
                     return Ok(self.lend(val));
                 }
                 let Kind::List(item) = &list.kind else {
                     return Err(cannot("`[ ]` on anything but a list, a dict or a str", span));
                 };
-                let slot = format!("(*zeno_list_at({}, {}, {}))", list.code, index.code, at(span));
-                let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing();
+                let slot = match self.minimal {
+                    true => self.slot_at(&list.code, &index.code, span),
+                    false => format!("({})", self.slot_at(&list.code, &index.code, span)),
+                };
+                let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing_if(!self.minimal);
                 val.reads = true;
                 Ok(self.lend(val))
             }
@@ -4075,7 +4183,9 @@ impl Emitter<'_> {
             return Ok(val);
         }
         let inner = (**inner).clone();
-        let again = at(expr.span);
+        // Looking again is a check, and a minimal build has none.
+        let changeable = changeable && !self.minimal;
+        let again = self.at(expr.span);
         let code = match (&inner, changeable) {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
@@ -4401,7 +4511,7 @@ impl Emitter<'_> {
                 let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
                 let mut inside = Vec::new();
                 let sorted = if own { items.clone() } else { vals[0].code.clone() };
-                after.push(format!("zeno_list_sort_by({sorted}, {out}, {by}, {});", at(span)));
+                after.push(format!("zeno_list_sort_by({sorted}, {out}, {by}, {});", self.at(span)));
                 if !self.collector && is_text(&kind.returns) {
                     self.marks += 1;
                     let mark = format!("m{}", self.marks);
@@ -4517,9 +4627,9 @@ impl Emitter<'_> {
                 let sign = match op { Add => "+", Sub => "-", _ => "*" };
                 Val::from(format!("((int64_t)((uint64_t)({l}) {sign} (uint64_t)({r})))"), Int, &parts)
             }
-            (Add, Int, Int) => Val::from(format!("zeno_add({l}, {r}, {})", at(span)), Int, &parts).failing(),
-            (Sub, Int, Int) => Val::from(format!("zeno_sub({l}, {r}, {})", at(span)), Int, &parts).failing(),
-            (Mul, Int, Int) => Val::from(format!("zeno_mul({l}, {r}, {})", at(span)), Int, &parts).failing(),
+            (Add, Int, Int) => Val::from(format!("zeno_add({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
+            (Sub, Int, Int) => Val::from(format!("zeno_sub({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
+            (Mul, Int, Int) => Val::from(format!("zeno_mul({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
             // By 2, 4, 8 and so on, written as a number: rounding down is a
             // shift of the bits and what is left over is the low bits, for
             // numbers below zero too. Nothing can fail (decision 23.5).
@@ -4531,16 +4641,16 @@ impl Emitter<'_> {
                 Val::from(format!("({l} & INT64_C({low}))"), Int, &parts)
             }
             (FloorDiv, Int, Int) => {
-                Val::from(format!("zeno_floordiv({l}, {r}, {})", at(span)), Int, &parts).failing()
+                Val::from(format!("zeno_floordiv({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal)
             }
-            (Mod, Int, Int) => Val::from(format!("zeno_mod({l}, {r}, {})", at(span)), Int, &parts).failing(),
-            (Pow, Int, Int) => Val::from(format!("zeno_pow({l}, {r}, {})", at(span)), Int, &parts).failing(),
+            (Mod, Int, Int) => Val::from(format!("zeno_mod({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
+            (Pow, Int, Int) => Val::from(format!("zeno_pow({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
 
             // The bits of whole numbers. C's own operators do these three.
             // The two shifts go through the runtime, which checks how far.
             (BitAnd | BitOr | BitXor, Int, Int) => Val::from(format!("({l} {symbol} {r})"), Int, &parts),
-            (Shl, Int, Int) => Val::from(format!("zeno_shl({l}, {r}, {})", at(span)), Int, &parts).failing(),
-            (Shr, Int, Int) => Val::from(format!("zeno_shr({l}, {r}, {})", at(span)), Int, &parts).failing(),
+            (Shl, Int, Int) => Val::from(format!("zeno_shl({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
+            (Shr, Int, Int) => Val::from(format!("zeno_shr({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
@@ -4568,10 +4678,10 @@ impl Emitter<'_> {
             }
             (Div, Quantity(a), Quantity(b)) => {
                 let (_, l, r) = in_common(&left, a, &right, b, span)?;
-                Val::from(format!("zeno_div({l}, {r}, {})", at(span)), Float, &parts).failing()
+                Val::from(self.divided(&l, &r, span), Float, &parts).failing_if(!self.minimal)
             }
             (Div, Quantity(unit), Int | Float) => {
-                Val::from(format!("zeno_div({dl}, {dr}, {})", at(span)), Quantity(unit.clone()), &parts).failing()
+                Val::from(self.divided(&dl, &dr, span), Quantity(unit.clone()), &parts).failing_if(!self.minimal)
             }
 
             // What is left is floats, or an int with a float. C's own float
@@ -4579,13 +4689,13 @@ impl Emitter<'_> {
             // by zero.
             (Add | Sub | Mul, _, _) if numbers => Val::from(format!("({dl} {symbol} {dr})"), Float, &parts),
             (Div, _, _) if numbers => {
-                Val::from(format!("zeno_div({dl}, {dr}, {})", at(span)), Float, &parts).failing()
+                Val::from(self.divided(&dl, &dr, span), Float, &parts).failing_if(!self.minimal)
             }
             (FloorDiv, _, _) if numbers => {
-                Val::from(format!("zeno_floordiv_float({dl}, {dr}, {})", at(span)), Float, &parts).failing()
+                Val::from(format!("zeno_floordiv_float({dl}, {dr}, {})", self.at(span)), Float, &parts).failing_if(!self.minimal)
             }
             (Mod, _, _) if numbers => {
-                Val::from(format!("zeno_mod_float({dl}, {dr}, {})", at(span)), Float, &parts).failing()
+                Val::from(format!("zeno_mod_float({dl}, {dr}, {})", self.at(span)), Float, &parts).failing_if(!self.minimal)
             }
             (Pow, _, _) if numbers => Val::from(format!("pow({dl}, {dr})"), Float, &parts),
 
@@ -4697,6 +4807,9 @@ impl Emitter<'_> {
                 if args.iter().any(|arg| arg.name.is_some()) {
                     return Err(cannot("named arguments to a built-in", span));
                 }
+                if name == "print" && self.minimal {
+                    return self.print_direct(args, span);
+                }
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
                 let vals = self.sequence(&exprs)?;
                 // `ValueError("bad")` makes an error value. Its message is
@@ -4779,7 +4892,7 @@ impl Emitter<'_> {
             return Err(cannot("`allocate` of a number of items that is not an int", span));
         }
         let item = pointee.c_type();
-        let call = format!("(({item} *)zeno_allocate({}, sizeof({item}), {}))", count.code, at(span));
+        let call = format!("(({item} *)zeno_allocate({}, sizeof({item}), {}))", count.code, self.at(span));
         Ok(self.called(call, &[count], Kind::Pointer(pointee)))
     }
 
@@ -4814,7 +4927,7 @@ impl Emitter<'_> {
             // value: it counts as a call, and is not worked out twice.
             ("time", "now", []) => Ok(self.called("zeno_now()".to_string(), &vals, Kind::Quantity("ms".to_string()))),
             ("board", "pin", [number]) if number.kind == Kind::Int => {
-                Ok(Val::from(format!("zeno_pin({}, {})", number.code, at(span)), Kind::Pin, &[number]).failing())
+                Ok(Val::from(format!("zeno_pin({}, {})", number.code, self.at(span)), Kind::Pin, &[number]).failing_if(!self.minimal))
             }
             // The `files` module. Each is one call into the runtime.
             ("files", "exists", [path]) if path.kind == Kind::Str => {
@@ -4833,7 +4946,7 @@ impl Emitter<'_> {
             {
                 let returns = if name == "read" { Kind::Str } else { Kind::None };
                 let texts: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
-                let call = format!("zeno_files_{name}({}, {})", texts.join(", "), at(span));
+                let call = format!("zeno_files_{name}({}, {})", texts.join(", "), self.at(span));
                 // The runtime builds the message of the error, and the
                 // text of the file, in the text room.
                 self.built = !self.collector;
@@ -4881,7 +4994,8 @@ impl Emitter<'_> {
             _ => return Err(cannot(format!("`{name}` called this way"), span)),
         };
         Ok(match name {
-            "sqrt" => Val::from(format!("zeno_sqrt({d}, {})", at(span)), Kind::Float, &[x]).failing(),
+            "sqrt" if self.minimal => Val::from(format!("sqrt({d})"), Kind::Float, &[x]),
+            "sqrt" => Val::from(format!("zeno_sqrt({d}, {})", self.at(span)), Kind::Float, &[x]).failing_if(!self.minimal),
             "floor" => Val::from(format!("zeno_whole(floor({d}))"), Kind::Int, &[x]),
             "ceil" => Val::from(format!("zeno_whole(ceil({d}))"), Kind::Int, &[x]),
             // C's `round` sends a half away from zero, as Zeno's does.
@@ -4889,7 +5003,7 @@ impl Emitter<'_> {
             "sin" | "cos" | "tan" | "exp" => Val::from(format!("{name}({d})"), Kind::Float, &[x]),
             "atan" => Val::from(format!("atan({d})"), radians, &[x]),
             // These two refuse a number that is the sine of no angle.
-            "asin" | "acos" => Val::from(format!("zeno_{name}({d}, {})", at(span)), radians, &[x]).failing(),
+            "asin" | "acos" => Val::from(format!("zeno_{name}({d}, {})", self.at(span)), radians, &[x]).failing_if(!self.minimal),
             // And these a number that has no logarithm.
             "log" | "log2" | "log10" => {
                 let base = match name {
@@ -4897,7 +5011,7 @@ impl Emitter<'_> {
                     "log10" => 10,
                     _ => 0,
                 };
-                Val::from(format!("zeno_log({d}, {base}, {})", at(span)), Kind::Float, &[x]).failing()
+                Val::from(format!("zeno_log({d}, {base}, {})", self.at(span)), Kind::Float, &[x]).failing_if(!self.minimal)
             }
             _ => return Err(cannot(format!("`math.{name}`"), span)),
         })
@@ -5147,11 +5261,11 @@ impl Emitter<'_> {
                         Val::from(format!("zeno_split_blanks({text})"), Kind::List(Box::new(Kind::Str)), &parts)
                     }
                     ("split", [text, separator]) if all_text => Val::from(
-                        format!("zeno_split({text}, {separator}, {})", at(span)),
+                        format!("zeno_split({text}, {separator}, {})", self.at(span)),
                         Kind::List(Box::new(Kind::Str)),
                         &parts,
                     )
-                    .failing(),
+                    .failing_if(!self.minimal),
                     ("lines", [text]) => {
                         Val::from(format!("zeno_lines({text})"), Kind::List(Box::new(Kind::Str)), &parts)
                     }
@@ -5173,15 +5287,15 @@ impl Emitter<'_> {
                         &parts,
                     ),
                     ("slice", [text, from]) if positions => {
-                        Val::from(format!("zeno_slice({text}, {from}, 0, true, {})", at(span)), Kind::Str, &parts)
-                            .failing()
+                        Val::from(format!("zeno_slice({text}, {from}, 0, true, {})", self.at(span)), Kind::Str, &parts)
+                            .failing_if(!self.minimal)
                     }
                     ("slice", [text, from, to]) if positions => {
-                        Val::from(format!("zeno_slice({text}, {from}, {to}, false, {})", at(span)), Kind::Str, &parts)
-                            .failing()
+                        Val::from(format!("zeno_slice({text}, {from}, {to}, false, {})", self.at(span)), Kind::Str, &parts)
+                            .failing_if(!self.minimal)
                     }
                     ("code", [text]) => {
-                        Val::from(format!("zeno_char_code({text}, {})", at(span)), Kind::Int, &parts).failing()
+                        Val::from(format!("zeno_char_code({text}, {})", self.at(span)), Kind::Int, &parts).failing_if(!self.minimal)
                     }
                     _ => return Err(cannot(format!("the str method `{name}` called this way"), span)),
                 };
@@ -5213,10 +5327,10 @@ impl Emitter<'_> {
                         let slot = match vals.get(1) {
                             // `pop(2)`: the item at that position.
                             Some(position) if position.kind == Kind::Int => {
-                                format!("zeno_list_pop_at({}, {}, {})", list.code, position.code, at(span))
+                                format!("zeno_list_pop_at({}, {}, {})", list.code, position.code, self.at(span))
                             }
                             Some(_) => return Err(cannot("`pop` with a position that is not an int", span)),
-                            None => format!("zeno_list_pop({}, {})", list.code, at(span)),
+                            None => format!("zeno_list_pop({}, {})", list.code, self.at(span)),
                         };
                         let mut code = from_slot(&item, &slot, span)?;
                         if !self.collector && is_text(&item) {
@@ -5237,7 +5351,7 @@ impl Emitter<'_> {
                         let value = self.keep(value.clone(), is_written(&args[1].value));
                         let value = self.coerce(value, &item, span)?;
                         let slot = to_slot(&value.kind, &value.code, span)?;
-                        let call = format!("zeno_list_insert({}, {}, {slot}, {})", list.code, position.code, at(span));
+                        let call = format!("zeno_list_insert({}, {}, {slot}, {})", list.code, position.code, self.at(span));
                         Ok(self.called(call, &vals, Kind::None))
                     }
                     ("reverse", [list]) => {
@@ -5292,14 +5406,14 @@ impl Emitter<'_> {
                             Some(_) => return Err(cannot("`slice` with a position that is not an int", span)),
                             None => "0, true".to_string(),
                         };
-                        let slice = format!("zeno_list_slice({}, {}, {ends}, {})", list.code, from.code, at(span));
+                        let slice = format!("zeno_list_slice({}, {}, {ends}, {})", list.code, from.code, self.at(span));
                         // With no collector a list of text has its own
                         // copy of each item, and so has the slice.
                         let code = match !self.collector && is_text(&item) {
                             true => format!("zeno_list_keep_text({slice})"),
                             false => slice,
                         };
-                        let mut val = Val::from(code, Kind::List(item.clone()), &parts).failing();
+                        let mut val = Val::from(code, Kind::List(item.clone()), &parts).failing_if(!self.minimal);
                         // The new list is nobody's yet.
                         val.made = true;
                         val.reads = true;
@@ -5366,7 +5480,7 @@ impl Emitter<'_> {
                     }
                     ("pop", [dict, wanted]) => {
                         let slot =
-                            format!("zeno_dict_pop({}, {}, {})", dict.code, to_slot(&key, &wanted.code, span)?, at(span));
+                            format!("zeno_dict_pop({}, {}, {})", dict.code, to_slot(&key, &wanted.code, span)?, self.at(span));
                         let mut code = from_slot(&value, &slot, span)?;
                         if !self.collector && is_text(&value) {
                             // The dict is done with it: the statement gets
@@ -5617,6 +5731,135 @@ impl Emitter<'_> {
         Ok(name)
     }
 
+    /// `print` in a minimal build: one `printf`, or `puts` where there is
+    /// only words to show.
+    ///
+    /// The ordinary `print` turns each value into text and hands the
+    /// texts to the runtime, and text takes memory. Here a whole number,
+    /// a float, a bool and a piece of text go to `printf` as they are,
+    /// and the words of an f-string are its format:
+    /// `print(f"{n} is prime")` is `printf("%lld is prime\n", (long long)z_n)`.
+    /// Whatever else there is to show, a list or an object, is made into
+    /// text as before and shown with `%s`.
+    fn print_direct(&mut self, args: &[Arg], span: Span) -> Result<Val, Error> {
+        /// One piece of the line: words written in the program, or the
+        /// value at this place in `vals` with the format it was given.
+        enum Piece<'a> {
+            Words(&'a str),
+            Value(usize, Option<&'a str>),
+        }
+        let mut vals: Vec<Val> = Vec::new();
+        let mut pieces: Vec<Piece> = Vec::new();
+        // Values that are made into text, which takes room while it is
+        // made: their places in `vals`.
+        let mut made: Vec<usize> = Vec::new();
+        let mut looked_into = false;
+        for (index, arg) in args.iter().enumerate() {
+            if index > 0 {
+                pieces.push(Piece::Words(" "));
+            }
+            match &arg.value.kind {
+                ExprKind::Str(words) => pieces.push(Piece::Words(words)),
+                ExprKind::FormatStr(parts) => {
+                    for part in parts {
+                        let (value, format) = match part {
+                            FormatPart::Text(words) => {
+                                pieces.push(Piece::Words(words));
+                                continue;
+                            }
+                            FormatPart::Value { value, format } => (value, format.as_deref()),
+                        };
+                        let mark = self.lines.len();
+                        let val = self.expr(value)?;
+                        // What `printf` cannot show is turned into text
+                        // as soon as it is worked out, before the next
+                        // value runs, as `format_string` does it.
+                        let (piece, format) = match printf_of(&val, format).is_some() {
+                            true => (val, format),
+                            false => {
+                                let plain = self.text(&val, span)?;
+                                let code = match format {
+                                    Some(spec) => formatted(&val, spec, plain, span)?,
+                                    None => plain,
+                                };
+                                let mut piece = Val::from(code, Kind::Str, &[&val]);
+                                piece.reads |= matches!(val.kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
+                                made.push(vals.len());
+                                (piece, None)
+                            }
+                        };
+                        self.settle(&mut vals, &piece, mark, span)?;
+                        pieces.push(Piece::Value(vals.len(), format));
+                        vals.push(piece);
+                    }
+                }
+                _ => {
+                    let mark = self.lines.len();
+                    let val = self.expr(&arg.value)?;
+                    looked_into |= matches!(val.kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
+                    if printf_of(&val, None).is_none() {
+                        made.push(vals.len());
+                    }
+                    self.settle(&mut vals, &val, mark, span)?;
+                    pieces.push(Piece::Value(vals.len(), None));
+                    vals.push(val);
+                }
+            }
+        }
+        // `print` shows its values after all of them are worked out. If
+        // one is a list or an object, and another calls something that
+        // could change it, finish the calls first.
+        if looked_into {
+            for val in &mut vals {
+                if val.calls {
+                    let taken = std::mem::replace(val, Val::plain("", Kind::None));
+                    *val = self.temp(taken, span)?;
+                }
+            }
+        }
+        // C does not say in which order the arguments of a call are
+        // worked out. Where two or more are made into text, each is made
+        // on a line of its own, so that the order is the one written.
+        let in_turn = made.len() > 1;
+        let (mut format, mut words, mut shown) = (String::new(), String::new(), Vec::new());
+        for piece in &pieces {
+            let (index, spec) = match piece {
+                Piece::Words(text) => {
+                    let literal = c_string(text);
+                    let body = &literal[1..literal.len() - 1];
+                    format += &body.replace('%', "%%");
+                    words += body;
+                    continue;
+                }
+                Piece::Value(index, spec) => (*index, *spec),
+            };
+            let val = &vals[index];
+            let (conversion, code) = match printf_of(val, spec) {
+                Some(direct) => direct,
+                None => ("%s".to_string(), Some(self.text(val, span)?)),
+            };
+            format += &conversion;
+            match code {
+                Some(code) if in_turn && made.contains(&index) => {
+                    let name = self.new_temp();
+                    self.line(format!("const char *{name} = {code};"));
+                    shown.push(name);
+                }
+                Some(code) => shown.push(code),
+                None => {}
+            }
+        }
+        match (shown.is_empty(), words.is_empty()) {
+            (true, true) => self.line("putchar('\\n');"),
+            (true, false) => self.line(format!("puts(\"{words}\");")),
+            (false, _) => self.line(format!("printf(\"{format}\\n\", {});", shown.join(", "))),
+        }
+        let parts: Vec<&Val> = vals.iter().collect();
+        let mut val = Val::from(String::new(), Kind::None, &parts);
+        val.pre_calls = true;
+        Ok(val)
+    }
+
     fn builtin(&mut self, name: &str, vals: Vec<Val>, span: Span) -> Result<Val, Error> {
         let parts: Vec<&Val> = vals.iter().collect();
         let one = || match vals.as_slice() {
@@ -5694,7 +5937,7 @@ impl Emitter<'_> {
             }
             // `char(65)`: the runtime writes the bytes of that character.
             "char" if matches!(one(), Ok(val) if val.kind == Kind::Int) => {
-                Val::from(format!("zeno_char({}, {})", one()?.code, at(span)), Kind::Str, &parts).failing()
+                Val::from(format!("zeno_char({}, {})", one()?.code, self.at(span)), Kind::Str, &parts).failing_if(!self.minimal)
             }
             // `free(p)`: back to the heap, or to the pool.
             "free" if matches!(one(), Ok(val) if matches!(val.kind, Kind::Pointer(_))) => {
@@ -5703,6 +5946,10 @@ impl Emitter<'_> {
             }
             // `u8(n)`: `n` itself, once the runtime has seen that it fits.
             // The size is handed over as the words for the message.
+            // A minimal build does not look: the number goes on as it is.
+            _ if self.minimal && ints::width(name).is_some() && matches!(one(), Ok(val) if val.kind == Kind::Int) => {
+                Val::from(one()?.code.clone(), Kind::Int, &parts)
+            }
             _ if ints::width(name).is_some() && matches!(one(), Ok(val) if val.kind == Kind::Int) => {
                 let width = ints::width(name).unwrap_or(ints::WIDTHS[0]);
                 let article = if width.signed { "an" } else { "a" };
@@ -5711,9 +5958,9 @@ impl Emitter<'_> {
                     one()?.code,
                     width.min(),
                     width.max(),
-                    at(span)
+                    self.at(span)
                 );
-                Val::from(code, Kind::Int, &parts).failing()
+                Val::from(code, Kind::Int, &parts).failing_if(!self.minimal)
             }
             "len" => match one()? {
                 val if val.kind == Kind::Str => Val::from(format!("zeno_len({})", val.code), Kind::Int, &parts),
@@ -5733,7 +5980,7 @@ impl Emitter<'_> {
             "abs" => {
                 let val = one()?;
                 match &val.kind {
-                    Kind::Int => Val::from(format!("zeno_abs({}, {})", val.code, at(span)), Kind::Int, &parts).failing(),
+                    Kind::Int => Val::from(format!("zeno_abs({}, {})", val.code, self.at(span)), Kind::Int, &parts).failing_if(!self.minimal),
                     Kind::Float | Kind::Quantity(_) => {
                         Val::from(format!("fabs({})", val.code), val.kind.clone(), &parts)
                     }
@@ -5745,11 +5992,11 @@ impl Emitter<'_> {
                 match &val.kind {
                     Kind::Int => Val::from(val.code.clone(), Kind::Int, &parts),
                     Kind::Float => {
-                        Val::from(format!("zeno_int({}, {})", val.code, at(span)), Kind::Int, &parts).failing()
+                        Val::from(format!("zeno_int({}, {})", val.code, self.at(span)), Kind::Int, &parts).failing_if(!self.minimal)
                     }
                     Kind::Str => {
                         self.built = !self.collector;
-                        let call = format!("zeno_parse_int({}, {})", val.code, at(span));
+                        let call = format!("zeno_parse_int({}, {})", val.code, self.at(span));
                         if self.firmware {
                             return self.checked_call(call, Kind::Int, &["ValueError".to_string()], span);
                         }
@@ -5764,7 +6011,7 @@ impl Emitter<'_> {
                     Kind::Int | Kind::Float => Val::from(val.double(), Kind::Float, &parts),
                     Kind::Str => {
                         self.built = !self.collector;
-                        let call = format!("zeno_parse_float({}, {})", val.code, at(span));
+                        let call = format!("zeno_parse_float({}, {})", val.code, self.at(span));
                         if self.firmware {
                             return self.checked_call(call, Kind::Float, &["ValueError".to_string()], span);
                         }
@@ -5778,11 +6025,11 @@ impl Emitter<'_> {
                 let list = &vals[0];
                 let Kind::List(item) = &list.kind else { unreachable!() };
                 let code = match (name, &**item) {
-                    ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, at(span)),
+                    ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, self.at(span)),
                     ("sum", Kind::Float) => format!("zeno_list_sum_float({})", list.code),
                     // A quantity is kept as a float, in its own unit.
                     ("min" | "max", Kind::Quantity(_)) => {
-                        format!("zeno_list_best_float({}, {}, {}, {})", list.code, name == "min", c_string(name), at(span))
+                        format!("zeno_list_best_float({}, {}, {}, {})", list.code, name == "min", c_string(name), self.at(span))
                     }
                     (_, Kind::Int | Kind::Float) => format!(
                         "zeno_list_best_{}({}, {}, {}, {})",
@@ -5790,11 +6037,11 @@ impl Emitter<'_> {
                         list.code,
                         name == "min",
                         c_string(name),
-                        at(span)
+                        self.at(span)
                     ),
                     _ => return Err(cannot(format!("`{name}` of a list of anything but ints or floats"), span)),
                 };
-                let mut val = Val::from(code, (**item).clone(), &parts).failing();
+                let mut val = Val::from(code, (**item).clone(), &parts).failing_if(!self.minimal);
                 val.reads = true;
                 val
             }
@@ -6160,6 +6407,113 @@ pub fn read_format(spec: &str) -> Option<Format> {
     Some(Format { align, zero, width, precision, kind })
 }
 
+/// A statement of a minimal build as a person would write it:
+/// `x = (x + 1);` is `x += 1;`, and `return (a * b);` is `return a * b;`.
+/// The emitter puts every operation in brackets, so that what is around
+/// it cannot change what it means; around a whole statement there is
+/// nothing left that could.
+fn tidy(line: &str) -> String {
+    let Some(statement) = line.strip_suffix(';') else {
+        return line.to_string();
+    };
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let statement = statement.trim_start();
+    if let Some(value) = statement.strip_prefix("return ") {
+        return format!("{indent}return {};", bare(value));
+    }
+    // `to = value`, where `to` is a name, a field, or a new variable.
+    let Some((to, value)) = statement.split_once(" = ") else {
+        return line.to_string();
+    };
+    let place = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ' ' | '*'));
+    if !place(&to.replace("->", ".")) {
+        return line.to_string();
+    }
+    let value = bare(value);
+    // `x = x + 1`, where the brackets taken off were around all of it.
+    for symbol in ["+", "-", "*", "/", "&", "|", "^"] {
+        let rest = value.strip_prefix(to).and_then(|rest| rest.strip_prefix(' '));
+        let Some(by) = rest.and_then(|rest| rest.strip_prefix(symbol)).and_then(|rest| rest.strip_prefix(' ')) else {
+            continue;
+        };
+        if !to.contains(' ') && atom(by) == by {
+            return format!("{indent}{to} {symbol}= {};", bare(by));
+        }
+    }
+    format!("{indent}{to} = {value};")
+}
+
+/// C that a cast or a `?` can be written next to: a name, a call, or
+/// something in brackets already. Anything else is put in brackets.
+fn atom(code: &str) -> String {
+    let named = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'));
+    let bracketed = |text: &str| bare(text).len() != text.len();
+    let call = code.find('(').is_some_and(|open| named(&code[..open]) && bracketed(&code[open..]));
+    match named(&code.replace("->", ".")) || bracketed(code) || call {
+        true => code.to_string(),
+        false => format!("({code})"),
+    }
+}
+
+/// How C's `printf` shows a value by itself, in a minimal build: what to
+/// write in its format, and the argument that goes with it, if any.
+/// `None` where `printf` has no way of its own, and the value has to be
+/// made into text first: a list, an object, a format `printf` lacks.
+///
+/// Each answer prints what the runtime's text of the value would be. So
+/// the formats that differ are left to the runtime: text is padded there
+/// by its characters and here by its bytes, and `printf` does not fill a
+/// float that is not a number with zeros.
+fn printf_of(val: &Val, spec: Option<&str>) -> Option<(String, Option<String>)> {
+    let whole = || Some(format!("(long long){}", atom(&val.code)));
+    let float_text = |name: &str| Some(format!("{name}({}, (char[64]){{0}})", val.code));
+    let unit_of = |unit: &str| {
+        let literal = c_string(unit);
+        literal[1..literal.len() - 1].replace('%', "%%")
+    };
+    let Some(spec) = spec else {
+        return Some(match &val.kind {
+            Kind::Str => ("%s".to_string(), Some(val.code.clone())),
+            Kind::Int => ("%lld".to_string(), whole()),
+            Kind::Float => ("%s".to_string(), float_text("zeno_float_text")),
+            Kind::Bool => ("%s".to_string(), Some(format!("{} ? \"true\" : \"false\"", atom(&val.code)))),
+            Kind::Quantity(unit) => (format!("%s {}", unit_of(unit)), float_text("zeno_quantity_text")),
+            Kind::None => ("none".to_string(), None),
+            _ => return None,
+        });
+    };
+    let Format { align, zero, width, precision, kind } = read_format(spec)?;
+    // `{n:5}` is `%5lld`, `{n:<5}` is `%-5lld`, `{n:05}` is `%05lld`.
+    let wide = |zeros: bool| match (width, align, zero) {
+        (0, _, _) => Some(String::new()),
+        (_, _, true) if zeros => Some(format!("0{width}")),
+        (_, Some('^'), _) | (_, _, true) => None,
+        (_, Some('<'), false) => Some(format!("-{width}")),
+        (_, _, false) => Some(width.to_string()),
+    };
+    let decimals = precision.unwrap_or(6);
+    match (kind, precision, &val.kind) {
+        (Some('f'), _, Kind::Quantity(unit)) | (None, Some(_), Kind::Quantity(unit)) if width == 0 => {
+            Some((format!("%.{decimals}f {}", unit_of(unit)), Some(val.code.clone())))
+        }
+        (Some('f'), _, Kind::Int | Kind::Float) | (None, Some(_), Kind::Float) => {
+            Some((format!("%{}.{decimals}f", wide(false)?), Some(val.double())))
+        }
+        (None | Some('d'), None, Kind::Int) => Some((format!("%{}lld", wide(true)?), whole())),
+        // `{n:x}`, `{reg:08b}`: the runtime writes the digits, and the
+        // zeros in front of them, into bytes of the statement's own.
+        (Some(kind @ ('x' | 'X' | 'b')), None, Kind::Int) if width <= 64 => {
+            let (zeros, wide) = match zero {
+                true => (width, String::new()),
+                false => (0, wide(false)?),
+            };
+            Some((format!("%{wide}s"), Some(format!("zeno_radix_text({}, '{kind}', {zeros}, (char[72]){{0}})", val.code))))
+        }
+        (None, None, Kind::Str) if width == 0 => Some(("%s".to_string(), Some(val.code.clone()))),
+        _ => None,
+    }
+}
+
 /// A value with a format after the colon, as in `{x:.2f}` or `{n:08b}`.
 fn formatted(val: &Val, spec: &str, plain: String, span: Span) -> Result<String, Error> {
     let bad = || Error::new(format!("`{spec}` is not a format Zeno understands"), span);
@@ -6478,7 +6832,7 @@ pub(crate) mod tests {
         let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit_with(&program, &types, "test.zeno", Build::Ordinary, Options { release: true, grows: false, fast: false })
+        emit_with(&program, &types, "test.zeno", Build::Ordinary, Options { release: true, grows: false, fast: false, ..Default::default() })
             .expect("it builds")
     }
 
@@ -6508,13 +6862,257 @@ pub(crate) mod tests {
         }
     }
 
+    /// The same program built with `--minimal`, for one kind of build.
+    /// `grows` is `--owned`: no collector, and memory from the system.
+    fn compile_minimal(source: &str, build: Build, grows: bool) -> String {
+        let program = crate::modules::testing::built(source);
+        let (errors, types) = crate::checker::check_by(&program, build.rules());
+        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        emit_with(&program, &types, "test.zeno", build, Options { grows, minimal: true, ..Default::default() }).expect("it builds")
+    }
+
+    /// The kinds of build `--minimal` goes with: the collector, `--owned`,
+    /// `--no-collector` and `--firmware`.
+    const MINIMAL_KINDS: [(&str, Build, bool); 4] = [
+        ("minimal", Build::Ordinary, false),
+        ("minimal-owned", Build::NoCollector, true),
+        ("minimal-pool", Build::NoCollector, false),
+        ("minimal-firmware", Build::Firmware, false),
+    ];
+
+    #[test]
+    fn a_minimal_build_of_hello_is_one_call_of_puts() {
+        let c = compile_minimal("print(\"Hello, Zeno!\")\n", Build::Ordinary, false);
+        assert!(c.contains("int main(void) {\n    puts(\"Hello, Zeno!\");\n    return 0;\n}\n"), "{c}");
+        // Nothing of the runtime is in it but what tells Windows to
+        // leave the ends of lines alone.
+        let runtime: Vec<&str> = c.match_indices("zeno_").map(|(at, _)| c[at..].split('(').next().unwrap_or_default()).collect();
+        assert_eq!(runtime, ["zeno_plain_line_ends"], "{c}");
+        assert!(c.lines().count() < 30, "{c}");
+        let Some((printed, _, finished)) = build_and_run("minimal-hello", &c, &["-Os"]) else { return };
+        assert!(finished);
+        assert_eq!(printed, "Hello, Zeno!\n");
+    }
+
+    #[test]
+    fn a_minimal_build_has_no_check_in_it_and_no_place_in_the_source() {
+        let source = r#"function middle(xs: list[int]) -> int {
+    return xs[len(xs) // 2] + 1
+}
+var xs = [3, 1, 4, 1, 5]
+xs[0] = xs[1] * 7 - 2
+let ages = ["Ada": 36]
+print(middle(xs), 7.0 / 2.0, math.sqrt(2.0), ages["Ada"], u8(200), -xs[2], abs(xs[3]), "abc"[1], 9 % 4, 9 // 4, 1 << 3)
+"#;
+        for (name, build, grows) in MINIMAL_KINDS {
+            let c = compile_minimal(&format!("import math\n{source}"), build, grows);
+            // The index is C's own, and so are the arithmetic and the division.
+            assert!(c.contains("return z2_xs->items[zeno_halved(z2_xs->len, 1)].i + 1;"), "{name}: {c}");
+            assert!(c.contains("z_xs->items[0] = (zeno_slot){.i = "), "{name}: {c}");
+            assert!(c.contains("(7.0 / 2.0)") && c.contains("sqrt(2.0)"), "{name}: {c}");
+            for gone in [
+                "zeno_fail", "zeno_bug", "zeno_overflow", "zeno_by_zero", "zeno_list_at", "zeno_div", "zeno_sqrt", "zeno_fit",
+                "zeno_add(", "zeno_sub(", "zeno_mul(", "IndexError", "ZeroDivisionError", "OverflowError", "KeyError", "int line", "line, col",
+                "zeno_raised_line", "ZENO_MINIMAL", "ZENO_UNCHECKED", NO_PLACE,
+            ] {
+                assert!(!c.contains(gone), "{name}: `{gone}` is in the minimal C");
+            }
+            let Some((printed, errors, finished)) =
+                build_and_run(&format!("{name}-bare"), &c, &["-Os", "-Wall", "-Werror=implicit-function-declaration"])
+            else {
+                return;
+            };
+            assert!(finished, "{name}: {errors}");
+            assert_eq!(printed, interpreted(&format!("import math\n{source}")), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_minimal_build_prints_what_zeno_run_prints_for_a_correct_program() {
+        // Lists, dicts, objects, text, errors that are raised and caught,
+        // quantities, functions as values: a correct program cannot tell
+        // a minimal build from any other.
+        let source = r#"class Reading {
+    name: str
+    values: list[float]
+
+    function mean(self) -> float {
+        var total = 0.0
+        for value in self.values {
+            total += value
+        }
+        return total / len(self.values)
+    }
+}
+
+function parsed(text: str) -> int {
+    try {
+        return int(text)
+    } except ValueError as error {
+        print("not a number:", error.message)
+        return -1
+    }
+}
+
+function checked(n: int) -> int raises ValueError {
+    if n < 0 {
+        raise ValueError(f"{n} is below zero")
+    }
+    return n * 2
+}
+
+let reading = Reading("inlet", [20.5, 21.25, 19.0])
+print(reading.name, reading.mean(), reading)
+var counts: dict[str, int] = [:]
+for word in "the cat and the hat and the bat".split(" ") {
+    counts[word] = counts.get(word, 0) + 1
+}
+print(counts, counts["the"], len(counts))
+var squares: list[int] = []
+for i in range(10) {
+    squares.append(i * i)
+}
+squares[3] = -squares[3]
+print(squares, sum(squares), max(squares), squares.slice(2, 5))
+print(parsed("42"), parsed("4x2"), parsed("-7"))
+try {
+    print(checked(4))
+    print(checked(-4))
+} except ValueError as error {
+    print("caught:", error.message)
+}
+let wait = 250 ms
+print(wait, wait * 4, 1.5 s, f"{wait} and {wait * 2.5:.1f}")
+print(17 % 5, -17 % 5, 17 // 5, -17 // 5, 2 ** 10, 7 / 2, 1 << 40, -9 >> 1)
+print(true, false, none, 1 == 1, "a" < "b", not true)
+let text = "Zeno, நன்றி"
+print(text.upper(), len(text), text[0], text.slice(6), text.find("no"), text.replace("Zeno", "Elea"))
+print()
+"#;
+        let expected = interpreted(source);
+        for (name, build, grows) in MINIMAL_KINDS {
+            let c = compile_minimal(source, build, grows);
+            let Some((printed, errors, finished)) = build_and_run(&format!("{name}-whole"), &c, &["-Os"]) else { return };
+            assert!(finished, "{name}: {errors}");
+            assert_eq!(printed, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn print_in_a_minimal_build_is_printf_wherever_printf_prints_the_same() {
+        let source = r#"let n = 42
+let low = -42
+let x = 3.14159
+let name = "Ada"
+let on = true
+let big = 9223372036854775807
+print(n, low, x, name, on, big)
+print(f"{n} {low} {x} {name} {on} 100% of {big}")
+print(f"[{n:5}] [{n:<5}] [{n:05}] [{low:05}] [{low:>6}] [{n:^7}] [{n:d}]")
+print(f"[{x:.2f}] [{x:8.3f}] [{x:<8.1f}] [{x:08.2f}] [{n:.1f}] [{low:.0f}] [{x:^9.2f}]")
+print(f"[{n:x}] [{n:X}] [{n:b}] [{n:08b}] [{low:x}] [{low:08b}] [{n:6x}] [{n:<6x}] [{255:04X}]")
+print(f"[{name:6}] [{name:>6}] [{name:^7}] [{'நன்றி':>7}] [{on}] [{not on:>6}]")
+print(0.1 + 0.2, 1.0, 1e21, 1.5e-7, -0.0, 100.0 / 3.0, 2.0 ** 70)
+print(f"{0.1 + 0.2} {1e100} {1.0 / 3.0:.3f}")
+print(500 ms, 1.5 s, 2 V, f"{500 ms} {1.25 s:.1f} {3 V * 2}")
+print("50%", "a\tb", "q?", "\"quoted\"", 'back\\slash')
+print("only", "words")
+print()
+print([1, 2], ["a": 1], f"{[n, low]} {name}")
+"#;
+        let c = compile_minimal(source, Build::Ordinary, false);
+        for written in [
+            "printf(\"%lld %lld %s %s %s %lld\\n\", (long long)z_n, (long long)z_low, zeno_float_text(z_x, (char[64]){0}), z_name, z_on ? \"true\" : \"false\", (long long)z_big);",
+            "printf(\"%lld %lld %s %s %s 100%% of %lld\\n\"",
+            "[%5lld] [%-5lld] [%05lld] [%05lld] [%6lld] [%s] [%lld]",
+            "[%.2f] [%8.3f] [%-8.1f] [%s] [%.1f] [%.0f] [%s]",
+            "zeno_radix_text(z_n, 'b', 8, (char[72]){0})",
+            "[%6s] [%-6s]",
+            "puts(\"only words\");",
+            "putchar('\\n');",
+            "printf(\"%s ms %s s %s V ",
+        ] {
+            assert!(c.contains(written), "`{written}` is not in the C:\n{}", &c[c.find("int main").unwrap_or(0)..]);
+        }
+        // Text is lined up by its characters, which `printf` cannot do:
+        // that is left to the runtime.
+        assert!(c.contains("zeno_pad(z_name, 6, '<', false)"), "{c}");
+        let Some((printed, errors, finished)) = build_and_run("minimal-printf", &c, &["-Os", "-Wall", "-Wextra"]) else { return };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, interpreted(source));
+    }
+
+    #[test]
+    fn a_minimal_build_keeps_the_errors_a_correct_program_can_meet() {
+        // Text that is not a number is not a mistake in the program: it
+        // comes from outside. So that error is still raised, and still
+        // stops the program when nothing catches it, with what it is
+        // and without where.
+        let source = "function half(text: str) -> int raises ValueError {\n    return int(text) // 2\n}\nprint(half(\"10\"))\nprint(half(\"ten\"))\n";
+        for (name, build, grows) in MINIMAL_KINDS {
+            let c = compile_minimal(source, build, grows);
+            let Some((printed, errors, finished)) = build_and_run(&format!("{name}-error"), &c, &["-Os"]) else { return };
+            assert!(!finished, "{name}");
+            assert_eq!(printed, "5\n", "{name}");
+            assert_eq!(errors, "error: uncaught ValueError: cannot turn \"ten\" into an int\n", "{name}");
+        }
+    }
+
+    #[test]
+    fn the_whole_runtime_of_a_minimal_build_is_c_for_every_kind_of_build() {
+        // A program uses a part of it. Every part must still be C once
+        // the checks and the places are taken out, so all of it is
+        // given to the C compiler here, for each kind of build.
+        for (name, firmware, collector, grows) in
+            [("collector", false, true, false), ("firmware", true, true, false), ("pool", true, false, false), ("owned", true, false, true)]
+        {
+            for report in [false, true] {
+                let runtime = crate::minimal::runtime(&runtime_of(firmware, collector, grows, true), report);
+                // (The note at the top of the runtime speaks of the marks.)
+                let marks = runtime.lines().filter(|line| line.starts_with('#') && line.contains("ZENO_MINIMAL")).count();
+                assert_eq!(marks, 0, "{name}: a mark is left in the runtime of a minimal build");
+                for gone in [", int line, int col", "(int line, int col", "line, col)"] {
+                    assert!(!runtime.contains(gone), "{name}: `{gone}` is in the runtime of a minimal build");
+                }
+                let roots = "static void zeno_roots(void) {}\n";
+                let c = format!("{runtime}\n{}int main(void) {{\n    return 0;\n}}\n", if collector { roots } else { "" });
+                let flags = ["-Wall", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-unused-const-variable", "-Werror"];
+                let Some((_, _, finished)) = build_and_run(&format!("minimal-runtime-{name}-{report}"), &c, &flags) else { return };
+                assert!(finished, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_statement_of_a_minimal_build_is_written_the_short_way() {
+        assert_eq!(tidy("    z_d = (z_d + 1);"), "    z_d += 1;");
+        assert_eq!(tidy("    z_self->z_total = (z_self->z_total - (z_a * z_b));"), "    z_self->z_total -= z_a * z_b;");
+        assert_eq!(tidy("    z_x = (z_x * zeno_mod(z_a, 3));"), "    z_x *= zeno_mod(z_a, 3);");
+        assert_eq!(tidy("    int64_t z_n = (z_a + z_b);"), "    int64_t z_n = z_a + z_b;");
+        assert_eq!(tidy("    return ((double)z_a / (double)z_b);"), "    return (double)z_a / (double)z_b;");
+        assert_eq!(tidy("    z_x = (z_y + z_x);"), "    z_x = z_y + z_x;");
+        // What is not all in one pair of brackets is left as it is.
+        assert_eq!(tidy("    z_x = (z_a) + (z_b);"), "    z_x = (z_a) + (z_b);");
+        assert_eq!(tidy("    z_x = (z_x + z_a) * (z_b);"), "    z_x = (z_x + z_a) * (z_b);");
+        for same in ["    if (z_a == z_b) {", "    printf(\"a = (b);\\n\");", "    for (int64_t i = 0; i < n; i++) {", "    z_f(z_a);", "}"] {
+            assert_eq!(tidy(same), same);
+        }
+        // What a cast can be written next to.
+        assert_eq!(atom("z_n"), "z_n");
+        assert_eq!(atom("z_p->z_x"), "z_p->z_x");
+        assert_eq!(atom("(z_a + z_b)"), "(z_a + z_b)");
+        assert_eq!(atom("zeno_mod(z_a, z_b)"), "zeno_mod(z_a, z_b)");
+        assert_eq!(atom("(z_a) + (z_b)"), "((z_a) + (z_b))");
+        assert_eq!(atom("z_f(1) + z_g(2)"), "(z_f(1) + z_g(2))");
+    }
+
     /// The same program built with `--fast`.
     fn compile_fast(source: &str, grows: bool) -> String {
         let program = crate::modules::testing::built(source);
         let build = if grows { Build::NoCollector } else { Build::Ordinary };
         let (errors, types) = crate::checker::check_by(&program, build.rules());
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
-        emit_with(&program, &types, "test.zeno", build, Options { release: true, grows, fast: true }).expect("it builds")
+        emit_with(&program, &types, "test.zeno", build, Options { release: true, grows, fast: true, ..Default::default() }).expect("it builds")
     }
 
     #[test]
@@ -8485,7 +9083,7 @@ function main() -> int raises Refused {
     fn grown_as_interpreter(name: &str, source: &str, printed: &str, report: &str) {
         let program = crate::modules::testing::built(source);
         let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
-        let options = Options { release: false, grows: true, fast: false };
+        let options = Options { release: false, grows: true, fast: false, ..Default::default() };
         let c = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
         assert!(c.contains("zeno_pool_cut") && !c.contains("zeno_pool.bytes"), "the pool does not grow");
         let flags = ["-O1", "-DZENO_MEMORY_REPORT", "-DZENO_POOL=64", "-DZENO_TEXT_ROOM=64"];
