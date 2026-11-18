@@ -41,6 +41,7 @@ mod interpreter;
 mod json;
 mod ints;
 mod lexer;
+mod library;
 mod lower;
 mod lsp;
 mod minimal;

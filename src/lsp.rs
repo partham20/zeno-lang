@@ -150,6 +150,14 @@ impl Server {
                         "contents",
                         Json::object([("kind", Json::text("plaintext")), ("value", Json::text(format!("{}: {}", meaning.written, meaning.ty)))]),
                     )]),
+                    // A name of the library that is written in Zeno was
+                    // declared in a file that is inside `zeno`, and an
+                    // editor has no such file to open.
+                    ("textDocument/definition", Some(Meaning { declared: Some((path, ..)), .. }))
+                        if crate::library::PARTS.iter().any(|part| part.path == path) =>
+                    {
+                        Json::Null
+                    }
                     ("textDocument/definition", Some(Meaning { declared: Some((path, line, character)), .. })) => {
                         let uri = self.uris.get(&path).cloned().unwrap_or_else(|| uri_of(&path));
                         Json::object([("uri", Json::text(uri)), ("range", range(line, character, line, character))])
@@ -609,6 +617,18 @@ mod tests {
     fn points_to(answer: &Json) -> (String, usize, usize) {
         let number = |name: &str| answer.at(&["range", "start", name]).and_then(Json::as_usize).unwrap();
         (answer.get("uri").and_then(Json::as_str).unwrap().to_string(), number("line"), number("character"))
+    }
+
+    #[test]
+    fn a_name_of_the_library_written_in_zeno_says_what_it_is() {
+        let mut server = Server::default();
+        open(&mut server, "main.zeno", "import math\nlet far = math.hypot(3.0, 4.0)\nprint(far)\n");
+        let hover = ask(&mut server, "textDocument/hover", "main.zeno", 1, "hypot");
+        let said = hover.at(&["contents", "value"]).and_then(Json::as_str).map(str::to_string);
+        assert_eq!(said.as_deref(), Some("hypot: function(x: float, y: float) -> float"));
+        // It is declared in a file that is inside `zeno`.
+        assert_eq!(ask(&mut server, "textDocument/definition", "main.zeno", 1, "hypot"), Json::Null);
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 2, "far")).1, 1);
     }
 
     #[test]

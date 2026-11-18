@@ -1645,6 +1645,20 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
     })
 }
 
+/// The message for `math.nothing`. A name of the part of a module that
+/// is written in Zeno (`library.rs`) only gets as far as this when the
+/// module was imported inside a function: `modules.rs` joins that part
+/// to a file that imports the module at its top.
+fn no_member(module: &str, name: &str) -> String {
+    match crate::library::part(module).is_some_and(|part| part.names.contains(&name)) {
+        true => format!(
+            "`{module}.{name}` is written in Zeno, and is joined to a file that has `import {module}` at its top. \
+             Move the `import` there from inside the function"
+        ),
+        false => format!("module `{module}` has no `{name}`"),
+    }
+}
+
 // -------------------------------------------------------------------- Checker
 
 /// What the checker tracks for the function body it is currently inside.
@@ -3333,7 +3347,7 @@ impl Checker {
                 for name in names {
                     let ty = match module_member(module, name) {
                         Some(ty) => ty,
-                        None => self.error(format!("module `{module}` has no `{name}`"), span),
+                        None => self.error(no_member(module, name), span),
                     };
                     self.declare(env, name, ty, false, span);
                 }
@@ -5485,7 +5499,7 @@ impl Checker {
             }
             Ty::Module(module) => match module_member(module, name) {
                 Some(ty) => ty,
-                None => self.error(format!("module `{module}` has no `{name}`"), span),
+                None => self.error(no_member(module, name), span),
             },
             // `u8.wrap`: the conversion that keeps the low bits.
             Ty::Builtin(sized) if name == "wrap" && ints::width(sized).is_some() => {
@@ -8047,9 +8061,16 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
+        // A name of the part of `math` that is written in Zeno, which
+        // `modules.rs` joins to a file that imports `math` at its top.
+        assert_eq!(
+            error("function far() -> float {\n    import math\n    return math.hypot(3.0, 4.0)\n}"),
+            "`math.hypot` is written in Zeno, and is joined to a file that has `import math` at its top. \
+             Move the `import` there from inside the function"
+        );
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
     }
 

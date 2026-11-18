@@ -4291,6 +4291,11 @@ impl Emitter<'_> {
             return Err(raises_as_value(span));
         }
         let (target, kind) = (entry.c_name.clone(), entry.kind.clone());
+        // A function of an imported file has a dot in its name,
+        // `shapes.area`, and a name in C cannot. Its name in C can
+        // stand in, since no two functions have the same.
+        let shown = name;
+        let name = if name.contains('.') { target.as_str() } else { name };
         let value = format!("zeno_value_{name}");
         if self.adapters.insert(value.clone()) {
             let mut params = vec!["zeno_closure *zeno_self".to_string()];
@@ -4306,7 +4311,7 @@ impl Emitter<'_> {
                 format!("    (void)zeno_self;\n    {call};\n"),
             );
             self.definitions
-                .push(format!("static zeno_closure {value} = {{(zeno_code)zeno_wrap_{name}, {}}};\n", c_string(name)));
+                .push(format!("static zeno_closure {value} = {{(zeno_code)zeno_wrap_{name}, {}}};\n", c_string(shown)));
         }
         Ok(Val::plain(format!("(&{value})"), Kind::Function(Box::new(kind))))
     }
@@ -12615,6 +12620,36 @@ print(maybe)
              if len(self.items) == 0 {\n            raise Empty(\"nothing on the stack\")\n        }\n        \
              return self.items[0]\n    }\n}\n\nclass Empty {\n    why: str\n}\n",
         );
+    }
+
+    #[test]
+    fn the_library_written_in_zeno_is_the_same_in_every_build() {
+        // `math.hypot` and its neighbours, and `random`: one file of
+        // Zeno each, that every engine and every build runs as it runs
+        // the program's own files. The program tries all of both.
+        no_collector_as_interpreter("library", include_str!("../tools/targets/library.zeno"));
+        // A mistake inside the library stops the program in every
+        // build with the same words, and names the library's file.
+        same_as_interpreter(
+            "library-fault",
+            "import random\nprint(random.between(1, 6))\nprint(random.between(-9223372036854775807, 9223372036854775807))\n",
+        );
+        // A function of an imported file as a value. Its name has a
+        // dot in it, which a name in C cannot have.
+        let value = "import shapes\nlet f = shapes.area\nprint(f(1.0), [1.0, 2.0].map(shapes.area), shapes.area)\n\
+                     ==> shapes.zeno\nfunction area(r: float) -> float { return r * 2.0 }\n";
+        no_collector_as_interpreter("module-function-value", value);
+        let c = compile(value).expect("it compiles");
+        assert!(c.contains("static zeno_closure zeno_value_z_shapes_area = {(zeno_code)zeno_wrap_z_shapes_area, \"shapes.area\"};\n"), "{c}");
+        // Only what the program reaches is in the C.
+        let c = compile("import math\nprint(math.gcd(4, 6))\n").expect("it compiles");
+        assert!(c.contains("static int64_t z_math_gcd(int64_t z_a, int64_t z_b)"), "{c}");
+        assert!(!c.contains("z_math_hypot") && !c.contains("z_math_size") && !c.contains("z_math_clamp"), "{c}");
+        assert!(c.contains("static const char *const modules[] = {\"library/math.zeno\"};"), "{c}");
+        // And a program that reaches none of it has none of it: not
+        // the file's name, and not a line that was not there before.
+        let plain = compile("import math\nprint(math.sqrt(4.0))\n").expect("it compiles");
+        assert!(!plain.contains("library/") && !plain.contains("z_math_"), "{plain}");
     }
 
     #[test]

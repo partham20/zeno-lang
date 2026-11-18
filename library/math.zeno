@@ -1,0 +1,146 @@
+# The part of `math` that is written in Zeno.
+#
+# `math.sqrt`, `math.exp` and the rest are built into Zeno, once for
+# every way it runs a program. What is in this file is written once,
+# here, from those. A program reaches both the same way: `import math`,
+# and then `math.hypot(3.0, 4.0)`.
+#
+# Only the functions a program uses are put into it.
+strict
+
+import math
+
+# How far `x` is from zero. Zeno has `abs` for this, and this file
+# does not use it: a program may give `abs` a meaning of its own, and
+# what `math.hypot` does must not depend on the program that calls it.
+# The same goes for `min`, `max` and every other name that is not a
+# word of the language. So this file uses its own.
+private function size(x: float) -> float {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+# The long side of a right-angled triangle whose short sides are `x`
+# and `y`: the distance of the point (x, y) from (0, 0).
+#
+# It is the root of `x * x + y * y`. For sides so long that their
+# squares are too big for a float, or so short that the squares are
+# too small for one, both sides are first made 2**600 times shorter or
+# longer, and the answer is put back afterwards. Multiplying a float
+# by a power of two changes none of its digits, so the answer is the
+# one the plain sum would have given had there been room for it.
+function hypot(x: float, y: float) -> float {
+    var long = size(x)
+    var short = size(y)
+    if long < short {
+        long = size(y)
+        short = size(x)
+    }
+    if long == 0.0 {
+        return 0.0
+    }
+    # 2**600 and 2**-600, each written with every digit it has.
+    let up = 4.149515568880993e180
+    let down = 2.409919865102884e-181
+    if long >= 1e140 {
+        long = long * down
+        short = short * down
+        return math.sqrt(long * long + short * short) * up
+    }
+    if long <= 1e-140 {
+        long = long * up
+        short = short * up
+        return math.sqrt(long * long + short * short) * down
+    }
+    return math.sqrt(long * long + short * short)
+}
+
+# The hyperbolic sine: (e**x - e**-x) / 2.
+#
+# Near zero the two powers are nearly equal, and taking one from the
+# other would lose most of the digits, so there the first six terms of
+# the series x + x**3/3! + x**5/5! + ... are added up. Past 709 the
+# power e**x is too big for a float while half of it is not, so it is
+# made from two halves.
+function sinh(x: float) -> float {
+    let far = size(x)
+    var answer = 0.0
+    if far < 0.25 {
+        let square = x * x
+        let series = 1.0 + square / 6.0 * (1.0 + square / 20.0 * (1.0 + square / 42.0 * (1.0 + square / 72.0 * (1.0 + square / 110.0))))
+        return x * series
+    } else if far > 709.0 {
+        let half = math.exp(far / 2.0)
+        answer = half / 2.0 * half
+    } else {
+        let grown = math.exp(far)
+        answer = (grown - 1.0 / grown) / 2.0
+    }
+    if x < 0.0 {
+        return -answer
+    }
+    return answer
+}
+
+# The hyperbolic cosine: (e**x + e**-x) / 2. It is the shape of a
+# chain that hangs from its two ends.
+function cosh(x: float) -> float {
+    let far = size(x)
+    if far > 709.0 {
+        let half = math.exp(far / 2.0)
+        return half / 2.0 * half
+    }
+    let grown = math.exp(far)
+    return (grown + 1.0 / grown) / 2.0
+}
+
+# The hyperbolic tangent: sinh(x) / cosh(x). It goes from -1 to 1,
+# and past 20 it is 1 to the last digit a float has.
+function tanh(x: float) -> float {
+    if x > 20.0 {
+        return 1.0
+    }
+    if x < -20.0 {
+        return -1.0
+    }
+    return sinh(x) / cosh(x)
+}
+
+# The greatest whole number that divides both `a` and `b`, by
+# Euclid's method. It is never negative, and `gcd(0, 0)` is 0.
+function gcd(a: int, b: int) -> int {
+    var big = a
+    var small = b
+    if big < 0 {
+        big = -big
+    }
+    if small < 0 {
+        small = -small
+    }
+    while small != 0 {
+        let rest = big % small
+        big = small
+        small = rest
+    }
+    return big
+}
+
+# `value`, kept between `low` and `high`: a value below `low` gives
+# `low`, a value above `high` gives `high`, and any other value gives
+# itself. The three are of one type, which can be any type that `<`
+# compares: `clamp(duty, 0, 255)`, `clamp(level, 0 V, 5 V)`.
+#
+# The value is held against `low` first. So if `low` is above `high`,
+# which is a mistake in the program, the answer is `low` for a value
+# below it and `high` for every other.
+function clamp[T](value: T, low: T, high: T) -> T {
+    if value < low {
+        return low
+    }
+    if value > high {
+        return high
+    }
+    return value
+}

@@ -1,0 +1,62 @@
+# The part of the library that is written in Zeno: `math.hypot` and its
+# neighbours, and the module `random`. Every engine and every target
+# must print the same, to the last digit, because it is the same Zeno
+# that each of them runs.
+strict
+
+import math
+import random
+from math import gcd
+
+# hypot: exact where the answer is, and safe where the squares are not.
+print(math.hypot(3.0, 4.0), math.hypot(5.0, 12.0), math.hypot(-8.0, 15.0))
+print(math.hypot(0.0, 0.0), math.hypot(0.0, -2.5))
+print(math.hypot(3e200, 4e200), math.hypot(3e-200, 4e-200))
+
+# The hyperbolic functions are made from `math.exp`, and the last digit
+# of that is the machine's own, so these are shown to nine places.
+for x in [-2.0, -0.1, 0.0, 0.001, 0.2, 1.0, 5.0] {
+    print(f"{x:6.3f} {math.sinh(x):14.9f} {math.cosh(x):14.9f} {math.tanh(x):12.9f}")
+}
+print(math.tanh(25.0), math.tanh(-25.0), math.sinh(0.0), math.cosh(0.0))
+
+# gcd
+print(gcd(12, 18), gcd(18, 12), gcd(-4, 6), gcd(4, -6), gcd(0, 5), gcd(0, 0), gcd(17, 5))
+print(gcd(2 ** 40, 2 ** 20 * 3), gcd(1071, 462))
+
+# clamp, for every type that `<` compares
+print(math.clamp(300, 0, 255), math.clamp(-7, 0, 255), math.clamp(128, 0, 255))
+print(math.clamp(1.5, 0.0, 1.0), math.clamp(6.2 V, 0.0 V, 5.0 V), math.clamp(20 ms, 50 ms, 500 ms))
+print(math.clamp("m", "a", "f"), math.clamp(5, 9, 1), math.clamp(0, 9, 1))
+
+# A function of the library is a value like any other.
+print([0.0, 1.0].map(math.cosh), math.gcd)
+
+# random: the same numbers on every run and in every engine.
+print(random.between(1, 6), random.between(1, 6), random.between(1, 6), random.number())
+random.seed(0)
+print(random.between(1, 6), random.between(1, 6), random.between(1, 6), random.number())
+random.seed(2026)
+var rolls: list[int] = []
+for roll in range(12) {
+    rolls.append(random.between(1, 6))
+}
+print(rolls)
+print(random.between(6, 1), random.between(7, 7), random.between(-3, 3))
+print(random.between(0, 1000000000000), random.between(-9000000000000000000, 0))
+print(random.number(), random.number())
+print(random.pick(["red", "amber", "green"]), random.pick([2, 3, 5, 7]))
+
+# Each face of a die comes up about as often as the others.
+var counts = [0, 0, 0, 0, 0, 0]
+for throw in range(6000) {
+    let face = random.between(1, 6)
+    counts[face - 1] += 1
+}
+print(counts, sum(counts))
+
+# A seed gives its numbers again.
+random.seed(-1)
+let first = random.number()
+random.seed(-1)
+print(first == random.number(), 0.0 <= first < 1.0)

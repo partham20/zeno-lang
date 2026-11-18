@@ -1,0 +1,103 @@
+# The module `random`: numbers that are hard to guess.
+#
+# It is written in Zeno and nothing else, so it gives the same numbers
+# under `zeno run`, in a compiled program, on a board, and in every
+# language `zeno build --target` writes.
+#
+# The numbers come from sfc32, by Chris Doty-Humphrey: four whole
+# numbers of 32 bits, stirred with additions, shifts and one `^` each
+# time a number is asked for. There is no multiplication and no
+# division in it, so it is quick on the smallest processor. It is good
+# enough for a game, a test or a simulation, and it is NOT fit for
+# keys, passwords or anything else that somebody must not be able to
+# guess.
+#
+# A program that never calls `seed` gets the same numbers every time
+# it runs, as if it had called `random.seed(0)`.
+strict
+
+# The four numbers. They are kept in whole numbers of the usual size
+# and cut to 32 bits with `& 4294967295` after each sum, so that this
+# file needs no name that a program could have given another meaning.
+private var a = 0
+private var b = 0
+private var c = 0
+private var d = 0
+private var seeded = false
+
+# Thirty-two new bits, as a whole number from 0 to 4294967295.
+private function bits() -> int {
+    if not seeded {
+        seed(0)
+    }
+    let sum = (a + b + d) & 4294967295
+    d = (d + 1) & 4294967295
+    a = b ^ (b >> 9)
+    b = (c + (c << 3)) & 4294967295
+    c = ((c << 21) | (c >> 11)) & 4294967295
+    c = (c + sum) & 4294967295
+    return sum
+}
+
+# Start again from `number`. After the same seed the same numbers
+# follow, in the same order, on every machine. Any whole number will
+# do, and two that differ give numbers that have nothing to do with
+# each other.
+function seed(number: int) {
+    a = number & 4294967295
+    b = (number >> 32) & 4294967295
+    c = 2654435769
+    d = 1
+    seeded = true
+    # The first few are thrown away: they still look like the seed.
+    var round = 0
+    while round < 15 {
+        bits()
+        round += 1
+    }
+}
+
+# A float from 0.0 up to 1.0, and never 1.0 itself. Every one of the
+# 2**53 floats of that kind that are evenly spaced is as likely as any
+# other.
+function number() -> float {
+    let high = bits() >> 5
+    let low = bits() >> 6
+    return (high * 67108864.0 + low) / 9007199254740992.0
+}
+
+# A whole number from `low` to `high`, and both of those can come up:
+# `random.between(1, 6)` is a die. Each is as likely as any other. The
+# two ends can be given in either order.
+function between(low: int, high: int) -> int {
+    if low > high {
+        return between(high, low)
+    }
+    # The numbers wanted are `low + 0` to `low + span`. Bits are drawn
+    # under a mask that just covers `span`, and a draw above it is
+    # thrown away, so that no number comes up more often than another.
+    let span = high - low
+    var mask = span
+    mask = mask | (mask >> 1)
+    mask = mask | (mask >> 2)
+    mask = mask | (mask >> 4)
+    mask = mask | (mask >> 8)
+    mask = mask | (mask >> 16)
+    mask = mask | (mask >> 32)
+    while true {
+        var drawn = bits()
+        if mask > 4294967295 {
+            drawn = ((bits() >> 1) << 32) | drawn
+        }
+        drawn = drawn & mask
+        if drawn <= span {
+            return low + drawn
+        }
+    }
+}
+
+# One of the items of a list, each as likely as any other. An empty
+# list has none to give, and that is an IndexError.
+function pick[T](items: list[T]) -> T {
+    return items[between(0, len(items) - 1)]
+}

@@ -46,6 +46,7 @@ use crate::ast::*;
 use crate::builtins;
 use crate::error::Error;
 use crate::lexer;
+use crate::library;
 use crate::package;
 use crate::parser;
 use crate::token::{Span, LINES_A_FILE, MOST_FILES};
@@ -91,9 +92,12 @@ pub fn load_in(folder: &Path, path: &str, source: String, read: &dyn Fn(&str) ->
         order: Vec::new(),
         loading: Vec::new(),
         missing: HashSet::new(),
+        wanted: Vec::new(),
+        parts: HashSet::new(),
         errors: Vec::new(),
     };
     loader.file(String::new(), 0, path.to_string(), source);
+    loader.library();
     let program = match loader.errors.is_empty() {
         true => loader.join(),
         false => Err(std::mem::take(&mut loader.errors)),
@@ -134,6 +138,13 @@ struct Loader<'a> {
     /// The modules that were looked for and not found, so that each is
     /// reported once however many lines import it.
     missing: HashSet<String>,
+    /// The lines that import a module which has a part written in Zeno
+    /// (`library.rs`), in a file that spells one of that part's names:
+    /// the number of the file, and the line. `Loader::library` reads
+    /// the parts these ask for, after every file of the program.
+    wanted: Vec<(usize, Import)>,
+    /// The numbers of the files that are such parts.
+    parts: HashSet<usize>,
     errors: Vec<Error>,
 }
 
@@ -177,6 +188,7 @@ impl Loader<'_> {
     /// `package` is the package the file is in.
     fn file(&mut self, module: String, package: usize, path: String, source: String) {
         let number = self.files.len();
+        let is_part = self.parts.contains(&number);
         // The first line of this file, for a mistake that is about the
         // file as a whole.
         let top = Span { line: number * LINES_A_FILE + 1, col: 1 };
@@ -213,6 +225,16 @@ impl Loader<'_> {
             };
             let module = module.join(".");
             if builtins::comes_with_zeno(&module) {
+                // A module that comes with Zeno may have a part that is
+                // written in Zeno. It is wanted if this file spells one
+                // of the names of that part. (The part itself imports
+                // the built-in part of its module, and nothing more.)
+                let part = library::part(&module)
+                    .filter(|part| !is_part && (!part.built_in_too || part.spelt_in(&self.files[number].source)));
+                if part.is_some() {
+                    let import = Import { module: module.clone(), global: module, names: names.clone(), span: statement.span };
+                    self.wanted.push((number, import));
+                }
                 continue;
             }
             if below {
@@ -304,6 +326,43 @@ impl Loader<'_> {
         self.units[number] = Some(Unit { module, program, imports });
     }
 
+    /// Read the parts of Zeno's library that are written in Zeno and
+    /// that a file of the program asked for (`library.rs`).
+    ///
+    /// This is done when every file of the program has been read, so
+    /// that the parts are the last files. The numbers of the program's
+    /// own files, which are in every place a message can point at, are
+    /// then what they would be with no such part. In the joined program
+    /// the parts still come first: a part imports nothing of the
+    /// program's, and what the program's files do at their top may use it.
+    fn library(&mut self) {
+        let wanted = std::mem::take(&mut self.wanted);
+        if wanted.is_empty() || !self.errors.is_empty() {
+            return;
+        }
+        let mut order = Vec::new();
+        for part in library::PARTS {
+            let Some((_, first)) = wanted.iter().find(|(_, import)| import.module == part.module) else { continue };
+            if self.files.len() >= MOST_FILES {
+                self.errors.push(Error::new(format!("a program can have {MOST_FILES} files, and this would be one more"), first.span));
+                continue;
+            }
+            let number = self.files.len();
+            self.parts.insert(number);
+            self.numbers.insert(part.module.to_string(), number);
+            self.file(part.module.to_string(), 0, part.path.to_string(), part.source.to_string());
+            self.order.retain(|other| *other != number);
+            order.push(number);
+        }
+        order.append(&mut self.order);
+        self.order = order;
+        for (number, import) in wanted {
+            if let Some(unit) = self.units[number].as_mut() {
+                unit.imports.push(import);
+            }
+        }
+    }
+
     /// Rename the names of every file, and join the files into one program.
     fn join(&mut self) -> Result<Program, Vec<Error>> {
         // One for each file, and `None` for a `zeno.package`.
@@ -352,31 +411,137 @@ impl Loader<'_> {
         let strict = first.program.strict;
         let memory = first.program.memory;
         let private = first.program.private.clone();
-        let first_file: HashMap<String, bool> =
-            declarations(&first.program).into_iter().map(|(name, _, is_case)| (name, is_case)).collect();
+        let first_file: HashMap<String, (Span, bool)> =
+            declarations(&first.program).into_iter().map(|(name, span, is_case)| (name, (span, is_case))).collect();
 
         let mut errors = Vec::new();
-        for unit in units.iter_mut().flatten() {
+        // What the program's own files name of the library's parts.
+        let mut named: Vec<String> = Vec::new();
+        // For a part: what each of its functions names, and what the
+        // rest of the file names, with the names it takes to be Zeno's
+        // own that the program's first file has given another meaning.
+        let mut by_function: HashMap<String, Names> = HashMap::new();
+        let mut by_part: HashMap<String, Names> = HashMap::new();
+        for (number, unit) in units.iter_mut().enumerate() {
+            let Some(unit) = unit else { continue };
+            let is_part = self.parts.contains(&number);
             let mut renamer = Renamer::new(&unit.module, &declared, &hidden, &cases, &enums, &first_file);
+            renamer.is_part = is_part;
             renamer.imports(&unit.imports);
             renamer.own(&declarations(&unit.program));
             for statement in &mut unit.program.statements {
                 renamer.statement(statement, true);
+                if is_part {
+                    let names = std::mem::take(&mut renamer.names);
+                    match &statement.kind {
+                        StmtKind::Function(function) => drop(by_function.insert(function.name.clone(), names)),
+                        _ => by_part.entry(unit.module.clone()).or_default().add(names),
+                    }
+                }
             }
+            named.append(&mut renamer.names.used);
             errors.extend(renamer.errors);
-            // The imports of files have done their work.
-            unit.program.statements.retain(|statement| match &statement.kind {
-                StmtKind::Import { module, .. } => builtins::comes_with_zeno(&module.join(".")),
-                _ => true,
+            // The imports of files have done their work. So has the
+            // import of a module that is all written in Zeno, and of a
+            // name that is: the checker is shown the built-in ones.
+            unit.program.statements.retain_mut(|statement| {
+                let StmtKind::Import { module, names } = &mut statement.kind else { return true };
+                let module = module.join(".");
+                if !builtins::comes_with_zeno(&module) || library::all_in_zeno(&module) {
+                    return false;
+                }
+                let Some(in_zeno) = declared.get(&module).filter(|_| !is_part) else { return true };
+                let whole = names.is_empty();
+                names.retain(|name| !in_zeno.contains(name));
+                whole || !names.is_empty()
             });
+        }
+
+        // Which functions of the parts the program reaches: the ones
+        // its files name, the ones those name, and so on. A part that
+        // has one of its names reached is in the program, with all that
+        // is not a function, and what that names is reached too.
+        let part_modules: HashSet<String> = units
+            .iter()
+            .enumerate()
+            .filter(|(number, _)| self.parts.contains(number))
+            .filter_map(|(_, unit)| unit.as_ref().map(|unit| unit.module.clone()))
+            .collect();
+        let mut reached: HashSet<String> = HashSet::new();
+        let mut parts_in: HashSet<String> = HashSet::new();
+        let mut meanings: Vec<(String, String)> = Vec::new();
+        while let Some(name) = named.pop() {
+            let Some((module, _)) = name.rsplit_once('.') else { continue };
+            if !part_modules.contains(module) || !reached.insert(name.clone()) {
+                continue;
+            }
+            let rest = by_part.get(module).filter(|_| !parts_in.contains(module));
+            parts_in.insert(module.to_string());
+            for names in by_function.get(&name).into_iter().chain(rest) {
+                named.extend(names.used.iter().cloned());
+                meanings.extend(names.taken.iter().map(|taken| (name.clone(), taken.clone())));
+            }
+        }
+        // A name the part takes to be Zeno's own, such as `len`, would
+        // mean the program's `len` once the two are joined.
+        meanings.sort();
+        meanings.dedup_by(|a, b| a.1 == b.1);
+        for (user, taken) in meanings {
+            let (span, _) = first_file[&taken];
+            errors.push(Error::new(
+                format!(
+                    "this program uses `{user}`, which is written in Zeno and uses the `{taken}` that comes with \
+                     Zeno. So the program cannot give `{taken}` a meaning of its own here. Give this one another name"
+                ),
+                span,
+            ));
         }
         if !errors.is_empty() {
             return Err(errors);
         }
+        for (number, unit) in units.iter_mut().enumerate() {
+            let Some(unit) = unit.as_mut().filter(|_| self.parts.contains(&number)) else { continue };
+            let is_in = parts_in.contains(&unit.module);
+            unit.program.statements.retain(|statement| match &statement.kind {
+                StmtKind::Function(function) => reached.contains(&function.name),
+                _ => is_in,
+            });
+        }
+        // A part that was read and that the program does not use after
+        // all is taken off the end again, so that the program is the
+        // one it would have been.
+        while self.parts.contains(&(units.len() - 1)) && units.last().is_some_and(|unit| unit.as_ref().is_some_and(|unit| !parts_in.contains(&unit.module))) {
+            let number = units.len() - 1;
+            units.pop();
+            self.files.pop();
+            self.parts.remove(&number);
+            self.order.retain(|other| *other != number);
+        }
 
-        let mut statements = Vec::new();
+        // Two files can each import a module that comes with Zeno. In
+        // the one program they are joined into, it is imported once.
+        let mut statements: Vec<Stmt> = Vec::new();
+        let mut whole: HashSet<String> = HashSet::new();
+        let mut by_name: HashSet<(String, String)> = HashSet::new();
         for &number in &self.order {
-            statements.append(&mut units[number].as_mut().expect("a file in the order was read").program.statements);
+            let unit = units[number].as_mut().expect("a file in the order was read");
+            let (mut whole_here, mut by_name_here) = (Vec::new(), Vec::new());
+            unit.program.statements.retain_mut(|statement| {
+                let StmtKind::Import { module, names } = &mut statement.kind else { return true };
+                let module = module.join(".");
+                if names.is_empty() {
+                    whole_here.push(module.clone());
+                    return !whole.contains(&module);
+                }
+                names.retain(|name| {
+                    by_name_here.push((module.clone(), name.clone()));
+                    !by_name.contains(&(module.clone(), name.clone()))
+                });
+                !names.is_empty()
+            });
+            whole.extend(whole_here);
+            by_name.extend(by_name_here);
+            statements.append(&mut unit.program.statements);
         }
         let modules = units
             .iter()
@@ -719,8 +884,8 @@ struct Renamer<'a> {
     /// The cases of every enum of the program, by the enum's full name.
     enums: &'a HashMap<String, Vec<String>>,
     /// What the program's first file declares at its top, and whether
-    /// each is an enum case.
-    first_file: &'a HashMap<String, bool>,
+    /// each is an enum case, with where it is declared.
+    first_file: &'a HashMap<String, (Span, bool)>,
     /// The modules this file imports whole, with `import shapes`: as
     /// the file writes each, and its name in the whole program.
     whole: HashMap<String, String>,
@@ -736,7 +901,37 @@ struct Renamer<'a> {
     /// The names declared by the functions and blocks around the place
     /// the walk is at, the innermost last.
     scopes: Vec<HashSet<String>>,
+    /// True for a part of Zeno's library that is written in Zeno.
+    is_part: bool,
+    /// What has been named since this was last taken away.
+    names: Names,
     errors: Vec<Error>,
+}
+
+/// What a stretch of a file names, for `Loader::join` to work out which
+/// functions of the library's parts a program reaches.
+#[derive(Default)]
+struct Names {
+    /// The full names, of this file's own declarations and of what it
+    /// imports, that were used.
+    used: Vec<String>,
+    /// In a part of the library: the names it takes to be Zeno's own,
+    /// such as `len`, that the program's first file also declares.
+    taken: Vec<String>,
+}
+
+impl Names {
+    fn add(&mut self, mut other: Names) {
+        self.used.append(&mut other.used);
+        self.taken.append(&mut other.taken);
+    }
+}
+
+/// True for a module that has a built-in part beside the part of it
+/// that is written in Zeno, as `math` has. What the written part does
+/// not declare is then left as it is, for the checker.
+fn built_in_too(module: &str) -> bool {
+    library::part(module).is_some_and(|part| part.built_in_too)
 }
 
 impl<'a> Renamer<'a> {
@@ -746,7 +941,7 @@ impl<'a> Renamer<'a> {
         hidden: &'a HashMap<String, Vec<String>>,
         cases: &'a HashSet<String>,
         enums: &'a HashMap<String, Vec<String>>,
-        first_file: &'a HashMap<String, bool>,
+        first_file: &'a HashMap<String, (Span, bool)>,
     ) -> Renamer<'a> {
         Renamer {
             module,
@@ -760,6 +955,8 @@ impl<'a> Renamer<'a> {
             top: HashMap::new(),
             from: HashMap::new(),
             scopes: Vec::new(),
+            is_part: false,
+            names: Names::default(),
             errors: Vec::new(),
         }
     }
@@ -811,7 +1008,9 @@ impl<'a> Renamer<'a> {
             }
             for name in &import.names {
                 if !names.contains(name) {
-                    self.error(no_such_name(module, name, names, &self.hidden[global]), import.span);
+                    if !built_in_too(global) {
+                        self.error(no_such_name(module, name, names, &self.hidden[global]), import.span);
+                    }
                     continue;
                 }
                 match self.from.get(name) {
@@ -883,6 +1082,12 @@ impl<'a> Renamer<'a> {
         }
         if let Some(full) = self.top.get(name.as_str()) {
             *name = full.clone();
+            self.names.used.push(full.clone());
+        } else if self.is_part && self.first_file.contains_key(name.as_str()) {
+            // A part of the library means the `len` that comes with
+            // Zeno. `Loader::join` says so at the program's own `len`,
+            // if the program reaches the function this is in.
+            self.names.taken.push(name.clone());
         } else if !self.module.is_empty() && self.first_file.contains_key(name.as_str()) {
             self.unseen(name, span);
         }
@@ -1047,7 +1252,15 @@ impl<'a> Renamer<'a> {
             // At the top of the file `Loader::file` has seen to it.
             StmtKind::Import { module, .. } => {
                 let module = module.join(".");
-                if !at_top && !builtins::comes_with_zeno(&module) {
+                if !at_top && library::all_in_zeno(&module) {
+                    self.error(
+                        format!(
+                            "`import {module}` goes at the top of the file, not inside a function or a block. \
+                             `{module}` is written in Zeno, and is joined to the program as a file of it is"
+                        ),
+                        span,
+                    );
+                } else if !at_top && !builtins::comes_with_zeno(&module) {
                     self.error(
                         format!(
                             "`import {module}` goes at the top of the file, not inside a function or a block. \
@@ -1108,7 +1321,7 @@ impl<'a> Renamer<'a> {
                     _ => {
                         // A case of the first file's would be compared
                         // with, where this file means a new variable.
-                        let is_case = self.first_file.get(name.as_str()) == Some(&true);
+                        let is_case = self.first_file.get(name.as_str()).is_some_and(|(_, is_case)| *is_case);
                         if is_case && !self.module.is_empty() && !self.is_local(name) {
                             let name = name.clone();
                             self.unseen(&name, span);
@@ -1229,7 +1442,13 @@ impl<'a> Renamer<'a> {
                 } else if let Some(global) = self.whole.get(&module) {
                     let names = &self.declared[global];
                     match names.contains(name) {
-                        true => expr.kind = ExprKind::Name(format!("{global}.{name}")),
+                        true => {
+                            let full = format!("{global}.{name}");
+                            self.names.used.push(full.clone());
+                            expr.kind = ExprKind::Name(full);
+                        }
+                        // `math.sqrt`: built in, and the checker's.
+                        false if built_in_too(global) => {}
                         false => self.error(no_such_name(&module, name, names, &self.hidden[global]), span),
                     }
                     return;
@@ -1245,7 +1464,7 @@ impl<'a> Renamer<'a> {
             }
         }
         // A module's name with nothing after it.
-        if let Some(module) = self.module_named(expr) {
+        if let Some(module) = self.module_named(expr).filter(|module| !self.whole.get(module).is_some_and(|global| built_in_too(global))) {
             let example = match self.whole.get(&module).and_then(|global| self.declared[global].first()) {
                 Some(name) => format!(", as in `{module}.{name}`"),
                 None => String::new(),
@@ -1412,6 +1631,173 @@ mod tests {
         assert_eq!(program(source), alone);
     }
 
+    // ----- The part of the library that is written in Zeno -----
+
+    #[test]
+    fn a_part_of_the_library_is_joined_like_a_file_of_the_program() {
+        let loaded = load("import math\nprint(math.gcd(12, 18), math.sqrt(4.0))\n");
+        let joined = loaded.program.expect("the program is joined");
+        // `gcd` is the part's and has the module's name in front, like
+        // a name of any file. `sqrt` is built in, and is left for the
+        // checker. `math` is imported once, though two files import it.
+        assert_eq!(
+            printer::print(&joined),
+            "import math\n\
+             function math.gcd(a: int, b: int) -> int\n    \
+                 var big = a\n    var small = b\n    \
+                 if (big < 0)\n        big = (-big)\n    \
+                 if (small < 0)\n        small = (-small)\n    \
+                 while (small != 0)\n        let rest = (big % small)\n        big = small\n        small = rest\n    \
+                 return big\n\
+             print(math.gcd(12, 18), math.sqrt(4.0))\n"
+        );
+        // The part is the last file, so the program's own files have
+        // the numbers they would have without it.
+        assert_eq!(loaded.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["test.zeno", "library/math.zeno"]);
+        assert!(joined.modules[0].strict);
+    }
+
+    #[test]
+    fn only_the_functions_a_program_reaches_are_joined() {
+        let functions = |source: &str| -> Vec<String> {
+            let joined = load(source).program.expect("the program is joined");
+            let mut names = Vec::new();
+            for statement in &joined.statements {
+                if let crate::ast::StmtKind::Function(function) = &statement.kind {
+                    names.push(function.name.clone());
+                }
+            }
+            names
+        };
+        // `hypot` uses `size`, which is private to the part.
+        assert_eq!(functions("import math\nprint(math.hypot(3.0, 4.0))\n"), ["math.size", "math.hypot"]);
+        // `tanh` is `sinh` over `cosh`, and both of those use `size`.
+        assert_eq!(functions("from math import tanh\nprint(tanh(1.0))\n"), ["math.size", "math.sinh", "math.cosh", "math.tanh"]);
+        assert_eq!(functions("import math\nlet f = math.clamp\n"), ["math.clamp"]);
+        // What is not a function comes with the part: the four numbers
+        // of `random`. `bits` needs `seed`, and nothing needs `number`.
+        let joined = load("import random\nprint(random.between(1, 6))\n").program.expect("the program is joined");
+        assert!(printer::print(&joined).starts_with("var random.a = 0\nvar random.b = 0\n"), "{}", printer::print(&joined));
+        assert_eq!(functions("import random\nprint(random.between(1, 6))\n"), ["random.bits", "random.seed", "random.between"]);
+        // A function of a file of the program can be what reaches it.
+        assert_eq!(
+            functions("import shapes\nprint(shapes.far(1.0))\n==> shapes.zeno\nimport math\nfunction far(x: float) -> float { return math.cosh(x) }\n"),
+            ["math.size", "math.cosh", "shapes.far"]
+        );
+    }
+
+    #[test]
+    fn a_program_that_names_nothing_of_a_part_is_the_program_it_was() {
+        // No word of the part: the part is not even read.
+        let source = "import math\nprint(math.sqrt(4.0))\n";
+        let alone = crate::parser::parse(crate::lexer::lex(source).unwrap()).unwrap();
+        let loaded = load(source);
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.program.unwrap(), alone);
+        // A word of the part that means something else here: the part
+        // is read, found to be of no use, and taken away again.
+        let source = "import math\nlet hypot = 3\nfunction clamp(n: int) -> int { return n }\nprint(math.sqrt(4.0), hypot, clamp(1))\n";
+        let alone = crate::parser::parse(crate::lexer::lex(source).unwrap()).unwrap();
+        let loaded = load(source);
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.program.unwrap(), alone);
+    }
+
+    #[test]
+    fn a_name_can_be_imported_from_either_part_of_a_module() {
+        let joined = load("from math import hypot, sqrt, pi\nprint(hypot(3.0, 4.0), sqrt(pi))\n").program.expect("the program is joined");
+        let text = printer::print(&joined);
+        // The import that is left names what is built in, for the checker.
+        assert!(text.contains("\nfrom math import sqrt, pi\nprint(math.hypot(3.0, 4.0), sqrt(pi))\n"), "{text}");
+        // With nothing built in to name, the line has done all its work.
+        let joined = load("from math import gcd\nprint(gcd(4, 6))\n").program.expect("the program is joined");
+        assert!(printer::print(&joined).ends_with("    return big\nprint(math.gcd(4, 6))\n"), "{}", printer::print(&joined));
+        // A module that is all in Zeno leaves no import behind.
+        let joined = load("import random\nfrom random import seed\nseed(7)\n").program.expect("the program is joined");
+        assert!(!printer::print(&joined).contains("import"), "{}", printer::print(&joined));
+    }
+
+    #[test]
+    fn a_mistake_about_a_part_says_what_to_do() {
+        assert_eq!(error("import random\nprint(random.dice())\n"), "module `random` has no `dice`. It has `seed`, `number`, `between` and `pick`");
+        assert_eq!(
+            error("import random\nprint(random.bits())\n"),
+            "`bits` is private in the module `random`: only its own file can use it. To use it from another file, take the word `private` off where it is declared"
+        );
+        assert_eq!(
+            error("import random\nprint(random)\n"),
+            "`random` is a module, not a value. Write `random.` and then a name from it, as in `random.seed`"
+        );
+        assert_eq!(
+            error("function throw() -> int {\n    import random\n    return random.between(1, 6)\n}\n"),
+            "`import random` goes at the top of the file, not inside a function or a block. \
+             `random` is written in Zeno, and is joined to the program as a file of it is"
+        );
+        // A name of the built-in part is the checker's to refuse.
+        assert!(load("import math\nprint(math.hypot(1.0, 2.0), math.nothing)\n").program.is_ok());
+    }
+
+    #[test]
+    fn a_part_means_the_names_that_come_with_zeno() {
+        // `random.pick` is written with `len`. If the program has a
+        // `len` of its own, the two would be one name once joined.
+        let (message, file, line) = mistake("import random\nfunction len(n: int) -> int { return n }\nprint(random.pick([1, 2]))\n");
+        assert_eq!(
+            message,
+            "this program uses `random.pick`, which is written in Zeno and uses the `len` that comes with Zeno. \
+             So the program cannot give `len` a meaning of its own here. Give this one another name"
+        );
+        assert_eq!((file, line), (0, 2));
+        // It is no mistake while the program does not reach `pick`.
+        assert!(load("import random\nfunction len(n: int) -> int { return n }\nprint(random.between(1, 2), len(3))\n").program.is_ok());
+        // And the part of `math` uses no such name at all, so a program
+        // is free to have an `abs`, a `max` or a `size` of its own.
+        let source = "import math\nfunction abs(n: int) -> int { return 7 }\nlet size = 2\nlet max = 3\nprint(math.hypot(3.0, 4.0), math.tanh(1.0), math.gcd(4, 6), math.clamp(1, 2, 3))\n";
+        assert!(load(source).program.is_ok());
+    }
+
+    #[test]
+    fn the_parts_are_what_library_rs_says_they_are() {
+        for part in crate::library::PARTS {
+            let tokens = crate::lexer::lex(part.source).unwrap_or_else(|errors| panic!("{}: {}", part.path, errors[0].message));
+            let parsed = crate::parser::parse(tokens).unwrap_or_else(|error| panic!("{}: {}", part.path, error.message));
+            // Every type is written, as a build asks.
+            assert!(parsed.strict, "{} does not begin with `strict`", part.path);
+            // The names it offers are the ones a file is searched for.
+            let private = super::private_names(&parsed);
+            let offered: Vec<String> = super::declarations(&parsed).into_iter().map(|(name, _, _)| name).filter(|name| !private.contains(name)).collect();
+            assert_eq!(offered, part.names, "{}", part.path);
+            // It imports the built-in part of its own module, and no more.
+            for statement in &parsed.statements {
+                if let crate::ast::StmtKind::Import { module, names } = &statement.kind {
+                    assert!(part.built_in_too && module.join(".") == part.module && names.is_empty(), "{} imports {module:?}", part.path);
+                }
+            }
+            // And it is a module that comes with Zeno.
+            assert!(crate::builtins::comes_with_zeno(part.module));
+            assert!(crate::builtins::MODULES.contains(&format!("`{}`", part.module)));
+        }
+    }
+
+    #[test]
+    fn two_files_can_import_one_module_that_comes_with_zeno() {
+        // Joined, the program imports it once. This used to be "`math`
+        // is already declared in this block", at the second of them.
+        let joined = program(
+            "import math\nimport shapes\nfrom math import pi\nprint(math.sqrt(4.0), shapes.round_area(1.0), pi)\n\
+             ==> shapes.zeno\nimport math\nfrom math import pi, floor\nfunction round_area(r: float) -> float { return floor(pi * r * r) + math.e }\n",
+        );
+        assert_eq!(
+            printer::print(&joined),
+            "import math\nfrom math import pi, floor\n\
+             function shapes.round_area(r: float) -> float\n    return (floor(((pi * r) * r)) + math.e)\n\
+             print(math.sqrt(4.0), shapes.round_area(1.0), pi)\n"
+        );
+        // Twice in one file is still one too many.
+        let twice = load("import math\nimport math\nprint(math.pi)\n").program.expect("the files are joined");
+        assert_eq!(printer::print(&twice), "import math\nimport math\nprint(math.pi)\n");
+    }
+
     #[test]
     fn the_names_of_an_imported_file_get_its_name_in_front() {
         let joined = program(&format!(
@@ -1567,7 +1953,7 @@ mod tests {
         assert_eq!(
             error("import shapes\nimport drivers.uart\nimport shapes\n"),
             "there is no module `shapes`. `import shapes` reads the file `shapes.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`"
         );
         assert_eq!(load("import shapes\nimport shapes\nfrom shapes import x\n").program.unwrap_err().len(), 1);
         assert_eq!(
@@ -1580,7 +1966,7 @@ mod tests {
             "`import shapes` goes at the top of the file, not inside a function or a block. \
              Only a module that comes with Zeno, such as `math`, can be imported in here"
         );
-        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`");
+        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`");
         assert_eq!(
             error("import test\n"),
             "`test.zeno` is the file the program starts in, and no file imports that one. \
@@ -1817,7 +2203,7 @@ mod tests {
         assert_eq!(
             needs("import filters\nimport control\n", "==> control.zeno\nlet x = 1\n==> lib/filters.zeno\nimport control\n"),
             "there is no module `control`. `import control` reads the file `lib/control.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node` and `java`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`"
         );
         // A file is one module, and a module is one file.
         assert_eq!(
