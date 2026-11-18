@@ -61,9 +61,21 @@
  * where `_setjmp` stored none: after a caught error the program could be
  * left with the write-fault signal held back, and hang on the next write
  * to a guarded page (decision 22.14). One pair everywhere avoids that, and
- * saves a system call per `try` on macOS. */
+ * saves a system call per `try` on macOS.
+ *
+ * On Windows `setjmp` is a macro that also hands over the frame of the
+ * function, and `longjmp` then unwinds the stack to that frame as for an
+ * exception of C++, which a Zeno program has no use for. Built by gcc 15
+ * with `-Os`, that unwinding stopped a program with a caught error
+ * (decision 32.1). MinGW says the frame itself, so there it is said to be
+ * none, which asks for a plain jump as on every other system, and as the
+ * LLVM build always asked. */
 #ifdef _WIN32
+#if defined(__MINGW32__) && defined(__x86_64__)
+#define zeno_setjmp(place) _setjmp(place, NULL)
+#else
 #define zeno_setjmp(place) setjmp(place)
+#endif
 #define zeno_longjmp(place) longjmp(place, 1)
 #else
 #define zeno_setjmp(place) _setjmp(place)

@@ -12312,3 +12312,58 @@ intuitive": a name that is right for `zeno run` and wrong for `zeno
 build` would be a rule of C showing through. Two classes that C would
 know by one name are still refused (`same_in_c`), since there a name
 would have to be made up for a type the program prints and compares.
+
+## 32. A `try` on Windows, in C
+
+Found while 0.5.2 was got ready (2026-11-18): the test
+`a_minimal_build_prints_what_zeno_run_prints_for_a_correct_program`
+passed on Linux and macOS and failed on Windows. The program it builds
+stopped at its first caught error and said nothing.
+
+### 32.1 Under MinGW a `try` is a plain jump
+
+A `try` in C is `setjmp`, and an error is `longjmp` back to it (5.5i).
+On Windows `setjmp` is a macro, and MinGW writes it as
+`_setjmp(place, the frame of this function)`. `longjmp` then does not
+only jump. It walks the stack back to that frame with the machinery
+Windows has for the exceptions of C++ (`RtlUnwindEx`), so that the
+functions it passes can clean up.
+
+On GitHub's Windows machine, with gcc 15.2 and `-Os`, that walk failed.
+The program of the test, built with `--minimal` and the collector,
+ended with the number 0xC0000028 (Windows' "bad stack") where
+`int("4x2")` is caught. A debugger showed the place: `longjmp`, then
+`RtlUnwindEx`, then the stop. The same C built with `-O0`, `-O1` and
+`-O2` ran to its end, and so did five examples with `-Os`. The same C
+built by gcc 13 ran under Wine at every level.
+
+**Decision.** Under MinGW for x86-64 the runtime says
+`_setjmp(place, NULL)`. With no frame, `longjmp` puts the registers
+back and jumps, and walks nothing. Every C build has these lines, and
+they do something only there.
+
+**Why.** A Zeno program has nothing for the walk to do: its C has no
+clean-up code between a `raise` and its `try`. The walk can only go
+wrong, and where it went wrong the program could not say so. A plain
+jump is what `_setjmp` and `_longjmp` are on Linux and macOS (22.14),
+and what the LLVM build has asked for on Windows since it first ran
+there (12.8). So this makes the C build the same as
+the other, and Windows the same as the other systems.
+
+**Why not find what gcc 15 did.** It was looked for and not found from
+here: no machine at hand has that compiler, and a build on GitHub's
+takes ten minutes. The reason above does not depend on it. Whatever
+made the walk fail, a program that does not walk cannot meet it.
+
+**Why not only with `--minimal`.** `-Os` is where it was seen, and
+only `--minimal` asks for `-Os`. But the checked build has the same
+`setjmp` in the same functions, and nothing says `-O2` is safe by more
+than luck with where the compiler put things. One way to jump, in
+every build.
+
+**What is left as it was.** 32-bit MinGW already asked for no walk
+(`_setjmp3(place, NULL)` is its macro). Windows on ARM64 has only the
+`setjmp` that walks, and other compilers on Windows say `setjmp` in
+their own way, so those keep the macro. The trial workflow now builds
+six programs with `--minimal` on the machine it tries, and says where
+one that fails stopped.
