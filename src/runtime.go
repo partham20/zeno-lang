@@ -2770,6 +2770,49 @@ func zPut(name string, args []ZV, appending bool, line int) ZV {
 	return nil
 }
 
+func Zb_files_read_bytes(args []ZV, line int) ZV {
+	path := zPaths("read_bytes", args, 1, line)[0]
+	switch zAt(path) {
+	case "nothing":
+		zFileError("there is no file `"+path+"`", line)
+	case "other":
+		zFileError("cannot read `"+path+"`", line)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		zFileError("cannot read `"+path+"`", line)
+	}
+	out := make([]ZV, len(data))
+	for i, b := range data {
+		out[i] = int64(b)
+	}
+	return &ZList{out}
+}
+
+func Zb_files_write_bytes(args []ZV, line int) ZV {
+	zArity("write_bytes", args, 2, 2, line)
+	path := zText("write_bytes", args[0], line)
+	items, ok := args[1].(*ZList)
+	if !ok {
+		zWrongType("write_bytes", "a list[u8]", args[1], line)
+	}
+	data := make([]byte, len(items.items))
+	for i, item := range items.items {
+		n, ok := item.(int64)
+		if !ok {
+			zWrongType("write_bytes", "a list[u8]", item, line)
+		}
+		if n < 0 || n > 255 {
+			zRaise("ValueError", strconv.FormatInt(n, 10)+" is not a byte: a byte is a number from 0 to 255", line)
+		}
+		data[i] = byte(n)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		zFileError("cannot write `"+path+"`", line)
+	}
+	return nil
+}
+
 func Zb_files_write(args []ZV, line int) ZV  { return zPut("write", args, false, line) }
 func Zb_files_append(args []ZV, line int) ZV { return zPut("append", args, true, line) }
 func Zb_files_exists(args []ZV, line int) ZV {
@@ -2921,7 +2964,7 @@ func init() {
 		"math.atan": Zb_math_atan, "math.atan2": Zb_math_atan2, "math.exp": Zb_math_exp,
 		"math.log": Zb_math_log, "math.log2": Zb_math_log2, "math.log10": Zb_math_log10,
 		"time.sleep": Zb_time_sleep, "time.now": Zb_time_now,
-		"files.read": Zb_files_read, "files.write": Zb_files_write, "files.append": Zb_files_append,
+		"files.read": Zb_files_read, "files.write": Zb_files_write, "files.read_bytes": Zb_files_read_bytes, "files.write_bytes": Zb_files_write_bytes, "files.append": Zb_files_append,
 		"files.exists": Zb_files_exists, "files.remove": Zb_files_remove,
 		"program.arguments": Zb_program_arguments, "program.exit": Zb_program_exit, "program.environment": Zb_program_environment, "program.warn": Zb_program_warn, "json.parse": Zb_json_parse, "json.write": Zb_json_write,
 		"u8": Zb_u8, "u8.wrap": Zb_u8_wrap, "u16": Zb_u16, "u16.wrap": Zb_u16_wrap,

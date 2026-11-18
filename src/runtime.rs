@@ -2412,6 +2412,41 @@ mod z {
         put("write", &args, false, line)
     }
 
+    pub fn b_files_read_bytes(args: Vec<V>, line: usize) -> R {
+        let path = paths("read_bytes", &args, 1, line)?.remove(0);
+        match at(&path) {
+            At::Nothing => return file_error(format!("there is no file `{path}`"), line),
+            At::Other => return file_error(format!("cannot read `{path}`"), line),
+            At::File => {}
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(new_list(bytes.into_iter().map(|b| V::Int(b as i64)).collect())),
+            Err(_) => file_error(format!("cannot read `{path}`"), line),
+        }
+    }
+
+    pub fn b_files_write_bytes(args: Vec<V>, line: usize) -> R {
+        arity("write_bytes", &args, 2, 2, line)?;
+        let path = text("write_bytes", &args[0], line)?;
+        let V::List(items) = &args[1] else {
+            return wrong_type("write_bytes", "a list[u8]", &args[1], line);
+        };
+        let mut bytes = Vec::with_capacity(items.borrow().len());
+        for item in items.borrow().iter() {
+            match item {
+                V::Int(n) if (0..=255).contains(n) => bytes.push(*n as u8),
+                V::Int(n) => {
+                    return raise_error("ValueError", format!("{n} is not a byte: a byte is a number from 0 to 255"), line)
+                }
+                other => return wrong_type("write_bytes", "a list[u8]", other, line),
+            }
+        }
+        match std::fs::write(&*path, &bytes) {
+            Ok(()) => Ok(V::None),
+            Err(_) => file_error(format!("cannot write `{path}`"), line),
+        }
+    }
+
     pub fn b_files_append(args: Vec<V>, line: usize) -> R {
         put("append", &args, true, line)
     }
@@ -2575,6 +2610,8 @@ mod z {
             "time.now" => b_time_now,
             "files.read" => b_files_read,
             "files.write" => b_files_write,
+            "files.read_bytes" => b_files_read_bytes,
+            "files.write_bytes" => b_files_write_bytes,
             "files.append" => b_files_append,
             "files.exists" => b_files_exists,
             "files.remove" => b_files_remove,

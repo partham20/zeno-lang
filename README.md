@@ -693,6 +693,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     enum, so it is the same in every engine, build and target.
     See [`docs/enum-numbers.md`](docs/enum-numbers.md) and chapter 35
     of [`docs/decisions.md`](docs/decisions.md))
+37. Bytes from and to a file (done, after 0.5.1 and not yet
+    released: `files.read_bytes(path)` gives a `list[u8]`, whatever
+    the file holds, and `files.write_bytes(path, bytes)` writes one. In
+    every engine, every build and all fifteen target languages.
+    See [`docs/bytes.md`](docs/bytes.md) and chapter 36 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

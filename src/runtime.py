@@ -1975,6 +1975,39 @@ def _put(name, args, append, line):
     return None
 
 
+def _b_files_read_bytes(args, line):
+    (path,) = _paths("read_bytes", args, 1, line)
+    where = _at(path)
+    if where == "nothing":
+        _file_error("there is no file `" + path + "`", line)
+    if where == "other":
+        _file_error("cannot read `" + path + "`", line)
+    try:
+        with open(path, "rb") as f:
+            return list(f.read())
+    except OSError:
+        _file_error("cannot read `" + path + "`", line)
+
+
+def _b_files_write_bytes(args, line):
+    _arity("write_bytes", args, 2, 2, line)
+    path = _text("write_bytes", args[0], line)
+    items = args[1]
+    if type(items) is not list:
+        _wrong_type("write_bytes", "a list[u8]", items, line)
+    for n in items:
+        if type(n) is not int:
+            _wrong_type("write_bytes", "a list[u8]", n, line)
+        if n < 0 or n > 255:
+            _raise("ValueError", str(n) + " is not a byte: a byte is a number from 0 to 255", line)
+    try:
+        with open(path, "wb") as f:
+            f.write(bytes(items))
+    except OSError:
+        _file_error("cannot write `" + path + "`", line)
+    return None
+
+
 def _b_files_remove(args, line):
     (path,) = _paths("remove", args, 1, line)
     where = _at(path)
@@ -2032,6 +2065,8 @@ BUILTINS = {
     "time.now": _b_now,
     "files.read": _b_files_read,
     "files.write": lambda args, line: _put("write", args, False, line),
+    "files.read_bytes": _b_files_read_bytes,
+    "files.write_bytes": _b_files_write_bytes,
     "files.append": lambda args, line: _put("append", args, True, line),
     "files.exists": lambda args, line: _at(_paths("exists", args, 1, line)[0]) == "file",
     "files.remove": _b_files_remove,

@@ -1978,6 +1978,41 @@ final class Z {
 
     static Object b_files_write(Object[] args, int line) { return put("write", args, false, line); }
 
+    static Object b_files_read_bytes(Object[] args, int line) {
+        String path = paths("read_bytes", args, 1, line)[0];
+        String where = at(path);
+        if (where.equals("nothing")) throw fileError("there is no file `" + path + "`", line);
+        if (where.equals("other")) throw fileError("cannot read `" + path + "`", line);
+        byte[] data;
+        try {
+            data = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(path));
+        } catch (java.io.IOException e) {
+            throw fileError("cannot read `" + path + "`", line);
+        }
+        var items = new java.util.ArrayList<Object>(data.length);
+        for (byte b : data) items.add((long) (b & 0xFF));
+        return new ZList(items);
+    }
+
+    static Object b_files_write_bytes(Object[] args, int line) {
+        arity("write_bytes", args, 2, 2, line);
+        String path = text("write_bytes", args[0], line);
+        if (!(args[1] instanceof ZList list)) throw wrongType("write_bytes", "a list[u8]", args[1], line);
+        byte[] data = new byte[list.items.size()];
+        for (int i = 0; i < data.length; i++) {
+            Object item = list.items.get(i);
+            if (!(item instanceof Long n)) throw wrongType("write_bytes", "a list[u8]", item, line);
+            if (n < 0 || n > 255) throw raiseError("ValueError", n + " is not a byte: a byte is a number from 0 to 255", line);
+            data[i] = (byte) (long) n;
+        }
+        try (var out = new java.io.FileOutputStream(path, false)) {
+            out.write(data);
+        } catch (java.io.IOException e) {
+            throw fileError("cannot write `" + path + "`", line);
+        }
+        return null;
+    }
+
     static Object b_files_append(Object[] args, int line) { return put("append", args, true, line); }
 
     static Object b_files_exists(Object[] args, int line) { return at(paths("exists", args, 1, line)[0]).equals("file"); }
@@ -2114,6 +2149,8 @@ final class Z {
         BUILTINS.put("time.now", Z::b_time_now);
         BUILTINS.put("files.read", Z::b_files_read);
         BUILTINS.put("files.write", Z::b_files_write);
+        BUILTINS.put("files.read_bytes", Z::b_files_read_bytes);
+        BUILTINS.put("files.write_bytes", Z::b_files_write_bytes);
         BUILTINS.put("files.append", Z::b_files_append);
         BUILTINS.put("files.exists", Z::b_files_exists);
         BUILTINS.put("files.remove", Z::b_files_remove);

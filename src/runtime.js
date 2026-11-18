@@ -1486,6 +1486,28 @@ const Z = (function () {
       try { fs.writeFileSync(path, s); } catch (e) { fileError("cannot write `" + path + "`", line); }
       return null;
     },
+    "files.read_bytes"(args, line) {
+      const [path] = paths("read_bytes", args, 1, line);
+      const where = at(path);
+      if (where === "nothing") fileError("there is no file `" + path + "`", line);
+      if (where === "other") fileError("cannot read `" + path + "`", line);
+      let bytes;
+      try { bytes = fs.readFileSync(path); } catch (e) { fileError("cannot read `" + path + "`", line); }
+      return Array.from(bytes);
+    },
+    "files.write_bytes"(args, line) {
+      arity("write_bytes", args, 2, 2, line);
+      const path = text("write_bytes", args[0], line);
+      const items = args[1];
+      if (!Array.isArray(items)) wrongType("write_bytes", "a list[u8]", items, line);
+      for (const n of items) {
+        if (!isInt(n)) wrongType("write_bytes", "a list[u8]", n, line);
+        if (n < 0 || n > 255) raise("ValueError", String(n) + " is not a byte: a byte is a number from 0 to 255", line);
+      }
+      if (!inNode) fileError("cannot write `" + path + "`", line);
+      try { fs.writeFileSync(path, Uint8Array.from(items, Number)); } catch (e) { fileError("cannot write `" + path + "`", line); }
+      return null;
+    },
     "files.append"(args, line) {
       const [path, s] = paths("append", args, 2, line);
       if (!inNode) fileError("cannot write `" + path + "`", line);

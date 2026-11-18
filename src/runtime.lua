@@ -1949,6 +1949,33 @@ function Z.b_files_write(args, line)
   local path, s = paths("write", args, 2, line)
   return put(path, s, "wb", line)
 end
+function Z.b_files_read_bytes(args, line)
+  local path = paths("read_bytes", args, 1, line)
+  local where = at_path(path)
+  if where == "nothing" then file_error("there is no file `" .. path .. "`", line) end
+  if where == "other" then file_error("cannot read `" .. path .. "`", line) end
+  local file = io.open(path, "rb")
+  local s = file and file:read("a")
+  if file then file:close() end
+  if not s then file_error("cannot read `" .. path .. "`", line) end
+  local bytes = {}
+  for i = 1, #s do bytes[i] = s:byte(i) end
+  return list(bytes)
+end
+function Z.b_files_write_bytes(args, line)
+  arity("write_bytes", args, 2, 2, line)
+  local path = text("write_bytes", args[1], line)
+  local items = args[2]
+  if not is(items, List) then wrong_type("write_bytes", "a list[u8]", items, line) end
+  local pieces = {}
+  for i = 1, #items do
+    local n = items[i]
+    if mtype(n) ~= "integer" then wrong_type("write_bytes", "a list[u8]", n, line) end
+    if n < 0 or n > 255 then raise_("ValueError", tostring(n) .. " is not a byte: a byte is a number from 0 to 255", line) end
+    pieces[i] = string.char(n)
+  end
+  return put(path, table.concat(pieces), "wb", line)
+end
 function Z.b_files_append(args, line)
   local path, s = paths("append", args, 2, line)
   return put(path, s, "ab", line)

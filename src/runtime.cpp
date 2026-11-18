@@ -2350,6 +2350,45 @@ V b_files_write(const Args& args, int line) { return put("write", args, false, l
 
 V b_files_append(const Args& args, int line) { return put("append", args, true, line); }
 
+V b_files_read_bytes(const Args& args, int line) {
+    string path = paths("read_bytes", args, 1, line)[0];
+    string where = at(path);
+    if (where == "nothing") fileError("there is no file `" + path + "`", line);
+    if (where == "other") fileError("cannot read `" + path + "`", line);
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) fileError("cannot read `" + path + "`", line);
+    Args items;
+    unsigned char buf[65536];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0) {
+        for (size_t i = 0; i < got; i++) items.push_back(I(buf[i]));
+    }
+    bool bad = ferror(f);
+    fclose(f);
+    if (bad) fileError("cannot read `" + path + "`", line);
+    return list(items);
+}
+
+V b_files_write_bytes(const Args& args, int line) {
+    arity("write_bytes", args, 2, 2, line);
+    string path = text("write_bytes", args[0], line);
+    if (!args[1].is(K::LIST)) wrongType("write_bytes", "a list[u8]", args[1], line);
+    const Args& items = as<List>(args[1]).items;
+    string data;
+    data.reserve(items.size());
+    for (const V& item : items) {
+        if (item.t != V::INT) wrongType("write_bytes", "a list[u8]", item, line);
+        if (item.i < 0 || item.i > 255) raiseError("ValueError", std::to_string(item.i) + " is not a byte: a byte is a number from 0 to 255", line);
+        data.push_back((char)(unsigned char)item.i);
+    }
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) fileError("cannot write `" + path + "`", line);
+    bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+    ok = fclose(f) == 0 && ok;
+    if (!ok) fileError("cannot write `" + path + "`", line);
+    return V();
+}
+
 V b_files_exists(const Args& args, int line) { return B(at(paths("exists", args, 1, line)[0]) == "file"); }
 
 V b_files_remove(const Args& args, int line) {
@@ -2463,7 +2502,7 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
             {"math.asin", b_math_asin}, {"math.acos", b_math_acos}, {"math.atan", b_math_atan}, {"math.atan2", b_math_atan2},
             {"math.exp", b_math_exp}, {"math.log", b_math_log}, {"math.log2", b_math_log2}, {"math.log10", b_math_log10},
             {"time.sleep", b_time_sleep}, {"time.now", b_time_now},
-            {"files.read", b_files_read}, {"files.write", b_files_write}, {"files.append", b_files_append},
+            {"files.read", b_files_read}, {"files.write", b_files_write}, {"files.read_bytes", b_files_read_bytes}, {"files.write_bytes", b_files_write_bytes}, {"files.append", b_files_append},
             {"files.exists", b_files_exists}, {"files.remove", b_files_remove},
             {"program.arguments", b_program_arguments}, {"program.exit", b_program_exit}, {"program.environment", b_program_environment}, {"program.warn", b_program_warn}, {"json.parse", b_json_parse}, {"json.write", b_json_write},
         };

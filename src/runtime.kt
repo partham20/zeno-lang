@@ -2031,6 +2031,45 @@ object Z {
 
     fun b_files_write(args: Array<Any?>, line: Int): Any? = put("write", args, false, line)
 
+    fun b_files_read_bytes(args: Array<Any?>, line: Int): Any? {
+        val path = paths("read_bytes", args, 1, line)[0]
+        val where = at(path)
+        if (where == "nothing") fileError("there is no file `" + path + "`", line)
+        if (where == "other") fileError("cannot read `" + path + "`", line)
+        val data: ByteArray
+        try {
+            data = java.nio.file.Files.readAllBytes(java.io.File(path).toPath())
+        } catch (e: java.io.IOException) {
+            fileError("cannot read `" + path + "`", line)
+        }
+        val items = ArrayList<Any?>(data.size)
+        for (b in data) items.add((b.toInt() and 0xFF).toLong())
+        return items
+    }
+
+    fun b_files_write_bytes(args: Array<Any?>, line: Int): Any? {
+        arity("write_bytes", args, 2, 2, line)
+        val path = text("write_bytes", args[0], line)
+        val list = args[1] as? ArrayList<*> ?: wrongType("write_bytes", "a list[u8]", args[1], line)
+        val data = ByteArray(list.size)
+        for (i in data.indices) {
+            val n = list[i] as? Long ?: wrongType("write_bytes", "a list[u8]", list[i], line)
+            if (n < 0 || n > 255) raiseError("ValueError", n.toString() + " is not a byte: a byte is a number from 0 to 255", line)
+            data[i] = n.toByte()
+        }
+        try {
+            val out = java.io.FileOutputStream(path, false)
+            try {
+                out.write(data)
+            } finally {
+                out.close()
+            }
+        } catch (e: java.io.IOException) {
+            fileError("cannot write `" + path + "`", line)
+        }
+        return null
+    }
+
     fun b_files_append(args: Array<Any?>, line: Int): Any? = put("append", args, true, line)
 
     fun b_files_exists(args: Array<Any?>, line: Int): Any? = at(paths("exists", args, 1, line)[0]) == "file"
@@ -2182,6 +2221,8 @@ object Z {
         BUILTINS["time.now"] = ::b_time_now
         BUILTINS["files.read"] = ::b_files_read
         BUILTINS["files.write"] = ::b_files_write
+        BUILTINS["files.read_bytes"] = ::b_files_read_bytes
+        BUILTINS["files.write_bytes"] = ::b_files_write_bytes
         BUILTINS["files.append"] = ::b_files_append
         BUILTINS["files.exists"] = ::b_files_exists
         BUILTINS["files.remove"] = ::b_files_remove

@@ -20,6 +20,8 @@ write a file & \verb|files.write(path, text)| & nothing \\
 add to a file & \verb|files.append(path, text)| & nothing \\
 ask if a file is there & \verb|files.exists(path)| & \verb|bool| \\
 remove a file & \verb|files.remove(path)| & nothing \\
+read a file as bytes & \verb|files.read_bytes(path)| & \verb|list[u8]| \\
+write bytes to a file & \verb|files.write_bytes(path, bytes)| & nothing \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -245,7 +247,44 @@ uses a file says \verb|raises FileError|, or catches it.
 
 \verb|files.read| gives a \verb|str|, and a \verb|str| is characters,
 so the file must be UTF-8 text. A picture or any other bytes are
-refused with a \verb|FileError|. Reading bytes is not in version 0.1.
+refused with a \verb|FileError|.
+
+\subsection{Bytes}
+
+A file that is not text, such as a firmware image or a record a board
+wrote, is read with \verb|files.read_bytes|. It gives every byte of the
+file, as it is, in a \verb|list[u8]|: each byte is a number from 0 to
+255, and the list does all a list does. \verb|files.write_bytes| makes
+a file, or replaces what it held, with one byte for each item:
+
+\begin{zeno}
+import files
+
+let frame: list[u8] = [0x7E, 0x01, 0x00, 0xFF]
+files.write_bytes("frame.bin", frame)
+
+let back = files.read_bytes("frame.bin")
+print(len(back), back)
+var sum = 0
+for byte in back {
+    sum = (sum + byte) % 256
+}
+print(sum)
+
+files.write("name.txt", "é")
+print(files.read_bytes("name.txt"))
+files.remove("frame.bin")
+files.remove("name.txt")
+\end{zeno}
+
+The last lines show that text is stored as UTF-8: one \verb|é| is two
+bytes. The list given to \verb|write_bytes| is a \verb|list[u8]|, so
+every item fits in a byte; a number written out that does not, such as
+\verb|256|, is refused before the program runs, and a \verb|list[int]|
+is refused too, because it could hold anything. Write
+\verb|[u8(n) for n in numbers]| to say where the check is made. The
+errors are those of \verb|files.read|: no file, or one that cannot be
+read. (Decision 36.1.)
 
 \section{A worked example: a log book}
 
@@ -354,7 +393,8 @@ in the name, as above. Text that is not JSON raises a
 the words after the file. \verb|files.read|, \verb|write|,
 \verb|append|, \verb|exists| and \verb|remove| work on whole files of
 text, and every one but \verb|exists| may raise a \verb|FileError|,
-which can always be caught. \verb|json.parse| and \verb|json.write|
+which can always be caught. \verb|files.read_bytes| and
+\verb|write_bytes| work on a file as its bytes, in a \verb|list[u8]|. \verb|json.parse| and \verb|json.write|
 read and write JSON.
 \end{summary}
 
@@ -368,7 +408,8 @@ read and write JSON.
 \item Keep a counter in a file: each run reads it, adds one, writes it
   back, and prints it. What should the first run do?
 \item Try to read a picture with \verb|files.read| and read the
-  message.
+  message. Then read it with \verb|files.read_bytes|, and print its
+  first eight bytes. A PNG begins \verb|137, 80, 78, 71, 13, 10, 26, 10|.
 \item Keep the counter as JSON instead, \verb|{"runs": 3}|, with
   \verb|json.parse| and \verb|json.write|.
 \end{enumerate}

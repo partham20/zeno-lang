@@ -37,6 +37,8 @@ decisions behind each part are 6.11 to 6.20 in
 | Add to a file | `files.append(path, text)` | nothing | `FileError` |
 | Is there a file? | `files.exists(path)` | `bool` | never |
 | Remove a file | `files.remove(path)` | nothing | `FileError` |
+| Read a file as bytes | `files.read_bytes(path)` | `list[u8]` | `FileError` |
+| Write bytes to a file | `files.write_bytes(path, bytes)` | nothing | `FileError` |
 | The lines of a text | `text.lines()` | `list[str]` | never |
 | A line from the keyboard | `input()`, `input("Name: ")` | `str or none` | never |
 | The command line | `program.arguments()` | `list[str]` | never |
@@ -115,6 +117,10 @@ to be UTF-8 with no zero byte in it. Anything else is refused:
 ```
 FileError: `logo.png` does not hold text
 ```
+
+A file that is not text is read with `files.read_bytes`, which gives
+its bytes as a `list[u8]`, and written with `files.write_bytes`. They
+have a page of their own: [`bytes.md`](bytes.md).
 
 The interpreter asks Rust (`String::from_utf8`). A compiled program has
 its own test, `zeno_is_text` in `runtime.c`, about forty lines. The
@@ -437,9 +443,7 @@ can catch. The simulated board (`board.md`) is not involved.
 
 - **Large files.** A file is read whole. Reading in pieces needs an
   open file with an owner, and is left until a program needs it (6.12).
-- **Bytes.** A file that is not text cannot be read at all yet (6.16).
 - **Folders.** No listing, making or removing of folders.
-- **`program.exit(code)` and environment variables** (6.19).
 - **Typed text that is not UTF-8.** `zeno run` replaces the bad bytes
   with `�`. A compiled program passes them on as they came.
 

@@ -3321,6 +3321,51 @@ static const char *zeno_file_read(const char *path, const char **result) {
     return NULL;
 }
 
+/* The bytes of a file, one to an item of a list[u8] (decision 36.1). */
+static const char *zeno_file_read_bytes(const char *path, zeno_list **result) {
+    int at = zeno_file_at(path);
+    if (at == 0) return zeno_join(3, "there is no file `", path, "`");
+    FILE *file = at == 1 ? fopen(path, "rb") : NULL;
+    long size = -1;
+    if (file != NULL && fseek(file, 0, SEEK_END) == 0) size = ftell(file);
+    if (file == NULL || size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        if (file != NULL) (void)fclose(file);
+        return zeno_join(3, "cannot read `", path, "`");
+    }
+    zeno_list *bytes = zeno_list_new((int64_t)size);
+    unsigned char piece[512];
+    long left = size;
+    while (left > 0) {
+        size_t want = left < (long)sizeof piece ? (size_t)left : sizeof piece;
+        size_t got = fread(piece, 1, want, file);
+        if (got != want) {
+            (void)fclose(file);
+            return zeno_join(3, "cannot read `", path, "`");
+        }
+        for (size_t i = 0; i < got; i++) bytes->items[bytes->len++].i = piece[i];
+        left -= (long)got;
+    }
+    (void)fclose(file);
+    *result = bytes;
+    return NULL;
+}
+
+/* A list[u8] written out, one byte an item. Its items fit a byte: the
+ * checker saw to that. */
+static const char *zeno_file_put_bytes(const char *path, zeno_list *bytes) {
+    FILE *file = fopen(path, "wb");
+    bool good = file != NULL;
+    unsigned char piece[512];
+    int64_t done = 0;
+    while (good && done < bytes->len) {
+        size_t count = 0;
+        while (count < sizeof piece && done < bytes->len) piece[count++] = (unsigned char)bytes->items[done++].i;
+        good = fwrite(piece, 1, count, file) == count;
+    }
+    if (file != NULL && fclose(file) != 0) good = false;
+    return good ? NULL : zeno_join(3, "cannot write `", path, "`");
+}
+
 /* `mode` is "wb" to replace what the file held, and "ab" to add to it. */
 static const char *zeno_file_put(const char *path, const char *text, const char *mode) {
     FILE *file = fopen(path, mode);
@@ -3369,6 +3414,16 @@ static void zeno_files_remove(const char *path, int line, int col) {
     zeno_file_done(zeno_file_remove(path), line, col);
 }
 
+static zeno_list *zeno_files_read_bytes(const char *path, int line, int col) {
+    zeno_list *bytes = NULL;
+    zeno_file_done(zeno_file_read_bytes(path, &bytes), line, col);
+    return bytes != NULL ? bytes : zeno_list_new(0);
+}
+
+static void zeno_files_write_bytes(const char *path, zeno_list *bytes, int line, int col) {
+    zeno_file_done(zeno_file_put_bytes(path, bytes), line, col);
+}
+
 #else /* ZENO_FIRMWARE */
 
 static bool zeno_file_done(const char *wrong, int line, int col) {
@@ -3391,6 +3446,14 @@ static bool zeno_files_append(const char *path, const char *text, int line, int 
 
 static bool zeno_files_remove(const char *path, int line, int col) {
     return zeno_file_done(zeno_file_remove(path), line, col);
+}
+
+static bool zeno_files_read_bytes(const char *path, int line, int col, zeno_list **result) {
+    return zeno_file_done(zeno_file_read_bytes(path, result), line, col);
+}
+
+static bool zeno_files_write_bytes(const char *path, zeno_list *bytes, int line, int col) {
+    return zeno_file_done(zeno_file_put_bytes(path, bytes), line, col);
 }
 
 #endif /* ZENO_FIRMWARE */

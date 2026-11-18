@@ -2019,6 +2019,35 @@ module Z
       put(path, s, "wb", line)
     end
 
+    def b_files_read_bytes(args, line)
+      path, = paths("read_bytes", args, 1, line)
+      where = at_path(path)
+      file_error("there is no file `" + path + "`", line) if where == "nothing"
+      file_error("cannot read `" + path + "`", line) if where == "other"
+      begin
+        File.binread(path).bytes
+      rescue SystemCallError, IOError
+        file_error("cannot read `" + path + "`", line)
+      end
+    end
+
+    def b_files_write_bytes(args, line)
+      arity("write_bytes", args, 2, 2, line)
+      path = text("write_bytes", args[0], line)
+      items = args[1]
+      wrong_type("write_bytes", "a list[u8]", items, line) unless items.is_a?(Array)
+      items.each do |n|
+        wrong_type("write_bytes", "a list[u8]", n, line) unless n.is_a?(Integer)
+        raise_("ValueError", n.to_s + " is not a byte: a byte is a number from 0 to 255", line) if n < 0 || n > 255
+      end
+      begin
+        File.binwrite(path, items.pack("C*"))
+      rescue SystemCallError, IOError
+        file_error("cannot write `" + path + "`", line)
+      end
+      nil
+    end
+
     def b_files_append(args, line)
       path, s = paths("append", args, 2, line)
       put(path, s, "ab", line)

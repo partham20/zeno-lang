@@ -309,6 +309,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_files_write", "declare void @zeno_files_write(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_append", "declare void @zeno_files_append(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_remove", "declare void @zeno_files_remove(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_read_bytes", "declare ptr @zeno_files_read_bytes(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_write_bytes", "declare void @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_char_code", "declare i64 @zeno_char_code(ptr, i32 signext, i32 signext)"),
     ("zeno_char", "declare ptr @zeno_char(i64, i32 signext, i32 signext)"),
     ("zeno_list_sum_int", "declare i64 @zeno_list_sum_int(ptr, i32 signext, i32 signext)"),
@@ -937,6 +939,8 @@ const DECLARED_FOR_FIRMWARE: &[(&str, &str)] = &[
     ("zeno_files_write", "declare zeroext i1 @zeno_files_write(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_append", "declare zeroext i1 @zeno_files_append(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_remove", "declare zeroext i1 @zeno_files_remove(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_read_bytes", "declare zeroext i1 @zeno_files_read_bytes(ptr, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_write_bytes", "declare zeroext i1 @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
 ];
 
 /// The error for a list that would outlive the statement that owns it:
@@ -5232,6 +5236,35 @@ impl Emitter<'_> {
                     return Ok(self.came_back(text));
                 }
                 self.run(runtime, list);
+                Ok(Val::nothing())
+            }
+            // `files.read_bytes(path)`: a new list[u8], which is nobody's
+            // yet. `files.write_bytes(path, bytes)` lends the list to the
+            // runtime for the call (decision 36.1).
+            ("files", "read_bytes", [path]) if path.kind == Kind::Str => {
+                let returns = Kind::List(Box::new(Kind::Int));
+                let list = format!("ptr {}, {}", path.code, at(span));
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses("zeno_files_read_bytes");
+                    let call = format!("call zeroext i1 @zeno_files_read_bytes({list}");
+                    let bytes = self.checked_call(call, &returns, &["FileError".to_string()], span)?;
+                    return Ok(bytes.made());
+                }
+                let bytes = Val::new(self.call("ptr", "zeno_files_read_bytes", list), returns);
+                Ok(self.came_back(bytes).made())
+            }
+            ("files", "write_bytes", [path, bytes])
+                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Int)) =>
+            {
+                let list = format!("ptr {}, ptr {}, {}", path.code, bytes.code, at(span));
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses("zeno_files_write_bytes");
+                    let call = format!("call zeroext i1 @zeno_files_write_bytes({list}");
+                    return self.checked_call(call, &Kind::None, &["FileError".to_string()], span);
+                }
+                self.run("zeno_files_write_bytes", list);
                 Ok(Val::nothing())
             }
             // `program.arguments()`: a new list, which is nobody's yet.

@@ -2180,6 +2180,37 @@ static class Z
 
     public static object b_files_write(object[] args, int line) => put("write", args, false, line);
 
+    public static object b_files_read_bytes(object[] args, int line)
+    {
+        string path = paths("read_bytes", args, 1, line)[0];
+        string where = at(path);
+        if (where == "nothing") throw fileError("there is no file `" + path + "`", line);
+        if (where == "other") throw fileError("cannot read `" + path + "`", line);
+        byte[] data;
+        try { data = System.IO.File.ReadAllBytes(path); }
+        catch (System.Exception) { throw fileError("cannot read `" + path + "`", line); }
+        var items = new System.Collections.Generic.List<object>(data.Length);
+        foreach (byte b in data) items.Add((long)b);
+        return new ZList(items);
+    }
+
+    public static object b_files_write_bytes(object[] args, int line)
+    {
+        arity("write_bytes", args, 2, 2, line);
+        string path = text("write_bytes", args[0], line);
+        if (args[1] is not ZList list) throw wrongType("write_bytes", "a list[u8]", args[1], line);
+        var data = new byte[list.items.Count];
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (list.items[i] is not long n) throw wrongType("write_bytes", "a list[u8]", list.items[i], line);
+            if (n < 0 || n > 255) throw raiseError("ValueError", n + " is not a byte: a byte is a number from 0 to 255", line);
+            data[i] = (byte)n;
+        }
+        try { System.IO.File.WriteAllBytes(path, data); }
+        catch (System.Exception) { throw fileError("cannot write `" + path + "`", line); }
+        return null;
+    }
+
     public static object b_files_append(object[] args, int line) => put("append", args, true, line);
 
     public static object b_files_exists(object[] args, int line) => at(paths("exists", args, 1, line)[0]) == "file";
@@ -2311,7 +2342,7 @@ static class Z
             ["math.asin"] = b_math_asin, ["math.acos"] = b_math_acos, ["math.atan"] = b_math_atan, ["math.atan2"] = b_math_atan2,
             ["math.exp"] = b_math_exp, ["math.log"] = b_math_log, ["math.log2"] = b_math_log2, ["math.log10"] = b_math_log10,
             ["time.sleep"] = b_time_sleep, ["time.now"] = b_time_now,
-            ["files.read"] = b_files_read, ["files.write"] = b_files_write, ["files.append"] = b_files_append,
+            ["files.read"] = b_files_read, ["files.write"] = b_files_write, ["files.read_bytes"] = b_files_read_bytes, ["files.write_bytes"] = b_files_write_bytes, ["files.append"] = b_files_append,
             ["files.exists"] = b_files_exists, ["files.remove"] = b_files_remove,
             ["program.arguments"] = b_program_arguments, ["program.exit"] = b_program_exit, ["program.environment"] = b_program_environment, ["program.warn"] = b_program_warn, ["json.parse"] = b_json_parse, ["json.write"] = b_json_write,
         };

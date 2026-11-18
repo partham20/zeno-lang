@@ -4779,8 +4779,8 @@ bytes, so `"\r\n"` in a file from Windows arrives as `"\r\n"`, and
 `write` puts down exactly what it was given. `lines()` is where line
 ends are dealt with (6.17).
 
-*(was provisional: 11.3)* Bytes that are not text belong in a `list[u8]`, and a
-`files.read_bytes` that gives one is for the stage that needs it.
+*(was provisional: 11.3)* Bytes that are not text belong in a `list[u8]`:
+`files.read_bytes` gives one, and `files.write_bytes` takes one (36.1).
 
 ### 6.17 `lines()` is a method of text, and knows both line ends
 
@@ -7270,7 +7270,7 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 6.10 | The methods of text and lists are written in Rust and C, not in Zeno | Settled for 0.1 | Each is written once for the interpreter and once for the runtime, and the tests hold the two together. A library in Zeno is the natural next thing after 0.1, and 7.2 waits for it |
 | 6.12, 6.20 | A file is read whole. One too large to hold cannot be read in pieces | A limit of 0.1 | Reading in pieces needs an open file, which is a value with an owner and a moment at which it closes |
 | 6.14 | One kind of error for a file, `FileError` | Settled | The message says which it was, for a person. A program that must tell them apart asks first, with `files.exists` |
-| 6.16 | A file holds text. There is no `files.read_bytes` | A limit of 0.1 | It gives a `list[u8]`, and is worth having when that list is packed (5.13a) |
+| 6.16 | A file holds text. There is no `files.read_bytes` | Changed in 36.1: `files.read_bytes` and `files.write_bytes` | |
 | 6.19 | No `program.exit(code)`, and no environment variables | Changed in 34.1 to 34.3: `program.exit`, `program.environment` and `program.warn` | |
 | 6.21 | `hypot`, the hyperbolic functions, `gcd`, `clamp`, and random numbers | Changed in 33.7 and 33.8: written in Zeno, and the module `random` | |
 | 6.24 | `asin`, `acos`, `atan` and `atan2` give a quantity in `rad` | Settled | A float that is secretly an angle is what units are there to stop. Since 10.29 it prints with any number of decimals, which was the one thing that made it awkward |
@@ -12896,3 +12896,77 @@ needs a list of an enum's cases as a value; it is the next thing for
 this chapter. **A case that is a set of bits** (`Read | Write`), for a
 register of flags: that is a different thing from one number per case,
 and wants a type of its own.
+
+## 36. Bytes
+
+```zeno
+import files
+
+let frame: list[u8] = [0x7E, 0x01, 0x00, 0xFF]
+files.write_bytes("frame.bin", frame)
+let back = files.read_bytes("frame.bin")     # list[u8]
+print(back[0])                                # 126
+```
+
+A firmware image, a capture from a logic analyser, a record a board
+wrote to its flash: none of these is text, and until now Zeno could not
+open them (6.16). This chapter is the first of three about bytes. It
+gives a file as its bytes. The second stores a `list[u8]` one byte to
+an item in C and LLVM (5.13a), and the third gives a list a fixed
+length. Walkthrough: [`bytes.md`](bytes.md).
+
+### 36.1 `files.read_bytes` gives a `list[u8]`, and `files.write_bytes` takes one
+
+**A byte is a `u8`, and a file of bytes is a `list[u8]`.** Zeno has had
+both since 0.1, so nothing new has to be learned: an item is a number
+from 0 to 255, `len` is the size of the file, `for b in bytes` walks
+it, and every method of a list works. **Turned down: a `bytes` type of
+its own**, as Python and Go have. It would be a second kind of list,
+with its own methods to learn and its own rules for what goes in. What
+a `bytes` type buys is a compact list, and that is a question of how a
+`list[u8]` is stored, which the second part of this chapter answers
+for every `list[u8]`, not only the ones that came from a file.
+
+**Two functions with names of their own**, beside `read` and `write`.
+**Turned down: `files.read(path, binary: true)`.** What a call gives
+back would then depend on the value of an argument, and the checker
+would have to know it; `read_bytes` says on the page what it gives.
+
+**Everything the file holds, as it holds it.** No byte is changed, and
+none is refused: a zero, a byte that is no UTF-8, a `"\r\n"` all arrive
+as numbers. The errors are those of `files.read`: no file, or one that
+cannot be read (a folder, or a file this program may not open), as a
+`FileError` that every kind of build can catch. There is no third,
+because nothing is required of the content.
+
+**`write_bytes` makes the file, or replaces what was in it**, as
+`files.write` does, with one byte for each item. The list is a
+`list[u8]`, so its items fit in a byte, and a number written out that
+does not fit is refused before the program runs (`256 does not fit in
+a u8 (0 to 255)`). A list of `int`s is refused too: it may hold
+anything, and turning it into bytes would have to drop what does not
+fit. `[u8(n) for n in numbers]` says where the check is. The one list
+whose items are not known until the program runs, one that came from
+`json.parse`, is looked at item by item, and an item that is no byte is
+a `ValueError` that names it.
+
+**The list is new at each call**, so it can be kept by an owner in a
+build with no collector: `let frame: owned list[u8] = files.read_bytes(path)`.
+
+**How it is built.** `zeno run` and the VM read the file with Rust's
+`std::fs::read`. C and LLVM call `zeno_files_read_bytes` in
+`runtime.c`, which reads in pieces of 512 bytes into a list with room
+for the whole file, and in a firmware build says whether it worked, as
+`files.read` does. Each target language uses its own way of reading a
+file as bytes (`list(f.read())` in Python, `File.binread(path).bytes`
+in Ruby, `os.ReadFile` in Go).
+
+### 36.2 Left for later
+
+**Text from bytes, and bytes from text** (the UTF-8 of a `str`, and a
+`str` from bytes that are UTF-8), which a protocol that carries a name
+wants. It is a pair of functions with an error for bytes that are not
+text, and waits until a program asks. **`files.append_bytes`**, for a
+log of records, the same. **A file read in pieces**, for a file too big
+to hold, waits for cleaning up at the end of a block, as it does for
+text.

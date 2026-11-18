@@ -1,0 +1,64 @@
+# Bytes from and to a file, at their edges (decision 36.1).
+import files
+import json
+let path = "zeno-targets-edge-bytes.bin"
+function attempt(what: str, action: function() -> str) {
+    try {
+        print(what, "->", action())
+    } except FileError as e {
+        print(what, "-> FileError:", e.message)
+    } except ValueError as e {
+        print(what, "-> ValueError:", e.message)
+    }
+}
+# Every byte there is, written and read back.
+let every: list[u8] = [u8(n) for n in range(256)]
+files.write_bytes(path, every)
+let back = files.read_bytes(path)
+print(len(back), back == every, back[0], back[127], back[128], back[255])
+# A file that is not text, and one with a zero byte, read as bytes.
+print(files.read_bytes("edge-files.bytes"))
+print(files.read_bytes("edge-files.nul"))
+# Text written, and read as the bytes of its UTF-8.
+files.write(path, "é😀\n")
+print(files.read_bytes(path))
+# Bytes written, and read as text.
+files.write_bytes(path, [0x7A, 0x65, 0x6E, 0x6F, 0xC3, 0xA9])
+print(files.read(path))
+# Nothing at all.
+let none_at_all: list[u8] = []
+files.write_bytes(path, none_at_all)
+print(files.read_bytes(path), len(files.read(path)))
+# A second write leaves nothing of the first.
+files.write_bytes(path, [1, 2, 3, 4, 5])
+files.write_bytes(path, [9])
+print(files.read_bytes(path))
+# Each item is a u8, so arithmetic on it is arithmetic on a number.
+var sum = 0
+for b in every {
+    sum += b
+}
+print(sum, every[200] * 2, -every[1])
+attempt("read missing", function() -> str { return str(files.read_bytes("zeno-targets-no-such-file.bin")) })
+attempt("read folder", function() -> str { return str(files.read_bytes(".")) })
+attempt("read empty name", function() -> str { return str(files.read_bytes("")) })
+attempt("write folder", function() -> str {
+    files.write_bytes(".", [1])
+    return "written"
+})
+attempt("write in missing folder", function() -> str {
+    files.write_bytes("zeno-targets-no-such-folder/x.bin", [1])
+    return "written"
+})
+# A list that only says what it holds when the program runs.
+attempt("not a byte", function() -> str {
+    files.write_bytes(path, json.parse("[1, 256]"))
+    return "written"
+})
+attempt("below a byte", function() -> str {
+    files.write_bytes(path, json.parse("[-1]"))
+    return "written"
+})
+print(files.read_bytes(path))
+files.remove(path)
+print(files.exists(path))

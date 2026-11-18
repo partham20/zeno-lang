@@ -1176,6 +1176,8 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             vec![
                 ("read", Value::Builtin(Builtin { name: "read", call: files_read })),
                 ("write", Value::Builtin(Builtin { name: "write", call: files_write })),
+                ("read_bytes", Value::Builtin(Builtin { name: "read_bytes", call: files_read_bytes })),
+                ("write_bytes", Value::Builtin(Builtin { name: "write_bytes", call: files_write_bytes })),
                 ("append", Value::Builtin(Builtin { name: "append", call: files_append })),
                 ("exists", Value::Builtin(Builtin { name: "exists", call: files_exists })),
                 ("remove", Value::Builtin(Builtin { name: "remove", call: files_remove })),
@@ -1323,6 +1325,47 @@ fn files_read(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     match String::from_utf8(bytes) {
         Ok(text) if !text.contains('\0') => Ok(Value::str(text)),
         _ => file_error(format!("`{path}` does not hold text"), span),
+    }
+}
+
+/// `files.read_bytes(path)`: everything in the file, as a `list[u8]`,
+/// one item a byte, whatever the file holds (decision 36.1).
+fn files_read_bytes(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let path = paths("read_bytes", &args, 1, span)?[0];
+    match at(path) {
+        At::Nothing => return file_error(format!("there is no file `{path}`"), span),
+        At::Other => return file_error(format!("cannot read `{path}`"), span),
+        At::File => {}
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Value::list(bytes.into_iter().map(|byte| Value::Int(byte as i64)).collect())),
+        Err(_) => file_error(format!("cannot read `{path}`"), span),
+    }
+}
+
+/// `files.write_bytes(path, bytes)` makes the file, or replaces what was
+/// in it, with one byte for each item of the list.
+fn files_write_bytes(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    use std::io::Write;
+    arity("write_bytes", &args, 2, 2, span)?;
+    let path = text("write_bytes", &args[0], span)?;
+    let Value::List(items) = &args[1] else {
+        return wrong_type("write_bytes", "a list[u8]", &args[1], span);
+    };
+    let mut bytes = Vec::with_capacity(items.borrow().len());
+    for item in items.borrow().iter() {
+        match item {
+            Value::Int(n) if (0..=255).contains(n) => bytes.push(*n as u8),
+            Value::Int(n) => {
+                return raise("ValueError", format!("{n} is not a byte: a byte is a number from 0 to 255"), span)
+            }
+            other => return wrong_type("write_bytes", "a list[u8]", other, span),
+        }
+    }
+    let file = std::fs::OpenOptions::new().write(true).truncate(true).create(true).open(path);
+    match file.and_then(|mut file| file.write_all(&bytes)) {
+        Ok(()) => Ok(Value::None),
+        Err(_) => file_error(format!("cannot write `{path}`"), span),
     }
 }
 

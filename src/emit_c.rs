@@ -4999,6 +4999,31 @@ impl Emitter<'_> {
                 }
                 Ok(self.called(call, &vals, returns))
             }
+            // `files.read_bytes(path)`: a new list[u8], which is nobody's
+            // yet. `files.write_bytes(path, bytes)` lends the list to the
+            // runtime for the call (decision 36.1).
+            ("files", "read_bytes", [path]) if path.kind == Kind::Str => {
+                let call = format!("zeno_files_read_bytes({}, {})", path.code, self.at(span));
+                let returns = Kind::List(Box::new(Kind::Int));
+                self.built = !self.collector;
+                let mut bytes = if self.firmware {
+                    self.checked_call(call, returns, &["FileError".to_string()], span)?
+                } else {
+                    self.called(call, &vals, returns)
+                };
+                bytes.made = true;
+                Ok(bytes)
+            }
+            ("files", "write_bytes", [path, bytes])
+                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Int)) =>
+            {
+                let call = format!("zeno_files_write_bytes({}, {}, {})", path.code, bytes.code, self.at(span));
+                self.built = !self.collector;
+                if self.firmware {
+                    return self.checked_call(call, Kind::None, &["FileError".to_string()], span);
+                }
+                Ok(self.called(call, &vals, Kind::None))
+            }
             // `program.arguments()`: a new list, which is nobody's yet.
             ("program", "arguments", []) => {
                 self.arguments = true;
@@ -13292,6 +13317,58 @@ try {
                  print(first(\"{path}\"))\n"
             ),
         );
+    }
+
+    /// `files.read_bytes` and `files.write_bytes` (decision 36.1). Each
+    /// list has an owner, so that the build with no collector takes it.
+    const BYTES: &str = r#"import files
+
+function checksum(bytes: owned list[u8]) -> int {
+    var sum = 0
+    for b in bytes {
+        sum = (sum + b) % 256
+    }
+    return sum
+}
+
+let path = "PATH"
+let frame: owned list[u8] = [0x7E, 0x00, 0xFF, 0x0A, 0x00]
+files.write_bytes(path, frame)
+let back: owned list[u8] = files.read_bytes(path)
+print(len(back), checksum(back), back[2] + 1)
+print(back)
+files.write(path, "தமிழ்")
+let text: owned list[u8] = files.read_bytes(path)
+print(len(text), text[0], text[len(text) - 1])
+let hi: owned list[u8] = [72, 105, 10]
+files.write_bytes(path, hi)
+print(files.read(path))
+let empty: owned list[u8] = []
+files.write_bytes(path, empty)
+let nothing: owned list[u8] = files.read_bytes(path)
+print(len(nothing), files.read(path) == "")
+files.remove(path)
+try {
+    let gone: owned list[u8] = files.read_bytes(path)
+    print(len(gone))
+} except FileError as error {
+    print(error.message)
+}
+try {
+    files.write_bytes("PATH/no/such/folder.bin", frame)
+} except FileError as error {
+    print(error.message)
+}
+"#;
+
+    #[test]
+    fn bytes_from_and_to_a_file_are_the_same_in_every_build() {
+        let source = BYTES.replace("PATH", &scratch("bytes.bin"));
+        no_collector_as_interpreter("bytes", &source);
+        same_as_interpreter("bytes-collected", &source);
+        // Uncaught, it stops the program as `files.read` does.
+        let path = scratch("bytes-uncaught.bin");
+        same_as_interpreter("bytes-uncaught", &format!("import files\nprint(len(files.read_bytes(\"{path}\")))\n"));
     }
 
     #[test]

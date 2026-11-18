@@ -1160,6 +1160,13 @@ mod tests {
         output
     }
 
+    /// The first thing the checker says about a program.
+    fn check_error(source: &str) -> String {
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let complaints = crate::checker::check(&program, false);
+        complaints.first().map(|complaint| complaint.message.clone()).unwrap_or_default()
+    }
+
     /// The message a failing program stops with.
     fn error(source: &str) -> String {
         run(source).1.expect_err("the program should have failed")
@@ -1280,6 +1287,43 @@ mod tests {
             "from files import write, read, remove\nwrite(\"{path}\", \"x\")\nprint(read(\"{path}\"))\nremove(\"{path}\")"
         );
         assert_eq!(output(&source), "x\n");
+    }
+
+    #[test]
+    fn a_file_is_read_and_written_as_bytes() {
+        let path = scratch("bytes.bin");
+        let source = format!(
+            "import files\nlet path = \"{path}\"\n\
+             files.write_bytes(path, [0, 1, 127, 128, 255])\n\
+             print(files.read_bytes(path))\n\
+             files.write(path, \"é\")\n\
+             print(files.read_bytes(path))\n\
+             let every: list[u8] = [u8(n) for n in range(256)]\n\
+             files.write_bytes(path, every)\n\
+             print(files.read_bytes(path) == every)\n\
+             files.remove(path)\n"
+        );
+        assert_eq!(output(&source), "[0, 1, 127, 128, 255]\n[195, 169]\ntrue\n");
+        assert_eq!(
+            error(&format!("import files\nprint(files.read_bytes(\"{path}\"))")),
+            format!("uncaught FileError: there is no file `{path}`")
+        );
+        // A list that says what it holds only when the program runs is
+        // looked at item by item.
+        assert_eq!(
+            error(&format!("import files\nimport json\nfiles.write_bytes(\"{path}\", json.parse(\"[1, 300]\"))")),
+            "uncaught ValueError: 300 is not a byte: a byte is a number from 0 to 255"
+        );
+        // A byte is a u8: a number written out must fit, and a list of
+        // ints is not a list of bytes.
+        assert_eq!(
+            check_error("import files\nfiles.write_bytes(\"x\", [1, 256])"),
+            "256 does not fit in a u8 (0 to 255)"
+        );
+        assert_eq!(
+            check_error("import files\nlet xs = [1, 2]\nfiles.write_bytes(\"x\", xs)"),
+            "the bytes given to `files.write_bytes` should be list[u8], but this is list[int]"
+        );
     }
 
     #[test]

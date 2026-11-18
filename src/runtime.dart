@@ -2180,6 +2180,40 @@ class Z {
 
   static Object? b_files_write(List<Object?> args, int line) => put("write", args, false, line);
 
+  static Object? b_files_read_bytes(List<Object?> args, int line) {
+    final path = paths("read_bytes", args, 1, line)[0];
+    final where = at(path);
+    if (where == "nothing") fileError("there is no file `" + path + "`", line);
+    if (where == "other") fileError("cannot read `" + path + "`", line);
+    Uint8List data;
+    try {
+      data = File(path).readAsBytesSync();
+    } on FileSystemException {
+      fileError("cannot read `" + path + "`", line);
+    }
+    return List<Object?>.of(data);
+  }
+
+  static Object? b_files_write_bytes(List<Object?> args, int line) {
+    arity("write_bytes", args, 2, 2, line);
+    final path = text("write_bytes", args[0], line);
+    final items = args[1];
+    if (items is! List<Object?>) wrongType("write_bytes", "a list[u8]", items, line);
+    final data = Uint8List(items.length);
+    for (var i = 0; i < data.length; i++) {
+      final n = items[i];
+      if (n is! int) wrongType("write_bytes", "a list[u8]", n, line);
+      if (n < 0 || n > 255) raiseError("ValueError", n.toString() + " is not a byte: a byte is a number from 0 to 255", line);
+      data[i] = n;
+    }
+    try {
+      File(path).writeAsBytesSync(data);
+    } on FileSystemException {
+      fileError("cannot write `" + path + "`", line);
+    }
+    return null;
+  }
+
   static Object? b_files_append(List<Object?> args, int line) => put("append", args, true, line);
 
   static Object? b_files_exists(List<Object?> args, int line) => at(paths("exists", args, 1, line)[0]) == "file";
@@ -2331,6 +2365,8 @@ class Z {
     "time.now": b_time_now,
     "files.read": b_files_read,
     "files.write": b_files_write,
+    "files.read_bytes": b_files_read_bytes,
+    "files.write_bytes": b_files_write_bytes,
     "files.append": b_files_append,
     "files.exists": b_files_exists,
     "files.remove": b_files_remove,

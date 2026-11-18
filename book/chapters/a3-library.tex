@@ -130,6 +130,8 @@ Name & Is \\
 \verb|write(path, text)|, \verb|append(path, text)| & writes, or adds to the end \\
 \verb|exists(path)| & \verb|bool| \\
 \verb|remove(path)| & removes the file \\
+\verb|read_bytes(path)| & the whole file, as a \verb|list[u8]| \\
+\verb|write_bytes(path, bytes)| & writes a \verb|list[u8]|, one byte an item \\
 \midrule
 \multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{23})} \\
 \verb|arguments()| & the words after the file \\

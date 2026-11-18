@@ -1,0 +1,75 @@
+# hexdump: show the bytes of any file, sixteen to a line, as `xxd` does,
+# and a checksum of the whole file.
+#
+#     zeno run examples/hexdump.zeno firmware.bin
+#
+# With no file named, it writes a small one of its own and shows that.
+import files
+import program
+
+# The checksum many boot loaders use: CRC-16/CCITT, with the bits taken
+# from the top, starting from 0xFFFF.
+function crc16(bytes: list[u8]) -> int {
+    var crc = 0xFFFF
+    for byte in bytes {
+        crc = crc ^ (byte << 8)
+        for bit in range(8) {
+            if crc & 0x8000 != 0 {
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            } else {
+                crc = (crc << 1) & 0xFFFF
+            }
+        }
+    }
+    return crc
+}
+
+# A byte as the character it is, when it is one that can be printed.
+function shown(byte: int) -> str {
+    if byte >= 32 and byte < 127 {
+        return char(byte)
+    }
+    return "."
+}
+
+function dump(bytes: list[u8]) {
+    var offset = 0
+    while offset < len(bytes) {
+        var hex = ""
+        var text = ""
+        for i in range(16) {
+            if offset + i < len(bytes) {
+                let byte = bytes[offset + i]
+                hex += f"{byte:02x} "
+                text += shown(byte)
+            } else {
+                hex += "   "
+            }
+        }
+        print(f"{offset:08x}  {hex} {text}")
+        offset += 16
+    }
+}
+
+var path = "hexdump-sample.bin"
+let words = program.arguments()
+if len(words) == 1 {
+    path = words[0]
+} else {
+    # A frame of a made-up serial protocol: a start byte, a length, the
+    # payload, and an end byte.
+    let sample: list[u8] = [0x7E, 0x0B, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x62, 0x6F, 0x61, 0x72, 0x64, 0x21, 0x00, 0xFF, 0x7E]
+    files.write_bytes(path, sample)
+}
+
+try {
+    let bytes = files.read_bytes(path)
+    dump(bytes)
+    print(f"{len(bytes)} bytes, CRC-16 {crc16(bytes):04x}")
+} except FileError as error {
+    program.warn(error.message)
+    program.exit(1)
+}
+if len(words) != 1 {
+    files.remove(path)
+}

@@ -1622,6 +1622,8 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("time", "now") => Ty::Builtin("now"),
         ("files", "read") => Ty::Builtin("files.read"),
         ("files", "write") => Ty::Builtin("files.write"),
+        ("files", "read_bytes") => Ty::Builtin("files.read_bytes"),
+        ("files", "write_bytes") => Ty::Builtin("files.write_bytes"),
         ("files", "append") => Ty::Builtin("files.append"),
         ("files", "exists") => Ty::Builtin("files.exists"),
         ("files", "remove") => Ty::Builtin("files.remove"),
@@ -5368,8 +5370,9 @@ impl Checker {
                     Some(ty) => ty,
                     None => self.call(&callee, arguments, span),
                 };
-                if matches!(callee, Ty::Builtin("program.arguments")) {
-                    // The list of arguments is new at each call.
+                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes")) {
+                    // The list of arguments, and the bytes of a file, are
+                    // new at each call.
                     self.types.made.insert(expr as *const Expr as usize);
                 }
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
@@ -6046,6 +6049,23 @@ impl Checker {
                     "exists" => Ty::Bool,
                     _ => Ty::None,
                 }
+            }
+            // `files.read_bytes(path)` and `files.write_bytes(path, bytes)`:
+            // a file as the bytes it holds, one `u8` an item (36.1).
+            "files.read_bytes" | "files.write_bytes" => {
+                let short = &name["files.".len()..];
+                let bytes = Ty::List(Box::new(Ty::Sized(ints::WIDTHS[0])));
+                let count = if short == "write_bytes" { 2 } else { 1 };
+                if self.arity(short, arguments, count, count, span) {
+                    self.expect(&first, &Ty::Str, &format!("the path given to `files.{short}`"), arguments[0].span);
+                    if count == 2 {
+                        let given = &arguments[1];
+                        let ty = self.adapted(given.written.clone(), given.ty.clone(), &bytes, given.span);
+                        self.expect(&ty, &bytes, "the bytes given to `files.write_bytes`", given.span);
+                    }
+                }
+                self.can_raise("FileError", span);
+                if short == "read_bytes" { bytes } else { Ty::None }
             }
             // `input()`, `input("Name: ")`: a line from the keyboard, or
             // `none` when there are no more. The answer has to be tested

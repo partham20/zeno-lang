@@ -1608,6 +1608,26 @@ final class Z {
         return null;
     }
     static function b_files_write(array $args, int $line) { [$path, $s] = self::paths("write", $args, 2, $line); return self::put($path, $s, 0, $line); }
+    static function b_files_read_bytes(array $args, int $line) {
+        [$path] = self::paths("read_bytes", $args, 1, $line);
+        $where = self::at($path);
+        if ($where === "nothing") self::fileError("there is no file `" . $path . "`", $line);
+        if ($where === "other") self::fileError("cannot read `" . $path . "`", $line);
+        $s = @file_get_contents($path);
+        if ($s === false) self::fileError("cannot read `" . $path . "`", $line);
+        return new ZList($s === "" ? [] : array_values(unpack("C*", $s)));
+    }
+    static function b_files_write_bytes(array $args, int $line) {
+        self::arity("write_bytes", $args, 2, 2, $line);
+        $path = self::text("write_bytes", $args[0], $line);
+        $items = $args[1];
+        if (!($items instanceof ZList)) self::wrongType("write_bytes", "a list[u8]", $items, $line);
+        foreach ($items->v as $n) {
+            if (!is_int($n)) self::wrongType("write_bytes", "a list[u8]", $n, $line);
+            if ($n < 0 || $n > 255) self::raise_("ValueError", $n . " is not a byte: a byte is a number from 0 to 255", $line);
+        }
+        return self::put($path, pack("C*", ...$items->v), 0, $line);
+    }
     static function b_files_append(array $args, int $line) { [$path, $s] = self::paths("append", $args, 2, $line); return self::put($path, $s, FILE_APPEND, $line); }
     static function b_files_exists(array $args, int $line) { [$path] = self::paths("exists", $args, 1, $line); return self::at($path) === "file"; }
     static function b_files_remove(array $args, int $line) {
