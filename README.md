@@ -71,6 +71,7 @@ Samples, none of them final:
 - [`examples/sentence.zeno`](examples/sentence.zeno): lines from a sensor, checked and taken apart with `find`, `slice`, `sort`, `join` and `code`, the methods of text and lists.
 - [`examples/logbook.zeno`](examples/logbook.zeno): readings typed at the keyboard, kept in a file named on the command line, and read back: `input`, `files` and `program.arguments`.
 - [`examples/download.zeno`](examples/download.zeno): a video from YouTube saved in a folder, for videos you have the right to keep. The program starts [yt-dlp](https://github.com/yt-dlp/yt-dlp) with `program.run`, which gives another program its words as a list, and says how it went. Run it with `zeno run`.
+- [`examples/video.zeno`](examples/video.zeno): the same job with yt-dlp as a library. `import python` lets a Zeno program use any package of Python that is installed: `python.module("yt_dlp")` is the module, and its answers come back as values of Zeno, so the program can say what a video is called and how long it is before it saves anything. Run it with `zeno run`.
 - [`examples/instruments.zeno`](examples/instruments.zeno): a compass, a thermistor, a level meter, a charging capacitor and a sine table, with the `math` module and angles that carry their unit.
 - [`examples/faults.zeno`](examples/faults.zeno): fault codes counted and looked up in a dict: `["mode": "auto"]`, `get`, `in`, `pop` and a loop over the keys.
 - [`examples/channels.zeno`](examples/channels.zeno): a dict that holds lists and objects. The readings of each channel are a list under its name, and `for channel, values in readings` is given each key and what is under it.
@@ -97,6 +98,7 @@ piece of the compiler:
 | Microcontrollers and firmware | Compile to C, no heap required |
 | Command-line tools, desktop, servers | Native code through C or LLVM |
 | Calling existing C libraries | C interop, in both directions |
+| Using the libraries of other languages | `import python` starts the Python that is installed beside the program, and any package of it is used as it is ([`docs/python.md`](docs/python.md)). JavaScript and Java are next |
 | Web front ends | Zeno itself built for WebAssembly, and the `web` module (`zeno build --web`); the program compiled to JavaScript (`--target js`, `--target html`) |
 | Web back ends, networking | `async` / `await` and a standard library |
 | Data and numerics | Fast arrays and operator overloading |
@@ -354,6 +356,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/library.md`](docs/library.md),
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
   [`docs/running-programs.md`](docs/running-programs.md),
+  [`docs/python.md`](docs/python.md),
   [`docs/math.md`](docs/math.md), [`docs/dict.md`](docs/dict.md),
   [`docs/modules.md`](docs/modules.md), [`docs/packages.md`](docs/packages.md),
   [`docs/format.md`](docs/format.md), [`docs/lsp.md`](docs/lsp.md),

@@ -1,0 +1,95 @@
+# What a video on YouTube is, and the video itself if a folder is named.
+#
+#     zeno run examples/video.zeno https://youtu.be/VIDEO
+#     zeno run examples/video.zeno https://youtu.be/VIDEO videos
+#
+# This is for videos you have the right to keep: your own, one whose
+# licence allows it (Creative Commons, for one), or one whose owner said
+# yes. YouTube's terms of service allow no other download.
+#
+# download.zeno does this job by starting the program yt-dlp. This one
+# uses yt-dlp as what it also is, a library of Python: `import python`
+# lets a Zeno program use any package that `pip install` put on the
+# computer. So it can ask a question first and get the answer back as
+# values: the title is a str and the length is a number.
+#
+# It needs Python, and `pip install yt-dlp`.
+
+import program
+import python
+
+let sites = ["https://www.youtube.com/", "https://youtube.com/", "https://m.youtube.com/", "https://youtu.be/"]
+
+function is_on_youtube(address: str) -> bool {
+    for site in sites {
+        if address.starts_with(site) and len(address) > len(site) {
+            return true
+        }
+    }
+    return false
+}
+
+# 635 seconds are shown as 10:35.
+function as_minutes(seconds: int) -> str {
+    return f"{seconds // 60}:{seconds % 60:02}"
+}
+
+# Everything here that is not a number or a str stays in Python:
+# `yt`, the options, the downloader and `about`. Zeno asks Python for a
+# field, an item or a call each time one is written. What Python can
+# raise is not known before the program runs, so the function says
+# `raises Error`: any kind.
+function show_and_save(address: str, folder: str or none) raises Error {
+    let yt = python.module("yt_dlp")
+    # yt-dlp takes its options as a dict of Python, which may hold
+    # values of several types. Python's own `dict` makes one from named
+    # arguments.
+    let options = python.module("builtins").dict(noplaylist=true, quiet=true, outtmpl="%(title)s.%(ext)s")
+    if folder is not none {
+        options["paths"] = ["home": folder]
+    }
+    let downloader = yt.YoutubeDL(options)
+
+    let about = downloader.extract_info(address, download=false)
+    print(about.get("title", "(no title)"))
+    let seconds = about.get("duration")
+    if seconds is not none {
+        print(f"  length    {as_minutes(int(seconds))}")
+    }
+    let uploader = about.get("uploader", "unknown")
+    print(f"  from      {uploader}")
+    # Python's `None` arrives as Zeno's `none`, and is tested the same way.
+    var licence = about.get("license")
+    if licence is none {
+        licence = "not stated, so the standard YouTube licence"
+    }
+    print(f"  licence   {licence}")
+
+    if folder is not none {
+        downloader.download([address])
+        print(f"Saved in `{folder}`.")
+    }
+}
+
+let words = program.arguments()
+if len(words) < 1 or len(words) > 2 {
+    print("usage: zeno run video.zeno <address of the video> [folder]")
+    print("  With no folder it says what the video is, and saves nothing")
+} else if not is_on_youtube(words[0]) {
+    print(f"`{words[0]}` is not the address of a video on YouTube.")
+} else {
+    var folder: str or none = none
+    if len(words) == 2 {
+        folder = words[1]
+    }
+    try {
+        show_and_save(words[0], folder)
+    } except FileError as error {
+        # Python is not installed, or it has no yt_dlp.
+        print(error.message)
+        print("This program needs Python, with the library that `pip install yt-dlp` gets.")
+    } except Error as error {
+        # Anything yt-dlp raised: no such video, no network.
+        print(f"yt-dlp could not do it. {error.message}")
+    }
+}

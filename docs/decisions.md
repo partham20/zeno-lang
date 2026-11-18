@@ -11083,3 +11083,212 @@ no other programs.
 - The folder it starts in, and its environment variables.
 - `program.exit(n)`: `download.zeno` can say in words that the
   download failed, and cannot yet end with a number that says so.
+
+## 26. The libraries of other languages
+
+Partha asked (2026-11-18): "Why should I leave Python?" A program in
+Zeno should be able to use what `pip install` put on the computer, and
+then the same for "every single language", done "without affecting the
+existing": whatever runs today runs the same, and the rest is there
+only "when we use some specific words, or import something". This
+chapter is the plan and its first part, Python.
+[`python.md`](python.md) is the walkthrough.
+
+### 26.1 Three versions, in the order the languages allow
+
+1. Python, JavaScript (npm) and Java.
+2. The other languages with an interpreter of their own: Ruby, PHP,
+   C#, Lua.
+3. C, Go and Rust.
+
+**Why this split.** The first two groups have a runtime that can load
+a library by its name while it runs, so one way of working serves them
+all: start that runtime beside the program and talk to it (26.2).
+C, Go and Rust have none. A Rust crate is compiled into the program
+that uses it, and its generic functions do not exist until then. For
+those the way in is the C interface: Zeno declares the types of a
+function and calls a compiled library. That is a different piece of
+work, and it belongs to `zeno build`, which already writes C.
+
+**Why Python first.** It is what was asked for, and its helper is the
+shortest. The other two of the first version use the same lines.
+
+### 26.2 Python runs beside the program, as a program of its own
+
+`import python` does not put Python inside Zeno and does not turn
+Python into Zeno. The first `python.module` starts the Python that is
+installed, and the two programs talk.
+
+**Why.** Zeno is one file with nothing to install beside it. Python
+inside it would mean finding the Python library of each machine and
+loading it, which differs between Linux, macOS and Windows and
+between one version of Python and the next; a fault inside a library
+written in C would then end Zeno too. Started as a program, any Python
+3 that is on the machine works, with every package it has, and a crash
+there is an error here.
+
+**The cost.** Every field read and every call goes to another program
+and back, some tens of microseconds each. A loop of a million small
+calls is slow; a call that does real work, which is what a library is
+for, does not notice.
+
+**Alternatives rejected.** Python inside Zeno (above). Rewriting
+libraries in Zeno, by hand or by a translator: most of what makes them
+worth having is written in C underneath. Only in `--target py` builds,
+where the program is Python anyway: `zeno run` could then not run the
+program, and running is how a program is written.
+
+### 26.3 They talk over a socket of this machine, so Python keeps the screen
+
+Zeno listens on a port that only this computer can reach, and hands
+Python the port and a word made up for the run. Python connects, says
+the word, and is listened to. Anything else that connects is hung up
+on.
+
+**Why not the two pipes every program has.** They are Python's
+keyboard and screen. If the conversation used them, a `print` inside a
+library would be a line of the conversation, a progress bar would have
+no screen to redraw, and `input()` would read Zeno's questions. Each
+of those can be patched around, and each patch is something a library
+can see through. With a line of their own to talk on, Python's screen
+and keyboard are the user's, as they are when Python is started by
+hand, and as they are for a program that `program.run` starts (25.4).
+
+**Why JSON, one line each way.** Every language of 26.1 can read and
+write it with what it comes with, and a line can be read by a person
+when something goes wrong.
+
+### 26.4 `python.module(name)`, and from there what is written is what Python does
+
+```zeno
+let yt = python.module("yt_dlp")
+let downloader = yt.YoutubeDL(options)
+downloader.download([address])
+```
+
+**Why a function, and not `import python.yt_dlp`.** `import a.b` is a
+file of the program, `a/b.zeno`, found and checked before the program
+runs (7.1). A module of Python is found when Python is asked, and may
+not be there. A call that can raise says that; an `import` that can
+fail at run time would be a second meaning for one word.
+
+**Why nothing more than a dot and brackets.** `thing.name`,
+`thing(...)` and `thing[...]` already mean a field, a call and an
+item. On a value of Python they mean Python's. There is no second way
+to write them and nothing to learn but the library.
+
+**A named argument is a keyword argument**, `dict(quiet=true)`,
+because that is what it is in both languages.
+
+### 26.5 Numbers and text cross as themselves; everything else stays where it is
+
+`none`, a bool, an int, a float and a str are the same thing in both
+languages and cannot be changed in place, so a copy is the value.
+Anything else that Python returns stays in Python, and Zeno holds the
+number it is kept under.
+
+**Why a list stays too.** A list can be changed. If
+`sys.path.append(folder)` ran on a copy of `sys.path`, Python's list
+would not change, and nothing would say so. Bridges between languages
+that copied lists across have that trap, and the later ones do not
+copy. So `append` on a list of Python is Python's `append`, on the one
+list.
+
+**`python.copy(value)` when a list of Zeno is wanted.** It says in the
+program that a copy is made, at the line where it is made.
+
+**What is exact.** Only Python's own `int`, `float`, `str`, `bool` and
+`None` cross by value, not kinds built on them. A number of a library
+that is not one of these stays in Python, and `builtins.float(x)`
+makes a float of it. An int too big for Zeno's 64 bits stays as well.
+
+### 26.6 What Zeno gives Python is a copy
+
+A list or dict of Zeno that is passed arrives as a new list or dict of
+Python, with what is in it.
+
+**Why not the same list.** For Python to hold a list of Zeno, Python
+would have to call into Zeno each time it reads an item, and Zeno is
+waiting for Python's answer at that moment. That is the same piece of
+work as a function of Zeno called from Python (26.11).
+
+### 26.7 A Python value is not a condition, and not a number
+
+`if thing { }` is refused as it is for any value that is not a bool
+(2.4), and so is `thing + 1`.
+
+**Why.** Python decides for itself what counts as true: an empty list
+is false, a number is false when it is zero, and a class can say what
+it likes. Zeno has one rule, and a second rule for values that came
+from elsewhere would be the thing the language was made to leave out.
+`len(thing) > 0` and `thing is not none` say which test is meant.
+
+### 26.8 An error of Python is an error of Zeno
+
+Python's `ValueError`, `IndexError`, `KeyError`, `ZeroDivisionError`
+and `OverflowError`, and the kinds built on them, are Zeno's kinds of
+the same names. `OSError` and its kinds are `FileError`. Every other
+is an `Error`. The message begins with Python's name for the error
+when that is not the kind's own name.
+
+**Why.** A program should not have to know which language raised
+`ValueError` to catch it. And `except Error` catches everything
+already, with the name in the message for whoever reads it.
+
+**No Python, or no such module, is a `FileError`**, like a program
+that is not installed (25.5): it is the same fact, something that was
+looked for on this computer and is not there.
+
+### 26.9 The types are known when the program runs (provisional where marked)
+
+A value from Python has the type `json.parse` gives (18.1). The
+checker lets it through, and `--strict` refuses it.
+
+`zeno run` and `zeno test` have `python`, in both engines. `zeno
+build` in C and LLVM, `--firmware` and every `--target` refuse it. In
+a page it is a `FileError`.
+
+**Provisional:** `--target py`. A program written out as Python could
+import the module directly, with no helper. It would have to behave as
+`zeno run` does at every line, which needs the same care as the rest
+of that target.
+
+### 26.10 Which Python
+
+`python3`, then `python`; on Windows `python`, `python3`, then `py`.
+`ZENO_PYTHON` names one outright. A name that may be something else
+(`python` can be Python 2, and on Windows a stand-in that only says
+where to get Python) is asked quietly for its version first.
+
+**Why the first on the `PATH`.** It is the one the user's `pip
+install` installed into, and the one an active virtual environment
+puts first.
+
+### 26.11 Nothing changes for a program that does not ask
+
+`import python` itself starts nothing. Python is started by the first
+`python.module`, once. A program without the import runs the code it
+ran before: the new kind of value is one more case in places that
+already ask what kind of value they have.
+
+**The one thing that does change.** `python` is now the name of a
+module that comes with Zeno, so a file of the program called
+`python.zeno` can no longer be imported under that name, and a package
+cannot have it. It is what happened to `json` and `web` when they were
+added, and it is the price of any new module. The message that
+lists the modules has one more name in it.
+
+**How that is held to.** Every test from before passes, with that
+message as the only line changed in them, and before a release the
+speed is compared with the release before, by count and by timed
+rounds (24.29).
+
+### 26.12 Left for later
+
+- A function of Zeno given to Python: progress callbacks, sort keys.
+- A name that is a word of Zeno (`re.match`). For now Python's own
+  `getattr` reaches it. Whether a word may follow a dot is a question
+  for the whole language, and it was decided once (5.19c).
+- A loop that takes items one at a time, for what never ends.
+- `python` in a built program, and in `--target py` (26.9).
+- JavaScript and Java, then the rest of 26.1.
