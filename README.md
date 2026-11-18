@@ -259,6 +259,15 @@ same flags: `--firmware` (errors as values, no `setjmp` in the IR),
 `--no-collector` (owned values freed where their owner ends, no
 collector in the program) and `--memory`.
 
+`zeno build --minimal` writes the least C that runs the program, close
+to what a person would write by hand: no check of any kind, no line
+numbers carried along, only the parts of Zeno's runtime the program
+uses, and `print` as C's `printf`. `examples/hello.zeno` is 23 lines of
+C that way and `examples/primes.zeno` is 100, from about 3,000 each. A
+mistake in such a build does what it would do in C, so it is for a
+program that already runs right ([`docs/minimal.md`](docs/minimal.md)).
+Every other build writes the C it always wrote.
+
 `zeno build --target <language>` writes the program in another language,
 by fixed rules, as a file that runs with that language's own tools:
 `js` (Node), `ts` (TypeScript), `html` (a page that runs it), `py`
@@ -307,6 +316,8 @@ python3 editors/talk.py target/debug/zeno examples/shapes.zeno  # play the edito
 cargo run -- run examples/driver.zeno           # memory by hand and registers: `zeno run` checks every use of a pointer
 cargo run -- build --memory examples/driver.zeno  # the same, compiled: the report counts what `allocate` gave and what was never freed
 cargo run -- check --no-collector examples/scheduler.zeno  # check as that build would, without building
+cargo run -- build --minimal examples/primes.zeno  # the least C that runs it: 100 lines, no checks, print as printf
+cargo run -- build --minimal --no-collector examples/ring/main.zeno  # the same with no collector: the smallest C for a program with a list
 cargo run -- build --llvm examples/shapes.zeno  # compile to LLVM IR (shapes.ll), then to ./shapes with clang
 cargo run -- build --llvm --firmware examples/sensor.zeno  # the same through LLVM, with errors as values
 cargo run -- build --llvm --no-collector --memory examples/buffer.zeno  # through LLVM with no collector: the same memory report as the C build
@@ -645,6 +656,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     Kotlin were added after 0.5.1 and will be in the release after it.
     See [`docs/targets.md`](docs/targets.md) and chapter 24 of
     [`docs/decisions.md`](docs/decisions.md))
+33. The least C (done, after 0.5.1 and not yet released: `zeno build
+    --minimal` writes only the C the program needs, with no checks,
+    for a program that is already correct. The other builds are
+    unchanged, byte for byte. `tools/minimal.py` holds it to the
+    checked build on 363 programs.
+    See [`docs/minimal.md`](docs/minimal.md) and chapter 30 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 ## Layout
 
@@ -682,10 +700,12 @@ src/units.rs        the units a number can carry
 src/emit_c.rs       syntax tree -> C source, for `zeno build`
 src/emit_llvm.rs    syntax tree -> LLVM IR, for `zeno build --llvm`
 src/runtime.c       the C library every compiled program carries
+src/minimal.rs      puts the C of `zeno build --minimal` together: only what the program uses
 src/lower.rs        syntax tree -> a plain program any language can say, for `zeno build --target`
 src/emit_js.rs      that program -> JavaScript and TypeScript; emit_py, emit_php, emit_lua, emit_ruby, emit_dart, emit_kotlin, emit_go, emit_java, emit_cs, emit_cpp and emit_rust are the others
 src/runtime.js      Zeno's rules in JavaScript, put into each written program; runtime.ts, .py, .php, .lua, .rb, .dart, .kt, .go, .java, .cs, .cpp and .rs are the others
 tools/targets.py    builds every example for every target and compares it with `zeno run`
+tools/minimal.py    builds every example with and without `--minimal` and compares the two
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs

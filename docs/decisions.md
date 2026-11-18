@@ -11962,3 +11962,272 @@ same writing is the language's own rule ([`node.md`](node.md)).
 - Zeno's checker reading Java's types, which Java has.
 - `java` in a built program, and in `--target java`, as 26.9 has it
   for Python.
+
+## 30. The least C: `zeno build --minimal`
+
+Partha asked (2026-11-18) for one more way to build: one that goes
+past the checks and writes only the C the program itself needs, so that
+the file is small and easy to read, with everything that is there now
+kept as it is. `zeno build` writes about 3,000 lines of C for a program
+of one line, because the whole runtime is pasted in front of it and
+every operation goes through a function that checks it.
+
+### 30.1 A new option, and the builds that were there do not change
+
+`zeno build --minimal` writes the least C that runs the program. Six
+things are done, each with its own section below: no check of any kind
+(30.2), no place in the source carried along (30.4), only the parts of
+the runtime the program uses (30.5), `print` as C's `printf` (30.6),
+each statement written the short way (30.7), and the C compiler asked
+for a small program (30.8). docs/minimal.md is the walkthrough.
+
+**Why a new option.** He asked for what is there to stay. The C that
+every other build writes is, byte for byte, what it was before this
+chapter: 2,028 C files were compared, the 363 programs of the check
+(30.10) built nine ways, with the compiler before and after.
+
+**Why the word `minimal`.** It is his word for it ("the minimum code"),
+and it says what the option is for, which is how `--fast` was named
+(23.1). `--small` promises a small program, and it is the C that gets
+small (30.11). `--unchecked` names one of the six things. `--bare` and
+`--direct` say less than `minimal` does to someone who has not read
+this.
+
+**Why not `--target c`.** `--target` writes the program in another
+language with the rules of Zeno carried along in a runtime (24.2),
+checks and all. This is the opposite promise, and it is the same C
+backend as `zeno build`, so it is an option of that.
+
+### 30.2 No check of any kind: a mistake does what the C does
+
+| | other builds | `--minimal` |
+|---|---|---|
+| `xs[i]` with `i` out of range | `IndexError` | reads or writes whatever memory is there |
+| `ages["Eve"]` with no such key | `KeyError` | reads an item that is not there |
+| overflow of `+ - *`, of `-n`, `abs(n)`, `**`, `sum` | `OverflowError` | no defined result |
+| `n // 0`, `n % 0` | `ZeroDivisionError` | what the processor does: on a computer the system stops the program |
+| `x / 0.0` | `ZeroDivisionError` | infinity, or NaN |
+| `math.sqrt(-1.0)`, `math.log(0.0)`, `math.asin(2.0)` | `ValueError` | NaN or infinity |
+| `u8(300)` | `ValueError` | 300 goes on as it is |
+| `n << 70`, `n << -1` | `ValueError` | no defined result |
+| `xs.pop()`, `min(xs)` of an empty list, a slice from past the end | an error | no defined result |
+| `int(x)` of infinity or NaN | `ValueError` | the biggest int, the smallest, or 0 |
+| a variable that became `none` again after it was checked | an error | used as if it held a value |
+| `free(p)` twice | stops, and says so | no defined result |
+
+**Why further than `--fast`.** `--fast` is about time. It leaves out the
+checks that cost something in a tight loop and keeps the rest: a key
+that is not there, a whole number divided by zero. `--minimal` is about
+what is in the file. A check brings its message, the message is put
+together from pieces of text, and text needs memory: one check left in
+keeps `zeno_fail`, the error value, `zeno_join`, `zeno_str_int` and an
+allocator in a program that adds two numbers. It is all of them or the
+file is not small.
+
+**Why a whole number divided by zero is not caught here, when `--fast`
+catches it (23.1).** There the reason was that the check is nearly free
+beside a division. Here the cost is not time. The table says plainly
+what happens, and it is what a C programmer expects of `/`.
+
+**What is not a check, and stays.** `-7 % 3` is 2 in Zeno and -1 in C,
+and `-7 // 2` is -4 and not -3. A correct program relies on that, so
+`%` and `//` are still the runtime's `zeno_mod` and `zeno_floordiv`,
+each a few lines with the check taken out. `x // 8` and `x % 8` are
+still a shift and a mask (23.5).
+
+### 30.3 The errors a correct program can meet stay
+
+`int("ten")` raises `ValueError`, a file that is not there raises
+`FileError`, `raise` raises, `try` and `except` catch, and an error
+that nothing catches stops the program and says what it was. Running
+out of memory still stops the program and says so.
+
+**Why.** These are not mistakes in the program. What a person types
+and whether a file is there are known only when the program runs, and
+the program was written to deal with them. A minimal build of a
+correct program must do what the checked build does (30.10), and it
+could not if these went.
+
+### 30.4 No place in the source
+
+A runtime function that can stop the program takes the line and the
+column it was called from as its last two arguments, for the message.
+In a minimal build no function has those two parameters and no call
+passes them, and the table of file names is gone. An error nothing
+caught prints its kind and its message:
+
+```
+error: uncaught ValueError: cannot turn "ten" into an int
+```
+
+**Why.** Two numbers at every call are code at every call, and they are
+the first thing that makes the C look unlike C a person writes. With
+the checks gone, the only reader left for them was an error the
+program raised itself.
+
+**What it costs.** That message does not say where. The checked build
+does: build that way to find it.
+
+**How it is done.** The emitter writes a mark in place of `line, col`
+(a byte no C has in it), and the mark goes with the comma before it
+when the file is put together. In the runtime the parameters and
+arguments are taken out by name, token by token (`without_positions`
+in src/minimal.rs); the test that compiles the whole runtime for each
+kind of build holds that to being C.
+
+### 30.5 Only what the program uses
+
+The runtime and the program are cut into items (a function, a type, a
+variable, a `#define`, an `#include`), each asked for by its name.
+Starting from the statements at the top of the program, every item
+that is named is kept, and every item those name, until nothing new is
+named. The rest is not written. A header is kept when one of the names
+it brings is used. Comments between items are dropped, since they
+explain the runtime across all its builds; comments inside a function
+stay with it. A function is declared ahead only if something written
+before it names it.
+
+**Why not leave it to the C compiler.** It already does this for the
+machine code: an unused `static` function is not in the program of any
+build, which is why the program shrinks much less than the C (30.11).
+What was asked for is the file: C that can be read, reviewed, and
+carried to another project.
+
+**Why the program's own unused functions go too.** One rule, "what the
+program uses". Every function Zeno writes is `static`, so nothing
+outside the file could have called it.
+
+**Why by name, and not with a C parser.** The runtime is ours and is
+written one way. Three things hold the cutting to its word: a unit
+test gives the whole minimal runtime of each kind of build to the C
+compiler; `tools/minimal.py` reads the C of every build it makes with
+the compiler's warnings on, and a function or variable left in unused,
+or used and not declared, is a failure; and the programs then have to
+run right.
+
+**The marks.** What a minimal build leaves out of the runtime is
+between `#ifndef ZENO_MINIMAL` and `#endif /* ZENO_MINIMAL */`, with
+what stands in its place after `#else /* ZENO_MINIMAL */`. They are
+decided when the C is written, as the marks of `ZENO_FIRMWARE` are, so
+no built program has them in it, and every other build gets the text
+between them unchanged.
+
+### 30.6 `print` is `printf`
+
+```zeno
+print(f"{n} is prime")
+print("total", total, "of", len(xs))
+```
+
+```c
+printf("%lld is prime\n", (long long)z_n);
+printf("total %lld of %lld\n", (long long)z_total, (long long)z_xs->len);
+```
+
+Words written in the program go into the format. A whole number is
+`%lld`, text and a bool are `%s`, and `print` of words alone is `puts`.
+`{n:5}`, `{n:<5}`, `{n:05}` and `{x:8.2f}` are `printf`'s own. A float
+is `%s` of `zeno_float_text(x, (char[64]){0})`, which writes it into
+bytes of the statement's own, because `printf` has no format for "the
+fewest digits that read back as the same float". `{n:x}` and
+`{reg:08b}` are written the same way by `zeno_radix_text`, and a
+quantity is `%s ms`. What `printf` would print differently is left to
+the runtime, and shown with `%s`: text lined up to a width (Zeno
+counts characters, `printf` bytes), `^`, a float filled with zeros
+(`printf` does not fill `inf`), and a list, a dict or an object.
+
+**Why.** `print` in every other build turns each value into text first,
+and text takes memory, so `print(n)` brought an allocator into a
+program that otherwise has none. With `printf`, a program of numbers
+has no runtime in it: `examples/primes.zeno` is 100 lines of C, and
+hello is one `puts`.
+
+**What it costs, measured.** `printf` is a large function. On Linux a
+program whose `print` never ran it before has about 250 KB more of the
+C library in memory while it runs (`ring`: 1,564 KB to 1,812 KB):
+pages of the library that nothing had touched. What the program
+itself asks for goes down (30.11). On a board nothing is paged, and
+the function is in the image of the checked build as well, which
+writes its error messages with `fprintf`; there the cost is the stack
+`printf` uses while it runs. A program that prints words alone gets
+`puts`, and has no `printf` in it at all.
+
+### 30.7 Statements the short way, and what stays as it was
+
+`x = (x + 1);` is written `x += 1;`, and `return (a * b);` is `return a
+* b;`. The emitter puts every operation in brackets so that what is
+around it cannot change its meaning; around a whole statement nothing
+is left that could (`tidy` in src/emit_c.rs). The statements at the
+top of the program are the body of `main`, unless the program has a
+collector in it, which has to find the program's variables on the
+stack below `main` (docs/memory.md).
+
+**What stays.** Names keep their `z_`: a Zeno program may call a
+variable `printf`, `main` or `int`. A whole number is still `int64_t`,
+because that is what an int is in Zeno. A temporary is still written
+where two values have to be worked out in the order Zeno gives them. A
+list still holds `zeno_slot`s and not an array of `int64_t` (30.12).
+
+### 30.8 The C compiler is asked for a small program
+
+`-Os` in place of `-O2`. With `--fast` as well it is `-O3
+-fno-math-errno`, since that was asked for by name.
+
+### 30.9 What it goes with
+
+Every kind of build that writes C: the collector, `--owned`,
+`--no-collector`, `--firmware`, and `--memory` and `--fast` beside
+them. `--release` adds nothing to it. `--llvm`, `--web` and `--target`
+refuse it with a sentence that says why.
+
+**Why not LLVM.** Nobody reads the IR, so the half of this that is for
+a reader has no reader there, and the half that is for the machine
+`--fast --llvm` already does.
+
+**The smallest.** `--minimal --no-collector` or `--minimal --owned`. A
+program that makes a list has to free it somehow, and with the
+collector that is about 500 lines of C that no option can make small.
+
+### 30.10 How it is held to its word
+
+`tools/minimal.py` builds every program of the check of the targets
+(24.9: the examples, the corner programs, every sample of the book)
+both ways for each of the four kinds of build, and the two must print
+the same, end the same way, and stop with the same message. A program
+that a check stops has no defined result in a minimal build, so it is
+found and left out: the C of the checked build is given a line that
+writes a mark in `zeno_fail` and `zeno_bug`, where every check ends.
+On 2026-11-18: 213, 192, 192 and 210 programs for the four kinds, all
+the same, and 16 to 19 left out for each. It runs on GitHub on a push
+that changes the C backend (.github/workflows/minimal.yml), on Linux
+with gcc and on macOS with clang.
+
+### 30.11 What it buys, measured
+
+`python3 tools/minimal.py --sizes` makes the table in docs/minimal.md.
+In short, for the examples:
+
+- **The C** is 23 lines for hello, about 100 for a program of numbers,
+  and 300 to 1,000 for a program with lists, objects and text, from
+  about 3,000 every time. Over all the programs of the check it is 6%
+  of the bytes with no collector and 14% with one.
+- **The program** shrinks less, because the C compiler never put an
+  unused function in it. Its code and constants (`text`, as `size`
+  counts it) are a quarter to a third smaller for most of the examples:
+  `ring` 8.1 KB to 4.5 KB with no collector, `words` 16.5 KB to 12.8
+  KB. At the ends, `blink` loses 6% (it had almost nothing to lose) and
+  `primes` 82%, 11.4 KB to 2.1 KB. The file on disk moves in steps of
+  4 KB and often does not move at all.
+- **Memory.** What the program holds from start to end changes little,
+  unless the program stops needing the pool (`primes`: 34.8 KB to 0.6
+  KB). What it asks for while it runs goes down wherever `print` made
+  text: `thermostat` 1,360 bytes to 240.
+
+### 30.12 Left for later
+
+- A list of whole numbers as an array of `int64_t`, and an object's
+  fields read without a slot, which is what a person would write.
+- A top-level `let` of a number as `static const`, with its value.
+- `%` as C's own where both sides are known not to be below zero.
+- A `print` for a board with no `printf`.
+- The uncaught error's place, for a build that wants only that back.

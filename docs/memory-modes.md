@@ -161,6 +161,19 @@ matters. A wrong index in a `--fast` build is a wrong answer or a crash
 far from the line that caused it, exactly as in C. Decisions 23.1 and
 23.6.
 
+## `--minimal`
+
+```sh
+zeno build --minimal --owned main.zeno
+```
+
+`--minimal` is about the C and not about speed: it writes the least C
+that runs the program. Every check goes, the ones `--fast` keeps as
+well, and so does every part of the runtime the program does not use.
+It goes with each way of freeing memory on this page, and it is
+smallest with `--owned` or `--no-collector`, where there is no
+collector to write out. It has a page of its own: docs/minimal.md.
+
 ## What it buys
 
 On the benchmarks in `bench/` (`python3 bench/run.py --size big`; the

@@ -113,6 +113,12 @@ function in the runtime, because "the shortest digits that read back as the
 same number, and always with a `.0`" is not something C's `printf` can do in
 one step.
 
+All of this is what `zeno build` writes unless it is asked not to.
+`zeno build --minimal` writes the C without the checks, without the
+line and column, and with only the functions of the runtime the
+program uses, for a program that is already correct. See
+[`minimal.md`](minimal.md).
+
 ## Order: the part C leaves open
 
 ```
