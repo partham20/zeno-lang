@@ -15,7 +15,7 @@ An engine the version does not have yet (0.1.0 has no --release, for
 example) fails to build; it is left out of the file instead of being
 recorded as a failure. docs/release.md says when to run this.
 """
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIG = "c,rust,zeno,zeno-llvm,zeno-nc,zeno-release,zeno-owned,zeno-fast,zeno-fast-gc"
@@ -23,6 +23,19 @@ SMALL = "c,python,vm,run"
 # Since 0.5: the Zeno program written in another language and run
 # there, at the small sizes, beside C and the VM.
 TARGETS = "c,vm,to-js,to-py,to-php,to-lua,to-ruby,to-dart,to-kotlin,to-go,to-java,to-cs,to-cpp,to-rust,to-wasm"
+# The program each of those needs. One that is not on this machine is
+# left out of the record, as an engine an old version lacks is, and
+# the record says nothing about it rather than stopping.
+NEEDS = {"to-js": "node", "to-py": "python3", "to-php": "php", "to-lua": "lua", "to-ruby": "ruby",
+         "to-dart": "dart", "to-kotlin": "kotlinc", "to-go": "go", "to-java": "javac", "to-cs": "dotnet",
+         "to-cpp": "g++", "to-rust": "rustc", "to-wasm": "node"}
+
+def present(engines):
+    kept = [e for e in engines.split(",") if shutil.which(NEEDS.get(e, "cc"))]
+    for e in engines.split(","):
+        if e not in kept:
+            print(f"{e}: no {NEEDS[e]} on this machine, left out", file=sys.stderr)
+    return ",".join(kept)
 
 def run(zeno, size, engines, timeout):
     with tempfile.TemporaryDirectory() as tmp:
@@ -47,7 +60,7 @@ def main():
     zeno = os.path.abspath(a.zeno)
     big = run(zeno, "big", BIG, a.timeout)
     small = run(zeno, "small", SMALL, a.timeout)
-    targets = run(zeno, "small", TARGETS, a.timeout)
+    targets = run(zeno, "small", present(TARGETS), a.timeout)
     record = {"version": a.version, "machine": big["machine"],
               "big": {k: big[k] for k in ("sizes", "engines", "times")},
               "small": {k: small[k] for k in ("sizes", "engines", "times")}}
