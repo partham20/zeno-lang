@@ -114,11 +114,22 @@ jobs:
                 failed="$failed $program$kind"
                 echo "$program $kind: ended with $ended"
                 head -n 6 differs.txt built-errors.txt || true
+                # How it ended as Windows says it, and at each level the C
+                # compiler can be asked for.
+                if command -v powershell > /dev/null; then
+                  powershell -NoProfile -Command "& ./$program.exe > \$null 2> \$null; 'ended with 0x{0:X8}' -f \$LASTEXITCODE" || true
+                fi
+                for level in -O0 -O1 -O2 -Os "-Os -fno-omit-frame-pointer"; do
+                  at=0
+                  { cc $level -o level $program.c -lm 2> /dev/null || cc $level -o level $program.c; } && { ./level > level.txt 2>&1 || at=$?; }
+                  echo "cc $level: ended with $at, $(wc -l < level.txt) lines printed"
+                done
                 if command -v gdb > /dev/null; then
                   cc -Os -g -o stopped $program.c -lm 2> /dev/null || cc -Os -g -o stopped $program.c
-                  gdb -batch -ex run -ex bt -ex "info registers rip rsp rbp" ./stopped 2>&1 | grep -v '^\[' | tail -n 16 > stopped.txt || true
-                  cat stopped.txt
-                  echo "::notice title=Where $program $kind stopped::$(tr '\r\n' ' |' < stopped.txt | cut -c1-2400)"
+                  gdb -batch -ex run -ex bt ./stopped > stopped.txt 2>&1 || true
+                  grep -v -e '^\[New Thread' -e '^\[Thread' stopped.txt | tail -n 24 > where.txt || true
+                  cat where.txt
+                  echo "::notice title=Where $program $kind stopped::$(tr '\r\n' ' |' < where.txt | cut -c1-2400)"
                 fi
               fi
             done
