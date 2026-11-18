@@ -2759,6 +2759,174 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         }
     }
 
+    /// Is there a .NET on this machine that can build the helper of
+    /// `import csharp`? That takes an SDK, not only the runtime.
+    fn dotnet_is_here() -> bool {
+        std::process::Command::new("dotnet")
+            .arg("--list-sdks")
+            .output()
+            .is_ok_and(|said| said.status.success() && !said.stdout.is_empty())
+    }
+
+    #[test]
+    fn a_type_of_dotnet_is_used_from_zeno() {
+        if !dotnet_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own. A type is named with its
+        // namespace, or as C# writes it (`string`, `List<int>`); calling it makes
+        // an object, and a dot after it is what is `static`. Of the methods of one
+        // name, the one the arguments fit is called, a named argument is given to
+        // the parameter of that name, and a `Task` is waited for.
+        assert_eq!(
+            output(
+                "import csharp\n\
+                 let Builder = csharp.type(\"System.Text.StringBuilder\")\n\
+                 let builder = Builder(\"ab\")\n\
+                 builder.Append(\"c\").Append(42).Append(1.5).Append(true)\n\
+                 print(builder, builder.Length, builder.ToString().upper(), builder.Capacity >= 9)\n\
+                 let math = csharp.type(\"System.Math\")\n\
+                 print(math.PI, math.Max(3, 7), math.Max(2, 3.5), math.Round(2.567, 2), math.Round(2.567, digits=1), math.Abs(-4), math.Sqrt(16))\n\
+                 let text = csharp.type(\"string\")\n\
+                 print(text.Join(\"-\", [\"x\", \"y\"]), text.Join(\"+\", \"a\", \"b\", \"c\"), text.Join(separator=\", \", values=[\"p\", \"q\"]), text.Empty == \"\", text.Concat(\"h\u{e9}\", \"\u{1f600}\"))\n\
+                 let day = csharp.type(\"System.DateTime\")(2026, 11, 18)\n\
+                 print(day.DayOfWeek, day.AddDays(10).ToString(\"yyyy-MM-dd\"), day.Year + 1, day == csharp.type(\"System.DateTime\")(2026, 11, 18), day.DayOfWeek == csharp.type(\"System.DayOfWeek\").Wednesday)\n\
+                 let bytes = csharp.type(\"System.Text.Encoding\").UTF8.GetBytes(\"zeno\")\n\
+                 print(csharp.type(\"System.Convert\").ToBase64String(bytes), len(bytes), bytes[0], csharp.copy(bytes))\n\
+                 print(csharp.type(\"long\").MaxValue, csharp.type(\"System.Int32\").Parse(\"12\") + 1, csharp.type(\"double\").NaN, csharp.type(\"double\").PositiveInfinity, csharp.type(\"System.Guid\").Empty)\n\
+                 print(csharp.type(\"System.Threading.Tasks.Task\").Delay(1), csharp.type(\"System.Threading.Tasks.Task\").FromResult(7))\n\
+                 let builder2 = Builder()\n\
+                 builder2.Capacity = 100\n\
+                 print(builder2.Capacity, builder2.Length, csharp.type(\"System.Text.StringBuilder\")[\"Equals\"](builder2, builder2))"
+            ),
+            "abc421.5True 12 ABC421.5TRUE true\n\
+             3.141592653589793 7 3.5 2.57 2.6 4 4.0\n\
+             x-y a+b+c p, q true h\u{e9}\u{1f600}\n\
+             Wednesday 2026-11-28 2027 true true\n\
+             emVubw== 4 122 [122, 101, 110, 111]\n\
+             9223372036854775807 13 NaN inf 00000000-0000-0000-0000-000000000000\n\
+             none 7\n\
+             100 0 true\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_dotnet() {
+        if !dotnet_is_here() {
+            return;
+        }
+        // A collection of .NET is the one collection there is: its items are
+        // reached from Zeno, and a list or a dict that Zeno gives is made into
+        // the one the method wants. `csharp.copy` makes a list or a dict of Zeno.
+        assert_eq!(
+            output(
+                "import csharp\n\
+                 let list = csharp.type(\"System.Collections.Generic.List<int>\")()\n\
+                 list.Add(3)\n\
+                 list.Add(1)\n\
+                 list.AddRange([5, 2])\n\
+                 list.Sort()\n\
+                 list[0] = 9\n\
+                 print(list, len(list), list[0] + 1, 2 in list, 4 in list, list.Count, list.Contains(5), csharp.copy(list))\n\
+                 var total = 0\n\
+                 for item in list {\n\
+                     total = total + item\n\
+                 }\n\
+                 print(total)\n\
+                 let ages = csharp.type(\"System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int>>\")()\n\
+                 ages[\"ann\"] = [31, 2]\n\
+                 ages.Add(\"bob\", [])\n\
+                 print(ages, len(ages), ages[\"ann\"][1], \"ann\" in ages, \"zed\" in ages, ages.ContainsKey(\"bob\"), csharp.copy(ages))\n\
+                 for name in ages {\n\
+                     print(name)\n\
+                 }\n\
+                 for name, numbers in csharp.copy(ages) {\n\
+                     print(name, numbers)\n\
+                 }\n\
+                 let array = csharp.type(\"int[]\")(3)\n\
+                 let made = csharp.type(\"System.Array\").CreateInstance(csharp.type(\"string\"), 2)\n\
+                 made[1] = \"b\"\n\
+                 print(array, made, len(made), made[1], made[0], csharp.copy(made))\n\
+                 let linq = csharp.type(\"System.Linq.Enumerable\")\n\
+                 print(linq.Sum([1, 2, 3]), linq.Max([1.5, 0.5]), linq.Range(1, 4), csharp.copy(linq.Range(1, 4)), linq.Repeat(\"ab\", 2), linq.Count(list))\n\
+                 let set = csharp.type(\"System.Collections.Generic.HashSet<string>\")([\"a\", \"b\", \"a\"])\n\
+                 print(len(set), \"a\" in set, set.Add(\"a\"), set.Add(\"c\"), len(set))\n\
+                 let queue = csharp.type(\"System.Collections.Generic.Queue<double>\")()\n\
+                 queue.Enqueue(1.5)\n\
+                 queue.Enqueue(2)\n\
+                 print(queue.Dequeue(), queue.Peek(), len(queue), list == list, list == csharp.type(\"System.Collections.Generic.List<int>\")(), list == 3)\n\
+                 let pair = csharp.type(\"System.Collections.Generic.KeyValuePair<string, int>\")(\"k\", 1)\n\
+                 print(pair.Key, pair.Value, csharp.type(\"System.Tuple\").Create(1, \"a\").Item2)"
+            ),
+            "[9, 2, 3, 5] 4 10 true false 4 true [9, 2, 3, 5]\n\
+             19\n\
+             {\"ann\": [31, 2], \"bob\": []} 2 2 true false true [\"ann\": [31, 2], \"bob\": []]\n\
+             ann\n\
+             bob\n\
+             ann [31, 2]\n\
+             bob []\n\
+             [0, 0, 0] [null, \"b\"] 2 b none [none, \"b\"]\n\
+             6 1.5 [1, 2, 3, 4] [1, 2, 3, 4] [\"ab\", \"ab\"] 4\n\
+             2 true false true 3\n\
+             1.5 2.0 1 true false false\n\
+             k 1 a\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_dotnet_is_an_error_of_zeno() {
+        if !dotnet_is_here() {
+            return;
+        }
+        // An exception has Zeno's kind where the two mean one thing, and every
+        // other is an `Error` that says what .NET called it. What .NET words is
+        // not compared, since each version words it differently.
+        assert_eq!(
+            output(
+                "import csharp\n\
+                 let numbers = csharp.type(\"System.Collections.Generic.Dictionary<string, int>\")()\n\
+                 try { numbers[\"no\"] } except KeyError as error { print(1, error.message.starts_with(\"KeyNotFoundException: \")) }\n\
+                 try { csharp.type(\"System.Convert\").ToInt32(\"abc\") } except ValueError as error { print(2, error.message.starts_with(\"FormatException: \")) }\n\
+                 try { csharp.type(\"System.IO.File\").ReadAllText(\"/zeno/no/such\") } except FileError as error { print(3, error.message.starts_with(\"DirectoryNotFoundException\")) }\n\
+                 try { csharp.type(\"Zeno.No.Such\") } except FileError as error { print(4, error.message) }\n\
+                 try { csharp.type(\"System.Math\").Max(\"a\", 2) } except Error as error { print(5, error.message.starts_with(\"`Max` has none that takes a str, an int. There is Max(byte val1, byte val2), \")) }\n\
+                 try { csharp.type(\"System.Math\").Nope } except Error as error { print(6, error.message) }\n\
+                 try { csharp.type(\"System.Collections.Generic.List<int>\")()[3] } except IndexError as error { print(7, error.message.starts_with(\"ArgumentOutOfRangeException\")) }\n\
+                 try { csharp.type(\"System.Int32\").Parse(\"99999999999\") } except OverflowError as error { print(8, error.message.starts_with(\"OverflowException\")) }\n\
+                 try { csharp.type(\"System.Decimal\").Divide(1, 0) } except ZeroDivisionError as error { print(9, error.message.starts_with(\"DivideByZeroException\")) }\n\
+                 try { csharp.type(\"System.Text.StringBuilder\")().Length = \"x\" } except Error as error { print(10, error.message) }\n\
+                 try { csharp.type(\"System.IO.Stream\")() } except Error as error { print(11, error.message) }\n\
+                 try { csharp.type(\"System.Math\").Round(2.5, places=1) } except Error as error { print(12, error.message.starts_with(\"`Round` has none that takes a float and `places`. \")) }\n\
+                 try { csharp.assembly(\"zeno-no-such.dll\") } except FileError as error { print(13, error.message.starts_with(\"there is no .dll or folder `\"), error.message.ends_with(\"zeno-no-such.dll`\")) }\n\
+                 try { csharp.type(\"List<int, int>\") } except Error as error { print(14, error.message) }\n\
+                 print(csharp.type(\"System.Math\").Max)"
+            ),
+            "1 true\n\
+             2 true\n\
+             3 true\n\
+             4 .NET has no type `Zeno.No.Such`. A type of a package is there once the project beside the program has the package (`dotnet add package`), and one of a .dll after `csharp.assembly`\n\
+             5 true\n\
+             6 the class System.Math has no static property, field or method `Nope`\n\
+             7 true\n\
+             8 true\n\
+             9 true\n\
+             10 `Length` is an int, and this is a str\n\
+             11 `Stream` is abstract, and no object can be made of it by calling it\n\
+             12 true\n\
+             13 true true\n\
+             14 .NET has no type `List<int, int>`. A type of a package is there once the project beside the program has the package (`dotnet add package`), and one of a .dll after `csharp.assembly`\n\
+             method `Max` of the type System.Math. In Zeno a call has brackets: `.Max()`\n"
+        );
+        assert_eq!(
+            error("import csharp\nfunction f(x: int) -> int {\n    return x\n}\ncsharp.type(\"System.Collections.Generic.List<int>\")().ForEach(f)"),
+            "a function of Zeno cannot be given to C# yet"
+        );
+        assert_eq!(
+            error("import csharp\nif csharp.type(\"System.Text.StringBuilder\")() {\n    print(1)\n}"),
+            "a condition must be true or false, but this is a C# value"
+        );
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -2795,7 +2963,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

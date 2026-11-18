@@ -1678,6 +1678,9 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("lua", "require") => Ty::Builtin("lua.require"),
         ("lua", "global") => Ty::Builtin("lua.global"),
         ("lua", "copy") => Ty::Builtin("python.copy"),
+        ("csharp", "type") => Ty::Builtin("csharp.type"),
+        ("csharp", "assembly") => Ty::Builtin("csharp.assembly"),
+        ("csharp", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3395,6 +3398,7 @@ impl Checker {
                     "ruby" => "ruby",
                     "php" => "php",
                     "lua" => "lua",
+                    "csharp" => "csharp",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -6162,6 +6166,15 @@ impl Checker {
             // the module.
             // `java.type("java.util.ArrayList")` is the same for Java,
             // and `java.jar("lib")` says where its classes are found.
+            // `csharp.assembly("lib")` says where the types of a
+            // library of .NET are found.
+            "csharp.assembly" => {
+                if self.arity("assembly", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the .dll or folder given to `csharp.assembly`", arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::None
+            }
             "java.jar" => {
                 if self.arity("jar", arguments, 1, 1, span) {
                     self.expect(&first, &Ty::Str, "the jar or folder given to `java.jar`", arguments[0].span);
@@ -6200,7 +6213,7 @@ impl Checker {
                 self.arity("variable", arguments, 0, 1, span);
                 Ty::Dynamic
             }
-            "node.module" | "node.global" | "java.type" | "ruby.constant" | "php.type" | "php.callable" | "php.constant" | "lua.require" | "lua.global" => {
+            "node.module" | "node.global" | "java.type" | "ruby.constant" | "php.type" | "php.callable" | "php.constant" | "lua.require" | "lua.global" | "csharp.type" => {
                 let short = name.split('.').nth(1).unwrap_or(name);
                 if self.arity(short, arguments, 1, 1, span) {
                     let what = format!("the name given to `{name}`");
@@ -8334,7 +8347,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         // A name of the part of `math` that is written in Zeno, which
@@ -10505,6 +10518,23 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import lua\nlua.module(\"lpeg\")"), "module `lua` has no `module`");
         assert_eq!(
             strict_error("import lua\nlet string = lua.global(\"string\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
+        // And those of .NET.
+        ok("import csharp\n\
+            csharp.assembly(\"lib\")\n\
+            let builder = csharp.type(\"System.Text.StringBuilder\")()\n\
+            builder.Append(\"abc\")\n\
+            let size: int = builder.Length\n\
+            for one in csharp.copy(csharp.type(\"System.IO.Directory\").GetFiles(\".\")) {\n    print(one, size, builder.ToString())\n}");
+        ok("from csharp import type, assembly, copy\nassembly(\"lib/Humanizer.dll\")\nprint(copy(type(\"System.Math\").Max(1, 2)))");
+        assert_eq!(error("import csharp\ncsharp.type(5)"), "the name given to `csharp.type` should be str, but this is int");
+        assert_eq!(error("import csharp\ncsharp.assembly(5)"), "the .dll or folder given to `csharp.assembly` should be str, but this is int");
+        assert_eq!(error("import csharp\ncsharp.type()"), "`type` takes 1 argument, but 0 were given");
+        assert_eq!(error("import csharp\nlet nothing: int = csharp.assembly(\"lib\")"), "`nothing` should be int, but this is none");
+        assert_eq!(error("import csharp\ncsharp.module(\"System\")"), "module `csharp` has no `module`");
+        assert_eq!(
+            strict_error("import csharp\nlet math = csharp.type(\"System.Math\")"),
             "strict mode: the type of this cannot be worked out before the program runs"
         );
         // Strict mode wants every type before the program runs, and

@@ -13473,3 +13473,155 @@ taken off. The one other kind is the `FileError` of 36.4.
 - Windows, which needs LuaSocket and was not tried.
 - `lua` in a built program, and in `--target lua`, as 26.9 has it for
   Python.
+
+## 37. The libraries of C# and .NET
+
+The fourth language of the second version (26.1): `import csharp`, for
+the types that come with .NET and for packages of NuGet.
+[`csharp.md`](csharp.md) is the walkthrough. Chapter 26 holds here as
+it does for the others, and .NET is close to Java (29): classes,
+methods of one name that take different things, a helper that has to
+be compiled. Where Java decided a question the same way, 29 has the
+reason, and what follows is what .NET made different.
+
+### 37.1 The module is `csharp`
+
+**Why not `dotnet`, which is the runtime and the command.** Every
+other module is named for the language its libraries are written in,
+and the name is what a person reads in the documentation of a library:
+"a library for C#". F# and Visual Basic run on .NET too, and what they
+make is used the same way, but nearly every package of NuGet is
+written in C# and documented with it. `cs` is the target of
+`zeno build --target cs` (24), which writes a program, and is the
+wrong word for using a library.
+
+`csharp.type(name)` is named as Java's (29.1), and calling it is
+`new` (29.2). `csharp.assembly(path)` is Java's `java.jar`: an
+assembly is what .NET calls a .dll.
+
+### 37.2 A type is named as C# writes it
+
+`"List<int>"`, `"Dictionary<string, List<int>>"`, `"int[]"`, `"int?"`,
+and `"string"` for `System.String`. .NET's own way to write a
+generic type, `"System.Collections.Generic.List`1[System.Int32]"`, is
+what `Type.GetType` takes, and nobody writes it in a program.
+
+**A name with no namespace is looked for in the namespaces a new
+project of C# has without a `using`**: `System`,
+`System.Collections.Generic`, `System.IO`, `System.Linq`,
+`System.Net.Http`, `System.Threading`, `System.Threading.Tasks`.
+
+**Why, when Java's types need the whole name (29.1).** For Java the
+packages looked in would have been a list Zeno chose. This list is
+C#'s own: every project made by `dotnet new` since .NET 6 has these
+namespaces without asking (its "implicit usings"), so a person who
+writes C# already writes `File`, `Math` and `List<int>` with no
+namespace. A name that is not found with its namespace is tried there
+only after, so a whole name always means what it says.
+
+### 37.3 Of several methods, the arguments choose, and a named argument is a parameter
+
+The choice is Java's (29.4), with C#'s order: an int of Zeno fits an
+`int` before a `long` and both before a `double`; a list fits an array
+or a `List<T>` as well as its items fit theirs, a class before an
+interface; `int?` takes what `int` takes, one step later. Two that fit
+as well are an error that lists both.
+
+**A named argument is given to the parameter of that name**,
+`Math.Round(2.567, digits=1)`. C# has named arguments of its own,
+unlike Java (29) and Lua (36.7), so `name=value` means in Zeno what
+`name: value` means in C#. The message that says no method fits lists
+each with the names of its parameters, so the names can be found.
+
+**A method that hides one of its base class's** (`new` in C#) is the
+one there is: `JObject.Parse` and `JToken.Parse` take the same
+arguments, and C# calls the first on a `JObject`.
+
+**A generic method is given its types from the arguments**:
+`Task.FromResult(7)` is `Task.FromResult<long>(7)`. A type that no
+argument says is `object`. Writing the types in the call, as C# can,
+is the rejected alternative of 29.4.
+
+### 37.4 A `Task` is waited for
+
+A method that takes time, such as one that reads the network, gives a
+`Task`, and C# writes `await` before the call. Zeno waits for it, and
+the call gives what the task gave: `none` for a plain `Task`.
+
+**Why not give the `Task`.** Zeno has no `await` for a value of
+another language, and a `Task` that is not waited for does its work
+while the program goes on, or not at all if the program ends first.
+Every library of .NET that reads a file or the network has methods
+that end in `Async`, and each would need a second call to be of use.
+
+### 37.5 Numbers go as `long`, and are made what the parameter is
+
+Every whole number of Zeno arrives as a `long`, and becomes `int`,
+`short`, `byte` or an enum when the method takes one and it fits, as
+C# turns `5` into what it is given to. A float becomes a `float` or a
+`decimal` the same way. Every whole number that comes back and fits 64
+bits is an int, and a `decimal` stays in .NET, since a float of Zeno
+would change it.
+
+**Why not Java's rule (29.5)**, `Integer` when it fits: that was for a
+collection that takes `Object`. A collection of .NET says its type
+(`List<int>`), and the number is made that type when it is given.
+
+### 37.6 A package is found from the project beside the program
+
+.NET has no folder that every package goes to, as pip and npm have,
+and NuGet installs a package only into a project. So the program uses
+the project beside it: `dotnet new classlib` and `dotnet add package`
+in its folder (or one above), and Zeno reads `obj/project.assets.json`,
+which `dotnet` writes and which names each .dll of each package, and
+of every package it needs, and where NuGet keeps it. A type is then
+found in them by its name, as in .NET's own.
+
+**Why not a name and a version in the program, as
+`csharp.package("Humanizer.Core", "3.0.10")`.** The packages a package
+needs, and which of their versions, are worked out by NuGet, and the
+file that NuGet writes is the answer. Zeno would otherwise have to
+work them out as NuGet does. It also leaves the project as .NET has
+it: `dotnet` builds it, updates it and lists what it has, and the code
+of C# beside the program is built into it (`csharp.assembly` of its
+`bin` folder).
+
+**Why not install what is missing.** No other module installs
+anything (26), and a program that fetches from the network when it is
+run is a program that does something it does not say.
+
+### 37.7 The helper is built once with `dotnet build`, and kept
+
+As Java's (29.9): the source is in the `zeno` file, the first run
+builds it in the folder for what can be made again, under a number
+worked out from the source, and later runs start what was built. .NET
+takes some seconds where `javac` takes one, so this matters more.
+
+**It is built for the .NET that builds it**, read from
+`dotnet --version`, and it may run on a later one (`RollForward`).
+.NET cannot compile a single file as it starts, as Java 11 can, so
+where it cannot be built `dotnet run` is started instead, which says
+why: there is no SDK, only the runtime.
+
+### 37.8 An exception of .NET is an error of Zeno
+
+`IOException` and those under it, and `UnauthorizedAccessException`,
+are `FileError`; `KeyNotFoundException` is `KeyError`;
+`IndexOutOfRangeException` and `ArgumentOutOfRangeException` are
+`IndexError`; `ArgumentException` and `FormatException` are
+`ValueError`; `DivideByZeroException` is `ZeroDivisionError`;
+`OverflowException` is `OverflowError`. Every other is `Error`. The
+message begins with .NET's name for it, as Java's does (29.7).
+
+**Why more than Java's three.** .NET has an exception of its own for
+each of these, where Java's `ArithmeticException` was two kinds. Each
+means in .NET what the kind means in Zeno, by .NET's own description.
+
+### 37.9 Left for later
+
+- A function of Zeno given to .NET: an event, a `Func<T>`, the
+  lambdas of LINQ.
+- An extension method called with a dot on its object.
+- What a method puts back in an `out` or `ref` parameter.
+- `csharp` in a built program, and in `--target cs`, as 26.9 has it
+  for Python.

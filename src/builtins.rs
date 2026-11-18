@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php" | "lua")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php" | "lua" | "csharp")
 }
 
 /// Every built-in name and what it stands for.
@@ -255,7 +255,7 @@ fn java_type(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 /// a folder, which is its classes and every jar in it.
 fn java_jar(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("jar", &args, 1, 1, span)?;
-    crate::bridge::jar(text("jar", &args[0], span)?, span)?;
+    crate::bridge::jar(crate::bridge::Lang::Java, text("jar", &args[0], span)?, span)?;
     Ok(Value::None)
 }
 
@@ -332,6 +332,23 @@ fn lua_require(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 fn lua_global(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("global", &args, 1, 1, span)?;
     crate::bridge::global(crate::bridge::Lang::Lua, text("global", &args[0], span)?, span)
+}
+
+/// `csharp.type("System.Text.StringBuilder")`: a type of .NET, by its
+/// name with its namespace. Calling it makes an object, and a dot after
+/// it is something `static`. .NET is started beside the program the
+/// first time it is asked for (`bridge.rs`).
+fn csharp_type(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("type", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::CSharp, text("type", &args[0], span)?, span)
+}
+
+/// `csharp.assembly("lib/Humanizer.dll")`: a .dll, or a folder of them,
+/// where .NET then finds types.
+fn csharp_assembly(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("assembly", &args, 1, 1, span)?;
+    crate::bridge::jar(crate::bridge::Lang::CSharp, text("assembly", &args[0], span)?, span)?;
+    Ok(Value::None)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1317,6 +1334,14 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             vec![
                 ("require", Value::Builtin(Builtin { name: "require", call: lua_require })),
                 ("global", Value::Builtin(Builtin { name: "global", call: lua_global })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "csharp" => (
+            "csharp",
+            vec![
+                ("type", Value::Builtin(Builtin { name: "type", call: csharp_type })),
+                ("assembly", Value::Builtin(Builtin { name: "assembly", call: csharp_assembly })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

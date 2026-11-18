@@ -1,20 +1,20 @@
 //! Values that live in another language: `import python`, `import node`,
-//! `import java`, `import ruby`, `import php` and `import lua`
-//! (docs/python.md, docs/node.md, docs/java.md, docs/ruby.md,
-//! docs/php.md, docs/lua.md).
+//! `import java`, `import ruby`, `import php`, `import lua` and
+//! `import csharp` (docs/python.md, docs/node.md, docs/java.md,
+//! docs/ruby.md, docs/php.md, docs/lua.md, docs/csharp.md).
 //!
 //! Zeno starts that language's own interpreter beside the program, once,
 //! the first time it is asked for, and the two talk over a socket of this
 //! machine (for Lua, two named pipes): one line of JSON asks, one line
-//! answers. `none`, a bool, an
-//! int, a float and a str go across as themselves. Anything else stays
+//! answers. `none`, a bool, an int, a float and a str go across as
+//! themselves. Anything else stays
 //! where it was made, and Zeno holds a `Foreign`: the number the other
 //! side keeps it under.
 //!
 //! Nothing here knows a language but `Lang` and the helper it names
 //! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`, `bridge.php`,
-//! `bridge.lua`). Another language is another helper that speaks the
-//! same lines.
+//! `bridge.lua`, `bridge.cs`). Another language is another helper that
+//! speaks the same lines.
 
 use std::rc::Rc;
 
@@ -32,6 +32,7 @@ pub enum Lang {
     Ruby,
     Php,
     Lua,
+    CSharp,
 }
 
 impl Lang {
@@ -44,6 +45,7 @@ impl Lang {
             Lang::Ruby => "Ruby",
             Lang::Php => "PHP",
             Lang::Lua => "Lua",
+            Lang::CSharp => "C#",
         }
     }
 
@@ -57,6 +59,7 @@ impl Lang {
             Lang::Ruby => "Ruby",
             Lang::Php => "PHP",
             Lang::Lua => "Lua",
+            Lang::CSharp => ".NET",
         }
     }
 }
@@ -465,8 +468,8 @@ pub fn variable(lang: Lang, value: &Value, span: Span) -> Result {
 /// finds classes.
 #[cold]
 #[inline(never)]
-pub fn jar(path: &str, span: Span) -> Result<()> {
-    Ask::new(Lang::Java, "jar", span).text("name", path).send().map(|_| ())
+pub fn jar(lang: Lang, path: &str, span: Span) -> Result<()> {
+    Ask::new(lang, "jar", span).text("name", path).send().map(|_| ())
 }
 
 /// `thing.name`
@@ -633,6 +636,7 @@ mod link {
     const RUBY: &str = include_str!("bridge.rb");
     const PHP: &str = include_str!("bridge.php");
     const LUA: &str = include_str!("bridge.lua");
+    const CSHARP: &str = include_str!("bridge.cs");
 
     /// How the helper of a language is handed to its program: the
     /// option that says "the program is the next word", and the helper.
@@ -648,6 +652,7 @@ mod link {
             Lang::Php => vec!["-r".to_string(), PHP.trim_start_matches("<?php").to_string()],
             // Lua takes no program that begins with `-`, as a comment does.
             Lang::Lua => vec!["-e".to_string(), format!(" {LUA}")],
+            Lang::CSharp => csharp_helper(program),
         }
     }
 
@@ -723,6 +728,99 @@ mod link {
         run(&making)
     }
 
+    /// The words that start the .NET helper.
+    ///
+    /// .NET runs a program that `dotnet build` made from a project, and
+    /// that takes some seconds, so it is done once, as for Java: the
+    /// project and what is built from it are kept in the folder this
+    /// machine has for what can be made again (`registry::cache`), under
+    /// a number worked out from the source, and every later run starts
+    /// what was built. It is built for the .NET that builds it, and runs
+    /// on that one and every later one.
+    fn csharp_helper(program: &str) -> Vec<String> {
+        let project = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    \
+                       <TargetFramework>TARGET</TargetFramework>\n    <RollForward>Major</RollForward>\n    \
+                       <AssemblyName>ZenoBridge</AssemblyName>\n    <RootNamespace>Zeno</RootNamespace>\n    \
+                       <ImplicitUsings>disable</ImplicitUsings>\n    <Nullable>disable</Nullable>\n    \
+                       <SatelliteResourceLanguages>en</SatelliteResourceLanguages>\n    \
+                       <GenerateDocumentationFile>false</GenerateDocumentationFile>\n    <NoWarn>$(NoWarn);CS8632</NoWarn>\n  \
+                       </PropertyGroup>\n</Project>\n";
+        let mut number: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in CSHARP.bytes().chain(project.bytes()) {
+            number = (number ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let name = format!("csharp-bridge-{number:016x}");
+        let base = match crate::registry::cache() {
+            Ok(folder) => folder,
+            Err(_) => {
+                let folder = std::env::temp_dir().join(format!("zeno-{}-{}", std::process::id(), secret()));
+                SCRAPS.with(|scraps| scraps.borrow_mut().push(folder.clone()));
+                folder
+            }
+        };
+        let built = base.join(&name);
+        let run = |folder: &std::path::Path| vec![folder.join("ZenoBridge.dll").to_string_lossy().into_owned()];
+        if built.join("ZenoBridge.dll").is_file() {
+            return run(&built);
+        }
+        let quiet = |command: &mut Command| {
+            command
+                .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+                .env("DOTNET_NOLOGO", "1")
+                .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1")
+                .stdin(Stdio::null());
+        };
+        // The version of the SDK says which .NET to build for: 8.0.100
+        // builds for `net8.0`.
+        let mut asked = Command::new(program);
+        asked.arg("--version");
+        quiet(&mut asked);
+        let major = asked
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|said| said.status.success())
+            .and_then(|said| String::from_utf8_lossy(&said.stdout).trim().split('.').next().and_then(|major| major.parse::<u32>().ok()))
+            .unwrap_or(8)
+            .max(6);
+        // `dotnet build` keeps what it is in the middle of in the folder
+        // of the project, so each build has a folder of its own: two
+        // runs at once, or two tests, never build in one. It goes when
+        // the program is over.
+        let unique = secret();
+        let source = base.join(format!("{name}-source-{unique}"));
+        SCRAPS.with(|scraps| scraps.borrow_mut().push(source.clone()));
+        let written = std::fs::create_dir_all(&source).is_ok()
+            && std::fs::write(source.join("ZenoBridge.csproj"), project.replace("TARGET", &format!("net{major}.0"))).is_ok()
+            && std::fs::write(source.join("Bridge.cs"), CSHARP).is_ok();
+        // Where it cannot be built, `dotnet run` builds it and says why
+        // it could not: no SDK, which is what builds.
+        let as_source = vec!["run".to_string(), "--project".to_string(), source.to_string_lossy().into_owned()];
+        if !written {
+            return as_source;
+        }
+        let making = base.join(format!("{name}.{unique}"));
+        // No server of the build is left running after it.
+        let mut build = Command::new(program);
+        build.arg("build").arg(source.join("ZenoBridge.csproj")).args(["-c", "Release", "--nologo", "-v", "q", "-nodeReuse:false", "-p:UseSharedCompilation=false", "-o"]).arg(&making);
+        quiet(&mut build);
+        let compiled = build.stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success())
+            && making.join("ZenoBridge.dll").is_file();
+        if !compiled {
+            let _ = std::fs::remove_dir_all(&making);
+            return as_source;
+        }
+        let _ = std::fs::remove_dir_all(&source);
+        if std::fs::rename(&making, &built).is_ok() {
+            return run(&built);
+        }
+        if built.join("ZenoBridge.dll").is_file() {
+            let _ = std::fs::remove_dir_all(&making);
+            return run(&built);
+        }
+        run(&making)
+    }
+
     /// The variable of the environment that names the program to use.
     fn named_by(lang: Lang) -> &'static str {
         match lang {
@@ -732,6 +830,7 @@ mod link {
             Lang::Ruby => "ZENO_RUBY",
             Lang::Php => "ZENO_PHP",
             Lang::Lua => "ZENO_LUA",
+            Lang::CSharp => "ZENO_DOTNET",
         }
     }
 
@@ -806,6 +905,23 @@ mod link {
             (_, Lang::Php) => vec!["php".to_string()],
             // Some systems name Lua by its version only.
             (_, Lang::Lua) => vec!["lua".to_string(), "lua5.4".to_string(), "luajit".to_string()],
+            // `DOTNET_ROOT` is where .NET is when it is not on the path,
+            // and `~/.dotnet` is where Microsoft's script puts it.
+            (_, Lang::CSharp) => {
+                let file = if cfg!(windows) { "dotnet.exe" } else { "dotnet" };
+                let mut names = vec!["dotnet".to_string()];
+                for folder in [std::env::var_os("DOTNET_ROOT"), std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|home| std::path::Path::new(&home).join(".dotnet").into_os_string())]
+                    .into_iter()
+                    .flatten()
+                    .filter(|folder| !folder.is_empty())
+                {
+                    let path = std::path::Path::new(&folder).join(file);
+                    if path.is_file() {
+                        names.push(path.to_string_lossy().into_owned());
+                    }
+                }
+                names
+            }
             // `JAVA_HOME` is where the tools of Java look for it.
             (_, Lang::Java) => {
                 let mut names = vec!["java".to_string()];

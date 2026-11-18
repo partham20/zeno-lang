@@ -952,6 +952,7 @@ impl Lowerer {
                         "ruby" => "The `ruby` module needs Ruby beside the program while it runs, and `zeno run` is what starts it",
                         "php" => "The `php` module needs PHP beside the program while it runs, and `zeno run` is what starts it",
                         "lua" => "The `lua` module needs Lua beside the program while it runs, and `zeno run` is what starts it",
+                        "csharp" => "The `csharp` module needs .NET beside the program while it runs, and `zeno run` is what starts it",
                         _ => "It is not a module that comes with Zeno",
                     };
                     return Err(Error::new(format!("a program built for another language cannot use `{path}`. {why}"), statement.span));
@@ -1676,6 +1677,13 @@ mod tests {
             refused("import lua\nprint(lua.global(\"math\").pi)").as_deref(),
             Some(
                 "a program built for another language cannot use `lua`. The `lua` module needs Lua beside \
+                 the program while it runs, and `zeno run` is what starts it"
+            )
+        );
+        assert_eq!(
+            refused("import csharp\nprint(csharp.type(\"System.Math\").PI)").as_deref(),
+            Some(
+                "a program built for another language cannot use `csharp`. The `csharp` module needs .NET beside \
                  the program while it runs, and `zeno run` is what starts it"
             )
         );

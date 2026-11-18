@@ -1,0 +1,75 @@
+# What time it is now in each place named, with how far ahead of UTC
+# it is there: for a meeting, a log stamped in another country, or a
+# board that keeps UTC.
+#
+#     zeno run examples/clock.zeno
+#     zeno run examples/clock.zeno Asia/Kolkata Asia/Taipei America/Chicago
+#
+# A place is named as the time zone database names it: a continent and
+# a city. `UTC` is one too.
+#
+# Zeno has the time as a number (`time.now()`) and no time zones. .NET
+# has them, in `TimeZoneInfo`, which knows when each place changes its
+# clocks, and `import csharp` lets a Zeno program use it: every type
+# that comes with .NET, and any package that `dotnet add package` gave
+# the project beside it.
+#
+# It needs the .NET SDK, 6 or later.
+
+import csharp
+import program
+
+# "07" for 7.
+function two(number: int) -> str {
+    if number < 10 {
+        return f"0{number}"
+    }
+    return str(number)
+}
+
+# "+05:30" for a number of minutes ahead of UTC.
+function ahead(minutes: int) -> str {
+    var sign = "+"
+    var left = minutes
+    if minutes < 0 {
+        sign = "-"
+        left = -minutes
+    }
+    return sign + two(left // 60) + ":" + two(left % 60)
+}
+
+# The time now, the zone and what it gives stay in .NET, and Zeno asks
+# for each. What .NET can raise is not known before the program runs,
+# so the function says `raises Error`: any kind.
+function show(places: list[str]) raises Error {
+    let now = csharp.type("DateTime").UtcNow
+    let zones = csharp.type("TimeZoneInfo")
+    for place in places {
+        try {
+            let zone = zones.FindSystemTimeZoneById(place)
+            let there = zones.ConvertTimeFromUtc(now, zone)
+            let minutes = int(zone.GetUtcOffset(now).TotalMinutes)
+            let written = there.ToString("yyyy-MM-dd HH:mm")
+            print(f"{written}  UTC{ahead(minutes)}  {place}")
+        } except Error as error {
+            if error.message.starts_with("TimeZoneNotFoundException") {
+                print(f"there is no time zone {place}. A place is named as Asia/Kolkata is")
+            } else {
+                raise error
+            }
+        }
+    }
+}
+
+var places = program.arguments()
+if len(places) == 0 {
+    places = ["UTC", "Asia/Kolkata", "Asia/Taipei", "Europe/Berlin", "America/New_York"]
+}
+try {
+    show(places)
+} except FileError as error {
+    # .NET is not installed.
+    print(error.message)
+} except Error as error {
+    print(f".NET could not do it. {error.message}")
+}

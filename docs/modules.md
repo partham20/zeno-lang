@@ -91,7 +91,7 @@ Each of these has a message that says what to write instead. A few:
 ```
 error: there is no module `shapes`. `import shapes` reads the file `demo/shapes.zeno`,
 and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`,
-`json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php` and `lua`
+`json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`
 
 error: module `sensors` has no `chek`. It has `Reading`, `Health`, `Good`, `Suspect`,
 `highest` and `check`
