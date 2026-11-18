@@ -1,0 +1,511 @@
+\chapter{Libraries of Other Languages}\label{ch-other-languages}
+
+A package of Zeno is written in Zeno. Most of the libraries in the
+world are not: Python has one for nearly everything, npm has more
+packages than any other place, and Java has a very large library of
+its own and a jar for whatever else. Since 0.5.2 a Zeno program can
+use all three as they are, with one line at the top:
+
+\begin{zeno}[file=mean.zeno]
+import python
+
+let statistics = python.module("statistics")
+let readings = [21.5, 22.0, 23.5, 22.5]
+print(statistics.mean(readings), statistics.median(readings))
+\end{zeno}
+
+\verb|python.module("statistics")| is what \verb|import statistics|
+is in Python. What it gives is the module, and from there the program
+is written as it would be in Python: a dot for what the module has,
+brackets for a call.
+
+The three work the same way, and this chapter takes Python first,
+then says what is different about JavaScript and Java.
+
+\begin{center}
+\begin{tabular}{lP{7.4cm}}
+\toprule
+Written & Gives \\
+\midrule
+\verb|import python| & \verb|python.module(name)| and \verb|python.copy(value)| \\
+\verb|import node| & \verb|node.module(name)|, \verb|node.global(name)|,
+  \verb|node.new(Class, ...)| and \verb|node.copy(value)| \\
+\verb|import java| & \verb|java.type(name)|, \verb|java.jar(path)| and
+  \verb|java.copy(value)| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{note}
+Nothing changes for a program that does not import one of these. They
+are added beside the language, and they are there only when they are
+asked for. The language that runs the library is started the first
+time the program calls into it, once, and stays until the program
+ends. A program that imports \verb|python| and never calls it starts
+nothing.
+\end{note}
+
+\section{What it needs}
+
+The other language must be on the computer, with the library
+installed for it:
+
+\begin{center}
+\begin{tabular}{llP{6.2cm}}
+\toprule
+Import & Needs & Zeno looks for \\
+\midrule
+\verb|python| & Python 3 & \verb|python3|, then \verb|python|
+  (on Windows \verb|python|, \verb|python3|, then \verb|py|);
+  \verb|ZENO_PYTHON| names another \\
+\verb|node| & Node 22 or later & \verb|node|; \verb|ZENO_NODE| names another \\
+\verb|java| & Java 11 or later & \verb|java|, then in \verb|JAVA_HOME|;
+  \verb|ZENO_JAVA| names another \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The Python that a virtual environment puts first, when it is active,
+is the one Zeno finds. A library is looked for where that language
+would look for it if the program were written in it and lay in the
+same place: so a \verb|helper.py| beside the program is
+\verb|python.module("helper")|, and an npm package is installed with
+\verb|npm install| in the folder of the program. The program can then
+be run from anywhere.
+
+\section{Values go across in two ways}
+
+\textbf{\texttt{none}, a bool, a number and a str go as themselves.}
+What the other language returns of these kinds is a value of Zeno at
+once, and what Zeno passes arrives as that language's own:
+
+\begin{zeno}[file=day.zeno, dir=python]
+import python
+
+let datetime = python.module("datetime")
+let day = datetime.date(2026, 11, 18)
+print(day, day.year + 1, day.strftime("%A"))
+\end{zeno}
+
+\verb|day.year| is an int of Zeno, so \verb|+ 1| is Zeno's.
+\verb|day.strftime("%A")| is a str of Zeno. Python's \verb|None| is
+\verb|none|.
+
+\textbf{Everything else stays where it was made.} \verb|datetime| and
+\verb|day| above are not copies of anything. Zeno holds a number that
+Python knows the value by, and each time the program writes a field, a
+call or an item of it, Zeno asks Python. When nothing in the program
+holds the value any more, Python is told, and lets it go.
+
+A value that stays in the other language can be used in these ways:
+
+\begin{center}
+\begin{tabular}{lP{6.8cm}}
+\toprule
+Written & What the other language does \\
+\midrule
+\verb|thing.name| & \verb|thing.name| \\
+\verb|thing.name = value| & the same \\
+\verb|thing(1, 2, key=3)| & the call; what a named argument becomes is
+  in the sections below \\
+\verb|thing[index]| & the item, and \verb|thing[index] = value| sets it \\
+\verb|len(thing)| & how many items it has \\
+\verb|for item in thing { }| & every item, taken when the loop begins \\
+\verb|item in thing| & whether it holds the item \\
+\verb|thing == other| & that language's own test for equal \\
+\verb|print(thing)|, \verb|str(thing)| & the value as that language writes it \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+What it cannot be is the test of an \verb|if|, because a condition in
+Zeno is \verb|true| or \verb|false| and nothing else. Write
+\verb|len(thing) > 0| or \verb|thing is not none|. Nor can it be one
+side of \verb|+| or \verb|<|: take a number of Zeno out of it first.
+
+\begin{zeno}[file=later.zeno, dir=python]
+import python
+
+let day = python.module("datetime").date(2026, 11, 18)
+let later = day.replace(month=12)
+print(later.isoformat(), later == day, [day, later])
+\end{zeno}
+
+\verb|month=12| is a keyword argument of Python. Inside a list, a value
+of Python is shown as Python writes it there, as a str of Zeno is shown
+with its quotes inside a list.
+
+\section{Lists and dicts}
+
+A list of Python stays in Python too, and that is on purpose:
+
+\begin{zeno}[file=names.zeno, dir=python]
+import python
+
+let builtins = python.module("builtins")
+let names = builtins.list(["cy", "ann"])
+names.append("bob")
+names.sort()
+print(names, len(names), names[0], "bob" in names)
+for name in names {
+    print(name.upper())
+}
+\end{zeno}
+
+\verb|names| is the one list there is. \verb|append| and \verb|sort|
+are Python's, and they change the list that Python has. If the list
+came across as a copy, \verb|names.append("bob")| would add to the
+copy, Python would never see it, and nothing would say so. Each
+\verb|name| in the loop is a str of Zeno, so \verb|upper| is Zeno's.
+
+When a list of Zeno is what the program wants, to pass to a function
+that takes \verb|list[str]| or to use Zeno's own methods on, the
+\verb|copy| of the module makes one:
+
+\begin{zeno}[file=mine.zeno, dir=python]
+import python
+
+let names = python.module("builtins").sorted(["cy", "ann", "bob"])
+let mine = python.copy(names)
+mine.append("dee")
+print(mine, len(names))
+\end{zeno}
+
+\verb|copy| takes a list, a tuple or a dict of Python, and gives a list
+or a dict of Zeno, with every list and dict inside it copied as well.
+A dict whose keys are not all str or int cannot be a dict of Zeno, and
+\verb|copy| raises a \verb|ValueError| that names the key.
+
+\textbf{The other way is always a copy.} A list or dict of Zeno passed
+to Python arrives as a new list or dict there:
+
+\begin{zeno}[file=shuffle.zeno, dir=python]
+import python
+
+let xs = [3, 1, 2]
+python.module("random").shuffle(xs)
+print(xs)        # Python shuffled its copy
+\end{zeno}
+
+To have Python work on a list and see the result, make the list in
+Python (\verb|builtins.list(xs)|) and copy it back.
+
+\section{Errors}
+
+An error that the other language raises is an error of Zeno, and
+\verb|try| catches it (\hyperref[ch-errors]{Errors}):
+
+\begin{zeno}[file=oops.zeno, dir=python]
+import python
+
+let json = python.module("json")
+try {
+    json.loads("{oops")
+} except ValueError as error {
+    print(error.message)
+}
+\end{zeno}
+
+The message begins with what Python called the error when that is not
+the name of the kind. The kinds are matched like this:
+
+\begin{center}
+\begin{tabular}{lP{8.4cm}}
+\toprule
+From & Becomes \\
+\midrule
+Python & \verb|OSError| and its kinds are a \verb|FileError|;
+  \verb|ValueError|, \verb|IndexError|, \verb|KeyError|,
+  \verb|OverflowError| and \texttt{Zero\-Division\-Error} are the kind
+  of the same name \\
+JavaScript & an error the system gave (no such file, no network) is a
+  \verb|FileError| \\
+Java & \verb|IOException| and its kinds are a \verb|FileError|;
+  \texttt{Index\-OutOf\-Bounds\-Exception} is an \verb|IndexError|;
+  \texttt{Illegal\-Argument\-Exception} is a \verb|ValueError| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Anything else is an \verb|Error|. Two things can go wrong
+before any library is reached, and both are a \verb|FileError|: there
+is no Python (or Node, or Java) to run, or it has no module of that
+name. The message says which one Zeno found, and where it looked.
+
+\begin{zeno}[file=missing.zeno, dir=python, fails=yes]
+import python
+
+let video = python.module("no_such_library")
+\end{zeno}
+
+What another language can raise is not known before the program runs.
+A function that declares what it raises (\hyperref[ch-errors]{Errors})
+and calls into one says \verb|raises Error|, which is every kind.
+
+\section{Types}
+
+What a module has is known when the program runs, and not before. So
+a value from another language has the type that \verb|json.parse|
+gives (\hyperref[ch-reading-writing]{Reading and Writing}): the checker
+lets everything through, and a wrong name is an error at its line when
+the program gets there. Give a value a type of Zeno where it lands,
+and from there on it is checked:
+
+\begin{zenofrag}
+let title: str = about["title"]       # checked when it happens
+\end{zenofrag}
+
+For the same reason \verb|zeno check --strict| refuses a program that
+imports one of the three.
+
+\section{JavaScript}
+
+\verb|node.module(name)| is what \verb|require(name)| is in
+JavaScript. A module that comes with Node, such as \verb|fs|,
+\verb|path|, \verb|os|, \verb|crypto| or \verb|zlib|, needs nothing
+more; a package from npm is installed in the program's folder with
+\verb|npm install|. A file of JavaScript beside the program is a
+module by its path, \verb|node.module("./helper.js")|.
+
+Much of JavaScript is not in a module at all. \verb|JSON|,
+\verb|Math|, \verb|Date| and \verb|process| are there everywhere, and
+\verb|node.global| gives them. JavaScript makes an object of a class
+with \verb|new|, and Zeno with \verb|node.new|:
+
+\begin{zeno}[file=globals.zeno]
+import node
+
+let path = node.module("path")
+print(path.basename("/home/ann/notes.txt"), path.extname("notes.txt"))
+
+let JSON = node.global("JSON")
+let about = JSON.parse("{\"name\": \"ann\", \"age\": 31}")
+print(about.name, about.age + 1, about.email is none)
+
+let start = node.new(node.global("Date"), 2026, 10, 18)
+print(start.getFullYear(), start.toDateString())
+\end{zeno}
+
+\verb|about.email| is \verb|none|, and not an error: a field that an
+object of JavaScript does not have is \verb|undefined|, and both
+\verb|null| and \verb|undefined| are \verb|none| in Zeno.
+
+Four things are different from Python.
+
+\begin{itemize}
+\item \textbf{One kind of number.} A number of JavaScript that is
+  whole arrives as an int, and any other as a float. So
+  \verb|Math.sqrt(16.0)| is \verb|4|, an int; where a float is
+  needed, \verb|float(x)| makes one.
+\item \textbf{Named arguments are the options.} JavaScript has no
+  named arguments. A function there takes its options as one object,
+  its last argument, and so the named arguments of a call are gathered
+  into that object: \verb|fs.readFileSync("notes.txt", encoding="utf8")|
+  is \verb|readFileSync("notes.txt", {encoding: "utf8"})|.
+\item \textbf{What takes time is waited for.} A call that gives a
+  promise gives its answer, and the program goes on when it is there.
+  There is no \verb|await| to write, and a promise that fails is an
+  error at the line of the call.
+\item \textbf{Equal is the same object.} \verb|==| is JavaScript's
+  \verb|===|, so two arrays with the same items are not equal. Compare
+  their copies: \verb|node.copy(a) == node.copy(b)|.
+\end{itemize}
+
+\begin{zeno}[file=waited.zeno]
+import node
+
+let Math = node.global("Math")
+print(Math.max(3, 9, 4), Math.sqrt(16.0), Math.sqrt(2.0))
+
+let options = node.global("Object")(recursive=true, retries=3)
+print(options, options.retries + 1)
+
+let crypto = node.module("crypto")
+print(crypto.createHash("sha256").update("zeno").digest("hex"))
+\end{zeno}
+
+\verb|node.global("Object")| called with named arguments makes such an
+object by itself, to keep or to add to. \verb|node.copy| takes an
+array or a \verb|Set| and gives a list, and a plain object or a
+\verb|Map| and gives a dict.
+
+\section{Java}
+
+\verb|java.type(name)| is what \verb|import| of a class is in Java,
+and the name is always the whole name that Java's own documentation
+gives. A dot after a class is what is \verb|static| in it, and calling
+a class makes an object, as \verb|new| does there:
+
+\begin{zeno}[file=classes.zeno]
+import java
+
+let Math = java.type("java.lang.Math")
+print(Math.max(3, 9), Math.floorMod(-7, 3))
+
+let LocalDate = java.type("java.time.LocalDate")
+let day = LocalDate.of(2026, 11, 18)
+print(day, day.getDayOfWeek(), day.plusMonths(1), day.getYear() + 1)
+
+let names = java.type("java.util.ArrayList")(["cy", "ann"])
+names.add("bob")
+java.type("java.util.Collections").sort(names)
+print(names, len(names), names[0], "bob" in names, names == ["ann", "bob", "cy"])
+\end{zeno}
+
+A list of Zeno passed to a class of Java arrives as a new
+\verb|ArrayList|, and a dict as a \verb|LinkedHashMap|: so
+\verb|ArrayList(["cy", "ann"])| is the short way to make a collection
+of Java from what Zeno has. \verb|==| is Java's \verb|equals|, so a
+list of Java equals a list of Zeno with the same items.
+
+What is different from Python:
+
+\begin{itemize}
+\item \textbf{A library is a jar.} \verb|java.jar("lib/gson-2.11.0.jar")|
+  says where one is, counted from the folder of the \verb|.zeno| file,
+  and after it the classes of that jar are found. A folder in place of
+  a jar is every jar in it. Kotlin, Scala and Clojure libraries are
+  jars as well.
+\item \textbf{Java's method decides.} Java can have several methods of
+  one name that take different types. The one that the arguments fit
+  best is called, in the order Java itself would choose: an int is an
+  \verb|int| before it is a \verb|long|, and a \verb|long| before a
+  \verb|double|. When none fits, the error lists what there is.
+\item \textbf{No named arguments.} Java has none, so a call with one is
+  an error that says so.
+\item \textbf{The first run takes a second longer.} Zeno's own part on
+  the Java side is compiled once, with \verb|javac|, and kept in the
+  folder for what can be made again (\verb|~/.cache/zeno| on Linux).
+\end{itemize}
+
+\begin{zeno}[file=valueof.zeno]
+import java
+
+let String = java.type("java.lang.String")
+print(String.valueOf(5), String.valueOf(2.5), String.valueOf(true))
+
+try {
+    java.type("java.lang.Integer").parseInt("forty")
+} except ValueError as error {
+    print(error.message)
+}
+\end{zeno}
+
+Those are three different methods of Java, and Zeno picked each from
+the type of what it was given.
+
+\begin{note}
+One trap is Java's own. A \verb|List| has \verb|remove(int)|, which
+takes out the item at a place, and \verb|remove(Object)|, which takes
+out an item. \verb|list.remove(30)| is the first, in Java as here. To
+take the number 30 out of a list of numbers, write
+\verb|list.remove(list.indexOf(30))|.
+\end{note}
+
+\section{More than one in a program}
+
+A program can import all three. Each value stays where it was made. A
+str or a number that one gave can be passed to another, because by
+then it is a value of Zeno; a value that stayed in one cannot be given
+to another, and Zeno says so at the line:
+
+\begin{zeno}[file=both.zeno, fails=yes]
+import python
+import node
+
+let day = python.module("datetime").date(2026, 11, 18)
+let JSON = node.global("JSON")
+print(JSON.stringify(day.isoformat()))
+print(JSON.stringify(day))
+\end{zeno}
+
+The first \verb|print| works, because \verb|isoformat()| gave a str of
+Zeno. The \verb|copy| of each module makes a list or a dict of Zeno,
+and that can go anywhere.
+
+\section{A name that is a word of Zeno}
+
+Python has \verb|re.match|, JavaScript has \verb|Array.from|, and Java
+has \verb|System.in|; \verb|match|, \verb|from| and \verb|in| are
+words of Zeno, so none of them parses after a dot. Each language has
+its own way around it:
+
+\begin{center}
+\begin{tabular}{lP{8.4cm}}
+\toprule
+Language & Write \\
+\midrule
+Python & \verb|builtins.getattr(re, "match")(p, text)| \\
+JavaScript & \verb|Array["from"](items)|: brackets are a dot there \\
+Java & \verb|System["in"]|, \verb|LocalDate["from"](other)| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{What is not there yet}
+
+\begin{itemize}
+\item \textbf{A function of Zeno cannot be given to another language.}
+  A library that calls back, for progress, a sort key, an event or a
+  request to a server, cannot call into Zeno yet, and Zeno says so at
+  the line. Much of Node gives a promise instead, and that works.
+\item \textbf{A loop takes everything first.} \verb|for line in thing|
+  asks for all the items, then loops. Over something that never ends,
+  it never begins.
+\item \textbf{A class of Zeno cannot extend a class of Java}, or be
+  one of its interfaces.
+\item \textbf{Built programs.} \verb|zeno run| and \verb|zeno test| have
+  all three, with and without \verb|--vm|. \verb|zeno build|, in every
+  form and for every target, refuses them, because a built program
+  must run where the other language may not be.
+\end{itemize}
+
+\section{How it is built}
+
+The other language runs as a program of its own, beside Zeno. A small
+helper for it is part of the \verb|zeno| file, and the first call
+starts the language with it. Zeno opens a socket that only this
+computer can reach, and gives the helper its port and a word made up
+for this run; the helper connects, says the word, and only then is it
+listened to. Because the conversation has a line of its own, the
+other language keeps the screen and the keyboard: its \verb|print|, a
+progress bar that redraws itself and \verb|input()| all work as if it
+had been started by hand.
+
+Each question is one line of JSON, and so is each answer:
+
+\begin{zenofrag}[lang=shell]
+{"op":"get","on":["p",3],"name":"year"}                 day.year
+{"ok": 2026}
+{"op":"call","on":["p",9],"args":["{oops"],"named":[],"free":[5,7]}
+{"err": ["ValueError", "JSONDecodeError: Expecting ..."]}
+\end{zenofrag}
+
+\verb|["p", 3]| is the value the helper keeps under the number 3.
+\verb|"free"| rides along with the next question: the numbers Zeno has
+let go of since the last one. In Zeno the value is one more kind of
+\verb|Value|, which holds the number, and the operations that both
+engines share (a field, an item, \verb|len|, \verb|==|) ask over the
+socket when they meet it. Nothing on Zeno's side knows Python but the
+name of the helper, so JavaScript and Java are each another helper that
+speaks the same lines. The reasons are chapters 26, 28 and 29 of
+\verb|docs/decisions.md|.
+
+\section{Things to try}
+
+\begin{enumerate}
+\item Run the first program of this chapter. Then misspell
+  \verb|statistics| and read the message. Which Python does it name?
+\item Print \verb|python.module("sys").executable|. Start a virtual
+  environment and run it again.
+\item \verb|builtins.sorted([3, 1, 2])| gives a list that stays in
+  Python. Print it, then print \verb|python.copy| of it. What is
+  different about the two lines, and why?
+\item Write \verb|function mean(xs: list[float]) -> float| in Zeno, and pass
+  it a list of Python with and without \verb|copy|. What do the
+  checker and the program say?
+\item With Node, read a file through \verb|node.module("fs/promises")|.
+  Where is the promise?
+\item With Java, call \verb|java.type("java.util.ArrayList")().get(3)|
+  inside a \verb|try|. Which kind of error catches it?
+\end{enumerate}
