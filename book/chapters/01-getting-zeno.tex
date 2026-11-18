@@ -10,7 +10,7 @@ building it from its source. The first two take a minute and need
 nothing installed. The third needs Rust, and gives you the compiler's
 source to read beside \hyperref[ch-inside]{Inside Zeno}.
 
-Zeno 0.5.1 is the current release, and everything below installs it.
+Zeno 0.5.2 is the current release, and everything below installs it.
 Its files are on the releases page of the repository:
 
 \begin{center}
@@ -21,7 +21,7 @@ Its files are on the releases page of the repository:
 
 \subsection{On Windows}
 
-Download \verb|zeno-0.5.1-windows-setup.exe| from the releases page,
+Download \verb|zeno-0.5.2-windows-setup.exe| from the releases page,
 run it, and press \emph{Next}.
 
 It is the same file for every Windows machine: it holds the
@@ -88,10 +88,10 @@ programs, and each removes them again the usual way.
 Each installs from its file, downloaded from the releases page:
 
 \begin{zenofrag}[lang=shell]
-sudo apt install ./zeno_0.5.1_amd64.deb                     # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.5.1-1-x86_64.pkg.tar.zst          # Arch
-sudo snap install --classic --dangerous zeno_0.5.1_amd64.snap
-flatpak install --user zeno-0.5.1-x86_64.flatpak
+sudo apt install ./zeno_0.5.2_amd64.deb                     # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.5.2-1-x86_64.pkg.tar.zst          # Arch
+sudo snap install --classic --dangerous zeno_0.5.2_amd64.snap
+flatpak install --user zeno-0.5.2-x86_64.flatpak
 \end{zenofrag}
 
 The \verb|.deb| comes for \verb|amd64|, \verb|arm64|, \verb|armhf| (any
@@ -139,16 +139,16 @@ your machine from the same releases page:
 \toprule
 Machine & File \\
 \midrule
-Linux on most PCs and servers (x86-64) & \verb|zeno-0.5.1-linux-x86_64.tar.gz| \\
-Linux on 32-bit x86 & \verb|zeno-0.5.1-linux-x86.tar.gz| \\
-Raspberry Pi 3, 4 or 5 with a 64-bit system, and ARM servers & \verb|zeno-0.5.1-linux-arm64.tar.gz| \\
-Raspberry Pi 2 or later with a 32-bit system (ARMv7) & \verb|zeno-0.5.1-linux-armv7.tar.gz| \\
-Raspberry Pi 1 or Zero (ARMv6) & \verb|zeno-0.5.1-linux-armv6.tar.gz| \\
-Mac with Apple silicon (M1 and later) & \verb|zeno-0.5.1-macos-arm64.tar.gz| \\
-Mac with an Intel processor & \verb|zeno-0.5.1-macos-x86_64.tar.gz| \\
-Windows on most PCs (x86-64) & \verb|zeno-0.5.1-windows-x86_64.zip| \\
-Windows on 32-bit x86 & \verb|zeno-0.5.1-windows-x86.zip| \\
-Windows on ARM & \verb|zeno-0.5.1-windows-arm64.zip| \\
+Linux on most PCs and servers (x86-64) & \verb|zeno-0.5.2-linux-x86_64.tar.gz| \\
+Linux on 32-bit x86 & \verb|zeno-0.5.2-linux-x86.tar.gz| \\
+Raspberry Pi 3, 4 or 5 with a 64-bit system, and ARM servers & \verb|zeno-0.5.2-linux-arm64.tar.gz| \\
+Raspberry Pi 2 or later with a 32-bit system (ARMv7) & \verb|zeno-0.5.2-linux-armv7.tar.gz| \\
+Raspberry Pi 1 or Zero (ARMv6) & \verb|zeno-0.5.2-linux-armv6.tar.gz| \\
+Mac with Apple silicon (M1 and later) & \verb|zeno-0.5.2-macos-arm64.tar.gz| \\
+Mac with an Intel processor & \verb|zeno-0.5.2-macos-x86_64.tar.gz| \\
+Windows on most PCs (x86-64) & \verb|zeno-0.5.2-windows-x86_64.zip| \\
+Windows on 32-bit x86 & \verb|zeno-0.5.2-windows-x86.zip| \\
+Windows on ARM & \verb|zeno-0.5.2-windows-arm64.zip| \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -165,11 +165,11 @@ Unpack the file, and copy \verb|zeno| into a folder that is on your
 \verb|sudo|:
 
 \begin{zenofrag}[lang=shell]
-$ tar -xzf zeno-0.5.1-linux-x86_64.tar.gz
+$ tar -xzf zeno-0.5.2-linux-x86_64.tar.gz
 $ mkdir -p ~/.local/bin
-$ cp zeno-0.5.1-linux-x86_64/zeno* ~/.local/bin/
+$ cp zeno-0.5.2-linux-x86_64/zeno* ~/.local/bin/
 $ zeno --version
-zeno 0.5.1
+zeno 0.5.2
 \end{zenofrag}
 
 If the shell says \verb|zeno: command not found|, that folder is not on
@@ -186,8 +186,8 @@ The same steps work in the Terminal, with \verb|/usr/local/bin| as the
 folder:
 
 \begin{zenofrag}[lang=shell]
-$ tar -xzf zeno-0.5.1-macos-arm64.tar.gz
-$ sudo cp zeno-0.5.1-macos-arm64/zeno* /usr/local/bin/
+$ tar -xzf zeno-0.5.2-macos-arm64.tar.gz
+$ sudo cp zeno-0.5.2-macos-arm64/zeno* /usr/local/bin/
 $ xattr -d com.apple.quarantine /usr/local/bin/zeno
 $ zeno --version
 \end{zenofrag}
@@ -209,7 +209,7 @@ window then finds it:
 
 \begin{zenofrag}[lang=shell]
 > zeno --version
-zeno 0.5.1
+zeno 0.5.2
 \end{zenofrag}
 
 Windows may warn that the program is from an unknown publisher, for
@@ -224,7 +224,7 @@ one that was built:
 
 \begin{zenofrag}[lang=shell]
 $ sha256sum --check --ignore-missing SHA256SUMS.txt
-zeno-0.5.1-linux-x86_64.tar.gz: OK
+zeno-0.5.2-linux-x86_64.tar.gz: OK
 \end{zenofrag}
 
 On macOS the command is \verb|shasum -a 256 -c|, and in PowerShell

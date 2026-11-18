@@ -109,7 +109,7 @@ piece of the compiler:
 
 ## Install
 
-**Windows.** Download `zeno-0.5.1-windows-setup.exe` from the
+**Windows.** Download `zeno-0.5.2-windows-setup.exe` from the
 [releases page](https://github.com/zeno-src/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
@@ -131,10 +131,10 @@ what both do, line by line, and how to take Zeno off again.
 pacman, snap and flatpak, installed from the file:
 
 ```sh
-sudo apt install ./zeno_0.5.1_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.5.1-1-x86_64.pkg.tar.zst         # Arch
-sudo snap install --classic --dangerous zeno_0.5.1_amd64.snap
-flatpak install --user zeno-0.5.1-x86_64.flatpak
+sudo apt install ./zeno_0.5.2_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.5.2-1-x86_64.pkg.tar.zst         # Arch
+sudo snap install --classic --dangerous zeno_0.5.2_amd64.snap
+flatpak install --user zeno-0.5.2-x86_64.flatpak
 ```
 
 The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
@@ -164,25 +164,25 @@ an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.5.1-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.5.1-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.5.1-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.5.1-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.5.1-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.5.1-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.5.1-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.5.1-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.5.1-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.5.1-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.5.2-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.5.2-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.5.2-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.5.2-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.5.2-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.5.2-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.5.2-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.5.2-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.5.2-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.5.2-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
 `PATH`. It is one file and needs nothing else installed. To build web
 pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.5.1-linux-x86_64.tar.gz
-cd zeno-0.5.1-linux-x86_64
-./zeno --version                 # zeno 0.5.1
+tar -xzf zeno-0.5.2-linux-x86_64.tar.gz
+cd zeno-0.5.2-linux-x86_64
+./zeno --version                 # zeno 0.5.2
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
@@ -488,9 +488,9 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `import filters.lowpass` then reads `lowpass.zeno` of that
     package. `zeno fetch` gets the repositories with git into
     `packages/` and pins each commit in `zeno.lock`; running a
-    program never uses the network. Since 0.5.1, and in no release
-    yet: a registry, so that `needs units at "v1.2.0"` finds a package
-    by its name. It is a git repository,
+    program never uses the network. Since 0.5.2 there is a registry,
+    so that `needs units at "v1.2.0"` finds a package by its name. It
+    is a git repository,
     [zeno-src/packages](https://github.com/zeno-src/packages), with
     one small file for each package and no server. `zeno search`
     lists it, `zeno publish` checks a package and gives the address
@@ -654,28 +654,27 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     Java, C#, C++ or Rust, as a page, or as WebAssembly. Each file
     carries Zeno's rules and prints what `zeno run` prints, which
     `tools/targets.py` checks on 338 programs. Lua, Ruby, Dart and
-    Kotlin were added after 0.5.1 and will be in the release after it.
+    Kotlin came in 0.5.2.
     See [`docs/targets.md`](docs/targets.md) and chapter 24 of
     [`docs/decisions.md`](docs/decisions.md))
-33. The least C (done, after 0.5.1 and not yet released: `zeno build
-    --minimal` writes only the C the program needs, with no checks,
-    for a program that is already correct. The other builds are
+33. The least C (done, in 0.5.2: `zeno build --minimal` writes only
+    the C the program needs, with no checks, for a program that is
+    already correct. The other builds are
     unchanged, byte for byte. `tools/minimal.py` holds it to the
     checked build on 363 programs.
     See [`docs/minimal.md`](docs/minimal.md) and chapter 30 of
     [`docs/decisions.md`](docs/decisions.md))
 
-34. A library written in Zeno (done, after 0.5.1 and not yet
-    released: a module that comes with Zeno may have a part that is a
-    file of Zeno, kept inside `zeno` and joined to a program as a file
-    of the program is. Only the functions a program reaches are put
-    into it, and a program that uses none is unchanged. The first
-    ones: `math.hypot`, `sinh`, `cosh`, `tanh`, `gcd` and `clamp`, and
-    the module `random`, with `between`, `number`, `pick` and `seed`.
-    Each is written once, and is the same in every engine, every
-    build and every target.
-    See [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and
-    chapter 33 of [`docs/decisions.md`](docs/decisions.md))
+34. A library written in Zeno (done, in 0.5.2: a module that comes
+    with Zeno may have a part that is a file of Zeno, kept inside
+    `zeno` and joined to a program as a file of the program is. Only
+    the functions a program reaches are put into it, and a program
+    that uses none is unchanged. The first ones: `math.hypot`, `sinh`,
+    `cosh`, `tanh`, `gcd` and `clamp`, and the module `random`, with
+    `between`, `number`, `pick` and `seed`. Each is written once, and
+    is the same in every engine, every build and every target. See
+    [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and chapter
+    33 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

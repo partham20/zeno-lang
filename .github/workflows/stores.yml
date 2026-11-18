@@ -41,7 +41,7 @@ on:
       version:
         description: The released version
         type: string
-        default: 0.5.1
+        default: 0.5.2
       send:
         description: Send it to the stores that a login was given for
         type: boolean

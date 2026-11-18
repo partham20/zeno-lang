@@ -127,7 +127,7 @@ Option & Means \\
   one owner, and memory comes from a pool of a fixed size
   (\hyperref[ch-no-collector]{Building with No Collector}) \\
 \verb|--minimal| & the least C that runs the program, with no checks
-  (the next section; after 0.5.1, and not yet released) \\
+  (the next section; new in 0.5.2) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -299,11 +299,8 @@ languages are \verb|js| (JavaScript, for Node), \verb|ts|
 (TypeScript), \verb|html| (a page that runs the program), \verb|py|
 (Python), \verb|php|, \verb|go|, \verb|java|, \verb|cs| (C\#),
 \verb|cpp| (C++), \verb|rust|, and \verb|wasm| (WebAssembly, built
-through Rust).
-
-{\itshape Four more are on their way and not yet released:
-\verb|lua|, \verb|ruby|, \verb|dart| and \verb|kotlin|. They are in
-Zeno built from its source today, and in the release after 0.5.1.}
+through Rust). Zeno 0.5.2 added four: \verb|lua|, \verb|ruby|,
+\verb|dart| and \verb|kotlin|.
 
 \begin{zeno}[file=area.zeno, cmd=zeno build --target js {file} ;; node area.js ;; zeno build --target py {file} ;; python3 area.py]
 import math
@@ -346,9 +343,8 @@ cannot use the keyboard or files, or \verb|sleep|.
 \begin{why}
 A program you have written in Zeno can then live where another language
 lives: on a web page, in a Python project, on a Java server. And it is a
-way to learn: the same program, written by fixed rules in eleven
-languages, and fifteen with the four on their way, shows what each
-language needs said that Zeno does not.
+way to learn: the same program, written by fixed rules in fifteen
+languages, shows what each language needs said that Zeno does not.
 (Decisions 24.1 to 24.34; \verb|docs/targets.md| has every target.)
 \end{why}
 
