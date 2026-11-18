@@ -4306,6 +4306,40 @@ static void zeno_program_exit(int64_t code, int line, int col) {
  * or NULL, which is `none`. The copy is the program's to keep: the
  * environment's own text can change under it. */
 static const char *zeno_program_environment(const char *name) {
+#ifdef _WIN32
+    /* On Windows `getenv` hands a value over in the machine's code page,
+     * as `main` does the command line (above): a word in Tamil arrives
+     * as question marks. Windows itself keeps the environment whole, in
+     * UTF-16, so it is asked, and the answer is turned into UTF-8. The
+     * functions are declared by hand for the reason `Sleep` is, and
+     * here, so that a build that keeps only the functions a program
+     * uses keeps them with this one. */
+    __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int page, unsigned long flags, const char *bytes,
+                                                        int length, wchar_t *wide, int room);
+    __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableW(const wchar_t *name, wchar_t *value,
+                                                                      unsigned long room);
+    __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int page, unsigned long flags, const wchar_t *wide,
+                                                        int wide_length, char *bytes, int room, const char *instead,
+                                                        int *used_instead);
+    int name_room = MultiByteToWideChar(65001, 0, name, -1, NULL, 0);
+    if (name_room > 0) {
+        wchar_t wide_name[name_room];
+        MultiByteToWideChar(65001, 0, name, -1, wide_name, name_room);
+        /* Asked with no room, it says how much room the value needs,
+         * the zero at its end included, or 0: there is no such name. */
+        unsigned long room = GetEnvironmentVariableW(wide_name, NULL, 0);
+        if (room == 0) return NULL;
+        wchar_t wide[room];
+        wide[0] = 0;
+        if (GetEnvironmentVariableW(wide_name, wide, room) >= room) return NULL;
+        int bytes = WideCharToMultiByte(65001, 0, wide, -1, NULL, 0, NULL, NULL);
+        if (bytes < 1) bytes = 1;
+        char text[bytes];
+        text[0] = '\0';
+        WideCharToMultiByte(65001, 0, wide, -1, text, bytes, NULL, NULL);
+        return zeno_copy(text, strlen(text));
+    }
+#endif
     const char *value = getenv(name);
     if (value == NULL) return NULL;
     return zeno_copy(value, strlen(value));

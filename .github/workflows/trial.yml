@@ -156,5 +156,7 @@ jobs:
             echo "::notice title=The tests that failed::$(echo "$names" | cut -c1-3800)"
             grep -m 4 -A 9 'panicked at' tests.txt | cut -c1-300 > first.txt || true
             echo "::notice title=The first failures::$(tr '\r\n' ' |' < first.txt | cut -c1-2400)"
+            # Every failure, where the log can be read.
+            grep -A 12 'panicked at' tests.txt | cut -c1-700 | head -n 240 || true
           fi
           exit $status

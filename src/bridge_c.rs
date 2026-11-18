@@ -1027,7 +1027,8 @@ pub fn library(library: &Value, declared: &Value, span: Span) -> Result {
             }
             Some(Err(text)) => {
                 let _ = std::fs::remove_dir_all(&folder);
-                return raise_build_error(&text, &folder, &label, span);
+                let names: Vec<&str> = functions.iter().map(|function| function.name.as_str()).collect();
+                return raise_build_error(&text, &folder, &label, &names, span);
             }
         }
     }
@@ -1038,8 +1039,36 @@ pub fn library(library: &Value, declared: &Value, span: Span) -> Result {
     )
 }
 
+/// The name a linker says nothing defines, if that is what a line of
+/// its says. GNU ld: "undefined reference to `name'"; lld: "undefined
+/// symbol: name"; the linker of macOS lists each as `"_name", referenced
+/// from:`, with the underscore it puts before every name of C.
+fn missing_name(line: &str) -> Option<String> {
+    let name_of = |rest: &str| -> String { rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect() };
+    for sign in ["undefined reference to `", "undefined reference to '", "undefined symbol: "] {
+        if let Some(at) = line.find(sign) {
+            let name = name_of(&line[at + sign.len()..]);
+            return (!name.is_empty()).then_some(name);
+        }
+    }
+    let line = line.trim();
+    if line.ends_with(", referenced from:") {
+        if let Some(rest) = line.strip_prefix("\"_") {
+            let name = name_of(rest);
+            return (!name.is_empty()).then_some(name);
+        }
+    }
+    None
+}
+
 /// What the C compiler said, as an error of Zeno.
-fn raise_build_error(said: &str, folder: &Path, label: &str, span: Span) -> Result {
+fn raise_build_error(said: &str, folder: &Path, label: &str, declared: &[&str], span: Span) -> Result {
+    // The linkers of Windows and macOS want every declared name to be
+    // there when the stubs are built, where the linker of Linux leaves
+    // it to the loading: what they say is said as the loading says it.
+    if let Some(name) = said.lines().find_map(missing_name).filter(|name| declared.contains(&name.as_str())) {
+        return raise("Error", format!("the library `{label}` has no `{name}`, which was declared"), span);
+    }
     for line in said.lines() {
         // The newer linker of macOS: "ld: library 'foo' not found".
         if let Some(at) = line.find("library '") {
@@ -1121,6 +1150,16 @@ mod tests {
         assert_eq!(found[7].takes[0].base, "time_t");
         assert!(found[8].takes.is_empty());
         assert!(found[8].gives.konst && found[8].gives.base == "char");
+
+        // What each linker says of a name nothing defines.
+        for (line, name) in [
+            ("ld.exe: C:\\Temp\\ccqnKXGm.o:zeno-library.c:(.text+0xb): undefined reference to `no_such'", Some("no_such")),
+            ("  \"_no_such\", referenced from:", Some("no_such")),
+            ("ld.lld: error: undefined symbol: no_such", Some("no_such")),
+            ("ld: symbol(s) not found for architecture arm64", None),
+        ] {
+            assert_eq!(missing_name(line).as_deref(), name, "{line}");
+        }
 
         // A declaration with no `(` is a value, read by its name.
         let (_, found) = declarations("int LIMIT;").unwrap();

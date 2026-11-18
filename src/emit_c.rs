@@ -7875,7 +7875,7 @@ print(readings)
             return;
         }
         let folder = hal_folder();
-        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy());
+        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy().replace('\\', "/"));
         let program = crate::modules::testing::program(&source);
         let (interpreted, result) = crate::vm::run_both(&program, &source);
         assert!(result.is_ok(), "zeno run failed: {result:?}");
@@ -7908,7 +7908,7 @@ print(readings)
             return;
         }
         let folder = hal_folder();
-        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy()).lines().take(19).collect::<Vec<_>>().join("\n")
+        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy().replace('\\', "/")).lines().take(19).collect::<Vec<_>>().join("\n")
             + "\nprint(\"before\")\nhal.HAL_Same8(300)\n";
         let program = crate::modules::testing::program(&source);
         let (interpreted, result) = crate::vm::run_both(&program, &source);
