@@ -5,7 +5,7 @@
 #
 # Maintainer: Partha <123355647+partham20@users.noreply.github.com>
 pkgname=zeno-lang-bin
-pkgver=0.5.1
+pkgver=0.5.2
 pkgrel=1
 pkgdesc="The Zeno programming language: checks, runs, tests, formats and compiles Zeno programs"
 url="https://zeno-lang.org"
@@ -18,16 +18,16 @@ optdepends=('gcc: for `zeno build`'
 # The program is already built, and is not to be changed.
 options=('!strip' '!debug')
 arch=('x86_64' 'aarch64' 'armv7h' 'armv6h' 'i686')
-source_x86_64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86_64.tar.gz")
-sha256sums_x86_64=('318e58181522b50eaf2b51aea7083bac5d0dd320e05f1a502355643d5b9a6bcd')
-source_aarch64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-arm64.tar.gz")
-sha256sums_aarch64=('cb69d0c759f5bf437480e728e63092cea46b4528bae10d8164d484598f59256b')
-source_armv7h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv7.tar.gz")
-sha256sums_armv7h=('36a44c76038e30f7aeed77a787765502f855f48090e27b8cc8ac676bae403b96')
-source_armv6h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-armv6.tar.gz")
-sha256sums_armv6h=('68171d925ae90262e441aa48d79b47e5c865470623573b1a49a7e51aac160ca3')
-source_i686=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.1/zeno-0.5.1-linux-x86.tar.gz")
-sha256sums_i686=('599571cd2d390d6275d8ba67c42d8a9ef19e5d4e2fb53283ca91c59d93532ee2')
+source_x86_64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.2/zeno-0.5.2-linux-x86_64.tar.gz")
+sha256sums_x86_64=('e1ca3b43061d091d6a5bc698046fec552417cb70252714d6b93afe74b85358d0')
+source_aarch64=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.2/zeno-0.5.2-linux-arm64.tar.gz")
+sha256sums_aarch64=('98cf21cef15bcb306124cd576a0714fdf1151063c6c72cba8f1cff534872d3b7')
+source_armv7h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.2/zeno-0.5.2-linux-armv7.tar.gz")
+sha256sums_armv7h=('828232f9b9bc02442c6fdf19dc4025f28476af7a8ea454473c1e7bfb1a6ad8d6')
+source_armv6h=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.2/zeno-0.5.2-linux-armv6.tar.gz")
+sha256sums_armv6h=('8a75d4716de52a10a4cc23f3ce5414f73aad1774d8a599719b02c328b5d5f08b')
+source_i686=("https://github.com/zeno-src/zeno-lang/releases/download/v0.5.2/zeno-0.5.2-linux-x86.tar.gz")
+sha256sums_i686=('bf8d2253c5ce44cfb6dc63be8503358125bee72926b0cad6e58fef5eda0f2aa8')
 
 package() {
     # The folder that the archive unpacked into, whichever processor it
