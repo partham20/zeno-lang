@@ -104,6 +104,9 @@ pub enum Kind {
     /// A pin that is switched on and off many times a second:
     /// `pwm_pin(9, 1 kHz)`. It is the pin's number (decision 48).
     PwmPin,
+    /// A beat the program keeps time by: `ticker(10 ms)`. It is which
+    /// ticker of the program this is, counted from 0 (decision 49).
+    Ticker,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -526,6 +529,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Serial => Kind::Serial,
         Ty::AnalogPin => Kind::AnalogPin,
         Ty::PwmPin => Kind::PwmPin,
+        Ty::Ticker => Kind::Ticker,
         // `pull_up` and `pull_down` are the strs of their names, so
         // printing one, comparing two and keeping them in a list work
         // as they do for any str. The checker keeps them apart.
@@ -714,6 +718,8 @@ enum Ty {
     /// A pin that is switched on and off many times a second:
     /// `pwm_pin(9, 1 kHz)`.
     PwmPin,
+    /// A beat the program keeps time by: `ticker(10 ms)`.
+    Ticker,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -928,6 +934,7 @@ enum Key {
     Serial,
     AnalogPin,
     PwmPin,
+    Ticker,
     Element,
     Event,
     Timer,
@@ -1173,6 +1180,7 @@ impl fmt::Display for Ty {
             Ty::Serial => write!(f, "Serial"),
             Ty::AnalogPin => write!(f, "AnalogPin"),
             Ty::PwmPin => write!(f, "PwmPin"),
+            Ty::Ticker => write!(f, "Ticker"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1305,6 +1313,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Serial, Ty::Serial)
         | (Ty::AnalogPin, Ty::AnalogPin)
         | (Ty::PwmPin, Ty::PwmPin)
+        | (Ty::Ticker, Ty::Ticker)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -2003,6 +2012,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "serial") => Ty::Builtin("serial"),
         ("board", "analog_pin") => Ty::Builtin("analog_pin"),
         ("board", "pwm_pin") => Ty::Builtin("pwm_pin"),
+        ("board", "ticker") => Ty::Builtin("ticker"),
         _ => return None,
     })
 }
@@ -2630,6 +2640,7 @@ impl Checker {
             Ty::Serial => Key::Serial,
             Ty::AnalogPin => Key::AnalogPin,
             Ty::PwmPin => Key::PwmPin,
+            Ty::Ticker => Key::Ticker,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2684,6 +2695,7 @@ impl Checker {
             Key::Serial => Ty::Serial,
             Key::AnalogPin => Ty::AnalogPin,
             Key::PwmPin => Ty::PwmPin,
+            Key::Ticker => Ty::Ticker,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3098,6 +3110,7 @@ impl Checker {
                         _ if name == "Serial" => Ty::Serial,
                         _ if name == "AnalogPin" => Ty::AnalogPin,
                         _ if name == "PwmPin" => Ty::PwmPin,
+                        _ if name == "Ticker" => Ty::Ticker,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6245,6 +6258,14 @@ impl Checker {
                 ),
                 span,
             ),
+            Ty::Ticker if TICKER_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Ticker), Rc::from(name)),
+            // `beat.period`: the time from one tick to the next, in the
+            // unit `now()` counts in (49.2).
+            Ty::Ticker if name == "period" => Ty::Quantity(Rc::from("ms")),
+            Ty::Ticker => self.error(
+                format!("a Ticker has no `{name}`. It has `wait()`, `ticks()`, `restart()` and `period`"),
+                span,
+            ),
             Ty::AnalogPin if ANALOG_PIN_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(Ty::AnalogPin), Rc::from(name))
             }
@@ -7380,6 +7401,20 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            // `ticker(10 ms)`: a beat with that long from one tick to
+            // the next (49.1).
+            "ticker" => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    let time = matches!(&first, Ty::Quantity(unit) if units::convert(unit, "s").is_some());
+                    if !time && !first.is_loose() {
+                        self.error(
+                            format!("the period of a ticker has a unit, as in `ticker(10 ms)`, and this is {first}"),
+                            arguments[0].span,
+                        );
+                    }
+                }
+                Ty::Ticker
+            }
             // `pwm_pin(9, 1 kHz)`: a pin switched on and off that many
             // times a second (48.1).
             "pwm_pin" => {
@@ -7530,6 +7565,14 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            // `beat.wait()` waits for the next tick and `beat.ticks()`
+            // does not; each gives how many ticks have come since the
+            // program last took them. `beat.restart()` starts the period
+            // again from now (49.2, 49.3).
+            (Ty::Ticker, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                if name == "restart" { Ty::None } else { Ty::Int }
             }
             // `lamp.duty(0.25)`: on for that share of the time, a float
             // from 0.0 to 1.0 (48.2).
@@ -8817,6 +8860,7 @@ const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
 const ANALOG_PIN_METHODS: &[&str] = &["voltage", "count"];
 const PWM_PIN_METHODS: &[&str] = &["duty", "pulse"];
+const TICKER_METHODS: &[&str] = &["wait", "ticks", "restart"];
 const SERIAL_METHODS: &[&str] = &["write", "write_bytes", "read_byte", "has_byte"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -10127,6 +10171,36 @@ mod tests {
         );
         assert_eq!(error("from board import pwm_pin\npwm_pin(9, 1 kHz).duty()"), "`duty` takes 1 argument, but 0 were given");
         assert_eq!(error("from board import pwm_pin, pin\nlet p: Pin = pwm_pin(9, 1 kHz)"), "`p` should be Pin, but this is PwmPin");
+    }
+
+    #[test]
+    fn a_ticker_has_a_period_with_a_unit() {
+        ok("from board import ticker\nlet beat: Ticker = ticker(10 ms)\nlet came: int = beat.wait()\nlet more: int = beat.ticks()\n\
+            beat.restart()\nlet period: ms = beat.period\nlet long = ticker(1 h)\nlet short = ticker(250 us)");
+        ok("import board\nfunction keep(beat: Ticker) -> int { return beat.wait() }\nkeep(board.ticker(1 s / 50))");
+        assert_eq!(
+            error("from board import ticker\nticker(10)"),
+            "the period of a ticker has a unit, as in `ticker(10 ms)`, and this is int"
+        );
+        assert_eq!(
+            error("from board import ticker\nticker(100 Hz)"),
+            "the period of a ticker has a unit, as in `ticker(10 ms)`, and this is a quantity in Hz"
+        );
+        assert_eq!(error("from board import ticker\nticker()"), "`ticker` takes 1 argument, but 0 were given");
+        assert_eq!(
+            error("from board import ticker\nticker(1 s).stop()"),
+            "a Ticker has no `stop`. It has `wait()`, `ticks()`, `restart()` and `period`"
+        );
+        assert_eq!(error("from board import ticker\nticker(1 s).wait(5 ms)"), "`wait` takes 0 arguments, but 1 was given");
+        assert_eq!(
+            error("from board import ticker\nif ticker(1 s).ticks() { print(1) }"),
+            "a condition must be true or false, but this is int"
+        );
+        assert_eq!(
+            error("from board import ticker\nlet period: s = ticker(1 s).period"),
+            "`period` should be a quantity in s, but this is a quantity in ms. Convert it with `.s`"
+        );
+        assert_eq!(error("from board import ticker\nlet t: Timer = ticker(1 s)"), "`t` should be Timer, but this is Ticker");
     }
 
     #[test]

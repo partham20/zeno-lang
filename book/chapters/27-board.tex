@@ -279,6 +279,74 @@ it flat out. (Decision 48.)
 The example \verb|examples/dimmer.zeno| fades a lamp and sweeps a
 servo.
 
+\section{A steady beat}
+
+A loop that ends with \verb|sleep(10 ms)| takes 10 ms and the time its
+work took, so it runs slow, by a different amount each round.
+\verb|ticker(10 ms)| gives a \verb|Ticker|, whose ticks are 10 ms
+apart whatever the work takes:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Gives \\
+\midrule
+\verb|t.wait()| & waits for the next tick; how many ticks have come \\
+\verb|t.ticks()| & the same count with no waiting; \verb|0| if none has \\
+\verb|t.restart()| & the next tick is one period from now \\
+\verb|t.period| & from one tick to the next, in \verb|ms| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A loop that waits for the ticks runs at a steady rate, and is told
+when it was late:
+
+\begin{zeno}
+from board import ticker
+from time import sleep
+
+let beat = ticker(5 ms)
+print(beat, beat.period)
+
+var ticks = 0
+for round in range(4) {
+    let came = beat.wait()
+    ticks += came
+    if round == 1 {
+        sleep(12 ms)
+    }
+}
+print(ticks >= 5)
+\end{zeno}
+
+The second round takes 12 ms, more than two periods. The next
+\verb|wait()| does not wait: it gives 2 or more, the ticks that came
+meanwhile. They are counted and not run one after another, so a
+program that fell behind is told by how much and does not rush to
+catch up. The count is on the computer's clock here, so the program
+prints only what any clock makes true.
+
+\verb|ticks()| is for a loop with several beats, which waits for none
+of them, and \verb|restart()| makes a ticker measure quiet: started
+again at each press of a button, it has a tick only when nothing was
+pressed for a whole period.
+
+\begin{why}
+An Arduino sketch writes \verb|if (millis() - last >= 10)| and
+\verb|last += 10| by hand, and almost never checks whether it fell
+behind. A ticker is that sum written once. It gives a count where a
+yes or no would lose the ticks that came while the program was busy:
+a clock adds the count and stays right, and a control loop knows a
+round ran over. It asks the board for nothing new, only its clock and
+its sleep. It is not called a timer because \verb|Timer| is what
+\verb|web.every| gives, and because a chip's timers do five other
+things. (Decision 49.)
+\end{why}
+
+The example \verb|examples/steady.zeno| is a loop that notices the
+round that took too long.
+
 \section{A serial port}
 
 A serial port is how a board talks: to a terminal on a computer, to a
@@ -438,9 +506,10 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 A button can be read, but nothing waits for it: a program looks at the
 pin as often as it needs to. On a computer nothing can press it yet.
-Nor can a voltage be fed to a pin there. Interrupts and timers
-are not in the \verb|board| module yet. Until they are, a program reaches them
-through their registers, at the addresses the data sheet gives.
+Nor can a voltage be fed to a pin there. Interrupts
+are not in the \verb|board| module yet, so no function runs by itself
+when a pin changes or a tick comes. Until they are, a program reaches
+them through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
 
 \begin{summary}
@@ -451,6 +520,8 @@ through their registers, at the addresses the data sheet gives.
 \verb|analog_pin(n)| gives an \verb|AnalogPin|, whose \verb|voltage()|
 is in volts. \verb|pwm_pin(n, 1 kHz)| gives a \verb|PwmPin|, on for a
 share of the time with \verb|duty| or for a time with \verb|pulse|.
+\verb|ticker(10 ms)| gives a \verb|Ticker|: \verb|wait()| waits for its
+next tick and says how many have come.
 \verb|serial(n, 115200 baud)| gives a \verb|Serial|, which
 writes text and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|

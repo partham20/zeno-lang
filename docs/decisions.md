@@ -15106,3 +15106,127 @@ would be high.
 - A voltage from a real DAC, and a tone.
 - A trial on a real board. The board function is written for the
   simulated board and for test boards only.
+
+## 49. A ticker: a steady beat the program keeps time by
+
+```zeno
+from board import ticker
+
+let beat = ticker(10 ms)
+while true {
+    let came = beat.wait()        # until the next tick: 1 when on time
+    step()
+}
+```
+
+A loop that ends with `sleep(10 ms)` takes 10 ms and the time its work
+took, so it runs slow, by a different amount each round. A control
+loop, a sampler and a clock need rounds that are the same length
+whatever the work takes, and need to know when a round ran over. It is
+the fifth part of item 7 of [`missing.md`](missing.md), the "timer"
+there. Walkthrough: [`ticker.md`](ticker.md).
+
+### 49.1 A ticker is made with its period, and is a type of its own
+
+**`ticker(10 ms)` gives a `Ticker`**, which has `wait()`, `ticks()`,
+`restart()` and `period`, and prints as `Ticker(10 ms)`. Its ticks are
+one period apart, counted from when it is made: the first is one
+period later. The period has a unit, and a bare number is refused:
+"the period of a ticker has a unit, as in `ticker(10 ms)`". A period
+of no time or less is a `ValueError`.
+
+**Why not `timer`?** `Timer` is already what `web.every` gives, a call
+that waits and can be stopped ([`web.md`](web.md)). And on a
+microcontroller "a timer" is five things: it makes PWM (48), counts
+pulses, measures them, wakes the chip and keeps a beat. The name says
+which one this is. Go and Mbed call theirs a ticker too.
+
+**Why in `board` and not in `time`?** `time` is in all fifteen target
+languages, and a ticker there would have to be written fifteen times
+before it was any use. It is built for the loop of a firmware program,
+where the other parts of `board` are, and a program on a computer
+imports it from there the same way.
+
+### 49.2 `wait()` and `ticks()` both say how many ticks have come
+
+**`beat.wait()` waits for the next tick. `beat.ticks()` never waits.
+Each gives the number of ticks that have come since the program last
+took them, and takes them.** `wait()` gives 1 when the loop kept up
+and more when it was late; `ticks()` gives 0 when no tick has come.
+
+```zeno
+if blink.ticks() > 0 { led.toggle() }      # a loop with several beats
+seconds += second.ticks()                  # a clock that loses nothing
+if beat.wait() > 1 { late += 1 }           # a loop that knows it ran over
+```
+
+**Why a count and not a `bool`?** A count is the whole truth: a clock
+adds it and stays right, and a control loop multiplies it by the
+period and has the time that went by. A `bool` would lose the ticks
+that came while the program was busy. **Turned down:**
+
+- **Running the late ticks one after another**, as `last += interval`
+  does on an Arduino. A program that fell behind would then run its
+  loop in a burst, with no waiting, to catch up, which is the last
+  thing a motor wants. The program is told how late it is and decides.
+- **Dropping late ticks in silence**, as Go's `Ticker` does. That a
+  round ran over is what a firmware engineer most needs to know, and
+  is what C code most often does not check.
+- **`ticks()` that only looks**, with a second call to take them. Two
+  calls leave a moment between them in which a tick can come.
+
+Zephyr's `k_timer_status_get` and `k_timer_status_sync` are the same
+pair. The ticks stay where they were due: taking them late does not
+move the next one, so a loop does not drift.
+
+**`beat.period` is the time from one tick to the next, in `ms`**, the
+unit `now()` counts in, so `came * beat.period` is the time that went
+by.
+
+### 49.3 `restart()` starts the period again
+
+**`idle.restart()` makes the next tick one period from now and forgets
+the ticks that had come.** It is how a ticker measures quiet: a
+program restarts it at each byte or each press, and `idle.ticks() > 0`
+then says that nothing came for a whole period. That is a timeout and
+a debounce, which 45.7 and 46.7 left open.
+
+### 49.4 It asks the board for nothing new
+
+**A ticker is kept on the board's clock and its sleep**
+(`zeno_board_now` and `zeno_board_sleep`, 5.12), so a board header
+with the first four functions runs it. **Why not a hardware timer
+each?** A chip has a handful, and PWM takes some. Comparing with one
+clock gives a program as many beats as it wants, at the clock's
+resolution. A sleep may end a little early, so `wait()` reads the
+clock again until the tick has come.
+
+Only a program with a ticker keeps this part of the runtime
+(`#ifdef ZENO_TICKING`, by the rule of 45.4), so the C of every other
+program is what it was.
+
+### 49.5 A board keeps a fixed number of tickers
+
+**Sixteen, unless the board header says another number with
+`ZENO_TICKERS`.** Each is two doubles in a table. Making one more is a
+`ValueError`: "this board keeps 16 tickers, and this would be one
+more. Make each ticker once, outside any loop". **Why a fixed table?**
+A firmware build with no collector has no `malloc`
+([`pool.md`](pool.md)), and a number
+underneath is what every other value of the board is (3.15). A ticker
+is not given back, so one made in a loop uses the table up, and the
+message says so. `zeno run` keeps the same sixteen.
+
+### 49.6 On a computer
+
+The clock is the computer's, and a ticker prints nothing: there is no
+line to show, as there is none for `sleep`. A program in a page cannot
+`wait`, as it cannot `sleep`, and is told to ask with `ticks()`.
+
+### 49.7 Left for later
+
+- A function the board runs at each tick: an interrupt, which is next.
+- Giving a ticker back, and one tick only (`after`).
+- A ticker in the fifteen target languages.
+- A period finer than the board's clock and sleep can keep.
+- A trial on a real board.

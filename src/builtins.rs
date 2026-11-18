@@ -876,6 +876,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::Serial(_) => matches!(name, "write" | "write_bytes" | "read_byte" | "has_byte"),
         Value::AnalogPin(_) => name == "voltage" || name == "count",
         Value::PwmPin(_) => name == "duty" || name == "pulse",
+        Value::Ticker(..) => matches!(name, "wait" | "ticks" | "restart"),
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
         Value::Timer(_) => name == "stop",
@@ -1353,6 +1354,39 @@ pub fn call_method(
             }
             _ => fatal(format!("a serial port has no method `{name}`"), span),
         },
+        // `beat.wait()`, `beat.ticks()` and `beat.restart()`, on the
+        // clock `now()` reads.
+        Value::Ticker(ticker, _) => {
+            arity(name, &args, 0, 0, span)?;
+            match name {
+                "wait" => {
+                    // A sleep may end a little early, so the clock is
+                    // asked again until the tick has come.
+                    loop {
+                        let left = machine.board().ticker_left(*ticker, board::now());
+                        if !(left > 0.0) {
+                            break;
+                        }
+                        // A page cannot stop and wait (see `sleep`).
+                        #[cfg(target_arch = "wasm32")]
+                        return fatal(
+                            "a program in a page cannot `wait` for a tick: the page would stand still until it came. \
+                             Ask with `ticks()`, or say what is to happen later with `web.every(10 ms, ...)`",
+                            span,
+                        );
+                        #[cfg(not(target_arch = "wasm32"))]
+                        sleep(machine, vec![Value::Quantity(left, Rc::from("ms"))], span)?;
+                    }
+                    Ok(Value::Int(machine.board().ticker_ticks(*ticker, board::now())))
+                }
+                "ticks" => Ok(Value::Int(machine.board().ticker_ticks(*ticker, board::now()))),
+                "restart" => {
+                    machine.board().ticker_restart(*ticker, board::now());
+                    Ok(Value::None)
+                }
+                _ => fatal(format!("a ticker has no method `{name}`"), span),
+            }
+        }
         // `lamp.duty(0.25)` and `servo.pulse(1500 us)`: the share of the
         // time the pin is on, said as a share or as a time in each
         // period.
@@ -1614,6 +1648,7 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("serial", Value::Builtin(Builtin { name: "serial", call: serial })),
                 ("analog_pin", Value::Builtin(Builtin { name: "analog_pin", call: analog_pin })),
                 ("pwm_pin", Value::Builtin(Builtin { name: "pwm_pin", call: pwm_pin })),
+                ("ticker", Value::Builtin(Builtin { name: "ticker", call: ticker })),
                 // How an input is held: the str of its name, as in a
                 // compiled program (decision 45.3).
                 ("pull_up", Value::Str(Rc::from("pull_up"))),
@@ -1958,6 +1993,33 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// `ticker(10 ms)`: a beat with that long from one tick to the next.
+/// Its first tick is one period from now.
+fn ticker(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("ticker", &args, 1, 1, span)?;
+    let period = match &args[0] {
+        Value::Quantity(time, unit) => match crate::units::convert(unit, "ms") {
+            Some(scale) => scale.apply(*time),
+            None => return wrong_type("ticker", "a time with a unit, such as `10 ms`", &args[0], span),
+        },
+        other => return wrong_type("ticker", "a time with a unit, such as `10 ms`", other, span),
+    };
+    if !(period > 0.0) {
+        return raise("ValueError", "the period of a ticker must be above 0 s".to_string(), span);
+    }
+    match machine.board().ticker(period, board::now()) {
+        Some(ticker) => Ok(Value::Ticker(ticker, period)),
+        None => raise(
+            "ValueError",
+            format!(
+                "this board keeps {} tickers, and this would be one more. Make each ticker once, outside any loop",
+                board::TICKERS
+            ),
+            span,
+        ),
+    }
+}
+
 /// `pwm_pin(9, 1 kHz)`: the pin with that number, switched on and off
 /// that many times a second. It starts off all the time.
 fn pwm_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {

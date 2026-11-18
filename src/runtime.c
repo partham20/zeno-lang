@@ -3726,6 +3726,85 @@ static void zeno_pwm_pulse(int64_t pin, double seconds, int line, int col) {
 }
 #endif /* ZENO_PWM_PINS */
 
+/* ----------------------------------------------------------------- Tickers
+ *
+ * `ticker(10 ms)`, `beat.wait()`, `beat.ticks()` and `beat.restart()`.
+ * They are kept on the board's clock and its sleep, so they ask the
+ * board layer for nothing beyond its first four functions. Only a
+ * program with a ticker keeps this part. */
+
+#ifdef ZENO_TICKING
+/* How many tickers a program can make. A board header may say another
+ * number. Each costs two doubles. */
+#ifndef ZENO_TICKERS
+#define ZENO_TICKERS 16
+#endif
+
+/* For each ticker, its period and when its next tick is due, both in
+ * milliseconds of the board's clock. */
+static double zeno_ticker_periods[ZENO_TICKERS];
+static double zeno_ticker_due[ZENO_TICKERS];
+static int zeno_tickers_made = 0;
+
+/* A new ticker, whose first tick is one period from now. The compiler
+ * has already turned the period into milliseconds. */
+static int64_t zeno_ticker(double period, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (!(period > 0.0)) {
+        zeno_fail("ValueError", "the period of a ticker must be above 0 s", line, col);
+    }
+    if (zeno_tickers_made == ZENO_TICKERS) {
+        zeno_fail("ValueError",
+                  zeno_join(3, "this board keeps ", zeno_str_int(ZENO_TICKERS),
+                            " tickers, and this would be one more. Make each ticker once, outside any loop"),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    int64_t ticker = zeno_tickers_made++;
+    zeno_ticker_periods[ticker] = period;
+    zeno_ticker_due[ticker] = zeno_board_now() + period;
+    return ticker;
+}
+
+/* `beat.ticks()`: the ticks that have come and were not yet taken. They
+ * are taken: the next tick due is the first one after now. */
+static int64_t zeno_ticker_ticks(int64_t ticker) {
+    double now = zeno_board_now();
+    double due = zeno_ticker_due[ticker];
+    if (now < due) return 0;
+    double period = zeno_ticker_periods[ticker];
+    double ticks = floor((now - due) / period) + 1.0;
+    zeno_ticker_due[ticker] = due + ticks * period;
+    return (int64_t)ticks;
+}
+
+/* `beat.wait()`: sleep until the next tick, then take what has come. A
+ * sleep may end a little early, so the clock is asked again. */
+static int64_t zeno_ticker_wait(int64_t ticker) {
+    for (;;) {
+        double left = zeno_ticker_due[ticker] - zeno_board_now();
+        if (!(left > 0.0)) break;
+        zeno_sleep(left / 1000.0);
+    }
+    return zeno_ticker_ticks(ticker);
+}
+
+/* `beat.restart()`: the next tick is one period from now. */
+static void zeno_ticker_restart(int64_t ticker) {
+    zeno_ticker_due[ticker] = zeno_board_now() + zeno_ticker_periods[ticker];
+}
+
+/* `beat.period`, in milliseconds. */
+static double zeno_ticker_period(int64_t ticker) {
+    return zeno_ticker_periods[ticker];
+}
+
+/* A ticker as `print` shows it: `Ticker(10 ms)`. */
+static const char *zeno_ticker_str(int64_t ticker) {
+    return zeno_join(3, "Ticker(", zeno_str_quantity(zeno_ticker_periods[ticker], "ms"), ")");
+}
+#endif /* ZENO_TICKING */
+
 /* A PWM pin as `print` shows it. */
 static const char *zeno_str_pwm_pin(int64_t pin) {
     return zeno_join(3, "PwmPin(", zeno_str_int(pin), ")");

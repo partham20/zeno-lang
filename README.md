@@ -95,6 +95,7 @@ Samples, none of them final:
 - [`examples/console.zeno`](examples/console.zeno): a command line over a serial port that drives the LED.
 - [`examples/battery.zeno`](examples/battery.zeno): a battery read through a divider on an analog pin, in volts, with the LED on when it is low.
 - [`examples/dimmer.zeno`](examples/dimmer.zeno): a lamp faded up and down and a servo swept, with a PWM signal on two pins.
+- [`examples/steady.zeno`](examples/steady.zeno): a loop that runs at a steady rate on a ticker, and notices the round that took too long.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -769,6 +770,15 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     share outside the range is an error, never clamped. A board
     header gains one function. In every engine and every C and LLVM
     build. See [`docs/pwm.md`](docs/pwm.md) and chapter 48 of
+    [`docs/decisions.md`](docs/decisions.md))
+47. A steady beat on a board (done, after 0.5.2 and not yet released:
+    `ticker(10 ms)` gives a `Ticker`, whose ticks are 10 ms apart
+    whatever the work between them takes. `wait()` waits for the next
+    tick and `ticks()` asks without waiting; each gives how many ticks
+    have come, so a loop knows when it ran over and a clock loses
+    nothing. `restart()` makes it a timeout. It asks a board header
+    for nothing new. In every engine and every C and LLVM build.
+    See [`docs/ticker.md`](docs/ticker.md) and chapter 49 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with

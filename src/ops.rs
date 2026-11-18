@@ -807,6 +807,8 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
                 span,
             ),
         },
+        // `beat.period`: from one tick to the next, in milliseconds.
+        Value::Ticker(_, period) if name == "period" => Ok(Value::Quantity(*period, Rc::from("ms"))),
         // `led.number`: which pin this is.
         Value::Pin(number)
         | Value::InputPin(number)

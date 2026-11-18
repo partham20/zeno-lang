@@ -32,6 +32,10 @@ pub const fn analog_max() -> i64 {
     (1 << ANALOG_BITS) - 1
 }
 
+/// How many tickers a program can make on the simulated board
+/// (decision 49.5).
+pub const TICKERS: usize = 16;
+
 /// The pin the LED is on. 13 is where an Arduino Uno has its LED, which
 /// makes it the number most people have already met.
 pub const LED: i64 = 13;
@@ -43,13 +47,16 @@ pub struct Board {
     /// For each pin that makes a PWM signal: its frequency in hertz and
     /// the share of the time it is on. Both 0 for every other pin.
     pwm: [(f64, f64); PINS as usize],
+    /// For each ticker the program has made: its period, and when its
+    /// next tick is due, both in milliseconds of the clock `now` reads.
+    tickers: Vec<(f64, f64)>,
     levels: [bool; PINS as usize],
     registers: std::collections::HashMap<i64, i64>,
 }
 
 impl Board {
     pub fn new() -> Board {
-        Board { pwm: [(0.0, 0.0); PINS as usize], levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
+        Board { pwm: [(0.0, 0.0); PINS as usize], tickers: Vec::new(), levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
     }
 
     /// What the register at `address` holds.
@@ -79,6 +86,41 @@ impl Board {
             Pull::Down => self.levels[pin as usize] = false,
             Pull::Nothing => {}
         }
+    }
+
+    /// A new ticker with that period, whose first tick is one period
+    /// from `now`. `None` when the board keeps no more (decision 49.5).
+    pub fn ticker(&mut self, period: f64, now: f64) -> Option<i64> {
+        if self.tickers.len() == TICKERS {
+            return None;
+        }
+        self.tickers.push((period, now + period));
+        Some(self.tickers.len() as i64 - 1)
+    }
+
+    /// How long from `now` until the ticker's next tick, in
+    /// milliseconds. Zero or below when it has come.
+    pub fn ticker_left(&self, ticker: i64, now: f64) -> f64 {
+        self.tickers[ticker as usize].1 - now
+    }
+
+    /// The ticks that have come by `now` and were not yet taken. They
+    /// are taken: the next tick due is the first one after `now`.
+    pub fn ticker_ticks(&mut self, ticker: i64, now: f64) -> i64 {
+        let (period, due) = self.tickers[ticker as usize];
+        if now < due {
+            return 0;
+        }
+        let ticks = ((now - due) / period).floor() + 1.0;
+        self.tickers[ticker as usize].1 = due + ticks * period;
+        ticks as i64
+    }
+
+    /// Start the ticker's period again: its next tick is one period
+    /// from `now`, and what had come is forgotten.
+    pub fn ticker_restart(&mut self, ticker: i64, now: f64) {
+        let period = self.tickers[ticker as usize].0;
+        self.tickers[ticker as usize].1 = now + period;
     }
 
     /// The frequency the pin's PWM signal was made with, in hertz.

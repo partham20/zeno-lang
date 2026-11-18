@@ -44,6 +44,7 @@ Zeno. This page is about how both of those work.
 | | `serial(1, 115200 baud)` | the serial port with that number, at that speed ([`serial.md`](serial.md)) |
 | | `analog_pin(0)` | the pin with that number, as one whose voltage is read ([`analog.md`](analog.md)) |
 | | `pwm_pin(9, 1 kHz)` | the pin with that number, switched at that frequency and on for a share of the time ([`pwm.md`](pwm.md)) |
+| | `ticker(10 ms)` | a steady beat a loop waits for, which says when the loop was late ([`ticker.md`](ticker.md)) |
 | `time` | `sleep(500 ms)` | wait. The time must have a unit |
 | | `now()` | the reading of a clock that only goes forward, in `ms` |
 
@@ -320,10 +321,10 @@ as `now() - start >= 200 ms` after sleeping that long.
   ([`inputs.md`](inputs.md)), and a board header can press them, but
   the simulated board has no way to. Nor can a program wait for an
   edge yet.
-- **Everything else on a microcontroller**: interrupts, timers.
-  (A serial port, reading a voltage and a PWM signal are there:
-  [`serial.md`](serial.md), [`analog.md`](analog.md),
-  [`pwm.md`](pwm.md).) Each would be a few more functions in the board
+- **Everything else on a microcontroller**: interrupts above all.
+  (A serial port, reading a voltage, a PWM signal and a steady beat
+  are there: [`serial.md`](serial.md), [`analog.md`](analog.md),
+  [`pwm.md`](pwm.md), [`ticker.md`](ticker.md).) Each would be a few more functions in the board
   layer. Until then a program can reach the hardware itself, through
   registers at the addresses the data sheet gives
   ([`unsafe.md`](unsafe.md)).

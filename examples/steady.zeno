@@ -1,0 +1,37 @@
+# A loop that keeps a steady rate, and knows when it was late.
+#
+# A loop that ends with `sleep(5 ms)` takes 5 ms and the time its work
+# took, so it runs slow, by a different amount each round. The ticks of
+# a ticker are 5 ms apart whatever the work takes. `wait()` waits for
+# the next one and says how many have come since the last: one when the
+# loop kept up, more when the work ran over. See docs/ticker.md.
+from board import led, ticker
+from time import now, sleep
+
+let start = now()
+let beat = ticker(5 ms)
+
+# The work of one round. The third round takes far too long.
+function work(round: int) {
+    led.toggle()
+    if round == 2 {
+        sleep(12 ms)
+    }
+}
+
+var ticks = 0
+var late = 0
+
+# Firmware would loop for ever. This does six rounds.
+for round in range(6) {
+    let came = beat.wait()
+    ticks += came
+    if came > 1 {
+        late += 1
+    }
+    work(round)
+}
+
+print("every round had its tick:", ticks >= 6)
+print("the long round was noticed:", late >= 1)
+print("no time was lost:", now() - start >= ticks * beat.period)

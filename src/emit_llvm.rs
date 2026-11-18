@@ -185,6 +185,12 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_pwm_duty", "declare void @zeno_pwm_duty(i64, double, i32 signext, i32 signext)"),
     ("zeno_pwm_pulse", "declare void @zeno_pwm_pulse(i64, double, i32 signext, i32 signext)"),
     ("zeno_str_pwm_pin", "declare ptr @zeno_str_pwm_pin(i64)"),
+    ("zeno_ticker", "declare i64 @zeno_ticker(double, i32 signext, i32 signext)"),
+    ("zeno_ticker_wait", "declare i64 @zeno_ticker_wait(i64)"),
+    ("zeno_ticker_ticks", "declare i64 @zeno_ticker_ticks(i64)"),
+    ("zeno_ticker_restart", "declare void @zeno_ticker_restart(i64)"),
+    ("zeno_ticker_period", "declare double @zeno_ticker_period(i64)"),
+    ("zeno_ticker_str", "declare ptr @zeno_ticker_str(i64)"),
     ("zeno_analog_pin", "declare i64 @zeno_analog_pin(i64, i32 signext, i32 signext)"),
     ("zeno_analog_max", "declare i64 @zeno_analog_max()"),
     ("zeno_analog_count", "declare i64 @zeno_analog_count(i64)"),
@@ -1072,6 +1078,7 @@ fn described(kind: &Kind) -> String {
         Kind::Serial => "a serial port".to_string(),
         Kind::AnalogPin => "an analog pin".to_string(),
         Kind::PwmPin => "a PWM pin".to_string(),
+        Kind::Ticker => "a ticker".to_string(),
         Kind::Pointer(_) => "a pointer".to_string(),
         Kind::Register(_) => "a register".to_string(),
         Kind::None => "a value that is nothing".to_string(),
@@ -1109,7 +1116,7 @@ fn is_pointer(kind: &Kind) -> bool {
 /// the collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Quantity(_) | Kind::None => false,
         Kind::Optional(inner) => holds_pointer(inner),
         _ => true,
     }
@@ -1177,6 +1184,7 @@ fn key(kind: &Kind) -> String {
         Kind::Serial => "serial".to_string(),
         Kind::AnalogPin => "analog_pin".to_string(),
         Kind::PwmPin => "pwm_pin".to_string(),
+        Kind::Ticker => "ticker".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
         Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
@@ -1238,7 +1246,7 @@ fn read_kind(item: &Kind) -> Kind {
 fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
     Ok(match kind {
         // A pin of the board is its number, and a register its address.
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "i64",
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "i64",
         // A u64 is the same 64 bits; the operations on it are the
         // unsigned ones (decision 42.8).
         Kind::U64 => "i64",
@@ -1266,7 +1274,7 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         // a bool cannot, so it travels as a pair with a flag in front.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => "ptr",
-            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "{ i1, i64 }",
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "{ i1, i64 }",
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "{ i1, double }",
             Kind::Bool => "{ i1, i1 }",
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1313,7 +1321,7 @@ fn zero(ty: &str) -> &'static str {
 /// Which of the three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -2199,6 +2207,7 @@ impl Emitter<'_> {
             ("Serial", []) => Kind::Serial,
             ("AnalogPin", []) => Kind::AnalogPin,
             ("PwmPin", []) => Kind::PwmPin,
+            ("Ticker", []) => Kind::Ticker,
             // `pull_up` and `pull_down` are the strs of their names.
             ("Pull", []) => Kind::Str,
             ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
@@ -4974,6 +4983,10 @@ impl Emitter<'_> {
                 Ok(Val { kind: Kind::Int, ..val })
             }
             Kind::AnalogPin if name == "max_count" => Ok(Val::new(self.call("i64", "zeno_analog_max", ""), Kind::Int)),
+            Kind::Ticker if name == "period" => {
+                let period = self.call("double", "zeno_ticker_period", format!("i64 {}", val.code));
+                Ok(Val::new(period, Kind::Quantity("ms".to_string())))
+            }
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on {}", described(&val.kind)), span)),
         }
@@ -4988,7 +5001,7 @@ impl Emitter<'_> {
     /// as a whole number, `ptrtoint` does the same for an address.
     fn to_slot(&mut self, val: &Val, span: Span) -> Result<String, Error> {
         Ok(match &val.kind {
-            Kind::Int | Kind::Byte | Kind::U64 | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => val.code.clone(),
+            Kind::Int | Kind::Byte | Kind::U64 | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => val.code.clone(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => self.set(format!("bitcast double {} to i64", val.code)),
             // "Zero extend": the one bit, with 63 zeros in front.
             Kind::Bool => self.set(format!("zext i1 {} to i64", val.code)),
@@ -5012,7 +5025,7 @@ impl Emitter<'_> {
     fn from_slot(&mut self, kind: &Kind, slot: &str, span: Span) -> Result<Val, Error> {
         let code = match kind {
             Kind::Byte => return Ok(Val::new(slot.to_string(), Kind::Int)),
-            Kind::Int | Kind::U64 | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => slot.to_string(),
+            Kind::Int | Kind::U64 | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => slot.to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => self.set(format!("bitcast i64 {slot} to double")),
             // "Truncate": keep the lowest bit.
             Kind::Bool => self.set(format!("trunc i64 {slot} to i1")),
@@ -5567,6 +5580,18 @@ impl Emitter<'_> {
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::new(self.call("i64", "zeno_pin", format!("i64 {}, {}", number.code, at(span))), Kind::Pin))
             }
+            // `ticker(10 ms)`: the period goes over in milliseconds.
+            ("board", "ticker", [time]) => {
+                let scale = match &time.kind {
+                    Kind::Quantity(unit) => units::convert(unit, "ms"),
+                    _ => None,
+                };
+                let Some(scale) = scale else {
+                    return Err(cannot("`ticker` with something that is not a time", span));
+                };
+                let period = self.scaled(&time.code, scale);
+                Ok(Val::new(self.call("i64", "zeno_ticker", format!("double {period}, {}", at(span))), Kind::Ticker))
+            }
             // `pwm_pin(9, 1 kHz)`: the frequency goes over in hertz.
             ("board", "pwm_pin", [number, rate]) if number.kind == Kind::Int => {
                 let scale = match &rate.kind {
@@ -6065,6 +6090,19 @@ impl Emitter<'_> {
                     _ => return Err(cannot(format!("the method `{name}`"), span)),
                 }
                 Ok(Val::nothing())
+            }
+            // `beat.wait()`, `beat.ticks()` and `beat.restart()`.
+            Kind::Ticker => {
+                let ticker = format!("i64 {}", receiver.code);
+                match (name, args) {
+                    ("wait", []) => Ok(Val::new(self.call("i64", "zeno_ticker_wait", ticker), Kind::Int)),
+                    ("ticks", []) => Ok(Val::new(self.call("i64", "zeno_ticker_ticks", ticker), Kind::Int)),
+                    ("restart", []) => {
+                        self.run("zeno_ticker_restart", ticker);
+                        Ok(Val::nothing())
+                    }
+                    _ => Err(cannot(format!("the method `{name}` of a ticker"), span)),
+                }
             }
             // `lamp.duty(0.25)` and `servo.pulse(1500 us)`.
             Kind::PwmPin => match (name, args) {
@@ -7164,6 +7202,7 @@ impl Emitter<'_> {
             Kind::Serial => self.call("ptr", "zeno_str_serial", format!("i64 {}", val.code)),
             Kind::AnalogPin => self.call("ptr", "zeno_str_analog_pin", format!("i64 {}", val.code)),
             Kind::PwmPin => self.call("ptr", "zeno_str_pwm_pin", format!("i64 {}", val.code)),
+            Kind::Ticker => self.call("ptr", "zeno_ticker_str", format!("i64 {}", val.code)),
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => self.string(&format!("<pointer[{}]>", pointee.name())),
@@ -7232,7 +7271,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => self.set(format!("icmp eq i64 {a}, {b}")),
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => self.set(format!("icmp eq i64 {a}, {b}")),
             Kind::Byte | Kind::U64 => self.set(format!("icmp eq i64 {a}, {b}")),
             // Two pointers are equal when they point at the same item.
             Kind::Pointer(_) => self.set(format!("icmp eq ptr {a}, {b}")),
@@ -7384,7 +7423,7 @@ impl Emitter<'_> {
                 FormatPart::Value { value, format } => {
                     let val = self.expr(value)?;
                     match val.kind {
-                        Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Quantity(_) | Kind::Str => {
+                        Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Quantity(_) | Kind::Str => {
                             Piece::Waiting(val, format)
                         }
                         _ => Piece::Text(self.shown(&val, format, span)?),

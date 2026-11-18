@@ -90,7 +90,7 @@ pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
 /// The parts of the runtime that call a function of the board layer
 /// beyond the first four, each marked `#ifdef` its name: input pins
 /// (decision 45.4) and serial ports (46.5).
-pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS", "ZENO_ANALOG_PINS", "ZENO_PWM_PINS"];
+pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS", "ZENO_ANALOG_PINS", "ZENO_PWM_PINS", "ZENO_TICKING"];
 
 /// `runtime` with each part of `BOARD_PARTS` kept when the program uses
 /// it (`used`) and left out when it does not. Only those parts call the
@@ -133,6 +133,9 @@ pub fn board_parts_in_ir(ir: &str) -> Vec<&'static str> {
     }
     if ir.contains("@zeno_pwm_") {
         used.push("ZENO_PWM_PINS");
+    }
+    if ir.contains("@zeno_ticker") {
+        used.push("ZENO_TICKING");
     }
     used
 }
@@ -1313,7 +1316,7 @@ pub fn for_a_page(span: Span) -> Error {
 fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin => "int64_t ".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker => "int64_t ".to_string(),
         // Only ever an item of a list; read, it is an int.
         Kind::Byte => "uint8_t ".to_string(),
         // A register is its address.
@@ -1340,7 +1343,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // bool cannot, so it is paired with a flag.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
-            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "zeno_opt_int ".to_string(),
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1374,7 +1377,7 @@ fn is_pointer(kind: &Kind) -> bool {
 fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1412,7 +1415,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 /// collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
         // Nor is what C gave.
@@ -1499,6 +1502,7 @@ fn key(kind: &Kind) -> String {
         Kind::Serial => "serial".to_string(),
         Kind::AnalogPin => "analog_pin".to_string(),
         Kind::PwmPin => "pwm_pin".to_string(),
+        Kind::Ticker => "ticker".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
         Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
@@ -1522,7 +1526,7 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
         // A list of bytes holds bytes, not slots (decision 36.2).
         Kind::Byte => return Ok(format!("((int64_t)({code}))")),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "i",
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "i",
         // A u64 is kept as the int with the same bits.
         Kind::U64 => return Ok(format!("(zeno_slot){{.i = (int64_t)({code})}}")),
         // In a slot an f32 is kept as the float it is exactly.
@@ -1574,7 +1578,7 @@ fn read_kind(item: &Kind) -> Kind {
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
         Kind::Byte => format!("((int64_t){slot})"),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => format!("{slot}.i"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::F32 => format!("((float){slot}.f)"),
         Kind::U64 => format!("((uint64_t){slot}.i)"),
@@ -1599,7 +1603,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 /// Which of the runtime's three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -3347,6 +3351,7 @@ impl Emitter<'_> {
             ("Serial", []) => Kind::Serial,
             ("AnalogPin", []) => Kind::AnalogPin,
             ("PwmPin", []) => Kind::PwmPin,
+            ("Ticker", []) => Kind::Ticker,
             // `pull_up` and `pull_down` are the strs of their names.
             ("Pull", []) => Kind::Str,
             ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
@@ -4483,7 +4488,7 @@ impl Emitter<'_> {
             (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
             (from, Kind::Optional(inner)) if from == &**inner => match from {
                 from if is_pointer(from) => val.code.clone(),
-                Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin => format!("(zeno_opt_int){{true, {}}}", val.code),
+                Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker => format!("(zeno_opt_int){{true, {}}}", val.code),
                 Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -4529,7 +4534,7 @@ impl Emitter<'_> {
         let code = match (&inner, changeable) {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
-            (Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin, true) => format!("zeno_still_int({}, {again})", val.code),
+            (Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker, true) => format!("zeno_still_int({}, {again})", val.code),
             (Kind::Float | Kind::F32 | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
             (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
             (inner, true) => {
@@ -5383,6 +5388,20 @@ impl Emitter<'_> {
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::from(format!("zeno_pin({}, {})", number.code, self.at(span)), Kind::Pin, &[number]).failing_if(!self.minimal))
             }
+            // `ticker(10 ms)`. The runtime counts in milliseconds, as
+            // the board's clock does, whatever unit the program wrote.
+            ("board", "ticker", [time]) => {
+                let scale = match &time.kind {
+                    Kind::Quantity(unit) => units::convert(unit, "ms"),
+                    _ => None,
+                };
+                let Some(scale) = scale else {
+                    return Err(cannot("`ticker` with something that is not a time", span));
+                };
+                self.uses_board_part("ZENO_TICKING");
+                let call = format!("zeno_ticker({}, {})", scaled(&time.code, scale), self.at(span));
+                Ok(self.called(call, &vals, Kind::Ticker).failing_if(!self.minimal))
+            }
             // `pwm_pin(9, 1 kHz)`. The board counts in hertz, whatever
             // unit the program wrote.
             ("board", "pwm_pin", [number, rate]) if number.kind == Kind::Int => {
@@ -5907,6 +5926,17 @@ impl Emitter<'_> {
                     _ => Err(cannot(format!("the method `{name}`"), span)),
                 }
             }
+            // `beat.wait()`, `beat.ticks()` and `beat.restart()`: one call
+            // into the runtime each. The clock moves by itself, so two
+            // calls are two calls.
+            Kind::Ticker => match (name, args) {
+                ("wait" | "ticks" | "restart", []) => {
+                    self.uses_board_part("ZENO_TICKING");
+                    let returns = if name == "restart" { Kind::None } else { Kind::Int };
+                    Ok(self.called(format!("zeno_ticker_{name}({})", receiver.code), &[receiver], returns))
+                }
+                _ => Err(cannot(format!("the method `{name}` of a ticker"), span)),
+            },
             // `lamp.duty(0.25)` and `servo.pulse(1500 us)`: one call into
             // the runtime each, the pulse's time in seconds.
             Kind::PwmPin => {
@@ -6194,7 +6224,7 @@ impl Emitter<'_> {
                     // number that may be `none` travels with a flag.
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
-                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Register(_) => "int",
+                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Register(_) => "int",
                             Kind::Float | Kind::F32 | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
@@ -6377,6 +6407,11 @@ impl Emitter<'_> {
             Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin if name == "number" => {
                 Ok(Val { kind: Kind::Int, ..val })
             }
+            // `beat.period`, in milliseconds.
+            Kind::Ticker if name == "period" => {
+                self.uses_board_part("ZENO_TICKING");
+                Ok(Val::from(format!("zeno_ticker_period({})", val.code), Kind::Quantity("ms".to_string()), &[&val]))
+            }
             // `sensor.max_count`: the board's, whichever pin it is.
             Kind::AnalogPin if name == "max_count" => {
                 self.uses_board_part("ZENO_ANALOG_PINS");
@@ -6430,6 +6465,10 @@ impl Emitter<'_> {
             Kind::Serial => format!("zeno_str_serial({})", val.code),
             Kind::AnalogPin => format!("zeno_str_analog_pin({})", val.code),
             Kind::PwmPin => format!("zeno_str_pwm_pin({})", val.code),
+            Kind::Ticker => {
+                self.uses_board_part("ZENO_TICKING");
+                format!("zeno_ticker_str({})", val.code)
+            }
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
@@ -6473,7 +6512,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Quantity(_) => {
+            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Quantity(_) => {
                 format!("({a} == {b})")
             }
             // Two pointers are equal when they point at the same item.
@@ -9140,6 +9179,7 @@ print(word[5])
             ("console", include_str!("../examples/console.zeno")),
             ("battery", include_str!("../examples/battery.zeno")),
             ("dimmer", include_str!("../examples/dimmer.zeno")),
+            ("steady", include_str!("../examples/steady.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
             ("handlers", include_str!("../examples/handlers.zeno")),
             ("driver", include_str!("../examples/driver.zeno")),
@@ -16222,7 +16262,13 @@ print(d.value)
                 !c.contains("static bool zeno_board_pwm(") && !c.contains("zeno_board_pwm((int)"),
                 "a program with no PWM pin asks the board for one"
             );
+            // Nor does it keep the table of tickers (decision 49.4).
+            assert!(!c.contains("static double zeno_ticker_due[") && !c.contains("ZENO_TICKING"), "a program with no ticker keeps their table");
             assert!(!c.contains("ZENO_INPUT_PINS"));
+        }
+        for c in [compile(TICKERS).unwrap(), compile_firmware(TICKERS).unwrap(), compile_no_collector(TICKERS).unwrap()] {
+            assert!(c.contains("static double zeno_ticker_due[ZENO_TICKERS];"), "the tickers are not kept");
+            assert!(!c.contains("static void zeno_board_input(") && !c.contains("ZENO_TICKING"));
         }
         for c in [compile(PWM).unwrap(), compile_firmware(PWM).unwrap(), compile_no_collector(PWM).unwrap()] {
             assert!(c.contains("zeno_board_pwm((int)"), "the PWM pins are not made");
@@ -16424,13 +16470,116 @@ print(d.value)
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Tickers (decision 49). The clock is the computer's, so the program
+    /// prints only what is true of any clock.
+    const TICKERS: &str = "from board import ticker, led\nfrom time import now, sleep\nimport board\n\
+        let start = now()\nlet beat = ticker(5 ms)\n\
+        print(beat, beat.period, beat.period.s, beat == beat, f\"{beat}\")\n\
+        var total = 0\nfor n in range(4) {\n    total += beat.wait()\n}\n\
+        print(total >= 4, now() - start >= 20 ms, now() - start >= total * beat.period)\n\
+        let slow = board.ticker(2 ms)\nprint(slow == beat)\nsleep(11 ms)\n\
+        print(slow.ticks() >= 5, slow.wait() >= 1)\n\
+        let far = ticker(1 h)\nprint(far, far.ticks(), far.period.s, ticker(0.25 s))\n\
+        let idle = ticker(40 ms)\nsleep(45 ms)\nidle.restart()\nprint(idle.ticks())\n\
+        function run(clock: Ticker, times: int) -> int {\n    var late = 0\n    \
+        for n in range(times) {\n        if clock.wait() > 1 { late += 1 }\n        led.toggle()\n    }\n    return late\n}\n\
+        print(run(ticker(0.5 s / 100), 3) >= 0)\n\
+        let all: list[Ticker] = [beat, slow]\nprint(all, far in all, beat in all)\n\
+        var spare: Ticker or none = none\nprint(spare)\nspare = far\n\
+        if spare is not none { print(spare.ticks(), spare.period) }\n";
+
+    #[test]
+    fn tickers_match() {
+        let printed = interpreted(TICKERS);
+        assert_eq!(
+            printed,
+            "Ticker(5 ms) 5 ms 0.005 s true Ticker(5 ms)\ntrue true true\nfalse\ntrue true\n\
+             Ticker(3600000 ms) 0 3600 s Ticker(250 ms)\n0\nled on\nled off\nled on\ntrue\n\
+             [Ticker(5 ms), Ticker(2 ms)] false true\nnone\n0 3600000 ms\n"
+        );
+        same_as_interpreter("tickers", TICKERS);
+        no_collector_as_interpreter("tickers", TICKERS);
+        for (name, source) in [
+            ("ticker-no-time", "from board import ticker\nlet none_at_all = 0 ms\nticker(none_at_all)\n"),
+            ("ticker-backwards", "from board import ticker\nticker(-1 s)\n"),
+            ("ticker-too-many", "from board import ticker\nfor n in range(17) {\n    print(n, ticker(1 s))\n}\n"),
+            (
+                "ticker-caught",
+                "from board import ticker\n\
+                 try {\n    ticker(0 us)\n} except ValueError as error {\n    print(\"no:\", error.message)\n}\n\
+                 var made = 0\n\
+                 try {\n    for n in range(20) {\n        ticker(1 s)\n        made += 1\n    }\n} except ValueError as error {\n    print(made, error.message)\n}\n",
+            ),
+        ] {
+            same_as_interpreter(name, source);
+        }
+    }
+
+    /// A board of its own whose clock moves only when the program
+    /// sleeps, so every tick is where the sums say. Its first sleep ends
+    /// a millisecond early, as a real one may, and it keeps two tickers.
+    #[test]
+    fn a_ticker_on_a_board_of_its_own() {
+        let header = "#define ZENO_PINS 2\n\
+                      #define ZENO_TICKERS 2\n\
+                      static bool my_levels[ZENO_PINS];\n\
+                      static double my_clock = 100.0;\n\
+                      static bool my_first = true;\n\
+                      static bool zeno_board_read(int pin) { return my_levels[pin]; }\n\
+                      static void zeno_board_write(int pin, bool level) { my_levels[pin] = level; }\n\
+                      static void zeno_board_sleep(double seconds) {\n\
+                      \x20   printf(\"sleep %g\\n\", seconds * 1000.0);\n\
+                      \x20   my_clock += seconds * 1000.0 - (my_first ? 1.0 : 0.0);\n\
+                      \x20   my_first = false;\n\
+                      }\n\
+                      static double zeno_board_now(void) { return my_clock; }\n";
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-my-ticker", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let file = dir.join("my_board.h");
+        std::fs::write(&file, header).expect("the header is written");
+        let flag = format!("-DZENO_BOARD=\"{}\"", file.display());
+        // In a firmware build an error of the runtime stops the program,
+        // so the ticker the board has no room for ends it there.
+        let source = "from board import ticker\nfrom time import sleep, now\n\
+                      let beat = ticker(10 ms)\nprint(beat.ticks())\nprint(beat.wait())\n\
+                      sleep(35 ms)\nprint(beat.ticks(), beat.ticks())\nprint(beat.wait())\n\
+                      sleep(3 ms)\nbeat.restart()\nprint(beat.wait(), now())\n\
+                      sleep(10 ms)\nprint(beat.wait(), now())\n\
+                      let second = ticker(1 s)\nprint(second, second.ticks())\n\
+                      ticker(1 s)\n";
+        for c in [compile(source).unwrap(), compile_firmware(source).unwrap(), compile_no_collector(source).unwrap()] {
+            let Some((printed, errors, finished)) = build_and_run("ticker-header", &c, &[&flag]) else {
+                return;
+            };
+            // The clock starts at 100. The first tick is due at 110: the
+            // sleep ends at 109, so there is a second, of 1 ms. Then 35 ms
+            // go by, to 145: the ticks of 120, 130 and 140 have come, and
+            // the next is at 150. Started again at 153, it ticks at 163.
+            // The tick of 173 has come when it is waited for, with no sleep.
+            assert_eq!(
+                printed,
+                "0\nsleep 10\nsleep 1\n1\nsleep 35\n3 0\nsleep 5\n1\nsleep 3\nsleep 10\n1 163 ms\nsleep 10\n1 173 ms\n\
+                 Ticker(1000 ms) 0\n"
+            );
+            assert!(!finished);
+            assert_eq!(
+                errors,
+                "error: uncaught ValueError: this board keeps 2 tickers, and this would be one more. \
+                 Make each ticker once, outside any loop\n --> test.zeno:16:1\n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A function that is handed a port, in a program that makes none,
     /// still finds the runtime's part for serial ports.
     #[test]
     fn a_port_that_is_only_handed_over_builds() {
         let source = "function talk(to: Serial) {\n    to.write(\"hi\")\n    print(to.has_byte())\n}\n\
                       function level(of: AnalogPin) -> V {\n    return of.voltage()\n}\n\
-                      function dim(light: PwmPin) {\n    light.duty(0.1)\n    light.pulse(1 ms)\n}\nprint(1)\n";
+                      function dim(light: PwmPin) {\n    light.duty(0.1)\n    light.pulse(1 ms)\n}\n\
+                      function keep(beat: Ticker) -> int {\n    print(beat, beat.period)\n    beat.restart()\n    return beat.wait() + beat.ticks()\n}\n\
+                      print(1)\n";
         same_as_interpreter("handed-over", source);
     }
 
