@@ -872,7 +872,8 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::List(_) => LIST_METHODS.contains(&name),
         Value::Dict(_) => DICT_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
-        Value::InputPin(_) => name == "is_high" || name == "is_low",
+        Value::InputPin(_) => matches!(name, "is_high" | "is_low" | "interrupt"),
+        Value::Interrupt(_) => name == "wait" || name == "edges",
         Value::Serial(_) => matches!(name, "write" | "write_bytes" | "read_byte" | "has_byte"),
         Value::AnalogPin(_) => name == "voltage" || name == "count",
         Value::PwmPin(_) => name == "duty" || name == "pulse",
@@ -1454,6 +1455,34 @@ pub fn call_method(
                 _ => fatal(format!("an analog pin has no method `{name}`"), span),
             }
         }
+        // `button.interrupt(falling)`: the board counts those edges of
+        // the pin from now on.
+        Value::InputPin(pin) if name == "interrupt" => {
+            arity(name, &args, 1, 1, span)?;
+            let edge = match &args[0] {
+                Value::Str(edge) if &**edge == "rising" => board::RISING,
+                Value::Str(edge) if &**edge == "falling" => board::FALLING,
+                Value::Str(edge) if &**edge == "either" => board::RISING | board::FALLING,
+                other => return wrong_type("interrupt", "`rising`, `falling` or `either`", other, span),
+            };
+            machine.board().interrupt(*pin, edge);
+            Ok(Value::Interrupt(*pin))
+        }
+        // `press.edges()`: how many edges have come since the program
+        // last took them. `press.wait()`: the same, after waiting for
+        // one. Nothing is wired to the simulated board, and nothing can
+        // drive a pin while the program waits, so a wait with no edge
+        // counted would never end: it is an error here.
+        Value::Interrupt(pin) => {
+            arity(name, &args, 0, 0, span)?;
+            let edges = machine.board().edges(*pin);
+            match name {
+                "edges" => Ok(Value::Int(edges)),
+                "wait" if edges > 0 => Ok(Value::Int(edges)),
+                "wait" => raise("ValueError", no_edge_can_come(*pin), span),
+                _ => fatal(format!("an interrupt has no method `{name}`"), span),
+            }
+        }
         // `button.is_low()`: what the pin reads now.
         Value::InputPin(pin) => {
             arity(name, &args, 0, 0, span)?;
@@ -1653,6 +1682,11 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 // compiled program (decision 45.3).
                 ("pull_up", Value::Str(Rc::from("pull_up"))),
                 ("pull_down", Value::Str(Rc::from("pull_down"))),
+                // Which edges an interrupt counts, by the same rule
+                // (decision 50.1).
+                ("rising", Value::Str(Rc::from("rising"))),
+                ("falling", Value::Str(Rc::from("falling"))),
+                ("either", Value::Str(Rc::from("either"))),
             ],
         ),
         _ => return None,
@@ -1993,6 +2027,15 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// What `press.wait()` says when the board answers that no edge can
+/// ever come. The runtime of a built program says the same.
+fn no_edge_can_come(pin: i64) -> String {
+    format!(
+        "the board says no edge can ever come on pin {pin}, so the program would wait for ever. \
+         On a computer nothing is wired to a pin: drive it with `pin({pin})` before the wait"
+    )
+}
+
 /// `ticker(10 ms)`: a beat with that long from one tick to the next.
 /// Its first tick is one period from now.
 fn ticker(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {

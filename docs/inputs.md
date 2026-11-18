@@ -109,6 +109,6 @@ and every C and LLVM build print the same.
 
 ## Not yet
 
-Pressing a button under `zeno run`, waiting for an edge, interrupts,
-debouncing in the library, and a `button` value on the board as `led`
-is. See 45.7 in [`decisions.md`](decisions.md).
+Pressing a button under `zeno run`, debouncing in the library, and a
+`button` value on the board as `led` is. (Waiting for an edge, and
+counting edges, are in [`interrupts.md`](interrupts.md).) See 45.7 in [`decisions.md`](decisions.md).

@@ -2381,8 +2381,26 @@ static double zeno_acos(double x, int line, int col) {
  *   zeno_board_pwm(pin, hertz, duty)   switch the pin on and off so many
  *                                      times a second, on for this share
  *                                      of the time, 0.0 to 1.0. False if
- *                                      this pin cannot Below is a simulated
- * board, for a program that runs on a computer: it keeps the level of
+ *                                      this pin cannot
+ *
+ * And a program that counts the edges of a pin
+ * (`button.interrupt(falling)`) needs three (decision 50.4):
+ *
+ *   zeno_board_interrupt(pin, edge)   count the pin's edges from now on,
+ *                                     starting from none: 1 rising, 2
+ *                                     falling, 3 either. False if this
+ *                                     pin cannot
+ *   zeno_board_edges(pin)             how many were counted since this
+ *                                     was last asked, and start again
+ *                                     from none. No waiting
+ *   zeno_board_edges_wait(pin)        the same, after waiting until at
+ *                                     least one has come. 0 only if none
+ *                                     ever can
+ *
+ * A ticker (`ticker(10 ms)`) needs nothing more than the clock and the
+ * sleep (decision 49.4).
+ *
+ * Below is a simulated board, for a program that runs on a computer: it keeps the level of
  * each pin in an array, and prints a line when a level changes, as a
  * logic analyser on the pin would show it.
  *
@@ -2472,10 +2490,39 @@ static int zeno_board_serial_read(int port) {
 }
 #endif /* ZENO_SERIAL_PORTS */
 
+#ifdef ZENO_INTERRUPTS
+/* Nothing is wired to the simulated board, so the only edges an
+ * interrupt can count are the ones the program drives itself, on a pin
+ * it also reads, as if a wire joined them. And nothing can drive a pin
+ * while the program waits, so a wait with no edge counted answers 0:
+ * none ever can come (decision 50.5). */
+static int zeno_watched[ZENO_PINS];
+static int zeno_edges[ZENO_PINS];
+
+static bool zeno_board_interrupt(int pin, int edge) {
+    zeno_watched[pin] = edge;
+    zeno_edges[pin] = 0;
+    return true;
+}
+
+static int zeno_board_edges(int pin) {
+    int edges = zeno_edges[pin];
+    zeno_edges[pin] = 0;
+    return edges;
+}
+
+static int zeno_board_edges_wait(int pin) {
+    return zeno_board_edges(pin);
+}
+#endif /* ZENO_INTERRUPTS */
+
 static void zeno_board_write(int pin, bool level) {
     /* A pin that is already there does not move, and shows nothing. */
     if (zeno_levels[pin] == level) return;
     zeno_levels[pin] = level;
+#ifdef ZENO_INTERRUPTS
+    if (zeno_watched[pin] & (level ? 1 : 2)) zeno_edges[pin]++;
+#endif /* ZENO_INTERRUPTS */
     if (pin == ZENO_LED) {
         printf("led %s\n", level ? "on" : "off");
     } else {
@@ -2715,6 +2762,49 @@ static int64_t zeno_input_pin(int64_t number, const char *pull, int line, int co
     return pin;
 }
 #endif /* ZENO_INPUT_PINS */
+
+#ifdef ZENO_INTERRUPTS
+/* `button.interrupt(falling)`: the board counts those edges of the pin
+ * from now on. The edge comes as the program holds it, the str of its
+ * name. */
+static int64_t zeno_interrupt(int64_t pin, const char *edge, int line, int col) {
+    int which = strcmp(edge, "rising") == 0 ? 1 : strcmp(edge, "falling") == 0 ? 2 : 3;
+#ifndef ZENO_MINIMAL
+    if (!zeno_board_interrupt((int)pin, which)) {
+        zeno_fail("ValueError", zeno_join(3, "pin ", zeno_str_int(pin), " of this board cannot count its edges"), line, col);
+    }
+#else /* ZENO_MINIMAL */
+    zeno_board_interrupt((int)pin, which);
+#endif /* ZENO_MINIMAL */
+    return pin;
+}
+
+/* `press.edges()`: how many have come since the program last took them. */
+static int64_t zeno_interrupt_edges(int64_t pin) {
+    return zeno_board_edges((int)pin);
+}
+
+/* `press.wait()`: the same, after waiting for one. A board answers 0
+ * only when none can ever come, and the program would wait for ever. */
+static int64_t zeno_interrupt_wait(int64_t pin, int line, int col) {
+    int edges = zeno_board_edges_wait((int)pin);
+#ifndef ZENO_MINIMAL
+    if (edges == 0) {
+        zeno_fail("ValueError",
+                  zeno_join(5, "the board says no edge can ever come on pin ", zeno_str_int(pin),
+                            ", so the program would wait for ever. On a computer nothing is wired to a pin: drive it with `pin(",
+                            zeno_str_int(pin), ")` before the wait"),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    return edges;
+}
+#endif /* ZENO_INTERRUPTS */
+
+/* An interrupt as `print` shows it. */
+static const char *zeno_str_interrupt(int64_t pin) {
+    return zeno_join(3, "Interrupt(", zeno_str_int(pin), ")");
+}
 
 /* `button.is_high()` and `button.is_low()`. */
 static bool zeno_input_is_high(int64_t pin) { return zeno_board_read((int)pin); }

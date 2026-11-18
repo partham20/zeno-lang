@@ -44,6 +44,9 @@ pub enum Value {
     AnalogPin(i64),
     /// A pin that makes a PWM signal, by its number: `pwm_pin(9, 1 kHz)`
     PwmPin(i64),
+    /// The edges of an input pin, counted by the board, by the pin's
+    /// number: `button.interrupt(falling)`
+    Interrupt(i64),
     /// A beat the program keeps time by, `ticker(10 ms)`: which ticker
     /// of the board it is, and its period in milliseconds
     Ticker(i64, f64),
@@ -721,6 +724,7 @@ impl Value {
             Value::AnalogPin(_) => "an analog pin".to_string(),
             Value::PwmPin(_) => "a PWM pin".to_string(),
             Value::Ticker(..) => "a ticker".to_string(),
+            Value::Interrupt(_) => "an interrupt".to_string(),
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
             Value::Timer(_) => "a Timer".to_string(),
@@ -885,6 +889,7 @@ fn equal_other(a: &Value, b: &Value) -> bool {
         (AnalogPin(a), AnalogPin(b)) => a == b,
         (PwmPin(a), PwmPin(b)) => a == b,
         (Ticker(a, _), Ticker(b, _)) => a == b,
+        (Interrupt(a), Interrupt(b)) => a == b,
         // Two elements are equal when they are one element of the page.
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
@@ -970,6 +975,7 @@ impl fmt::Display for Value {
             Value::Serial(number) => write!(f, "Serial({number})"),
             Value::AnalogPin(number) => write!(f, "AnalogPin({number})"),
             Value::PwmPin(number) => write!(f, "PwmPin({number})"),
+            Value::Interrupt(number) => write!(f, "Interrupt({number})"),
             Value::Ticker(_, period) => write!(f, "Ticker({})", Value::Quantity(*period, Rc::from("ms"))),
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),

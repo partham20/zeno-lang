@@ -45,6 +45,7 @@ Zeno. This page is about how both of those work.
 | | `analog_pin(0)` | the pin with that number, as one whose voltage is read ([`analog.md`](analog.md)) |
 | | `pwm_pin(9, 1 kHz)` | the pin with that number, switched at that frequency and on for a share of the time ([`pwm.md`](pwm.md)) |
 | | `ticker(10 ms)` | a steady beat a loop waits for, which says when the loop was late ([`ticker.md`](ticker.md)) |
+| | `button.interrupt(falling)` | the edges of an input pin, counted by the board; `rising`, `falling` and `either` say which ([`interrupts.md`](interrupts.md)) |
 | `time` | `sleep(500 ms)` | wait. The time must have a unit |
 | | `now()` | the reading of a clock that only goes forward, in `ms` |
 
@@ -171,9 +172,10 @@ Those four, and `ZENO_PINS`, the number of pins, are everything Zeno
 knows about hardware. A program that reads a pin needs a fifth,
 `zeno_board_input(pin, pull)`, and only such a program calls it
 ([`inputs.md`](inputs.md), decision 45.4). One with a serial port
-needs four more, one that reads a voltage two, and one that makes a
-PWM signal one, by the same rule
-([`serial.md`](serial.md), [`analog.md`](analog.md), [`pwm.md`](pwm.md)). What the program calls is written on top of them
+needs four more, one that reads a voltage two, one that makes a
+PWM signal one, and one that counts a pin's edges three, by the same
+rule ([`serial.md`](serial.md), [`analog.md`](analog.md),
+[`pwm.md`](pwm.md), [`interrupts.md`](interrupts.md)). What the program calls is written on top of them
 once, for every board:
 
 ```c
@@ -319,12 +321,14 @@ as `now() - start >= 200 ms` after sleeping that long.
 
 - **Pressing a button under `zeno run`.** Inputs can be made and read
   ([`inputs.md`](inputs.md)), and a board header can press them, but
-  the simulated board has no way to. Nor can a program wait for an
-  edge yet.
-- **Everything else on a microcontroller**: interrupts above all.
-  (A serial port, reading a voltage, a PWM signal and a steady beat
-  are there: [`serial.md`](serial.md), [`analog.md`](analog.md),
-  [`pwm.md`](pwm.md), [`ticker.md`](ticker.md).) Each would be a few more functions in the board
+  the simulated board has no way to: the only edges it counts are the
+  ones the program drives itself ([`interrupts.md`](interrupts.md)).
+- **Everything else on a microcontroller**: a function of the program
+  run by an interrupt, the time of an edge, I2C and SPI.
+  (A serial port, reading a voltage, a PWM signal, a steady beat and
+  counted edges are there: [`serial.md`](serial.md),
+  [`analog.md`](analog.md), [`pwm.md`](pwm.md),
+  [`ticker.md`](ticker.md), [`interrupts.md`](interrupts.md).) Each would be a few more functions in the board
   layer. Until then a program can reach the hardware itself, through
   registers at the addresses the data sheet gives
   ([`unsafe.md`](unsafe.md)).

@@ -107,6 +107,9 @@ pub enum Kind {
     /// A beat the program keeps time by: `ticker(10 ms)`. It is which
     /// ticker of the program this is, counted from 0 (decision 49).
     Ticker,
+    /// The edges of an input pin, counted by the board:
+    /// `button.interrupt(falling)`. It is the pin's number (decision 50).
+    Interrupt,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -530,10 +533,13 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::AnalogPin => Kind::AnalogPin,
         Ty::PwmPin => Kind::PwmPin,
         Ty::Ticker => Kind::Ticker,
+        Ty::Interrupt => Kind::Interrupt,
         // `pull_up` and `pull_down` are the strs of their names, so
         // printing one, comparing two and keeping them in a list work
         // as they do for any str. The checker keeps them apart.
         Ty::Pull => Kind::Str,
+        // `rising`, `falling` and `either` are the strs of their names too.
+        Ty::Edge => Kind::Str,
         Ty::Pointer(pointee) => Kind::Pointer(*pointee),
         Ty::Register(width) => Kind::Register(*width),
         Ty::None => Kind::None,
@@ -720,6 +726,12 @@ enum Ty {
     PwmPin,
     /// A beat the program keeps time by: `ticker(10 ms)`.
     Ticker,
+    /// Which change of a pin an interrupt counts: `rising`, `falling`
+    /// or `either`, from the `board` module.
+    Edge,
+    /// The edges of an input pin, counted by the board:
+    /// `button.interrupt(falling)`.
+    Interrupt,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -935,6 +947,8 @@ enum Key {
     AnalogPin,
     PwmPin,
     Ticker,
+    Edge,
+    Interrupt,
     Element,
     Event,
     Timer,
@@ -1181,6 +1195,8 @@ impl fmt::Display for Ty {
             Ty::AnalogPin => write!(f, "AnalogPin"),
             Ty::PwmPin => write!(f, "PwmPin"),
             Ty::Ticker => write!(f, "Ticker"),
+            Ty::Edge => write!(f, "Edge"),
+            Ty::Interrupt => write!(f, "Interrupt"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1314,6 +1330,8 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::AnalogPin, Ty::AnalogPin)
         | (Ty::PwmPin, Ty::PwmPin)
         | (Ty::Ticker, Ty::Ticker)
+        | (Ty::Edge, Ty::Edge)
+        | (Ty::Interrupt, Ty::Interrupt)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -2013,6 +2031,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "analog_pin") => Ty::Builtin("analog_pin"),
         ("board", "pwm_pin") => Ty::Builtin("pwm_pin"),
         ("board", "ticker") => Ty::Builtin("ticker"),
+        ("board", "rising") | ("board", "falling") | ("board", "either") => Ty::Edge,
         _ => return None,
     })
 }
@@ -2641,6 +2660,8 @@ impl Checker {
             Ty::AnalogPin => Key::AnalogPin,
             Ty::PwmPin => Key::PwmPin,
             Ty::Ticker => Key::Ticker,
+            Ty::Edge => Key::Edge,
+            Ty::Interrupt => Key::Interrupt,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2696,6 +2717,8 @@ impl Checker {
             Key::AnalogPin => Ty::AnalogPin,
             Key::PwmPin => Ty::PwmPin,
             Key::Ticker => Ty::Ticker,
+            Key::Edge => Ty::Edge,
+            Key::Interrupt => Ty::Interrupt,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3111,6 +3134,8 @@ impl Checker {
                         _ if name == "AnalogPin" => Ty::AnalogPin,
                         _ if name == "PwmPin" => Ty::PwmPin,
                         _ if name == "Ticker" => Ty::Ticker,
+                        _ if name == "Edge" => Ty::Edge,
+                        _ if name == "Interrupt" => Ty::Interrupt,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6258,6 +6283,15 @@ impl Checker {
                 ),
                 span,
             ),
+            Ty::Interrupt if INTERRUPT_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Interrupt), Rc::from(name)),
+            Ty::Interrupt if name == "number" => Ty::Int,
+            Ty::Interrupt => self.error(
+                format!(
+                    "an Interrupt has no `{name}`. It has `wait()`, `edges()` and `number`. \
+                     The level of its pin is read from the InputPin, with `is_high()` or `is_low()`"
+                ),
+                span,
+            ),
             Ty::Ticker if TICKER_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Ticker), Rc::from(name)),
             // `beat.period`: the time from one tick to the next, in the
             // unit `now()` counts in (49.2).
@@ -7602,6 +7636,31 @@ impl Checker {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "voltage" { Ty::Quantity(Rc::from("V")) } else { Ty::Int }
             }
+            // `button.interrupt(falling)`: the board counts those edges
+            // of the pin from now on (50.1).
+            (Ty::InputPin, "interrupt") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    let edge = &arguments[0];
+                    if !fits(&edge.ty, &Ty::Edge) {
+                        self.error(
+                            format!(
+                                "an interrupt counts `rising`, `falling` or `either` edges, from the `board` module, \
+                                 and this is {}",
+                                edge.ty
+                            ),
+                            edge.span,
+                        );
+                    }
+                }
+                Ty::Interrupt
+            }
+            // `press.wait()` waits for an edge and `press.edges()` does
+            // not; each gives how many have come since the program last
+            // took them (50.2).
+            (Ty::Interrupt, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Int
+            }
             // `button.is_low()`: the level the pin is at now.
             (Ty::InputPin, _) => {
                 self.arity(name, arguments, 0, 0, span);
@@ -8857,7 +8916,8 @@ const LIST_METHODS: &[&str] = &[
 ];
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
-const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
+const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low", "interrupt"];
+const INTERRUPT_METHODS: &[&str] = &["wait", "edges"];
 const ANALOG_PIN_METHODS: &[&str] = &["voltage", "count"];
 const PWM_PIN_METHODS: &[&str] = &["duty", "pulse"];
 const TICKER_METHODS: &[&str] = &["wait", "ticks", "restart"];
@@ -10201,6 +10261,44 @@ mod tests {
             "`period` should be a quantity in s, but this is a quantity in ms. Convert it with `.s`"
         );
         assert_eq!(error("from board import ticker\nlet t: Timer = ticker(1 s)"), "`t` should be Timer, but this is Ticker");
+    }
+
+    #[test]
+    fn an_interrupt_counts_the_edges_of_an_input() {
+        ok("from board import input_pin, pull_up, falling, rising, either\nlet button = input_pin(2, pull_up)\n\
+            let press: Interrupt = button.interrupt(falling)\nlet came: int = press.wait()\nlet more: int = press.edges()\n\
+            let n: int = press.number\nlet which: Edge = rising\nlet kinds: list[Edge] = [rising, falling, either]");
+        ok("import board\nfunction watch(what: InputPin, which: Edge) -> Interrupt { return what.interrupt(which) }\n\
+            watch(board.input_pin(3), board.rising)");
+        assert_eq!(
+            error("from board import input_pin\ninput_pin(2).interrupt(\"falling\")"),
+            "an interrupt counts `rising`, `falling` or `either` edges, from the `board` module, and this is str"
+        );
+        assert_eq!(
+            error("from board import input_pin, pull_up\ninput_pin(2).interrupt(pull_up)"),
+            "an interrupt counts `rising`, `falling` or `either` edges, from the `board` module, and this is Pull"
+        );
+        assert_eq!(error("from board import input_pin\ninput_pin(2).interrupt()"), "`interrupt` takes 1 argument, but 0 were given");
+        assert_eq!(
+            error("from board import led, falling\nled.interrupt(falling)"),
+            "`interrupt` reads an input, and this Pin is driven by the program. Ask it what it was driven to with \
+             `is_on()`. A pin the program reads is made with `input_pin( )`"
+        );
+        assert_eq!(
+            error("from board import input_pin, falling\ninput_pin(2).interrupt(falling).is_low()"),
+            "an Interrupt has no `is_low`. It has `wait()`, `edges()` and `number`. \
+             The level of its pin is read from the InputPin, with `is_high()` or `is_low()`"
+        );
+        assert_eq!(
+            error("from board import input_pin, falling\ninput_pin(2).interrupt(falling).wait(5 ms)"),
+            "`wait` takes 0 arguments, but 1 was given"
+        );
+        assert_eq!(error("from board import falling\nlet s: str = falling"), "`s` should be str, but this is Edge");
+        assert_eq!(error("from board import rising, pull_up\nprint(rising == pull_up)"), "`==` between Edge and Pull is always false");
+        assert_eq!(
+            error("from board import input_pin, rising\nlet p: InputPin = input_pin(2).interrupt(rising)"),
+            "`p` should be InputPin, but this is Interrupt"
+        );
     }
 
     #[test]

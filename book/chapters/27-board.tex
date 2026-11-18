@@ -347,6 +347,72 @@ things. (Decision 49.)
 The example \verb|examples/steady.zeno| is a loop that notices the
 round that took too long.
 
+\section{Interrupts}
+
+A pulse from a wheel sensor is over in a millisecond. A program that
+looks at the pin now and then misses most of them. A chip's answer is
+the interrupt: the hardware notices each edge by itself, whatever the
+program is doing. In Zeno the board counts the edges, and the program
+asks for the count. \verb|button.interrupt(falling)| gives an
+\verb|Interrupt|:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Gives \\
+\midrule
+\verb|i.wait()| & waits for an edge; how many have come \\
+\verb|i.edges()| & the same count with no waiting; \verb|0| if none has \\
+\verb|i.number| & which pin it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The edge is \verb|rising|, \verb|falling| or \verb|either|, from the
+\verb|board| module. On a computer nothing is wired to a pin, so the
+edges are the ones the program drives on it itself, as if a wire
+joined the two:
+
+\begin{zeno}
+from board import input_pin, pin, rising
+
+let sensor = input_pin(3)
+let turns = sensor.interrupt(rising)
+
+let wheel = pin(3)
+wheel.on()
+wheel.off()
+wheel.on()
+
+print(turns, turns.edges())
+print(turns.edges())
+wheel.off()
+wheel.on()
+print(turns.wait(), sensor.is_high())
+\end{zeno}
+
+Each count is taken when it is asked for, so the second
+\verb|edges()| gives 0. \verb|wait()| on a board puts the chip to sleep
+until an edge comes. On a computer nothing can drive a pin while the
+program waits, so a \verb|wait()| with no edge counted would never
+end, and is a \verb|ValueError| that says so.
+
+\begin{why}
+In C a function of the program runs inside the interrupt, and shares
+its variables with the loop it broke into. The programmer marks them
+\verb|volatile|, and \verb|count += 1| in the loop still loses the
+edge that lands between its read and its write, once a week. Zeno's
+rule is one sentence: the program's own code never runs inside an
+interrupt. The board's handler counts, which is what nearly every
+handler does, and the program asks when it chooses to. So there is no
+shared variable to get wrong. What needs an answer within
+microseconds, inside the interrupt itself, stays in C.
+(Decision 50.)
+\end{why}
+
+The example \verb|examples/tachometer.zeno| counts the turns of a
+wheel in each stretch of time.
+
 \section{A serial port}
 
 A serial port is how a board talks: to a terminal on a computer, to a
@@ -485,8 +551,10 @@ port needs four more, and \verb|ZENO_SERIALS|, the number of ports:
 \verb|zeno_board_serial_open|, \verb|_write|, \verb|_ready| and
 \verb|_read|. One that reads a voltage needs
 \verb|zeno_board_analog| and \verb|zeno_board_analog_read|, with the
-converter's bits and reference, and one that makes a PWM signal needs
-\verb|zeno_board_pwm(pin, hertz, duty)|. Only a program that uses them calls them, so a header
+converter's bits and reference, one that makes a PWM signal needs
+\verb|zeno_board_pwm(pin, hertz, duty)|, and one with an interrupt
+needs \verb|zeno_board_interrupt|, \verb|zeno_board_edges| and
+\verb|zeno_board_edges_wait|. Only a program that uses them calls them, so a header
 with four still builds every other program.
 
 The simulated board is these four, written for a computer. For a real
@@ -504,12 +572,11 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 \section{What the board does not have yet}
 
-A button can be read, but nothing waits for it: a program looks at the
-pin as often as it needs to. On a computer nothing can press it yet.
-Nor can a voltage be fed to a pin there. Interrupts
-are not in the \verb|board| module yet, so no function runs by itself
-when a pin changes or a tick comes. Until they are, a program reaches
-them through their registers, at the addresses the data sheet gives.
+On a computer nothing can press a button yet, and no voltage can be
+fed to a pin there. No function of the program runs by itself when a
+pin changes or a tick comes: the board counts, and the program asks.
+I2C and SPI are not in the \verb|board| module yet. Until they are, a
+program reaches them through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
 
 \begin{summary}
@@ -521,7 +588,9 @@ them through their registers, at the addresses the data sheet gives.
 is in volts. \verb|pwm_pin(n, 1 kHz)| gives a \verb|PwmPin|, on for a
 share of the time with \verb|duty| or for a time with \verb|pulse|.
 \verb|ticker(10 ms)| gives a \verb|Ticker|: \verb|wait()| waits for its
-next tick and says how many have come.
+next tick and says how many have come. \verb|button.interrupt(falling)|
+gives an \verb|Interrupt|: the board counts the edges, and
+\verb|wait()| and \verb|edges()| give the count.
 \verb|serial(n, 115200 baud)| gives a \verb|Serial|, which
 writes text and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|

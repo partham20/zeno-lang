@@ -96,6 +96,7 @@ Samples, none of them final:
 - [`examples/battery.zeno`](examples/battery.zeno): a battery read through a divider on an analog pin, in volts, with the LED on when it is low.
 - [`examples/dimmer.zeno`](examples/dimmer.zeno): a lamp faded up and down and a servo swept, with a PWM signal on two pins.
 - [`examples/steady.zeno`](examples/steady.zeno): a loop that runs at a steady rate on a ticker, and notices the round that took too long.
+- [`examples/tachometer.zeno`](examples/tachometer.zeno): the turns of a wheel counted by an interrupt, read once in each stretch of time.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -779,6 +780,16 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     nothing. `restart()` makes it a timeout. It asks a board header
     for nothing new. In every engine and every C and LLVM build.
     See [`docs/ticker.md`](docs/ticker.md) and chapter 49 of
+    [`docs/decisions.md`](docs/decisions.md))
+48. Interrupts on a board (done, after 0.5.2 and not yet released:
+    `button.interrupt(falling)` gives an `Interrupt`: the board counts
+    the pin's edges, `wait()` waits for one and `edges()` asks without
+    waiting, so no pulse is lost and the chip can sleep. The program's
+    own code never runs inside an interrupt, so there is no shared
+    variable to get wrong. `rising`, `falling` and `either` are values
+    of the type `Edge`. A board header gains three functions. In every
+    engine and every C and LLVM build.
+    See [`docs/interrupts.md`](docs/interrupts.md) and chapter 50 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with

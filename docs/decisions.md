@@ -15230,3 +15230,142 @@ line to show, as there is none for `sleep`. A program in a page cannot
 - A ticker in the fifteen target languages.
 - A period finer than the board's clock and sleep can keep.
 - A trial on a real board.
+
+## 50. Interrupts: the board counts, and the program asks
+
+```zeno
+from board import falling, input_pin, pull_up
+
+let button = input_pin(2, pull_up)
+let press = button.interrupt(falling)
+
+while true {
+    press.wait()              # the chip sleeps until the button goes down
+    ring()
+}
+```
+
+A pulse from a wheel sensor lasts a millisecond, and a program that
+looks at the pin now and then misses most of them. A chip's answer is
+the interrupt: the hardware notices the edge itself, whatever the
+program is doing. It is the last part of item 7 of
+[`missing.md`](missing.md), which asked for "a safe way to share a
+variable" with an interrupt, "and the rule should be one sentence".
+Walkthrough: [`interrupts.md`](interrupts.md).
+
+### 50.1 An interrupt is made from an input pin and an edge
+
+**`button.interrupt(falling)` gives an `Interrupt`**, which has
+`wait()`, `edges()` and `number`, and prints as `Interrupt(2)`. From
+then on the board counts those edges of the pin. **`rising`, `falling`
+and `either` are values of the `board` module, of the type `Edge`**,
+as `pull_up` is a `Pull` (45.3), so a function can take one and a str
+in their place is refused.
+
+**Why from an `InputPin`, and not `interrupt_pin(2, falling)`?** The
+pin is still read: a program that counts presses also asks whether the
+button is down now. And what holds the pin is said once, where the
+input is made. An `Interrupt` is the pin's number underneath (3.15),
+and it is a type of its own so that `wait()` exists only on a pin
+whose edges are being counted, which the checker then knows (45.1).
+
+**One pin has one interrupt.** A second `interrupt( )` on a pin starts
+the count again with the new edge, as a second `pwm_pin` starts the
+signal again (48.1). A chip has one such setting a pin.
+
+### 50.2 `wait()` and `edges()` both say how many edges have come
+
+**`press.wait()` waits for an edge. `press.edges()` never waits. Each
+gives the number of edges counted since the program last took them,
+and takes them**, as `wait()` and `ticks()` do for a ticker (49.2), for
+the same reasons: a count loses nothing, and a `bool` would.
+
+```zeno
+print(turns.edges(), "turns this second")     # a rate, with a ticker
+if press.edges() > 0 { ring() }               # a loop that does other things
+press.wait()                                  # nothing else to do: sleep
+```
+
+### 50.3 The program's own code never runs inside an interrupt
+
+That is the rule, in one sentence. **The board counts what happened,
+and the program asks for the count when it chooses to.** There is no
+function of the program that the hardware starts by itself, so there
+is no variable shared with one, and nothing to get wrong.
+
+**Why not a function that runs when the edge comes**, as C, Arduino
+and Rust have?
+
+- **The shared variable.** In C the handler and the loop both write
+  `count`, the programmer marks it `volatile`, and `count += 1` in the
+  loop still loses an edge that lands between its read and its write.
+  No compiler sees it, and it shows up once a week. Rust refuses it,
+  with critical sections and its ownership rules through the whole
+  language; in Zeno owning is one way to build a program, not the
+  language.
+- **The runtime.** A handler that joins two strs, or appends to a
+  list, while the program is half-way through doing the same, breaks
+  the pool both draw from. Refusing that needs the checker to know of
+  every function whether it could allocate or raise, which is the
+  ground of item 9.
+- **What a handler is for.** Nearly every handler in firmware does one
+  of two things: counts, or sets a flag for the loop to see. Counting
+  is both. The board's own handler is two lines of C that cannot be
+  wrong, and it is written once, in the board header.
+
+**What this gives up:** an answer inside the interrupt itself, within
+microseconds of the edge: bit-banging a protocol, or reading the
+second line of an encoder at the edge of the first. Those stay in C,
+which a firmware build calls directly (44.10).
+
+**Also turned down: functions run between two statements of the
+program**, an event loop, as a page has (`web.every`). It is safe, but
+the compiler must then place the points where they may run, in four
+engines, and it is one answer to item 14 (tasks), which should be
+designed whole. It can be layered on counting later without changing
+it.
+
+### 50.4 Three functions in the board layer
+
+```c
+bool zeno_board_interrupt(int pin, int edge);   /* count from now on: 1 rising, 2 falling, 3 either */
+int  zeno_board_edges(int pin);                 /* how many since last asked; start again from none */
+int  zeno_board_edges_wait(int pin);            /* the same, after waiting for at least one */
+```
+
+**Why is the wait the board's, and not a loop over
+`zeno_board_edges` and a sleep?** Looking at the count and going to
+sleep must be one step, or an edge that lands between the two is slept
+through. On a Cortex-M that is: interrupts off, look, `WFI`,
+interrupts on. The board knows how its chip does it. **A pin with no
+interrupt is a `ValueError`** ("pin 7 of this board cannot count its
+edges"), and only a program with an interrupt calls the three
+(`#ifdef ZENO_INTERRUPTS`, 45.4).
+
+### 50.5 On a computer the program drives its own edges
+
+**Nothing is wired to the simulated board, so the edges counted are
+the ones the program drives on that pin itself**, with `pin(2).on()`,
+as if a wire joined the two. It is the rule of 47.4, where a pin the
+program drove high reads as 3.3 V. Making an input with a pull is not
+an edge.
+
+**A `wait()` with no edge counted is a `ValueError` there**: "the
+board says no edge can ever come on pin 2, so the program would wait
+for ever". Nothing can drive a pin while the program waits, and a
+message is kinder than a program that hangs. The board function says
+it by answering 0, which a real board never does.
+
+### 50.6 Left for later
+
+- A function of the program run for each edge, with item 14.
+- Waiting for the first of several: an interrupt or a ticker. Today a
+  loop asks each and sleeps a little in between.
+- When an edge came: the width of a pulse, which a chip's timer can
+  capture.
+- Debouncing a button in the board. Today the program does it, with a
+  ticker (49.3).
+- Interrupts of a serial port or a converter. A board header may use
+  them inside its own functions already.
+- Pressing a button under `zeno run` (45.5).
+- A trial on a real board.

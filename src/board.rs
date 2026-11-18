@@ -32,6 +32,11 @@ pub const fn analog_max() -> i64 {
     (1 << ANALOG_BITS) - 1
 }
 
+/// The edges an interrupt counts, as the board layer numbers them. Both
+/// together are either edge.
+pub const RISING: u8 = 1;
+pub const FALLING: u8 = 2;
+
 /// How many tickers a program can make on the simulated board
 /// (decision 49.5).
 pub const TICKERS: usize = 16;
@@ -50,13 +55,18 @@ pub struct Board {
     /// For each ticker the program has made: its period, and when its
     /// next tick is due, both in milliseconds of the clock `now` reads.
     tickers: Vec<(f64, f64)>,
+    /// For each pin, which of its edges are counted (1 rising, 2
+    /// falling, 3 either, 0 none), and how many have come since the
+    /// program last took them.
+    watched: [u8; PINS as usize],
+    edges: [i64; PINS as usize],
     levels: [bool; PINS as usize],
     registers: std::collections::HashMap<i64, i64>,
 }
 
 impl Board {
     pub fn new() -> Board {
-        Board { pwm: [(0.0, 0.0); PINS as usize], tickers: Vec::new(), levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
+        Board { pwm: [(0.0, 0.0); PINS as usize], tickers: Vec::new(), watched: [0; PINS as usize], edges: [0; PINS as usize], levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
     }
 
     /// What the register at `address` holds.
@@ -86,6 +96,18 @@ impl Board {
             Pull::Down => self.levels[pin as usize] = false,
             Pull::Nothing => {}
         }
+    }
+
+    /// Count these edges of the pin from now on, starting from none.
+    pub fn interrupt(&mut self, pin: i64, edge: u8) {
+        self.watched[pin as usize] = edge;
+        self.edges[pin as usize] = 0;
+    }
+
+    /// The edges counted on the pin since this was last asked. They are
+    /// taken: the count starts again from none.
+    pub fn edges(&mut self, pin: i64) -> i64 {
+        std::mem::take(&mut self.edges[pin as usize])
     }
 
     /// A new ticker with that period, whose first tick is one period
@@ -159,6 +181,12 @@ impl Board {
             return None;
         }
         self.levels[pin as usize] = level;
+        // Nothing is wired to the simulated board, so the only edges
+        // an interrupt can count are the ones the program drives
+        // (decision 50.5).
+        if self.watched[pin as usize] & (if level { RISING } else { FALLING }) != 0 {
+            self.edges[pin as usize] += 1;
+        }
         Some(format!("{} {}", name(pin), if level { "on" } else { "off" }))
     }
 }

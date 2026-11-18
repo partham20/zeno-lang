@@ -1,0 +1,29 @@
+# A wheel counter: how many pulses a sensor gave in each stretch of time.
+#
+# A sensor on a wheel gives one short pulse a turn. A program that only
+# looked at the pin now and then would miss most of them. An interrupt
+# has the board count every pulse, and the program asks for the count
+# when it has the time. See docs/interrupts.md.
+from board import input_pin, pin, rising, ticker
+
+let sensor = input_pin(3)
+let turns = sensor.interrupt(rising)
+let beat = ticker(5 ms)
+
+# On a computer nothing is wired to pin 3, so the program plays the
+# wheel itself, as if a wire joined the two. On a board, leave this out.
+let wheel = pin(3)
+
+function spin(times: int) {
+    for turn in range(times) {
+        wheel.on()
+        wheel.off()
+    }
+}
+
+# Firmware would measure for ever. This measures three stretches.
+for stretch in range(3) {
+    spin(stretch + 1)
+    beat.wait()
+    print(f"turns in this stretch: {turns.edges()}")
+}

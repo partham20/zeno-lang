@@ -17,7 +17,9 @@ The numbers are the decisions, for anyone who wants the argument.
   voltage under \verb|zeno run| (45.5), and none of it has been tried
   on a real board. A PWM pin cannot be asked its duty or given a new
   frequency (48.6). A board keeps sixteen tickers and none is given
-  back (\verb|ticker|, 49.5). Interrupts are still to come.
+  back (\verb|ticker|, 49.5). An interrupt counts edges
+  (\verb|interrupt|, 50), and no function of the program runs inside
+  one (50.3); nor can a program wait for the first of several.
 \end{description}
 
 \section{Numbers}

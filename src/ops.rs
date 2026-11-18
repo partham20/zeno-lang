@@ -815,6 +815,7 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
         | Value::Serial(number)
         | Value::AnalogPin(number)
         | Value::PwmPin(number)
+        | Value::Interrupt(number)
             if name == "number" =>
         {
             Ok(Value::Int(*number))
