@@ -1,0 +1,77 @@
+# list[u8, 64]: a list of a fixed length (decision 36.4).
+var buffer: list[u8, 8] = [0] * 8
+let header: list[u8, 4] = [0x7E, 1, 2, 3]
+buffer[0] = 0x7E
+buffer[7] = 255
+print(buffer, len(buffer), buffer[7])
+for b in header {
+    print(b)
+}
+print(sum(buffer), min(header), max(header), 3 in header, header.find(2))
+print(header == [0x7E, 1, 2, 3], buffer.slice(0, 2), [b * 2 for b in header])
+print(header.map(function(b: u8) -> int { return b + 1 }))
+buffer.reverse()
+buffer.sort()
+print(buffer, str(header), f"{header}")
+let copy = buffer
+copy[1] = 9
+print(buffer[1])
+function first[T](xs: list[T]) -> T {
+    return xs[0]
+}
+print(first(header), first([u8(1)]))
+function checksum(data: list[u8]) -> u8 {
+    var total = 0
+    for b in data {
+        total = (total + b) % 256
+    }
+    return u8(total)
+}
+function fill(data: list[u8], value: u8) {
+    for i in range(len(data)) {
+        data[i] = value
+    }
+}
+function frame_of(command: u8) -> list[u8, 4] {
+    return [0x7E, command, 0, 0x7F]
+}
+function show(frame: list[u8, 4]) {
+    print(f"frame {frame} sum {checksum(frame)}")
+}
+class Packet {
+    kind: u8
+    data: list[u8, 4]
+}
+fill(buffer, 3)
+print(buffer, checksum(buffer))
+let f = frame_of(9)
+show(f)
+let p = Packet(1, f)
+p.data[2] = 5
+print(p.data, f, len(p.data))
+show(p.data)
+var frames: list[list[u8, 4]] = [f, frame_of(2)]
+frames.append(frame_of(3))
+print(len(frames), frames[2])
+let a3: list[u8, 3] = [1, 2, 3]
+let b3: list[u8, 3] = [1, 2, 3]
+print(a3 + [4], a3 + b3, a3 == b3, a3 != b3, 2 in a3, 9 not in a3, a3 * 2)
+let longer: list[u8] = a3.slice(0)
+longer.append(9)
+print(longer, a3)
+let words: list[str, 2] = ["a", "b"]
+print(words, len(words), words.find("b"))
+var table: dict[str, list[u8, 3]] = ["x": a3]
+print(table["x"][1])
+let maybe: list[u8, 3] or none = a3
+if maybe is not none {
+    print(maybe[0])
+}
+let ring_size = 4
+var ring: list[int, 4] = [0] * 4
+var head = 0
+for value in range(10) {
+    ring[head] = value
+    head = (head + 1) % ring_size
+}
+print(ring, head)

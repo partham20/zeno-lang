@@ -347,6 +347,12 @@ const Z = (function () {
   }
 
   function mul(a: any, b: any, line: any) {
+    if (Array.isArray(a) && isInt(b)) {
+      if (b < 0) raise("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line);
+      const repeated = [];
+      for (let t = 0; t < b; t++) for (const item of a) repeated.push(item);
+      return repeated;
+    }
     if (typeof a === "number" && typeof b === "number") {
       const r = a * b;
       return Number.isSafeInteger(r) ? (r === 0 ? 0 : r) : int(BigInt(a) * BigInt(b), line);

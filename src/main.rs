@@ -40,6 +40,7 @@ mod html;
 mod interpreter;
 mod json;
 mod ints;
+mod lengths;
 mod lexer;
 mod library;
 mod lower;

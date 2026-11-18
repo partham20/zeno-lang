@@ -559,6 +559,9 @@ pub enum Type {
     /// and the caller's variable holds nothing afterwards. A parameter
     /// without the word only looks.
     Take(Box<Type>),
+    /// A number written among the types in `[ ]`: the 64 of
+    /// `list[u8, 64]`, a list of a fixed length (decision 36.4).
+    Length(u64),
 }
 
 // --------------------------------------------------------------- Expressions

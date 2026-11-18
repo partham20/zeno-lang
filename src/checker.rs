@@ -31,6 +31,7 @@ use std::sync::Arc;
 use crate::ast::{self, *};
 use crate::error::{counted, were, Error};
 use crate::ints::{self, Width};
+use crate::lengths;
 use crate::token::Span;
 use crate::units;
 
@@ -410,7 +411,9 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             Kind::Owned(inner) => Kind::Owned(Box::new(Kind::Optional(inner))),
             inner => Kind::Optional(Box::new(inner)),
         },
-        list @ Ty::List(_) if is_bytes(list) => Kind::List(Box::new(Kind::Byte)),
+        list @ (Ty::List(_) | Ty::Fixed(..)) if is_bytes(list) => Kind::List(Box::new(Kind::Byte)),
+        // To the compilers a list of a fixed length is a list.
+        Ty::Fixed(item, _) => Kind::List(Box::new(kind_within(item, depth))),
         Ty::List(item) => Kind::List(Box::new(kind_within(item, depth))),
         Ty::Dict(key, value) => Kind::Dict(Box::new(kind_within(key, depth)), Box::new(kind_within(value, depth))),
         Ty::Owned(inner) => Kind::Owned(Box::new(kind_within(inner, depth))),
@@ -440,10 +443,23 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
 }
 
 /// `list[u8]`, as it is or with one owner.
+/// Is a value of this type one that two places can hold at once, so that
+/// a change made through one is seen through the other? A list, a dict
+/// and an object are. A number, a text and an enum value are not.
+fn is_shared(ty: &Ty) -> bool {
+    match ty {
+        Ty::List(_) | Ty::Fixed(..) | Ty::Dict(..) | Ty::Instance(_) | Ty::Owned(_) | Ty::Borrowed(_) | Ty::Element | Ty::Timer => {
+            true
+        }
+        Ty::Optional(inner) => is_shared(inner),
+        _ => false,
+    }
+}
+
 fn is_bytes(ty: &Ty) -> bool {
     match ty {
         Ty::Owned(inner) | Ty::Borrowed(inner) => is_bytes(inner),
-        Ty::List(item) => matches!(**item, Ty::Sized(width) if width.bits == 8 && !width.signed),
+        Ty::List(item) | Ty::Fixed(item, _) => matches!(**item, Ty::Sized(width) if width.bits == 8 && !width.signed),
         _ => false,
     }
 }
@@ -614,6 +630,10 @@ enum Ty {
     /// A register of the board at a fixed address: `Register[u32]`.
     Register(Width),
     List(Box<Ty>),
+    /// `list[u8, 64]`: a list that always has this many items (decision
+    /// 36.4). Inside is the type of an item. Anything that only reads a
+    /// list reads one of these; nothing can change how long it is.
+    Fixed(Box<Ty>, u64),
     /// `dict[str, int]`: the type of its keys, and of its values.
     Dict(Box<Ty>, Box<Ty>),
     /// `T or none`
@@ -931,7 +951,7 @@ impl Ty {
     /// A list or a dict: the two types that hold other values. Where
     /// everything has one owner, each of them has one.
     fn is_collection(&self) -> bool {
-        matches!(self, Ty::List(_) | Ty::Dict(..))
+        matches!(self, Ty::List(_) | Ty::Fixed(..) | Ty::Dict(..))
     }
 
     /// True for the two types that are accepted everywhere.
@@ -947,7 +967,9 @@ impl Ty {
     fn has_dynamic(&self) -> bool {
         match self {
             Ty::Dynamic => true,
-            Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => inner.has_dynamic(),
+            Ty::List(inner) | Ty::Fixed(inner, _) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => {
+                inner.has_dynamic()
+            }
             Ty::Dict(key, value) => key.has_dynamic() || value.has_dynamic(),
             _ => false,
         }
@@ -1041,6 +1063,7 @@ impl fmt::Display for Ty {
             Ty::None => write!(f, "none"),
             Ty::Quantity(unit) => write!(f, "a quantity in {unit}"),
             Ty::List(item) => write!(f, "list[{item}]"),
+            Ty::Fixed(item, length) => write!(f, "list[{item}, {length}]"),
             Ty::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
             Ty::Owned(inner) => write!(f, "owned {inner}"),
@@ -1167,6 +1190,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Owned(a), Ty::Owned(b))
         | (Ty::Borrowed(a), Ty::Borrowed(b)) => same(a, b),
         (Ty::Dict(a_key, a_value), Ty::Dict(b_key, b_value)) => same(a_key, b_key) && same(a_value, b_value),
+        (Ty::Fixed(a, a_length), Ty::Fixed(b, b_length)) => a_length == b_length && same(a, b),
         (Ty::Instance(a), Ty::Instance(b)) => Rc::ptr_eq(a, b),
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
@@ -1316,6 +1340,9 @@ fn sized_into_int(from: &Ty, to: &Ty) -> bool {
 enum Written {
     Number(i128),
     List(Vec<Written>),
+    /// `[0] * 64`: a list written out, and how many times it is repeated
+    /// when that is written as a number. `place` is the list written out.
+    Repeat { list: Box<Written>, times: Option<i128>, place: usize },
 }
 
 fn written(expr: &Expr) -> Option<Written> {
@@ -1323,8 +1350,16 @@ fn written(expr: &Expr) -> Option<Written> {
         ExprKind::Int(n) => Some(Written::Number(*n as i128)),
         ExprKind::Unary { op: UnaryOp::Neg, operand } => match written(operand)? {
             Written::Number(n) => Some(Written::Number(-n)),
-            Written::List(_) => None,
+            Written::List(_) | Written::Repeat { .. } => None,
         },
+        ExprKind::Binary { op: BinaryOp::Mul, left, right } => {
+            let list = written(left).filter(|list| matches!(list, Written::List(_)))?;
+            let times = match &right.kind {
+                ExprKind::Int(n) => Some(*n as i128),
+                _ => None,
+            };
+            Some(Written::Repeat { list: Box::new(list), times, place: &**left as *const Expr as usize })
+        }
         ExprKind::List(items) if !items.is_empty() => {
             items.iter().map(written).collect::<Option<Vec<_>>>().map(Written::List)
         }
@@ -1342,7 +1377,8 @@ fn written_fits(written: &Written, to: &Ty) -> Option<Result<(), String>> {
             Some(if fits { Ok(()) } else { Err(width.does_not_fit(n)) })
         }
         (_, Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner)) => written_fits(written, inner),
-        (Written::List(items), Ty::List(item)) => {
+        (Written::Repeat { list, .. }, _) => written_fits(list, to),
+        (Written::List(items), Ty::List(item) | Ty::Fixed(item, _)) => {
             for written in items {
                 if let Err(message) = written_fits(written, item)? {
                     return Some(Err(message));
@@ -1381,7 +1417,7 @@ fn call_in(place: &Expr) -> Option<&Expr> {
 fn sized_as(from: &Ty, to: &Ty) -> Ty {
     match (from, to) {
         (Ty::Int, Ty::Sized(_)) => to.clone(),
-        (Ty::List(from), Ty::List(to)) => Ty::list(sized_as(from, to)),
+        (Ty::List(from), Ty::List(to) | Ty::Fixed(to, _)) => Ty::list(sized_as(from, to)),
         (Ty::Owned(from), Ty::Owned(to)) => Ty::Owned(Box::new(sized_as(from, to))),
         (from, Ty::Optional(to) | Ty::Borrowed(to) | Ty::Owned(to)) => sized_as(from, to),
         _ => from.clone(),
@@ -1787,6 +1823,10 @@ struct Checker {
     /// Where a field that may be `none` was read (line and column), and
     /// the field's name, for `none_first`.
     maybe_fields: HashMap<(usize, usize), String>,
+    /// How many items each list written out has, by where it is: `[a, b]`
+    /// has two, and `[x] * 4` has four. A list of a fixed length is
+    /// checked against it (decision 36.4).
+    counted: HashMap<usize, i128>,
     /// This pass's classes and enums, to turn a `Key` back into a `Ty`.
     classes: HashMap<DeclId, Rc<ClassInfo>>,
     enums: HashMap<DeclId, Rc<EnumInfo>>,
@@ -1889,6 +1929,7 @@ impl Checker {
             touched: Vec::new(),
             consts: std::collections::HashSet::new(),
             maybe_fields: HashMap::new(),
+            counted: HashMap::new(),
             classes: HashMap::new(),
             enums: HashMap::new(),
             types: Types::default(),
@@ -2081,6 +2122,19 @@ impl Checker {
                     message += ". Something else owns it, so it can go to a parameter that looks, \
                                 and not to one that says `take` or to anything else that keeps it"
                 }
+                // A list of a fixed length kept as one that may grow.
+                (Ty::Fixed(item, length), Ty::List(_)) => {
+                    message += &format!(
+                        ". This one always has {length} items, and a list[{item}] may be made longer. \
+                         Write `list[{item}, {length}]` there, or copy the items into a list of its own with `.slice(0)`"
+                    )
+                }
+                (Ty::List(_), Ty::Fixed(item, length)) => {
+                    message += &format!(
+                        ". A list[{item}, {length}] always has {length} items, and how many this one has is only \
+                         known when the program runs. Write the {length} items, or `[0] * {length}`"
+                    )
+                }
                 (Ty::Dict(..), Ty::Owned(_)) => {
                     message += ". Only a dict made right here can become an owned one: one written out, \
                                 as in `[\"a\": 1]` or `[:]`"
@@ -2136,16 +2190,36 @@ impl Checker {
     /// written number keeps the type it was given.
     fn adapted(&mut self, written: Option<Written>, place: usize, given: Ty, wanted: &Ty, span: Span) -> Ty {
         let Some(written) = written else {
+            // A list written out with names in it, as in `[start, command]`:
+            // only its length is known.
+            if let (Some(length), Some(count)) = (fixed_length(wanted), self.counted.get(&place).copied()) {
+                if count != length as i128 {
+                    return self.error(too_many_or_few(count, wanted, length), span);
+                }
+                return fixed_as(given, length);
+            }
             return given;
         };
-        let ty = match written_fits(&written, wanted) {
+        let mut ty = match written_fits(&written, wanted) {
             None => given,
             Some(Ok(())) => sized_as(&given, wanted),
             Some(Err(message)) => self.error(message, span),
         };
+        // `[0] * 64` where a `list[u8, 64]` is wanted: the length is
+        // known before the program runs, and must be the one asked for.
+        let count = written_length(&written).or_else(|| self.counted.get(&place).copied());
+        if let (Some(length), Some(count)) = (fixed_length(wanted), count) {
+            if count != length as i128 {
+                return self.error(too_many_or_few(count, wanted, length), span);
+            }
+            ty = fixed_as(ty, length);
+        }
         // `[1, 2]` where a `list[u8]` is wanted is made as a list of bytes.
-        if matches!(written, Written::List(_)) && place != 0 && is_bytes(&ty) {
+        if matches!(written, Written::List(_) | Written::Repeat { .. }) && place != 0 && is_bytes(&ty) {
             self.types.bytes.insert(place);
+            if let Written::Repeat { place, .. } = written {
+                self.types.bytes.insert(place);
+            }
         }
         ty
     }
@@ -2502,6 +2576,12 @@ impl Checker {
                     span,
                 )
             }
+            ast::Type::Length(length) => {
+                return self.error(
+                    format!("{length} is a number, and a type is wanted here. Only a list takes a length: `list[u8, {length}]`"),
+                    span,
+                )
+            }
             // What may be `none` can have one owner: `none` is what is
             // left when it is given a new value.
             ast::Type::Optional(inner) => {
@@ -2556,6 +2636,33 @@ impl Checker {
                             }
                             _ => list,
                         }
+                    }
+                    // `list[u8, 64]`: always 64 items (decision 36.4).
+                    ("list", [item, ast::Type::Length(length)]) => {
+                        if *length == 0 {
+                            return self.error("a list of a fixed length has at least one item: `list[u8, 1]` or more", span);
+                        }
+                        let item = self.resolve_inside(item, env, span, Inside::List);
+                        if item.is_owned() {
+                            return self.error(
+                                "a list of a fixed length holds values that are not owned for now: numbers, text, \
+                                 bools, enum values and shared objects",
+                                span,
+                            );
+                        }
+                        let list = Ty::Fixed(Box::new(item), *length);
+                        match inside {
+                            Inside::Optional if self.one_owner => Ty::Owned(Box::new(list)),
+                            Inside::Front | Inside::Optional => list,
+                            _ if self.one_owner => Ty::Owned(Box::new(list)),
+                            _ => list,
+                        }
+                    }
+                    ("list", [_, _]) => {
+                        return self.error(
+                            "a list takes the type of its items, and then may take how many there are, as in `list[u8, 64]`",
+                            span,
+                        )
                     }
                     ("list", _) => {
                         return self.error("`list` takes one type, as in `list[int]`", span)
@@ -3444,9 +3551,9 @@ impl Checker {
             self.expecting(value, wanted);
         }
         let wanted_item = match &wanted {
-            Some(Ty::List(item)) => Some((**item).clone()),
+            Some(Ty::List(item) | Ty::Fixed(item, _)) => Some((**item).clone()),
             Some(Ty::Owned(inner)) => match &**inner {
-                Ty::List(item) => Some((**item).clone()),
+                Ty::List(item) | Ty::Fixed(item, _) => Some((**item).clone()),
                 _ => None,
             },
             _ => None,
@@ -3488,6 +3595,11 @@ impl Checker {
                         if is_bytes(&wanted) {
                             self.types.bytes.insert(value as *const Expr as usize);
                         }
+                        if let Some(length) = fixed_length(&wanted) {
+                            if items.len() as u64 != length {
+                                self.error(too_many_or_few(items.len() as i128, &wanted, length), value.span);
+                            }
+                        }
                         for item in items {
                             // The list keeps the item.
                             let item_type = self.kept(item, wanted_item, env);
@@ -3503,6 +3615,13 @@ impl Checker {
                         }
                     }
                     _ => {
+                        // `[none] * 4` where a `list[int or none]` is wanted:
+                        // the list written out is made as that list.
+                        if let (ExprKind::Binary { op: BinaryOp::Mul, left, .. }, Some(wanted_item)) = (&value.kind, wanted_item) {
+                            if matches!(left.kind, ExprKind::List(_)) && asks_more(wanted_item) {
+                                self.types.items.insert(&**left as *const Expr as usize, kind(wanted_item));
+                            }
+                        }
                         let given = self.fresh_list(value, given, &wanted);
                         let given = self.adapted(written(value), value as *const Expr as usize, given, &wanted, value.span);
                         self.expect(&given, &wanted, &format!("`{name}`"), value.span)
@@ -3612,7 +3731,8 @@ impl Checker {
                 ty => self.error(format!("a field cannot be set on {ty}"), span),
             },
             ExprKind::Index { object: list, index } => {
-                let object = self.look(list, env);
+                let (object, length) = self.look_fixed(list, env);
+                self.index_inside(index, length);
                 let index_type = self.look(index, env);
                 if let Ty::Dict(key, value) = &object {
                     // `ages["Ada"] = 36` puts the key in, or gives it a
@@ -4614,6 +4734,45 @@ impl Checker {
         self.looked(ty, expr)
     }
 
+    /// `look`, and the length of the list if it is one of a fixed length.
+    fn look_fixed(&mut self, expr: &Expr, env: &Env) -> (Ty, Option<u64>) {
+        let ty = self.expr(expr, env);
+        let length = fixed_length(&ty.clone().looked_at());
+        (self.looked(ty, expr), length)
+    }
+
+    /// `append`, `pop`, `insert` and `clear` change how long a list is,
+    /// so a list of a fixed length has none of them (decision 36.4).
+    fn keeps_length(&mut self, name: &str, length: Option<u64>, span: Span) -> bool {
+        let Some(length) = length else {
+            return true;
+        };
+        if !matches!(name, "append" | "pop" | "insert" | "clear") {
+            return true;
+        }
+        self.error(
+            format!(
+                "`{name}` would change how many items this list has, and a list of a fixed length always has {length}. \
+                 Give an item a new value instead, as in `list[0] = 7`"
+            ),
+            span,
+        );
+        false
+    }
+
+    /// `buffer[64]` on a `list[u8, 64]`: a position written as a number
+    /// is checked before the program runs.
+    fn index_inside(&mut self, index: &Expr, length: Option<u64>) {
+        if let (Some(length), Some(Written::Number(at))) = (length, written(index)) {
+            if at >= length as i128 || at < 0 {
+                self.error(
+                    format!("{at} is outside a list of {length} items, whose positions are 0 to {}", length - 1),
+                    index.span,
+                );
+            }
+        }
+    }
+
     /// What somebody who only looks sees of the value of `expr`, whose
     /// type is `ty`.
     fn looked(&mut self, ty: Ty, expr: &Expr) -> Ty {
@@ -4623,7 +4782,8 @@ impl Checker {
             // frees it when the statement is over.
             self.types.lent.insert(expr as *const Expr as usize);
         }
-        ty.looked_at()
+        // Whatever only looks reads a list of a fixed length as a list.
+        unfixed(ty.looked_at())
     }
 
     /// The type of an expression whose value goes into a list. The list
@@ -5009,7 +5169,21 @@ impl Checker {
     /// The type of an expression.
     fn expr(&mut self, expr: &Expr, env: &Env) -> Ty {
         let ty = self.expr_inner(expr, env);
-        if matches!(expr.kind, ExprKind::List(_) | ExprKind::ListComp { .. } | ExprKind::Call { .. }) && is_bytes(&ty) {
+        match &expr.kind {
+            ExprKind::List(items) => {
+                self.counted.insert(expr as *const Expr as usize, items.len() as i128);
+            }
+            ExprKind::Binary { op: BinaryOp::Mul, left, right } => {
+                if let (Some(count), ExprKind::Int(times)) = (self.counted.get(&(&**left as *const Expr as usize)), &right.kind) {
+                    let count = count * *times as i128;
+                    self.counted.insert(expr as *const Expr as usize, count);
+                }
+            }
+            _ => {}
+        }
+        if matches!(expr.kind, ExprKind::List(_) | ExprKind::ListComp { .. } | ExprKind::Call { .. } | ExprKind::Binary { .. })
+            && is_bytes(&ty)
+        {
             self.types.bytes.insert(expr as *const Expr as usize);
         }
         if let (ExprKind::Field { name, .. }, Ty::Optional(_)) = (&expr.kind, &ty) {
@@ -5216,8 +5390,8 @@ impl Checker {
                         span,
                     );
                 }
-                if *op == BinaryOp::Add && matches!(ty, Ty::List(_)) {
-                    // `a + b` on two lists makes a third.
+                if matches!(op, BinaryOp::Add | BinaryOp::Mul) && matches!(ty, Ty::List(_)) {
+                    // `a + b` on two lists makes a third, and `a * 3` a second.
                     self.types.made.insert(expr as *const Expr as usize);
                 }
                 ty
@@ -5313,7 +5487,10 @@ impl Checker {
                     // `object.method(...)`: the call looks at the object.
                     ExprKind::Field { object: receiver, name, .. } => {
                         let looked = self.owned.looking.len();
-                        let object = self.look(receiver, env);
+                        let (object, length) = self.look_fixed(receiver, env);
+                        if !self.keeps_length(name, length, callee.span) {
+                            return Ty::Invalid;
+                        }
                         if matches!(name.as_str(), "pop" | "clear") && owns_items(&object) {
                             // The item leaves the list, and whoever
                             // receives it is its owner from here. `clear`
@@ -5446,7 +5623,11 @@ impl Checker {
             ExprKind::Field { object, name, at } => {
                 let object_type = self.expr(object, env);
                 let tied = object_type.is_tied();
+                let length = fixed_length(&object_type.clone().looked_at());
                 let object = self.looked(object_type, object);
+                if !self.keeps_length(name, length, span) {
+                    return Ty::Invalid;
+                }
                 let found = self.field(&object, name, span);
                 self.field_used(name, &found, *at);
                 match found {
@@ -5462,7 +5643,8 @@ impl Checker {
                 }
             }
             ExprKind::Index { object, index } => {
-                let object = self.look(object, env);
+                let (object, length) = self.look_fixed(object, env);
+                self.index_inside(index, length);
                 let index_type = self.look(index, env);
                 if let Ty::Dict(key, value) = &object {
                     // `ages["Ada"]`: the value kept under that key.
@@ -5813,10 +5995,11 @@ impl Checker {
         }
     }
 
-    fn call(&mut self, callee: &Ty, arguments: Vec<Argument>, span: Span) -> Ty {
+    fn call(&mut self, callee: &Ty, mut arguments: Vec<Argument>, span: Span) -> Ty {
         match callee {
             Ty::Function(function) => {
                 let signature = self.signature(function);
+                self.fixed_arguments(&function.decl, &function.env, &signature.params, &mut arguments);
                 self.arguments(&signature.name, &signature.params, &arguments, span);
                 for kind in &signature.raises {
                     self.can_raise(kind, span);
@@ -5827,6 +6010,7 @@ impl Checker {
                 let signature = self.signature(function);
                 // `self` is already supplied by the object.
                 let params = signature.params.get(1..).unwrap_or_default();
+                self.fixed_arguments(&function.decl, &function.env, params, &mut arguments);
                 self.arguments(&signature.name, params, &arguments, span);
                 for kind in &signature.raises {
                     self.can_raise(kind, span);
@@ -5925,6 +6109,53 @@ impl Checker {
                 span,
             ),
             ty => self.error(format!("{ty} cannot be called"), span),
+        }
+    }
+
+    /// A list of a fixed length given where a plain list is wanted goes
+    /// there if the function never changes how many items that list has
+    /// (decision 36.4). Then the argument is read as the plain list it
+    /// is to the function; otherwise the message says what in the
+    /// function could change it.
+    fn fixed_arguments(&mut self, decl: &Arc<ast::Function>, env: &Env, slots: &[Slot], arguments: &mut [Argument]) {
+        let mut next = 0;
+        for argument in arguments.iter_mut() {
+            let index = match &argument.name {
+                None => {
+                    next += 1;
+                    next - 1
+                }
+                Some(name) => match slots.iter().position(|slot| slot.name == *name) {
+                    Some(index) => index,
+                    None => continue,
+                },
+            };
+            let Some(slot) = slots.get(index) else {
+                continue;
+            };
+            let Some(length) = fixed_length(&argument.ty.clone().looked_at()) else {
+                continue;
+            };
+            let plain = unfixed(argument.ty.clone());
+            if !matches!(slot.ty.clone().looked_at(), Ty::List(_)) || !fits(&plain, &slot.ty) {
+                continue;
+            }
+            let mut seen = HashSet::new();
+            match length_changed(decl, env, &slot.name, &mut seen) {
+                None => argument.ty = plain,
+                Some(why) => {
+                    self.error(
+                        format!(
+                            "this list always has {length} items, and `{}` may change how many its `{}` has: {why}. \
+                             A function that only reads a list, or gives its items new values, can be given one of a \
+                             fixed length",
+                            decl.name, slot.name
+                        ),
+                        argument.span,
+                    );
+                    argument.ty = Ty::Invalid;
+                }
+            }
         }
     }
 
@@ -6870,14 +7101,16 @@ impl Checker {
         // list is told what it is a list of.
         if matches!(value.kind, ExprKind::List(_)) && says_something {
             let wanted_item = match wanted.clone().looked_at() {
-                Ty::List(item) => Some(*item),
+                Ty::List(item) | Ty::Fixed(item, _) => Some(*item),
                 Ty::Optional(inner) => match inner.looked_at() {
-                    Ty::List(item) => Some(*item),
+                    Ty::List(item) | Ty::Fixed(item, _) => Some(*item),
                     _ => None,
                 },
                 _ => None,
             };
-            if let Some(item) = wanted_item.filter(asks_more) {
+            // `[0x7E, command, 0]` where a `list[u8]` is wanted: a number
+            // written out is a u8 if it fits, and `command` must be one.
+            if let Some(item) = wanted_item.filter(|item| asks_more(item) || matches!(item, Ty::Sized(_))) {
                 self.expected_items = Some((value as *const Expr as usize, item));
             }
         }
@@ -6947,11 +7180,30 @@ impl Checker {
     fn call_generic(
         &mut self,
         generic: &Rc<Generic>,
-        arguments: Vec<Argument>,
+        mut arguments: Vec<Argument>,
         call: &Expr,
         wanted: Option<Ty>,
         span: Span,
     ) -> Ty {
+        // `first(buffer)`, where `first` takes a `list[T]`: as for any
+        // function, a list of a fixed length goes there if the function
+        // never changes how long it is (decision 36.4).
+        if let Template::Function(decl) = &generic.template {
+            let slots: Vec<Slot> = decl
+                .params
+                .iter()
+                .map(|param| Slot {
+                    name: param.name.clone(),
+                    ty: match &param.ty {
+                        Some(ast::Type::Named { name, args }) if name == "list" && args.len() == 1 => Ty::list(Ty::Dynamic),
+                        _ => Ty::Invalid,
+                    },
+                    has_default: false,
+                    id: None,
+                })
+                .collect();
+            self.fixed_arguments(decl, &generic.env, &slots, &mut arguments);
+        }
         // The compilers find the copy by the call. `expr` has seen to it
         // that a generic is only ever called by its own name.
         let Some(types) = self.infer(generic, &arguments, wanted, span) else {
@@ -7467,6 +7719,22 @@ impl Checker {
             Mul if ints => Some(Ty::Int),
             Mul if numbers => Some(Ty::Float),
             Mul => match (left, right) {
+                // `[0] * 64`: the items again and again (decision 36.3).
+                // Items that are shared, such as lists, would be the same
+                // one many times over, which nobody means.
+                (Ty::List(item), Ty::Int) if is_shared(item) => {
+                    return self.error(
+                        format!(
+                            "`*` would put the same {item} in the list again and again, and a change to one \
+                             would be a change to all. Make each one: `[[0] * 4 for i in range(3)]`"
+                        ),
+                        span,
+                    );
+                }
+                (Ty::List(_), Ty::Int) => Some(left.clone()),
+                (Ty::Int, Ty::List(_)) => {
+                    return self.error("`*` repeats a list when the list comes first: write `[0] * 64`", span);
+                }
                 (Ty::Quantity(_), other) if other.is_number() => Some(left.clone()),
                 (other, Ty::Quantity(_)) if other.is_number() => Some(right.clone()),
                 _ => None,
@@ -7641,7 +7909,110 @@ fn borrowable(ty: &Ty) -> bool {
 /// Is this a list whose items have one owner each? Such a list is their
 /// owner, and frees them when it is freed.
 fn owns_items(ty: &Ty) -> bool {
-    matches!(ty, Ty::List(item) if item.is_owned())
+    matches!(ty, Ty::List(item) | Ty::Fixed(item, _) if item.is_owned())
+}
+
+/// A list of a fixed length, as anything that only reads it sees it: a
+/// list. `owned` and `or none` around it stay.
+fn unfixed(ty: Ty) -> Ty {
+    match ty {
+        Ty::Fixed(item, _) => Ty::List(item),
+        Ty::Owned(inner) => Ty::Owned(Box::new(unfixed(*inner))),
+        Ty::Borrowed(inner) => Ty::Borrowed(Box::new(unfixed(*inner))),
+        Ty::Optional(inner) => Ty::Optional(Box::new(unfixed(*inner))),
+        other => other,
+    }
+}
+
+/// How many items a list written out has, when that is known before the
+/// program runs: `[1, 2, 3]` has three, and `[0] * 64` has 64.
+fn written_length(written: &Written) -> Option<i128> {
+    match written {
+        Written::List(items) => Some(items.len() as i128),
+        Written::Repeat { list, times: Some(times), .. } => match &**list {
+            Written::List(items) => Some(items.len() as i128 * times.max(&0)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A list whose length is known, as the list of a fixed length it fits.
+fn fixed_as(ty: Ty, length: u64) -> Ty {
+    match ty {
+        Ty::List(item) => Ty::Fixed(item, length),
+        Ty::Owned(inner) => Ty::Owned(Box::new(fixed_as(*inner, length))),
+        other => other,
+    }
+}
+
+/// The message for a list written out with the wrong number of items.
+fn too_many_or_few(count: i128, wanted: &Ty, length: u64) -> String {
+    let wanted = unowned_text(wanted);
+    let items = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
+    format!("this list has {items}, and a {wanted} always has {length}")
+}
+
+/// A type as it is written, without the `owned` in front.
+fn unowned_text(ty: &Ty) -> String {
+    match ty {
+        Ty::Owned(inner) | Ty::Borrowed(inner) => unowned_text(inner),
+        Ty::Optional(inner) => format!("{} or none", unowned_text(inner)),
+        other => other.to_string(),
+    }
+}
+
+/// What in `decl` could change how many items its parameter `param` has,
+/// reading the functions it hands the list on to as well. `seen` holds
+/// the ones being read already: a function that calls itself is taken
+/// to keep the length there, and anything that changes it is found
+/// where it is written.
+fn length_changed(decl: &Arc<ast::Function>, env: &Env, param: &str, seen: &mut HashSet<(usize, String)>) -> Option<String> {
+    if !seen.insert((Arc::as_ptr(decl) as usize, param.to_string())) {
+        return None;
+    }
+    lengths::changes_length(&decl.body, param, &mut |callee, args, index| {
+        let found = match &callee.kind {
+            ExprKind::Name(name) => env.get(name).map(|variable| variable.ty),
+            // `files.write_bytes(path, data)`: a module's functions are
+            // built in, and only look.
+            ExprKind::Field { object, .. } => match &object.kind {
+                ExprKind::Name(name) => match env.get(name).map(|variable| variable.ty) {
+                    Some(Ty::Module(_)) => return lengths::Callee::Looks,
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        let (called, called_env) = match found {
+            Some(Ty::Builtin(_)) => return lengths::Callee::Looks,
+            Some(Ty::Function(info)) if info.self_type.is_none() => (info.decl.clone(), info.env.clone()),
+            Some(Ty::Generic(generic)) => match &generic.template {
+                Template::Function(function) => (function.clone(), generic.env.clone()),
+                Template::Class(_) => return lengths::Callee::Unknown,
+            },
+            _ => return lengths::Callee::Unknown,
+        };
+        // Which parameter the list arrives at.
+        let at = match &args[index].name {
+            Some(name) => called.params.iter().position(|param| param.name == *name),
+            None => Some(args[..index].iter().filter(|arg| arg.name.is_none()).count()),
+        };
+        let Some(param) = at.and_then(|at| called.params.get(at)) else {
+            return lengths::Callee::Unknown;
+        };
+        lengths::Callee::Function(length_changed(&called, &called_env, &param.name, seen))
+    })
+}
+
+/// The length of a list of a fixed length, through `owned` or a look.
+fn fixed_length(ty: &Ty) -> Option<u64> {
+    match ty {
+        Ty::Fixed(_, length) => Some(*length),
+        Ty::Owned(inner) | Ty::Borrowed(inner) => fixed_length(inner),
+        _ => None,
+    }
 }
 
 /// What a call calls: the `f` of `f(x)`.

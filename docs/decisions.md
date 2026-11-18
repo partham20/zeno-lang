@@ -13013,7 +13013,124 @@ a `list[int]`, has its own function, `zeno_bytes_eq_ints`.
 The interpreter, the VM and the fifteen target languages are as they
 were: there a list of numbers is already the language's own.
 
-### 36.3 Left for later
+### 36.3 `[0] * 64` repeats a list
+
+A buffer starts as so many zeros, and writing sixty-four of them out is
+no way to say it. `list * n` makes a new list with the items of `list`,
+`n` times over, as in Python: `[0] * 64`, `[0x7E, 0x00] * 3`. Where a
+`list[u8]` is wanted the numbers written in it must fit in a byte, as
+in any list written out, and the new list is stored packed (36.2).
+
+**One way round.** `3 * [0]`, which Python also takes, is refused with
+a message that shows `[0] * 3`. Two spellings of one thing is one too
+many (principle 1).
+
+**Not for lists of lists, dicts or objects.** `[[0] * 3] * 3` is the
+best-known trap in Python: the three rows are one row, and setting
+`grid[0][0]` sets all three. A list holds such values by sharing them,
+so `*` would always make that trap, and it is refused with a message
+that shows the comprehension, `[[0] * 3 for i in range(3)]`, which
+makes each row. Numbers, text, bools, enum values and `none` are never
+changed in place, so repeating them is safe.
+
+**A count below zero is a `ValueError`**, where Python quietly gives an
+empty list. A negative count is a mistake in the program, and an empty
+list would carry it further before anything showed it. A count of zero
+gives an empty list.
+
+**How it is built.** The checker types `list * int` as the list, and
+refuses the cases above. `zeno run` and the VM build the list in
+`ops.rs`. C and LLVM call `zeno_list_repeat`, or `zeno_bytes_repeat` for
+a list of bytes, which is one `memcpy` for each repeat; with no
+collector a list of text takes its own copies, as `+` does. The target
+languages each have their own way in the `mul` of their runtime
+(Python's own `*`, Ruby's `Array#*`, a loop elsewhere).
+
+### 36.4 `list[u8, 64]`: a list of a fixed length
+
+```zeno
+var buffer: list[u8, 64] = [0] * 64
+buffer[0] = 0x7E
+buffer.append(1)      # error: `append` would change how many items this list has
+print(buffer[64])     # error: 64 is outside a list of 64 items
+```
+
+A buffer in firmware nearly always has a size that is fixed when the
+program is written: a frame of 8 bytes, a block of 512, a ring of 64.
+C writes `uint8_t buffer[64]`, Rust `[u8; 64]`, Go `[64]byte`. In Zeno
+it is `list[u8, 64]`: a list that always has 64 items.
+
+**The length is part of the type, and is a number written in it.**
+`list[u8, 64]` reads as "a list of u8, 64 of them", and a number in the
+`[ ]` can never be mistaken for a type. **Turned down: a word of its
+own, such as `array[u8, 64]`.** It would be a second kind of list, with
+its own name to learn, for what is a list that cannot grow. Everything
+a list does that leaves its length as it is works the same way.
+**Turned down: `[64]u8` or `u8[64]`**, the order of Go and C: Zeno
+writes a type's name first and what it holds after (`list[u8]`,
+`dict[str, int]`), and a length is one more thing it holds.
+
+**What gives one a value.** A list written out with exactly that many
+items (`[0x7E, command, 0, 0x7F]`), `[0] * 64`, or another list of the
+same type and length. The count is checked before the program runs:
+`this list has 2 items, and a list[u8, 8] always has 8`. A list whose
+length is only known when the program runs (`[0] * n`, a `list[u8]`
+from somewhere else) is refused, with a message that says so.
+
+**What it does.** Everything a list does that leaves the length as it
+is: an index, `xs[i] = v`, `len`, `for`, `in`, `==`, `find`, `sort`,
+`reverse`, `slice`, `map`, `filter`, `sum`, `min`, `max`, `+` (which
+makes a new, ordinary list), printing. `append`, `pop`, `insert` and
+`clear` are refused, with a message that says to give an item a new
+value instead. A position written as a number is checked before the
+program runs: `buffer[64]` on a `list[u8, 64]` is an error then, not an
+`IndexError` later.
+
+**Where it can go.** A list of a fixed length goes where one of the
+same type and length is wanted: a variable, a parameter, a field, what
+a function gives back, an item of a `list[list[u8, 4]]`. It does not
+go where an ordinary `list[u8]` is kept, such as a `let` that says
+`list[u8]` or a field of that type: whatever held it there could
+append to it, and the first holder would find a list longer than its
+type says. The message says to write `list[u8, 64]` there, or copy the
+items with `.slice(0)`.
+
+**A function that never changes the length can be given one.** This is
+the case that matters most: `checksum(data: list[u8])` should take a
+buffer as well as any other list. The checker reads the function: if
+it only reads its `data`, gives items new values, walks it, or passes
+it on to a function that does the same, a list of a fixed length goes
+there. If anything in it could change the length (`data.append`, or
+keeping `data` in a variable, a list or a field, or returning it, or
+handing it to a function the checker cannot read), the message names
+that line: ``this list always has 8 items, and `pad` may change how
+many its `data` has: it calls `data.append` (line 11)``. The same holds
+for a generic function such as `first[T](xs: list[T])`. **Turned down:
+refusing every function that takes a `list[u8]`**, which would make
+each library function be written twice, and **turned down: a check
+when the program runs**, which would turn a mistake the checker can
+see into an error that waits for the program to reach it, and would
+need a mark on every list in all fifteen target languages.
+
+**How it is built.** The checker has one more type, `Ty::Fixed`, the
+item and the length. Whatever only looks at a value (the arguments of
+`print`, `len` and the other built-ins, an index, a loop, the object of
+a method) sees it as the list it is, so none of that had to change.
+The places that keep a value see the length, and `src/lengths.rs`
+reads a function's body to answer whether it changes the length of a
+parameter. Every engine and every build stores a list of a fixed length
+as a list: the length was made sure of before the program ran, so
+nothing is left to check while it runs. A `list[u8, 64]` is packed one
+byte to an item, as any `list[u8]` is (36.2).
+
+### 36.5 Left for later
+
+**A list of a fixed length that takes no block from the pool.** Today
+`list[u8, 64]` in a build with no collector is a block from the pool,
+as any list is. Since its length is known, its items could sit inside
+the object that has it as a field, or on the stack of the function that
+makes it, with nothing to give back. That is the next step for this
+type.
 
 **Text from bytes, and bytes from text** (the UTF-8 of a `str`, and a
 `str` from bytes that are UTF-8), which a protocol that carries a name

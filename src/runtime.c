@@ -2550,6 +2550,29 @@ static zeno_list *zeno_list_concat(zeno_list *a, zeno_list *b) {
     return joined;
 }
 
+/* `[0] * 64`: the items of `list`, `times` times over (decision 36.3). */
+static void zeno_repeat_check(int64_t times, int line, int col) {
+#ifndef ZENO_UNCHECKED
+    if (times < 0) {
+        zeno_fail("ValueError", zeno_join(2, "`*` repeats a list 0 or more times, and this is ", zeno_str_int(times)),
+                  line, col);
+    }
+#else
+    (void)times;
+    (void)line;
+    (void)col;
+#endif
+}
+
+static zeno_list *zeno_list_repeat(zeno_list *list, int64_t times, int line, int col) {
+    zeno_repeat_check(times, line, col);
+    zeno_list *repeated = zeno_list_new(times > 0 ? list->len * times : 0);
+    for (int64_t t = 0; t < times; t++) {
+        for (int64_t i = 0; i < list->len; i++) zeno_list_append(repeated, list->items[i]);
+    }
+    return repeated;
+}
+
 /* Every use of `list[i]` goes through here, so a position that is not in
  * the list is an IndexError and never a read of someone else's memory. */
 static zeno_slot *zeno_list_at(zeno_list *list, int64_t i, int line, int col) {
@@ -3003,6 +3026,32 @@ static zeno_list *zeno_bytes_concat(zeno_list *a, zeno_list *b) {
     if (b->len > 0) memcpy(ZENO_BYTES(joined) + a->len, b->items, (size_t)b->len);
     joined->len = a->len + b->len;
     return joined;
+}
+
+/* `bytes + [300]`: a list[u8] and a list[int] make a list[int], one slot
+ * to an item (36.2). */
+static zeno_list *zeno_list_concat_mixed(zeno_list *a, bool a_bytes, zeno_list *b, bool b_bytes) {
+    zeno_list *joined = zeno_list_new(a->len + b->len);
+    for (int64_t i = 0; i < a->len; i++) {
+        zeno_slot slot = a_bytes ? (zeno_slot){.i = ZENO_BYTES(a)[i]} : a->items[i];
+        zeno_list_append(joined, slot);
+    }
+    for (int64_t i = 0; i < b->len; i++) {
+        zeno_slot slot = b_bytes ? (zeno_slot){.i = ZENO_BYTES(b)[i]} : b->items[i];
+        zeno_list_append(joined, slot);
+    }
+    return joined;
+}
+
+static zeno_list *zeno_bytes_repeat(zeno_list *list, int64_t times, int line, int col) {
+    zeno_repeat_check(times, line, col);
+    int64_t len = times > 0 ? list->len * times : 0;
+    zeno_list *repeated = zeno_bytes_new(len);
+    for (int64_t t = 0; t < times && list->len > 0; t++) {
+        memcpy(ZENO_BYTES(repeated) + t * list->len, list->items, (size_t)list->len);
+    }
+    repeated->len = len;
+    return repeated;
 }
 
 static uint8_t *zeno_bytes_at(zeno_list *list, int64_t i, int line, int col) {

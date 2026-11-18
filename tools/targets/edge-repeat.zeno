@@ -1,0 +1,24 @@
+# `[0] * 64`: a list's items, so many times over (decision 36.3).
+let zeros = [0] * 8
+print(zeros, len(zeros))
+let frame: list[u8] = [0x7E, 0x00] * 3
+print(frame, len(frame))
+let n = 2
+print(["a", "b"] * n, [1.5] * 0, [true] * 1)
+let empty: list[int] = []
+print(empty * 5)
+let bytes: list[u8] = [7] * n
+bytes[0] = 9
+print(bytes)
+let maybe: list[int or none] = [none] * 2
+print(maybe)
+var buffer: list[u8] = [0] * 16
+buffer[15] = 255
+print(buffer, sum(buffer))
+let again = zeros * 2
+print(len(again), again == [0] * 16)
+try {
+    print([1] * (n - 5))
+} except ValueError as error {
+    print(error.message)
+}

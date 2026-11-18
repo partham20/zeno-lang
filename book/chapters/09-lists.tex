@@ -212,6 +212,18 @@ let xs = [1, 2]
 print(xs + ["a"])
 \end{zeno}
 
+\verb|*| with a number repeats a list: the list comes first, and the
+result is a new list. It is how a buffer of zeros is made:
+
+\begin{zeno}
+print([0] * 4, [1, 2] * 2)
+\end{zeno}
+
+A list of lists cannot be repeated, because every row would be one and
+the same row, and a change to one would show in all of them. A
+comprehension makes each row: \verb|[[0] * 3 for i in range(3)]|. A
+count below zero is a \verb|ValueError|. (Decision 36.3.)
+
 \section{Comprehensions}
 
 A \emph{comprehension} builds a new list from another in one line: an
@@ -299,14 +311,64 @@ Two lists are equal when they have equal items in the same order:
 print([1, 2] == [1, 2], [1, 2] == [2, 1])
 \end{zeno}
 
+\section{A list of a fixed length}
+
+\verb|list[u8, 64]| is a list that always has 64 items: a buffer, a
+frame, a block, whose size is known when the program is written. It
+gets a list of exactly that many items, and the count is checked
+before the program runs:
+
+\begin{zeno}
+var buffer: list[u8, 8] = [0] * 8
+buffer[0] = 0x7E
+print(buffer, len(buffer))
+\end{zeno}
+
+Everything that leaves the length as it is works as on any list.
+\verb|append|, \verb|pop|, \verb|insert| and \verb|clear| are
+refused, and so is a position written as a number that is past the end:
+
+\begin{zeno}[fails=yes]
+var buffer: list[u8, 8] = [0] * 8
+buffer.append(1)
+\end{zeno}
+
+A function whose parameter is an ordinary \verb|list[u8]| can be given
+one, if nothing in the function could change how many items the list
+has. The checker reads the function to know, and when something could,
+the message names the line:
+
+\begin{zeno}
+function total(data: list[u8]) -> int {
+    var sum = 0
+    for b in data {
+        sum += b
+    }
+    return sum
+}
+
+let frame: list[u8, 4] = [0x7E, 1, 2, 0x7F]
+print(total(frame))
+\end{zeno}
+
+\begin{why}
+The length is part of the type, as in C's \verb|uint8_t buf[64]| and
+Rust's \verb|[u8; 64]|, because a mistake about it is then found
+before the program runs, not as an \verb|IndexError| on a board. It is
+written as one more thing in the \verb|[ ]| of \verb|list| rather
+than as a new kind of list, because it is a list: one that cannot
+grow. (Decision 36.4.)
+\end{why}
+
 \begin{summary}
 A list holds values of one type, in order, from position 0. It grows
 with \verb|append|, \verb|insert| and \verb|+=|, shrinks with
 \verb|pop| and \verb|clear|, and is ordered with \verb|sort| and
 \verb|reverse|, all in place. \verb|find|, \verb|slice|, \verb|join|,
 \verb|map|, \verb|filter| and \verb|reduce| give new values.
-Comprehensions build lists in one line. A list is shared, never copied
-without being asked.
+Comprehensions build lists in one line, and \verb|[0] * 64| repeats
+one. A list is shared, never copied without being asked. A
+\verb|list[u8, 64]| always has 64 items.
 \end{summary}
 
 \begin{tryit}
@@ -320,5 +382,8 @@ without being asked.
   right, and why?
 \item Write a list of lists that is a 3 by 3 grid of zeros, set the
   middle to 1, and print it row by row.
+\item Make a ring buffer: a \verb|list[int, 4]|, a position that goes
+  round with \verb|% 4|, and a loop that writes ten numbers into it.
+  Which four are left at the end?
 \end{enumerate}
 \end{tryit}

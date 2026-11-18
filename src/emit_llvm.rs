@@ -258,6 +258,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_bytes_at", "declare ptr @zeno_bytes_at(ptr, i64, i32 signext, i32 signext)"),
     ("zeno_bytes_copy", "declare ptr @zeno_bytes_copy(ptr)"),
     ("zeno_bytes_concat", "declare ptr @zeno_bytes_concat(ptr, ptr)"),
+    ("zeno_bytes_repeat", "declare ptr @zeno_bytes_repeat(ptr, i64, i32 signext, i32 signext)"),
     ("zeno_bytes_pop", "declare i64 @zeno_bytes_pop(ptr, i32 signext, i32 signext)"),
     ("zeno_bytes_pop_at", "declare i64 @zeno_bytes_pop_at(ptr, i64, i32 signext, i32 signext)"),
     ("zeno_bytes_insert", "declare void @zeno_bytes_insert(ptr, i64, i64, i32 signext, i32 signext)"),
@@ -291,6 +292,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_list_keep_text", "declare ptr @zeno_list_keep_text(ptr)"),
     ("zeno_error_of", "declare ptr @zeno_error_of(ptr, ptr, ptr, ptr)"),
     ("zeno_list_concat", "declare ptr @zeno_list_concat(ptr, ptr)"),
+    ("zeno_list_repeat", "declare ptr @zeno_list_repeat(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_list_concat_mixed", "declare ptr @zeno_list_concat_mixed(ptr, i1 zeroext, ptr, i1 zeroext)"),
     ("zeno_list_at", "declare ptr @zeno_list_at(ptr, i64, i32 signext, i32 signext)"),
     ("zeno_list_pop", "declare i64 @zeno_list_pop(ptr, i32 signext, i32 signext)"),
     ("zeno_list_str", "declare ptr @zeno_list_str(ptr, ptr)"),
@@ -2104,6 +2107,7 @@ impl Emitter<'_> {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how it is held.
             Type::Owned(inner) | Type::Take(inner) => return self.kind_of_type(inner),
+            Type::Length(_) => return None,
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
             Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
@@ -2119,7 +2123,11 @@ impl Emitter<'_> {
             ("float", []) => Kind::Float,
             ("str", []) => Kind::Str,
             ("bool", []) => Kind::Bool,
-            ("list", [item]) => Kind::List(Box::new(self.kind_of_type(item)?)),
+            ("list", [item]) | ("list", [item, Type::Length(_)]) => match self.kind_of_type(item)? {
+                // A list of bytes keeps one byte to an item (36.2).
+                Kind::Int if matches!(item, Type::Named { name, .. } if name == "u8") => Kind::List(Box::new(Kind::Byte)),
+                item => Kind::List(Box::new(item)),
+            },
             ("dict", [key, value]) => {
                 Kind::Dict(Box::new(self.kind_of_type(key)?), Box::new(self.kind_of_type(value)?))
             }
@@ -4415,6 +4423,24 @@ impl Emitter<'_> {
             }
 
             (Add, Str, Str) => Val::new(self.join(&[l, r]), Str),
+            // `bytes + [300]`: a list of bytes and a list of ints make a
+            // list of ints (36.2).
+            (Add, Kind::List(a), Kind::List(b))
+                if matches!((&**a, &**b), (Kind::Byte, Kind::Int) | (Kind::Int, Kind::Byte)) =>
+            {
+                let (a_bytes, b_bytes) = (**a == Kind::Byte, **b == Kind::Byte);
+                let joined = self.call("ptr", "zeno_list_concat_mixed", format!("ptr {l}, i1 {a_bytes}, ptr {r}, i1 {b_bytes}"));
+                Val::new(joined, Kind::List(Box::new(Int))).made()
+            }
+            // `[0] * 64`: a new list with the items so many times over.
+            (Mul, Kind::List(a), Int) => {
+                let repeat = if **a == Kind::Byte { "zeno_bytes_repeat" } else { "zeno_list_repeat" };
+                let mut repeated = self.call("ptr", repeat, format!("ptr {l}, i64 {r}, {}", at(span)));
+                if !self.collector && is_text(a) {
+                    repeated = self.call("ptr", "zeno_list_keep_text", format!("ptr {repeated}"));
+                }
+                Val::new(repeated, left.kind.clone()).made()
+            }
             // A new list with the items of both.
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
                 let mut joined = self.call("ptr", list_fn(a, "concat"), format!("ptr {l}, ptr {r}"));

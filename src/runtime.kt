@@ -575,6 +575,12 @@ object Z {
     }
 
     fun mul(a: Any?, b: Any?, line: Int): Any? {
+        if (a is ArrayList<*> && b is Long) {
+            if (b < 0L) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + b, line)
+            val items = ArrayList<Any?>()
+            for (t in 0 until b) items.addAll(a)
+            return items
+        }
         if (a is Long && b is Long) return mulInt(a, b, line)
         if (a is ZQuantity || b is ZQuantity) {
             val q = (if (a is ZQuantity) a else b) as ZQuantity

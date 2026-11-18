@@ -514,6 +514,10 @@ module Z
     end
 
     def mul(a, b, line)
+      if a.is_a?(Array) && b.is_a?(Integer)
+        raise_("ValueError", "`*` repeats a list 0 or more times, and this is #{b}", line) if b < 0
+        return a * b
+      end
       return fits(a * b, line) if a.is_a?(Integer) && b.is_a?(Integer)
       if a.is_a?(ZQuantity) || b.is_a?(ZQuantity)
         q, other = a.is_a?(ZQuantity) ? [a, b] : [b, a]

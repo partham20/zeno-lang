@@ -418,6 +418,12 @@ final class Z {
     }
 
     static function mul($a, $b, int $line) {
+        if ($a instanceof ZList && is_int($b)) {
+            if ($b < 0) self::raise_("ValueError", "`*` repeats a list 0 or more times, and this is " . $b, $line);
+            $items = [];
+            for ($t = 0; $t < $b; $t++) foreach ($a->v as $item) $items[] = $item;
+            return new ZList($items);
+        }
         if (is_int($a) && is_int($b)) {
             $r = $a * $b;
             if (!is_int($r)) self::overflow($line);

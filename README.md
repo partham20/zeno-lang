@@ -708,6 +708,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     not yet released: in C and LLVM, every `list[u8]`, with nothing
     to write. An 8 MB file read and written back takes 13 MB where it
     took 64. Decision 36.2)
+39. A list of a fixed length (done, after 0.5.1 and not yet released:
+    `list[u8, 64]` always has 64 items. The count is checked before
+    the program runs, `append`, `pop`, `insert` and `clear` are
+    refused, and a function that never changes a list's length can be
+    given one. `[0] * 64` repeats a list, for any list. In every
+    engine, every build and all fifteen target languages.
+    See [`docs/fixed-lists.md`](docs/fixed-lists.md) and decisions
+    36.3 and 36.4 in [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

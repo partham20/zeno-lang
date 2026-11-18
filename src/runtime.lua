@@ -437,6 +437,12 @@ end
 
 function Z.mul(a, b, line)
   local ka, kb = mtype(a), mtype(b)
+  if is(a, List) and kb == "integer" then
+    if b < 0 then raise_("ValueError", "`*` repeats a list 0 or more times, and this is " .. tostring(b), line) end
+    local out = {}
+    for _ = 1, b do table.move(a, 1, #a, #out + 1, out) end
+    return setmt(out, List)
+  end
   if ka == "integer" and kb == "integer" then
     local r = product(a, b)
     if r == nil then overflow(line) end

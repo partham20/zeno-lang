@@ -3090,6 +3090,7 @@ impl Emitter<'_> {
             Type::Named { name, args } => (name, args),
             // Who owns a value does not change how C holds it.
             Type::Owned(inner) | Type::Take(inner) => return self.kind_of_type(inner),
+            Type::Length(_) => return None,
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
             Type::Function { params, returns } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
@@ -3105,7 +3106,11 @@ impl Emitter<'_> {
             ("float", []) => Kind::Float,
             ("str", []) => Kind::Str,
             ("bool", []) => Kind::Bool,
-            ("list", [item]) => Kind::List(Box::new(self.kind_of_type(item)?)),
+            ("list", [item]) | ("list", [item, Type::Length(_)]) => match self.kind_of_type(item)? {
+                // A list of bytes keeps one byte to an item (36.2).
+                Kind::Int if matches!(item, Type::Named { name, .. } if name == "u8") => Kind::List(Box::new(Kind::Byte)),
+                item => Kind::List(Box::new(item)),
+            },
             ("dict", [key, value]) => {
                 Kind::Dict(Box::new(self.kind_of_type(key)?), Box::new(self.kind_of_type(value)?))
             }
@@ -4759,6 +4764,29 @@ impl Emitter<'_> {
             (Shr, Int, Int) => Val::from(format!("zeno_shr({l}, {r}, {})", self.at(span)), Int, &parts).failing_if(!self.minimal),
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
+            // `bytes + [300]`: a list of bytes and a list of ints make a
+            // list of ints (36.2).
+            (Add, Kind::List(a), Kind::List(b))
+                if matches!((&**a, &**b), (Kind::Byte, Kind::Int) | (Kind::Int, Kind::Byte)) =>
+            {
+                let (a_bytes, b_bytes) = (**a == Kind::Byte, **b == Kind::Byte);
+                let code = format!("zeno_list_concat_mixed({l}, {a_bytes}, {r}, {b_bytes})");
+                let mut val = Val::from(code, Kind::List(Box::new(Int)), &parts);
+                val.made = true;
+                val
+            }
+            // `[0] * 64`: a new list with the items so many times over.
+            (Mul, Kind::List(a), Int) => {
+                let repeat = if **a == Kind::Byte { "zeno_bytes_repeat" } else { "zeno_list_repeat" };
+                let repeated = format!("{repeat}({l}, {r}, {})", self.at(span));
+                let code = match !self.collector && is_text(a) {
+                    true => format!("zeno_list_keep_text({repeated})"),
+                    false => repeated,
+                };
+                let mut val = Val::from(code, left.kind.clone(), &parts).failing_if(!self.minimal);
+                val.made = true;
+                val
+            }
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
                 let joined = format!("{}({l}, {r})", list_fn(a, "concat"));
                 // With no collector a list of text has its own copy of
@@ -13599,6 +13627,30 @@ print(m)
         // place, in every build.
         same_as_interpreter("packed-outside", "let a: list[u8] = [1, 2]\nprint(a[2])\n");
         same_as_interpreter("packed-pop", "var a: list[u8] = []\nprint(a.pop())\n");
+    }
+
+    #[test]
+    fn a_list_of_a_fixed_length_is_the_same_in_every_build() {
+        same_as_interpreter("fixed", include_str!("../tools/targets/edge-fixed.zeno"));
+        no_collector_as_interpreter(
+            "fixed-owned",
+            "var buffer: owned list[u8, 8] = [0] * 8\nbuffer[7] = 255\n\
+             function fill(data: owned list[u8], value: u8) {\n    for i in range(len(data)) {\n        data[i] = value\n    }\n}\n\
+             fill(buffer, 2)\nprint(buffer, len(buffer))\nlet header: owned list[u8, 3] = [1, 2, 3]\nprint(header == [1, 2, 3])\n",
+        );
+        // A list of bytes and a list of ints make a list of ints.
+        same_as_interpreter("bytes-and-ints", "let a: list[u8] = [1, 2]\nprint(a + [300], [300] + a)\n");
+    }
+
+    #[test]
+    fn a_list_repeated_with_a_star_is_the_same_in_every_build() {
+        same_as_interpreter("repeat", include_str!("../tools/targets/edge-repeat.zeno"));
+        no_collector_as_interpreter(
+            "repeat-owned",
+            "let zeros: owned list[int] = [0] * 8\nprint(zeros)\nlet frame: owned list[u8] = [0x7E, 0] * 3\nprint(frame)\n\
+             let words: owned list[str] = [\"ab\", \"c\"] * 2\nprint(words)\nlet again: owned list[int] = zeros * 2\nprint(len(again))\n",
+        );
+        same_as_interpreter("repeat-negative", "let n = -2\nprint([0] * n)\n");
     }
 
     #[test]

@@ -234,6 +234,7 @@ fn type_(ty: &Type) -> String {
         Type::Optional(inner) => format!("{} or none", type_(inner)),
         Type::Owned(inner) => format!("owned {}", type_(inner)),
         Type::Take(inner) => format!("take {}", type_(inner)),
+        Type::Length(n) => n.to_string(),
         Type::Function { params, returns } => {
             let mut text = format!("function({})", join(params, type_));
             if let Some(returns) = returns {

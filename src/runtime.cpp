@@ -694,6 +694,12 @@ V sub(const V& a, const V& b, int line) {
 }
 
 V mul(const V& a, const V& b, int line) {
+    if (a.is(K::LIST) && b.t == V::INT) {
+        if (b.i < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + std::to_string(b.i), line);
+        Args items;
+        for (int64_t t = 0; t < b.i; t++) items.insert(items.end(), as<List>(a).items.begin(), as<List>(a).items.end());
+        return O(std::make_shared<List>(std::move(items)));
+    }
     if (a.t == V::INT && b.t == V::INT) return I(mulInt(a.i, b.i, line));
     if (a.is(K::QUANTITY) || b.is(K::QUANTITY)) {
         const V& qv = a.is(K::QUANTITY) ? a : b;

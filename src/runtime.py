@@ -511,6 +511,10 @@ def sub(a, b, line):
 
 def mul(a, b, line):
     ta, tb = type(a), type(b)
+    if ta is list and tb is int:
+        if b < 0:
+            _raise("ValueError", "`*` repeats a list 0 or more times, and this is " + str(b), line)
+        return a * b
     if ta is int and tb is int:
         r = a * b
         if r > MAX or r < MIN:

@@ -674,6 +674,18 @@ func Zsub(a, b ZV, line int) ZV {
 }
 
 func Zmul(a, b ZV, line int) ZV {
+	if list, ok := a.(*ZList); ok {
+		if times, ok := b.(int64); ok {
+			if times < 0 {
+				zRaise("ValueError", "`*` repeats a list 0 or more times, and this is "+strconv.FormatInt(times, 10), line)
+			}
+			items := make([]ZV, 0, int64(len(list.items))*times)
+			for t := int64(0); t < times; t++ {
+				items = append(items, list.items...)
+			}
+			return &ZList{items}
+		}
+	}
 	if x, ok := a.(int64); ok {
 		if y, ok := b.(int64); ok {
 			return zMulInt(x, y, line)

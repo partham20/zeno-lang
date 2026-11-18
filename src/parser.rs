@@ -965,6 +965,16 @@ impl Parser {
             let mut args = Vec::new();
             if self.eat(TokenKind::LBracket) {
                 loop {
+                    // `list[u8, 64]`: a number is a length, never a type.
+                    if let TokenKind::Int(n) = self.peek() {
+                        let n = *n;
+                        self.advance();
+                        args.push(Type::Length(n));
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                        continue;
+                    }
                     args.push(self.type_()?);
                     if !self.eat(TokenKind::Comma) {
                         break;

@@ -704,6 +704,10 @@ class Z {
   }
 
   static Object? mul(Object? a, Object? b, int line) {
+    if (a is List<Object?> && b is int) {
+      if (b < 0) raiseError("ValueError", "`*` repeats a list 0 or more times, and this is $b", line);
+      return <Object?>[for (var t = 0; t < b; t++) ...a];
+    }
     if (a is int && b is int) return mulInt(a, b, line);
     if (a is ZQuantity || b is ZQuantity) {
       final q = (a is ZQuantity ? a : b) as ZQuantity;

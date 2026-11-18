@@ -579,6 +579,13 @@ static class Z
 
     public static object mul(object a, object b, int line)
     {
+        if (a is ZList list && b is long times)
+        {
+            if (times < 0) throw raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + times, line);
+            var items = new System.Collections.Generic.List<object>();
+            for (long t = 0; t < times; t++) items.AddRange(list.items);
+            return new ZList(items);
+        }
         if (a is long x && b is long y) return mulInt(x, y, line);
         if (a is Quantity || b is Quantity)
         {

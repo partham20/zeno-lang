@@ -1290,6 +1290,63 @@ mod tests {
     }
 
     #[test]
+    fn a_list_of_a_fixed_length_keeps_its_length() {
+        let buffer = "var buffer: list[u8, 8] = [0] * 8\n";
+        assert_eq!(output(&format!("{buffer}buffer[7] = 255\nprint(buffer, len(buffer))")), "[0, 0, 0, 0, 0, 0, 0, 255] 8\n");
+        let grows = "`append` would change how many items this list has, and a list of a fixed length always has 8. \
+                     Give an item a new value instead, as in `list[0] = 7`";
+        assert_eq!(check_error(&format!("{buffer}buffer.append(1)")), grows);
+        assert_eq!(
+            check_error(&format!("{buffer}print(buffer[8])")),
+            "8 is outside a list of 8 items, whose positions are 0 to 7"
+        );
+        assert_eq!(check_error("let b: list[u8, 8] = [1, 2]"), "this list has 2 items, and a list[u8, 8] always has 8");
+        assert_eq!(check_error("let b: list[u8, 8] = [0] * 7"), "this list has 7 items, and a list[u8, 8] always has 8");
+        assert_eq!(
+            check_error("let n = 8\nlet b: list[u8, 8] = [0] * n"),
+            "`b` should be list[u8, 8], but this is list[u8]. A list[u8, 8] always has 8 items, and how many this one \
+             has is only known when the program runs. Write the 8 items, or `[0] * 8`"
+        );
+        assert_eq!(
+            check_error(&format!("{buffer}let grow: list[u8] = buffer")),
+            "`grow` should be list[u8], but this is list[u8, 8]. This one always has 8 items, and a list[u8] may be \
+             made longer. Write `list[u8, 8]` there, or copy the items into a list of its own with `.slice(0)`"
+        );
+        assert_eq!(check_error("let b: list[u8, 0] = []"), "a list of a fixed length has at least one item: `list[u8, 1]` or more");
+        // A function that never changes the length can be given one.
+        let functions = "function total(data: list[u8]) -> int {\n    var sum = 0\n    for b in data {\n        sum = sum + b\n    }\n    return sum\n}\n\
+                         function twice(data: list[u8]) -> int {\n    return total(data) * 2\n}\n\
+                         function pad(data: list[u8]) {\n    data.append(0)\n}\n\
+                         function keep(data: list[u8]) -> list[u8] {\n    return data\n}\n";
+        assert_eq!(output(&format!("{functions}{buffer}buffer[0] = 3\nprint(total(buffer), twice(buffer))")), "3 6\n");
+        assert_eq!(
+            check_error(&format!("{functions}{buffer}pad(buffer)")),
+            "this list always has 8 items, and `pad` may change how many its `data` has: it calls `data.append` (line 12). \
+             A function that only reads a list, or gives its items new values, can be given one of a fixed length"
+        );
+        assert_eq!(
+            check_error(&format!("{functions}{buffer}keep(buffer)")),
+            "this list always has 8 items, and `keep` may change how many its `data` has: it returns `data` (line 15). \
+             A function that only reads a list, or gives its items new values, can be given one of a fixed length"
+        );
+    }
+
+    #[test]
+    fn a_list_is_repeated_with_a_star() {
+        assert_eq!(
+            output("print([0] * 4, [1, 2] * 2, [\"a\"] * 0)\nlet b: list[u8] = [255] * 3\nprint(b)\nlet n = 2\nprint([true] * n)"),
+            "[0, 0, 0, 0] [1, 2, 1, 2] []\n[255, 255, 255]\n[true, true]\n"
+        );
+        assert_eq!(
+            error("let n = -1\nprint([0] * n)"),
+            "uncaught ValueError: `*` repeats a list 0 or more times, and this is -1"
+        );
+        assert_eq!(check_error("let b: list[u8] = [256] * 2"), "256 does not fit in a u8 (0 to 255)");
+        assert_eq!(check_error("let x = 3 * [0]"), "`*` repeats a list when the list comes first: write `[0] * 64`");
+        assert!(check_error("let grid = [[0] * 3] * 3").starts_with("`*` would put the same list[int] in the list again"));
+    }
+
+    #[test]
     fn a_file_is_read_and_written_as_bytes() {
         let path = scratch("bytes.bin");
         let source = format!(

@@ -229,6 +229,18 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
         },
         Mul => match (&left, &right) {
             (Int(a), Int(b)) => a.checked_mul(*b).map(Int).map_or_else(overflow, Ok),
+            // `[0] * 64`: the items, so many times over (decision 36.3).
+            (List(_), Int(times)) if *times < 0 => {
+                raise("ValueError", format!("`*` repeats a list 0 or more times, and this is {times}"), span)
+            }
+            (List(items), Int(times)) => {
+                let items = items.borrow();
+                let mut repeated = Vec::with_capacity(items.len().saturating_mul(*times as usize));
+                for _ in 0..*times {
+                    repeated.extend(items.iter().cloned());
+                }
+                Ok(Value::list(repeated))
+            }
             // Scaling a quantity keeps its unit: 2 * 500 ms is 1000 ms.
             (Quantity(a, unit), other) | (other, Quantity(a, unit)) => match other.number() {
                 Some(b) => Ok(Quantity(a * b, unit.clone())),

@@ -509,6 +509,12 @@ final class Z {
     }
 
     static Object mul(Object a, Object b, int line) {
+        if (a instanceof ZList list && b instanceof Long times) {
+            if (times < 0) throw raiseError("ValueError", "`*` repeats a list 0 or more times, and this is " + times, line);
+            var items = new java.util.ArrayList<Object>();
+            for (long t = 0; t < times; t++) items.addAll(list.items);
+            return new ZList(items);
+        }
         if (a instanceof Long x && b instanceof Long y) return mulInt(x, y, line);
         if (a instanceof Quantity || b instanceof Quantity) {
             Quantity q = a instanceof Quantity qa ? qa : (Quantity) b;

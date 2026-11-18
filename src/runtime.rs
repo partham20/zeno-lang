@@ -610,6 +610,17 @@ mod z {
 
     pub fn mul(a: V, b: V, line: usize) -> R {
         match (&a, &b) {
+            (V::List(x), V::Int(times)) => {
+                if *times < 0 {
+                    return raise_error("ValueError", format!("`*` repeats a list 0 or more times, and this is {times}"), line);
+                }
+                let x = x.borrow();
+                let mut items = Vec::new();
+                for _ in 0..*times {
+                    items.extend(x.iter().cloned());
+                }
+                Ok(new_list(items))
+            }
             (V::Int(x), V::Int(y)) => x.checked_mul(*y).map(V::Int).map_or_else(|| overflow(line), Ok),
             (V::Quantity(x, u), other) | (other, V::Quantity(x, u)) => {
                 if !is_number(other) {

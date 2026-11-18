@@ -1376,6 +1376,7 @@ impl<'a> Renamer<'a> {
                 }
             }
             Type::Optional(inner) | Type::Owned(inner) | Type::Take(inner) => self.ty(inner, span),
+            Type::Length(_) => {}
             Type::Function { params, returns } => {
                 for param in params {
                     self.ty(param, span);
