@@ -163,6 +163,59 @@ module of the type \verb|Pull|, so a function can take one.
 The example \verb|examples/doorbell.zeno| counts presses of a button
 and rings a bell for each.
 
+\section{A serial port}
+
+A serial port is how a board talks: to a terminal on a computer, to a
+GPS module, to a modem. \verb|serial(n, speed)| opens the port with
+that number, at a speed in \verb|baud|, and gives a \verb|Serial|:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Does \\
+\midrule
+\verb|s.write("hi\n")| & sends the bytes of the text, and no line end of its own \\
+\verb|s.write_bytes(frame)| & sends a \verb|list[u8]| as it is \\
+\verb|s.read_byte()| & the next byte, waiting for it: a \verb|u8 or none| \\
+\verb|s.has_byte()| & has a byte come that has not been read? No waiting \\
+\verb|s.number| & which port it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\verb|read_byte| gives \verb|none| only when no byte can come any
+more. On a board that is never; on a computer it is the end of what
+was typed, because there every serial port is the terminal itself, as
+a serial monitor is. A program that must not wait asks
+\verb|has_byte| first.
+
+\begin{zeno}[stdin=on\nstatus\n]
+from board import serial
+
+let port = serial(1, 115200 baud)
+port.write("ready\n")
+var byte = port.read_byte()
+var line = ""
+while byte is not none and byte != 10 {
+    line = line + char(byte)
+    byte = port.read_byte()
+}
+port.write(f"got {line}\n")
+\end{zeno}
+
+\begin{why}
+The speed has a unit for the reason \verb|sleep| has one:
+\verb|serial(1, 9600)| does not say which number is the port.
+Text and bytes are sent by two methods, as \verb|files.write| and
+\verb|files.write_bytes| are, so neither is a guess. Reading a byte
+waits, which is what a console or a modem wants, and
+\verb|has_byte| is there for a loop that has other work.
+(Decision 46.)
+\end{why}
+
+The example \verb|examples/console.zeno| is a small command line over
+a serial port that drives the LED.
+
 \section{The clock}
 
 \verb|sleep| waits for a time with a unit, and \verb|now()| reads a
@@ -243,8 +296,11 @@ zeno_board_now()               a clock that only goes forward, in ms
 
 A program that reads a pin needs a fifth,
 \verb|zeno_board_input(pin, pull)|, which makes the pin an input with
-no pull (0), a pull-up (1) or a pull-down (2). Only such a program
-calls it, so a header with four still builds every other program.
+no pull (0), a pull-up (1) or a pull-down (2). A program with a serial
+port needs four more, and \verb|ZENO_SERIALS|, the number of ports:
+\verb|zeno_board_serial_open|, \verb|_write|, \verb|_ready| and
+\verb|_read|. Only a program that uses them calls them, so a header
+with four still builds every other program.
 
 The simulated board is these four, written for a computer. For a real
 microcontroller they are written once, over the vendor's library, in a
@@ -263,8 +319,8 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 A button can be read, but nothing waits for it: a program looks at the
 pin as often as it needs to. On a computer nothing can press it yet.
-Interrupts, timers, PWM, an analogue converter and a serial port are
-not in the \verb|board| module either. Until they are, a program reaches them
+Interrupts, timers, PWM and an analogue converter are not in the
+\verb|board| module either. Until they are, a program reaches them
 through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
 
@@ -272,7 +328,9 @@ through their registers, at the addresses the data sheet gives.
 \verb|from board import led, pin, register|. A pin is driven with
 \verb|on|, \verb|off| and \verb|toggle| and asked with \verb|is_on|;
 \verb|Pin| is a type. \verb|input_pin(n, pull_up)| gives an
-\verb|InputPin|, read with \verb|is_high| and \verb|is_low|. \verb|sleep| and \verb|now| keep time with units.
+\verb|InputPin|, read with \verb|is_high| and \verb|is_low|.
+\verb|serial(n, 115200 baud)| gives a \verb|Serial|, which writes text
+and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|
 simulates the board and prints each change; a compiled program sits on
 four C functions that a real board provides.

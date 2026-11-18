@@ -53,6 +53,8 @@ pub const UNITS: &[(&str, &str, f64)] = &[
     ("deg", "angle in degrees", 1.0),
     ("rad", "angle in radians", 1.0),
     ("rpm", "rotation", 1.0),
+    // The speed of a serial line: `serial(1, 115200 baud)` (decision 46.2).
+    ("baud", "speed of a serial line", 1.0),
 ];
 
 pub fn is_unit(name: &str) -> bool {

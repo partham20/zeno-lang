@@ -873,6 +873,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::Dict(_) => DICT_METHODS.contains(&name),
         Value::Pin(_) => PIN_METHODS.contains(&name),
         Value::InputPin(_) => name == "is_high" || name == "is_low",
+        Value::Serial(_) => matches!(name, "write" | "write_bytes" | "read_byte" | "has_byte"),
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
         Value::Timer(_) => name == "stop",
@@ -1325,6 +1326,31 @@ pub fn call_method(
                 _ => fatal(format!("a pin has no method `{name}`"), span),
             }
         }
+        // A serial port of the simulated board is the terminal: what is
+        // sent is written out as it is, and what is read is typed.
+        Value::Serial(_) => match name {
+            "write" => {
+                arity(name, &args, 1, 1, span)?;
+                let sent = text("write", &args[0], span)?.to_string();
+                machine.write(&sent);
+                Ok(Value::None)
+            }
+            "write_bytes" => {
+                arity(name, &args, 1, 1, span)?;
+                let bytes = byte_list("write_bytes", &args[0], span)?;
+                machine.write(&String::from_utf8_lossy(&bytes));
+                Ok(Value::None)
+            }
+            "read_byte" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(machine.outside().byte().map_or(Value::None, |byte| Value::Int(i64::from(byte))))
+            }
+            "has_byte" => {
+                arity(name, &args, 0, 0, span)?;
+                Ok(Value::Bool(machine.outside().has_byte()))
+            }
+            _ => fatal(format!("a serial port has no method `{name}`"), span),
+        },
         // `button.is_low()`: what the pin reads now.
         Value::InputPin(pin) => {
             arity(name, &args, 0, 0, span)?;
@@ -1516,6 +1542,7 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("pin", Value::Builtin(Builtin { name: "pin", call: pin })),
                 ("register", Value::Builtin(Builtin { name: "register", call: register })),
                 ("input_pin", Value::Builtin(Builtin { name: "input_pin", call: input_pin })),
+                ("serial", Value::Builtin(Builtin { name: "serial", call: serial })),
                 // How an input is held: the str of its name, as in a
                 // compiled program (decision 45.3).
                 ("pull_up", Value::Str(Rc::from("pull_up"))),
@@ -1860,6 +1887,49 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// `serial(1, 115200 baud)`: the serial port with that number.
+fn serial(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("serial", &args, 2, 2, span)?;
+    let number = match &args[0] {
+        Value::Int(number) if (0..board::SERIALS).contains(number) => *number,
+        Value::Int(number) => {
+            return raise(
+                "ValueError",
+                format!("this board has no serial port {number}. Its ports are 0 to {}", board::SERIALS - 1),
+                span,
+            )
+        }
+        other => return wrong_type("serial", "an int", other, span),
+    };
+    match &args[1] {
+        Value::Quantity(speed, unit) if &**unit == "baud" => {
+            if !(*speed > 0.0) {
+                return raise("ValueError", "the speed of a serial port must be above 0 baud".to_string(), span);
+            }
+        }
+        other => return wrong_type("serial", "a speed in baud", other, span),
+    }
+    Ok(Value::Serial(number))
+}
+
+/// The bytes of a `list[u8]`.
+fn byte_list(name: &str, list: &Value, span: Span) -> Result<Vec<u8>> {
+    let Value::List(items) = list else {
+        return wrong_type(name, "a list[u8]", list, span);
+    };
+    let mut bytes = Vec::with_capacity(items.borrow().len());
+    for item in items.borrow().iter() {
+        match item {
+            Value::Int(n) if (0..=255).contains(n) => bytes.push(*n as u8),
+            Value::Int(n) => {
+                return raise("ValueError", format!("{n} is not a byte: a byte is a number from 0 to 255"), span)
+            }
+            other => return wrong_type(name, "a list[u8]", other, span),
+        }
+    }
+    Ok(bytes)
+}
+
 /// `input_pin(2, pull_up)`: the pin with that number, made an input.
 fn input_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("input_pin", &args, 1, 2, span)?;

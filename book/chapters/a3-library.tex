@@ -125,6 +125,8 @@ Name & Is \\
 \verb|p.on()|, \verb|off()|, \verb|toggle()|, \verb|is_on()|, \verb|number| & what a \verb|Pin| does \\
 \verb|input_pin(n)|, \verb|input_pin(n, pull_up)|, \verb|pull_down| & a pin the program reads \\
 \verb|b.is_high()|, \verb|is_low()|, \verb|number| & what an \verb|InputPin| does \\
+\verb|serial(n, 115200 baud)| & a serial port \\
+\verb|s.write(text)|, \verb|write_bytes(bytes)|, \verb|read_byte()|, \verb|has_byte()| & what a \verb|Serial| does \\
 \verb|r.read()|, \verb|r.write(v)|, \verb|r.address| & what a \verb|Register| does, inside \verb|unsafe| \\
 \midrule
 \multicolumn{2}{l}{\texttt{import files} (\hyperref[ch-reading-writing]{23})} \\

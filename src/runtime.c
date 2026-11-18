@@ -2354,7 +2354,17 @@ static double zeno_acos(double x, int line, int col) {
  *
  * and reads it with zeno_board_read. Only such a program calls it, so a
  * board header written before there were inputs still builds every
- * program that has none (decision 45.4). Below is a simulated
+ * program that has none (decision 45.4). A program with a serial port
+ * (`serial(1, 115200 baud)`) needs three more, and ZENO_SERIALS, the
+ * number of ports, by the same rule (decision 46.5):
+ *
+ *   zeno_board_serial_open(port, baud)          set the port's speed
+ *   zeno_board_serial_write(port, bytes, count) send these bytes
+ *   zeno_board_serial_ready(port)               has a byte come that has
+ *                                               not been read? No waiting
+ *   zeno_board_serial_read(port)                the next byte, waiting
+ *                                               for it, or -1 when no
+ *                                               more can ever come Below is a simulated
  * board, for a program that runs on a computer: it keeps the level of
  * each pin in an array, and prints a line when a level changes, as a
  * logic analyser on the pin would show it.
@@ -2391,6 +2401,42 @@ static void zeno_board_input(int pin, int pull) {
     if (pull == 2) zeno_levels[pin] = false;
 }
 #endif /* ZENO_INPUT_PINS */
+
+#ifdef ZENO_SERIAL_PORTS
+/* On a computer every serial port is the terminal, as a serial monitor
+ * is: what is sent is written out as it is, with no line of its own,
+ * and what is read is what is typed, a byte at a time. The end of what
+ * was typed is the end of the port: no byte (-1), and none ready.
+ * A terminal hands over a line at a time, so asking whether a byte has
+ * come waits for the next line (decision 46.6). */
+#define ZENO_SERIALS 4
+
+static void zeno_board_serial_open(int port, double baud) {
+    (void)port;
+    (void)baud;
+}
+
+static void zeno_board_serial_write(int port, const uint8_t *bytes, size_t count) {
+    (void)port;
+    fwrite(bytes, 1, count, stdout);
+}
+
+static bool zeno_board_serial_ready(int port) {
+    (void)port;
+    fflush(stdout);
+    int byte = getchar();
+    if (byte == EOF) return false;
+    ungetc(byte, stdin);
+    return true;
+}
+
+static int zeno_board_serial_read(int port) {
+    (void)port;
+    fflush(stdout);
+    int byte = getchar();
+    return byte == EOF ? -1 : byte;
+}
+#endif /* ZENO_SERIAL_PORTS */
 
 static void zeno_board_write(int pin, bool level) {
     /* A pin that is already there does not move, and shows nothing. */
@@ -3478,6 +3524,56 @@ static int64_t zeno_bytes_best(zeno_list *list, bool smallest, const char *name,
         if (smallest ? item < best : item > best) best = item;
     }
     return best;
+}
+
+/* ------------------------------------------------------------ Serial ports
+ *
+ * `serial(1, 115200 baud)`, `port.write(text)`, `port.write_bytes(bytes)`
+ * and `port.read_byte()`, over the three functions of the board layer
+ * for a serial port (see "The board"). Only a program that makes a port
+ * keeps this part. */
+
+#ifdef ZENO_SERIAL_PORTS
+/* The port with that number, opened at that speed, if the board has it. */
+static int64_t zeno_serial(int64_t number, double baud, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (number < 0 || number >= ZENO_SERIALS) {
+        zeno_fail("ValueError",
+                  zeno_join(4, "this board has no serial port ", zeno_str_int(number), ". Its ports are 0 to ",
+                            zeno_str_int(ZENO_SERIALS - 1)),
+                  line, col);
+    }
+    if (!(baud > 0.0)) {
+        zeno_fail("ValueError", "the speed of a serial port must be above 0 baud", line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    zeno_board_serial_open((int)number, baud);
+    return number;
+}
+
+/* Text goes as the bytes of its UTF-8, and no line end is added. */
+static void zeno_serial_write(int64_t port, const char *text) {
+    zeno_board_serial_write((int)port, (const uint8_t *)text, strlen(text));
+}
+
+static void zeno_serial_write_bytes(int64_t port, zeno_list *bytes) {
+    zeno_board_serial_write((int)port, ZENO_BYTES(bytes), (size_t)bytes->len);
+}
+
+/* The next byte, or -1 when no more can come. The compiler makes it a
+ * `u8 or none` with `zeno_found`. */
+static int64_t zeno_serial_read_byte(int64_t port) {
+    return zeno_board_serial_read((int)port);
+}
+
+static bool zeno_serial_has_byte(int64_t port) {
+    return zeno_board_serial_ready((int)port);
+}
+#endif /* ZENO_SERIAL_PORTS */
+
+/* A serial port as `print` shows it. */
+static const char *zeno_str_serial(int64_t port) {
+    return zeno_join(3, "Serial(", zeno_str_int(port), ")");
 }
 
 /* ------------------------------------------------------- Text into numbers */

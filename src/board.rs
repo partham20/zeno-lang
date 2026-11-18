@@ -18,6 +18,10 @@
 /// How many pins the simulated board has. They are numbered from 0.
 pub const PINS: i64 = 64;
 
+/// How many serial ports the simulated board has. Every one of them is
+/// the terminal (decision 46.6).
+pub const SERIALS: i64 = 4;
+
 /// The pin the LED is on. 13 is where an Arduino Uno has its LED, which
 /// makes it the number most people have already met.
 pub const LED: i64 = 13;

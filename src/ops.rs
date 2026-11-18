@@ -749,7 +749,7 @@ pub fn field(object: Value, name: &str, span: Span) -> Result {
             ),
         },
         // `led.number`: which pin this is.
-        Value::Pin(number) | Value::InputPin(number) if name == "number" => Ok(Value::Int(*number)),
+        Value::Pin(number) | Value::InputPin(number) | Value::Serial(number) if name == "number" => Ok(Value::Int(*number)),
         Value::Register(address, _) if name == "address" => Ok(Value::Int(*address)),
         // `u8.wrap`: the conversion that keeps the low bits.
         Value::Builtin(sized) if name == "wrap" && builtins::wrapping(sized).is_some() => {

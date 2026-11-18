@@ -87,27 +87,47 @@ pub fn runtime_for(firmware: bool, collector: bool, grows: bool) -> String {
     runtime_of(firmware, collector, grows, false)
 }
 
-/// `runtime` with its part for input pins, marked `#ifdef
-/// ZENO_INPUT_PINS`, kept when the program makes one and left out when
-/// it makes none. Only that part calls `zeno_board_input`, the fifth
-/// function of the board layer, so a board header written before there
-/// were inputs still builds every program that reads no pin, and the C
-/// of such a program is what it was before (decision 45.4).
-pub fn with_input_pins(runtime: &str, used: bool) -> String {
+/// The parts of the runtime that call a function of the board layer
+/// beyond the first four, each marked `#ifdef` its name: input pins
+/// (decision 45.4) and serial ports (46.5).
+pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS"];
+
+/// `runtime` with each part of `BOARD_PARTS` kept when the program uses
+/// it (`used`) and left out when it does not. Only those parts call the
+/// functions a board header did not always have to write, so a header
+/// written before them still builds every program that uses none, and
+/// the C of such a program is what it was before.
+pub fn with_board_parts(runtime: &str, used: &[&str]) -> String {
     let mut text = String::with_capacity(runtime.len());
-    let mut inside = false;
+    let mut inside: Option<&str> = None;
     for line in runtime.lines() {
-        match line.trim() {
-            "#ifdef ZENO_INPUT_PINS" => inside = true,
-            "#endif /* ZENO_INPUT_PINS */" => inside = false,
-            _ if inside && !used => {}
-            _ => {
-                text += line;
-                text.push('\n');
-            }
+        let trimmed = line.trim();
+        let part = |prefix: &str, suffix: &str| {
+            BOARD_PARTS.iter().copied().find(|part| trimmed.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix)) == Some(part))
+        };
+        if let Some(part) = part("#ifdef ", "") {
+            inside = Some(part);
+        } else if part("#endif /* ", " */").is_some() {
+            inside = None;
+        } else if inside.is_none_or(|part| used.contains(&part)) {
+            text += line;
+            text.push('\n');
         }
     }
     text
+}
+
+/// The parts of `BOARD_PARTS` that a program of LLVM IR uses, by the
+/// functions of the runtime it calls.
+pub fn board_parts_in_ir(ir: &str) -> Vec<&'static str> {
+    let mut used = Vec::new();
+    if ir.contains("@zeno_input_pin(") {
+        used.push("ZENO_INPUT_PINS");
+    }
+    if ir.contains("@zeno_serial(") {
+        used.push("ZENO_SERIAL_PORTS");
+    }
+    used
 }
 
 /// The same, saying also whether it is for `zeno build --minimal`, which
@@ -211,7 +231,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         release: options.release || options.fast || options.minimal,
         fast: options.fast || options.minimal,
         minimal: options.minimal,
-        input_pins: false,
+        board_parts: Vec::new(),
         in_place: false,
         text_stays: false,
         once: None,
@@ -409,7 +429,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
         return Ok(crate::minimal::assemble(crate::minimal::Parts {
             source,
-            runtime: &with_input_pins(&runtime_of(firmware, collector, options.grows && !collector, true), emitter.input_pins),
+            runtime: &with_board_parts(&runtime_of(firmware, collector, options.grows && !collector, true), &emitter.board_parts),
             declarations: declarations.iter().map(String::as_str).collect(),
             functions: definitions.iter().map(String::as_str).collect(),
             program: &program,
@@ -424,7 +444,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = with_input_pins(&runtime_for(firmware, collector, options.grows && !collector), emitter.input_pins);
+    let mut c = with_board_parts(&runtime_for(firmware, collector, options.grows && !collector), &emitter.board_parts);
     if options.fast {
         c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
@@ -1058,9 +1078,9 @@ struct Emitter<'a> {
     /// `--minimal`: no checks at all, and C as a person would write it
     /// where that can be done (decisions chapter 30).
     minimal: bool,
-    /// The program makes an input pin, so the runtime keeps its part
-    /// marked `#ifdef ZENO_INPUT_PINS` (decision 45.4).
-    input_pins: bool,
+    /// The parts of `BOARD_PARTS` the program uses, such as
+    /// `ZENO_INPUT_PINS` when it makes an input pin (decision 45.4).
+    board_parts: Vec<&'static str>,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
     in_place: bool,
@@ -1286,7 +1306,7 @@ pub fn for_a_page(span: Span) -> Error {
 fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
-        Kind::Int | Kind::Pin | Kind::InputPin => "int64_t ".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial => "int64_t ".to_string(),
         // Only ever an item of a list; read, it is an int.
         Kind::Byte => "uint8_t ".to_string(),
         // A register is its address.
@@ -1313,7 +1333,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // bool cannot, so it is paired with a flag.
         Kind::Optional(inner) => match &**inner {
             inner if is_pointer(inner) => c_type(inner, span)?,
-            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "zeno_opt_int ".to_string(),
+            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
             _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1347,7 +1367,7 @@ fn is_pointer(kind: &Kind) -> bool {
 fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
     Ok(match inner {
         inner if is_pointer(inner) => "NULL".to_string(),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
         _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -1385,7 +1405,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 /// collector looks after? Numbers and bools cannot.
 fn holds_pointer(kind: &Kind) -> bool {
     match kind {
-        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Quantity(_) | Kind::None => false,
+        Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
         // Nor is what C gave.
@@ -1469,6 +1489,7 @@ fn key(kind: &Kind) -> String {
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
         Kind::InputPin => "input_pin".to_string(),
+        Kind::Serial => "serial".to_string(),
         Kind::Pointer(pointee) => format!("pointer_{}", pointee.name()),
         Kind::Register(width) => format!("register_{}", width.name),
         Kind::Str => "str".to_string(),
@@ -1492,7 +1513,7 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
         // A list of bytes holds bytes, not slots (decision 36.2).
         Kind::Byte => return Ok(format!("((int64_t)({code}))")),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "i",
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "i",
         // A u64 is kept as the int with the same bits.
         Kind::U64 => return Ok(format!("(zeno_slot){{.i = (int64_t)({code})}}")),
         // In a slot an f32 is kept as the float it is exactly.
@@ -1544,7 +1565,7 @@ fn read_kind(item: &Kind) -> Kind {
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
         Kind::Byte => format!("((int64_t){slot})"),
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => format!("{slot}.i"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::F32 => format!("((float){slot}.f)"),
         Kind::U64 => format!("((uint64_t){slot}.i)"),
@@ -1569,7 +1590,7 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
 /// Which of the runtime's three flagged kinds holds an optional `inner`.
 fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
     match inner {
-        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => Ok("int"),
+        Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
         _ => Err(cannot("this kind of value that may be `none`", span)),
@@ -3314,6 +3335,7 @@ impl Emitter<'_> {
             (name, []) if units::is_unit(name) => Kind::Quantity(name.to_string()),
             ("Pin", []) => Kind::Pin,
             ("InputPin", []) => Kind::InputPin,
+            ("Serial", []) => Kind::Serial,
             // `pull_up` and `pull_down` are the strs of their names.
             ("Pull", []) => Kind::Str,
             ("pointer", [Type::Named { name, args }]) if args.is_empty() => Kind::Pointer(Pointee::named(name)?),
@@ -4450,7 +4472,7 @@ impl Emitter<'_> {
             (Kind::None, Kind::Optional(inner)) => nothing(inner, span)?,
             (from, Kind::Optional(inner)) if from == &**inner => match from {
                 from if is_pointer(from) => val.code.clone(),
-                Kind::Int | Kind::Pin | Kind::InputPin => format!("(zeno_opt_int){{true, {}}}", val.code),
+                Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial => format!("(zeno_opt_int){{true, {}}}", val.code),
                 Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
@@ -4496,7 +4518,7 @@ impl Emitter<'_> {
         let code = match (&inner, changeable) {
             (inner, false) if is_pointer(inner) => val.code.clone(),
             (_, false) => format!("{}.value", val.code),
-            (Kind::Int | Kind::Pin | Kind::InputPin, true) => format!("zeno_still_int({}, {again})", val.code),
+            (Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial, true) => format!("zeno_still_int({}, {again})", val.code),
             (Kind::Float | Kind::F32 | Kind::Quantity(_), true) => format!("zeno_still_float({}, {again})", val.code),
             (Kind::Bool, true) => format!("zeno_still_bool({}, {again})", val.code),
             (inner, true) => {
@@ -5350,10 +5372,17 @@ impl Emitter<'_> {
             ("board", "pin", [number]) if number.kind == Kind::Int => {
                 Ok(Val::from(format!("zeno_pin({}, {})", number.code, self.at(span)), Kind::Pin, &[number]).failing_if(!self.minimal))
             }
+            // `serial(1, 115200 baud)`. The speed is in baud already, and
+            // opening a port is done to the board, so it is a call.
+            ("board", "serial", [number, speed]) if number.kind == Kind::Int && speed.kind == Kind::Quantity("baud".to_string()) => {
+                self.uses_board_part("ZENO_SERIAL_PORTS");
+                let call = format!("zeno_serial({}, {}, {})", number.code, speed.code, self.at(span));
+                Ok(self.called(call, &vals, Kind::Serial).failing_if(!self.minimal))
+            }
             // `input_pin(2, pull_up)`. Making a pin an input is done to
             // the board, so it is a call, and is not worked out twice.
             ("board", "input_pin", [number, rest @ ..]) if number.kind == Kind::Int && rest.len() < 2 => {
-                self.input_pins = true;
+                self.uses_board_part("ZENO_INPUT_PINS");
                 let pull = rest.first().map_or("NULL".to_string(), |pull| pull.code.clone());
                 let call = format!("zeno_input_pin({}, {pull}, {})", number.code, self.at(span));
                 Ok(self.called(call, &vals, Kind::InputPin).failing_if(!self.minimal))
@@ -5574,6 +5603,13 @@ impl Emitter<'_> {
     }
 
     /// Turn a call to a function or method into a value.
+    /// Keep the part of the runtime marked `#ifdef part`.
+    fn uses_board_part(&mut self, part: &'static str) {
+        if !self.board_parts.contains(&part) {
+            self.board_parts.push(part);
+        }
+    }
+
     fn called(&mut self, call: String, vals: &[Val], returns: Kind) -> Val {
         let parts: Vec<&Val> = vals.iter().collect();
         if returns == Kind::None {
@@ -5833,6 +5869,31 @@ impl Emitter<'_> {
                     _ => Err(cannot(format!("the method `{name}`"), span)),
                 }
             }
+            // A serial port: `port.write(text)`, `port.write_bytes(bytes)`,
+            // `port.read_byte()`. Each is one call into the runtime.
+            Kind::Serial => {
+                let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+                let vals = self.sequence_after(vec![receiver], &exprs)?;
+                match (name, vals.as_slice()) {
+                    ("write", [port, text]) if text.kind == Kind::Str => {
+                        let call = format!("zeno_serial_write({}, {})", port.code, text.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    ("write_bytes", [port, bytes]) if bytes.kind == Kind::List(Box::new(Kind::Byte)) => {
+                        let call = format!("zeno_serial_write_bytes({}, {})", port.code, bytes.code);
+                        Ok(self.called(call, &vals, Kind::None))
+                    }
+                    ("read_byte", [port]) => {
+                        let call = format!("zeno_found(zeno_serial_read_byte({}))", port.code);
+                        Ok(self.called(call, &vals, Kind::Optional(Box::new(Kind::Int))))
+                    }
+                    ("has_byte", [port]) => {
+                        let call = format!("zeno_serial_has_byte({})", port.code);
+                        Ok(self.called(call, &vals, Kind::Bool))
+                    }
+                    _ => Err(cannot(format!("`{name}` on a serial port called this way"), span)),
+                }
+            }
             // `button.is_low()`: what the pin reads now. The board can
             // change it at any time, so it is read each time it is asked.
             Kind::InputPin => match (name, args) {
@@ -6056,7 +6117,7 @@ impl Emitter<'_> {
                     // number that may be `none` travels with a flag.
                     ("get", [dict, wanted]) => {
                         let which = match &*value {
-                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Register(_) => "int",
+                            Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Register(_) => "int",
                             Kind::Float | Kind::F32 | Kind::Quantity(_) => "float",
                             Kind::Bool => "bool",
                             Kind::Str => "str",
@@ -6236,7 +6297,7 @@ impl Emitter<'_> {
                 Ok(Val::from(format!("{}->{name}", val.code), Kind::Str, &[&val]))
             }
             // `led.number`: a pin is its number already.
-            Kind::Pin | Kind::InputPin if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
+            Kind::Pin | Kind::InputPin | Kind::Serial if name == "number" => Ok(Val { kind: Kind::Int, ..val }),
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
@@ -6282,6 +6343,7 @@ impl Emitter<'_> {
             Kind::Bool => format!("zeno_str_bool({})", val.code),
             Kind::Pin => format!("zeno_str_pin({})", val.code),
             Kind::InputPin => format!("zeno_str_input_pin({})", val.code),
+            Kind::Serial => format!("zeno_str_serial({})", val.code),
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
@@ -6325,7 +6387,7 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Quantity(_) => {
+            Kind::Int | Kind::Byte | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::Quantity(_) => {
                 format!("({a} == {b})")
             }
             // Two pointers are equal when they point at the same item.
@@ -8989,6 +9051,7 @@ print(word[5])
             ("words", include_str!("../examples/words.zeno")),
             ("scheduler", include_str!("../examples/scheduler.zeno")),
             ("doorbell", include_str!("../examples/doorbell.zeno")),
+            ("console", include_str!("../examples/console.zeno")),
             ("commands", include_str!("../examples/commands.zeno")),
             ("handlers", include_str!("../examples/handlers.zeno")),
             ("driver", include_str!("../examples/driver.zeno")),
@@ -16032,6 +16095,11 @@ print(d.value)
         for c in [compile(PINS).unwrap(), compile_firmware(PINS).unwrap(), compile_no_collector(PINS).unwrap()] {
             // The comment at the top of the board layer names it; no C does.
             assert!(!c.contains("static void zeno_board_input(") && !c.contains("zeno_board_input((int)"), "a program with no input pins asks the board for one");
+            // Nor for a serial port (decision 46.5).
+            assert!(
+                !c.contains("static void zeno_board_serial_open(") && !c.contains("zeno_board_serial_open((int)"),
+                "a program with no serial port asks the board for one"
+            );
             assert!(!c.contains("ZENO_INPUT_PINS"));
         }
         for c in [compile(INPUTS).unwrap(), compile_firmware(INPUTS).unwrap(), compile_no_collector(INPUTS).unwrap()] {
@@ -16073,6 +16141,80 @@ print(d.value)
             };
             assert!(finished, "{errors}");
             assert_eq!(printed, "input 2 1\nwrite 9 1 at 10\nwrite 9 0 at 60\npresses: 1\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Serial ports (decision 46). On a computer each is the terminal.
+    const SERIAL: &str = "from board import serial\nimport board\n\
+        let port = serial(1, 115200 baud)\nlet other = board.serial(0, 9600 baud)\n\
+        print(port, other.number, port == other, f\"{port}\")\n\
+        port.write(\"hello, \")\nport.write(\"world\\n\")\n\
+        let frame: list[u8] = [0x48, 0x69, 0x0a]\nport.write_bytes(frame)\nport.write_bytes([0x4f, 0x4b, 0x0a])\n\
+        function talk(to: Serial, text: str) {\n    to.write(text)\n}\ntalk(other, \"two\\n\")\n\
+        let ports: list[Serial] = [port, other]\nprint(ports)\n\
+        var line = \"\"\nvar b = port.read_byte()\n\
+        while b is not none and b != 10 {\n    line = line + char(b)\n    b = port.read_byte()\n}\n\
+        print(f\"got [{line}]\", port.has_byte())\n\
+        var count = 0\nwhile port.has_byte() {\n    let byte = port.read_byte()\n    if byte is not none { count += byte }\n}\n\
+        print(count, \"then\", port.read_byte(), port.has_byte())\n";
+
+    #[test]
+    fn serial_ports_match() {
+        use crate::value::testing::with_outside;
+        with_outside("ping\nab", &[], || {
+            assert!(interpreted(SERIAL).ends_with("got [ping] true\n195 then none false\n"), "{}", interpreted(SERIAL));
+            same_as_interpreter("serial", SERIAL);
+            no_collector_as_interpreter("serial", SERIAL);
+        });
+        // Nothing typed: the port has ended before it began.
+        assert!(interpreted(SERIAL).ends_with("got [] false\n0 then none false\n"));
+        same_as_interpreter("serial-nothing", SERIAL);
+        same_as_interpreter(
+            "no-serial-port",
+            "from board import serial\n\
+             try {\n    serial(4, 9600 baud)\n} except ValueError as error {\n    print(\"no:\", error.message)\n}\n\
+             try {\n    serial(1, 0 baud)\n} except ValueError as error {\n    print(\"no:\", error.message)\n}\n\
+             serial(-1, 9600 baud)\n",
+        );
+    }
+
+    /// A board of its own whose serial port 1 is wired back to itself: what
+    /// is sent comes back to be read, and when all of it has, no more can.
+    #[test]
+    fn a_serial_port_on_a_board_of_its_own() {
+        let header = "#define ZENO_PINS 2\n\
+                      #define ZENO_SERIALS 2\n\
+                      static bool my_levels[ZENO_PINS];\n\
+                      static uint8_t my_wire[64];\n\
+                      static size_t my_sent = 0, my_read = 0;\n\
+                      static bool zeno_board_read(int pin) { return my_levels[pin]; }\n\
+                      static void zeno_board_write(int pin, bool level) { my_levels[pin] = level; }\n\
+                      static void zeno_board_sleep(double seconds) { (void)seconds; }\n\
+                      static double zeno_board_now(void) { return 0.0; }\n\
+                      static void zeno_board_serial_open(int port, double baud) { printf(\"open %d %g\\n\", port, baud); }\n\
+                      static void zeno_board_serial_write(int port, const uint8_t *bytes, size_t count) {\n\
+                      \x20   printf(\"sent %d:\", port);\n\
+                      \x20   for (size_t i = 0; i < count; i++) { printf(\" %02x\", bytes[i]); my_wire[my_sent++] = bytes[i]; }\n\
+                      \x20   printf(\"\\n\");\n\
+                      }\n\
+                      static bool zeno_board_serial_ready(int port) { (void)port; return my_read < my_sent; }\n\
+                      static int zeno_board_serial_read(int port) { (void)port; return my_read < my_sent ? my_wire[my_read++] : -1; }\n";
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-my-serial", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let file = dir.join("my_board.h");
+        std::fs::write(&file, header).expect("the header is written");
+        let flag = format!("-DZENO_BOARD=\"{}\"", file.display());
+        let source = "from board import serial\nlet port = serial(1, 9600 baud)\nport.write(\"hi\\n\")\n\
+                      port.write_bytes([1, 2, 255])\nvar got: list[int] = []\n\
+                      while port.has_byte() {\n    let b = port.read_byte()\n    if b is not none { got.append(int(b)) }\n}\n\
+                      print(got, port.read_byte())\n";
+        for c in [compile(source).unwrap(), compile_firmware(source).unwrap(), compile_no_collector(source).unwrap()] {
+            let Some((printed, errors, finished)) = build_and_run("serial-header", &c, &[&flag]) else {
+                return;
+            };
+            assert!(finished, "{errors}");
+            assert_eq!(printed, "open 1 9600\nsent 1: 68 69 0a\nsent 1: 01 02 ff\n[104, 105, 10, 1, 2, 255] none\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

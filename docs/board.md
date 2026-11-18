@@ -41,6 +41,7 @@ Zeno. This page is about how both of those work.
 | | `pin(7)` | the pin with that number. A `ValueError` if the board has none |
 | | `register(u32, 0x4002_0014)` | the register at that address, read and written inside `unsafe { }` ([`unsafe.md`](unsafe.md)) |
 | | `input_pin(2, pull_up)` | the pin with that number, as an input the program reads ([`inputs.md`](inputs.md)) |
+| | `serial(1, 115200 baud)` | the serial port with that number, at that speed ([`serial.md`](serial.md)) |
 | `time` | `sleep(500 ms)` | wait. The time must have a unit |
 | | `now()` | the reading of a clock that only goes forward, in `ms` |
 
@@ -166,7 +167,8 @@ is the part worth reading slowly:
 Those four, and `ZENO_PINS`, the number of pins, are everything Zeno
 knows about hardware. A program that reads a pin needs a fifth,
 `zeno_board_input(pin, pull)`, and only such a program calls it
-([`inputs.md`](inputs.md), decision 45.4). What the program calls is written on top of them
+([`inputs.md`](inputs.md), decision 45.4). One with a serial port
+needs four more, by the same rule ([`serial.md`](serial.md)). What the program calls is written on top of them
 once, for every board:
 
 ```c
@@ -315,7 +317,7 @@ as `now() - start >= 200 ms` after sleeping that long.
   the simulated board has no way to. Nor can a program wait for an
   edge yet.
 - **Everything else on a microcontroller**: interrupts, timers, PWM, an
-  ADC, a serial port. Each would be a few more functions in the board
+  ADC. (A serial port is there: [`serial.md`](serial.md).) Each would be a few more functions in the board
   layer. Until then a program can reach the hardware itself, through
   registers at the addresses the data sheet gives
   ([`unsafe.md`](unsafe.md)).

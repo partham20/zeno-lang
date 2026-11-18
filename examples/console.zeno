@@ -1,0 +1,46 @@
+# A console on a serial port: send `on` or `off` to drive the LED,
+# `status` to ask, and anything else to be told what it knows.
+#
+# On a board, open a terminal on its port at 115200 baud. On a computer
+# every serial port is the terminal itself: type the commands, and end
+# with Ctrl-D. See docs/serial.md.
+from board import serial, led
+
+let port = serial(1, 115200 baud)
+
+# One line from the port, without its end. `none` when no more can come,
+# which on a board is never.
+function read_line(port: Serial) -> str or none {
+    var line = ""
+    var byte = port.read_byte()
+    if byte is none {
+        return none
+    }
+    while byte is not none and byte != 10 {
+        # A terminal may end a line with 13 and 10. The 13 is dropped.
+        if byte != 13 {
+            line = line + char(byte)
+        }
+        byte = port.read_byte()
+    }
+    return line
+}
+
+port.write("ready\n")
+var line = read_line(port)
+while line is not none {
+    if line == "on" {
+        led.on()
+        port.write("ok\n")
+    } else if line == "off" {
+        led.off()
+        port.write("ok\n")
+    } else if line == "status" and led.is_on() {
+        port.write("the led is on\n")
+    } else if line == "status" {
+        port.write("the led is off\n")
+    } else {
+        port.write(f"`{line}`? I know on, off and status\n")
+    }
+    line = read_line(port)
+}

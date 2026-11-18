@@ -38,6 +38,8 @@ pub enum Value {
     Pin(i64),
     /// A pin the program reads, by its number: `input_pin(2)`
     InputPin(i64),
+    /// A serial port of the board, by its number: `serial(1, 115200 baud)`
+    Serial(i64),
     /// A raw pointer: the block that `allocate` made, and how many items
     /// into it this pointer points.
     Pointer(Rc<Memory>, i64),
@@ -396,19 +398,58 @@ impl Outside {
         }
     }
 
+    /// The next byte that was typed, for a serial port of the simulated
+    /// board, which is the terminal (decision 46.6). `None` at the end.
+    pub fn byte(&mut self) -> Option<u8> {
+        match &self.typed {
+            Some(typed) => {
+                let byte = typed.as_bytes().get(self.read).copied()?;
+                self.read += 1;
+                Some(byte)
+            }
+            #[cfg(target_arch = "wasm32")]
+            None => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None => {
+                use std::io::BufRead;
+                let mut stdin = std::io::stdin().lock();
+                let byte = stdin.fill_buf().ok()?.first().copied()?;
+                stdin.consume(1);
+                Some(byte)
+            }
+        }
+    }
+
+    /// Is there a byte typed that has not been read? A terminal hands
+    /// over a line at a time, so this waits for the next line.
+    pub fn has_byte(&mut self) -> bool {
+        match &self.typed {
+            Some(typed) => self.read < typed.len(),
+            #[cfg(target_arch = "wasm32")]
+            None => false,
+            #[cfg(not(target_arch = "wasm32"))]
+            None => {
+                use std::io::BufRead;
+                std::io::stdin().lock().fill_buf().is_ok_and(|bytes| !bytes.is_empty())
+            }
+        }
+    }
+
     /// The next line that was typed, without its line end. `None` when
     /// there is no more: the keyboard was closed (Ctrl-D), or the file
     /// that was piped in has been read to its end.
     pub fn line(&mut self) -> Option<String> {
         let mut line = match &self.typed {
             Some(typed) => {
-                let rest = &typed[self.read..];
+                // By bytes: a serial port may have read part of a
+                // character (`byte`).
+                let rest = &typed.as_bytes()[self.read..];
                 if rest.is_empty() {
                     return None;
                 }
-                let end = rest.find('\n').map_or(rest.len(), |at| at + 1);
+                let end = rest.iter().position(|&byte| byte == b'\n').map_or(rest.len(), |at| at + 1);
                 self.read += end;
-                rest[..end].to_string()
+                String::from_utf8_lossy(&rest[..end]).into_owned()
             }
             None => {
                 use std::io::BufRead;
@@ -649,6 +690,7 @@ impl Value {
             Value::Dict(_) => "a dict".to_string(),
             Value::Pin(_) => "a pin".to_string(),
             Value::InputPin(_) => "an input pin".to_string(),
+            Value::Serial(_) => "a serial port".to_string(),
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
             Value::Timer(_) => "a Timer".to_string(),
@@ -789,6 +831,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (None, None) => true,
         (Pin(a), Pin(b)) => a == b,
         (InputPin(a), InputPin(b)) => a == b,
+        (Serial(a), Serial(b)) => a == b,
         // Two elements are equal when they are one element of the page.
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
@@ -871,6 +914,7 @@ impl fmt::Display for Value {
             }
             Value::Pin(number) => write!(f, "Pin({number})"),
             Value::InputPin(number) => write!(f, "InputPin({number})"),
+            Value::Serial(number) => write!(f, "Serial({number})"),
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),
             Value::Timer(_) => write!(f, "Timer"),

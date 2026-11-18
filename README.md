@@ -92,6 +92,7 @@ Samples, none of them final:
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/doorbell.zeno`](examples/doorbell.zeno): a button on an input pin with a pull-up rings a bell, once for each press.
+- [`examples/console.zeno`](examples/console.zeno): a command line over a serial port that drives the LED.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -750,6 +751,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `zeno_board_input`, which only a program that reads a pin calls.
     In every engine and every C and LLVM build.
     See [`docs/inputs.md`](docs/inputs.md) and chapter 45 of
+    [`docs/decisions.md`](docs/decisions.md))
+44. A serial port on a board (done, after 0.5.2 and not yet released:
+    `serial(1, 115200 baud)` gives a `Serial` that writes text and
+    bytes and reads a byte at a time; the speed has a unit, `baud`.
+    On a computer every port is the terminal. A board header gains
+    four functions, which only a program with a port calls. In every
+    engine and every C and LLVM build.
+    See [`docs/serial.md`](docs/serial.md) and chapter 46 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with

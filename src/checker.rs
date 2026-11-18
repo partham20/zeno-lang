@@ -95,6 +95,9 @@ pub enum Kind {
     /// A pin the program reads: `input_pin(2)`. It is the pin's number
     /// too (decision 45).
     InputPin,
+    /// A serial port of the board: `serial(1, 115200 baud)`. It is the
+    /// port's number (decision 46).
+    Serial,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -514,6 +517,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Bool => Kind::Bool,
         Ty::Pin => Kind::Pin,
         Ty::InputPin => Kind::InputPin,
+        Ty::Serial => Kind::Serial,
         // `pull_up` and `pull_down` are the strs of their names, so
         // printing one, comparing two and keeping them in a list work
         // as they do for any str. The checker keeps them apart.
@@ -695,6 +699,8 @@ enum Ty {
     /// How an input pin is held when nothing drives it: `pull_up` or
     /// `pull_down`, from the `board` module.
     Pull,
+    /// A serial port of the board: `serial(1, 115200 baud)`.
+    Serial,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -906,6 +912,7 @@ enum Key {
     Pin,
     InputPin,
     Pull,
+    Serial,
     Element,
     Event,
     Timer,
@@ -1148,6 +1155,7 @@ impl fmt::Display for Ty {
             Ty::Pin => write!(f, "Pin"),
             Ty::InputPin => write!(f, "InputPin"),
             Ty::Pull => write!(f, "Pull"),
+            Ty::Serial => write!(f, "Serial"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1277,6 +1285,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Pin, Ty::Pin)
         | (Ty::InputPin, Ty::InputPin)
         | (Ty::Pull, Ty::Pull)
+        | (Ty::Serial, Ty::Serial)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -1972,6 +1981,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "register") => Ty::Builtin("register"),
         ("board", "input_pin") => Ty::Builtin("input_pin"),
         ("board", "pull_up") | ("board", "pull_down") => Ty::Pull,
+        ("board", "serial") => Ty::Builtin("serial"),
         _ => return None,
     })
 }
@@ -2596,6 +2606,7 @@ impl Checker {
             Ty::Pin => Key::Pin,
             Ty::InputPin => Key::InputPin,
             Ty::Pull => Key::Pull,
+            Ty::Serial => Key::Serial,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2647,6 +2658,7 @@ impl Checker {
             Key::Pin => Ty::Pin,
             Key::InputPin => Ty::InputPin,
             Key::Pull => Ty::Pull,
+            Key::Serial => Ty::Serial,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3058,6 +3070,7 @@ impl Checker {
                         _ if name == "Pin" => Ty::Pin,
                         _ if name == "InputPin" => Ty::InputPin,
                         _ if name == "Pull" => Ty::Pull,
+                        _ if name == "Serial" => Ty::Serial,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6196,6 +6209,14 @@ impl Checker {
                 Ty::BuiltinMethod(Box::new(Ty::InputPin), Rc::from(name))
             }
             Ty::InputPin if name == "number" => Ty::Int,
+            Ty::Serial if SERIAL_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::Serial), Rc::from(name)),
+            Ty::Serial if name == "number" => Ty::Int,
+            Ty::Serial => self.error(
+                format!(
+                    "a Serial has no `{name}`. It has `write(text)`, `write_bytes(bytes)`, `read_byte()`, `has_byte()` and `number`"
+                ),
+                span,
+            ),
             // `ticking.stop()`: the one thing a timer does.
             Ty::Timer if name == "stop" => Ty::BuiltinMethod(Box::new(Ty::Timer), Rc::from(name)),
             Ty::Timer => self.error(format!("a Timer has no `{name}`. It has `stop()`, which calls off what is waiting"), span),
@@ -7310,6 +7331,24 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            // `serial(1, 115200 baud)`: a serial port of the board, at
+            // that speed (46.1, 46.2).
+            "serial" => {
+                if self.arity(name, arguments, 2, 2, span) {
+                    self.expect(&first, &Ty::Int, "the number of a serial port", arguments[0].span);
+                    let speed = &arguments[1];
+                    if !fits(&speed.ty, &Ty::Quantity(Rc::from("baud"))) {
+                        self.error(
+                            format!(
+                                "the speed of a serial port is in baud, as in `serial(1, 115200 baud)`, and this is {}",
+                                speed.ty
+                            ),
+                            speed.span,
+                        );
+                    }
+                }
+                Ty::Serial
+            }
             // `input_pin(2)`, `input_pin(2, pull_up)`: a pin the program
             // reads, and what holds it when nothing drives it (45.3).
             "input_pin" => {
@@ -7421,6 +7460,35 @@ impl Checker {
             (Ty::InputPin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::Bool
+            }
+            // `port.write("hello\n")`, `port.write_bytes(frame)`: sent as
+            // they are. `port.read_byte()`: the next byte, waiting for
+            // it, or `none` when no more can come. `port.has_byte()`:
+            // has one come, without waiting (46.3, 46.4).
+            (Ty::Serial, "has_byte") => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Bool
+            }
+            (Ty::Serial, "write") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&arguments[0].ty, &Ty::Str, "the text given to `write`", arguments[0].span);
+                }
+                Ty::None
+            }
+            (Ty::Serial, "write_bytes") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    let bytes = Ty::List(Box::new(Ty::Sized(ints::WIDTHS[0])));
+                    let given = &arguments[0];
+                    let ty = self.adapted(given.written.clone(), given.place, given.ty.clone(), &bytes, given.span);
+                    // The port only looks at the list, so a list with one
+                    // owner is lent to it for the call.
+                    self.expect(&ty.looked_at(), &bytes, "the bytes given to `write_bytes`", given.span);
+                }
+                Ty::None
+            }
+            (Ty::Serial, _) => {
+                self.arity(name, arguments, 0, 0, span);
+                Ty::Optional(Box::new(Ty::Sized(ints::WIDTHS[0])))
             }
             // `button.on("click", pressed)`: the page calls `pressed`
             // with nothing.
@@ -8644,6 +8712,7 @@ const LIST_METHODS: &[&str] = &[
 const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
+const SERIAL_METHODS: &[&str] = &["write", "write_bytes", "read_byte", "has_byte"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
 /// What is looking at a part of an owner's value, so that the part must
@@ -9898,6 +9967,35 @@ mod tests {
         assert_eq!(error("from board import input_pin\ninput_pin(2, 3, 4)"), "`input_pin` takes 1 to 2 arguments, but 3 were given");
         assert_eq!(error("from board import input_pin, pull_up\ninput_pin(pull_up)"), "the number of a pin should be int, but this is Pull");
         assert_eq!(error("from board import input_pin\ninput_pin(2).is_high(1)"), "`is_high` takes 0 arguments, but 1 was given");
+    }
+
+    #[test]
+    fn a_serial_port_has_a_speed_in_baud() {
+        ok("from board import serial\nlet port: Serial = serial(1, 115200 baud)\nport.write(\"hi\\n\")\n\
+            let frame: list[u8] = [1, 2]\nport.write_bytes(frame)\nport.write_bytes([3, 4])\n\
+            let byte: u8 or none = port.read_byte()\nlet ready: bool = port.has_byte()\nlet n: int = port.number");
+        ok("import board\nfunction talk(to: Serial) { to.write(\"x\") }\ntalk(board.serial(0, 9600 baud))");
+        assert_eq!(
+            error("from board import serial\nlet p = serial(1, 9600)"),
+            "the speed of a serial port is in baud, as in `serial(1, 115200 baud)`, and this is int"
+        );
+        assert_eq!(
+            error("from board import serial\nlet p = serial(1, 9600 Hz)"),
+            "the speed of a serial port is in baud, as in `serial(1, 115200 baud)`, and this is a quantity in Hz"
+        );
+        assert_eq!(
+            error("from board import serial\nserial(1, 9600 baud).on()"),
+            "a Serial has no `on`. It has `write(text)`, `write_bytes(bytes)`, `read_byte()`, `has_byte()` and `number`"
+        );
+        assert_eq!(error("from board import serial\nserial(1, 9600 baud).write(65)"), "the text given to `write` should be str, but this is int");
+        assert_eq!(
+            error("from board import serial\nserial(1, 9600 baud).write_bytes(\"hi\")"),
+            "the bytes given to `write_bytes` should be list[u8], but this is str"
+        );
+        assert_eq!(
+            error("from board import serial\nlet b: u8 = serial(1, 9600 baud).read_byte()"),
+            "`b` should be u8, but this is u8 or none. Check it with `is not none` first"
+        );
         // A class of the program's own called `Pin` comes first.
         ok("class Pin {\n n: int\n}\nlet p: Pin = Pin(1)\nprint(p.n)");
     }

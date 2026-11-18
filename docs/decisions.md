@@ -14546,3 +14546,132 @@ class of either name comes first, as one called `Pin` does (3.15).
 - Running it on a real board. The STM32 sketch in
   [`board.md`](board.md) gains its fifth function, and like the other
   four it has not been tried on hardware.
+
+## 46. A serial port
+
+```zeno
+from board import serial
+
+let port = serial(1, 115200 baud)
+port.write("ready\n")
+let byte = port.read_byte()           # u8 or none
+if port.has_byte() {
+    port.write_bytes([0x06])
+}
+```
+
+A serial port is how a board talks: to a terminal on a desk, to a GPS
+module, a modem, another board. It is the second part of item 7 of
+[`missing.md`](missing.md), after inputs (45), and the one that list
+put first among the rest. Walkthrough: [`serial.md`](serial.md).
+
+### 46.1 A port is a type of its own, and a number underneath
+
+**`serial(1, 115200 baud)` gives a `Serial`**, which has `write`,
+`write_bytes`, `read_byte`, `has_byte` and `number`, and prints as
+`Serial(1)`. As a pin is (3.15), a port is a kind of its own to the
+checker and its number in the built program, so it costs what an
+`int` costs, and a list of ports, a port in a field and a function
+that takes one all work. A port the board does not have is a
+`ValueError`, as a pin is: the simulated board has ports 0 to 3.
+
+### 46.2 The speed has a unit: `baud`
+
+**`serial(1, 9600)` is refused**: the message says to write
+`9600 baud`. Two bare numbers side by side do not say which is the
+port and which the speed, which is the reason `sleep(500)` is refused
+(3.15a). `baud` joins the list of units (1.15) as the one unit of a
+kind of its own, so a speed in `Hz` is refused too. A speed of 0 or
+below is a `ValueError`.
+
+**Why not `Bd`, or `kBd`?** Data sheets write "115200 baud", and the
+speeds a port is set to are written out in full, so one unit with no
+prefixes is enough. **Left for later: `1 / 9600 baud`**, the time of
+one bit, which would join the list of units made of units (43.1).
+
+### 46.3 Text and bytes are sent by two methods
+
+**`port.write(text)` sends the bytes of the text's UTF-8, and nothing
+else: no line end is added. `port.write_bytes(bytes)` sends a
+`list[u8]` as it is.** A port only looks at the list, so in a build
+where a list has one owner it is lent for the call.
+
+**Why two?** It is how `files.write` and `files.write_bytes` already
+are (36.1), so neither is a guess, and the checker can say which one
+was meant. **Turned down: one `write` that takes either**, which would
+need a rule for a list written in place (`[1, 2]` is a `list[int]`
+until something says otherwise). **Turned down: adding a line end**,
+as `print` does. A protocol decides its own line ends (`\r\n` for a
+modem), and a port that added one would be wrong for half of them.
+
+### 46.4 `read_byte` waits; `has_byte` does not
+
+**`port.read_byte()` gives the next byte, waiting for it, as a
+`u8 or none`. It is `none` only when no byte can come any more.
+`port.has_byte()` says whether a byte has come that has not been read,
+without waiting.** A console, a modem or a protocol reads in order and
+can wait, and is shortest written with `read_byte`; a loop that also
+blinks a light asks `has_byte` first. These are Arduino's
+`Serial.read()` and `Serial.available()`, and MicroPython's
+`uart.read(1)` and `uart.any()`.
+
+**Why `none` and not a byte that never comes?** On a board no more
+bytes is never, so a firmware program can treat `none` as the end. On
+a computer it is the end of what was typed (Ctrl-D, or the end of a
+file piped in), and a program that reads lines stops there, as one
+that reads `input()` does (23). **Turned down: `read_byte` giving
+`none` for "nothing yet"**, which would make every reader a loop with
+a wait in it, and a reader on a computer spin for ever once the input
+ended.
+
+**Left for later: `read_line`, a timeout, and reading many bytes at
+once.** A line is a few lines of Zeno over `read_byte`
+(`examples/console.zeno`), and the library written in Zeno (33) is
+where it can go once a board has been tried.
+
+### 46.5 Four more functions in the board layer, for a program with a port
+
+```c
+#define ZENO_SERIALS 4                                       /* how many ports */
+void zeno_board_serial_open(int port, double baud);          /* set its speed */
+void zeno_board_serial_write(int port, const uint8_t *bytes, size_t count);
+bool zeno_board_serial_ready(int port);                      /* no waiting */
+int  zeno_board_serial_read(int port);                       /* waits; -1: no more */
+```
+
+**Only a program that makes a port calls them**, by the rule of 45.4:
+the part of the runtime that does is marked `#ifdef ZENO_SERIAL_PORTS`
+and kept only for such a program. A board header written with four
+functions, or five, still builds every program with no port, and the C
+of every such program is what it was. Writing takes a buffer and a
+count and not a byte at a time, because a board's driver (ST's
+`HAL_UART_Transmit`, a DMA) sends a buffer.
+
+### 46.6 On a computer every port is the terminal
+
+**What a port sends is written out as it is, with no line of its own,
+and what it reads is what is typed, a byte at a time.** That is a
+serial monitor: the window where a firmware engineer reads what a
+board says and types back. The end of what was typed is the end of the
+port: `read_byte` gives `none` and `has_byte` is `false`. A terminal
+hands over a line at a time, so on a computer `has_byte` waits for the
+next line, where on a board it never waits.
+
+**Turned down: a line for each write, as the pins have** (`pin 7 on`).
+A pin's level is an event a logic analyser shows; the bytes of a port
+are text, and a line around every `write("hel")` would cut a sentence
+in pieces. Every port of the simulated board is the one terminal, so a
+program with two ports sees both there; a board of one's own (5.12b)
+keeps them apart, and is how the tests wire a port back to itself.
+
+### 46.7 Left for later
+
+- `read_line`, a timeout, and reading many bytes at once (46.4).
+- `1 / 9600 baud` as the time of one bit (46.2).
+- Parity, stop bits, flow control. The board header sets them; 8N1 is
+  what nearly every port is.
+- A byte arriving by interrupt, with the rule of item 7 for what an
+  interrupt may share.
+- Running it on a real board, with ST's HAL underneath, as in
+  [`serial.md`](serial.md). Like the rest of the board layer it is a
+  sketch until then.
