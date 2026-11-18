@@ -12806,6 +12806,19 @@ gave the loop back its registers would have been luck, and the next
 change anywhere could undo it. Carrying the end in a kind that already
 exists leaves the loop as it was in 0.5.2.
 
+### 34.6 On Windows a built program asks for the environment in UTF-16
+
+C's `getenv` answers on Windows in the machine's code page, so a
+value in Tamil on a machine set up for English came out of a built
+program as question marks, where `zeno run` printed it. Windows keeps
+the environment whole, in UTF-16, and `program.environment` now asks
+it (`GetEnvironmentVariableW`) and turns the answer into UTF-8, as
+`program.arguments` does for the command line. The three functions of
+Windows are declared inside the function that uses them, so that a
+`--minimal` build, which keeps only the functions a program uses,
+keeps them with it. **Turned down: `_wgetenv`**, which is Microsoft's
+C library's own and reads a copy made when the program started.
+
 ## 35. A case of an enum can stand for a number
 
 ```zeno
@@ -13340,6 +13353,23 @@ and so does a program of Zeno.
   for Python.
 - Rubies before 3.1 and other Rubies (JRuby, TruffleRuby) are not
   tested. The helper uses nothing newer than Ruby 2.6.
+
+### 37.10 On Windows the helper is a file
+
+Everywhere else Ruby is started with `-e` and the helper as one word.
+On Windows a program is handed its command line as one text and cuts
+it into words itself, and Ruby cuts it by rules of its own: a `\`
+followed by spaces and then a `"` takes the `"` out of the count, and
+a word with `*` or `{` in it is looked up as the name of a file. The
+helper arrived cut short at a line that ended in `\`, Ruby stopped on
+a syntax error, and Zeno said there was no Ruby. So on Windows the
+helper is written once into the folder for what can be made again
+(`registry::cache`), under a number worked out from it, and Ruby is
+given the file. **Turned down: only mending that line**, which was
+done too: the next line of the helper to trip a rule nobody knows by
+heart would bring the fault back, and only on a machine no test here
+runs on. **Why not a file everywhere:** `-e` needs no folder to write
+in, and works.
 
 ## 38. The libraries of PHP
 
@@ -14434,6 +14464,18 @@ purpose:
 - **That layer already works here.** A library of C++ with `extern
   "C"` functions is a library of C, and `c.library` takes it, as it
   takes Go and Rust (44.6).
+
+### 44.13 A missing function is said the same way on every system
+
+A declared function the library does not have is found on Linux when
+the stubs are loaded, and the helper says "the library `m` has no
+`name`, which was declared". The linkers of Windows and macOS find
+it earlier, when the stubs are built, and what they say names a
+temporary file that is different each time. Their lines ("undefined
+reference to", "undefined symbol:", `"_name", referenced from:`) are
+read, and when the name is one the program declared, the error is the
+one Linux gives. Any other complaint of a linker is still shown as it
+was said.
 
 ## 45. Inputs: a pin the program reads
 

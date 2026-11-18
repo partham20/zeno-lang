@@ -696,7 +696,7 @@ mod link {
             Lang::Python => vec!["-c".to_string(), PYTHON.to_string()],
             Lang::Node => vec!["-e".to_string(), NODE.to_string()],
             Lang::Java => java_helper(program),
-            Lang::Ruby => vec!["-e".to_string(), RUBY.to_string()],
+            Lang::Ruby => ruby_helper(),
             // `-r` takes the program without the `<?php` a file begins with.
             Lang::Php => vec!["-r".to_string(), PHP.trim_start_matches("<?php").to_string()],
             // Lua takes no program that begins with `-`, as a comment does.
@@ -705,6 +705,42 @@ mod link {
             // The helper is a program of its own (`programs`).
             Lang::C => Vec::new(),
         }
+    }
+
+    /// The words that start the Ruby helper: `-e` and the helper, or on
+    /// Windows a file that holds it.
+    ///
+    /// On Windows a program is handed its command line as one text and
+    /// cuts it into words itself. Ruby cuts it by rules of its own: a
+    /// `\` some spaces before a `"` takes the `"` out of the count, and
+    /// a `*` or a `{` is looked up as the name of a file. The helper,
+    /// handed over as a word, arrived cut short at its line 232, and
+    /// Ruby stopped on a syntax error. A file is read as it is. It is
+    /// kept where the Java helper's classes are, under a number worked
+    /// out from the helper, and written once.
+    fn ruby_helper() -> Vec<String> {
+        let as_a_word = vec!["-e".to_string(), RUBY.to_string()];
+        if !cfg!(windows) {
+            return as_a_word;
+        }
+        let mut number: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in RUBY.bytes() {
+            number = (number ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let folder = match crate::registry::cache() {
+            Ok(folder) => folder,
+            // A folder nobody else can have made, used this once and
+            // taken away when the program is over.
+            Err(_) => {
+                let folder = std::env::temp_dir().join(format!("zeno-{}-{}", std::process::id(), secret()));
+                SCRAPS.with(|scraps| scraps.borrow_mut().push(folder.clone()));
+                folder
+            }
+        };
+        let file = folder.join(format!("ruby-bridge-{number:016x}.rb"));
+        let written = std::fs::read(&file).is_ok_and(|there| there == RUBY.as_bytes())
+            || (std::fs::create_dir_all(&folder).is_ok() && std::fs::write(&file, RUBY).is_ok());
+        if written { vec![file.to_string_lossy().into_owned()] } else { as_a_word }
     }
 
     /// The words that start the Java helper.

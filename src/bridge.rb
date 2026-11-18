@@ -228,7 +228,7 @@ def act(ask)
     rescue LoadError => error
       raise Told.new(
         "FileError",
-        "Ruby has no library `" + name + "` (" + error.message.lines.first.to_s.strip + "). " \
+        "Ruby has no library `" + name + "` (" + error.message.lines.first.to_s.strip + "). " +
         "Is its gem installed for this Ruby? It is " + RbConfig.ruby
       )
     end
