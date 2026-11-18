@@ -1,5 +1,6 @@
-//! Values that live in another language: `import python`, `import node`
-//! and `import java` (docs/python.md, docs/node.md, docs/java.md).
+//! Values that live in another language: `import python`, `import node`,
+//! `import java` and `import ruby` (docs/python.md, docs/node.md,
+//! docs/java.md, docs/ruby.md).
 //!
 //! Zeno starts that language's own interpreter beside the program, once,
 //! the first time it is asked for, and the two talk over a socket of this
@@ -9,7 +10,7 @@
 //! side keeps it under.
 //!
 //! Nothing here knows a language but `Lang` and the helper it names
-//! (`bridge.py`, `bridge.js`, `bridge.java`). Another language is
+//! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`). Another language is
 //! another helper that speaks the same lines.
 
 use std::rc::Rc;
@@ -25,6 +26,7 @@ pub enum Lang {
     Python,
     Node,
     Java,
+    Ruby,
 }
 
 impl Lang {
@@ -34,6 +36,7 @@ impl Lang {
             Lang::Python => "Python",
             Lang::Node => "JavaScript",
             Lang::Java => "Java",
+            Lang::Ruby => "Ruby",
         }
     }
 
@@ -44,6 +47,7 @@ impl Lang {
             Lang::Python => "Python",
             Lang::Node => "Node",
             Lang::Java => "Java",
+            Lang::Ruby => "Ruby",
         }
     }
 }
@@ -424,6 +428,13 @@ pub fn global(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "global", span).text("name", name).send()
 }
 
+/// `ruby.symbol("name")`: what `:name` is in Ruby.
+#[cold]
+#[inline(never)]
+pub fn symbol(lang: Lang, name: &str, span: Span) -> Result {
+    Ask::new(lang, "symbol", span).text("name", name).send()
+}
+
 /// `java.jar("lib")`: a jar, or a folder of them, where Java then
 /// finds classes.
 #[cold]
@@ -593,6 +604,7 @@ mod link {
     const PYTHON: &str = include_str!("bridge.py");
     const NODE: &str = include_str!("bridge.js");
     const JAVA: &str = include_str!("bridge.java");
+    const RUBY: &str = include_str!("bridge.rb");
 
     /// How the helper of a language is handed to its program: the
     /// option that says "the program is the next word", and the helper.
@@ -603,6 +615,7 @@ mod link {
             Lang::Python => vec!["-c".to_string(), PYTHON.to_string()],
             Lang::Node => vec!["-e".to_string(), NODE.to_string()],
             Lang::Java => java_helper(program),
+            Lang::Ruby => vec!["-e".to_string(), RUBY.to_string()],
         }
     }
 
@@ -684,6 +697,7 @@ mod link {
             Lang::Python => "ZENO_PYTHON",
             Lang::Node => "ZENO_NODE",
             Lang::Java => "ZENO_JAVA",
+            Lang::Ruby => "ZENO_RUBY",
         }
     }
 
@@ -749,6 +763,7 @@ mod link {
             (_, Lang::Python) if cfg!(windows) => vec!["python".to_string(), "python3".to_string(), "py".to_string()],
             (_, Lang::Python) => vec!["python3".to_string(), "python".to_string()],
             (_, Lang::Node) => vec!["node".to_string()],
+            (_, Lang::Ruby) => vec!["ruby".to_string()],
             // `JAVA_HOME` is where the tools of Java look for it.
             (_, Lang::Java) => {
                 let mut names = vec!["java".to_string()];

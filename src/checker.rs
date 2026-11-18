@@ -1665,6 +1665,10 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("java", "type") => Ty::Builtin("java.type"),
         ("java", "jar") => Ty::Builtin("java.jar"),
         ("java", "copy") => Ty::Builtin("python.copy"),
+        ("ruby", "require") => Ty::Builtin("ruby.require"),
+        ("ruby", "constant") => Ty::Builtin("ruby.constant"),
+        ("ruby", "symbol") => Ty::Builtin("ruby.symbol"),
+        ("ruby", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3379,6 +3383,7 @@ impl Checker {
                     "python" => "python",
                     "node" => "node",
                     "java" => "java",
+                    "ruby" => "ruby",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -6153,7 +6158,23 @@ impl Checker {
                 self.can_raise("FileError", span);
                 Ty::None
             }
-            "node.module" | "node.global" | "java.type" => {
+            // `ruby.require("date")` loads a library of Ruby, which may
+            // not be there. `ruby.constant("Date")` then names what it
+            // brought, and `ruby.symbol("name")` is `:name`.
+            "ruby.require" => {
+                if self.arity("require", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the library given to `ruby.require`", arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::None
+            }
+            "ruby.symbol" => {
+                if self.arity("symbol", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the name given to `ruby.symbol`", arguments[0].span);
+                }
+                Ty::Dynamic
+            }
+            "node.module" | "node.global" | "java.type" | "ruby.constant" => {
                 let short = name.split('.').nth(1).unwrap_or(name);
                 if self.arity(short, arguments, 1, 1, span) {
                     let what = format!("the name given to `{name}`");
@@ -8287,7 +8308,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         // A name of the part of `math` that is written in Zeno, which
@@ -10400,6 +10421,26 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import java\njava.new(\"x\")"), "module `java` has no `new`");
         assert_eq!(
             strict_error("import java\nlet list = java.type(\"java.util.ArrayList\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
+        // And Ruby's.
+        ok("import ruby\n\
+            ruby.require(\"date\")\n\
+            let Date = ruby.constant(\"Date\")\n\
+            let day = Date.new(2026, 11, 18)\n\
+            let year: int = day.year()\n\
+            let days = ruby.constant(\"Array\").new(2, day)\n\
+            days[0] = ruby.symbol(\"none\")\n\
+            for one in ruby.copy(days) {\n    print(one, year, len(days), days[0], day.send(\"leap?\"), Date.today(start=1))\n}");
+        ok("from ruby import require, constant, symbol, copy\nrequire(\"set\")\nprint(copy(constant(\"Set\").new([symbol(\"a\")])))");
+        assert_eq!(error("import ruby\nruby.constant(5)"), "the name given to `ruby.constant` should be str, but this is int");
+        assert_eq!(error("import ruby\nruby.symbol(5)"), "the name given to `ruby.symbol` should be str, but this is int");
+        assert_eq!(error("import ruby\nruby.require(5)"), "the library given to `ruby.require` should be str, but this is int");
+        assert_eq!(error("import ruby\nruby.constant()"), "`constant` takes 1 argument, but 0 were given");
+        assert_eq!(error("import ruby\nlet nothing: int = ruby.require(\"date\")"), "`nothing` should be int, but this is none");
+        assert_eq!(error("import ruby\nruby.module(\"date\")"), "module `ruby` has no `module`");
+        assert_eq!(
+            strict_error("import ruby\nlet date = ruby.constant(\"Date\")"),
             "strict mode: the type of this cannot be worked out before the program runs"
         );
         // Strict mode wants every type before the program runs, and

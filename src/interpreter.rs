@@ -2153,6 +2153,204 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         }
     }
 
+    /// Is there a Ruby on this machine for `import ruby` to start?
+    fn ruby_is_here() -> bool {
+        std::process::Command::new("ruby")
+            .args(["-e", "exit 0"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn a_library_of_ruby_is_used_from_zeno() {
+        if !ruby_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own. A constant is named
+        // as Ruby writes it, a call has brackets, a name Zeno cannot write
+        // after a dot goes through `send`, and a named argument is a keyword
+        // argument.
+        assert_eq!(
+            output(
+                "import ruby\n\
+                 ruby.require(\"date\")\n\
+                 let Date = ruby.constant(\"Date\")\n\
+                 let day = Date.new(2026, 11, 18)\n\
+                 print(day, day.year() + 1, day.strftime(\"%A\"), day.send(\"leap?\"), day.next_day(30), day == Date.parse(\"2026-11-18\"), day.send(\"-\", Date.new(2026, 1, 1)).to_i())\n\
+                 let Math = ruby.constant(\"Math\")\n\
+                 print(Math.PI > 3.14, Math.sqrt(16), Math.hypot(3, 4), ruby.constant(\"Float::INFINITY\"), ruby.constant(\"Float\").NAN, ruby.constant(\"Integer\").sqrt(99))\n\
+                 let Kernel = ruby.constant(\"Kernel\")\n\
+                 let text = Kernel.format(\"%05.1f|%s|%d\", 3.14159, \"h\u{e9}llo \u{1f600}\\t\\\"q\\\"\", 7)\n\
+                 print(text, len(text), text.upper(), Kernel.send(\"Integer\", \"ff\", 16), Kernel.send(\"Integer\", \"x\", exception=false), 2 ** 62)\n\
+                 let big = Kernel.send(\"Integer\", \"123456789012345678901234567890\")\n\
+                 print(big, big.send(\"+\", big), big.bit_length(), big.send(\"even?\"), big.send(\"class\"), big == big.send(\"+\", 0))\n\
+                 let Point = ruby.constant(\"Struct\").new(ruby.symbol(\"x\"), ruby.symbol(\"y\"), keyword_init=true)\n\
+                 let point = Point.new(x=1, y=2.5)\n\
+                 point.x = point.x() + 10\n\
+                 let read = point.y\n\
+                 print(point.x(), read(), point.to_a(), point == Point.new(x=11, y=2.5), point == Point.new(x=0, y=0), ruby.symbol(\"x\"), ruby.symbol(\"x\") == ruby.symbol(\"x\"), ruby.symbol(\"x\") == \"x\")\n\
+                 ruby.require(\"net/http\")\n\
+                 ruby.require(\"digest\")\n\
+                 print(ruby.constant(\"Net::HTTP\"), ruby.constant(\"Net\").HTTP == ruby.constant(\"Net::HTTP\"), ruby.constant(\"URI\").parse(\"https://zeno-lang.org/docs?x=1\").host(), ruby.constant(\"Digest::SHA256\").hexdigest(\"zeno\"))\n\
+                 print(ruby.require(\"set\"), read)"
+            ),
+            "2026-11-18 2027 Wednesday false 2026-12-18 true 321\n\
+             true 4.0 5.0 inf NaN 9\n\
+             003.1|h\u{e9}llo \u{1f600}\t\"q\"|7 19 003.1|H\u{e9}LLO \u{1f600}\t\"Q\"|7 255 none 4611686018427387904\n\
+             123456789012345678901234567890 246913578024691357802469135780 97 true Integer true\n\
+             11 2.5 [11, 2.5] true false x true false\n\
+             Net::HTTP true zeno-lang.org 988465d28db4d902b53d9e902ea5d7bba65489f4aafdb2df4c271a9e4f6364a4\n\
+             none method `y` of a Struct. In Zeno a call has brackets: `.y()`\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_ruby() {
+        if !ruby_is_here() {
+            return;
+        }
+        // An Array of Ruby is the one Array there is. `ruby.copy` makes a
+        // list of Zeno of it, with everything in it, and a symbol in it is
+        // copied as its name. Text is a str whatever its encoding was, and
+        // bytes that are not text stay in Ruby.
+        assert_eq!(
+            output(
+                "import ruby\n\
+                 let items = ruby.constant(\"Array\").new(3, 0)\n\
+                 items.push(5).push(\"x\")\n\
+                 items[0] = [1, 2.5, none, true, [\"k\": \"v\"]]\n\
+                 print(len(items), items[1], items[3] + 1, items[4] + \"!\", 5 in items, 6 in items, items.size(), items.last(), items.index(5))\n\
+                 var total = 0\n\
+                 for item in items.last(3) { total = total + len(str(item)) }\n\
+                 print(total, items == items, items == items.dup(), items == 3, items[0][4][\"k\"], len(items[0]), items[0].length())\n\
+                 let copy = ruby.copy(items)\n\
+                 copy[1] = 9\n\
+                 print(copy, items[1], ruby.copy(3), ruby.copy(\"as it is\"), ruby.copy(items.first(2)))\n\
+                 let ages = ruby.constant(\"Hash\").new()\n\
+                 ages[\"ann\"] = 31\n\
+                 ages[ruby.symbol(\"bob\")] = 40\n\
+                 ages[7] = [ruby.symbol(\"seven\"), 7.0]\n\
+                 print(len(ages), ages[\"ann\"], ages[ruby.symbol(\"bob\")], ages[\"bob\"], \"ann\" in ages, \"bob\" in ages, ages.key(31), ages.fetch(\"zed\", 0))\n\
+                 for key in ages { print(key) }\n\
+                 for name, age in ruby.copy(ages) { print(name, age) }\n\
+                 for n in ruby.constant(\"Range\").new(1, 3) { print(n * 2) }\n\
+                 for pair in ages.first(2) { print(ruby.copy(pair)) }\n\
+                 ruby.require(\"set\")\n\
+                 ruby.require(\"stringio\")\n\
+                 let seen = ruby.constant(\"Set\").new([3, 1, 3])\n\
+                 print(len(seen), 3 in seen, ruby.copy(seen), ruby.copy(ruby.constant(\"Range\").new(1, 4).step(2).to_a()), len(ruby.constant(\"Range\").new(1, 10)))\n\
+                 for line in ruby.constant(\"StringIO\").new(\"a\\nb\\n\") { print(line.strip()) }\n\
+                 let bytes = ruby.constant(\"Array\").new(2, 255).pack(\"C*\")\n\
+                 let latin = ruby.constant(\"Array\").new(1, 233).pack(\"C*\").force_encoding(\"ISO-8859-1\")\n\
+                 print(len(bytes), bytes.bytes(), bytes == bytes.dup(), bytes.unpack1(\"H*\"), ruby.constant(\"Array\").new(2, 104).pack(\"C*\") + \"i\", latin, len(latin))\n\
+                 let word = ruby.constant(\"String\").new(\"zeno\")\n\
+                 print(word.upper(), ruby.symbol(\"zeno\").length(), ruby.symbol(\"upcase\").to_proc().call(\"x\" + word) == \"XZENO\")"
+            ),
+            "5 0 6 x! true false 5 x 3\n\
+             3 true true false v 5 5\n\
+             [[1, 2.5, none, true, [\"k\": \"v\"]], 9, 0, 5, \"x\"] 0 3 as it is [[1, 2.5, none, true, [\"k\": \"v\"]], 0]\n\
+             3 31 40 none true false ann 0\n\
+             ann\n\
+             bob\n\
+             7\n\
+             ann 31\n\
+             bob 40\n\
+             7 [\"seven\", 7.0]\n\
+             2\n\
+             4\n\
+             6\n\
+             [\"ann\", 31]\n\
+             [\"bob\", 40]\n\
+             2 true [3, 1] [1, 3] 10\n\
+             a\n\
+             b\n\
+             2 [255, 255] true ffff hhi \u{e9} 1\n\
+             ZENO 4 true\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_ruby_is_an_error_of_zeno() {
+        if !ruby_is_here() {
+            return;
+        }
+        // An exception has Zeno's kind where the two mean one thing, a
+        // file that cannot be used is a FileError, and every other is an
+        // `Error` that says what Ruby called it. What Ruby words is not
+        // compared, since each Ruby words it differently.
+        assert_eq!(
+            output(
+                "import ruby\n\
+                 let Kernel = ruby.constant(\"Kernel\")\n\
+                 let items = ruby.constant(\"Array\").new(2, 0)\n\
+                 try { Kernel.send(\"Integer\", \"x\") } except ValueError as error { print(1, error.message.starts_with(\"ArgumentError: \")) }\n\
+                 try { items.fetch(2) } except IndexError as error { print(2, error.message != \"\") }\n\
+                 try { ruby.constant(\"Hash\").new().fetch(\"k\") } except KeyError as error { print(3, error.message != \"\") }\n\
+                 try { Kernel.send(\"Rational\", 1, 0) } except ZeroDivisionError as error { print(4, error.message != \"\") }\n\
+                 try { ruby.constant(\"File\").read(\"/zeno/no/such/file\") } except FileError as error { print(5, error.message.starts_with(\"Errno::ENOENT: \")) }\n\
+                 try { items.send(\"+\", 1) } except Error as error { print(6, error.kind, error.message.starts_with(\"TypeError: \")) }\n\
+                 try { Kernel.send(\"raise\", \"it broke\") } except Error as error { print(7, error.kind, error.message) }\n\
+                 try { ruby.require(\"zeno_no_such_library\") } except FileError as error { print(8, error.message.starts_with(\"Ruby has no library `zeno_no_such_library` (\")) }\n\
+                 try { ruby.constant(\"ZenoNoSuch\") } except Error as error { print(9, error.message) }\n\
+                 try { items.nothing() } except Error as error { print(10, error.message) }\n\
+                 try { items.frozen } except Error as error { print(11, error.message) }\n\
+                 try { ruby.constant(\"Math\").nothing } except Error as error { print(12, error.message) }\n\
+                 try { ruby.constant(\"Array\")(1) } except Error as error { print(13, error.message) }\n\
+                 try { items() } except Error as error { print(14, error.message) }\n\
+                 try { items.push(1, most=2).fetch(9, 9, 9) } except ValueError as error { print(16, error.message.starts_with(\"ArgumentError: \")) }\n\
+                 try { ruby.copy(ruby.constant(\"Hash\").send(\"[]\", 1.5, 2)) } except ValueError as error { print(17, error.message) }\n\
+                 try { for n in ruby.constant(\"Range\").new(1, none) { print(n) } } except ValueError as error { print(18, error.message) }\n\
+                 try { for n in ruby.constant(\"Object\").new() { print(n) } } except Error as error { print(19, error.message) }\n\
+                 try { len(ruby.constant(\"Object\").new()) } except Error as error { print(20, error.message) }\n\
+                 try { print(1 in ruby.constant(\"Object\").new()) } except Error as error { print(21, error.message) }\n\
+                 try { ruby.constant(\"Object\").new()[0] } except Error as error { print(22, error.message.starts_with(\"NoMethodError: \")) }\n\
+                 print(items.size, \"still here\")"
+            ),
+            "1 true\n\
+             2 true\n\
+             3 true\n\
+             4 true\n\
+             5 true\n\
+             6 Error true\n\
+             7 Error it broke\n\
+             8 true\n\
+             9 Ruby has no constant `ZenoNoSuch`. One that a library brings is there after `ruby.require` of the library\n\
+             10 an Array has no method `nothing`\n\
+             11 an Array has no method `frozen`. It has `frozen?`, which is written `.send(\"frozen?\")` in Zeno\n\
+             12 the module Math has no method `nothing`\n\
+             13 the class Array is not called in Ruby. An object of it is made with `.new(...)`\n\
+             14 an Array is not a method, and cannot be called\n\
+             16 true\n\
+             17 a dict in Zeno has keys that are str or int, and this one has the key 1.5\n\
+             18 a Range that has no end cannot be gone through with `for`. `.first(n)` takes the first n of it\n\
+             19 an Object cannot be gone through with `for`\n\
+             20 an Object has no length\n\
+             21 an Object cannot be asked what is `in` it\n\
+             22 true\n\
+             method `size` of an Array. In Zeno a call has brackets: `.size()` still here\n"
+        );
+        assert_eq!(
+            error("import ruby\nfunction double(n) { return n * 2 }\nruby.constant(\"Array\").new(2, 0).map(double)"),
+            "a function of Zeno cannot be given to Ruby yet"
+        );
+        assert_eq!(
+            error("import ruby\nif ruby.constant(\"Array\").new() { print(1) }"),
+            "a condition must be true or false, but this is a Ruby value"
+        );
+        assert_eq!(error("import ruby\nruby.constant()"), "`constant` takes 1 argument, but 0 were given");
+        assert_eq!(error("import ruby\nruby.require(3)"), "`require` needs a str, but this is an int");
+        assert_eq!(error("import ruby\nruby.symbol(3)"), "`symbol` needs a str, but this is an int");
+        // Each stays where it was made.
+        if python_is_here() {
+            assert_eq!(
+                error("import ruby\nimport python\npython.module(\"json\").dumps(ruby.constant(\"Array\").new())"),
+                "a Ruby value cannot be given to Python. Each stays where it was made"
+            );
+        }
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -2189,7 +2387,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

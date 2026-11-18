@@ -13022,3 +13022,176 @@ text, and waits until a program asks. **`files.append_bytes`**, for a
 log of records, the same. **A file read in pieces**, for a file too big
 to hold, waits for cleaning up at the end of a block, as it does for
 text.
+
+## 34. The libraries of Ruby
+
+The first language of the second version (26.1): `import ruby`, for
+the library that comes with Ruby and for gems. [`ruby.md`](ruby.md)
+is the walkthrough. Chapter 26 holds here as it does for JavaScript
+(28) and Java (29): Ruby runs beside the program, they talk over a
+socket, numbers and text cross and everything else stays, what Zeno
+gives is a copy, a value from there is not a condition, the types are
+known when the program runs, and nothing changes for a program that
+does not ask. What follows is what Ruby made different.
+
+### 34.1 `ruby.require` loads, and `ruby.constant` names
+
+```zeno
+ruby.require("date")
+let Date = ruby.constant("Date")
+```
+
+**Why two functions, where Python has one.** In Python `import` gives
+the module, and everything is reached from it. In Ruby `require`
+gives nothing: it loads a file, and what the file brings are
+constants that every program can then name. One library can bring
+several (`net/http` brings `Net::HTTP` and `URI`), and many constants
+need no library at all (`Math`, `File`, `Kernel`). A `ruby.module`
+that guessed the constant from the name of the library would be right
+for `date` and wrong for `net/http`, `yaml` (`YAML`) and
+`active_support`.
+
+**Why these names.** `require` is the word Ruby has, so it is the one
+a person looks for. `constant` is what Ruby calls every name that
+begins with a capital letter, a class, a module and `RUBY_VERSION`
+alike, so one function covers them. It takes the name as Ruby writes
+it, `"Net::HTTP"`.
+
+**`require` gives none.** Ruby's gives `true` the first time and
+`false` after, which says nothing a program of Zeno needs.
+
+### 34.2 A call has brackets
+
+In Ruby `day.year` is a call. In Zeno `thing.name` with no brackets
+is the method itself, to be called later, as it is for a value of
+JavaScript (28.6) and Java (29.3), and that rule holds for a value of
+Ruby: `day.year()` calls, and `day.year` is the method.
+
+**Why not call it as Ruby does.** A dot that sometimes calls is the
+ambiguity the language was written to be without: `words.push` would
+have to mean "call with nothing" or "the method" by a rule the reader
+cannot see. With brackets every call in a Zeno program looks like a
+call, whichever language answers it. Python, JavaScript and Java
+already agree with Zeno here, so Ruby is the one that bends.
+
+The method not called yet prints as a sentence that says so, since
+the commonest mistake is to leave the brackets off as Ruby allows.
+
+### 34.3 `send` for the names Zeno cannot write
+
+`empty?`, `sort!`, `+`, `class` and `raise` cannot follow a dot in
+Zeno. They are reached through `send`, which is Ruby's own method for
+calling a method by its name: `words.send("empty?")`.
+
+**Why not let `?` and `!` into a name after a dot.** `?` and `!` are
+not part of any name in Zeno, and letting them in for one module
+would change what the lexer reads for every program, which 26.11
+rules out. It would also not reach the operators or the words.
+
+**Why not the name in brackets, as for Java (29.10).** In Java an
+object that has no items has no use for brackets. In Ruby almost
+everything has `[]`: an Array, a Hash, a String, a Struct, a class
+(`Hash["a", 1]`). `words["empty?"]` already means something there.
+`send` means one thing, and is what a Ruby programmer would write.
+
+Where a name has no method and the same name with `?` or `!` has, the
+error says how to write it.
+
+### 34.4 A symbol stays in Ruby; `ruby.symbol` makes one
+
+`:up` and `"up"` are different values in Ruby, and a Hash keeps them
+apart. If a symbol arrived as a str, the program could not give it
+back as what it was, and `hash[key]` with a key Ruby gave would look
+under the wrong key. So a symbol is one of the values that stay, and
+`ruby.symbol("up")` is how a program writes `:up`.
+
+**In a copy it is its name.** `ruby.copy` makes plain data of Zeno
+(26.5), and a dict has keys that are str or int. A Hash with symbol
+keys is the commonest Hash in Ruby, so the copy would be refused for
+most of them if a symbol could not be a key. As a value it is copied
+the same way, so that one rule covers both.
+
+**No looking under both.** `ages["bob"]` does not also try `:bob`.
+A Hash can hold both keys, and then which one was meant would be a
+guess.
+
+### 34.5 Text and bytes are one String
+
+Ruby has one class for both. A String comes across as a str when it
+is text: as it is when Ruby has it in UTF-8, turned into UTF-8 when
+it is in another encoding, and read as UTF-8 when Ruby has no
+encoding for it (`ASCII-8BIT`), which is what a socket, `Net::HTTP`
+and `File.binread` give. Bytes that do not read as UTF-8 stay in
+Ruby.
+
+**Why read the unlabelled bytes as text.** Most of what Ruby hands
+out without an encoding is text: the body of a web page, the output
+of a program. If those stayed in Ruby, the first thing most programs
+do, fetch something and look at it, would give a value that `len` and
+`+` refuse.
+
+**What it costs.** Whether such a String arrives as a str depends on
+what is in it, where everywhere else it depends on the kind of value:
+the bytes of a file that happens to hold only text arrive as a str.
+Python has `bytes` and JavaScript has `Buffer`, so they have no such
+case. Nothing is lost by it, because a str given back to Ruby is the
+same bytes. A program that must have bytes whatever they are reads
+them through something that stays in Ruby: `File.open(name, "rb")`,
+and its `each_byte()`.
+
+### 34.6 An exception of Ruby is an error of Zeno
+
+`ZeroDivisionError` and `KeyError` have Zeno's kinds of the same
+name. `IndexError` and `StopIteration` are `IndexError`,
+`ArgumentError` is `ValueError` (it is what Ruby raises for a value a
+method cannot use, `Integer("x")`), `Errno::...` and `IOError` are
+`FileError`, and the rest are `Error` with the name Ruby gave in
+front. `RuntimeError` is the exception `raise "text"` makes, and its
+name says nothing, so the message is the text alone, as for a plain
+`Error` of JavaScript (28.8).
+
+`ArgumentError` is also what Ruby raises for the wrong number of
+arguments. That is a mistake in the program and not a value, but Ruby
+does not tell the two apart, so neither can Zeno.
+
+### 34.7 A loop goes through what `each` gives
+
+`for item in thing` takes everything `thing.each` gives, as Ruby's
+own `for` does, and of a Hash its keys, as for a dict.
+
+**Why `each` and not `to_a`.** They are the same for most things and
+differ for some: a table of `csv` gives its rows to `each` and its
+header as well to `to_a`. A loop is `each`.
+
+**Something with no end is refused.** `1..` and `loop` would be gone
+through forever before the loop began (26.12). A Range with no end and
+anything whose size is infinite raise `ValueError` and say what to
+write (`first(n)`).
+
+### 34.8 A library is looked for from the folder of the program
+
+As for Python and JavaScript (28.9): the folder of the `.zeno` file
+is the first place `require` looks, so a `helper.rb` beside the
+program is `ruby.require("helper")`. A `Gemfile` there is the one
+Bundler uses, when the program requires `bundler/setup` and
+`BUNDLE_GEMFILE` does not already name another.
+
+**Why Bundler is not required for the program.** A `Gemfile` beside
+a program does not say that the program must run under it, and under
+Bundler every gem that the `Gemfile` does not name is hidden. A
+program of Ruby says `require "bundler/setup"` when it wants that,
+and so does a program of Zeno.
+
+### 34.9 Left for later
+
+- A block: a function of Zeno given to `map`, `each`, `File.open`.
+  It is the callback that 26.12 leaves, and Ruby needs it more than
+  the others.
+- A loop with two names over a Hash, giving the key and the value.
+  It gives a count and the key, as over the list of keys that the
+  loop takes. The same holds for a dict of Python and a Map of Java.
+- A class of Zeno that inherits from a class of Ruby.
+- `ruby` in a built program, and in `--target ruby`, as 26.9 has it
+  for Python.
+- Rubies before 3.1 and other Rubies (JRuby, TruffleRuby) are not
+  tested. The helper uses nothing newer than Ruby 2.6.

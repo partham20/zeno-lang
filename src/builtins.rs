@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java` and `random`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby")
 }
 
 /// Every built-in name and what it stands for.
@@ -257,6 +257,29 @@ fn java_jar(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("jar", &args, 1, 1, span)?;
     crate::bridge::jar(text("jar", &args[0], span)?, span)?;
     Ok(Value::None)
+}
+
+/// `ruby.require("date")`: a library of Ruby, or a gem, as `require`
+/// loads it there. What it brings is then reached by `ruby.constant`.
+/// Ruby is started beside the program the first time it is asked for
+/// (`bridge.rs`).
+fn ruby_require(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("require", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Ruby, text("require", &args[0], span)?, span)?;
+    Ok(Value::None)
+}
+
+/// `ruby.constant("Date")`: a class, a module or another constant of
+/// Ruby, by its name as Ruby writes it: `"Net::HTTP"`.
+fn ruby_constant(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("constant", &args, 1, 1, span)?;
+    crate::bridge::global(crate::bridge::Lang::Ruby, text("constant", &args[0], span)?, span)
+}
+
+/// `ruby.symbol("name")`: what `:name` is in Ruby.
+fn ruby_symbol(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("symbol", &args, 1, 1, span)?;
+    crate::bridge::symbol(crate::bridge::Lang::Ruby, text("symbol", &args[0], span)?, span)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1214,6 +1237,15 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             vec![
                 ("type", Value::Builtin(Builtin { name: "type", call: java_type })),
                 ("jar", Value::Builtin(Builtin { name: "jar", call: java_jar })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "ruby" => (
+            "ruby",
+            vec![
+                ("require", Value::Builtin(Builtin { name: "require", call: ruby_require })),
+                ("constant", Value::Builtin(Builtin { name: "constant", call: ruby_constant })),
+                ("symbol", Value::Builtin(Builtin { name: "symbol", call: ruby_symbol })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

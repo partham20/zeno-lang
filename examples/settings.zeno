@@ -1,0 +1,49 @@
+# A settings file written in YAML, as JSON.
+#
+#     zeno run examples/settings.zeno board.yml
+#     zeno run examples/settings.zeno board.yml uart
+#
+# With a name as a second word, it prints that setting only.
+#
+# Zeno reads JSON and not YAML. Ruby reads both, with the `yaml` that
+# comes with it, and `import ruby` lets a Zeno program use it: every
+# library that comes with Ruby, and any gem that `gem install` put on
+# the computer.
+#
+# It needs Ruby.
+
+import files
+import json
+import program
+import ruby
+
+# `YAML` stays in Ruby, and so does the Hash it makes of the file.
+# `ruby.copy` makes that a dict of Zeno with everything in it, which
+# `json.write` can write. What Ruby can raise is not known before the
+# program runs, so the function says `raises Error`: any kind.
+function settings_of(name: str) raises Error {
+    ruby.require("yaml")
+    let YAML = ruby.constant("YAML")
+    return ruby.copy(YAML.safe_load(files.read(name)))
+}
+
+let words = program.arguments()
+if len(words) < 1 or len(words) > 2 {
+    print("usage: zeno run settings.zeno <file.yml> [a setting]")
+} else {
+    try {
+        let settings = settings_of(words[0])
+        if len(words) == 1 {
+            print(json.write(settings))
+        } else if words[1] in settings {
+            print(json.write(settings[words[1]]))
+        } else {
+            print(f"{words[0]} has no setting `{words[1]}`.")
+        }
+    } except FileError as error {
+        # Ruby is not installed, or there is no such file.
+        print(error.message)
+    } except Error as error {
+        print(f"Ruby could not read it. {error.message}")
+    }
+}
