@@ -520,7 +520,7 @@ file and a faster program, but no `import web` yet.
 - `import php`: the same, for PHP (decision 38.9).
 - `import lua`: the same, for Lua (decision 39.9).
 - `import csharp`: the same, for .NET (decision 40.9).
-- `import c`: the same, for a library of C, Go or Rust (decision 44.9).
+- `import c`: a library of C, Go or Rust is called from `zeno run` and from `zeno build`, which writes C (decision 44.10).
 
 Zeno refuses such a program with a message that names the line.
 

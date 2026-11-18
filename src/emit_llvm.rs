@@ -1062,6 +1062,8 @@ fn described(kind: &Kind) -> String {
         Kind::Function(_) => "a function used as a value".to_string(),
         Kind::Owned(_) => "an owned value".to_string(),
         Kind::Other(name) => format!("a value of type {name}"),
+        Kind::CPointer(to) => format!("a C pointer to {to}"),
+        Kind::CLibrary(_) => "a library of C".to_string(),
     }
 }
 
@@ -1160,6 +1162,8 @@ fn key(kind: &Kind) -> String {
         Kind::Error => "error".to_string(),
         Kind::Function(_) => "function".to_string(),
         Kind::Other(_) => "other".to_string(),
+        Kind::CPointer(_) => "c_pointer".to_string(),
+        Kind::CLibrary(number) => format!("c_library_{number}"),
         Kind::Owned(inner) => key(inner),
     }
 }
@@ -1244,7 +1248,8 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         Kind::None => {
             return Err(cannot("a variable that only ever holds `none`. Give it a type, as in `x: int or none`", span))
         }
-        Kind::Other(_) => return Err(cannot(described(kind), span)),
+        // `import c` is built through C, not LLVM, so far (decision 44.10).
+        Kind::Other(_) | Kind::CPointer(_) | Kind::CLibrary(_) => return Err(cannot(described(kind), span)),
     })
 }
 
@@ -7113,7 +7118,7 @@ impl Emitter<'_> {
             Kind::None => "true".to_string(),
             // Two function values are equal only if they are the same one.
             Kind::Function(_) => self.set(format!("icmp eq ptr {a}, {b}")),
-            Kind::Other(_) | Kind::Owned(_) => return Err(cannot("comparing these", span)),
+            Kind::Other(_) | Kind::Owned(_) | Kind::CPointer(_) | Kind::CLibrary(_) => return Err(cannot("comparing these", span)),
         })
     }
 

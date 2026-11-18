@@ -61,6 +61,7 @@ import targets  # noqa: E402  (the programs, and how one is run)
 
 ZENO = targets.ZENO
 CC = os.environ.get("CC", "cc")
+ASKED = "compiler-was-asked"  # what `zeno build` asked the compiler, one word a line
 
 # Each kind of build, and the words that ask `zeno build` for it.
 KINDS = {
@@ -103,9 +104,15 @@ ENDS_IN = re.compile(r"^(__attribute__\(\(noreturn\)\) static void zeno_(?:fail|
 def written(kind, program, out_dir, minimal):
     """The C file `zeno build` wrote and the program to make of it, or why it wrote none."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The "compiler" `zeno build` is given only writes down what it was
+    # asked to compile with, so that a library of C the program declares
+    # (`import c`) is built in here as `zeno build` builds it in.
+    recorder = out_dir / "record-cc"
+    recorder.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{out_dir / ASKED}'\n")
+    recorder.chmod(0o755)
     command = [str(ZENO), "build"] + KINDS[kind] + (["--minimal"] if minimal else [])
     done = subprocess.run(command + [str(program.folder / program.file)], cwd=out_dir, capture_output=True, text=True,
-                          env=dict(os.environ, CC="true", NO_COLOR="1"))
+                          env=dict(os.environ, CC=str(recorder), NO_COLOR="1"))
     if done.returncode != 0:
         return None, done.stderr.strip()
     name = re.search(r"Built (\S+?)\.? ", done.stdout + " ")
@@ -115,9 +122,28 @@ def written(kind, program, out_dir, minimal):
     return (out_dir / c_file.group(1), out_dir / name.group(1)), ""
 
 
+def libraries(c_file):
+    """What `zeno build` asked the compiler for beyond the program's own C:
+    the libraries of C the program declares, and where their headers are."""
+    asked = c_file.parent / ASKED
+    if not asked.exists():
+        return []
+    words = asked.read_text().splitlines()
+    kept, skip = [], False
+    for word in words:
+        if skip:
+            skip = False
+        elif word == "-o":
+            skip = True
+        elif word != c_file.name and not word.startswith(("-O", "-D", "-fno-math")):
+            kept.append(word)
+    return kept
+
+
 def compiled(c_file, binary, flags):
     """What the C compiler said, if it could not make the program."""
-    done = subprocess.run([CC] + flags + ["-o", str(binary), str(c_file), "-lm"], capture_output=True, text=True)
+    done = subprocess.run([CC] + flags + ["-o", str(binary), str(c_file)] + libraries(c_file) + ["-lm"],
+                          capture_output=True, text=True)
     return done.stderr[:3000] if done.returncode != 0 else ""
 
 
@@ -155,7 +181,8 @@ def try_program(kind, program, scratch):
     wrong = compiled(small_c, small, ["-Os"])
     if wrong:
         return "the minimal C does not compile:\n" + wrong, sizes
-    warned = subprocess.run([CC, "-fsyntax-only", "-Wall", str(small_c)], capture_output=True, text=True)
+    headers = [word for word in libraries(small_c) if word.startswith("-I")]
+    warned = subprocess.run([CC, "-fsyntax-only", "-Wall", str(small_c)] + headers, capture_output=True, text=True)
     # A variable of the program's own that it never reads is the
     # program's business. What is looked for is a function or a variable
     # at the top of the file that nothing uses, or one that is used and

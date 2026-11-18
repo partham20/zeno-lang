@@ -104,6 +104,12 @@ pub enum Kind {
     /// parameter, a field or a return type; a value that is merely looked at
     /// has the plain kind inside.
     Owned(Box<Kind>),
+    /// A library of C that the program declared, by its number in
+    /// `Types::c_libraries` (decision 44.10). It is known while
+    /// building, and holds nothing while the program runs.
+    CLibrary(usize),
+    /// A pointer that C gave, to what it names (`counter`, `void`).
+    CPointer(String),
     /// Anything else, described in words for an error message.
     Other(String),
 }
@@ -291,6 +297,9 @@ pub struct Types {
     /// value `checked` puts there; and `u64.wrap`, which becomes
     /// `u64..of` (decision 42.7).
     pub limits: HashMap<(usize, usize), Expr>,
+    /// Each library of C a program declares with `c.library`, written
+    /// out, in the order they are met (decision 44.10).
+    pub c_libraries: Vec<Rc<crate::bridge_c::Library>>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -507,6 +516,8 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::Quantity(unit) => Kind::Quantity(unit.to_string()),
         Ty::Instance(class) => Kind::Class(class.name.clone()),
         Ty::EnumValue(info) => Kind::Enum(info.name.clone()),
+        Ty::CLibrary(library) => Kind::CLibrary(library.number),
+        Ty::CPointer(to) => Kind::CPointer(to.to_string()),
         other => Kind::Other(other.to_string()),
     }
 }
@@ -726,6 +737,15 @@ enum Ty {
     ErrorType(Rc<str>),
 
     Module(&'static str),
+
+    /// What `c.library(...)` gives when the library and its declarations
+    /// are written out in the program (decision 44.10).
+    CLibrary(Rc<crate::bridge_c::Library>),
+    /// One function of such a library, by its place in it.
+    CFunction(Rc<crate::bridge_c::Library>, usize),
+    /// A pointer that C gave, to what it names: `counter`, `struct tm`,
+    /// `void`. Zeno keeps it, gives it back, and never looks inside.
+    CPointer(Rc<str>),
 
     // Generics. See the section "Generic functions and classes".
     /// A function or a class with type parameters, by its name: `first`,
@@ -1147,6 +1167,9 @@ impl fmt::Display for Ty {
             }
             Ty::ErrorType(kind) => write!(f, "the error type {kind}"),
             Ty::Module(name) => write!(f, "the module {name}"),
+            Ty::CLibrary(library) => write!(f, "the C library {}", library.label),
+            Ty::CFunction(library, at) => write!(f, "the C function {}", library.functions[*at].name),
+            Ty::CPointer(to) => write!(f, "a C pointer to {to}"),
             Ty::Generic(generic) => match generic.template {
                 Template::Function(_) => write!(f, "the generic function {}", generic.name),
                 Template::Class(_) => write!(f, "the generic class {}", generic.name),
@@ -1242,6 +1265,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         (Ty::Quantity(a), Ty::Quantity(b)) => a == b,
         (Ty::Sized(a), Ty::Sized(b)) => a == b,
         (Ty::Pointer(a), Ty::Pointer(b)) => a == b,
+        (Ty::CPointer(a), Ty::CPointer(b)) => a == b,
         (Ty::Register(a), Ty::Register(b)) => a == b,
         (Ty::Param(a), Ty::Param(b)) => a == b,
         (Ty::List(a), Ty::List(b))
@@ -1259,6 +1283,21 @@ fn same(a: &Ty, b: &Ty) -> bool {
                 && same(&a.returns, &b.returns)
         }
         _ => false,
+    }
+}
+
+/// The type of what C gives back, or of a value it names (44.10).
+fn c_given(class: &crate::bridge_c::Class) -> Ty {
+    use crate::bridge_c::Class;
+    match class {
+        Class::Nothing => Ty::None,
+        Class::Whole => Ty::Int,
+        Class::U64 => Ty::U64,
+        Class::Float => Ty::Float,
+        Class::Bool => Ty::Bool,
+        // NULL is `none`.
+        Class::Text { .. } => Ty::Optional(Box::new(Ty::Str)),
+        Class::Pointer { to, .. } => Ty::Optional(Box::new(Ty::CPointer(to.as_str().into()))),
     }
 }
 
@@ -1281,6 +1320,8 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         (Ty::Owned(from), Ty::Owned(to)) => fits(from, to),
         // A `Circle or none` goes where a `Shape or none` is wanted.
         (Ty::Optional(from), Ty::Optional(to)) if seen_as_interface(from, to) => fits(from, to),
+        // A pointer of C that may be NULL, where another may be.
+        (Ty::Optional(from), Ty::Optional(to)) if matches!(**from, Ty::CPointer(_)) => fits(from, to),
         // `none` and a plain T both fit `T or none`.
         (Ty::None, Ty::Optional(_)) => true,
         (from, Ty::Optional(inner)) => fits(from, inner),
@@ -1302,6 +1343,9 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         // (decision 41.3). A float going where an f32 is wanted needs
         // `f32( )`, since most floats are not one.
         (Ty::F32, Ty::Float) => true,
+        // A `void *` of C goes where any pointer of C does, and any
+        // goes where a `void *` does, as in C.
+        (Ty::CPointer(from), Ty::CPointer(to)) => &**from == "void" || &**to == "void",
         // Any error fits the catch-all `Error`.
         (Ty::Error(_), Ty::Error(to)) => &**to == "Error",
         // A function going where a function type is wanted is compared in
@@ -5895,6 +5939,13 @@ impl Checker {
                     Some(ty) => ty,
                     None => self.call(&callee, arguments, span),
                 };
+                // `c.library("m", "double cbrt(double x);")`, written out:
+                // its functions are known from here (decision 44.10).
+                if matches!(callee, Ty::Builtin("c.library")) && !matches!(ty, Ty::Invalid) {
+                    if let Some(library) = self.c_library(args, span) {
+                        return Ty::CLibrary(library);
+                    }
+                }
                 if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes")) {
                     // The list of arguments, and the bytes of a file, are
                     // new at each call.
@@ -5985,6 +6036,22 @@ impl Checker {
     /// The type of `object.name`.
     fn field(&mut self, object: &Ty, name: &str, span: Span) -> Ty {
         match object {
+            Ty::CLibrary(library) => match library.functions.iter().position(|function| function.name == name) {
+                // `hal.GPIO_PIN_5`: a value, read where it is named.
+                Some(at) if library.functions[at].value => c_given(&library.functions[at].gives.1),
+                Some(at) => Ty::CFunction(library.clone(), at),
+                None => {
+                    let declared: Vec<&str> = library.functions.iter().map(|function| function.name.as_str()).collect();
+                    self.error(
+                        format!(
+                            "the library `{}` has no `{name}` among what is declared for it. Declared: {}",
+                            library.label,
+                            declared.join(", ")
+                        ),
+                        span,
+                    )
+                }
+            },
             Ty::Instance(class) => {
                 if self.kept_private(class, name, span) {
                     return Ty::Invalid;
@@ -6304,6 +6371,7 @@ impl Checker {
 
     fn call(&mut self, callee: &Ty, mut arguments: Vec<Argument>, span: Span) -> Ty {
         match callee {
+            Ty::CFunction(library, at) => self.c_call(library, *at, &arguments, span),
             Ty::Function(function) => {
                 let signature = self.signature(function);
                 self.fixed_arguments(&function.decl, &function.env, &signature.params, &mut arguments);
@@ -6517,6 +6585,143 @@ impl Checker {
                 self.error(format!("`{what}` needs a value for `{}`", slot.name), span);
             }
         }
+    }
+
+    /// `c.library(...)` with the library and the declarations written
+    /// out: the library, with what each of its functions takes and gives
+    /// (decision 44.10). `None` when either is worked out only as the
+    /// program runs; then its functions are known only then.
+    fn c_library(&mut self, args: &[ast::Arg], span: Span) -> Option<Rc<crate::bridge_c::Library>> {
+        let [library, declared] = args else { return None };
+        if library.name.is_some() || declared.name.is_some() {
+            return None;
+        }
+        fn texts(expr: &Expr, none_too: bool) -> Option<Vec<String>> {
+            match &expr.kind {
+                ExprKind::Str(text) => Some(vec![text.clone()]),
+                ExprKind::None if none_too => Some(Vec::new()),
+                ExprKind::List(items) => items
+                    .iter()
+                    .map(|item| match &item.kind {
+                        ExprKind::Str(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => None,
+            }
+        }
+        let words = texts(&library.value, true)?;
+        let declared = texts(&declared.value, false)?.join("\n");
+        if let Some(known) = self.types.c_libraries.iter().find(|known| known.span == span) {
+            return Some(known.clone());
+        }
+        let number = self.types.c_libraries.len();
+        match crate::bridge_c::library_of(words, &declared, number, span) {
+            Ok(library) => {
+                let library = Rc::new(library);
+                self.types.c_libraries.push(library.clone());
+                Some(library)
+            }
+            Err(why) => {
+                self.error(why, args[1].value.span);
+                None
+            }
+        }
+    }
+
+    /// A call of a function of a library of C: each argument held to
+    /// what the declaration says the function takes.
+    fn c_call(&mut self, library: &crate::bridge_c::Library, at: usize, arguments: &[Argument], span: Span) -> Ty {
+        use crate::bridge_c::Class;
+        let function = &library.functions[at];
+        if let Some(named) = arguments.iter().find(|argument| argument.name.is_some()) {
+            return self.error(format!("a function of C takes no named arguments, and `{}` was given one", function.name), named.span);
+        }
+        if arguments.len() != function.takes.len() {
+            return self.error(
+                format!("`{}` takes {}, but {} given", function.name, counted(function.takes.len(), "argument"), were(arguments.len())),
+                span,
+            );
+        }
+        let numbers = |item: &Ty| matches!(item, Ty::Int | Ty::Sized(_) | Ty::Dynamic | Ty::Invalid);
+        let mut checks = false;
+        for (index, (argument, (of, class))) in arguments.iter().zip(&function.takes).enumerate() {
+            let label = format!("the {} parameter of `{}` (`{}`)", crate::bridge_c::ordinal(index + 1), function.name, of.text);
+            let wanted = match class {
+                Class::Whole => Some(Ty::Int),
+                Class::U64 => Some(Ty::U64),
+                Class::Float => Some(Ty::Float),
+                Class::Bool => Some(Ty::Bool),
+                _ => None,
+            };
+            if let Some(wanted) = wanted {
+                checks |= matches!(class, Class::Whole);
+                let given = self.adapted(argument.written.clone(), argument.place, argument.ty.clone(), &wanted, argument.span);
+                self.expect(&given, &wanted, &label, argument.span);
+                continue;
+            }
+            let given = argument.ty.clone().looked_at();
+            let given = match given {
+                Ty::Optional(inner) => *inner,
+                other => other,
+            };
+            if given.is_loose() || matches!(given, Ty::None) {
+                continue;
+            }
+            let takes = match class {
+                Class::Text { .. } => match &given {
+                    Ty::Str => true,
+                    Ty::List(item) | Ty::Fixed(item, _) => {
+                        checks = true;
+                        numbers(item)
+                    }
+                    _ => false,
+                },
+                Class::Pointer { to, item, .. } => match (&given, item.as_deref()) {
+                    (Ty::CPointer(from), _) => &**from == to || &**from == "void" || to == "void",
+                    // Bytes, for a pointer to anything that is not a
+                    // number of a known size larger than one.
+                    (Ty::Str, Some(Class::Whole)) => !crate::bridge_c::wider_than_a_byte(to),
+                    (Ty::Str, None) => to == "void",
+                    (Ty::List(list) | Ty::Fixed(list, _), item) => {
+                        checks = true;
+                        match item {
+                            Some(Class::Whole) => numbers(list),
+                            Some(Class::U64) => matches!(**list, Ty::U64) || numbers(list),
+                            Some(Class::Float) => matches!(**list, Ty::Float | Ty::F32 | Ty::Dynamic | Ty::Invalid),
+                            Some(Class::Bool) => matches!(**list, Ty::Bool | Ty::Dynamic | Ty::Invalid),
+                            // `void *` takes bytes; a pointer to a
+                            // pointer takes a list for C to fill.
+                            None if to == "void" => numbers(list),
+                            None => to.ends_with('*'),
+                            Some(_) => false,
+                        }
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !takes {
+                let what = match class {
+                    Class::Text { .. } => "takes a str, a list of bytes or none".to_string(),
+                    Class::Pointer { to, item, .. } => {
+                        let list = match item.as_deref() {
+                            Some(Class::Float) => ", a list of floats".to_string(),
+                            Some(Class::Bool) => ", a list of bools".to_string(),
+                            Some(_) => ", a list of whole numbers".to_string(),
+                            None => String::new(),
+                        };
+                        format!("takes a pointer to {to} that C gave{list} or none")
+                    }
+                    _ => "takes something else".to_string(),
+                };
+                self.error(format!("{label} {what}, and this is {}", argument.ty), argument.span);
+            }
+        }
+        // A number that does not fit is an OverflowError, as `u8(300)`
+        // is: a check the program does not have to declare.
+        let _ = checks;
+        c_given(&function.gives.1)
     }
 
     /// Check the number of arguments given to a built-in.
@@ -9222,6 +9427,45 @@ mod tests {
         assert_eq!(error(&format!("{f}f(b=\"y\", 1)")), "plain arguments must come before named ones");
         assert_eq!(error("let x = 5\nx()"), "int cannot be called");
         assert_eq!(error("function f(a: int = \"no\") { }"), "`a` should be int, but this is str");
+    }
+
+    #[test]
+    fn a_function_of_c_is_checked_before_the_program_runs() {
+        // The declarations say what each function takes and gives, so a
+        // wrong argument is found here, as for a function of Zeno
+        // (decision 44.10). Nothing is built to find it.
+        let lib = "import c\nlet m = c.library(\"m\", [\"double cbrt(double x);\", \"int abs(int n);\", \"char *getenv(const char *name);\", \"typedef struct thing thing;\", \"thing *make(void);\", \"void use(thing *t, uint8_t *bytes, size_t n);\", \"uint64_t big(void);\", \"int LIMIT;\"])\n";
+        ok(&format!("{lib}let x: float = m.cbrt(8.0)\nlet n: int = m.abs(-2) + m.LIMIT\nlet home = m.getenv(\"HOME\")\nif home is not none {{\n    print(home.upper())\n}}\nlet t = m.make()\nlet bytes: list[u8] = [1, 2]\nm.use(t, bytes, len(bytes))\nm.use(none, [1, 2], 2)\nlet b: u64 = m.big() + 1\n"));
+        assert_eq!(
+            error(&format!("{lib}m.cbrt(\"8\")")),
+            "the 1st parameter of `cbrt` (`double`) should be float, but this is str"
+        );
+        assert_eq!(error(&format!("{lib}m.abs(1, 2)")), "`abs` takes 1 argument, but 2 were given");
+        assert_eq!(error(&format!("{lib}m.abs(n=1)")), "a function of C takes no named arguments, and `abs` was given one");
+        assert_eq!(
+            error(&format!("{lib}m.cube(1.0)")),
+            "the library `m` has no `cube` among what is declared for it. Declared: cbrt, abs, getenv, make, use, big, LIMIT"
+        );
+        assert_eq!(
+            error(&format!("{lib}m.use(m.getenv(\"x\"), [1], 1)")),
+            "the 1st parameter of `use` (`thing *`) takes a pointer to thing that C gave or none, and this is str or none"
+        );
+        assert_eq!(
+            error(&format!("{lib}m.use(none, [1.5], 1)")),
+            "the 2nd parameter of `use` (`uint8_t *`) takes a pointer to uint8_t that C gave, a list of whole numbers or none, and this is list[float]"
+        );
+        assert_eq!(error(&format!("{lib}let s: str = m.getenv(\"x\")")), "`s` should be str, but this is str or none. Check it with `is not none` first");
+        // A declaration that is not one is found here too.
+        assert_eq!(
+            error("import c\nc.library(\"m\", \"int printf(const char *format, ...);\")"),
+            "`printf` takes any number of arguments (`...`), and Zeno cannot know their types. Declare it with the ones the program gives, under another name of C, or write a function of C that calls it"
+        );
+        // What is worked out as the program runs is known only then.
+        ok("import c\nlet name = \"m\"\nlet m = c.library(name, \"double cbrt(double x);\")\nprint(m.anything(1, 2))");
+        assert_eq!(
+            strict_error("import c\nlet name = \"m\"\nlet m = c.library(name, \"double cbrt(double x);\")\nprint(m.cbrt(1.0))"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
     }
 
     #[test]

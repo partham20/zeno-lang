@@ -953,7 +953,7 @@ impl Lowerer {
                         "php" => "The `php` module needs PHP beside the program while it runs, and `zeno run` is what starts it",
                         "lua" => "The `lua` module needs Lua beside the program while it runs, and `zeno run` is what starts it",
                         "csharp" => "The `csharp` module needs .NET beside the program while it runs, and `zeno run` is what starts it",
-                        "c" => "The `c` module loads a library of C while the program runs, and `zeno run` is what does that",
+                        "c" => "The `c` module calls a library of C, which `zeno run` does, and `zeno build`, which writes C",
                         _ => "It is not a module that comes with Zeno",
                     };
                     return Err(Error::new(format!("a program built for another language cannot use `{path}`. {why}"), statement.span));

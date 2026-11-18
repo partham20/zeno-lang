@@ -3036,7 +3036,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
                 "import c\n\
                  let m = c.library(\"m\", [\"double sqrt(double x);\", \"double frexp(double x, int *exponent);\", \"int abs(int);\"])\n\
                  let e = [0]\n\
-                 print(m.sqrt(2.0), m.frexp(8.0, e), e, m.abs(-5), m.sqrt(16))\n\
+                 print(m.sqrt(2.0), m.frexp(8.0, e), e, m.abs(-5), m.sqrt(16.0))\n\
                  let mine = c.library([\"{folder}/helper.c\", \"-DSTEP=3\"], [\n\
                      \"/* An opaque struct: Zeno keeps the pointer and never looks inside. */ typedef struct counter counter;\",\n\
                      \"counter *counter_new(void);\",\n\
@@ -3072,7 +3072,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
             "1.4142135623730951 0.5 [4] 5 4.0\n\
              12 true false none\n\
              19255 19255 hello, Partha\n\
-             1.5 18446744073709551615 -3 true false [255, 97, 98]\n\
+             1.5 18446744073709551615 -3 true false \u{fffd}ab\n\
              [0.0, 1.5, 3.0] [4, 5, 2] none\n\
              <C library m> uint16_t crc16(const uint8_t *data, size_t length)\n"
         );
@@ -3086,7 +3086,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         let sqrt = "import c\nlet m = c.library(\"m\", \"double sqrt(double);\")\n";
         assert_eq!(
             error(&format!("{sqrt}print(m.cbrt(8.0))")),
-            "uncaught Error: the library `m` has no function `cbrt` among those declared for it. Declared: sqrt"
+            "uncaught Error: the library `m` has no `cbrt` among what is declared for it. Declared: sqrt"
         );
         assert_eq!(error(&format!("{sqrt}m.sqrt(\"x\")")), "uncaught Error: the 1st parameter of `sqrt` (`double`) takes a number, and this is a str");
         assert_eq!(error(&format!("{sqrt}m.sqrt()")), "uncaught Error: `sqrt` takes 1 argument, but 0 were given");
@@ -3100,7 +3100,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         );
         assert_eq!(
             error("import c\nc.library(\"m\", \"int zeno_has_no_such_function(int x);\")"),
-            "uncaught Error: the library `m` has no function `zeno_has_no_such_function`, which was declared"
+            "uncaught Error: the library `m` has no `zeno_has_no_such_function`, which was declared"
         );
         assert_eq!(
             error("import c\nc.library(\"m\", \"int printf(const char *format, ...);\")"),

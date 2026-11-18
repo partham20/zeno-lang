@@ -411,27 +411,32 @@ static void say_text(buffer *b, const char *text, size_t n) {
 
 /* Whether these bytes are text: UTF-8, with no character written in
    more bytes than it needs, and none of the halves of UTF-16. */
+/* How many bytes the character of UTF-8 at `k` takes, or 0 if the bytes
+   there are not one. */
+static size_t character_at(const unsigned char *s, size_t n, size_t k) {
+    unsigned char c = s[k];
+    size_t more;
+    unsigned code;
+    if (c < 0x80) return 1;
+    else if (c >= 0xC2 && c <= 0xDF) more = 1, code = c & 0x1F;
+    else if (c >= 0xE0 && c <= 0xEF) more = 2, code = c & 0x0F;
+    else if (c >= 0xF0 && c <= 0xF4) more = 3, code = c & 0x07;
+    else return 0;
+    if (k + more >= n) return 0;
+    for (size_t m = 1; m <= more; m++) {
+        if ((s[k + m] & 0xC0) != 0x80) return 0;
+        code = (code << 6) | (s[k + m] & 0x3F);
+    }
+    if ((more == 2 && code < 0x800) || (more == 3 && (code < 0x10000 || code > 0x10FFFF)) || (code >= 0xD800 && code < 0xE000))
+        return 0;
+    return more + 1;
+}
+
 static int is_text(const unsigned char *s, size_t n) {
-    size_t k = 0;
-    while (k < n) {
-        unsigned char c = s[k];
-        size_t more;
-        unsigned code;
-        if (c < 0x80) {
-            k++;
-            continue;
-        } else if (c >= 0xC2 && c <= 0xDF) more = 1, code = c & 0x1F;
-        else if (c >= 0xE0 && c <= 0xEF) more = 2, code = c & 0x0F;
-        else if (c >= 0xF0 && c <= 0xF4) more = 3, code = c & 0x07;
-        else return 0;
-        if (k + more >= n) return 0;
-        for (size_t m = 1; m <= more; m++) {
-            if ((s[k + m] & 0xC0) != 0x80) return 0;
-            code = (code << 6) | (s[k + m] & 0x3F);
-        }
-        if ((more == 2 && code < 0x800) || (more == 3 && (code < 0x10000 || code > 0x10FFFF)) || (code >= 0xD800 && code < 0xE000))
-            return 0;
-        k += more + 1;
+    for (size_t k = 0; k < n;) {
+        size_t length = character_at(s, n, k);
+        if (!length) return 0;
+        k += length;
     }
     return 1;
 }
@@ -516,7 +521,7 @@ static int load(json *ask, buffer *answer) {
            have shows here, when the stubs that call it are loaded. */
         const char *missing = strstr(why, "undefined symbol: ");
         if (missing) {
-            return fail("Error", "the library `%s` has no function `%s`, which was declared",
+            return fail("Error", "the library `%s` has no `%s`, which was declared",
                         label && label->type == J_TEXT ? label->text : "?", missing + strlen("undefined symbol: "));
         }
         return fail("FileError", "C could not load the library: %s", why);
@@ -746,6 +751,9 @@ static void say_slot(buffer *b, char code, int size, zeno_slot slot) {
     case 'b': say(b, slot.u ? "true" : "false"); break;
     case 'f': say_float(b, slot.d); break;
     case 'i': say_number(b, "%lld", (long long)slot.i); break;
+    case 'U': /* a u64 of Zeno, whatever its size */
+        say_number(b, "[\"u\",\"%llu\"]", (unsigned long long)slot.u);
+        break;
     case 'u':
         if (slot.u > (uint64_t)INT64_MAX) say_number(b, "[\"u\",\"%llu\"]", (unsigned long long)slot.u);
         else say_number(b, "%llu", (unsigned long long)slot.u);
@@ -757,10 +765,29 @@ static void say_slot(buffer *b, char code, int size, zeno_slot slot) {
             size_t n = strlen(text);
             if (is_text((const unsigned char *)text, n)) say_text(b, text, n);
             else {
-                /* Bytes that are not text arrive as a list of them. */
-                say(b, "[\"l\",[");
-                for (size_t k = 0; k < n; k++) say_number(b, k ? ",%u" : "%u", (unsigned)(unsigned char)text[k]);
-                say(b, "]]");
+                /* Text of C is bytes. A byte that is not part of a
+                   character of UTF-8 arrives as U+FFFD, the character
+                   that stands for one that could not be read. */
+                char *fixed = malloc(n * 3 + 1);
+                size_t out = 0;
+                if (!fixed) {
+                    say(b, "null");
+                    break;
+                }
+                for (size_t k = 0; k < n;) {
+                    size_t length = character_at((const unsigned char *)text, n, k);
+                    if (length) {
+                        memcpy(fixed + out, text + k, length);
+                        out += length;
+                        k += length;
+                    } else {
+                        memcpy(fixed + out, "\xEF\xBF\xBD", 3);
+                        out += 3;
+                        k++;
+                    }
+                }
+                say_text(b, fixed, out);
+                free(fixed);
             }
         }
         break;
@@ -866,7 +893,7 @@ static int call(zeno_thing *thing, json *ask, buffer *answer) {
             say(answer, "]]]");
         }
         say(answer, "],\"ok\":");
-        say_slot(answer, f->kinds[0].code, f->kinds[0].size, result);
+        say_slot(answer, f->kinds[0].pointee == 'U' ? 'U' : f->kinds[0].code, f->kinds[0].size, result);
         say(answer, "}");
     }
     for (int k = 0; k < lent_count; k++) free(lents[k].memory);
@@ -902,6 +929,15 @@ static int act(json *ask, buffer *answer) {
         if (thing->what != LIBRARY) return fail("Error", "%s has no `%s`", kind_of(thing), name && name->type == J_TEXT ? name->text : "?");
         for (int k = 0; k < thing->table->count; k++) {
             if (name && name->type == J_TEXT && !strcmp(thing->table->functions[k].name, name->text)) {
+                const zeno_function *f = &thing->table->functions[k];
+                if (f->arity < 0) {
+                    /* A value the declarations name, such as a constant of
+                       a header: read now, as C would read it. */
+                    zeno_slot result = {0};
+                    f->call(NULL, &result);
+                    say_slot(answer, f->kinds[0].pointee == 'U' ? 'U' : f->kinds[0].code, f->kinds[0].size, result);
+                    return 1;
+                }
                 zeno_thing function = {0};
                 function.what = FUNCTION;
                 function.table = thing->table;
@@ -915,7 +951,7 @@ static int act(json *ask, buffer *answer) {
             say(&names, k ? ", " : "");
             say(&names, thing->table->functions[k].name);
         }
-        fail("Error", "the library `%s` has no function `%s` among those declared for it. Declared: %s", thing->label ? thing->label : "",
+        fail("Error", "the library `%s` has no `%s` among what is declared for it. Declared: %s", thing->label ? thing->label : "",
              name && name->type == J_TEXT ? name->text : "?", names.text ? names.text : "none");
         free(names.text);
         return 0;

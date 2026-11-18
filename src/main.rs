@@ -585,8 +585,28 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
             return None;
         }
     };
+    // A library of C the program declares is built in with it (decision 44.10).
+    let home = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
+    let home = if home.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { home };
+    let declared = match bridge_c::build_args(&types.c_libraries, &home) {
+        Ok(args) => args,
+        Err(why) => {
+            eprintln!("error: {why}");
+            return None;
+        }
+    };
     let name = Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program");
     let c_file = format!("{name}.c");
+    // The C a build writes must not take the place of a file of C the
+    // program builds with.
+    let same = |arg: &String| fs::canonicalize(arg).ok().is_some_and(|known| fs::canonicalize(&c_file).ok() == Some(known));
+    if declared.iter().any(same) {
+        eprintln!(
+            "zeno: `zeno build` writes the program's C to `{c_file}`, which is a file `c.library` names. \
+             Give one of the two another name"
+        );
+        return None;
+    }
     if let Err(err) = fs::write(&c_file, c) {
         eprintln!("zeno: cannot write `{c_file}`: {err}");
         return None;
@@ -611,10 +631,17 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
             // (A minimal build has those lines written in or left out.)
             command.arg("-DZENO_MEMORY_REPORT");
         }
-        match command.args(optimise(options)).args(["-o", &program_file, &c_file]).args(emit_c::LIBRARIES).status() {
+        match command.args(optimise(options)).args(["-o", &program_file, &c_file]).args(&declared).args(emit_c::LIBRARIES).status() {
             Ok(status) if status.success() => {
                 println!("Built {name}. Run it with {}", how_to_run(name));
                 return Some(());
+            }
+            Ok(_) if !types.c_libraries.is_empty() => {
+                eprintln!(
+                    "zeno: `{compiler}` could not compile `{c_file}` with the libraries of C it declares. What it said is above: \
+                     a declaration that does not agree with its header, or a library that is not there, is the usual reason"
+                );
+                return None;
             }
             Ok(_) => {
                 eprintln!("zeno: `{compiler}` could not compile `{c_file}`. That is a bug in Zeno, not in your program");

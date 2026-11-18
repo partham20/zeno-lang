@@ -1,11 +1,11 @@
 # Frames of Modbus RTU, checked by the C that a board's firmware
-# already has. `import c` builds modbus.c beside this file, once, and
+# already has. `import c` builds crc.c beside this file, once, and
 # calls it as it is (docs/c.md).
 #
 #     zeno run examples/modbus.zeno
 import c
 
-let modbus = c.library("modbus.c", [
+let modbus = c.library("crc.c", [
     "uint16_t modbus_crc(const uint8_t *frame, size_t length);",
     "int modbus_good(const uint8_t *frame, size_t length);",
 ])

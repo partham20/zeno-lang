@@ -1,5 +1,5 @@
 //! `import c`: a library of C, or of Go or Rust built with a C
-//! interface, used from `zeno run` (docs/c.md, decisions chapter 43).
+//! interface, used from `zeno run` (docs/c.md, decisions chapter 44).
 //!
 //! A program says which functions it uses, as C declares them:
 //!
@@ -34,26 +34,29 @@ const HELPER: &str = include_str!("bridge.c");
 
 /// A type as a declaration wrote it.
 #[derive(Debug, Clone, PartialEq)]
-struct Type {
+pub(crate) struct Type {
     /// As C writes it: `const unsigned char *`.
-    text: String,
+    pub(crate) text: String,
     /// What is left with no `*` and no `const`: `unsigned char`.
-    base: String,
+    pub(crate) base: String,
     /// How many `*`.
-    stars: usize,
+    pub(crate) stars: usize,
     /// Whether what it points to is `const`.
-    konst: bool,
+    pub(crate) konst: bool,
 }
 
 /// One function, as it was declared.
 #[derive(Debug, Clone, PartialEq)]
-struct Declared {
-    name: String,
+pub(crate) struct Declared {
+    pub(crate) name: String,
+    /// A value and not a function: `int LIMIT;`, a constant or a
+    /// variable that a header names (decision 44.11).
+    pub(crate) value: bool,
     /// The declaration, with its spaces made single: how `print` shows
     /// the function.
-    text: String,
-    gives: Type,
-    takes: Vec<Type>,
+    pub(crate) text: String,
+    pub(crate) gives: Type,
+    pub(crate) takes: Vec<Type>,
 }
 
 /// The words of C that are a type or part of one, and so are never the
@@ -185,7 +188,7 @@ fn declaration(text: &str) -> std::result::Result<Declared, String> {
         return Err(format!("`{shown}` has a body. `c.library` takes declarations, each ending with `;`"));
     }
     let Some(open) = text.find('(') else {
-        return Err(format!("`{shown}` is not the declaration of a function: it has no `(`"));
+        return value(text, &shown);
     };
     let mut depth = 0;
     let mut close = None;
@@ -248,7 +251,7 @@ fn declaration(text: &str) -> std::result::Result<Declared, String> {
             ));
         }
     }
-    Ok(Declared { name, text: shown, gives, takes })
+    Ok(Declared { name, value: false, text: shown, gives, takes })
 }
 
 /// Is this statement a type for the declarations that follow, and not a
@@ -267,9 +270,35 @@ fn is_a_type(statement: &str) -> bool {
     }
 }
 
+/// A value the declarations name, with no `(`: `int LIMIT;`,
+/// `GPIO_TypeDef *GPIOA;`. It may be a variable of the library, a
+/// constant, or a macro of a header that is included: C reads it by its
+/// name in each case (decision 44.11).
+fn value(text: &str, shown: &str) -> std::result::Result<Declared, String> {
+    let mut words = tokens(text);
+    words.retain(|word| !matches!(word.as_str(), "extern" | "static"));
+    let Some(name) = words.last().filter(|word| is_name(word)).cloned() else {
+        return Err(format!("`{shown}` is neither a function, as in `int abs(int n);`, nor a value, as in `int LIMIT;`"));
+    };
+    let of = &words[..words.len() - 1];
+    if of.is_empty() || text.contains('=') || text.contains('[') {
+        return Err(format!(
+            "`{shown}` is neither a function, as in `int abs(int n);`, nor a value, as in `int LIMIT;`, with its type and its name and nothing more"
+        ));
+    }
+    let gives = type_of(of);
+    if gives.stars == 0 && (gives.base.starts_with("struct ") || gives.base.starts_with("union ") || gives.base == "void") {
+        return Err(format!(
+            "`{name}` is a whole `{}`, and Zeno cannot hold a struct yet. Write a function of C that gives a pointer to it",
+            gives.base
+        ));
+    }
+    Ok(Declared { name, value: true, text: shown.to_string(), gives, takes: Vec::new() })
+}
+
 /// All that a program gave `c.library`: the lines that begin with `#`
 /// and the types, as they are, and each function.
-fn declarations(text: &str) -> std::result::Result<(Vec<String>, Vec<Declared>), String> {
+pub(crate) fn declarations(text: &str) -> std::result::Result<(Vec<String>, Vec<Declared>), String> {
     let text = without_comments(text);
     let mut lines = Vec::new();
     let mut rest = String::new();
@@ -327,7 +356,222 @@ fn declarations(text: &str) -> std::result::Result<(Vec<String>, Vec<Declared>),
     Ok((lines, found))
 }
 
+// ----------------------------------------------------- What a type is
+
+/// What a type of C is to Zeno, worked out from its words alone, so that
+/// the checker knows it before anything is built (decision 44.10).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Class {
+    /// `void`, given back: `none`.
+    Nothing,
+    /// A whole number: an `int` of Zeno, checked to fit when it is given.
+    Whole,
+    /// `uint64_t` and `unsigned long long`: a `u64` of Zeno.
+    U64,
+    /// `float` and `double`.
+    Float,
+    /// `bool` and `_Bool`.
+    Bool,
+    /// A pointer to `char`: text.
+    Text { konst: bool },
+    /// Any other pointer. `to` is what it points to, with no `const`:
+    /// `int`, `struct tm`, `counter`, or `void`, and `item` what an item
+    /// there is, when a list can be lent for it.
+    Pointer { to: String, konst: bool, item: Option<Box<Class>> },
+}
+
+/// The names of floats that headers often give: CMSIS has `float32_t`.
+const FLOAT_NAMES: &[&str] = &["float32_t", "float64_t", "float_t", "double_t"];
+
+/// The names of whole numbers of 64 bits with no sign.
+const U64_NAMES: &[&str] = &["uint64_t", "uint_least64_t", "uint_fast64_t"];
+
+/// What each name a `typedef` of the declarations gives stands for: the
+/// type it names, or `None` for a struct, a union or a function.
+pub(crate) fn typedefs(lines: &[String]) -> Vec<(String, Option<Type>)> {
+    let mut out = Vec::new();
+    for line in lines {
+        let words = tokens(line.trim_end_matches(';'));
+        if words.first().map(String::as_str) != Some("typedef") {
+            continue;
+        }
+        // `typedef void (*handler)(int);`: the name is the one after `*`.
+        if line.contains('(') {
+            if let Some(name) = line.split('(').nth(1).map(|part| part.trim_start_matches(|c: char| c == '*' || c.is_whitespace())) {
+                let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                out.push((name, None));
+            }
+            continue;
+        }
+        let Some(name) = words.last().cloned() else { continue };
+        let named = &words[1..words.len() - 1];
+        let opaque = line.contains('{') || matches!(named.first().map(String::as_str), Some("struct" | "union"));
+        let enumeration = named.first().map(String::as_str) == Some("enum");
+        let of = if enumeration {
+            Some(type_of(&["int".to_string()]))
+        } else if opaque {
+            None
+        } else {
+            Some(type_of(named))
+        };
+        out.push((name, of));
+    }
+    out
+}
+
+/// What a type of the declarations is to Zeno, or why Zeno cannot take
+/// it. A name that only a header gives is a whole number (nearly every
+/// one is: `uLong`, `HAL_StatusTypeDef`), unless it is a float's name
+/// headers often use. The C compiler sees the real type, and says so if
+/// the two disagree.
+pub(crate) fn class(of: &Type, typedefs: &[(String, Option<Type>)]) -> std::result::Result<Class, String> {
+    class_in(of, typedefs, 0)
+}
+
+fn class_in(of: &Type, typedefs: &[(String, Option<Type>)], depth: usize) -> std::result::Result<Class, String> {
+    let words: Vec<&str> = of.base.split_whitespace().filter(|w| !matches!(*w, "extern" | "static" | "inline")).collect();
+    let base = words.join(" ");
+    // A name a typedef gives is what it stands for.
+    if depth < 16 {
+        if let Some((_, named)) = typedefs.iter().find(|(name, _)| *name == base) {
+            return match named {
+                Some(named) => {
+                    let mut whole = named.clone();
+                    whole.stars += of.stars;
+                    whole.konst = if of.stars > 0 { of.konst } else { named.konst };
+                    class_in(&whole, typedefs, depth + 1)
+                }
+                None if of.stars > 0 => Ok(Class::Pointer { to: base, konst: of.konst, item: None }),
+                None => Err(format!("a whole `{base}`, not a pointer to one, and Zeno cannot hand C a struct or a function yet")),
+            };
+        }
+    }
+    let plain = |_: usize| -> std::result::Result<Class, String> {
+        if base == "void" {
+            return Ok(Class::Nothing);
+        }
+        if matches!(base.as_str(), "bool" | "_Bool") {
+            return Ok(Class::Bool);
+        }
+        if matches!(base.as_str(), "float" | "double" | "long double") || FLOAT_NAMES.contains(&base.as_str()) {
+            return Ok(Class::Float);
+        }
+        if U64_NAMES.contains(&base.as_str())
+            || (words.contains(&"unsigned") && words.iter().filter(|w| **w == "long").count() == 2)
+        {
+            return Ok(Class::U64);
+        }
+        if words.first().is_some_and(|w| matches!(*w, "struct" | "union")) {
+            return Err(format!("a whole `{base}`, not a pointer to one, and Zeno cannot hand C a struct yet"));
+        }
+        Ok(Class::Whole)
+    };
+    if of.stars == 0 {
+        return plain(0);
+    }
+    let to = if base.is_empty() { "void".to_string() } else { base.clone() };
+    if of.stars == 1 && base == "char" {
+        return Ok(Class::Text { konst: of.konst });
+    }
+    // What an item is, where a list can be lent: a pointer to numbers or
+    // bools, one level down.
+    let item = match plain(0) {
+        Ok(Class::Nothing) | Err(_) => None,
+        Ok(class) if of.stars == 1 => Some(Box::new(class)),
+        Ok(_) => None,
+    };
+    let to = if of.stars > 1 { format!("{to} {}", "*".repeat(of.stars - 1)) } else { to };
+    Ok(Class::Pointer { to, konst: of.konst, item })
+}
+
+/// A library of C as a program declared it, with each type worked out:
+/// what the checker and `zeno build` know of it (decision 44.10).
+#[derive(Debug)]
+pub(crate) struct Library {
+    /// Its place among the libraries of the program.
+    pub(crate) number: usize,
+    /// Where `c.library` is called: the same call is one library.
+    pub(crate) span: Span,
+    /// What it is called in messages: the first word naming it.
+    pub(crate) label: String,
+    /// The words that name it: `"m"`, `"crc.c"`, `"-DSTEP=3"`.
+    pub(crate) words: Vec<String>,
+    /// The lines given to C as they are: `#include`, `typedef`.
+    pub(crate) lines: Vec<String>,
+    pub(crate) functions: Vec<Function>,
+}
+
+/// One declared function, and what each of its types is to Zeno.
+#[derive(Debug)]
+pub(crate) struct Function {
+    pub(crate) name: String,
+    /// A value, read by its name, and not a function (decision 44.11).
+    pub(crate) value: bool,
+    /// How C is told of it: `crate::bridge_c::declared_c`.
+    pub(crate) c: String,
+    pub(crate) gives: (Type, Class),
+    pub(crate) takes: Vec<(Type, Class)>,
+}
+
+/// Is this the name of a whole number known to take more than a byte?
+/// A str can be lent for a pointer to anything else.
+pub(crate) fn wider_than_a_byte(base: &str) -> bool {
+    let words: Vec<&str> = base.split_whitespace().collect();
+    words.iter().any(|word| matches!(*word, "short" | "int" | "long" | "wchar_t" | "size_t" | "ssize_t" | "ptrdiff_t"))
+        || (base.contains("int") && !base.contains("int8") && base.ends_with("_t") && (base.starts_with("int") || base.starts_with("uint")))
+}
+
+/// `1st`, `2nd`, `3rd`, `4th`, as the messages of the helper say it.
+pub(crate) fn ordinal(n: usize) -> String {
+    let end = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{end}")
+}
+
+/// A library from what a program wrote: the words that name it, and its
+/// declarations. The message, if it cannot be one.
+pub(crate) fn library_of(words: Vec<String>, declared: &str, number: usize, span: Span) -> std::result::Result<Library, String> {
+    let (lines, declared) = declarations(declared)?;
+    let named = typedefs(&lines);
+    let mut functions = Vec::new();
+    for function in declared {
+        let gives = class(&function.gives, &named).map_err(|why| format!("`{}` gives {why}", function.name))?;
+        let mut takes = Vec::new();
+        for (at, of) in function.takes.iter().enumerate() {
+            let what = class(of, &named).map_err(|why| format!("the {} parameter of `{}` is {why}", ordinal(at + 1), function.name))?;
+            if what == Class::Nothing {
+                return Err(format!("a parameter of `{}` is `void`, which only a function that takes nothing has, alone: `{}(void)`", function.name, function.name));
+            }
+            takes.push((of.clone(), what));
+        }
+        if function.value && gives == Class::Nothing {
+            return Err(format!("`{}` is `void`, which no value is", function.name));
+        }
+        let c = declared_c(&function);
+        functions.push(Function { name: function.name, value: function.value, c, gives: (function.gives, gives), takes });
+    }
+    let label = words.iter().find(|word| !word.starts_with('-')).cloned().unwrap_or_else(|| "c".to_string());
+    Ok(Library { number, span, label, words, lines, functions })
+}
+
 // ----------------------------------------------------------- The stubs
+
+/// How C is told of a declared function or value, before it is used.
+/// `extern int total;` is a variable of the library, declared as it is
+/// written. `int LIMIT;` is a value a header has (a macro, a constant
+/// of an enum, a variable), which is read by its name and not declared
+/// again, since C cannot declare a macro (decision 44.11).
+pub(crate) fn declared_c(function: &Declared) -> String {
+    if function.value && !function.text.starts_with("extern ") {
+        return format!("/* {}: read by its name */\n", function.text);
+    }
+    format!("{};\n", function.text)
+}
 
 /// A string of C that holds this text.
 fn c_text(text: &str) -> String {
@@ -345,12 +589,15 @@ fn c_text(text: &str) -> String {
 }
 
 /// What a slot of this type holds, as the table of the stubs says it.
-fn kind(of: &Type) -> String {
+fn kind(of: &Type, named: &[(String, Option<Type>)]) -> String {
     if of.stars == 0 {
         if of.base == "void" {
             return "{'v', 0, 0, 0, 0}".to_string();
         }
-        return format!("{{ZCODE({0}), ZSIZE({0}), 0, 0, 0}}", of.base);
+        // A u64 of Zeno comes back as one whatever its value, as the
+        // checker said it would (decision 44.10).
+        let u64 = if class(of, named) == Ok(Class::U64) { "'U'" } else { "0" };
+        return format!("{{ZCODE({0}), ZSIZE({0}), 0, {u64}, 0}}", of.base);
     }
     let konst = u8::from(of.konst);
     if of.stars == 1 && of.base == "char" {
@@ -373,6 +620,7 @@ fn argument(of: &Type, at: usize) -> String {
 
 /// The library of C that Zeno writes for a `c.library`.
 fn stubs(lines: &[String], declared: &[Declared]) -> String {
+    let named = typedefs(lines);
     let mut out = String::from(
         "/* Written by Zeno for c.library (docs/c.md). */\n\
          #include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n",
@@ -383,13 +631,12 @@ fn stubs(lines: &[String], declared: &[Declared]) -> String {
     }
     out.push_str("\n/* As the program declared them. */\n");
     for function in declared {
-        out.push_str(&function.text);
-        out.push_str(";\n");
+        out.push_str(&declared_c(function));
     }
     out.push_str(STUB_TOP);
     for (number, function) in declared.iter().enumerate() {
         let args: Vec<String> = function.takes.iter().enumerate().map(|(at, of)| argument(of, at)).collect();
-        let call = format!("{}({})", function.name, args.join(", "));
+        let call = if function.value { function.name.clone() } else { format!("{}({})", function.name, args.join(", ")) };
         let body = if function.gives.stars > 0 {
             format!("r->p = (void *) {call};")
         } else if function.gives.base == "void" {
@@ -398,7 +645,7 @@ fn stubs(lines: &[String], declared: &[Declared]) -> String {
             format!("ZR({}, r, {call});", function.gives.text)
         };
         out.push_str(&format!("static void zeno_call_{number}(zeno_slot *a, zeno_slot *r) {{ (void) a; {body} }}\n"));
-        let kinds: Vec<String> = std::iter::once(&function.gives).chain(&function.takes).map(kind).collect();
+        let kinds: Vec<String> = std::iter::once(&function.gives).chain(&function.takes).map(|of| kind(of, &named)).collect();
         out.push_str(&format!("static const zeno_kind zeno_kinds_{number}[] = {{{}}};\n", kinds.join(", ")));
         let types: Vec<String> = std::iter::once(&function.gives).chain(&function.takes).map(|of| c_text(&of.text)).collect();
         out.push_str(&format!("static const char *const zeno_types_{number}[] = {{{}}};\n", types.join(", ")));
@@ -409,7 +656,7 @@ fn stubs(lines: &[String], declared: &[Declared]) -> String {
             "    {{{}, {}, {}, zeno_kinds_{number}, zeno_types_{number}, zeno_call_{number}}},\n",
             c_text(&function.name),
             c_text(&function.text),
-            function.takes.len()
+            if function.value { -1 } else { function.takes.len() as i64 }
         ));
     }
     out.push_str(&format!(
@@ -606,6 +853,54 @@ fn parts(words: &[String], home: &Path, span: Span) -> Result<Vec<Part>> {
     Ok(out)
 }
 
+/// What the C compiler is given, besides the program's own C, to build a
+/// program that uses these libraries (`zeno build`, decision 44.10): a
+/// file of C, or a library, found from `home`, the program's folder; a
+/// library of the system as `-l`; and anything that starts with `-`.
+pub(crate) fn build_args(libraries: &[std::rc::Rc<Library>], home: &Path) -> std::result::Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut folders: Vec<PathBuf> = vec![home.to_path_buf()];
+    for library in libraries {
+        for word in &library.words {
+            let word = word.trim();
+            if word.is_empty() {
+                continue;
+            }
+            if word.starts_with('-') {
+                args.push(word.to_string());
+                continue;
+            }
+            let lower = word.to_ascii_lowercase();
+            let is_file = word.contains('/')
+                || word.contains('\\')
+                || [".c", ".so", ".a", ".o", ".dylib", ".dll", ".lib", ".obj"].iter().any(|end| lower.ends_with(end))
+                || lower.contains(".so.");
+            if !is_file {
+                args.push(format!("-l{word}"));
+                continue;
+            }
+            let path = home.join(word);
+            if !path.is_file() {
+                return Err(format!("there is no file `{word}`, from the folder `{}`, which `c.library` names", home.display()));
+            }
+            if let Some(folder) = path.parent() {
+                if !folders.iter().any(|known| known == folder) {
+                    folders.push(folder.to_path_buf());
+                }
+            }
+            args.push(path.to_string_lossy().into_owned());
+        }
+    }
+    let mut out: Vec<String> = folders.iter().map(|folder| format!("-I{}", folder.display())).collect();
+    out.extend(args);
+    if !cfg!(windows) {
+        for folder in &folders {
+            out.push(format!("-Wl,-rpath,{}", folder.display()));
+        }
+    }
+    Ok(out)
+}
+
 /// What a value given to `c.library` says, as words: a str, or a list
 /// of them.
 fn words(value: &Value, what: &str, span: Span) -> Result<Vec<String>> {
@@ -798,13 +1093,17 @@ mod tests {
         assert!(found[8].takes.is_empty());
         assert!(found[8].gives.konst && found[8].gives.base == "char");
 
+        // A declaration with no `(` is a value, read by its name.
+        let (_, found) = declarations("int LIMIT;").unwrap();
+        assert!(found[0].value && found[0].name == "LIMIT" && found[0].gives.base == "int");
+
         for (wrong, says) in [
             ("int printf(const char *format, ...);", "any number of arguments"),
             ("void qsort(void *base, size_t n, size_t size, int (*compare)(const void *, const void *));", "a function of Zeno cannot be given"),
             ("int f(int x) { return x; }", "has a body"),
             ("int f(int x)", "has no `;`"),
             ("abs(int x);", "says nothing of what `abs` gives"),
-            ("int x;", "not the declaration of a function"),
+            ("int x = 3;", "neither a function"),
             ("struct point { int x; int y; }; struct point middle(struct point a);", "a whole `struct point`"),
             ("int f(void); long f(int);", "declared twice"),
             ("", "no declarations"),

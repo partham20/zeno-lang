@@ -361,6 +361,14 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
 
     emitter.write_drops(Span { line: 0, col: 0 })?;
 
+    // The libraries of C it declares come after the runtime, and before
+    // anything of the program's own: their lines and declarations as they
+    // are, and the few functions that pass values to C.
+    let (declared, helpers) = c_libraries(types, options.minimal);
+    if !options.minimal && !declared.is_empty() {
+        emitter.typedefs.insert(0, format!("{declared}{helpers}"));
+    }
+
     // A minimal build is put together from the same pieces another way:
     // only what the program uses is written (src/minimal.rs).
     if options.minimal {
@@ -369,7 +377,9 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         let bare = |text: &String| text.replace(&format!(", {NO_PLACE}"), "");
         // And each statement is written the short way. See `tidy`.
         let tidied = |text: &String| bare(text).lines().map(|line| tidy(line) + "\n").collect::<String>();
-        let declarations: Vec<String> = emitter.typedefs.iter().chain(&emitter.structs).chain(&emitter.globals).map(bare).collect();
+        let helpers = bare(&helpers);
+        let declarations: Vec<String> =
+            std::iter::once(&helpers).chain(&emitter.typedefs).chain(&emitter.structs).chain(&emitter.globals).map(bare).collect();
         let definitions: Vec<String> = emitter.definitions.iter().map(tidied).collect();
         let program = tidied(&render(&main));
         let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
@@ -383,6 +393,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
             roots: &emitter.roots,
             arguments: emitter.arguments,
             memory_report: options.memory_report,
+            verbatim: &declared,
         }));
     }
 
@@ -442,6 +453,130 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     c += "    return 0;\n}\n";
     Ok(c)
 }
+
+/// What a program that says `import c` needs in its C: each library's
+/// lines (`#include`, `typedef`) and declarations, as the program wrote
+/// them, and the few functions that check a number for C, lend a list
+/// and copy text (decision 44.10). Nothing for any other program.
+fn c_libraries(types: &Types, minimal: bool) -> (String, String) {
+    if types.c_libraries.is_empty() {
+        return (String::new(), String::new());
+    }
+    let mut c = String::from("/* The libraries of C that the program declares (docs/c.md). */\n");
+    for library in &types.c_libraries {
+        c += &format!("/* {} */\n", library.words.join(" ").replace("*/", "* /"));
+        for line in &library.lines {
+            c += line;
+            c.push('\n');
+        }
+        for function in &library.functions {
+            c += &function.c;
+        }
+    }
+    let helpers = format!("{C_LIBRARY_HELPERS}{}", if minimal { C_LIBRARY_MINIMAL } else { C_LIBRARY_CHECKED });
+    (c, helpers)
+}
+
+/// What kind of number an item of type `T` is: 'f', 'b', or a whole
+/// number with a sign ('i') or without ('u'); and the copy of text a
+/// function of C may change, and the text C gives back, copied.
+const C_LIBRARY_HELPERS: &str = r#"#define ZENO_C_CODE(T) _Generic((T *)0, float *: 'f', double *: 'f', long double *: 'f', _Bool *: 'b', \
+    default: ((T)-1 < (T)0 ? 'i' : 'u'))
+static const char *zeno_c_text(const char *text) {
+    return text ? zeno_copy(text, strlen(text)) : NULL;
+}
+static char *zeno_c_text_copy(const char *text) {
+    return text ? (char *)zeno_copy(text, strlen(text)) : NULL;
+}
+static void *zeno_c_lend_bytes(int64_t count, int size) {
+    void *memory = malloc((size_t)(count > 0 ? count : 1) * (size_t)size);
+    if (!memory) abort();
+    return memory;
+}
+static void zeno_c_store(unsigned char *at, int size, char code, int64_t whole, double real) {
+    if (code == 'f' && size == 4) { float x = (float)real; memcpy(at, &x, 4); }
+    else if (code == 'f' && size == 8) { memcpy(at, &real, 8); }
+    else if (code == 'f') { long double x = real; memcpy(at, &x, sizeof x); }
+    else if (size == 1) { uint8_t x = (uint8_t)whole; memcpy(at, &x, 1); }
+    else if (size == 2) { uint16_t x = (uint16_t)whole; memcpy(at, &x, 2); }
+    else if (size == 4) { uint32_t x = (uint32_t)whole; memcpy(at, &x, 4); }
+    else { memcpy(at, &whole, 8); }
+}
+static void zeno_c_load(const unsigned char *at, int size, char code, int64_t *whole, double *real) {
+    if (code == 'f' && size == 4) { float x; memcpy(&x, at, 4); *real = x; }
+    else if (code == 'f' && size == 8) { memcpy(real, at, 8); }
+    else if (code == 'f') { long double x; memcpy(&x, at, sizeof x); *real = (double)x; }
+    else if (code == 'b') { *whole = at[0] != 0; }
+    else if (size == 1) { *whole = code == 'i' ? (int64_t)(int8_t)at[0] : (int64_t)at[0]; }
+    else if (size == 2) { uint16_t x; memcpy(&x, at, 2); *whole = code == 'i' ? (int64_t)(int16_t)x : (int64_t)x; }
+    else if (size == 4) { uint32_t x; memcpy(&x, at, 4); *whole = code == 'i' ? (int64_t)(int32_t)x : (int64_t)x; }
+    else { memcpy(whole, at, 8); }
+}
+static void zeno_c_give_back(zeno_list *list, void *memory, bool bytes, bool floats, int size, char code, bool back) {
+    for (int64_t i = 0; back && i < list->len; i++) {
+        int64_t whole = 0;
+        double real = 0;
+        zeno_c_load((unsigned char *)memory + i * size, size, code, &whole, &real);
+        if (bytes) ZENO_BYTES(list)[i] = (uint8_t)whole;
+        else if (floats) list->items[i].f = code == 'f' ? real : (double)whole;
+        else if (code == 'b') list->items[i].b = whole != 0;
+        else list->items[i].i = whole;
+    }
+    free(memory);
+}
+static const char *zeno_c_pointer_str(const void *pointer) {
+    char text[64];
+    snprintf(text, sizeof text, "<C pointer %p>", pointer);
+    return zeno_copy(text, strlen(text));
+}
+"#;
+
+/// A number for C, checked to fit the type the function takes, as
+/// `zeno run` checks it; and a list lent, each item checked.
+const C_LIBRARY_CHECKED: &str = r#"static int64_t zeno_c_fit(int64_t n, bool fits, bool is_signed, int size, const char *what, int line, int col) {
+    if (!fits) {
+        int bits = size * 8;
+        int64_t low = !is_signed ? 0 : bits >= 64 ? INT64_MIN : -((int64_t)1 << (bits - 1));
+        uint64_t high = bits >= 64 ? (is_signed ? (uint64_t)INT64_MAX : UINT64_MAX) : ((uint64_t)1 << (bits - (is_signed ? 1 : 0))) - 1;
+        zeno_fail("OverflowError", zeno_join(6, what, " holds ", zeno_str_int(low), " to ", zeno_str_u64(high),
+                  zeno_join(2, ", and this is ", zeno_str_int(n))), line, col);
+    }
+    return n;
+}
+#define ZENO_C_FIT(T, v, what, line, col) ((T)zeno_c_fit((v), (int64_t)(T)(v) == (v) && (((T)(v) < (T)0) == ((v) < 0)), \
+    (T)-1 < (T)0, (int)sizeof(T), what, line, col))
+static void *zeno_c_lend(zeno_list *list, bool bytes, bool floats, int size, char code, const char *what, int line, int col) {
+    unsigned char *memory = zeno_c_lend_bytes(list->len, size);
+    for (int64_t i = 0; i < list->len; i++) {
+        int64_t whole = bytes ? (int64_t)ZENO_BYTES(list)[i] : code == 'b' ? (int64_t)list->items[i].b : list->items[i].i;
+        double real = floats ? list->items[i].f : (double)whole;
+        if (code == 'i' || code == 'u') {
+            bool is_signed = code == 'i';
+            int64_t moved = size >= 8 ? whole : is_signed ? (whole << (64 - size * 8)) >> (64 - size * 8) : (int64_t)((uint64_t)whole & ((UINT64_C(1) << (size * 8)) - 1));
+            if (moved != whole || (!is_signed && whole < 0)) {
+                const char *item = zeno_join(4, "item ", zeno_str_int(i), " of the list given for ", what);
+                zeno_c_fit(whole, false, is_signed, size, item, line, col);
+            }
+        }
+        zeno_c_store(memory + i * size, size, code, whole, real);
+    }
+    return memory;
+}
+"#;
+
+/// The same with no checks, for `zeno build --minimal`.
+const C_LIBRARY_MINIMAL: &str = r#"#define ZENO_C_FIT(T, v, what) ((T)(v))
+static void *zeno_c_lend(zeno_list *list, bool bytes, bool floats, int size, char code, const char *what) {
+    unsigned char *memory = zeno_c_lend_bytes(list->len, size);
+    (void)what;
+    for (int64_t i = 0; i < list->len; i++) {
+        int64_t whole = bytes ? (int64_t)ZENO_BYTES(list)[i] : code == 'b' ? (int64_t)list->items[i].b : list->items[i].i;
+        double real = floats ? list->items[i].f : (double)whole;
+        zeno_c_store(memory + i * size, size, code, whole, real);
+    }
+    return memory;
+}
+"#;
 
 /// Lines of C, each with how deeply it is indented.
 type Lines = Vec<(usize, String)>;
@@ -1131,6 +1266,11 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         Kind::Register(_) => "int64_t ".to_string(),
         // A raw pointer is exactly C's: `uint8_t *`.
         Kind::Pointer(pointee) => format!("{} *", pointee.c_type()),
+        // A pointer that C gave is kept as C keeps any pointer, and goes
+        // back to C as the pointer the function takes (decision 44.10).
+        Kind::CPointer(_) => "void *".to_string(),
+        // A library of C is known while building, and holds nothing.
+        Kind::CLibrary(_) => "int ".to_string(),
         Kind::Float | Kind::Quantity(_) => "double ".to_string(),
         // An f32 is C's own `float` (decision 41.7).
         Kind::F32 => "float ".to_string(),
@@ -1172,6 +1312,7 @@ fn is_pointer(kind: &Kind) -> bool {
             | Kind::Error
             | Kind::Function(_)
             | Kind::Pointer(_)
+            | Kind::CPointer(_)
     )
 }
 
@@ -1220,6 +1361,8 @@ fn holds_pointer(kind: &Kind) -> bool {
         Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool | Kind::Pin | Kind::Quantity(_) | Kind::None => false,
         // Memory from `allocate` is not the collector's.
         Kind::Pointer(_) | Kind::Register(_) => false,
+        // Nor is what C gave.
+        Kind::CPointer(_) | Kind::CLibrary(_) => false,
         Kind::Optional(inner) => holds_pointer(inner),
         _ => true,
     }
@@ -1310,6 +1453,8 @@ fn key(kind: &Kind) -> String {
         Kind::Error => "error".to_string(),
         Kind::Function(_) => "function".to_string(),
         Kind::Other(_) => "other".to_string(),
+        Kind::CPointer(_) => "c_pointer".to_string(),
+        Kind::CLibrary(number) => format!("c_library_{number}"),
         Kind::Owned(inner) => key(inner),
     }
 }
@@ -1332,11 +1477,12 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         | Kind::Enum(_)
         | Kind::Error
         | Kind::Function(_)
-        | Kind::Pointer(_) => "p",
+        | Kind::Pointer(_)
+        | Kind::CPointer(_) => "p",
         Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
         // A number and its flag do not fit in a slot; see `zeno_box_int`.
         Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
-        Kind::None | Kind::Other(_) | Kind::Owned(_) => return Err(cannot("a list of these", span)),
+        Kind::None | Kind::Other(_) | Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
     };
     Ok(format!("(zeno_slot){{.{member} = {code}}}"))
 }
@@ -1382,12 +1528,13 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         | Kind::Enum(_)
         | Kind::Error
         | Kind::Function(_)
-        | Kind::Pointer(_) => {
+        | Kind::Pointer(_)
+        | Kind::CPointer(_) => {
             format!("(({}){slot}.p)", c_type(kind, span)?.trim_end())
         }
         Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
         Kind::Optional(inner) => format!("zeno_unbox_{}({slot}.p)", scalar(inner, span)?),
-        Kind::None | Kind::Other(_) | Kind::Owned(_) => return Err(cannot("a list of these", span)),
+        Kind::None | Kind::Other(_) | Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
     })
 }
 
@@ -2673,7 +2820,7 @@ impl Emitter<'_> {
                 if module == "web" {
                     return Err(for_a_page(span));
                 }
-                if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program") {
+                if !matches!(module.as_str(), "math" | "time" | "board" | "files" | "program" | "c") {
                     return Err(cannot(format!("the module `{module}`"), span));
                 }
                 for name in names {
@@ -5055,6 +5202,19 @@ impl Emitter<'_> {
                         if owner == "math" {
                             return self.math(name, args, span);
                         }
+                        // `c.library("m", "double cbrt(double x);")`: known
+                        // while building, and nothing while the program
+                        // runs (decision 44.10).
+                        if (owner.as_str(), name.as_str()) == ("c", "library") {
+                            return match self.types.c_libraries.iter().find(|library| library.span == span) {
+                                Some(library) => Ok(Val::plain("0", Kind::CLibrary(library.number))),
+                                None => Err(Error::new(
+                                    "`zeno build` needs the library given to `c.library`, and its declarations, written out \
+                                     in the program as texts, so that it knows them while it builds",
+                                    span,
+                                )),
+                            };
+                        }
                         // `time.sleep(1 s)`, `board.pin(7)`, `files.read(path)`
                         if matches!(owner.as_str(), "time" | "board" | "files" | "program") {
                             return self.device(owner, name, args, span);
@@ -5387,6 +5547,122 @@ impl Emitter<'_> {
         val
     }
 
+    /// A call of a function of a library of C, as C calls it: each
+    /// number checked to fit what the function takes, each list lent for
+    /// the call, and what comes back made a value of Zeno (decision
+    /// 44.10). The C of `crc.crc16(frame, len(frame))` is about
+    ///
+    /// ```c
+    /// void *t2 = zeno_c_lend(z_frame, ...);
+    /// int64_t t3 = (int64_t)crc16((const uint8_t *)t2, ZENO_C_FIT(size_t, t1, ...));
+    /// zeno_c_give_back(z_frame, t2, ...);
+    /// ```
+    fn c_call(&mut self, number: usize, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        use crate::bridge_c::Class;
+        let library = self.types.c_libraries[number].clone();
+        let Some(function) = library.functions.iter().find(|function| function.name == name) else {
+            return Err(cannot(format!("`{name}`, which `{}` does not declare", library.label), span));
+        };
+        let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+        let vals = self.sequence(&exprs)?;
+        let mut passed = Vec::new();
+        let mut after = Vec::new();
+        for (index, (val, (of, class))) in vals.iter().zip(&function.takes).enumerate() {
+            let what = c_string(&format!("the {} parameter of `{name}` (`{}`)", crate::bridge_c::ordinal(index + 1), of.text));
+            let t = &of.text;
+            let code = match (class, &val.kind) {
+                (Class::Whole, Kind::Int) if self.minimal => format!("(({t})({}))", val.code),
+                (Class::Whole, Kind::Int) => {
+                    let held = self.temp(val.clone(), span)?;
+                    format!("ZENO_C_FIT({t}, {}, {what}, {})", held.code, self.at(span))
+                }
+                (Class::U64, Kind::U64 | Kind::Int) | (Class::Float, Kind::Float | Kind::F32) | (Class::Bool, Kind::Bool) => {
+                    format!("(({t})({}))", val.code)
+                }
+                (Class::Text { .. } | Class::Pointer { .. }, Kind::None) => format!("(({t})NULL)"),
+                (Class::Pointer { .. }, Kind::CPointer(_)) => format!("(({t})({}))", val.code),
+                (Class::Pointer { .. }, Kind::Optional(inner)) if matches!(**inner, Kind::CPointer(_)) => {
+                    format!("(({t})({}))", val.code)
+                }
+                // Text: C reads it, and the copy C may change is its own.
+                (Class::Text { konst: true } | Class::Pointer { konst: true, .. }, kind)
+                    if matches!(kind, Kind::Str) || matches!(kind, Kind::Optional(inner) if **inner == Kind::Str) =>
+                {
+                    format!("(({t})({}))", val.code)
+                }
+                (Class::Text { .. } | Class::Pointer { .. }, kind)
+                    if matches!(kind, Kind::Str) || matches!(kind, Kind::Optional(inner) if **inner == Kind::Str) =>
+                {
+                    self.built = !self.collector;
+                    format!("(({t})zeno_c_text_copy({}))", val.code)
+                }
+                // A list is lent: copied into memory as C lays it out,
+                // and copied back after the call unless C promised not to
+                // change it, as `zeno run` does.
+                (Class::Text { konst } | Class::Pointer { konst, .. }, Kind::List(item)) => {
+                    let to = match class {
+                        Class::Pointer { to, .. } if to.ends_with('*') => {
+                            return Err(cannot(format!("a list given for a pointer to a pointer (`{t}`)"), span))
+                        }
+                        Class::Pointer { to, .. } if to != "void" => to.clone(),
+                        _ => "unsigned char".to_string(),
+                    };
+                    let bytes = **item == Kind::Byte;
+                    // A list[u8] is bytes side by side already (36.2): C
+                    // is given them where they are, with no copy, and
+                    // what it writes there is what the list holds after.
+                    if bytes && matches!(to.as_str(), "unsigned char" | "uint8_t" | "char") {
+                        let list = self.temp(val.clone(), span)?;
+                        passed.push(format!("(({t})ZENO_BYTES({}))", list.code));
+                        continue;
+                    }
+                    if !matches!(**item, Kind::Byte | Kind::Int | Kind::Float | Kind::F32 | Kind::U64 | Kind::Bool) {
+                        return Err(cannot(format!("a list of these given for `{t}`"), span));
+                    }
+                    let float = matches!(**item, Kind::Float | Kind::F32);
+                    let memory = self.new_temp();
+                    self.line(format!(
+                        "void *{memory} = zeno_c_lend({}, {bytes}, {float}, sizeof({to}), ZENO_C_CODE({to}), {what}, {});",
+                        val.code,
+                        self.at(span)
+                    ));
+                    after.push(format!(
+                        "zeno_c_give_back({}, {memory}, {bytes}, {float}, sizeof({to}), ZENO_C_CODE({to}), {});",
+                        val.code,
+                        !konst
+                    ));
+                    format!("(({t}){memory})")
+                }
+                _ => return Err(cannot(format!("this value given for `{t}`"), span)),
+            };
+            passed.push(code);
+        }
+        let call = format!("{name}({})", passed.join(", "));
+        let (code, kind) = match &function.gives.1 {
+            Class::Nothing => (call, Kind::None),
+            Class::Whole => (format!("((int64_t)({call}))"), Kind::Int),
+            Class::U64 => (format!("((uint64_t)({call}))"), Kind::U64),
+            Class::Float => (format!("((double)({call}))"), Kind::Float),
+            Class::Bool => (format!("((bool)({call}))"), Kind::Bool),
+            Class::Text { .. } => {
+                self.built = !self.collector;
+                (format!("zeno_c_text({call})"), Kind::Optional(Box::new(Kind::Str)))
+            }
+            Class::Pointer { to, .. } => {
+                (format!("((void *)({call}))"), Kind::Optional(Box::new(Kind::CPointer(to.clone()))))
+            }
+        };
+        if after.is_empty() {
+            return Ok(self.called(code, &vals, kind));
+        }
+        let val = self.called(code, &vals, kind);
+        let val = if val.kind == Kind::None { val } else { self.temp(val, span)? };
+        for line in after {
+            self.line(line);
+        }
+        Ok(val)
+    }
+
     /// A call to one of the program's own functions.
     fn call_function(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
         let entry = &self.functions[name];
@@ -5437,6 +5713,7 @@ impl Emitter<'_> {
         let makes_bytes = std::mem::take(&mut self.makes_bytes);
         let receiver = self.expr(object)?;
         match receiver.kind.clone() {
+            Kind::CLibrary(number) => self.c_call(number, name, args, span),
             Kind::Class(class) => {
                 let Some(entry) = self.classes[&class].methods.get(name) else {
                     // Not a method. It may be a field that holds a function.
@@ -5844,6 +6121,33 @@ impl Emitter<'_> {
         }
         let val = self.expr(object)?;
         match &val.kind {
+            // `hal.GPIO_PIN_5`: a value a library of C declares, read by
+            // its name, as C reads it (decision 44.11).
+            Kind::CLibrary(number) => {
+                use crate::bridge_c::Class;
+                let library = self.types.c_libraries[*number].clone();
+                let Some(value) = library.functions.iter().find(|function| function.name == name && function.value) else {
+                    return Err(cannot(format!("`{name}` of a library of C used as a value"), span));
+                };
+                let (code, kind) = match &value.gives.1 {
+                    Class::Whole => (format!("((int64_t)({name}))"), Kind::Int),
+                    Class::U64 => (format!("((uint64_t)({name}))"), Kind::U64),
+                    Class::Float => (format!("((double)({name}))"), Kind::Float),
+                    Class::Bool => (format!("((bool)({name}))"), Kind::Bool),
+                    Class::Text { .. } => {
+                        self.built = !self.collector;
+                        (format!("zeno_c_text({name})"), Kind::Optional(Box::new(Kind::Str)))
+                    }
+                    Class::Pointer { to, .. } => {
+                        (format!("((void *)({name}))"), Kind::Optional(Box::new(Kind::CPointer(to.clone()))))
+                    }
+                    Class::Nothing => return Err(cannot(format!("`{name}`, which is `void`"), span)),
+                };
+                let mut read = Val::plain(code, kind);
+                // A variable of C may change in any call.
+                read.reads = true;
+                Ok(read)
+            }
             // `(3 s).ms`: the same quantity in another unit.
             Kind::Quantity(unit) if units::is_unit(name) => match units::convert(unit, name) {
                 Some(scale) => Ok(Val::from(scaled(&val.code, scale), Kind::Quantity(name.to_string()), &[&val])),
@@ -5920,6 +6224,9 @@ impl Emitter<'_> {
             // Where a pointer points is different on every run, so it
             // is not shown.
             Kind::Pointer(pointee) => c_string(&format!("<pointer[{}]>", pointee.name())),
+            // As `zeno run` shows it (decision 44.10).
+            Kind::CPointer(_) => format!("zeno_c_pointer_str({})", val.code),
+            Kind::CLibrary(number) => c_string(&format!("<C library {}>", self.types.c_libraries[*number].label)),
             Kind::Register(_) => format!("zeno_str_register({})", val.code),
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
@@ -5961,7 +6268,8 @@ impl Emitter<'_> {
                 format!("({a} == {b})")
             }
             // Two pointers are equal when they point at the same item.
-            Kind::Pointer(_) | Kind::Register(_) => format!("({a} == {b})"),
+            Kind::Pointer(_) | Kind::Register(_) | Kind::CPointer(_) => format!("({a} == {b})"),
+            Kind::CLibrary(_) => "true".to_string(),
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
             Kind::List(item) if **item == Kind::Byte => format!("zeno_bytes_eq({a}, {b})"),
@@ -7318,6 +7626,149 @@ pub(crate) mod tests {
         ("minimal-pool", Build::NoCollector, false),
         ("minimal-firmware", Build::Firmware, false),
     ];
+
+    /// A folder with a header and a file of C in the shape of a vendor's
+    /// HAL, for the tests of `import c` (decision 44.10).
+    fn hal_folder() -> std::path::PathBuf {
+        let folder = std::env::temp_dir().join(format!("zeno-hal-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a temporary folder");
+        std::fs::write(
+            folder.join("hal.h"),
+            "#include <stdint.h>\n\
+             #include <stddef.h>\n\
+             typedef struct { volatile uint32_t ODR; } GPIO_TypeDef;\n\
+             typedef enum { HAL_OK = 0, HAL_ERROR = 1 } HAL_StatusTypeDef;\n\
+             typedef enum { GPIO_PIN_RESET = 0, GPIO_PIN_SET } GPIO_PinState;\n\
+             extern GPIO_TypeDef gpio_a;\n\
+             #define GPIOA (&gpio_a)\n\
+             #define GPIO_PIN_5 ((uint16_t)0x0020)\n\
+             #define HAL_VERSION \"1.2.3\"\n\
+             #define TICK_HZ 1000.0f\n\
+             void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);\n\
+             GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin);\n\
+             HAL_StatusTypeDef HAL_Checksum(const uint8_t *data, uint16_t size, uint16_t *crc);\n\
+             void HAL_Scale(float *values, size_t count, float by);\n\
+             int8_t HAL_Same8(int8_t x);\n\
+             uint64_t HAL_Biggest(void);\n\
+             extern uint32_t uptime_ms;\n",
+        )
+        .expect("the header is written");
+        std::fs::write(
+            folder.join("hal.c"),
+            "#include \"hal.h\"\n\
+             GPIO_TypeDef gpio_a;\n\
+             uint32_t uptime_ms = 42;\n\
+             void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state) {\n\
+                 if (state == GPIO_PIN_SET) port->ODR |= pin; else port->ODR &= ~(uint32_t)pin;\n\
+             }\n\
+             GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin) { return (port->ODR & pin) ? GPIO_PIN_SET : GPIO_PIN_RESET; }\n\
+             HAL_StatusTypeDef HAL_Checksum(const uint8_t *data, uint16_t size, uint16_t *crc) {\n\
+                 uint16_t sum = 0xFFFF;\n\
+                 for (uint16_t i = 0; i < size; i++) { sum ^= data[i]; for (int b = 0; b < 8; b++) sum = (sum & 1) ? (sum >> 1) ^ 0xA001 : sum >> 1; }\n\
+                 *crc = sum;\n\
+                 return size ? HAL_OK : HAL_ERROR;\n\
+             }\n\
+             void HAL_Scale(float *values, size_t count, float by) { for (size_t i = 0; i < count; i++) values[i] *= by; }\n\
+             int8_t HAL_Same8(int8_t x) { return x; }\n\
+             uint64_t HAL_Biggest(void) { return UINT64_MAX; }\n",
+        )
+        .expect("the file of C is written");
+        folder
+    }
+
+    const HAL_PROGRAM: &str = r##"import c
+
+let hal = c.library("{folder}/hal.c", [
+    "#include \"{folder}/hal.h\"",
+    "void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);",
+    "GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin);",
+    "HAL_StatusTypeDef HAL_Checksum(const uint8_t *data, uint16_t size, uint16_t *crc);",
+    "void HAL_Scale(float *values, size_t count, float by);",
+    "int8_t HAL_Same8(int8_t x);",
+    "uint64_t HAL_Biggest(void);",
+    "GPIO_TypeDef *GPIOA;",
+    "uint16_t GPIO_PIN_5;",
+    "GPIO_PinState GPIO_PIN_SET;",
+    "GPIO_PinState GPIO_PIN_RESET;",
+    "HAL_StatusTypeDef HAL_OK;",
+    "const char *HAL_VERSION;",
+    "float TICK_HZ;",
+    "extern uint32_t uptime_ms;",
+])
+
+function lit(pin: int) -> bool {
+    return hal.HAL_GPIO_ReadPin(hal.GPIOA, pin) == hal.GPIO_PIN_SET
+}
+
+print("HAL", hal.HAL_VERSION, hal.TICK_HZ, hal.uptime_ms, hal.HAL_Biggest(), hal.HAL_Same8(-3))
+hal.HAL_GPIO_WritePin(hal.GPIOA, hal.GPIO_PIN_5, hal.GPIO_PIN_SET)
+print("pin 5:", lit(hal.GPIO_PIN_5))
+hal.HAL_GPIO_WritePin(hal.GPIOA, hal.GPIO_PIN_5, hal.GPIO_PIN_RESET)
+print("pin 5:", lit(hal.GPIO_PIN_5))
+let frame: list[u8] = [0x01, 0x03, 0x00, 0x6B, 0x00, 0x03]
+let words = [1, 3, 0, 107, 0, 3]
+let crc = [0]
+print(hal.HAL_Checksum(frame, len(frame), crc) == hal.HAL_OK, crc, hal.HAL_Checksum(words, len(words), crc), crc)
+let readings = [1.5, 2.0, 4.0]
+hal.HAL_Scale(readings, len(readings), 2.0)
+print(readings)
+"##;
+
+    #[test]
+    fn a_library_of_c_is_called_directly_in_every_build() {
+        if crate::bridge_c::helper().is_err() {
+            return;
+        }
+        let folder = hal_folder();
+        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy());
+        let program = crate::modules::testing::program(&source);
+        let (interpreted, result) = crate::vm::run_both(&program, &source);
+        assert!(result.is_ok(), "zeno run failed: {result:?}");
+        assert_eq!(
+            interpreted,
+            "HAL 1.2.3 1000.0 42 18446744073709551615 -3\n\
+             pin 5: true\n\
+             pin 5: false\n\
+             true [6004] 0 [6004]\n\
+             [3.0, 4.0, 8.0]\n"
+        );
+        let builds = [("plain", Build::Ordinary, false, false), ("firmware", Build::Firmware, false, false), ("owned", Build::NoCollector, true, false)];
+        let minimal = MINIMAL_KINDS.iter().map(|(name, build, grows)| (*name, *build, *grows, true));
+        for (name, build, grows, minimal) in builds.into_iter().chain(minimal) {
+            let program = crate::modules::testing::built(&source);
+            let (errors, types) = crate::checker::check_by(&program, build.rules());
+            assert!(errors.is_empty(), "{name}: {:?}", errors[0].message);
+            let c = emit_with(&program, &types, "test.zeno", build, Options { grows, minimal, ..Default::default() }).expect("it builds");
+            let args = crate::bridge_c::build_args(&types.c_libraries, &folder).expect("the library is there");
+            let flags: Vec<&str> = args.iter().map(String::as_str).collect();
+            let Some((printed, errors, finished)) = build_and_run(&format!("hal-{name}"), &c, &flags) else { return };
+            assert!(finished, "{name}: {errors}");
+            assert_eq!(printed, interpreted, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_number_too_big_for_c_stops_a_build_as_it_stops_zeno_run() {
+        if crate::bridge_c::helper().is_err() {
+            return;
+        }
+        let folder = hal_folder();
+        let source = HAL_PROGRAM.replace("{folder}", &folder.to_string_lossy()).lines().take(19).collect::<Vec<_>>().join("\n")
+            + "\nprint(\"before\")\nhal.HAL_Same8(300)\n";
+        let program = crate::modules::testing::program(&source);
+        let (interpreted, result) = crate::vm::run_both(&program, &source);
+        let said = "the 1st parameter of `HAL_Same8` (`int8_t`) holds -128 to 127, and this is 300";
+        assert_eq!((interpreted.as_str(), result.map_err(|error| error.message)), ("before\n", Err(format!("uncaught OverflowError: {said}"))));
+        let program = crate::modules::testing::built(&source);
+        let (errors, types) = crate::checker::check_by(&program, Build::Ordinary.rules());
+        assert!(errors.is_empty(), "{:?}", errors[0].message);
+        let c = emit(&program, &types, "test.zeno", Build::Ordinary).expect("it builds");
+        let args = crate::bridge_c::build_args(&types.c_libraries, &folder).expect("the library is there");
+        let flags: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Some((printed, errors, finished)) = build_and_run("hal-too-big", &c, &flags) else { return };
+        assert_eq!(printed, "before\n");
+        assert!(!finished && errors.contains(said) && errors.contains("OverflowError"), "{errors}");
+    }
 
     #[test]
     fn a_minimal_build_of_hello_is_one_call_of_puts() {

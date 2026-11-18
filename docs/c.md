@@ -83,12 +83,29 @@ functions the program uses are needed.
   is too: `typedef struct counter counter;`.
 - `int8_t` to `uint64_t`, `size_t` and `bool` can be used with no
   `#include`.
+- A declaration with no `(` is a value: see
+  [Values a header names](#values-a-header-names).
 
-A declaration that names a function the library does not have is an
-error when `c.library` is called, not later:
+When the library and its declarations are written out in the program,
+as texts, Zeno knows every function before the program runs, and
+checks each call as it checks a call of a function of Zeno:
 
 ```
-error: uncaught Error: the library `m` has no function `cube_root`, which was declared
+error: the 1st parameter of `cbrt` (`double`) should be float, but this is str
+error: `abs` takes 1 argument, but 2 were given
+error: the library `m` has no `cube` among what is declared for it. Declared: cbrt, abs
+```
+
+A type that only a header names (`uLong`, `HAL_StatusTypeDef`) is taken
+to be a whole number, as nearly all such names are, unless it is one
+of the names headers give floats (`float32_t`). The C compiler sees the
+real type, and says so if the two disagree.
+
+A declaration that names a function the library does not have is an
+error when `c.library` is called, not at the first call:
+
+```
+error: uncaught Error: the library `m` has no `cube_root`, which was declared
 ```
 
 `print` shows a library by its name, and a function by its
@@ -111,9 +128,9 @@ print(m, m.cbrt)
 | `float`, `double`                    | `float`                                                       |
 | `bool`, `_Bool`                      | `bool`                                                        |
 | `const char *` given                 | a `str`, lent for the call, with the `\0` C expects           |
-| `char *` given back                  | a `str`, copied (a list of bytes if it is not UTF-8)          |
+| `char *` given back                  | a `str or none`, copied                                       |
 | `T *` given                          | a list, lent for the call: copied in, and back after          |
-| any other pointer given back         | kept: a pointer Zeno gives back to C, and never looks inside  |
+| any other pointer given back         | a C pointer `or none`: given back to C, never looked inside   |
 | `NULL`                               | `none`                                                        |
 | `void`                               | `none`                                                        |
 
@@ -167,6 +184,68 @@ sqlite.sqlite3_close(db[0])
 Zeno never frees memory that C gave it. A library that says the caller
 frees what it returns has a function to do it, and the program calls
 that, as it would in C.
+
+Text that C gives back is bytes. A byte there that is not part of a
+character of UTF-8 is shown as `\u{fffd}` (�) by `zeno run`; a program
+that `zeno build` made prints the bytes as they are.
+
+## Values a header names
+
+A declaration with no `(` names a value: a constant or a macro of a
+header, a constant of an `enum`, or a variable. It is read by its name,
+as C reads it, each time the program reads it:
+
+```zeno
+let hal = c.library("hal.c", [
+    "#include \"stm32f4xx_hal.h\"",
+    "void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);",
+    "GPIO_TypeDef *GPIOA;",
+    "uint16_t GPIO_PIN_5;",
+    "GPIO_PinState GPIO_PIN_SET;",
+])
+hal.HAL_GPIO_WritePin(hal.GPIOA, hal.GPIO_PIN_5, hal.GPIO_PIN_SET)
+```
+
+`GPIOA` and `GPIO_PIN_5` are macros, and `GPIO_PIN_SET` a constant of an
+`enum`. C cannot declare a macro, so a value is not declared again: the
+header has it. A variable that only the library's own file of C has,
+with no header, is declared with `extern`, as C would declare it:
+`"extern uint32_t uptime_ms;"`.
+
+## `zeno build`: C calls C
+
+`zeno build` writes C, so a function of a library is called there as C
+calls it, with no helper beside the program and nothing in between.
+The library is built in with the program: a file of C is compiled with
+it, a library is linked. That is what firmware needs: the vendor's HAL,
+on the board.
+
+```
+zeno build blink.zeno
+```
+
+Every build does it: `--firmware`, `--no-collector`, `--owned` and
+`--minimal`. With `--minimal` the C is about what a person would write:
+
+```c
+#include "stm32f4xx_hal.h"
+void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);
+...
+    HAL_GPIO_WritePin(((GPIO_TypeDef *)(((void *)(GPIOA)))), ((uint16_t)(((int64_t)(GPIO_PIN_5)))), ...);
+```
+
+A program built this way prints what `zeno run` prints, and a number
+that does not fit stops it with the same `OverflowError` (a `--minimal`
+build does not check, as it checks nothing). A `list[u8]` is handed to
+a function that takes bytes where it is, with no copy, and what C
+writes there is what the list holds afterwards. Any other list is
+copied in and back, as in `zeno run`.
+
+For `zeno build`, the library and its declarations must be written out
+in the program as texts, so that they are known while it builds. A
+file of C cannot have the name the build gives the program's own C
+(`blink.c` for `blink.zeno`): the build says so, and writes nothing.
+`zeno build --llvm` and `--target` do not take `import c` yet.
 
 ## Libraries of Go and Rust
 
@@ -235,14 +314,21 @@ print(filter.average(readings, len(readings)))
 
 ## Errors
 
-A mistake Zeno can see is an error of Zeno, at the line that made it:
+A mistake Zeno can see before the program runs is found then, as
+above: a wrong argument, a function that is not declared, a
+declaration Zeno cannot take:
 
 ```
-error: uncaught Error: the 1st parameter of `sqrt` (`double`) takes a number, and this is a str
+error: `printf` takes any number of arguments (`...`), and Zeno cannot know their types.
+Declare it with the ones the program gives, under another name of C, or write a function
+of C that calls it
+```
+
+A number that does not fit is found as the program runs, as for
+`u8(300)`:
+
+```
 error: uncaught OverflowError: the 1st parameter of `same8` (`int8_t`) holds -128 to 127, and this is 300
-error: uncaught ValueError: `printf` takes any number of arguments (`...`), and Zeno cannot know
-their types. Declare it with the ones the program gives, under another name of C, or write a
-function of C that calls it
 ```
 
 A mistake inside C, such as reading memory that is not there, stops
@@ -258,13 +344,15 @@ error, with its first lines shown.
 
 ## What is not there yet
 
-- **`zeno build`.** A program that says `import c` runs with
-  `zeno run`. For `zeno build`, which writes C already, calling the
-  functions directly from the C it writes, with no helper, is the next
-  step: that is the one firmware needs, for a vendor's HAL.
+- **The address of a variable** (`&huart2`, a handle of a HAL that the
+  vendor's code defines). Write a function of C that gives it:
+  `UART_HandleTypeDef *uart2(void) { return &huart2; }`.
+- **`zeno build --llvm`**, and the other languages of `--target`.
 - **A function of Zeno given to C**, as a callback.
 - **A struct given or given back whole**, not through a pointer.
 - **A function that takes `...`**, such as `printf`.
+- **C++.** A library of C++ is used through C, as Go and Rust are: one
+  with `extern "C"` functions is a library of C (decision 44.12).
 - **Reading the declarations from a header by itself.** They are
   copied by hand for now, and only the ones used are needed.
 
@@ -273,7 +361,7 @@ error, with its first lines shown.
 [`examples/modbus.zeno`](../examples/modbus.zeno) makes a request of
 Modbus RTU and checks the frames that come back, with the checksum
 written in C as a board's firmware already has it
-([`examples/modbus.c`](../examples/modbus.c)):
+([`examples/crc.c`](../examples/crc.c)):
 
 ```
 zeno run examples/modbus.zeno

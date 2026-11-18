@@ -581,6 +581,10 @@ pub struct Parts<'a> {
     pub arguments: bool,
     /// `--memory`: the program reports its memory as it ends.
     pub memory_report: bool,
+    /// The libraries of C the program declares: their `#include` lines
+    /// and declarations, written as they are after the runtime
+    /// (decision 44.10). Empty for any other program.
+    pub verbatim: &'a str,
 }
 
 /// The marks of the runtime that a minimal build decides, beside those of
@@ -746,6 +750,7 @@ pub fn assemble(parts: Parts) -> String {
     // Start from what the top-level code names, and keep following.
     let mut kept = Kept::new(&all);
     kept.want_all_in(parts.program);
+    kept.want_all_in(parts.verbatim);
     if parts.arguments {
         kept.want_all_in("zeno_program_start");
     }
@@ -791,6 +796,10 @@ pub fn assemble(parts: Parts) -> String {
     };
     written.entries(&kept, 0, runtime_end);
     written.gap();
+    if !parts.verbatim.is_empty() {
+        written.c += parts.verbatim;
+        written.gap();
+    }
     written.entries(&kept, runtime_end, declared);
 
     // The functions. One is declared ahead only if something written

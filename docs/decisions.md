@@ -14318,16 +14318,92 @@ importing each other; it now calls the third one `d`, and that, with
 the message that lists the modules, is the only line of the tests
 from before that changed.
 
-`zeno build` and `--target` refuse `import c` with a message, as they
-refuse `import python`.
+`--target` refuses `import c` with a message, as it refuses `import
+python`. `zeno build` takes it (44.10).
 
 ### 44.9 Left for later
 
-- **`zeno build` calling the functions directly.** The C that
-  `zeno build` writes can call a declared function as C calls it, with
-  no helper and no cost. That is the one firmware needs, for a
-  vendor's HAL on the board, and it is the next step.
 - A function of Zeno given to C as a callback.
 - Structs by value, with a class of Zeno for each.
+- The address of a variable (`&huart2`), which for now a function of C
+  gives.
 - Reading the declarations from a header, for a library with many
   functions.
+- `zeno build --llvm`, which writes LLVM and not C.
+
+### 44.10 `zeno build` calls C as C does
+
+Partha asked for it next, for a vendor's HAL on a board, and it is the
+place where `import c` costs nothing: the C that `zeno build` writes
+calls the declared function by its name, with no helper and nothing in
+between, and the C compiler links the library in. Every build does it:
+`--firmware`, `--no-collector`, `--owned` and `--minimal`.
+
+**What made it possible: the checker knows the declarations.** When
+the library and the declarations are written out as texts in
+`c.library(...)` (nearly always), the checker reads them, as `zeno run`
+does, and gives each function a type: `int` for a whole number of C,
+`u64` for `uint64_t`, `float`, `bool`, `str or none` for a `char *`
+given back, and a new type, a C pointer to `thing`, `or none`, for any
+other pointer given back. So a wrong argument is found before the
+program runs, in `zeno run` too, and the C build knows what to write.
+A declaration worked out while the program runs still works with
+`zeno run`, unchecked, and `zeno build` asks for it written out.
+
+**Why a name only a header gives is a whole number.** Zeno does not
+read headers (44.1), so it cannot know what `uLong` or
+`HAL_StatusTypeDef` is. Nearly every such name passed by value is a
+whole number or an enum; a few are floats, and those few have names
+headers share (`float32_t`). The C compiler sees the real type and
+says so if the two disagree, and a pointer to such a name is kept as a
+pointer, whatever it points to. **Turned down: asking the C compiler
+first**, as `zeno run`'s stubs do. The checker would then need a
+compiler, and for a board, the board's compiler and its headers, just
+to say whether a program is right.
+
+**The same answers as `zeno run`.** A number is checked to fit the
+type the function takes, with the same message; a list is lent, copied
+in and back; text given back is copied. A test holds every build to
+what `zeno run` prints (`emit_c::tests`). Two differences, both of C:
+a `list[u8]` given for bytes is handed over where it is, with no copy,
+which a program cannot tell apart from the copy and back; and text
+that is not UTF-8 is printed as the bytes it is, where `zeno run`
+shows `\u{fffd}`. `tools/minimal.py`, which holds `--minimal` to what
+the checked build does, builds the libraries in as `zeno build` does.
+
+**A file of C may not be the build's own C.** `zeno build modbus.zeno`
+writes `modbus.c`, and the example's checksum was in `modbus.c` too:
+the first build would have written over it. The build now refuses,
+and says which file, and the example's file is `crc.c`.
+
+### 44.11 A declaration with no `(` is a value
+
+A HAL is used through its constants as much as its functions:
+`GPIOA`, `GPIO_PIN_5`, `GPIO_PIN_SET`, `HAL_OK`. They are macros or
+constants of an `enum`, which no library holds as a symbol, so they
+cannot be looked up as a function is. `"uint16_t GPIO_PIN_5;"` says
+there is a value of that name and type, and `hal.GPIO_PIN_5` reads it
+by its name, as C would: in `zeno run`, in the stubs, which are
+compiled with the header; in `zeno build`, where it is written.
+
+**Not declared again.** C cannot declare a macro (`uint16_t
+GPIO_PIN_5;` would become `uint16_t ((uint16_t)0x0020);`), so a value
+is only read, and the header declares it. A variable of the library's
+own file of C, with no header, is written `extern`, as C writes it,
+and is declared as it is written.
+
+### 44.12 No `import cpp`
+
+C++ was the one big language left. It is skipped, for now and on
+purpose:
+
+- **Firmware libraries are C.** The HAL of every chip vendor, CMSIS,
+  FreeRTOS, lwIP, FatFs: all C. What firmware needs is in 44.10.
+- **The C++ interface is not one thing.** Names are mangled
+  differently by each compiler, classes and templates have no form a
+  program outside C++ can call, and a library built by one compiler
+  cannot always be called by another. Every language that uses C++
+  libraries (Python, Rust, Go) mostly does it through a layer of C.
+- **That layer already works here.** A library of C++ with `extern
+  "C"` functions is a library of C, and `c.library` takes it, as it
+  takes Go and Rust (44.6).
