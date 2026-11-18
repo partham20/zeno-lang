@@ -1,0 +1,54 @@
+# Holds `zeno build --minimal` to `zeno build` (decision 30.10).
+#
+# A minimal build has no checks in it, so a correct program must do in
+# it exactly what it does in the build that checks. tools/minimal.py
+# builds every example, every sample of the book and the corner programs
+# in tools/targets/ both ways, for each kind of build (the collector,
+# --owned, --no-collector, --firmware), and compares what the two do.
+# It also reads the C of each minimal build with the C compiler's
+# warnings on: a function left in it that the program does not use is a
+# failure.
+#
+# On Linux with gcc and on macOS with clang, on a push that changes the
+# C backend, and by hand from the Actions page ("Run workflow").
+
+name: minimal
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/emit_c.rs"
+      - "src/minimal.rs"
+      - "src/runtime.c"
+      - "tools/minimal.py"
+      - "tools/targets/**"
+      - ".github/workflows/minimal.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  minimal:
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.machine }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zeno
+        run: cargo build --release
+
+      - name: The tests of the minimal build
+        run: cargo test --release minimal
+
+      - name: Every program, built with and without --minimal
+        run: python3 tools/minimal.py
+
+      - name: The sizes of the examples
+        if: runner.os == 'Linux'
+        run: python3 tools/minimal.py --sizes
