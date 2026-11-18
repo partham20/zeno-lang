@@ -213,6 +213,72 @@ lookup table. (Decision 47.)
 The example \verb|examples/battery.zeno| watches a battery through a
 divider and lights the LED when it is low.
 
+\section{A pin on for a share of the time}
+
+A pin is only ever high or low. Switched fast by a timer of the chip,
+it dims a lamp, sets the speed of a motor and tells a servo where to
+turn. The signal is called PWM, and \verb|pwm_pin(n, frequency)| gives
+a \verb|PwmPin| that makes it:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Written & Does \\
+\midrule
+\verb|p.duty(0.25)| & on for that share of the time, \verb|0.0| to \verb|1.0| \\
+\verb|p.pulse(1500 us)| & on for that long in each period \\
+\verb|p.number| & which pin it is \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The frequency has a unit, and so has the time of a pulse:
+
+\begin{zeno}
+from board import pwm_pin
+
+let lamp = pwm_pin(9, 1 kHz)
+lamp.duty(0.25)
+lamp.duty(1.0)
+
+let servo = pwm_pin(10, 50 Hz)
+servo.pulse(1500 us)
+servo.pulse(2 ms)
+\end{zeno}
+
+A new pin is off. On a computer no timer makes the signal, so each
+change of it is printed, as turning a pin on is. A lamp or a motor is
+given a share with \verb|duty|. A servo is given a time with
+\verb|pulse|: 1 ms is one end of its turn and 2 ms the other, whatever
+the period.
+
+A share above \verb|1.0| or below \verb|0.0| is a \verb|ValueError|,
+and so is a pulse longer than one period:
+
+\begin{zeno}
+from board import pwm_pin
+
+let motor = pwm_pin(3, 20 kHz)
+try {
+    motor.duty(1.5)
+} except ValueError as error {
+    print(error.message)
+}
+\end{zeno}
+
+\begin{why}
+Arduino's \verb|analogWrite(pin, 64)| takes a count out of 255, which
+is one timer's width and says ``a quarter'' to nobody, at a frequency
+the board picked. Here the share is a share, the frequency is written
+where the pin is made, since it belongs to what is wired there, and
+both times have their units. A share that is too large is refused and
+not taken as full power: the wrong sum should stop a motor, not run
+it flat out. (Decision 48.)
+\end{why}
+
+The example \verb|examples/dimmer.zeno| fades a lamp and sweeps a
+servo.
+
 \section{A serial port}
 
 A serial port is how a board talks: to a terminal on a computer, to a
@@ -351,7 +417,8 @@ port needs four more, and \verb|ZENO_SERIALS|, the number of ports:
 \verb|zeno_board_serial_open|, \verb|_write|, \verb|_ready| and
 \verb|_read|. One that reads a voltage needs
 \verb|zeno_board_analog| and \verb|zeno_board_analog_read|, with the
-converter's bits and reference. Only a program that uses them calls them, so a header
+converter's bits and reference, and one that makes a PWM signal needs
+\verb|zeno_board_pwm(pin, hertz, duty)|. Only a program that uses them calls them, so a header
 with four still builds every other program.
 
 The simulated board is these four, written for a computer. For a real
@@ -371,7 +438,7 @@ board, so the four can be four lines each. (Decision 5.12.)
 
 A button can be read, but nothing waits for it: a program looks at the
 pin as often as it needs to. On a computer nothing can press it yet.
-Nor can a voltage be fed to a pin there. Interrupts, timers and PWM
+Nor can a voltage be fed to a pin there. Interrupts and timers
 are not in the \verb|board| module yet. Until they are, a program reaches them
 through their registers, at the addresses the data sheet gives.
 \hyperref[app-limits]{Appendix G} lists these.
@@ -382,7 +449,9 @@ through their registers, at the addresses the data sheet gives.
 \verb|Pin| is a type. \verb|input_pin(n, pull_up)| gives an
 \verb|InputPin|, read with \verb|is_high| and \verb|is_low|.
 \verb|analog_pin(n)| gives an \verb|AnalogPin|, whose \verb|voltage()|
-is in volts. \verb|serial(n, 115200 baud)| gives a \verb|Serial|, which
+is in volts. \verb|pwm_pin(n, 1 kHz)| gives a \verb|PwmPin|, on for a
+share of the time with \verb|duty| or for a time with \verb|pulse|.
+\verb|serial(n, 115200 baud)| gives a \verb|Serial|, which
 writes text and bytes and reads a byte at a time. \verb|sleep| and \verb|now| keep time with units.
 A register is read and written inside \verb|unsafe|. \verb|zeno run|
 simulates the board and prints each change; a compiled program sits on

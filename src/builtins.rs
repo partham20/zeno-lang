@@ -875,6 +875,7 @@ pub fn has_method(receiver: &Value, name: &str) -> bool {
         Value::InputPin(_) => name == "is_high" || name == "is_low",
         Value::Serial(_) => matches!(name, "write" | "write_bytes" | "read_byte" | "has_byte"),
         Value::AnalogPin(_) => name == "voltage" || name == "count",
+        Value::PwmPin(_) => name == "duty" || name == "pulse",
         Value::Register(..) => REGISTER_METHODS.contains(&name),
         Value::Element(..) => ELEMENT_METHODS.contains(&name),
         Value::Timer(_) => name == "stop",
@@ -1352,6 +1353,57 @@ pub fn call_method(
             }
             _ => fatal(format!("a serial port has no method `{name}`"), span),
         },
+        // `lamp.duty(0.25)` and `servo.pulse(1500 us)`: the share of the
+        // time the pin is on, said as a share or as a time in each
+        // period.
+        Value::PwmPin(pin) => {
+            arity(name, &args, 1, 1, span)?;
+            let hertz = machine.board().pwm_hertz(*pin);
+            let share = match (name, &args[0]) {
+                ("duty", Value::Float(share)) => {
+                    if !(*share >= 0.0 && *share <= 1.0) {
+                        return raise(
+                            "ValueError",
+                            format!(
+                                "a duty is from 0.0 to 1.0, and this is {}. For a quarter of the time on, write 0.25",
+                                Value::Float(*share)
+                            ),
+                            span,
+                        );
+                    }
+                    *share
+                }
+                ("duty", other) => return wrong_type("duty", "a float from 0.0 to 1.0", other, span),
+                ("pulse", Value::Quantity(time, unit)) => {
+                    let Some(scale) = crate::units::convert(unit, "s") else {
+                        return fatal(format!("`pulse` needs a time, such as `1500 us`, not a quantity in {unit}"), span);
+                    };
+                    let seconds = scale.apply(*time);
+                    let mut share = seconds * hertz;
+                    // A pulse of one whole period, give or take the last
+                    // digit of the sum, is all the time on.
+                    if share > 1.0 && share <= 1.0 + 1e-9 {
+                        share = 1.0;
+                    }
+                    if !(share >= 0.0 && share <= 1.0) {
+                        return raise(
+                            "ValueError",
+                            format!(
+                                "a pulse lasts from no time to one whole period, which is {} at this frequency, and this is {}",
+                                Value::Quantity(1.0 / hertz, Rc::from("s")),
+                                Value::Quantity(seconds, Rc::from("s"))
+                            ),
+                            span,
+                        );
+                    }
+                    share
+                }
+                ("pulse", other) => return wrong_type("pulse", "a time with a unit, such as `1500 us`", other, span),
+                _ => return fatal(format!("a PWM pin has no method `{name}`"), span),
+            };
+            pwm(machine, *pin, hertz, share);
+            Ok(Value::None)
+        }
         // `sensor.voltage()` and `sensor.count()`: what the converter
         // reads on the pin now. The voltage is the count's share of the
         // largest count, times the reference, worked out in that order
@@ -1561,6 +1613,7 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("input_pin", Value::Builtin(Builtin { name: "input_pin", call: input_pin })),
                 ("serial", Value::Builtin(Builtin { name: "serial", call: serial })),
                 ("analog_pin", Value::Builtin(Builtin { name: "analog_pin", call: analog_pin })),
+                ("pwm_pin", Value::Builtin(Builtin { name: "pwm_pin", call: pwm_pin })),
                 // How an input is held: the str of its name, as in a
                 // compiled program (decision 45.3).
                 ("pull_up", Value::Str(Rc::from("pull_up"))),
@@ -1905,6 +1958,39 @@ fn pin(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 }
 
 /// Set a pin high or low, and print what the simulated board shows.
+/// `pwm_pin(9, 1 kHz)`: the pin with that number, switched on and off
+/// that many times a second. It starts off all the time.
+fn pwm_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("pwm_pin", &args, 2, 2, span)?;
+    let Value::Pin(number) = pin(machine, vec![args[0].clone()], span)? else { unreachable!("`pin` gives a pin") };
+    let hertz = match &args[1] {
+        Value::Quantity(rate, unit) => match crate::units::convert(unit, "Hz") {
+            Some(scale) => scale.apply(*rate),
+            None => return wrong_type("pwm_pin", "a frequency, such as `1 kHz`", &args[1], span),
+        },
+        other => return wrong_type("pwm_pin", "a frequency, such as `1 kHz`", other, span),
+    };
+    if !(hertz > 0.0) {
+        return raise("ValueError", "the frequency of a PWM signal must be above 0 Hz".to_string(), span);
+    }
+    pwm(machine, number, hertz, 0.0);
+    Ok(Value::PwmPin(number))
+}
+
+/// Set a pin's PWM signal, and print the lines the simulated board
+/// shows for it: the pin going low if it was driven high, and the signal
+/// when it changes.
+fn pwm(machine: &mut dyn Machine, pin: i64, hertz: f64, duty: f64) {
+    let (low, changed) = machine.board().pwm(pin, hertz, duty);
+    if let Some(line) = low {
+        machine.write_line(&line);
+    }
+    if changed {
+        let signal = format!("{} pwm {} at {}", board::name(pin), Value::Float(duty), Value::Quantity(hertz, Rc::from("Hz")));
+        machine.write_line(&signal);
+    }
+}
+
 /// `analog_pin(0)`: the pin with that number, for reading its voltage.
 /// Every pin of the simulated board can be read this way.
 fn analog_pin(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {

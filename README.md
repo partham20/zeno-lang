@@ -94,6 +94,7 @@ Samples, none of them final:
 - [`examples/doorbell.zeno`](examples/doorbell.zeno): a button on an input pin with a pull-up rings a bell, once for each press.
 - [`examples/console.zeno`](examples/console.zeno): a command line over a serial port that drives the LED.
 - [`examples/battery.zeno`](examples/battery.zeno): a battery read through a divider on an analog pin, in volts, with the LED on when it is low.
+- [`examples/dimmer.zeno`](examples/dimmer.zeno): a lamp faded up and down and a servo swept, with a PWM signal on two pins.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
 - [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
@@ -760,6 +761,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     converter's own number. A board header says its bits and reference
     and gains two functions. In every engine and every C and LLVM
     build. See [`docs/analog.md`](docs/analog.md) and chapter 47 of
+    [`docs/decisions.md`](docs/decisions.md))
+46. A PWM signal on a board (done, after 0.5.2 and not yet released:
+    `pwm_pin(9, 1 kHz)` gives a `PwmPin`, made with its frequency;
+    `duty(0.25)` is the share of the time on, from 0.0 to 1.0, and
+    `pulse(1500 us)` the time on in each period, as a servo wants. A
+    share outside the range is an error, never clamped. A board
+    header gains one function. In every engine and every C and LLVM
+    build. See [`docs/pwm.md`](docs/pwm.md) and chapter 48 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with

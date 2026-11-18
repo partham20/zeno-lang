@@ -101,6 +101,9 @@ pub enum Kind {
     /// A pin whose voltage the program reads: `analog_pin(0)`. It is the
     /// pin's number (decision 47).
     AnalogPin,
+    /// A pin that is switched on and off many times a second:
+    /// `pwm_pin(9, 1 kHz)`. It is the pin's number (decision 48).
+    PwmPin,
     /// A raw pointer: `pointer[u8]`. See docs/unsafe.md.
     Pointer(Pointee),
     /// A register of the board at a fixed address. It is the address.
@@ -522,6 +525,7 @@ fn plain_kind(ty: &Ty) -> Kind {
         Ty::InputPin => Kind::InputPin,
         Ty::Serial => Kind::Serial,
         Ty::AnalogPin => Kind::AnalogPin,
+        Ty::PwmPin => Kind::PwmPin,
         // `pull_up` and `pull_down` are the strs of their names, so
         // printing one, comparing two and keeping them in a list work
         // as they do for any str. The checker keeps them apart.
@@ -707,6 +711,9 @@ enum Ty {
     Serial,
     /// A pin whose voltage the program reads: `analog_pin(0)`.
     AnalogPin,
+    /// A pin that is switched on and off many times a second:
+    /// `pwm_pin(9, 1 kHz)`.
+    PwmPin,
     /// An element of the page, from the `web` module.
     Element,
     /// What happened on the page: what a function given to `on` may ask for.
@@ -920,6 +927,7 @@ enum Key {
     Pull,
     Serial,
     AnalogPin,
+    PwmPin,
     Element,
     Event,
     Timer,
@@ -1164,6 +1172,7 @@ impl fmt::Display for Ty {
             Ty::Pull => write!(f, "Pull"),
             Ty::Serial => write!(f, "Serial"),
             Ty::AnalogPin => write!(f, "AnalogPin"),
+            Ty::PwmPin => write!(f, "PwmPin"),
             Ty::Element => write!(f, "Element"),
             Ty::Event => write!(f, "Event"),
             Ty::Timer => write!(f, "Timer"),
@@ -1295,6 +1304,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         | (Ty::Pull, Ty::Pull)
         | (Ty::Serial, Ty::Serial)
         | (Ty::AnalogPin, Ty::AnalogPin)
+        | (Ty::PwmPin, Ty::PwmPin)
         | (Ty::Element, Ty::Element)
         | (Ty::Event, Ty::Event)
         | (Ty::Timer, Ty::Timer)
@@ -1992,6 +2002,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("board", "pull_up") | ("board", "pull_down") => Ty::Pull,
         ("board", "serial") => Ty::Builtin("serial"),
         ("board", "analog_pin") => Ty::Builtin("analog_pin"),
+        ("board", "pwm_pin") => Ty::Builtin("pwm_pin"),
         _ => return None,
     })
 }
@@ -2618,6 +2629,7 @@ impl Checker {
             Ty::Pull => Key::Pull,
             Ty::Serial => Key::Serial,
             Ty::AnalogPin => Key::AnalogPin,
+            Ty::PwmPin => Key::PwmPin,
             Ty::Element => Key::Element,
             Ty::Event => Key::Event,
             Ty::Timer => Key::Timer,
@@ -2671,6 +2683,7 @@ impl Checker {
             Key::Pull => Ty::Pull,
             Key::Serial => Ty::Serial,
             Key::AnalogPin => Ty::AnalogPin,
+            Key::PwmPin => Ty::PwmPin,
             Key::Element => Ty::Element,
             Key::Event => Ty::Event,
             Key::Timer => Ty::Timer,
@@ -3084,6 +3097,7 @@ impl Checker {
                         _ if name == "Pull" => Ty::Pull,
                         _ if name == "Serial" => Ty::Serial,
                         _ if name == "AnalogPin" => Ty::AnalogPin,
+                        _ if name == "PwmPin" => Ty::PwmPin,
                         // An element of the page, by the same rule.
                         _ if name == "Element" => Ty::Element,
                         _ if name == "Event" => Ty::Event,
@@ -6222,6 +6236,15 @@ impl Checker {
                 Ty::BuiltinMethod(Box::new(Ty::InputPin), Rc::from(name))
             }
             Ty::InputPin if name == "number" => Ty::Int,
+            Ty::PwmPin if PWM_PIN_METHODS.contains(&name) => Ty::BuiltinMethod(Box::new(Ty::PwmPin), Rc::from(name)),
+            Ty::PwmPin if name == "number" => Ty::Int,
+            Ty::PwmPin => self.error(
+                format!(
+                    "a PwmPin has no `{name}`. It has `duty(share)`, `pulse(time)` and `number`. \
+                     All the time on is `duty(1.0)`, and off is `duty(0.0)`"
+                ),
+                span,
+            ),
             Ty::AnalogPin if ANALOG_PIN_METHODS.contains(&name) => {
                 Ty::BuiltinMethod(Box::new(Ty::AnalogPin), Rc::from(name))
             }
@@ -7357,6 +7380,25 @@ impl Checker {
                 }
                 Ty::Pin
             }
+            // `pwm_pin(9, 1 kHz)`: a pin switched on and off that many
+            // times a second (48.1).
+            "pwm_pin" => {
+                if self.arity(name, arguments, 2, 2, span) {
+                    self.expect(&first, &Ty::Int, "the number of a pin", arguments[0].span);
+                    let rate = &arguments[1];
+                    let frequency = matches!(&rate.ty, Ty::Quantity(unit) if units::convert(unit, "Hz").is_some());
+                    if !frequency && !rate.ty.is_loose() {
+                        self.error(
+                            format!(
+                                "the frequency of a PWM pin has a unit, as in `pwm_pin(9, 1 kHz)`, and this is {}",
+                                rate.ty
+                            ),
+                            rate.span,
+                        );
+                    }
+                }
+                Ty::PwmPin
+            }
             // `analog_pin(0)`: a pin whose voltage the program reads (47.1).
             "analog_pin" => {
                 if self.arity(name, arguments, 1, 1, span) {
@@ -7488,6 +7530,28 @@ impl Checker {
             (Ty::Pin, _) => {
                 self.arity(name, arguments, 0, 0, span);
                 if name == "is_on" { Ty::Bool } else { Ty::None }
+            }
+            // `lamp.duty(0.25)`: on for that share of the time, a float
+            // from 0.0 to 1.0 (48.2).
+            (Ty::PwmPin, "duty") => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    self.expect(&arguments[0].ty, &Ty::Float, "the share of the time given to `duty`", arguments[0].span);
+                }
+                Ty::None
+            }
+            // `servo.pulse(1500 us)`: on for that long in each period (48.3).
+            (Ty::PwmPin, _) => {
+                if self.arity(name, arguments, 1, 1, span) {
+                    let given = &arguments[0];
+                    let time = matches!(&given.ty, Ty::Quantity(unit) if units::convert(unit, "s").is_some());
+                    if !time && !given.ty.is_loose() {
+                        self.error(
+                            format!("`pulse` needs a time with a unit, such as `1500 us`, and this is {}", given.ty),
+                            given.span,
+                        );
+                    }
+                }
+                Ty::None
             }
             // `sensor.voltage()`: what the pin is at now, in volts.
             // `sensor.count()`: the same as the converter counts it.
@@ -8752,6 +8816,7 @@ const DICT_METHODS: &[&str] = &["get", "pop", "keys", "values", "clear"];
 const PIN_METHODS: &[&str] = &["on", "off", "toggle", "is_on"];
 const INPUT_PIN_METHODS: &[&str] = &["is_high", "is_low"];
 const ANALOG_PIN_METHODS: &[&str] = &["voltage", "count"];
+const PWM_PIN_METHODS: &[&str] = &["duty", "pulse"];
 const SERIAL_METHODS: &[&str] = &["write", "write_bytes", "read_byte", "has_byte"];
 const REGISTER_METHODS: &[&str] = &["read", "write"];
 
@@ -10031,6 +10096,37 @@ mod tests {
         assert_eq!(error("from board import analog_pin\nanalog_pin(0).count(1)"), "`count` takes 0 arguments, but 1 was given");
         assert_eq!(error("from board import analog_pin\nanalog_pin(0.5)"), "the number of a pin should be int, but this is float");
         assert_eq!(error("from board import analog_pin, pin\nlet p: Pin = analog_pin(0)"), "`p` should be Pin, but this is AnalogPin");
+    }
+
+    #[test]
+    fn a_pwm_pin_has_a_frequency_and_a_duty() {
+        ok("from board import pwm_pin\nlet lamp: PwmPin = pwm_pin(9, 1 kHz)\nlamp.duty(0.25)\nlamp.pulse(1500 us)\n\
+            let n: int = lamp.number\nlet rate: Hz = 1 / 20 ms\nlet servo = pwm_pin(10, rate)\nservo.pulse(0.002 s)");
+        ok("import board\nfunction dim(light: PwmPin, share: float) { light.duty(share) }\ndim(board.pwm_pin(3, 500 Hz), 0.1)");
+        assert_eq!(
+            error("from board import pwm_pin\npwm_pin(9, 1000)"),
+            "the frequency of a PWM pin has a unit, as in `pwm_pin(9, 1 kHz)`, and this is int"
+        );
+        assert_eq!(
+            error("from board import pwm_pin\npwm_pin(9, 1 ms)"),
+            "the frequency of a PWM pin has a unit, as in `pwm_pin(9, 1 kHz)`, and this is a quantity in ms"
+        );
+        assert_eq!(error("from board import pwm_pin\npwm_pin(9)"), "`pwm_pin` takes 2 arguments, but 1 was given");
+        assert_eq!(
+            error("from board import pwm_pin\npwm_pin(9, 1 kHz).pulse(1500)"),
+            "`pulse` needs a time with a unit, such as `1500 us`, and this is int"
+        );
+        assert_eq!(
+            error("from board import pwm_pin\npwm_pin(9, 1 kHz).pulse(50 Hz)"),
+            "`pulse` needs a time with a unit, such as `1500 us`, and this is a quantity in Hz"
+        );
+        assert_eq!(
+            error("from board import pwm_pin\npwm_pin(9, 1 kHz).on()"),
+            "a PwmPin has no `on`. It has `duty(share)`, `pulse(time)` and `number`. \
+             All the time on is `duty(1.0)`, and off is `duty(0.0)`"
+        );
+        assert_eq!(error("from board import pwm_pin\npwm_pin(9, 1 kHz).duty()"), "`duty` takes 1 argument, but 0 were given");
+        assert_eq!(error("from board import pwm_pin, pin\nlet p: Pin = pwm_pin(9, 1 kHz)"), "`p` should be Pin, but this is PwmPin");
     }
 
     #[test]

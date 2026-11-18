@@ -1,0 +1,43 @@
+# A lamp that fades up and down, and a servo that sweeps.
+#
+# A pin is only ever on or off. Switched fast enough, a lamp looks
+# dimmer the smaller the share of the time it is on, and a servo reads
+# its angle from how long each pulse lasts. See docs/pwm.md.
+#
+# On a computer no timer makes the signal: each change of it is
+# printed. On a board, the pins must be ones a timer of the chip drives.
+from board import pwm_pin
+from time import sleep
+
+let lamp = pwm_pin(9, 1 kHz)
+let servo = pwm_pin(10, 50 Hz)
+
+# Brighter in `steps` steps, from off to on all the time.
+function fade_up(light: PwmPin, steps: int) {
+    for step in range(steps + 1) {
+        light.duty(step / steps)
+        sleep(5 ms)
+    }
+}
+
+function fade_down(light: PwmPin, steps: int) {
+    for step in range(steps + 1) {
+        light.duty((steps - step) / steps)
+        sleep(5 ms)
+    }
+}
+
+# A hobby servo turns to where the pulse says: 1000 us is one end,
+# 1500 us the middle and 2000 us the other end.
+function turn(motor: PwmPin, share: float) {
+    motor.pulse(1000 us + 1000 us * share)
+}
+
+fade_up(lamp, 4)
+fade_down(lamp, 4)
+
+for place in [0.0, 0.5, 1.0, 0.5] {
+    turn(servo, place)
+    sleep(20 ms)
+}
+servo.duty(0.0)

@@ -14982,3 +14982,127 @@ it turns this file into `/decisions/`. Nothing is written twice. A
 short name of a commit is a link to the commit on GitHub, in the file
 and on the site, so the page can stay one line to a commit and the
 whole of each is one press away.
+
+## 48. A PWM signal: a pin switched on for a share of the time
+
+```zeno
+from board import pwm_pin
+
+let lamp = pwm_pin(9, 1 kHz)
+lamp.duty(0.25)               # on for a quarter of each millisecond
+
+let servo = pwm_pin(10, 50 Hz)
+servo.pulse(1500 us)          # on for 1.5 ms of each 20 ms
+```
+
+A pin is only ever high or low. Switched fast by a timer of the chip,
+it dims a lamp, sets the speed of a motor and tells a servo its angle,
+with no work from the program between two changes. It is the fourth
+part of item 7 of [`missing.md`](missing.md), after inputs (45), the
+serial port (46) and reading a voltage (47). Walkthrough:
+[`pwm.md`](pwm.md).
+
+### 48.1 A PWM pin is a type of its own, made with its frequency
+
+**`pwm_pin(9, 1 kHz)` gives a `PwmPin`**, which has `duty(share)`,
+`pulse(time)` and `number`, and prints as `PwmPin(9)`. It is the pin's
+number underneath (3.15). It has no `on` and no `off`: a `Pin` has
+those, and the message says that all the time on is `duty(1.0)`. It is
+the fourth thing a pin can be, by the rule of 45.1.
+
+**The frequency is given when the pin is made, and it has a unit.**
+`pwm_pin(9, 1000)` is refused: "the frequency of a PWM pin has a unit,
+as in `pwm_pin(9, 1 kHz)`". A frequency worked out from a period,
+`1 / 20 ms`, is one too (43). **Why when it is made?** The frequency
+belongs to the wiring: a servo wants 50 Hz and a lamp wants more than
+the eye sees, and neither changes while the program runs. A timer is
+set up once with it. **Turned down:** a frequency with a default, as
+Arduino's `analogWrite` has (490 Hz on some pins and 980 Hz on others,
+which nobody remembers), and a frequency set by a method after the
+pin is made, which leaves a pin with no frequency in between.
+
+**A new pin is off all the time**, as a new `Pin` is low. A frequency
+of 0 Hz or less is a `ValueError`.
+
+**One pin has one signal.** Making a second `PwmPin` for a pin that
+has one starts the signal again, off, at the new frequency, and both
+values then drive it, as two `pin(9)` drive one pin.
+
+### 48.2 `duty` takes the share of the time on, from 0.0 to 1.0
+
+**`lamp.duty(0.25)` is on for a quarter of the time.** A float, since
+a share is a number with no unit, and 0.0 to 1.0 since that is what a
+share is. Outside that range is a `ValueError` that says the range and
+gives an example. **Turned down:**
+
+- **A count from 0 to 255**, as `analogWrite(pin, 64)`. The 255 is one
+  timer's width and means nothing on another, and `64` does not say
+  "a quarter" to anyone reading.
+- **A percentage, 0 to 100.** Zeno has no `%` unit, and `duty(25)`
+  beside `duty(0.25)` would be the ambiguity the language is built to
+  keep out. A program that thinks in percent writes `duty(25 / 100)`.
+- **Clamping** a share above 1.0 to 1.0. A wrong sum would then run a
+  motor at full power in silence.
+
+The name is the word on the data sheet: the duty cycle.
+
+### 48.3 `pulse` takes the time on in each period
+
+**`servo.pulse(1500 us)` is on for that long in each period.** A servo
+and an electronic speed controller are told a time, not a share: 1 ms
+to 2 ms, whatever the period. Without `pulse` the program would write
+`duty(1500 us * 50 Hz)`, and must then know the frequency in two
+places. The time has a unit, and a bare number is refused. A time
+below zero or longer than one period is a `ValueError` that says how
+long the period is.
+
+`pulse(t)` is `duty(t * frequency)` and nothing more. The two are two
+ways to say one thing, and each is the plain way for one kind of
+device.
+
+### 48.4 One function in the board layer
+
+```c
+bool zeno_board_pwm(int pin, double hertz, double duty);
+```
+
+**It starts or changes the signal on a pin, and answers false if the
+pin cannot make one.** On most chips only the pins a timer reaches
+can, and the board is what knows which, so making such a pin is a
+`ValueError`: "pin 7 of this board cannot make a PWM signal". Making a
+pin calls it with a duty of 0, and `duty` and `pulse` call it with the
+same frequency and the new share. The runtime keeps each pin's
+frequency and checks every range, so the board sees a pin it has, a
+frequency above 0 and a duty from 0 to 1.
+
+**One function, not three** (open, set, close): every call carries the
+whole signal, so a board has nothing to remember, and one that must
+set up its timer can do it when the frequency changes. **Only a
+program that makes a PWM pin calls it** (`#ifdef ZENO_PWM_PINS`), by
+the rule of 45.4.
+
+### 48.5 On a computer each change is printed
+
+**The simulated board prints a line when a signal changes**: `pin 9
+pwm 0.25 at 1000 Hz`, and `led pwm 0.5 at 2500 Hz` for the LED's pin.
+It is the line `pin 9 on` (5.12a) for a pin that is partly on. Setting
+the duty a pin already has prints nothing, as turning on a pin that is
+on prints nothing, and so making a pin that has no signal yet prints
+nothing. A pin that was
+on is turned off first, with its own line, since a timer takes the pin
+over. Every pin can make a signal there. Reading such a pin, with
+`is_on()`, says off: the simulated board has no time in which the pin
+would be high.
+
+### 48.6 Left for later
+
+- Reading back the duty and the frequency of a pin.
+- Changing the frequency of a pin that is made (a buzzer playing a
+  tune), which today is a second `pwm_pin`.
+- The timer's resolution: a board with an 8-bit timer rounds `0.001`
+  to nothing, and the program is not told.
+- Two pins of one timer that must share a frequency, complementary
+  outputs and dead time for a motor bridge.
+- A voltage from a real DAC, and a tone.
+- A trial on a real board. The board function is written for the
+  simulated board and for test boards only.

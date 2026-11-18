@@ -40,13 +40,16 @@ pub const LED: i64 = 13;
 /// written to each register, by its address. A register nobody has
 /// written to reads as 0.
 pub struct Board {
+    /// For each pin that makes a PWM signal: its frequency in hertz and
+    /// the share of the time it is on. Both 0 for every other pin.
+    pwm: [(f64, f64); PINS as usize],
     levels: [bool; PINS as usize],
     registers: std::collections::HashMap<i64, i64>,
 }
 
 impl Board {
     pub fn new() -> Board {
-        Board { levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
+        Board { pwm: [(0.0, 0.0); PINS as usize], levels: [false; PINS as usize], registers: std::collections::HashMap::new() }
     }
 
     /// What the register at `address` holds.
@@ -76,6 +79,23 @@ impl Board {
             Pull::Down => self.levels[pin as usize] = false,
             Pull::Nothing => {}
         }
+    }
+
+    /// The frequency the pin's PWM signal was made with, in hertz.
+    pub fn pwm_hertz(&self, pin: i64) -> f64 {
+        self.pwm[pin as usize].0
+    }
+
+    /// Make the pin's PWM signal this: so many hertz, on for this share
+    /// of the time. A pin that was driven high goes low first, since the
+    /// timer has it now: that line is given back, if there is one. And
+    /// whether the signal changed, which is when the board prints it. A
+    /// signal that is off all the time is the same at every frequency.
+    pub fn pwm(&mut self, pin: i64, hertz: f64, duty: f64) -> (Option<String>, bool) {
+        let low = self.write(pin, false);
+        let (old_hertz, old_duty) = self.pwm[pin as usize];
+        self.pwm[pin as usize] = (hertz, duty);
+        (low, duty != old_duty || (duty > 0.0 && hertz != old_hertz))
     }
 
     /// What the converter counts on the pin. Nothing is wired to the

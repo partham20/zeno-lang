@@ -42,6 +42,8 @@ pub enum Value {
     Serial(i64),
     /// A pin whose voltage the program reads, by its number: `analog_pin(0)`
     AnalogPin(i64),
+    /// A pin that makes a PWM signal, by its number: `pwm_pin(9, 1 kHz)`
+    PwmPin(i64),
     /// A raw pointer: the block that `allocate` made, and how many items
     /// into it this pointer points.
     Pointer(Rc<Memory>, i64),
@@ -714,6 +716,7 @@ impl Value {
             Value::InputPin(_) => "an input pin".to_string(),
             Value::Serial(_) => "a serial port".to_string(),
             Value::AnalogPin(_) => "an analog pin".to_string(),
+            Value::PwmPin(_) => "a PWM pin".to_string(),
             Value::Element(..) => "an element".to_string(),
             Value::Event(_) => "an Event".to_string(),
             Value::Timer(_) => "a Timer".to_string(),
@@ -876,6 +879,7 @@ fn equal_other(a: &Value, b: &Value) -> bool {
         (InputPin(a), InputPin(b)) => a == b,
         (Serial(a), Serial(b)) => a == b,
         (AnalogPin(a), AnalogPin(b)) => a == b,
+        (PwmPin(a), PwmPin(b)) => a == b,
         // Two elements are equal when they are one element of the page.
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
@@ -960,6 +964,7 @@ impl fmt::Display for Value {
             Value::InputPin(number) => write!(f, "InputPin({number})"),
             Value::Serial(number) => write!(f, "Serial({number})"),
             Value::AnalogPin(number) => write!(f, "AnalogPin({number})"),
+            Value::PwmPin(number) => write!(f, "PwmPin({number})"),
             Value::Element(_, name) => write!(f, "Element({name})"),
             Value::Event(event) => write!(f, "Event({})", event.kind),
             Value::Timer(_) => write!(f, "Timer"),

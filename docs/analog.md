@@ -112,5 +112,5 @@ print the same digits.
 ## Not yet
 
 Feeding a voltage to a pin under `zeno run`, averaging and sample
-times, several pins in one sweep, and writing a voltage out (a DAC,
-PWM). See 47.5 in [`decisions.md`](decisions.md).
+times, several pins in one sweep, and writing a voltage out with a
+DAC (a PWM signal is in [`pwm.md`](pwm.md)). See 47.5 in [`decisions.md`](decisions.md).

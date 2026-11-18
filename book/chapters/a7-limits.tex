@@ -11,10 +11,12 @@ The numbers are the decisions, for anyone who wants the argument.
 
 \begin{description}
 \item[Inputs.] A pin can be read (\verb|input_pin|, 45), a serial
-  port used (\verb|serial|, 46) and a voltage read
-  (\verb|analog_pin|, 47), but nothing presses a button or feeds a
+  port used (\verb|serial|, 46), a voltage read
+  (\verb|analog_pin|, 47) and a PWM signal made (\verb|pwm_pin|, 48),
+  but nothing presses a button or feeds a
   voltage under \verb|zeno run| (45.5), and none of it has been tried
-  on a real board. PWM, interrupts and timers are still to come.
+  on a real board. A PWM pin cannot be asked its duty or given a new
+  frequency (48.6). Interrupts and timers are still to come.
 \end{description}
 
 \section{Numbers}

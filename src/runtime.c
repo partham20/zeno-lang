@@ -2373,7 +2373,15 @@ static double zeno_acos(double x, int line, int col) {
  *
  *   zeno_board_analog(pin)        make the pin one the converter reads.
  *                                 False if this pin cannot be
- *   zeno_board_analog_read(pin)   what the converter counts on it now Below is a simulated
+ *   zeno_board_analog_read(pin)   what the converter counts on it now
+ *
+ * And a program with a PWM pin (`pwm_pin(9, 1 kHz)`) needs one
+ * (decision 48.4):
+ *
+ *   zeno_board_pwm(pin, hertz, duty)   switch the pin on and off so many
+ *                                      times a second, on for this share
+ *                                      of the time, 0.0 to 1.0. False if
+ *                                      this pin cannot Below is a simulated
  * board, for a program that runs on a computer: it keeps the level of
  * each pin in an array, and prints a line when a level changes, as a
  * logic analyser on the pin would show it.
@@ -2474,6 +2482,30 @@ static void zeno_board_write(int pin, bool level) {
         printf("pin %d %s\n", pin, level ? "on" : "off");
     }
 }
+
+#ifdef ZENO_PWM_PINS
+/* A line when the signal changes, as an oscilloscope on the pin would
+ * show it: `pin 9 pwm 0.25 at 1000 Hz`. A pin that was driven high goes
+ * low first, since the timer has it now. A signal that is off all the
+ * time is the same at every frequency (decision 48.5). */
+static double zeno_pwm_rates[ZENO_PINS];
+static double zeno_pwm_duties[ZENO_PINS];
+
+static bool zeno_board_pwm(int pin, double hertz, double duty) {
+    zeno_board_write(pin, false);
+    bool changed = duty != zeno_pwm_duties[pin] || (duty > 0.0 && hertz != zeno_pwm_rates[pin]);
+    zeno_pwm_rates[pin] = hertz;
+    zeno_pwm_duties[pin] = duty;
+    if (changed) {
+        if (pin == ZENO_LED) {
+            printf("led pwm %s at %s\n", zeno_str_float(duty), zeno_str_quantity(hertz, "Hz"));
+        } else {
+            printf("pin %d pwm %s at %s\n", pin, zeno_str_float(duty), zeno_str_quantity(hertz, "Hz"));
+        }
+    }
+    return true;
+}
+#endif /* ZENO_PWM_PINS */
 
 /* Waiting and reading the clock are the two things here that the C
  * language leaves to the system, and there are two families of system.
@@ -3633,6 +3665,71 @@ static double zeno_analog_voltage(int64_t pin) {
     return (double)zeno_analog_count(pin) / (double)zeno_analog_max() * ZENO_ANALOG_REFERENCE;
 }
 #endif /* ZENO_ANALOG_PINS */
+
+/* ---------------------------------------------------------------- PWM pins
+ *
+ * `pwm_pin(9, 1 kHz)`, `lamp.duty(0.25)` and `servo.pulse(1500 us)`,
+ * over the one function of the board layer for PWM (see "The board").
+ * Only a program with a PWM pin keeps this part. */
+
+#ifdef ZENO_PWM_PINS
+/* The frequency each PWM pin was made with, in hertz. */
+static double zeno_pwm_hertz[ZENO_PINS];
+
+/* The pin with that number, making a signal of that frequency that is
+ * off all the time, until the program says otherwise. */
+static int64_t zeno_pwm_pin(int64_t number, double hertz, int line, int col) {
+    int64_t pin = zeno_pin(number, line, col);
+#ifndef ZENO_MINIMAL
+    if (!(hertz > 0.0)) {
+        zeno_fail("ValueError", "the frequency of a PWM signal must be above 0 Hz", line, col);
+    }
+    if (!zeno_board_pwm((int)pin, hertz, 0.0)) {
+        zeno_fail("ValueError", zeno_join(3, "pin ", zeno_str_int(pin), " of this board cannot make a PWM signal"), line, col);
+    }
+#else /* ZENO_MINIMAL */
+    zeno_board_pwm((int)pin, hertz, 0.0);
+#endif /* ZENO_MINIMAL */
+    zeno_pwm_hertz[pin] = hertz;
+    return pin;
+}
+
+/* `lamp.duty(0.25)`: on for that share of the time. */
+static void zeno_pwm_duty(int64_t pin, double share, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (!(share >= 0.0 && share <= 1.0)) {
+        zeno_fail("ValueError",
+                  zeno_join(3, "a duty is from 0.0 to 1.0, and this is ", zeno_str_float(share),
+                            ". For a quarter of the time on, write 0.25"),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    zeno_board_pwm((int)pin, zeno_pwm_hertz[pin], share);
+}
+
+/* `servo.pulse(1500 us)`: on for that long in each period. The compiler
+ * has already turned the time into seconds. A pulse of one whole period,
+ * give or take the last digit of the sum, is all the time on. */
+static void zeno_pwm_pulse(int64_t pin, double seconds, int line, int col) {
+    double hertz = zeno_pwm_hertz[pin];
+    double share = seconds * hertz;
+    if (share > 1.0 && share <= 1.0 + 1e-9) share = 1.0;
+#ifndef ZENO_MINIMAL
+    if (!(share >= 0.0 && share <= 1.0)) {
+        zeno_fail("ValueError",
+                  zeno_join(4, "a pulse lasts from no time to one whole period, which is ", zeno_str_quantity(1.0 / hertz, "s"),
+                            " at this frequency, and this is ", zeno_str_quantity(seconds, "s")),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    zeno_board_pwm((int)pin, hertz, share);
+}
+#endif /* ZENO_PWM_PINS */
+
+/* A PWM pin as `print` shows it. */
+static const char *zeno_str_pwm_pin(int64_t pin) {
+    return zeno_join(3, "PwmPin(", zeno_str_int(pin), ")");
+}
 
 /* An analog pin as `print` shows it. */
 static const char *zeno_str_analog_pin(int64_t pin) {
