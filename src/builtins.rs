@@ -141,7 +141,7 @@ fn program_exit(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("exit", &args, 1, 1, span)?;
     let code = whole("exit", &args[0], span)?;
     match u8::try_from(code) {
-        Ok(status) => Err(Control::Exit(status, span)),
+        Ok(status) => Err(crate::value::exit_with(status, span)),
         Err(_) => raise("ValueError", format!("a program ends with a number from 0 to 255, not {code}"), span),
     }
 }

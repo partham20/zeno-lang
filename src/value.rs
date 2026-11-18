@@ -554,9 +554,29 @@ pub enum Control {
     /// A bug in the program, such as a misspelt name or `"abc" - 1`.
     /// It cannot be caught; the type checker will later find these before the program runs.
     Fatal(Error),
-    /// `program.exit(code)`: the program ends here, with this number for
-    /// whatever started it. It is not an error, and no `try` stops it.
-    Exit(u8, Span),
+}
+
+// `program.exit(code)` ends the program with a number for whatever
+// started it. It is not an error, and no `try` stops it. It travels as
+// a `Fatal` that says where the program ended, which is what a test
+// shows if a function it calls ends the program, and the number waits
+// here for the end of the run. A sixth kind of `Control` would have
+// said the same, but it made the loop of the VM run 1 to 3 % more
+// instructions, with not a line of the loop changed (decision 34.5).
+thread_local! {
+    static EXITED: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+}
+
+/// `program.exit(status)` at `span`: what stops the program.
+pub fn exit_with(status: u8, span: Span) -> Control {
+    EXITED.with(|exited| exited.set(Some(status)));
+    Control::Fatal(Error::new(format!("the program ended here, with `program.exit({status})`"), span))
+}
+
+/// The number `program.exit` was given, if the program on this thread
+/// called it since this was last asked.
+pub fn exited() -> Option<u8> {
+    EXITED.with(|exited| exited.take())
 }
 
 /// How a run of a whole program went: what it printed, what it wrote on
@@ -574,10 +594,10 @@ pub struct Ran {
 impl Ran {
     /// The end of a run, from how the program's statements finished.
     pub fn ended(output: String, warned: String, finished: Result<(), Control>) -> Ran {
-        let (result, status) = match finished {
-            Ok(()) => (Ok(()), 0),
-            Err(Control::Exit(status, _)) => (Ok(()), status),
-            Err(control) => (Err(crate::ops::escaped(control)), 1),
+        let (result, status) = match (finished, exited()) {
+            (_, Some(status)) => (Ok(()), status),
+            (Ok(()), None) => (Ok(()), 0),
+            (Err(control), None) => (Err(crate::ops::escaped(control)), 1),
         };
         Ran { output, warned, result, status }
     }

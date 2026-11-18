@@ -12672,9 +12672,10 @@ names no kind. It is not an error: a program that asked to end has
 not gone wrong. Python's `sys.exit` is an exception, and a bare
 `except:` that was written to catch something else swallows it; that
 is the kind of surprise Zeno is meant not to have. Inside both engines
-it travels up the way `return` does (`Control::Exit` beside
-`Control::Raise`), so the language beside a program (`import python`)
-is still told that the program is over. In C and LLVM builds it is
+it travels up as an error that no `try` catches does (a
+`Control::Fatal` that says where the program ended, with the number
+kept beside it, 34.5), so the language beside a program (`import
+python`) is still told that the program is over. In C and LLVM builds it is
 C's own `exit`, which also runs the memory report. Each target
 language uses its own way to end at once (`os._exit` after the output
 is sent in Python, `exit!` in Ruby, `std::_Exit` in C++), never one an
@@ -12778,6 +12779,32 @@ In `cargo test`, both engines give a `Ran`: what was printed, what was
 warned, the error if any, and the number at the end. A test sets the
 environment the way it sets what is typed (`with_environment`), and
 that environment goes to the built programs it runs as well.
+
+### 34.5 The end travels as an error no `try` catches
+
+**Decision.** Inside `zeno run` and the VM, `program.exit(3)` keeps 3
+aside, for the thread the program runs on, and stops the program with
+`Control::Fatal`, the kind no `try` catches, with the message "the
+program ended here, with `program.exit(3)`". At the end of the run,
+`Ran::ended` finds the 3 and makes it a run that went well, ending
+with 3. A page's turn does the same, and the page stays. A test that
+calls a function that ends the program shows that message, as it did.
+
+**Why.** It first had a kind of its own, `Control::Exit`, beside
+`Control::Raise` and `Control::Fatal`. Counted before 0.6.0, the VM ran
+1 to 3 % more instructions than in 0.5.2 on every benchmark (fib
++2.1 %, loop +3.1 %, sort +2.7 %), and the whole difference was inside
+its loop, at lines that had not changed (`let base = frame.base`
+alone ran 3.9 million more on fib 25). The loop is one large function,
+and a sixth kind of `Control` changed how the Rust compiler kept its
+values in registers. Without it the counts are those of 0.5.2 again.
+What a program does is the same either way: nothing catches the end,
+everything above it is told, and the number reaches the shell.
+
+**The other choice.** Keeping `Exit` and finding another change that
+gave the loop back its registers would have been luck, and the next
+change anywhere could undo it. Carrying the end in a kind that already
+exists leaves the loop as it was in 0.5.2.
 
 ## 35. A case of an enum can stand for a number
 

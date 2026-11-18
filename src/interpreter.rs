@@ -209,9 +209,9 @@ impl Session {
 /// it is, with its buttons (decision 34.1).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn in_page(finished: Result<(), Control>) -> Result<(), Error> {
-    match finished {
-        Err(Control::Exit(..)) => Ok(()),
-        other => other.map_err(ops::escaped),
+    match (finished, crate::value::exited()) {
+        (_, Some(_)) => Ok(()),
+        (other, None) => other.map_err(ops::escaped),
     }
 }
 

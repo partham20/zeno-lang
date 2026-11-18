@@ -154,12 +154,13 @@ gives nothing. If the argument is a number written down, it must be
 from 0 to 255.
 
 **2. `zeno run` and the VM** (`builtins.rs`, `value.rs`). The built-in
-checks the number and returns `Err(Control::Exit(3, span))`. `Control`
-is how both engines carry `return`, `break` and a raised error up
-through the Rust functions that run the program, so `Exit` goes up
-the same way. A `try` looks only for `Control::Raise`, so it lets
-`Exit` pass. At the top, `Ran::ended` turns it into a run that went
-well, with status 3, and `main.rs` hands 3 to the shell.
+checks the number, keeps 3 aside (`value::exit_with`), and returns
+`Err(Control::Fatal(...))` with "the program ended here". `Control` is
+how both engines carry `return`, `break` and a raised error up through
+the Rust functions that run the program. A `try` looks only for
+`Control::Raise`, so it lets the end pass. At the top, `Ran::ended`
+finds the 3 (`value::exited`), turns the run into one that went well,
+with status 3, and `main.rs` hands 3 to the shell.
 
 ```rust
 pub enum Control {
@@ -168,9 +169,11 @@ pub enum Control {
     Return(Value, Span),
     Raise(Value, Span),
     Fatal(Error),
-    Exit(u8, Span),
 }
 ```
+
+The end had a kind of its own, `Exit`, until a count showed that a
+sixth kind made the VM's loop slower (decision 34.5).
 
 **3. C and LLVM** (`runtime.c`). One function, which both backends call:
 
