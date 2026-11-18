@@ -5472,10 +5472,15 @@ impl Emitter<'_> {
             self.let_go(key);
         }
         let mut list = Vec::new();
-        for (val, (_, kind, default)) in given.into_iter().zip(slots) {
-            // An argument that was left out takes the default.
+        for (place, (val, (_, kind, default))) in given.into_iter().zip(slots).enumerate() {
+            // An argument that was left out takes the default. A place
+            // that keeps what it is given owns the list made for it
+            // here; any other only looks, and the statement frees the
+            // list after the call (as in `emit_c`).
+            let keeps = !lends.get(place).copied().unwrap_or(false);
             let val = match (val, default) {
                 (Some(val), _) => val,
+                (None, Some(default)) if emit_c::is_literal(default) && keeps => self.value(default)?,
                 (None, Some(default)) if emit_c::is_literal(default) => self.expr(default)?,
                 (None, _) => return Err(cannot("a default value that is not a plain literal", span)),
             };

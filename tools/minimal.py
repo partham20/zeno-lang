@@ -89,6 +89,14 @@ UNDEFINED = {
     # its `free` does the second time differs from one system to the next.
     "book/33-unsafe#5": "gives memory back twice",
 }
+# Programs the system may stop, in a build that checks too: nothing in
+# Zeno's C looks for these, and a signal is how the program ends. Any
+# other program that ends with a signal has found a mistake in the C.
+THE_SYSTEM_STOPS = {
+    "tools/targets/edge-deep.zeno": "calls itself until the stack is full",
+    "tools/targets/edge-deep-3.zeno": "calls itself until the stack is full",
+    "book/a6-errors#5": "gives back memory at an address nothing handed out",
+}
 # Put in front of the checked build's C: the mark, written with nothing
 # of the C library's that the program could have changed.
 MARKER = (
@@ -172,6 +180,11 @@ def try_program(kind, program, scratch):
     status, out, errors = targets.run([str(binary)] + program.args, program.folder, program.stdin, timeout=LONGEST)
     if MARK in errors or GIVEN_BACK_TWICE in errors or program.name in UNDEFINED:
         return "at a check", None
+    if status < -1 and program.name not in THE_SYSTEM_STOPS:
+        # Not an error of Zeno's: the system stopped it, for reading
+        # memory that is not its own, say. Two builds that both do that
+        # are not two builds that agree.
+        return f"the system stopped the checked build (signal {-status}), after it printed\n{out[-1000:]}", None
 
     minimal, why = written(kind, program, folder / "minimal", True)
     if minimal is None:

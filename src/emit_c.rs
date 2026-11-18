@@ -5599,12 +5599,18 @@ impl Emitter<'_> {
             codes[*place] = Some(self.coerce(val.clone(), kind, span)?.code);
         }
         // An argument that was left out takes the default.
-        for (code, (_, kind, default)) in codes.iter_mut().zip(slots) {
+        for (place, (code, (_, kind, default))) in codes.iter_mut().zip(slots).enumerate() {
             if code.is_none() {
-                let default = match default {
-                    Some(default) if is_literal(default) => self.expr(default)?,
-                    _ => return Err(cannot("a default value that is not a plain literal", span)),
+                let Some(default) = default.as_ref().filter(|default| is_literal(default)) else {
+                    return Err(cannot("a default value that is not a plain literal", span));
                 };
+                // A place that keeps what it is given (a field of a new
+                // object, a `take` parameter) owns the list made for it
+                // here, as it would own a `[]` written in the call. Any
+                // other parameter only looks, and the statement frees
+                // the list after the call (see `belongs`).
+                let keeps = !lends.get(place).copied().unwrap_or(false);
+                let default = if keeps { self.value(default)? } else { self.expr(default)? };
                 *code = Some(self.coerce(default, kind, span)?.code);
             }
         }
@@ -10081,6 +10087,30 @@ function main() -> int raises Refused {
             return Err(error.message.clone());
         }
         emit(&program, &types, "test.zeno", Build::NoCollector).map_err(|error| error.message)
+    }
+
+    /// A list field with a default: the new object owns the list made
+    /// for it, as it owns one written in the call. (The list was freed
+    /// when the statement ended, with the object still pointing at it.)
+    /// The same for a parameter that takes its list.
+    #[test]
+    fn a_default_list_belongs_to_whoever_keeps_it() {
+        let source = "class Bag {\n    items: list[str] = []\n    count: int = 0\n}\n\
+                      function made() -> Bag {\n    return Bag()\n}\n\
+                      function length(numbers: take list[int] = []) -> int {\n    return len(numbers)\n}\n\
+                      let bag = Bag()\nbag.items.append(\"x\")\nbag.items.append(\"y\")\nprint(bag)\n\
+                      let bags: list[Bag] = [Bag(), made(), Bag([\"z\"])]\nbags[0].items.append(\"first\")\n\
+                      bags[1].items.append(\"second\")\nprint(bags)\n\
+                      print(length(), length([1, 2]))\n";
+        assert_eq!(
+            interpreted(source),
+            "Bag(items=[\"x\", \"y\"], count=0)\n\
+             [Bag(items=[\"first\"], count=0), Bag(items=[\"second\"], count=0), Bag(items=[\"z\"], count=0)]\n0 2\n"
+        );
+        no_collector_as_interpreter("default-list", source);
+        // No list is made beside the call and freed after it.
+        let c = compile_no_collector(source).unwrap();
+        assert!(c.contains("z_bag = zeno_new_Bag(zeno_list_new(0), 0);"), "{c}");
     }
 
     /// A program that a build with no collector must accept. Built that
