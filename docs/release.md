@@ -115,6 +115,38 @@ It is not a step of the release workflow: GitHub's machines are shared
 and their times move by a quarter from one run to the next, more than
 most of the changes the record is there to show (decisions 22.12).
 
+## Keeping the history
+
+[`HISTORY.md`](../HISTORY.md) lists every commit under the release it
+went into, with one plain line for each, and zeno-lang.org shows the
+same file at `/history/`. [`tools/history.py`](../tools/history.py)
+writes it: the commits, their order and the releases come from git and
+its tags, and the words come from
+[`tools/history-notes.txt`](../tools/history-notes.txt). After the tag
+is pushed, in a clone that has the whole history:
+
+```sh
+git fetch --tags
+python3 tools/history.py --missing
+```
+
+The second line prints each commit that has no line in the notes yet.
+Give each one a line there, rename the block `Unreleased` to the
+version, and write its paragraph on what the release brought. Then:
+
+```sh
+python3 tools/history.py
+git add HISTORY.md tools/history-notes.txt
+git commit -m "History: 0.6.0"
+```
+
+The two files go in a commit of their own, which the page leaves out:
+a commit cannot hold its own name (decisions chapter 49). If the notes
+are not touched at all, the script still writes a whole page: the new
+tag makes its heading, and a commit with no line is listed with the
+first line of its message. `python3 tools/history.py --check` fails
+when `HISTORY.md` is behind.
+
 ## As fast as the release before
 
 A release that adds code is compared with the one before, on one

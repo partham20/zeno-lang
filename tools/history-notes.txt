@@ -1,0 +1,495 @@
+# The words of HISTORY.md. tools/history.py puts them together with the
+# commits and tags of git and writes the file: python3 tools/history.py
+#
+#   = 0.5.2: a few words on what the release brought
+#   One paragraph or more about the release.
+#
+#   == A heading for a run of commits
+#   3e2c68f One plain line on what the commit changed.
+#
+# A line that begins with "# " is for whoever edits this file and is left out.
+# For a new commit, add its line under a heading of the Unreleased block
+# (python3 tools/history.py --missing prints the lines to fill in). After a
+# release is tagged, rename the Unreleased block to its number, write its
+# paragraph, and begin a new Unreleased block when the next commit comes.
+
+This page lists every commit in the Zeno repository, oldest first, under
+the release it went into. Read from the top, it is the story of how the
+language was built, from an empty folder on 14 November 2026 to what is on
+`main` today.
+
+Each line says in plain words what one commit changed. The letters and
+digits at its start are the commit's short name, and they open the commit on
+GitHub, with its full message and every line of code it touched. A release
+is a heading, with a few words under it on what the release brought. The
+last heading, Unreleased, is what is on `main` and in no release yet.
+
+Two other files go with this one. The reason for every choice in the
+language is in [`docs/decisions.md`](docs/decisions.md), and what is still
+to be built is in [`docs/missing.md`](docs/missing.md).
+
+= 0.1.0: the whole language, a book, and builds for ten kinds of machine
+
+The first release is the largest part of the story: the whole language was
+built on 14 and 15 November 2026. It begins with a README and a sketch of
+the syntax, and then goes stage by stage. A lexer, a parser, an interpreter
+and a type checker come first, then a compiler to C and a garbage collector,
+then builds for firmware that have no collector at all, a second engine (a
+bytecode VM) and a second backend (LLVM). After that come the library,
+programs in several files, packages, a formatter, a language server for
+editors, and tests written in Zeno.
+
+Most stages are three commits: the code, a walkthrough of it in `docs/`, and
+the reasons in `docs/decisions.md`. The release ends with The Zeno Book and
+with a workflow that builds `zeno` for ten kinds of machine. Writing the
+book and trying the release on a Mac and on Windows each found mistakes,
+and the mends are here too.
+
+== A name, a sketch and a syntax
+de07d57 The first commit: a README, an empty command-line program in Rust, and `hello.zeno`.
+8e8ea36 The syntax is made to look like Python first, and the README lists what the language should be able to do.
+8e5cda9 The syntax changes to the one Zeno kept: braces, `let` and `var`, and whole words for keywords.
+
+== Reading a program: the lexer and the parser
+33669d7 The lexer: it cuts a file into tokens and decides where a line ends, with tests.
+9fea775 `zeno tokens` prints the tokens of a file, and an error points at its place with a caret.
+0ee6898 A walkthrough of how the lexer works.
+861e3b6 Every stage shares one kind of error, and a message names a token in words.
+37b02f5 The parser: it turns the tokens into a syntax tree, and `zeno parse` prints the tree.
+7e99c93 A walkthrough of how the parser works.
+15f52e4 Comparisons chain as in Python (`0 < x < 10`), `//` divides whole numbers, and `is` is kept for `none`.
+
+== Running a program: the interpreter
+8c90b90 The interpreter: `zeno run` runs a program for the first time.
+52e8edc `docs/decisions.md` begins, the file that holds the reason for every choice, with a walkthrough of the interpreter.
+8fc07ff Functions can be used as values, `map`, `filter` and `reduce` arrive, and the type of a field may be left out.
+7a1956b The reasons for allowing several styles and optional types are written down, with an example.
+
+== Checking a program before it runs: the type checker
+d30c750 The type checker: `zeno check` finds mistakes before a program runs, and strict mode asks for every type to be written.
+45eb543 Tests for the checker, and a list that is written out is checked item by item.
+a39031a A walkthrough of the checker, and its reasons.
+7873651 A type can be a function (`function(int) -> int`), a file can begin with `strict`, and units come from a fixed table, so a misspelt unit is caught.
+273b260 The checker works out the types of parameters and fields that have none written, by going over the program until nothing changes.
+0f32d01 The docs for function types, unit types, the `strict` line and worked-out types.
+
+== Compiling to C
+26eb7eb The checker hands what it learned about each function to the stages after it.
+7ea2462 `zeno build`: numbers, text, functions and control flow are compiled to C. The tests compare a compiled program's output with the interpreter's, byte for byte.
+505e4fc A walkthrough of the C backend, and its reasons.
+f470cb3 An error caused by a worked-out type says which call the type came from, and units of one kind work together: `1 s + 500 ms` is `1500 ms`.
+6b5c1c5 The checker hands the types of classes, enums and lists to the compiler.
+e38aaae Classes, lists, enums and `match` compile to C.
+cb32725 The docs for how classes, enums, `match` and lists compile.
+252e4b4 The interpreter is tightened so that a compiled program can agree with it: a function value sees only what was in view where it was written, a raised object is caught by its class, and text methods know plain letters only.
+be1f7cc `none`, errors (`try` and `raise`) and functions as values compile to C. The tour of the language now builds.
+c4c718b The docs for how `none`, errors and function values compile.
+
+== Memory: a collector, a firmware build, and owned values
+a199025 Compiled programs free their memory with a mark-and-sweep garbage collector, and `--memory` reports what was used.
+feef6df A walkthrough of the collector, and a plan to carry errors as plain values for firmware.
+a31c589 The plan for the next two stages: owned values with borrows, and a firmware build with no collector.
+44f6cc8 `zeno build --firmware`: an error travels as a returned value, with no `setjmp`, as firmware rules such as MISRA C ask.
+83e3a58 A walkthrough of the firmware build, and its reasons.
+672487e Owned values: a value marked `owned` has one owner and is freed the moment its owner's block ends. A `borrow` parameter only looks.
+23fa3f5 A walkthrough of owned values, and decision 5.8.
+2747119 The README and the older pages point at owned values.
+91fde19 `zeno build --no-collector`: a firmware build with no garbage collector in it. Anything that would take memory nobody gives back is refused when the program is built.
+bc5f77c A walkthrough of the build with no collector, and decision 5.9.
+393c071 The README and the older pages point at the build with no collector.
+
+== A second engine: bytecode and a VM
+216e852 What each operator does moves to a file of its own, so that a second engine can share it.
+b2ce242 A function sees what is declared above it and nothing below: a mistake in scoping, found while building the VM, is mended.
+e7e94c0 Bytecode: a program as a flat list of small instructions, and a compiler from the syntax tree to it. `zeno bytecode` prints it.
+9ff462c The VM: `zeno run --vm` runs the bytecode, two to three times as fast as the interpreter. Every test now runs on both engines and must give the same output.
+9a6e6ae The bytecode listing names two hidden slots, and the help text lines up.
+1eadece A walkthrough of the bytecode VM, and its reasons.
+6d108a8 The checker refuses a function that is called before a variable it needs is declared.
+
+== A second backend: LLVM
+00513e1 The C backend's code for reading an f-string format is split off, so that another backend can use it.
+4a4f1de `zeno build --llvm`: numbers, text, functions and control flow are written as LLVM IR, as plain text and with no dependency.
+2049bc3 A walkthrough of the LLVM backend, and its reasons.
+798e928 `//`, `%` and `/` are written in IR and no longer call the runtime, which makes a loop of them more than twice as fast.
+384b5d6 The LLVM backend compiles the rest of the language: classes, enums, `match`, lists, `none`, errors, function values and units.
+e524554 The walkthrough of the LLVM backend is rewritten for the whole language.
+
+== For firmware: a board, bits, sized numbers and generics
+fa3961a The `board` and `time` modules: pins, `sleep` and `now`. `blink.zeno` runs on a simulated board and builds for a real one.
+7f10b84 The bit operators `&`, `|`, `^`, `~`, `<<` and `>>`.
+c1f941b Whole numbers with a size: `u8`, `u16`, `u32`, `i8`, `i16` and `i32`. A number that does not fit is an error and never a wrong answer.
+2840eb6 The docs for the bit operators and the sized numbers.
+1ff13ec `zeno tokens`, `parse` and `bytecode` end quietly when their output goes to a program that stops reading.
+0c3ee4d Generics: `function first[T](...)` and `class Stack[T]`. The checker works the type out from the call.
+01a8585 The docs for generics.
+a90e33f `--llvm --firmware`: the LLVM backend carries errors as values too.
+66410c0 The docs for `--llvm --firmware`.
+268c392 `--llvm` with `--no-collector` and `--memory`: the LLVM backend frees owned values and can leave the collector out.
+b330867 The docs for `--llvm` with `--no-collector` and `--memory`.
+
+== No collector: a pool, text that is kept, and one owner for every value
+2788a33 With no collector, memory comes from one fixed pool and not from `malloc`. Taking a block and giving it back take constant time, and the pool cannot break up.
+0e89346 The docs for the memory pool.
+e07dc43 With no collector, text can be kept: whatever stores a text has a copy of its own and frees it.
+54031ad The docs for text that is kept, with an example.
+ce6bf6a A value made in the middle of a statement and given to nobody belongs to the statement, which frees it. So `split`, `map`, `filter` and `+` on lists work with no collector.
+418337a The docs for what a statement owns.
+51ebc9b With no collector, every list and object has one owner without the word `owned`, and a list owns its items.
+ac76f2f A list cannot fill a type parameter where it has one owner, and the message for it is put right.
+96abe6b A walkthrough of one owner.
+a06f534 Decision 5.15: whoever receives a value owns it.
+00cb81c The older pages are brought up to date with one owner.
+d01a741 An owner cannot be given a new value while a loop walks its list: a way to read freed memory is closed.
+49c97d8 With no collector, enum values and values that may be `none` have one owner too.
+f3b8eff The docs for enums and `none` with one owner.
+082126b The checker gives errors and function values one owner with no collector. They were the last two kinds of value without one.
+2cd94d1 Both backends free errors and function values through their owner.
+a626e31 The docs for functions and errors with one owner.
+914cc99 The older pages and the README are brought up to date.
+
+== Memory by hand
+9efd0f8 Memory by hand: `unsafe` blocks, raw pointers, `allocate` and `free`, and registers at a fixed address. `zeno run` checks every use; a compiled program, like C, checks none.
+d8e411a An `unsafe` block that ends in `return` ends the function: the C backend wrote a second `return` after it.
+c3a1d12 A walkthrough of memory by hand, and its reasons.
+
+== The audit: is every rule unambiguous and intuitive?
+0714358 A plain parameter only looks at a value, and `take` marks the one that takes it over. `borrow` is gone.
+a4c2d5f The docs follow that change, and `docs/audit.md` begins.
+41cef08 Messages count in words: "1 argument", "2 arguments", and never "argument(s)".
+cc2853a `[1] + ["two"]` is refused, as `append` already refused it.
+40258d2 After `case none`, the later cases of a `match` know the value is there.
+eb5e05b With no collector, every function can look at a `let` at the top of the file, which is how firmware keeps a table.
+8d232e1 A method can take out what its own object holds, as a queue does with `pop`.
+a0e4a6c A `var` that holds a function of the program can be given another function.
+d9e6c8b A firmware build refuses a `raises` it cannot honour, and the audit is written up.
+
+== The library
+f4bf63a Text and lists get the methods every program reaches for: `find`, `slice`, `insert`, `reverse`, `sort`, `join` and more.
+26830bd The docs for the first part of the library.
+92c2197 Programs read and write: files, the keyboard (`input`), and the arguments they were started with.
+5163d9e The docs for reading and writing.
+36a4e17 More of `math`: angles with units (`30 deg`), logarithms, `exp` and rounding.
+683df64 The docs for the new `math`, with an example of five instruments.
+689e9cf A dictionary type: `["Ada": 36]`, `[:]` for an empty one, and the type `dict[str, int]`.
+8fb13a3 The docs for the dictionary.
+
+== Bigger programs: modules, packages, a formatter and a language server
+5275c4d Programs in several files: `import shapes` reads `shapes.zeno` as a module.
+65b4bd5 The docs for programs in several files.
+54d4554 Packages: a `zeno.package` file says what a program needs, and `zeno fetch` gets it from git.
+e235d96 The docs for packages.
+49209cb `zeno format`: one layout for every Zeno file. It changes white space only, and checks that the program still means the same.
+bc6727e The docs for the formatter.
+d2a1edd `zeno lsp`: a language server, so that an editor shows mistakes as you type, with setup for VS Code, Vim, Neovim and Helix.
+580e838 The docs for the language server.
+3d651df The language server answers "go to declaration" and hover, from what the checker knows.
+1040b8e The docs for how the server knows what a name means.
+
+== The finish line for 0.1
+1acd4f0 `private`: a declaration at the top of a file can be kept to that file.
+c1cbf21 `private` fields and functions of a class.
+9f9ae5d An example for `private`: a queue of a fixed size.
+20f0423 The docs for `private`, and the list of what is left for version 0.1.
+dcaef4e Interfaces: `interface Shape { ... }` and `class Circle is Shape`.
+04e9189 The docs for interfaces.
+d93b0b5 A dict can hold any kind of value, and a loop can have two names: `for key, value in ages`.
+e9fc668 The docs for both.
+be3c6a6 `zeno test`: the tests of a program are written in Zeno, with `test "name" { ... }` and `assert`.
+6d3c3a3 The docs for tests.
+0f8d365 `zeno new` makes a new program or package in one command.
+6f353bb The docs for `zeno new`.
+34078de The last gaps: `+=` on a sized number, a format on a quantity (`{angle:.1f}`), the operators `//=`, `%=` and `**=`, and two mistakes in the order of `x += f()` mended.
+eb9c706 The docs for the last gaps.
+0700a2e The version is 0.1.0: the list for it is done. Also a clearer message for `as` after an import.
+702a6de Every decision once marked provisional is read again and settled, and `docs/version-0.1.md` says what 0.1 is.
+
+== The Zeno Book, and a release for ten kinds of machine
+08d0d83 The Zeno Book begins: its LaTeX source, its build, and the first chapters.
+c531678 Book: values, numbers, text, control flow, functions, lists and dicts.
+e2d3ec3 Book: classes, enums, `none`, errors and functions as values.
+f5807d4 Book: types, units, sized numbers and bits.
+0b2272f Book: generics, interfaces, modules and packages.
+4ca6d11 Book: reading and writing, and mathematics.
+cdfed0c Book: testing and the tools.
+4443627 Book: the board and compiling.
+0322055 Book: memory, ownership and firmware.
+3762242 Book: building with no collector, and unsafe code.
+f831a99 The release workflow: a tag builds `zeno` for ten kinds of machine (Linux, macOS and Windows, on several processors each) and checks every build.
+4e090eb Book: Inside Zeno, and why Zeno is as it is.
+ddf739e The first trial of the release found that a compiled program rounded floats differently on a Mac. Compiled programs now round as `zeno run` does on every processor.
+903a7dd Book: the appendices, and the first full build: 226 pages of PDF and a page of HTML for each chapter, with all 300 samples run by the compiler.
+3751da3 Release workflow: the C build and the LLVM build are each checked in a step of their own.
+ee19a64 Release workflow: what a trial finds is written on the summary page of the run.
+814b967 The docs for how a release is made and how to install one.
+c07f157 Release workflow: a release can be made from the Actions page on GitHub.
+642c040 Writing the book found programs that `zeno check` accepted and that failed later. The checker now refuses them, and several messages say more.
+797556b Book: the samples follow the checker's new refusals.
+1213f69 Windows: a compiled program sleeps and reads the clock the Windows way, so `--llvm` builds there.
+da45a66 A path that Zeno makes is written with `/` on every system.
+6b3ed16 Windows: arguments arrive whole in any script (a word in Tamil had come out as `?????`), and a fetched package keeps its line ends.
+9385ec0 The mend for Windows arguments is done again without the heap, so that a build with no collector stays without one.
+7cc9fe9 The docs for what Windows found. Every test passes there now.
+be2248e Three clearer messages that the book asked for.
+446d355 Book: Zeno builds on Windows too.
+
+= 0.2.0: a program in a web page, installers and packages
+
+A Zeno program can be a web page, and Zeno gets installers. `zeno build
+--web` puts a program, its page and Zeno itself (built as WebAssembly) into
+one HTML file that a browser opens. The same days brought a setup program
+for Windows and one line to paste for macOS and Linux, packages for apt,
+pacman, snap, flatpak, Homebrew and winget, a `json` module, the first
+playground, and the MIT licence. With this release the repository became
+public.
+
+== A program in a web page
+64e8f27 The `web` module and `zeno build --web`: a Zeno program becomes one HTML file that a browser opens. Zeno itself runs in the page, built as WebAssembly.
+90cc566 The version moves to 0.2.0, with its release notes.
+5a2f9e2 Book: install steps for ten machines, and a new chapter on web pages.
+
+== Installers, packages, JSON and a playground
+e3a17a1 Installers: a setup program for Windows, and one line to paste for macOS and Linux. `zeno build` finds the C compiler by itself.
+6b9361f A page can do more: events, styles, drawing on a canvas, text kept between visits, and the network. `zeno playground` writes a page in which programs are written and run in a browser.
+c0a3563 What 0.1 left: `min` and `max` of quantities, hover on a field in an editor, and `zeno test --only` to run tests by name.
+a0a1254 A workflow adds installers to a version that is already released, and 0.1.0 gets both.
+b200af8 The `json` module: `json.parse` and `json.write`.
+d60f0bd Book: the bigger `web` module, JSON, the installers, and tests by name.
+be32a88 Packages: a `.deb`, a snap, a flatpak, a pacman package, and recipes for Homebrew and winget.
+4581bd7 Packages: the PKGBUILD goes into its folder and not into the archive beside it.
+0fe0238 A release now makes the packages and tries each one. Their walkthrough and their reasons.
+051062b A timer that can be stopped: `web.after` and `web.every` give a `Timer`.
+66a1d5e The Homebrew, pacman and winget recipes for 0.1.0, with its checksums.
+1c8fce9 Book: the timer, and the whole `web` module in the library appendix.
+39d70e6 Book: installing with apt, pacman, snap, flatpak, Homebrew and winget.
+f998247 The playground is made ready for zeno-lang.org: an endless loop is stopped after 5 seconds, errors show under the output, and it fits a phone.
+
+== A licence, and a public repository
+db80267 Zeno gets the MIT licence, in the repository and in everything a release carries.
+2367c89 The repository is made public, and the docs no longer say that the install line cannot download.
+
+= 0.3.0: speed, and a choice of how memory is freed
+
+This release is about speed. The garbage collector is rebuilt around pages
+and then given two generations, a program can ask for `memory owned` and
+have no collector, `--release` drops the overflow checks, and the VM gets
+faster. Six benchmarks against C, Rust and Python are added to measure all
+of it. Also here: `sort` with a function, a new playground with a real
+editor, and the groundwork for the package stores.
+
+The rehearsal of the release hung on macOS, so 0.3.0 went out with the two
+generations on Linux only. The cause was found in 0.4.0.
+
+== After 0.2.0: sort with a function, a new playground, and the package stores
+9a48258 The Homebrew, pacman and winget recipes for 0.2.0, with its checksums.
+8581065 Book: 0.2.0 is released, and chapter 1 installs it.
+6b54f7d `sort` with a function: `people.sort(age_of)` orders a list of anything by a key. A crash in `map`, `filter` and `reduce` is mended.
+9741037 Book: `sort` with a function.
+4cea297 A new playground: an editor in colour that checks as you write, a Format button, problems that jump to their line, and fifteen examples.
+9c9a488 The stores workflow: signed lists for apt, the files for the AUR, and winget files in the current form.
+bad5ee2 The sketch example can be drawn with a finger on a phone.
+3ad0c5e On Arch Linux the package is named `zeno-lang-bin`, because the AUR already has another program called zeno.
+90558ce The docs for the stores: where each package manager looks for Zeno, and what is left to do for each.
+6640134 Book: the AUR name, and no Flathub.
+a9ba762 Book: a line that ran into the margin is mended.
+
+== Speed: a faster collector, a choice of memory, and benchmarks
+8d205de A faster collector: blocks live in 64 KB pages that are found through a hash table. One benchmark went from 57.8 seconds to 12.0.
+9219ac5 A program chooses how its memory is freed: `memory owned` (one owner for each value, no collector) or `memory collector`. A `--release` build drops the overflow checks on whole numbers.
+d11af73 Benchmarks: six programs in Zeno, C, Rust and Python, and a script that runs and checks them. A walkthrough of the memory modes.
+1321033 winget: the recipe files in the newer form that Microsoft's list asks for.
+8fc4af8 Book: `memory owned`, `--owned`, `--collector`, `--release` and the paged collector.
+3d1c6db Benchmark results after those changes.
+dca4974 `for ch in text` walks the text and no longer makes a list of its characters first.
+79252ad A field that a function never writes is read once, and `math.sqrt` is inlined in the LLVM build.
+8fba764 Benchmark results after those two.
+9f0f67a `memory owned` at the top of a file makes the classes of that file owned, also in a program with a collector.
+e15264e The playground shows the C that `zeno build` writes for the program, in a tab of its own.
+49fb9dc The collector gets two generations, so that it need not go over old blocks at every collection. A leak in lists is ended on the way.
+54c9758 Benchmark results after generations, and a script that keeps the times of each version.
+09fe44c The VM gets faster: instructions joined into one, quick paths for int and float arithmetic, and fields found by their place.
+9a04d9f The playground takes the one accent colour of the website, blue.
+40cfa4e Benchmark records for 0.1.0 and 0.2.0, to compare later versions with.
+
+== Releasing 0.3.0, and a hang on macOS
+06d0195 Release notes for 0.3.0.
+1ff51bf The rehearsal of 0.3.0 hung in the tests on macOS. Every workflow job gets a time limit, and a probe workflow is added to look into the hang.
+9630500 Until the hang is understood, the two generations are used on Linux only.
+c920cd8 The probe runs the test suite under a clock on macOS and says where a hung program is.
+ca486cd The release notes say what 0.3.0 has: generations on Linux, and the paged collector on every system.
+
+= 0.4.0: a build as fast as C and Rust
+
+`zeno build --fast` is a build that runs as fast as C and Rust on the
+benchmarks. The release also ends the hunt for the hang on macOS that held
+0.3.0 back. It was a `try` that jumped with two C functions that do not
+match on a Mac. Once that was mended, the collector's two generations came
+back on macOS.
+
+== Finding the hang on macOS
+354aea1 The Homebrew, pacman and winget recipes for 0.3.0, with its checksums.
+ba8aa27 The benchmark record of 0.3.0.
+393212a The release had left the AUR's `.SRCINFO` file at 0.2.0, because a workflow drops files whose names begin with a dot. Mended.
+514613a The probe asks three questions of the runtime on macOS, to narrow the hang down.
+9e28b91 The probe runs the two hung tests with a runtime that writes what it does, and looks at a hung program with a debugger.
+aae13f0 The probe tries the cause it suspects: an LLVM build enters a `try` with `_setjmp` and `raise` leaves it with `longjmp`, and on macOS the two do not match.
+e548e7e The mend: a `try` jumps with the matched pair `_setjmp` and `_longjmp`. The mismatch had left blocked the signal that the collector's two generations rely on.
+8744490 The probe checks that the whole suite passes on macOS with two generations.
+3c270a3 The two generations are back on macOS.
+c57afed Decision 22.11 records that.
+2a2aaef `main` becomes 0.3.1, with notes on what was mended.
+
+== `zeno build --fast`
+6132e28 `zeno build --fast`: a build with no checks on indexes, float division or square roots, compiled with `-O3`. Numbers become text without `snprintf`, and big owned lists grow with `realloc`.
+b04f80f Benchmarks with `--fast`.
+3e492d1 The next version is named 0.4.0, since a new way to build is more than a mend.
+1aa503b `--fast` uses C's own whole-number arithmetic, so the loop benchmark compiles to the same instructions as C. In every build, `//` and `%` by a power of two are a shift and a mask.
+af7a738 The benchmark script can count instructions, which is steadier than a clock, and timed runs go in rounds.
+5b44520 Decision 23.9: the overflow rule of `--fast` stays, with what dropping it would cost, measured.
+d6b3deb Release notes for 0.4.0, and the README and the docs name its files.
+
+= 0.5.0: the program written in another language
+
+Zeno writes your program in another language. `zeno build --target` gives
+the same program in JavaScript, TypeScript, Python, PHP, Go, Java, C#, C++
+or Rust, as a web page, or as WebAssembly, and each prints what `zeno run`
+prints. A review of every target found about thirty corners where a
+language did what is usual there and not what Zeno does. Each got a rule,
+and a test program that holds every target to it.
+
+== Eleven targets
+79cf832 The Homebrew, pacman and winget recipes for 0.4.0, with its checksums.
+e043682 The benchmark record of 0.4.0.
+52c030e `zeno build --target js`, `html` and `py`: Zeno writes the program in JavaScript or Python, and a script holds every target to what `zeno run` prints.
+2a96152 Targets: Go, Java and C#.
+90d713b Targets: C++.
+8939c1d Targets: Rust and WebAssembly, and a weekly check of every target against the newest version of its language.
+925d162 Book: rebuilt with a section on `zeno build --target`.
+98c6603 Book: other languages are marked as new in 0.5.
+60c5416 A review of every target found about thirty corners where a target did what its own language does and not what `zeno run` does: order, large numbers, text, JSON, names. Each now has a rule and a program that tests it.
+52796d2 Targets: TypeScript and PHP.
+5e88303 The version moves to 0.5.0, with its release notes.
+878afd3 The benchmarks can time the program written in each other language. The notes of 0.5.0 say how its speed compares with 0.4.0.
+
+= 0.5.1: the VM as fast as it was
+
+A small release with one purpose. In 0.5.0, `zeno run --vm` had become a
+few percent slower, although no line of the VM had changed: with more code
+in the program, the Rust compiler had laid it out differently. 0.5.1 is
+0.5.0 built as one piece, and the VM is as fast as it was in 0.4.0.
+
+655d4b7 The Homebrew, pacman and winget recipes for 0.5.0, with its checksums.
+662d727 Benchmarks: a program that stops without a word is reported as that, and the script no longer falls over.
+ffbed00 The benchmark record of 0.5.0, with the times of the program in nine other languages.
+8f3da1d `zeno run --vm` was 1 to 9 % slower in 0.5.0 with no line of it changed: the Rust compiler had cut the program up differently. A release is now built as one piece, and the version moves to 0.5.1.
+e19e4f7 Release notes for 0.5.1.
+4acd512 The README and the docs name the files of 0.5.1.
+
+= 0.5.2: four more targets, a registry, and the libraries of other languages
+
+This release adds to what is around the language and leaves the language
+as it was. There are four more target languages (Lua, Ruby, Dart and
+Kotlin), and a registry, so that a package is found by its name. `import
+python`, `import node` and `import java` let a Zeno program use the
+libraries of those languages. `zeno build --minimal` writes the least C
+that runs a program, `program.run` starts another program, and the first
+part of the library is written in Zeno itself.
+
+The repository moved to the zeno-src organization on GitHub. Two mistakes
+were mended: a float `%` that the C++ target got wrong, and a caught error
+that could stop a program built on Windows.
+
+== After 0.5.1: records, the book, and where to write
+bfae8a9 The Homebrew, pacman and winget recipes for 0.5.1, with its checksums.
+e23b2b7 The benchmark record of 0.5.1. A run that its host crashed is run again.
+441f348 Book: rebuilt for Zeno 0.5, with eleven target languages.
+7817c2e Book: the title page names the version the book is for.
+d027849 The install and release pages still named the files of old versions. They name 0.5.1 now.
+139f757 `SECURITY.md`: where to report a security problem in private.
+1380d3c An address at zeno-lang.org for each kind of mail: help, issues, security and contact.
+1f8a079 Book: a section on where to write when you are stuck.
+
+== Starting another program, and a new home on GitHub
+4d1a392 `program.run(name, words)` starts another program and waits for it.
+fae846c An example that saves a video with yt-dlp through `program.run`, with the walkthrough and the reasons.
+f7611fd The repository moved to the zeno-src organization on GitHub, and every link points there.
+
+== Four more target languages
+3e2c68f `zeno build --target lua` and `--target ruby`.
+ab67e56 `zeno build --target dart`.
+76aff9b `zeno build --target kotlin`, and a test program of awkward names for the four new languages.
+966a2ad The docs for Lua, Ruby, Dart and Kotlin.
+dc82309 Book: Lua, Ruby, Dart and Kotlin are on their way.
+17959ff How fast the four new targets run.
+c66ef68 With a new compiler the C++ target printed a wrong float for `7.0 % 0.1`, and Go could do the same. Both are mended. The weekly check had stayed green with that failure in it, and now fails when a program differs.
+
+== A registry, and the libraries of Python, JavaScript and Java
+ce5760d A registry: a package is found by its name (`needs units at "v1.2.0"`), with `zeno search` and `zeno publish`.
+11eef17 `import python`: a Zeno program uses the libraries of Python, which runs beside it.
+6257ea6 An example that uses yt-dlp as a library through `import python`, with the walkthrough and the plan for other languages.
+3998c64 The docs for the registry, and the book's chapter on packages.
+a3fa4bd Book: rebuilt with the registry.
+0b680e8 `import node`: a Zeno program uses the libraries of JavaScript.
+32732c6 `import java`: a Zeno program uses the classes and jars of Java.
+
+== The least C
+8db60a7 `zeno build --minimal`: the least C that runs the program, with no checks and only the parts of the runtime the program uses.
+1832b7b A script builds every test program with and without `--minimal` and compares the two.
+4652734 The docs for `--minimal`.
+4aabf71 Book: the least C, in the chapter on compiling.
+9d15172 Book: rebuilt with it.
+028e557 The `--minimal` comparison leaves out one sample whose result C does not define (memory given back twice).
+49b0e49 A field may have the name of a class or an enum: the C that `zeno build` wrote for it did not compile.
+1b87690 A `--minimal` test failed on Windows without a word. The trial workflow now builds such programs there and reports where one stops.
+2f4fbac The trial also reports how the program ended, at each level of the C compiler's optimising.
+
+== A list of what is missing, a mend for Windows, and a library written in Zeno
+f907a95 `docs/missing.md`: what Zeno does not have yet, in the order to build it, firmware first.
+b1b4d82 Adding `import java` had made a sort on the VM a tenth slower, with no line of the VM changed. The code of the bridge is kept apart from the functions every program runs, and the speed is back.
+fbf4aff The failure on Windows is found and mended: a caught error could stop a program built there with gcc. A `try` is now a plain jump.
+3e677b4 Part of the library is now written in Zeno itself: `math.hypot`, `sinh`, `cosh`, `tanh`, `gcd` and `clamp`, and a `random` module. Only the functions a program uses are added to it.
+265c21d The docs for the library written in Zeno, with an example.
+0c48e5f Book: the functions written in Zeno, in the appendices.
+596a800 The version is 0.5.2, with its release notes. Its speed was compared with 0.5.1 first.
+
+= Unreleased: what firmware needs, and the libraries of five more languages
+
+The work here follows
+[`docs/missing.md`](docs/missing.md), the list of what Zeno still lacks,
+with firmware first: ending a program with a code, enums that stand for
+numbers, bytes, lists of a fixed length, `f32` and `u64`, units made of
+units, and on a board, inputs, a serial port and reading a voltage. Beside
+that, a Zeno program can now use the libraries of Ruby, PHP, Lua, .NET and
+C, and through C those of Go and Rust.
+
+== Ending a program, enums as numbers, and bytes
+5135b88 The Homebrew, pacman and winget recipes for 0.5.2, with its checksums.
+d7c378a `program.exit`, `program.environment` and `program.warn`. A case of an enum can stand for a number: `enum Reply { Ack = 6  Nak = 21 }`.
+c1715a8 Bytes from and to a file: `files.read_bytes` and `files.write_bytes`.
+446c228 A `list[u8]` is stored one byte to an item. An 8 MB file read and written back takes 13 MB of memory where it took 64.
+
+== The libraries of Ruby, PHP, Lua and .NET
+0f38b05 `import ruby`: the library of Ruby and its gems.
+216f9b0 `import php`: what comes with PHP, and Composer packages.
+efc5668 `import lua`: the library of Lua and its rocks.
+e84a926 `import csharp`: the types of .NET and the packages of NuGet.
+6c5b61d The decisions for those four become chapters 37 to 40, since `main` had taken 34 to 36.
+
+== Numbers for firmware: fixed lists, `f32`, `u64`, and units made of units
+dacdeef The benchmark record of 0.5.2.
+670f4a6 A list of a fixed length, `list[u8, 64]`, and `[0] * 64` to fill one.
+b2f8ad4 `docs/targets.md` records the last check of the targets: 349 programs in each language.
+778b502 `f32`, a float of 32 bits, as C's `float`.
+399d7af Book: a chapter on the libraries of Python, JavaScript and Java.
+222068f `u64`, a whole number of 64 bits with no sign, and `.max` and `.min` on every whole type (`u8.max`).
+dab0d00 Units made of units: voltage times current is power, so `3.3 V * 20 mA` is `0.066 W`.
+
+== The libraries of C, and of Go and Rust through C
+b747791 `import c`: a Zeno program calls libraries of C, and of Go and Rust through their C interface.
+564dae0 `zeno build` calls C directly: `import c` works in every C build, and the checker reads the declarations, so a wrong argument is found before the program runs.
+
+== On a board: inputs, a serial port, and a voltage
+9665982 Inputs on a board: `input_pin(2, pull_up)` makes a pin that the program reads.
+d21a4a3 The WebAssembly and Rust targets could wake from `sleep` a fraction of a millisecond early. They now wait until the time has passed.
+0635fba A serial port on a board: `serial(1, 115200 baud)`, with `write`, `read_byte` and `has_byte`.
+a2447a7 Reading a voltage on a board: `analog_pin(0)` gives a pin whose `voltage()` is a quantity in volts.

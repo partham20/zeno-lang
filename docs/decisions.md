@@ -14891,3 +14891,94 @@ a 10-bit converter against 5 V that reads a ramp.
 - Reading several pins in one sweep, and a reading by interrupt.
 - A voltage written out: a DAC, and PWM, which is next.
 - A temperature from a thermistor, in the library written in Zeno.
+
+## 49. The history: every commit, under its release
+
+[`HISTORY.md`](../HISTORY.md), at the root of the repository, lists
+every commit, oldest first, under the release it went into, with one
+plain line on what it changed. zeno-lang.org shows the same file at
+`/history/`. It is there so that somebody who reads it from the top
+can follow how the language was built: this file says why Zeno is as
+it is, and that one says in what order it came to be.
+
+### 49.1 A script writes the file, from git and a file of notes
+
+**[`tools/history.py`](../tools/history.py) writes `HISTORY.md`.** Git
+gives the commits, their order, their dates and the tags.
+[`tools/history-notes.txt`](../tools/history-notes.txt) gives the
+words: a line for each commit, a heading for a run of commits, and a
+paragraph for each release.
+
+**Why a script?** A list of three hundred commits kept by hand is
+behind at the next commit, and nobody can see that one is missing. The
+script counts them, and `--check` fails when the file is behind.
+**Why notes beside it?** The first line of a commit message is written
+for somebody in the middle of the work ("Decisions 5.15: whoever
+receives a value owns it"). The page is for somebody who is not.
+**Turned down:**
+
+- **`git log` alone.** It has every commit and none of the story: no
+  release, no word on what a run of commits was for.
+- **The plain line inside each commit message.** The commits that are
+  there cannot be given one without writing the history again, which
+  changes every hash and breaks every link to a commit.
+- **`git notes`.** GitHub does not show them, and a clone does not
+  fetch them unless it is told to.
+
+### 49.2 A release is a tag
+
+**A tag `vX.Y.Z` on a commit ends a release, and nothing else says
+so.** The commits up to and with the tagged one are that release, and
+what follows the last tag is under "Unreleased". So a new tag makes a
+new heading by itself, and the notes cannot disagree with git about
+what a release holds.
+
+The paragraph of a release is in the notes, under its number. The
+block named `Unreleased` goes with whichever release now holds its
+first commit: a release that is tagged before anybody has touched the
+notes still gets the paragraph that was written for its commits.
+
+**The script stops in a clone that has no tags or only part of the
+history**, and says which `git fetch` to run. A clone made for one
+task is often shallow. Without this, every commit it has would be
+written under "Unreleased" and the file would look whole.
+
+### 49.3 A commit with no note is still listed
+
+**A commit that has no line in the notes is listed with the first
+line of its own message**, under the heading "Later commits" when it
+comes after the noted ones. The page says it has every commit, and it
+keeps saying so between the day a commit is pushed and the day
+somebody writes its line. `--missing` prints the lines to fill in.
+
+**Turned down: leaving such a commit out until it has a line.** Then
+the page is whole only when somebody remembers.
+
+### 49.4 Oldest first, and the name is not CHANGELOG
+
+**The first commit is at the top.** The page is read as a story, and a
+story starts at its beginning. A changelog is the other way round,
+because it is for somebody who has one version and wants to know what
+the next one changes. Zeno has that already, in
+[`docs/releases/`](releases/), one page for each version, which is
+also the text of the release on GitHub. Two files with one job would
+drift apart, so this one has another job and another name.
+
+### 49.5 The commit that brings the page up to date is not on it
+
+**A commit that changes only `HISTORY.md` and the notes is not
+listed.** A commit cannot hold its own name: the name is worked out
+from what the commit holds. So a commit gets its line in a later
+commit, and that later commit holds the two files and nothing else.
+
+**Turned down: listing it, one step late.** Every time the page was
+brought up to date it would gain a line that says only that it was
+brought up to date, and would need bringing up to date again.
+
+### 49.6 One file, shown in two places
+
+**The site's `tools/build.py` turns `HISTORY.md` into `/history/`**, as
+it turns this file into `/decisions/`. Nothing is written twice. A
+short name of a commit is a link to the commit on GitHub, in the file
+and on the site, so the page can stay one line to a commit and the
+whole of each is one press away.

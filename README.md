@@ -368,6 +368,7 @@ each type it is used with, so a `Stack[u8]` is as small and as fast as one
 written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
 
 - **Why Zeno is the way it is:** [`docs/decisions.md`](docs/decisions.md) gives the reason for every design choice.
+- **How Zeno was built:** [`HISTORY.md`](HISTORY.md) lists every commit, oldest first, under its release, with a plain line on what each one changed.
 - **How each stage works:** [`docs/lexer.md`](docs/lexer.md), [`docs/parser.md`](docs/parser.md),
   [`docs/checker.md`](docs/checker.md), [`docs/interpreter.md`](docs/interpreter.md),
   [`docs/compiler.md`](docs/compiler.md), [`docs/memory.md`](docs/memory.md),
