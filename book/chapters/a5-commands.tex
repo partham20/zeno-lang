@@ -93,6 +93,11 @@ Option & With & What it does \\
 \verb|--fast| & \verb|build| & no index check, no check of a float
   divided by zero or of a square root below zero, overflow with no
   defined result (as in C), and \verb|-O3| \\
+\verb|--minimal| & \verb|build| & the least C that runs the program:
+  no check of any kind, only the parts of the runtime the program
+  uses, \verb|print| as \verb|printf|, and \verb|-Os|
+  (\hyperref[ch-compiling]{Compiling}; after 0.5.1, and not yet
+  released) \\
 \verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
   to \verb|clang|. Goes with the three options around it \\
 \verb|--web| & \verb|build| & write a web page that runs the program:

@@ -126,6 +126,8 @@ Option & Means \\
 \verb|--no-collector| & no garbage collector; every list and object has
   one owner, and memory comes from a pool of a fixed size
   (\hyperref[ch-no-collector]{Building with No Collector}) \\
+\verb|--minimal| & the least C that runs the program, with no checks
+  (the next section; after 0.5.1, and not yet released) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -139,6 +141,82 @@ print(len(squares), squares[999])
 \end{zeno}
 
 \hyperref[ch-memory]{Memory} explains the report.
+
+\section{The least C}
+
+The C that \verb|zeno build| writes keeps every promise Zeno makes,
+and that takes room. Each sum is checked, each index is checked, each
+error can say its line, and the whole runtime stands in front of the
+program in case it is needed: about 3,000 lines of C for a program of
+one line. Once a program is correct, \verb|--minimal| writes the
+other kind of C: the least that runs it, close to what a person would
+write by hand.
+
+\begin{zeno}[file=multiples.zeno, cmd=zeno build --minimal {file} ;; ./multiples ;; grep -c "" multiples.c ;; grep -A18 "^static int64_t z_total" multiples.c]
+function total(limit: int) -> int {
+    var sum = 0
+    for n in range(limit) {
+        if n % 3 == 0 {
+            sum += n * 2
+        }
+    }
+    return sum
+}
+
+print(f"the total is {total(1000)}")
+\end{zeno}
+
+The number after the answer is how many lines the C file has, and the
+rest is the program, whole. \verb|n * 2| is C's own \verb|*|, with
+nothing checking it. \verb|print| is \verb|printf|. No call ends in
+a line and a column. Of the runtime, one function is left, a few lines
+above \verb|z_total| in the file: \verb|zeno_mod|, because
+\verb|-7 % 3| is 2 in Zeno and $-1$ in C, and that is not a check but
+what \verb|%| means.
+
+What is given up is every check. In a minimal build a mistake does
+what it would do in C:
+
+\begin{center}
+\begin{tabular}{P{4.6cm}P{3.2cm}P{4.6cm}}
+\toprule
+ & \verb|zeno build| & \verb|zeno build --minimal| \\
+\midrule
+an index out of range & \verb|IndexError| & reads or writes whatever memory is there \\
+a key the dict does not have & \verb|KeyError| & reads an item that is not there \\
+a whole number that overflows & \verb|OverflowError| & no defined result \\
+a whole number divided by zero & \verb|ZeroDivisionError| & what the processor does; on a computer the program is stopped \\
+a float divided by zero & \verb|ZeroDivisionError| & infinity, or NaN \\
+\verb|u8(300)| & \verb|ValueError| & 300 goes on as it is \\
+an error nothing catches & says what, and the line & says what \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+What is kept is everything a correct program can meet.
+\verb|int("ten")| still raises a \verb|ValueError| and a file that is
+not there a \verb|FileError|, \verb|try| and \verb|except| work as
+they did, and the program prints what it printed before, to the last
+digit of a float.
+
+\verb|--minimal| goes with \verb|--firmware|, \verb|--owned| and
+\verb|--no-collector|. A program that makes a list still needs
+something to free it, and the garbage collector is some 500 lines of
+C that no option makes small, so the smallest C for such a program
+comes from \verb|--minimal --no-collector|. The file gets much
+smaller, 23 lines for a program that prints one line; the program the
+C compiler makes of it gets a little smaller, since the C compiler
+never put an unused function into it in the first place.
+
+\begin{why}
+Two readers want two things from the C. While a program is being
+written, the C should stop at the first mistake and say where. When it
+is done and its C is to be read, reviewed or carried into another
+project, every line that is not the program is in the way. So there
+are two builds, and the one that checks is the one you get without
+asking. (Decisions 30.1 to 30.12; \verb|docs/minimal.md| has the whole
+table and the sizes.)
+\end{why}
 
 \section{Through LLVM}
 
@@ -281,6 +359,8 @@ prints, errors included, and is many times faster. A build is always
 strict. \verb|--llvm| goes through LLVM; \verb|--memory|,
 \verb|--firmware| and \verb|--no-collector| are for the board. For
 another processor, the C goes to that processor's compiler.
+\verb|--minimal| writes the least C for a program that is already
+correct, with no checks in it.
 \verb|--target| writes the program in another language instead.
 \end{summary}
 
@@ -294,6 +374,9 @@ another processor, the C goes to that processor's compiler.
   the same as \verb|zeno run|'s?
 \item Build with \verb|--llvm|, open the \verb|.ll| file, and find
   \verb|is_prime|.
+\item Build the primes example with \verb|--minimal| and read the
+  whole of \verb|primes.c|. Then read a list past its end in a small
+  program, and build that both ways.
 \item Build the area example with \verb|--target go| and
   \verb|--target java|. Find \verb|area| in each, and compare the two
   with the Python.
