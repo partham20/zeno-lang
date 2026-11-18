@@ -303,6 +303,10 @@ pub trait Machine {
     /// Print text with no line end after it: the question `input` asks.
     fn write(&mut self, text: &str);
 
+    /// Write one line on the error stream (`program.warn`), which the
+    /// shell keeps apart from what is printed.
+    fn warn(&mut self, text: &str);
+
     /// The keyboard, and the words the program was started with.
     fn outside(&mut self) -> &mut Outside;
 
@@ -339,12 +343,15 @@ pub struct Outside {
     /// `todo.html` for `todo.zeno`, if there is one. The simulated page
     /// then has the elements it has (`page.rs`).
     pub page: Option<String>,
+    /// The environment the program was started in, which is how the
+    /// tests set it. `None` asks the machine itself.
+    pub environment: Option<Vec<(String, String)>>,
 }
 
 impl Outside {
     /// A program at the real keyboard, started with these words.
     pub fn started_with(arguments: Vec<String>) -> Outside {
-        Outside { typed: None, read: 0, arguments, page: None }
+        Outside { typed: None, read: 0, arguments, page: None, environment: None }
     }
 
     /// The same, with the page that was written for the program.
@@ -361,6 +368,25 @@ impl Outside {
             read: 0,
             arguments: arguments.iter().map(|word| word.to_string()).collect(),
             page: None,
+            environment: None,
+        }
+    }
+
+    /// `program.environment(name)`: what the environment says `name`
+    /// is, if it says. A value that is not UTF-8 is read as well as it
+    /// can be, as the words on the command line are.
+    pub fn variable(&self, name: &str) -> Option<String> {
+        match &self.environment {
+            Some(pairs) => pairs.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone()),
+            // A browser has no environment.
+            #[cfg(target_arch = "wasm32")]
+            None => None,
+            // A name with `=` or a zero byte in it is in no environment,
+            // and the machine is not asked about it (it would refuse).
+            #[cfg(not(target_arch = "wasm32"))]
+            None if name.is_empty() || name.contains(['=', '\0']) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None => std::env::var_os(name).map(|value| value.to_string_lossy().into_owned()),
         }
     }
 
@@ -425,6 +451,15 @@ pub mod testing {
         OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing("", &[]));
     }
 
+    /// Run `test` with this environment for every program it runs, the
+    /// built ones too.
+    pub fn with_environment(pairs: &[(&str, &str)], test: impl FnOnce()) {
+        let pairs: Vec<(String, String)> = pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+        OUTSIDE.with(|outside| outside.borrow_mut().environment = Some(pairs));
+        test();
+        OUTSIDE.with(|outside| *outside.borrow_mut() = Outside::typing("", &[]));
+    }
+
     /// Run `test` with this page written for every program it runs.
     pub fn on_page(html: &str, test: impl FnOnce()) {
         OUTSIDE.with(|outside| outside.borrow_mut().page = Some(html.to_string()));
@@ -441,6 +476,9 @@ pub mod testing {
     /// line, and the typed text on its standard input.
     pub fn run(command: &mut Command) -> std::io::Result<Output> {
         let outside = outside();
+        for (key, value) in outside.environment.iter().flatten() {
+            command.env(key, value);
+        }
         let mut child = command
             .args(&outside.arguments)
             .stdin(Stdio::piped())
@@ -467,6 +505,48 @@ pub enum Control {
     /// A bug in the program, such as a misspelt name or `"abc" - 1`.
     /// It cannot be caught; the type checker will later find these before the program runs.
     Fatal(Error),
+    /// `program.exit(code)`: the program ends here, with this number for
+    /// whatever started it. It is not an error, and no `try` stops it.
+    Exit(u8, Span),
+}
+
+/// How a run of a whole program went: what it printed, what it wrote on
+/// the error stream (both kept only when the run is captured, for the
+/// tests), the error that stopped it if one did, and the number it ended
+/// with: 0, 1 after an error, or what `program.exit` was given.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ran {
+    pub output: String,
+    pub warned: String,
+    pub result: Result<(), Error>,
+    pub status: u8,
+}
+
+impl Ran {
+    /// The end of a run, from how the program's statements finished.
+    pub fn ended(output: String, warned: String, finished: Result<(), Control>) -> Ran {
+        let (result, status) = match finished {
+            Ok(()) => (Ok(()), 0),
+            Err(Control::Exit(status, _)) => (Ok(()), status),
+            Err(control) => (Err(crate::ops::escaped(control)), 1),
+        };
+        Ran { output, warned, result, status }
+    }
+}
+
+/// Write one line on the error stream (`program.warn`). What was
+/// printed before it is sent first, so that the two keep their order on
+/// a screen that shows both. In a browser there is one place to show
+/// text, and the line goes there.
+pub fn warn_line(text: &str) {
+    #[cfg(target_arch = "wasm32")]
+    crate::web_host::print(&format!("{text}\n"));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = writeln!(std::io::stderr(), "{text}");
+    }
 }
 
 /// Print one line of a program's output. If nobody is reading any more,

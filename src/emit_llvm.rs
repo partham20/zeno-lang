@@ -242,6 +242,9 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_input", "declare ptr @zeno_input(ptr)"),
     ("zeno_program_start", "declare void @zeno_program_start(i32 signext, ptr)"),
     ("zeno_program_arguments", "declare ptr @zeno_program_arguments()"),
+    ("zeno_program_exit", "declare void @zeno_program_exit(i64, i32 signext, i32 signext)"),
+    ("zeno_program_environment", "declare ptr @zeno_program_environment(ptr)"),
+    ("zeno_program_warn", "declare void @zeno_program_warn(ptr)"),
     ("zeno_chars", "declare ptr @zeno_chars(ptr)"),
     ("zeno_char_size", "declare i64 @zeno_char_size(ptr)"),
     ("zeno_char_here", "declare ptr @zeno_char_here(ptr, ptr)"),
@@ -5238,6 +5241,23 @@ impl Emitter<'_> {
                 let words = self.call("ptr", "zeno_program_arguments", "");
                 Ok(Val::new(words, Kind::List(Box::new(Kind::Str))).made())
             }
+            // `program.exit(code)`: C's own `exit`, after the code is
+            // checked (decision 34.1).
+            ("program", "exit", [code]) if code.kind == Kind::Int => {
+                self.run("zeno_program_exit", format!("i64 {}, {}", code.code, at(span)));
+                Ok(Val::nothing())
+            }
+            // `program.environment(name)`: a copy of the text, or null.
+            ("program", "environment", [name]) if name.kind == Kind::Str => {
+                self.code.built = !self.collector;
+                let value = self.call("ptr", "zeno_program_environment", format!("ptr {}", name.code));
+                let value = Val::new(value, Kind::Optional(Box::new(Kind::Str)));
+                Ok(self.came_back(value))
+            }
+            ("program", "warn", [text]) if text.kind == Kind::Str => {
+                self.run("zeno_program_warn", format!("ptr {}", text.code));
+                Ok(Val::nothing())
+            }
             // `program.run(name, words)` starts another program, which
             // only `zeno run` does so far.
             ("program", "run", _) => Err(cannot("`program.run`", span)),
@@ -6835,7 +6855,7 @@ pub(crate) mod tests {
     use super::*;
     use std::process::Command;
 
-    fn compile(source: &str) -> Result<String, String> {
+    pub(crate) fn compile(source: &str) -> Result<String, String> {
         let program = crate::modules::testing::built(source);
         let (errors, types) = crate::checker::check_with_types(&program, true);
         assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
@@ -6870,6 +6890,17 @@ pub(crate) mod tests {
     /// The same, for any of the three kinds of build, with these flags
     /// for clang beside the usual ones.
     fn build_and_run_as(name: &str, ir: &str, build: Build, flags: &[&str]) -> Option<(String, String, bool)> {
+        let ran = built_output(name, ir, build, flags)?;
+        Some((
+            String::from_utf8_lossy(&ran.stdout).into_owned(),
+            String::from_utf8_lossy(&ran.stderr).into_owned(),
+            ran.status.success(),
+        ))
+    }
+
+    /// The same, with everything the run gave: the number it ended with
+    /// among the rest.
+    pub(crate) fn built_output(name: &str, ir: &str, build: Build, flags: &[&str]) -> Option<std::process::Output> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-llvm-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
         let (ir_file, runtime_file, binary) = (dir.join("test.ll"), dir.join("test_runtime.c"), dir.join(emit_c::program_file("test")));
@@ -6904,11 +6935,7 @@ pub(crate) mod tests {
         }
         .expect("the program runs");
         let _ = std::fs::remove_dir_all(&dir);
-        Some((
-            String::from_utf8_lossy(&ran.stdout).into_owned(),
-            String::from_utf8_lossy(&ran.stderr).into_owned(),
-            ran.status.success(),
-        ))
+        Some(ran)
     }
 
     #[test]

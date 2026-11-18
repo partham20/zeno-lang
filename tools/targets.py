@@ -16,8 +16,11 @@ runs (book/chapters/*.tex). Each is run with `zeno run`, which says what
 it must print. Then for each target it is built with
 `zeno build --target <target>`, the result is run with that language's
 own tools, and what it did is held to what `zeno run` did: the same text
-printed, the same answer to "did it stop with an error", and if it did,
-the same message, in the same file, at the same line. A program that a
+printed, the same number it ended with, the same lines written on the
+error stream before any error (`program.warn`), and if it stopped with
+an error, the same message, in the same file, at the same line. Every
+program is started with ZENO_TARGETS set to "yes", for a program that
+reads the environment. A program that a
 target refuses to build because it uses what no target can do
 (`import board`, `unsafe`, `program.run`, `import python`) is counted as
 left out, not as a failure.
@@ -55,7 +58,8 @@ TARGETS = {
     "dart": {"needs": ["dart"], "run": ["dart", "run", "{file}"]},
     # Compiled into a jar beside the file, with Kotlin's own library in it, then run.
     "kotlin": {"needs": ["kotlinc", "java"], "run": ["sh", "-c", "kotlinc \"$0\" -include-runtime -d \"$0.jar\" >&2 && exec java -jar \"$0.jar\" \"$@\"", "{file}"]},
-    "go": {"needs": ["go"], "run": ["go", "run", "{file}"]},
+    # Built, then run: `go run` ends with 1 whatever the program ended with.
+    "go": {"needs": ["go"], "run": ["sh", "-c", "go build -o \"$0.bin\" \"$0\" >&2 && exec \"$0.bin\" \"$@\"", "{file}"]},
     "java": {"needs": ["java"], "run": ["java", "{file}"]},
     "cs": {"needs": ["dotnet"], "run": ["dotnet", "run", "{file}"]},
     # Compiled beside the file it wrote, then run.
@@ -69,7 +73,9 @@ TARGETS = {
     "html": {"needs": ["node"], "run": ["node", str(REPO / "tools/run-page.js"), "{file}"], "page": True},
 }
 
-PAGE_CANNOT = re.compile(r"\bsleep\(|\bfiles\.(write|append)\(")
+# A page cannot end, has no environment, and shows a warning where it
+# shows the rest.
+PAGE_CANNOT = re.compile(r"\bsleep\(|\bfiles\.(write|append)\(|\bprogram\.(exit|environment|warn)\(")
 SAMPLE_RE = re.compile(r"\\begin\{zeno\}(?:\[(.*?)\])?\n(.*?)\\end\{zeno\}", re.S)
 
 
@@ -154,7 +160,7 @@ def run(command, cwd, stdin=b"", timeout=120):
         stdin = stdin.encode()
     try:
         done = subprocess.run(command, cwd=cwd, input=stdin, capture_output=True, timeout=timeout,
-                              env=dict(os.environ, NO_COLOR="1"))
+                              env=dict(os.environ, NO_COLOR="1", ZENO_TARGETS="yes"))
         return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         return -1, "", "timed out"
@@ -169,6 +175,21 @@ def stopped_by(errors):
     message = next((line for line in errors.splitlines() if line.startswith("error")), "")
     place = re.search(r"--> (.*?):(\d+)", errors)
     return message, f"{Path(place.group(1)).name}:{place.group(2)}" if place else ""
+
+
+def warned(errors):
+    """The lines a program wrote on the error stream before any error:
+    what `program.warn` wrote."""
+    lines = errors.splitlines()
+    end = next((at for at, line in enumerate(lines) if line.startswith("error")), len(lines))
+    return lines[:end]
+
+
+def same_warnings(want, got):
+    """A target's own tools may write on the error stream before the
+    program runs (kotlinc's warnings), so the program's lines are the
+    last ones there."""
+    return not want or got[-len(want):] == want
 
 
 def main():
@@ -197,7 +218,7 @@ def main():
     # What `zeno run` prints is what every target must print.
     def run_zeno(program):
         status, out, errors = run([str(ZENO), "run", program.file] + program.args, program.folder, program.stdin)
-        return status == 0, out, stopped_by(errors)
+        return status, out, stopped_by(errors), warned(errors)
 
     expected = dict(zip((p.name for p in found), pool.map(run_zeno, found)))
 
@@ -211,7 +232,7 @@ def main():
         if status != 0:
             if "a program built for another language cannot use" in errors or "manual memory" in errors:
                 return "left out"
-            ok = expected[program.name][0]
+            ok = expected[program.name][0] == 0
             if not ok and "error" in errors:
                 # A program that `zeno run` refuses is refused here too.
                 return "pass"
@@ -221,11 +242,15 @@ def main():
         command = [part.replace("{file}", str(out_dir / file)).replace("{dir}", str(out_dir))
                    for part in spec["run"]]
         status, out, errors = run(command + program.args, program.folder, program.stdin)
-        ok, want, stopped = expected[program.name]
-        if (status == 0) == ok and out == want and (ok or stopped_by(errors) == stopped):
+        ended, want, stopped, warnings = expected[program.name]
+        ok = ended == 0
+        same = status == ended and out == want and same_warnings(warnings, warned(errors))
+        if same and (ok or stopped_by(errors) == stopped):
             return "pass"
-        why = f"zeno run {'succeeded' if ok else 'failed'}, the {target} program {'succeeded' if status == 0 else 'failed'}"
-        if (status == 0) == ok and out == want:
+        why = f"zeno run ended with {ended}, the {target} program with {status}"
+        if status == ended and out == want and not same_warnings(warnings, warned(errors)):
+            why = f"zeno run warned {warnings}, the {target} program {warned(errors)}"
+        elif same:
             why = f"zeno run stopped with {stopped}, the {target} program with {stopped_by(errors)}"
         return f"{why}\n--- zeno run printed\n{want}--- {target} printed\n{out}--- {target} said\n{errors}"
 

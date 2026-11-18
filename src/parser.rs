@@ -905,7 +905,21 @@ impl Parser {
                 }
                 self.expect(TokenKind::RParen)?;
             }
-            variants.push(Variant { name, fields });
+            // `Ack = 6`: a number written out, which may have a minus.
+            let number = if self.eat(TokenKind::Assign) {
+                let at = self.span();
+                let minus = self.eat(TokenKind::Minus);
+                match self.peek().clone() {
+                    TokenKind::Int(n) => {
+                        self.advance();
+                        Some((if minus { -i128::from(n) } else { i128::from(n) }, at))
+                    }
+                    _ => return self.error("a case of an enum is given a whole number written out: `Ack = 6`"),
+                }
+            } else {
+                None
+            };
+            variants.push(Variant { name, fields, number });
             self.end_of_statement()?;
         }
         self.advance(); // the }

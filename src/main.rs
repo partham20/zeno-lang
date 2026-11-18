@@ -493,11 +493,18 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>, owned: boo
     // and what it reads with `input()` is the keyboard.
     bridge::program_at(path);
     let outside = value::Outside::started_with(arguments).with_page(own_page(path));
-    let (_, result) = match on_vm {
-        true => vm::run_with(&program, false, outside),
-        false => interpreter::run_with(&program, false, outside),
+    let ran = match on_vm {
+        true => vm::run_ending(&program, false, outside),
+        false => interpreter::run_ending(&program, false, outside),
     };
-    match result {
+    match ran.result {
+        // `program.exit(3)`: the shell is given 3. What was printed is
+        // sent first, as when the program ends at its last line.
+        Ok(()) if ran.status != 0 => {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            std::process::exit(i32::from(ran.status));
+        }
         Ok(()) => Some(()),
         Err(error) => {
             report(&files, &error);

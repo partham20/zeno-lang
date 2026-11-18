@@ -1808,6 +1808,38 @@ def _b_sum(args, line):
     return total if all_ints else float_total
 
 
+def _b_program_exit(args, line):
+    """`program.exit(code)`: what was printed goes out, and the program
+    ends with `code`. Not as an exception, which an `except` could stop."""
+    _arity("exit", args, 1, 1, line)
+    code = _whole("exit", args[0], line)
+    if code < 0 or code > 255:
+        _raise("ValueError", "a program ends with a number from 0 to 255, not " + str(code), line)
+    flush()
+    _sys.stderr.flush()
+    _os._exit(code)
+
+
+def _b_program_environment(args, line):
+    """`program.environment(name)`: the text, or none. Bytes that are not
+    UTF-8 are read as well as they can be."""
+    _arity("environment", args, 1, 1, line)
+    value = _os.environ.get(_text("environment", args[0], line))
+    if value is None:
+        return None
+    return value.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def _b_program_warn(args, line):
+    """`program.warn(text)`: one line on the error stream, after what was printed."""
+    _arity("warn", args, 1, 1, line)
+    said = _text("warn", args[0], line)
+    flush()
+    _sys.stderr.buffer.write((said + "\n").encode("utf-8", "surrogatepass"))
+    _sys.stderr.buffer.flush()
+    return None
+
+
 def _b_char(args, line):
     _arity("char", args, 1, 1, line)
     code = _whole("char", args[0], line)
@@ -2003,6 +2035,9 @@ BUILTINS = {
     "files.append": lambda args, line: _put("append", args, True, line),
     "files.exists": lambda args, line: _at(_paths("exists", args, 1, line)[0]) == "file",
     "files.remove": _b_files_remove,
+    "program.exit": _b_program_exit,
+    "program.environment": _b_program_environment,
+    "program.warn": _b_program_warn,
     "program.arguments": lambda args, line: (_arity("arguments", args, 0, 0, line), list(_sys.argv[1:]))[1],
     "json.parse": _b_json_parse,
     "json.write": lambda args, line: (_arity("write", args, 1, 1, line), _json_write(args[0], line))[1],

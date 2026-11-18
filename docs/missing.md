@@ -40,8 +40,8 @@ release ([`release.md`](release.md)).
 | | What | Size | Why here |
 |---|---|---|---|
 | 1 | A library written in Zeno. **Done** ([`library-in-zeno.md`](library-in-zeno.md)) | medium | Every later library function is then written once, and not once for each engine and each target |
-| 2 | The small library gaps. **Done:** `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp` and random numbers. **Left:** `program.exit`, the environment, the error stream | small | First use of 1. Every one is asked for by ordinary programs |
-| 3 | An enum case with a number: `Ack = 6` | medium | Every protocol and every register field is a number with a name |
+| 2 | The small library gaps. **Done:** `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`, random numbers, and `program.exit`, `program.environment` and `program.warn` ([`ending-a-program.md`](ending-a-program.md)) | small | First use of 1. Every one is asked for by ordinary programs |
+| 3 | An enum case with a number: `Ack = 6`. **Done** ([`enum-numbers.md`](enum-numbers.md)); a loop over the cases is left | medium | Every protocol and every register field is a number with a name |
 | 4 | Bytes: a packed `list[u8]`, a list of a fixed length, bytes from and to a file | large | "The first thing a real driver will ask for" (5.13a) |
 | 5 | `u64` and `f32` | medium | Counters and timestamps; a board whose float unit is 32 bits |
 | 6 | Units made of units: `V * A` is `W` | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
@@ -95,7 +95,7 @@ C.
 
 | Missing | What the others have | Recommendation |
 |---|---|---|
-| **An enum case with a number**, an enum from a number, a loop over the cases | C, C++, Java, Rust, Go (`iota`) | Build it. `Ack = 6` in the enum, `Reply(6)` gives a `Reply or none` |
+| ~~An enum case with a number, an enum from a number~~, a loop over the cases | C, C++, Java, Rust, Go (`iota`) | **Done** (chapter 35): `Ack = 6`, `int(Ack)`, `Reply(6)` gives a `Reply or none`. The loop over the cases is next |
 | **Several values from one function**, and `a, b = b, a` | Python, Go, Rust, C++ | Build it as two or more results and not as a new kind of value: `-> (int, str)`, taken apart where it is received. A tuple that is kept in a list is a class |
 | **Generic enums** (3.16e) | Rust, Java, C++ | Build it. `enum Maybe[T]` is the commonest generic there is |
 | **Generic interfaces and bounds** (3.16d, 10.10) | Rust traits, Java, Go, C++ concepts | Build after generic enums. `function largest[T is Ordered]` moves the error from inside the generic to the call |
@@ -123,8 +123,8 @@ C.
 | ~~`hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`~~ (6.21) | **Done**, as the first functions written in Zeno |
 | ~~Random numbers~~ (6.21) | **Done**: the module `random`. What is left is a seed from the machine, which waits for the time of day |
 | **The methods of text and lists in Zeno** (6.10) | Leave. They are called as `xs.insert(...)` and take items out of a list they were lent, which a function written in Zeno may not |
-| **`program.exit(code)` and the environment** (6.19) | Build. These two need each engine, because Zeno cannot write them itself |
-| **Writing to the error stream** | Build with `program.exit` |
+| ~~`program.exit(code)` and the environment~~ (6.19) | **Done** (chapter 34): `program.exit` and `program.environment`, in every engine and target |
+| ~~Writing to the error stream~~ | **Done**: `program.warn(text)` (34.3) |
 | **A file read in pieces** (6.12, 6.20) | After cleaning up at the end of a block |
 | **Folders**: what is in one, making one, joining the parts of a path | Build with files in pieces |
 | **The date and the time of day** | Build: `time` has only a stopwatch today |
@@ -192,7 +192,7 @@ that comes with it.
 | `none` checked before use | no | no | no | no | no | yes | no | yes |
 | Errors a function must declare | no | no | no | no | yes | yes | no | yes |
 | Enums that carry data | no | some | no | no | some | yes | no | yes |
-| An enum case with a number | yes | yes | yes | no | yes | yes | yes | no |
+| An enum case with a number | yes | yes | yes | no | yes | yes | yes | yes |
 | Generics | no | yes | no | no | yes | yes | yes | yes, no bounds |
 | Several results from a function | no | yes | yes | yes | no | yes | yes | no |
 | Cleaning up at the end of a block | no | yes | yes | yes | yes | yes | yes | freeing only |

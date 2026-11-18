@@ -1,0 +1,83 @@
+# A small serial protocol, as a sensor board speaks it. Each frame is
+# a list of bytes: a command, the length of what follows, the payload,
+# and a checksum. The commands and the replies are numbers on the wire
+# and names in the program: an enum whose cases stand for numbers
+# (docs/enum-numbers.md).
+
+enum Command {
+    Ping = 0x01
+    ReadTemperature = 0x10
+    SetLed = 0x20
+    Reset = 0x7F
+}
+
+enum Status {
+    Ok = 0x00
+    BadChecksum = 0xE1
+    UnknownCommand = 0xE2
+    BadLength = 0xE3
+}
+
+# The low eight bits of the sum of every byte before the checksum.
+function checksum(bytes: list[int]) -> int {
+    var total = 0
+    for byte in bytes {
+        total += byte
+    }
+    return total & 0xFF
+}
+
+# A frame for a command, ready to send.
+function frame(command: Command, payload: list[int]) -> list[int] {
+    var bytes = [int(command), len(payload)]
+    for byte in payload {
+        bytes.append(byte)
+    }
+    bytes.append(checksum(bytes))
+    return bytes
+}
+
+var led_on = false
+
+# What the board does with a frame, and the status it answers with.
+function handle(bytes: list[int]) -> Status {
+    if len(bytes) < 3 or bytes[1] != len(bytes) - 3 {
+        return BadLength
+    }
+    if checksum(bytes.slice(0, len(bytes) - 1)) != bytes[len(bytes) - 1] {
+        return BadChecksum
+    }
+    let command = Command(bytes[0])
+    if command is none {
+        return UnknownCommand
+    }
+    match command {
+        case Ping { print("  pong") }
+        case ReadTemperature { print("  21.5 C") }
+        case SetLed {
+            led_on = bytes[2] == 1
+            print("  led on:", led_on)
+        }
+        case Reset { print("  resetting") }
+    }
+    return Ok
+}
+
+function hex(n: int) -> str {
+    return f"0x{n:02X}"
+}
+
+let frames = [
+    frame(Ping, []),
+    frame(SetLed, [1]),
+    frame(ReadTemperature, []),
+    [0x10, 0, 0x99],             # a checksum that is wrong
+    [0x42, 0, 0x42],             # a command nobody knows
+    [0x01, 5, 0x06],             # a length that is wrong
+]
+
+for bytes in frames {
+    print("frame", bytes.map(hex))
+    let status = handle(bytes)
+    print("  answer", hex(int(status)), status)
+}

@@ -281,13 +281,49 @@ Give the cases names that say which enum they belong to, such as
 \verb|FlagRed|, or put the enums in different files
 (\hyperref[ch-modules]{Programs in Several Files}).
 
+\section{Cases that stand for numbers}
+
+On a wire or in a register, a command is a number. An enum whose
+cases carry nothing can give each case its number, where the case is
+written. \verb|int(Ack)| then gives the number, \verb|u8(Ack)| gives
+it checked to fit a byte, and \verb|Reply(6)| gives the case back:
+
+\begin{zeno}[file=reply.zeno]
+enum Reply {
+    Ack = 6
+    Nak = 21
+    Busy = 0x11
+}
+
+let sent: u8 = u8(Busy)
+print(sent)
+
+for code in [6, 17, 99] {
+    let reply = Reply(code)
+    if reply is none {
+        print(code, "is no reply")
+    } else {
+        print(code, "is", reply)
+    }
+}
+\end{zeno}
+
+\verb|Reply(code)| gives \verb|Reply or none|, because most numbers
+are no case at all, and a byte from outside can be anything. Every
+case has a number or none does, and no two have the same: a number
+nobody wrote down, as C counts them, would change when a case is
+added above it. A case is still not a number: \verb|Ack == 6| is
+refused, and \verb|int(Ack) == 6| says what is meant.
+
 \begin{summary}
 An enum lists the cases a value can be, and a case can carry values
 of its own. \verb|match| runs the block of the case that fits, takes
 out what a case carries, and must handle every case of an enum, either
 by name or with a final \verb|case _|. A \verb|match| on numbers or
 text always needs \verb|case _|, and a plain name as the last case
-gives the value a name.
+gives the value a name. A case that carries nothing can stand for a
+number written beside it: \verb|int(Ack)| gives it, and
+\verb|Reply(6)| gives the case or \verb|none|.
 \end{summary}
 
 \begin{tryit}
@@ -301,5 +337,8 @@ gives the value a name.
   readings, with the fault codes in hexadecimal.
 \item Add \verb|Jammed| to the door, and a \verb|Closing| state, so
   that an open door closes again.
+\item Write \verb|enum Month| with \verb|January = 1| to
+  \verb|December = 12|, and print the name of the month whose number
+  is typed, or that there is none.
 \end{enumerate}
 \end{tryit}

@@ -1962,6 +1962,35 @@ function Z.b_files_remove(args, line)
   file_error("cannot remove `" .. path .. "`", line)
 end
 
+-- `program.exit(code)`: what was printed goes out, and the program ends
+-- with `code`.
+function Z.b_program_exit(args, line)
+  arity("exit", args, 1, 1, line)
+  local code = whole("exit", args[1], line)
+  if code < 0 or code > 255 then raise_("ValueError", "a program ends with a number from 0 to 255, not " .. code, line) end
+  flush()
+  io.stderr:flush()
+  os.exit(code)
+end
+-- `program.environment(name)`: the text, or none. A name with `=` or a
+-- zero byte in it is in no environment (and C would read only the part
+-- before the zero).
+function Z.b_program_environment(args, line)
+  arity("environment", args, 1, 1, line)
+  local name = text("environment", args[1], line)
+  if name == "" or name:find("[=%z]") then return NONE end
+  local value = os.getenv(name)
+  if value == nil then return NONE end
+  return lossy(value)
+end
+-- `program.warn(text)`: one line on the error stream, after what was printed.
+function Z.b_program_warn(args, line)
+  arity("warn", args, 1, 1, line)
+  local said = text("warn", args[1], line)
+  flush()
+  io.stderr:write(said, "\n")
+  return NONE
+end
 function Z.b_program_arguments(args, line)
   arity("arguments", args, 0, 0, line)
   local words = {}

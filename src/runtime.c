@@ -3543,6 +3543,36 @@ static zeno_list *zeno_program_arguments(void) {
     return words;
 }
 
+/* `program.exit(code)`: the program ends here, and whatever started it
+ * is given `code`. `exit` sends what was printed first, and runs what
+ * was asked to run at the end (the memory report). */
+static void zeno_program_exit(int64_t code, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (code < 0 || code > 255) {
+        zeno_fail("ValueError", zeno_join(2, "a program ends with a number from 0 to 255, not ", zeno_str_int(code)), line,
+                  col);
+    }
+#endif /* ZENO_MINIMAL */
+    exit((int)code);
+}
+
+/* `program.environment(name)`: a copy of what the environment says,
+ * or NULL, which is `none`. The copy is the program's to keep: the
+ * environment's own text can change under it. */
+static const char *zeno_program_environment(const char *name) {
+    const char *value = getenv(name);
+    if (value == NULL) return NULL;
+    return zeno_copy(value, strlen(value));
+}
+
+/* `program.warn(text)`: one line on the error stream, after what was
+ * printed so far, so that the two keep their order on a screen. */
+static void zeno_program_warn(const char *text) {
+    fflush(stdout);
+    fputs(text, stderr);
+    fputc('\n', stderr);
+}
+
 /* --------------------------------------------------- Values that may be none
  *
  * `str or none` and the other kinds that are already pointers need no extra

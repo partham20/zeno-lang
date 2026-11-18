@@ -2199,6 +2199,43 @@ static class Z
 
     static string[] arguments = new string[0];
 
+    // `program.exit(code)`: what was printed goes out, and the program
+    // ends with `code`.
+    public static object b_program_exit(object[] args, int line)
+    {
+        arity("exit", args, 1, 1, line);
+        long code = wholeArg("exit", args[0], line);
+        if (code < 0 || code > 255)
+        {
+            throw raiseError("ValueError", "a program ends with a number from 0 to 255, not " + code, line);
+        }
+        flush();
+        System.Console.Error.Flush();
+        System.Environment.Exit((int)code);
+        return null;
+    }
+
+    // `program.environment(name)`: the text, or none. A name with `=` or
+    // a zero byte in it is in no environment.
+    public static object b_program_environment(object[] args, int line)
+    {
+        arity("environment", args, 1, 1, line);
+        string name = text("environment", args[0], line);
+        if (name.Length == 0 || name.IndexOf('=') >= 0 || name.IndexOf('\0') >= 0) return null;
+        return System.Environment.GetEnvironmentVariable(name);
+    }
+
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    public static object b_program_warn(object[] args, int line)
+    {
+        arity("warn", args, 1, 1, line);
+        string said = text("warn", args[0], line);
+        flush();
+        System.Console.Error.Write(said + "\n");
+        System.Console.Error.Flush();
+        return null;
+    }
+
     public static object b_program_arguments(object[] args, int line)
     {
         arity("arguments", args, 0, 0, line);
@@ -2276,7 +2313,7 @@ static class Z
             ["time.sleep"] = b_time_sleep, ["time.now"] = b_time_now,
             ["files.read"] = b_files_read, ["files.write"] = b_files_write, ["files.append"] = b_files_append,
             ["files.exists"] = b_files_exists, ["files.remove"] = b_files_remove,
-            ["program.arguments"] = b_program_arguments, ["json.parse"] = b_json_parse, ["json.write"] = b_json_write,
+            ["program.arguments"] = b_program_arguments, ["program.exit"] = b_program_exit, ["program.environment"] = b_program_environment, ["program.warn"] = b_program_warn, ["json.parse"] = b_json_parse, ["json.write"] = b_json_write,
         };
         foreach (var name in WIDTHS.Keys)
         {

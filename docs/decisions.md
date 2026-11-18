@@ -7271,8 +7271,8 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 6.12, 6.20 | A file is read whole. One too large to hold cannot be read in pieces | A limit of 0.1 | Reading in pieces needs an open file, which is a value with an owner and a moment at which it closes |
 | 6.14 | One kind of error for a file, `FileError` | Settled | The message says which it was, for a person. A program that must tell them apart asks first, with `files.exists` |
 | 6.16 | A file holds text. There is no `files.read_bytes` | A limit of 0.1 | It gives a `list[u8]`, and is worth having when that list is packed (5.13a) |
-| 6.19 | No `program.exit(code)`, and no environment variables | A limit of 0.1 | A program ends by reaching its end, or with an error nobody caught, which ends it with status 1 |
-| 6.21 | `hypot`, the hyperbolic functions, `gcd`, `clamp`, and random numbers | A limit of 0.1 | Each is a few lines of Zeno today. Random numbers want a module of their own, and on a board a source of them |
+| 6.19 | No `program.exit(code)`, and no environment variables | Changed in 34.1 to 34.3: `program.exit`, `program.environment` and `program.warn` | |
+| 6.21 | `hypot`, the hyperbolic functions, `gcd`, `clamp`, and random numbers | Changed in 33.7 and 33.8: written in Zeno, and the module `random` | |
 | 6.24 | `asin`, `acos`, `atan` and `atan2` give a quantity in `rad` | Settled | A float that is secretly an angle is what units are there to stop. Since 10.29 it prints with any number of decimals, which was the one thing that made it awkward |
 | 6.24 | `atan2` takes plain numbers, not two lengths | A limit of 0.1 | Divide each by one of its unit first |
 | 6.32 | A dict held only ints, floats, bools and text | Changed in 10.11: it holds what a list holds | |
@@ -12638,3 +12638,261 @@ What cannot: anything that asks the machine. `program.exit`, the
 environment and the time of day need each engine. And the methods of
 text and lists stay built in, for the reason of 6.10: they are called
 as `xs.insert(...)`, and they take items out of a list they were lent.
+
+## 34. Ending a program, its environment, and the error stream
+
+Three functions of the module `program`, each of which asks the
+machine, so each was written once for every engine: `zeno run`, the
+VM, C, LLVM and the fifteen target languages. A program that does not
+use them is unchanged: they are three new names inside `program`, and
+nothing else moved. Walkthrough: [`ending-a-program.md`](ending-a-program.md).
+
+### 34.1 `program.exit(code)` ends the program, and is not an error
+
+```zeno
+import program
+
+if len(program.arguments()) != 2 {
+    program.warn("usage: copy <from> <to>")
+    program.exit(2)
+}
+```
+
+**The program ends there**, and whatever started it (the shell, a
+script, `program.run`) is given `code`. What was printed is sent
+first. Before this, a program could end in two ways only: at its last
+line, with 0, or with an error nobody caught, with 1 (6.19). A tool
+that a script calls has to be able to say "no such file" with one
+number and "wrong words" with another.
+
+**No `try` stops it, and no `except` sees it**, not even one that
+names no kind. It is not an error: a program that asked to end has
+not gone wrong. Python's `sys.exit` is an exception, and a bare
+`except:` that was written to catch something else swallows it; that
+is the kind of surprise Zeno is meant not to have. Inside both engines
+it travels up the way `return` does (`Control::Exit` beside
+`Control::Raise`), so the language beside a program (`import python`)
+is still told that the program is over. In C and LLVM builds it is
+C's own `exit`, which also runs the memory report. Each target
+language uses its own way to end at once (`os._exit` after the output
+is sent in Python, `exit!` in Ruby, `std::_Exit` in C++), never one an
+`except` written in that language could stop.
+
+**`code` goes from 0 to 255.** That is what every system hands on: on
+Linux and macOS, `exit(256)` arrives as 0, which would turn a failure
+into a success. A number outside is a `ValueError`, raised where the
+call is, as `char(0)` is; a number written down outside is found by
+the checker before the program runs. A `--minimal` build has no
+checks (30.2), and there the number is cut to its last eight bits, as
+in C.
+
+**It does not count as the end of a path.** A function that promises
+an `int` still has to return one on every path, `program.exit` or not.
+**Why.** Java, Go and C do the same. The rule "every path returns"
+stays one a reader can check without knowing which calls end the
+program, and the cost is one line in a rare case.
+
+**In a test** (`zeno test`), a program cannot end in the middle of the
+run: the test fails, with "the program ended here, with
+`program.exit(2)`", and the next test runs. **In a page**, the program
+cannot end either: the turn that is running stops, and the page stays,
+with its buttons. **In a firmware build** it is allowed: an uncaught
+error there already ends with `exit(1)`, and what ending means on a
+real board is for the board's runtime to say (missing.md, item 8).
+
+### 34.2 `program.environment(name)` gives `str or none`
+
+```zeno
+let home = program.environment("HOME")
+if home is none {
+    print("HOME is not set")
+}
+```
+
+**`none` when the environment does not say**, which a program must
+handle (`str or none`, as `input()` gives). A name that no environment
+can hold (empty, or with `=` or a zero byte in it) is `none` too, and
+the machine is not asked: some systems would refuse it with an error,
+and C would read only the part before the zero. A value that is not
+UTF-8 is read as the words on the command line are, with U+FFFD where
+a byte cannot be read.
+
+**A function, and not a dict of everything.** A dict would be a copy
+taken when the program started, of names the program never looks at,
+and it would have to be made in every target. One question, one
+answer.
+
+**It only reads.** Setting a variable changes nothing for the program
+itself, only for programs it starts, and C's `setenv` is not safe
+beside other threads. If `program.run` ever needs to give a program an
+environment, that will be a word of `run`'s.
+
+**The word is `environment`**, whole, as Zeno's names are (1.4), not
+`env` or `getenv`.
+
+**A firmware build refuses it**: a board has no environment, and a
+value the build needs is a `const`. **A page has none**, and gets
+`none`. A program built for WebAssembly sees what its host gives it:
+`tools/run-wasi.js` gives it Node's environment, `wasmtime` gives
+nothing unless asked with `--env`.
+
+### 34.3 `program.warn(text)` writes one line on the error stream
+
+```zeno
+program.warn(f"cannot read {path}, going on without it")
+```
+
+**One `str`**, and a line end after it. `print` takes any values, and
+showing every kind of value is a long piece of each backend; an
+f-string already turns anything into text, so one `str` loses nothing
+and costs fifteen short functions instead of fifteen long ones.
+
+**What was printed before it is sent first**, so that on a screen that
+shows both streams the lines keep the order the program wrote them in.
+
+**The word is `warn`.** Ruby and Perl have a `warn` that does exactly
+this. `program.error(text)` reads as if it raised an error, which it
+does not. `print(text, to: errors)` would make `print` the one built-in
+that takes a named argument for where its output goes, and every
+backend's `print` more complicated, for a rare need.
+
+**In a page**, where there is one place for text, the line is shown
+with the rest. **In a firmware build** it goes where an uncaught
+error's message goes.
+
+### 34.4 How the three are held to each other
+
+`tools/targets.py` now holds every target to `zeno run` on two more
+things: the number the program ended with (it compared only "0 or
+not" before), and the lines written on the error stream before any
+error. Every program is started with `ZENO_TARGETS=yes`, so that
+`tools/targets/edge-ending.zeno` can read a variable whose value is
+known. Two changes came with that. `go run` ends with 1 whatever the
+program ended with, so Go programs are built first and then run, as
+C++ and Rust ones were. And `tools/run-wasi.js` hands the program
+Node's environment instead of an empty one.
+
+In `cargo test`, both engines give a `Ran`: what was printed, what was
+warned, the error if any, and the number at the end. A test sets the
+environment the way it sets what is typed (`with_environment`), and
+that environment goes to the built programs it runs as well.
+
+## 35. A case of an enum can stand for a number
+
+```zeno
+enum Reply {
+    Ack = 6
+    Nak = 21
+}
+
+let byte: u8 = u8(Ack)        # 6, to send
+let reply = Reply(byte)       # Reply or none, from what came back
+```
+
+Every protocol, every register field and every error code is a number
+with a name. Before this, a program kept the numbers in `const`s and
+the meaning in an enum, and wrote the `match` between them by hand,
+once for each direction. Walkthrough: [`enum-numbers.md`](enum-numbers.md).
+
+### 35.1 `Ack = 6`, for every case or for none
+
+**The number is written out**, a whole number with or without a minus,
+in any base Zeno reads (`0x15`, `0b1010`). A `const` or a sum is not
+taken: the list of numbers is meant to be read off the page, as the
+table in a datasheet is.
+
+**Every case has one, or none does.** C numbers the cases it is not
+told about (one more than the case before), which makes the number of
+a case depend on where it is in the list: adding a case in the middle
+changes the numbers after it, and a message sent by the old program
+means something else to the new one. In Zeno nothing has a number
+that was not written. **Why not a number for every enum, counted from
+0?** The same reason: a number that nobody wrote cannot be relied on,
+so it is better not to have one at all.
+
+**Only a case that carries nothing.** A `Fault(code: int)` is not one
+number; giving it one would say that every fault is the same.
+
+**No two cases the same.** `Reply(6)` has to give back one case. C
+allows two names for one number; Zeno has `const` for a second name.
+
+**The number is an int**, the size Zeno counts in. A case that has to
+fit a `u8` is turned into one with `u8(Ack)`, which is checked like
+every conversion: a number too big for a `u8` is an `OverflowError`
+there.
+
+### 35.2 `int(Ack)` gives the number, `Reply(6)` gives the case or `none`
+
+**Both ways are conversions, written as conversions are.** `int(x)`
+and `u8(x)` already turn a value into a number, and the name of a type
+called like a function already makes a value of that type (a class).
+So `int(Ack)` and `Reply(6)` need nothing new to be read. **Turned
+down: a field, `Ack.number`.** A case is not an object, and a field
+would read as if it could be changed. **Turned down: `Ack as int`.**
+Zeno has no `as`, and does not need a second way to convert.
+
+**`Reply(6)` gives `Reply or none`**, because most numbers are no
+case at all, and a byte that came over a wire can be anything. The
+checker makes the program look at the `none` before it uses the case,
+as it does for `input()` and `program.environment`. **Turned down:
+raising a `ValueError` for a number that is no case.** Not knowing a
+code is the ordinary case for a program that reads from outside, not
+a mistake, and `none` makes the program say what it does then.
+
+**`int(Ack)` cannot fail**, and `u8(Ack)` fails only as `u8(n)` does.
+
+**A plain enum without numbers is refused in both**, and the message
+says how to give it numbers. A case is not secretly a number in Zeno,
+as it is in C.
+
+**Comparing a case with a number is still refused** (`Ack == 6`): a
+`Reply` and an `int` are different things, and `int(Ack) == 6` says
+which one is meant.
+
+### 35.3 How it is built: two functions written beside the enum
+
+The checker knows which calls these are, since it knows that `Ack` is
+a case of an enum with numbers and that `Reply` is one. It notes each,
+as it notes a `count += 1` on a sized number (10.27), and `checked`
+rewrites the program. Beside the enum, in the same block, it writes
+
+```zeno
+function Reply..number(value: Reply) -> int {
+    match value {
+        case Ack { return 6 }
+        case Nak { return 21 }
+    }
+}
+function Reply..case(number: int) -> Reply or none {
+    if number == 6 { return Ack }
+    if number == 21 { return Nak }
+    return none
+}
+```
+
+and `int(Ack)` becomes `int(Reply..number(Ack))`, `Reply(6)` becomes
+`Reply..case(6)`. No program can write a name with two dots in a row,
+so the names are no one else's, and an enum declared inside a function
+gets its two functions inside that function.
+
+**Why not in each engine.** Every engine, every build and all fifteen
+target languages can already run a function with a `match` and an
+`if`. Written this way, the feature is the same everywhere from the
+first day, with nothing to keep in step: `tools/targets/edge-enum-numbers.zeno`
+passes in all of them unchanged. An enum whose numbers no call uses
+gets no functions, so a program that only writes the numbers, as
+documentation, builds to the same code as before.
+
+**What it costs.** `Reply(n)` tries the cases one after another, which
+for the dozen cases of a protocol is as fast as a table. An enum of
+hundreds of cases would want a table or a `switch`, which the C
+compiler may make of the `if`s on its own.
+
+### 35.4 Left for later
+
+**A loop over the cases** (`for reply in Reply.cases`), which other
+languages have and which a menu or a test of every code wants. It
+needs a list of an enum's cases as a value; it is the next thing for
+this chapter. **A case that is a set of bits** (`Read | Write`), for a
+register of flags: that is a different thing from one number per case,
+and wants a type of its own.

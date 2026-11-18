@@ -9,7 +9,7 @@
 //! - a **statement** does something: declare a variable, loop, return.
 //! - an **expression** produces a value: `1 + 2`, `area(shape)`, `user.name`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ints::Width;
@@ -60,7 +60,10 @@ impl Program {
     /// the long form, which it could do already, so there is nothing
     /// for the four of them to do alike.
     pub fn with_fits(mut self, fits: &HashMap<(usize, usize), Width>) -> Program {
-        let mut visit = |statement: &mut Stmt| {
+        let mut visit = |node: Node| {
+            let Node::Stmt(statement) = node else {
+                return;
+            };
             let span = statement.span;
             let StmtKind::Assign { target, op, value } = &mut statement.kind else {
                 return;
@@ -82,6 +85,132 @@ impl Program {
         fresh_block(&mut self.statements, &mut visit);
         self
     }
+
+    /// `int(Ack)` and `Reply(6)`, for an enum whose cases have numbers
+    /// (decision 35.2). The checker says where each such call is, and
+    /// which enums they use. Each of those enums gets two functions,
+    /// written beside it in the same block:
+    ///
+    /// ```text
+    /// function Reply..number(value: Reply) -> int {
+    ///     match value { case Ack { return 6 }  case Nak { return 21 } }
+    /// }
+    /// function Reply..case(number: int) -> Reply or none {
+    ///     if number == 6 { return Ack }
+    ///     if number == 21 { return Nak }
+    ///     return none
+    /// }
+    /// ```
+    ///
+    /// and `int(Ack)` becomes `int(Reply..number(Ack))`, `Reply(6)`
+    /// becomes `Reply..case(6)`. No name a program writes has two dots in
+    /// a row, so these can be no one else's. Every engine, build and
+    /// target then runs plain functions, a `match` and an `if`, which
+    /// they all could already.
+    pub fn with_numbers(mut self, mut calls: HashMap<(usize, usize), Numbered>, enums: &HashSet<(usize, usize)>) -> Program {
+        let mut visit = |node: Node| match node {
+            Node::Block(block) => {
+                let mut at = 0;
+                while at < block.len() {
+                    let statement = &block[at];
+                    at += 1;
+                    let StmtKind::Enum(decl) = &statement.kind else { continue };
+                    if !enums.contains(&(statement.span.line, statement.span.col)) {
+                        continue;
+                    }
+                    let written = number_functions(decl, statement.span);
+                    let count = written.len();
+                    block.splice(at..at, written);
+                    at += count;
+                }
+            }
+            Node::Expr(expr) => {
+                let span = expr.span;
+                let ExprKind::Call { callee, args } = &mut expr.kind else { return };
+                match calls.remove(&(span.line, span.col)) {
+                    Some(Numbered::Case(name)) => {
+                        callee.kind = ExprKind::Name(format!("{name}..case"));
+                    }
+                    Some(Numbered::Number(name)) => {
+                        let Some(arg) = args.first_mut() else { return };
+                        let at = arg.value.span;
+                        let value = std::mem::replace(&mut arg.value, Expr { kind: ExprKind::None, span: at });
+                        let number = Box::new(Expr { kind: ExprKind::Name(format!("{name}..number")), span: at });
+                        let args = vec![Arg { name: None, value }];
+                        arg.value = Expr { kind: ExprKind::Call { callee: number, args }, span: at };
+                    }
+                    None => {}
+                }
+            }
+            Node::Stmt(_) => {}
+        };
+        fresh_block(&mut self.statements, &mut visit);
+        self
+    }
+}
+
+/// A call the checker found that `Program::with_numbers` rewrites: the
+/// enum's name, as the program's tree has it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Numbered {
+    /// `int(Ack)`, `u8(Ack)`: the case's number.
+    Number(String),
+    /// `Reply(6)`: the case with that number, or `none`.
+    Case(String),
+}
+
+/// The two functions of `Program::with_numbers`, for one enum, placed
+/// where the enum is written.
+fn number_functions(decl: &Enum, span: Span) -> Vec<Stmt> {
+    let expr = |kind: ExprKind| Expr { kind, span };
+    let named = |name: &str| Type::Named { name: name.to_string(), args: Vec::new() };
+    let number = |n: i128| match n < 0 {
+        true => expr(ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(expr(ExprKind::Int(n.unsigned_abs() as u64))) }),
+        false => expr(ExprKind::Int(n as u64)),
+    };
+    let give = |value: Expr| Stmt { kind: StmtKind::Return(Some(value)), span };
+    let function = |name: String, param: (&str, Type), returns: Type, body: Block| Stmt {
+        kind: StmtKind::Function(Arc::new(Function {
+            span,
+            name,
+            type_params: Vec::new(),
+            params: vec![Param { name: param.0.to_string(), ty: Some(param.1), default: None }],
+            return_type: Some(returns),
+            raises: Vec::new(),
+            body,
+        })),
+        span,
+    };
+    let cases = decl.variants.iter().filter_map(|case| case.number.map(|(n, _)| (case.name.as_str(), n)));
+    let arms = cases
+        .clone()
+        .map(|(case, n)| Arm { pattern: Pattern::Name(case.to_string()), body: vec![give(number(n))] })
+        .collect();
+    let match_ = Stmt { kind: StmtKind::Match { subject: expr(ExprKind::Name("value".to_string())), arms }, span };
+    let mut tests: Block = cases
+        .map(|(case, n)| Stmt {
+            kind: StmtKind::If {
+                condition: expr(ExprKind::Binary {
+                    op: BinaryOp::Eq,
+                    left: Box::new(expr(ExprKind::Name("number".to_string()))),
+                    right: Box::new(number(n)),
+                }),
+                then_block: vec![give(expr(ExprKind::Name(case.to_string())))],
+                else_block: None,
+            },
+            span,
+        })
+        .collect();
+    tests.push(give(expr(ExprKind::None)));
+    vec![
+        function(format!("{}..number", decl.name), ("value", named(&decl.name)), named("int"), vec![match_]),
+        function(
+            format!("{}..case", decl.name),
+            ("number", named("int")),
+            Type::Optional(Box::new(named(&decl.name))),
+            tests,
+        ),
+    ]
 }
 
 /// A file that the program imports.
@@ -226,9 +355,9 @@ impl Function {
         self.fresh_with(&mut |_| {})
     }
 
-    /// `fresh`, with every statement of the copy shown to `visit` on the
+    /// `fresh`, with every node of the copy shown to `visit` on the
     /// way, which may change it.
-    fn fresh_with(&self, visit: &mut dyn FnMut(&mut Stmt)) -> Function {
+    fn fresh_with(&self, visit: &mut dyn FnMut(Node)) -> Function {
         let mut copy = self.clone();
         fresh_block(&mut copy.body, visit);
         copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(|value| fresh_expr(value, visit));
@@ -242,7 +371,7 @@ impl Class {
         self.fresh_with(&mut |_| {})
     }
 
-    fn fresh_with(&self, visit: &mut dyn FnMut(&mut Stmt)) -> Class {
+    fn fresh_with(&self, visit: &mut dyn FnMut(Node)) -> Class {
         let mut copy = self.clone();
         copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(value, visit));
         for method in &mut copy.methods {
@@ -252,11 +381,21 @@ impl Class {
     }
 }
 
+/// What `fresh_block` shows its visitor on the way: each block before
+/// its statements, each statement, and each expression before what is
+/// inside it. Each may be changed.
+pub enum Node<'a> {
+    Block(&'a mut Block),
+    Stmt(&'a mut Stmt),
+    Expr(&'a mut Expr),
+}
+
 /// Give every function written inside these statements a copy of its own,
-/// and show `visit` each statement on the way.
-fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(&mut Stmt)) {
+/// and show `visit` each block, statement and expression on the way.
+fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {
+    visit(Node::Block(block));
     for statement in block {
-        visit(statement);
+        visit(Node::Stmt(statement));
         match &mut statement.kind {
             StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => fresh_expr(value, visit),
             StmtKind::Assign { target, value, .. } => {
@@ -300,7 +439,8 @@ fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(&mut Stmt)) {
     }
 }
 
-fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(&mut Stmt)) {
+fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(Node)) {
+    visit(Node::Expr(expr));
     match &mut expr.kind {
         ExprKind::Function(function) => *function = Arc::new(function.fresh_with(visit)),
         ExprKind::FormatStr(parts) => {
@@ -369,6 +509,9 @@ pub struct Enum {
 pub struct Variant {
     pub name: String,
     pub fields: Vec<Field>,
+    /// `Ack = 6`: the number written for the case, and where it is
+    /// (decision 35.1). An enum has one for every case, or for none.
+    pub number: Option<(i128, Span)>,
 }
 
 /// One `case pattern { body }` inside a match.

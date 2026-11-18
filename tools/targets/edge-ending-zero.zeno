@@ -1,0 +1,19 @@
+# `program.exit(0)` from inside a function that `map` calls: the program
+# ends there, with what it printed so far, and says all went well.
+import program
+
+var seen = 0
+function look(n: int) -> int {
+    seen += 1
+    if n > 3 {
+        print("ending at", n, "after", seen)
+        program.exit(0)
+    }
+    return n * n
+}
+
+for round in range(3) {
+    print("round", round)
+}
+let squares = [1, 2, 3, 4, 5].map(look)
+print("never printed", squares)

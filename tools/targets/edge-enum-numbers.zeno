@@ -1,0 +1,50 @@
+# An enum whose cases stand for numbers (decisions 35.1 and 35.2), held
+# to `zeno run` in every target.
+
+enum Reply {
+    Ack = 6
+    Nak = 21
+    Busy = 0x11
+    Lost = -1
+}
+
+print(int(Ack), int(Nak), int(Busy), int(Lost))
+print(Reply(6), Reply(0x15), Reply(17), Reply(-1), Reply(0))
+
+# To a byte and back, as a protocol does.
+let sent: u8 = u8(Busy)
+print(sent, Reply(sent))
+try {
+    print(u8(Lost))
+} except OverflowError as e {
+    print(e)
+}
+
+function describe(code: int) -> str {
+    let reply = Reply(code)
+    if reply is none {
+        return f"{code}: no such reply"
+    }
+    match reply {
+        case Ack { return f"{code}: accepted" }
+        case Nak { return f"{code}: refused" }
+        case Busy { return f"{code}: try again" }
+        case Lost { return f"{code}: lost" }
+    }
+}
+
+for code in [6, 21, 17, -1, 99] {
+    print(describe(code))
+}
+
+# Inside a function, an enum of its own.
+function levels() -> list[int] {
+    enum Level {
+        Low = 10
+        High = 1000
+    }
+    return [int(Low), int(High), int(Level.High) - int(Level.Low)]
+}
+print(levels())
+
+print([Ack, Nak, Lost].map(function(reply: Reply) -> int { return int(reply) * 2 }))

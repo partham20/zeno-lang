@@ -271,7 +271,7 @@ pub fn module_members(module: &str) -> Option<&'static [&'static str]> {
         ],
         "time" => &["sleep", "now"],
         "files" => &["read", "write", "append", "exists", "remove"],
-        "program" => &["arguments"],
+        "program" => &["arguments", "exit", "environment", "warn"],
         "json" => &["parse", "write"],
         _ => return None,
     })

@@ -133,6 +133,9 @@ Name & Is \\
 \midrule
 \multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{23})} \\
 \verb|arguments()| & the words after the file \\
+\verb|environment(name)| & what the environment says \verb|name| is, or \verb|none| \\
+\verb|warn(text)| & one line on the error stream \\
+\verb|exit(code)| & ends the program with \verb|code|, 0 to 255; \verb|ValueError| outside \\
 \midrule
 \multicolumn{2}{l}{\texttt{import json} (\hyperref[ch-reading-writing]{23})} \\
 \verb|parse(text)| & the value JSON text describes; \verb|ValueError| if it is not JSON \\

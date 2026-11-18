@@ -44,6 +44,8 @@ pub fn escaped(control: Control) -> Error {
         Control::Break(span) => Error::new("`break` outside a loop", span),
         Control::Continue(span) => Error::new("`continue` outside a loop", span),
         Control::Return(_, span) => Error::new("`return` outside a function", span),
+        // Only where a program cannot end, as in a test (`zeno test`).
+        Control::Exit(status, span) => Error::new(format!("the program ended here, with `program.exit({status})`"), span),
     }
 }
 

@@ -2044,6 +2044,37 @@ module Z
       file_error("cannot remove `" + path + "`", line)
     end
 
+    # `program.exit(code)`: what was printed goes out, and the program
+    # ends with `code`. `exit!` is not an exception a `rescue` could stop.
+    def b_program_exit(args, line)
+      arity("exit", args, 1, 1, line)
+      code = whole("exit", args[0], line)
+      raise_("ValueError", "a program ends with a number from 0 to 255, not " + code.to_s, line) if code < 0 || code > 255
+      flush
+      STDERR.flush
+      exit!(code)
+    end
+
+    # `program.environment(name)`: the text, or none. A name with `=` or
+    # a zero byte in it is in no environment.
+    def b_program_environment(args, line)
+      arity("environment", args, 1, 1, line)
+      name = text("environment", args[0], line)
+      return nil if name.empty? || name.include?("=") || name.include?("\0")
+      value = ENV[name]
+      value.nil? ? nil : lossy(value)
+    end
+
+    # `program.warn(text)`: one line on the error stream, after what was printed.
+    def b_program_warn(args, line)
+      arity("warn", args, 1, 1, line)
+      said = text("warn", args[0], line)
+      flush
+      STDERR.write(said + "\n")
+      STDERR.flush
+      nil
+    end
+
     def b_program_arguments(args, line)
       arity("arguments", args, 0, 0, line)
       ARGV.map { |word| lossy(word) }

@@ -31,7 +31,9 @@ use crate::board::Board;
 use crate::builtins;
 use crate::bytecode::{From, Op, Proto};
 use crate::emit_bytecode;
-use crate::error::{counted, Error};
+use crate::error::counted;
+#[cfg(test)]
+use crate::error::Error;
 use crate::ops;
 use crate::token::Span;
 use crate::value::*;
@@ -49,7 +51,15 @@ const STACK_SIZE: usize = 256 * 1024 * 1024;
 /// tests check output.
 /// `outside` is what is typed at the program, and the words after the
 /// file on the command line.
+#[cfg(test)]
 pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, Result<(), Error>) {
+    let ran = run_ending(program, capture, outside);
+    (ran.output, ran.result)
+}
+
+/// The same, with what the program wrote on the error stream and the
+/// number it ended with: what `zeno run --vm` hands back to the shell.
+pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
@@ -57,6 +67,7 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 let main = emit_bytecode::compile(program);
                 let mut vm = Vm {
                     output: capture.then(String::new),
+                    warned: String::new(),
                     board: Board::new(),
                     page: crate::page::Page::simulated(outside.page.as_deref()),
                     outside,
@@ -70,11 +81,11 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 };
                 let nothing: Rc<[Cell]> = Rc::from(Vec::new());
                 vm.frames.push(Frame::new(main, nothing, 1, Vec::new(), Span { line: 1, col: 1 }));
-                let result = vm.run(0).map(|_| ()).map_err(ops::escaped);
+                let finished = vm.run(0).map(|_| ());
                 // Another language that was started beside the program
                 // (`import python`) is told the program is over.
                 crate::bridge::close();
-                (vm.output.unwrap_or_default(), result)
+                Ran::ended(vm.output.unwrap_or_default(), vm.warned, finished)
             })
             .expect("could not start the VM thread")
             .join()
@@ -101,9 +112,23 @@ pub fn run_both(program: &Program, source: &str) -> (String, Result<(), Error>) 
     interpreted
 }
 
+/// For the tests: the same as `run_both`, for everything a run gives:
+/// also what was written on the error stream, and the number the
+/// program ended with.
+#[cfg(test)]
+pub fn run_both_ending(program: &Program, source: &str) -> Ran {
+    let outside = crate::value::testing::outside();
+    let interpreted = crate::interpreter::run_ending(program, true, outside.clone());
+    let on_vm = run_ending(program, true, outside);
+    assert_eq!(interpreted, on_vm, "the interpreter (left) and the VM (right) disagree about this program:\n{source}");
+    interpreted
+}
+
 struct Vm {
     /// `Some` collects printed text; `None` prints straight to the screen.
     output: Option<String>,
+    /// What `program.warn` wrote, when printed text is collected.
+    warned: String,
     /// The simulated board, for the `board` module.
     board: Board,
     /// The simulated page, for the `web` module.
@@ -186,6 +211,17 @@ impl Machine for Vm {
         match &mut self.output {
             Some(buffer) => buffer.push_str(text),
             None => print_text(text),
+        }
+    }
+
+    fn warn(&mut self, text: &str) {
+        match &mut self.output {
+            // Kept apart from what is printed, as the shell keeps it.
+            Some(_) => {
+                self.warned.push_str(text);
+                self.warned.push('\n');
+            }
+            None => warn_line(text),
         }
     }
 

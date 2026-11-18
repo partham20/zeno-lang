@@ -1,0 +1,45 @@
+# program.exit, program.environment and program.warn (decisions 34.1 to
+# 34.3), held to `zeno run` in every target. tools/targets.py starts
+# every program with ZENO_TARGETS set to "yes".
+import program
+
+let said = program.environment("ZENO_TARGETS")
+if said is none {
+    print("ZENO_TARGETS is not set")
+} else {
+    print(f"ZENO_TARGETS is {said}")
+}
+print(program.environment("ZENO_TARGETS_NEVER_SET_ANYWHERE"))
+print(program.environment("A=B"))
+print(program.environment(""))
+
+program.warn("a warning goes on the error stream")
+program.warn("வணக்கம், and a second one")
+
+# A number no program can end with is a ValueError, which can be caught.
+for code in [-1, 256, 1000] {
+    try {
+        program.exit(code)
+    } except ValueError as e {
+        print(e)
+    }
+}
+
+function finish(steps: int) {
+    for step in range(steps) {
+        print("step", step)
+        if step == 2 {
+            # No `try` stops the end of the program, and no `except`
+            # sees it.
+            try {
+                program.exit(3)
+            } except {
+                print("never printed")
+            }
+        }
+    }
+    print("never printed either")
+}
+
+finish(10)
+print("nor this")

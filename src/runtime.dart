@@ -2201,6 +2201,36 @@ class Z {
 
   static List<String> arguments = const <String>[];
 
+  // `program.exit(code)`: what was printed goes out, and the program
+  // ends with `code`.
+  static Object? b_program_exit(List<Object?> args, int line) {
+    arity("exit", args, 1, 1, line);
+    final code = wholeArg("exit", args[0], line);
+    if (code < 0 || code > 255) {
+      raiseError("ValueError", "a program ends with a number from 0 to 255, not " + code.toString(), line);
+    }
+    flush();
+    exit(code);
+  }
+
+  // `program.environment(name)`: the text, or none. A name with `=` or a
+  // zero byte in it is in no environment.
+  static Object? b_program_environment(List<Object?> args, int line) {
+    arity("environment", args, 1, 1, line);
+    final name = text("environment", args[0], line);
+    if (name.isEmpty || name.contains("=") || name.contains("\u0000")) return null;
+    return Platform.environment[name];
+  }
+
+  // `program.warn(text)`: one line on the error stream, after what was printed.
+  static Object? b_program_warn(List<Object?> args, int line) {
+    arity("warn", args, 1, 1, line);
+    final said = text("warn", args[0], line);
+    flush();
+    stderr.add(utf8.encode(said + "\n"));
+    return null;
+  }
+
   static Object? b_program_arguments(List<Object?> args, int line) {
     arity("arguments", args, 0, 0, line);
     return List<Object?>.of(arguments);
@@ -2305,6 +2335,9 @@ class Z {
     "files.exists": b_files_exists,
     "files.remove": b_files_remove,
     "program.arguments": b_program_arguments,
+    "program.exit": b_program_exit,
+    "program.environment": b_program_environment,
+    "program.warn": b_program_warn,
     "json.parse": b_json_parse,
     "json.write": b_json_write,
     "u8": b_u8,

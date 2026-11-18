@@ -62,6 +62,8 @@ const Z = (function () {
   class Raise { constructor(value, line) { this.value = value; this.line = line; } }
   // A mistake in the program, which nothing catches.
   class Fatal { constructor(message, line) { this.message = message; this.line = line; } }
+  // `program.exit` in a page: the run ends, and the page stays.
+  class Exit { constructor(code) { this.code = code; } }
 
   function fatal(message, line) { throw new Fatal(message, line); }
   function raise(kind, message, line) { throw new Raise(new ZError(kind, message, null), line); }
@@ -1499,6 +1501,32 @@ const Z = (function () {
       fileError("cannot remove `" + path + "`", line);
     },
 
+    // `program.exit(code)`: what was printed goes out, and Node ends
+    // with `code`. A page cannot end: the run stops, and the page stays.
+    "program.exit"(args, line) {
+      arity("exit", args, 1, 1, line);
+      const code = whole("exit", args[0], line);
+      if (code < 0 || code > 255) raise("ValueError", "a program ends with a number from 0 to 255, not " + code, line);
+      flush();
+      if (inNode) process.exit(Number(code));
+      throw new Exit(code);
+    },
+    // `program.environment(name)`: the text, or none. A page has no environment.
+    "program.environment"(args, line) {
+      arity("environment", args, 1, 1, line);
+      const name = text("environment", args[0], line);
+      if (!inNode || !Object.prototype.hasOwnProperty.call(process.env, name)) return null;
+      return process.env[name];
+    },
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    "program.warn"(args, line) {
+      arity("warn", args, 1, 1, line);
+      const said = text("warn", args[0], line);
+      flush();
+      if (inNode) fs.writeSync(2, said + "\n");
+      else writePage(said + "\n");
+      return null;
+    },
     "program.arguments"(args, line) { arity("arguments", args, 0, 0, line); return inNode ? process.argv.slice(2) : []; },
 
     "json.parse"(args, line) {
@@ -1611,6 +1639,7 @@ const Z = (function () {
     } catch (e) {
       flush();
       let message;
+      if (e instanceof Exit) return;
       if (e instanceof Raise) {
         message = "error: uncaught " + shownName(e.value.kind) + ": " + show(e.value) + "\n" + where(e.line);
       } else if (e instanceof Fatal) {

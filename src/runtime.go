@@ -2790,6 +2790,43 @@ func Zb_files_remove(args []ZV, line int) ZV {
 	return nil
 }
 
+// `program.exit(code)`: what was printed goes out, and the program ends
+// with `code`.
+func Zb_program_exit(args []ZV, line int) ZV {
+	zArity("exit", args, 1, 1, line)
+	code := zWhole("exit", args[0], line)
+	if code < 0 || code > 255 {
+		zRaise("ValueError", "a program ends with a number from 0 to 255, not "+strconv.FormatInt(code, 10), line)
+	}
+	zFlush()
+	os.Exit(int(code))
+	return nil
+}
+
+// `program.environment(name)`: the text, or none. A name with `=` or a
+// zero byte in it is in no environment.
+func Zb_program_environment(args []ZV, line int) ZV {
+	zArity("environment", args, 1, 1, line)
+	name := zText("environment", args[0], line)
+	if name == "" || strings.ContainsAny(name, "=\x00") {
+		return nil
+	}
+	value, found := os.LookupEnv(name)
+	if !found {
+		return nil
+	}
+	return zLossy(value)
+}
+
+// `program.warn(text)`: one line on the error stream, after what was printed.
+func Zb_program_warn(args []ZV, line int) ZV {
+	zArity("warn", args, 1, 1, line)
+	said := zText("warn", args[0], line)
+	zFlush()
+	os.Stderr.WriteString(said + "\n")
+	return nil
+}
+
 func Zb_program_arguments(args []ZV, line int) ZV {
 	zArity("arguments", args, 0, 0, line)
 	out := make([]ZV, 0, len(os.Args))
@@ -2886,7 +2923,7 @@ func init() {
 		"time.sleep": Zb_time_sleep, "time.now": Zb_time_now,
 		"files.read": Zb_files_read, "files.write": Zb_files_write, "files.append": Zb_files_append,
 		"files.exists": Zb_files_exists, "files.remove": Zb_files_remove,
-		"program.arguments": Zb_program_arguments, "json.parse": Zb_json_parse, "json.write": Zb_json_write,
+		"program.arguments": Zb_program_arguments, "program.exit": Zb_program_exit, "program.environment": Zb_program_environment, "program.warn": Zb_program_warn, "json.parse": Zb_json_parse, "json.write": Zb_json_write,
 		"u8": Zb_u8, "u8.wrap": Zb_u8_wrap, "u16": Zb_u16, "u16.wrap": Zb_u16_wrap,
 		"u32": Zb_u32, "u32.wrap": Zb_u32_wrap, "i8": Zb_i8, "i8.wrap": Zb_i8_wrap,
 		"i16": Zb_i16, "i16.wrap": Zb_i16_wrap, "i32": Zb_i32, "i32.wrap": Zb_i32_wrap,

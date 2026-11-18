@@ -12,6 +12,9 @@ To & Write & Gives \\
 \midrule
 read a line typed & \verb|input()|, \verb|input("Name: ")| & \verb|str or none| \\
 read the command line & \verb|program.arguments()| & \verb|list[str]| \\
+read the environment & \verb|program.environment(name)| & \verb|str or none| \\
+write on the error stream & \verb|program.warn(text)| & nothing \\
+end the program now & \verb|program.exit(code)| & nothing \\
 read a file & \verb|files.read(path)| & \verb|str| \\
 write a file & \verb|files.write(path, text)| & nothing \\
 add to a file & \verb|files.append(path, text)| & nothing \\
@@ -113,6 +116,54 @@ program, even one that looks like an option of Zeno's; Zeno's own
 options go before the file: \verb|zeno run --vm greet.zeno Ada|. A
 compiled program gets the same list from the words after its name:
 \verb|./greet Ada Grace|.
+
+\section{Ending, warning, and the environment}
+
+A program that other programs call says how it went with a number
+when it ends: 0 if all went well, anything up to 255 if not. A script
+reads that number with \verb|&&|, \verb|||| or \verb|$?|.
+\verb|program.exit(code)| ends the program there with that number.
+It is not an error, so no \verb|try| stops it. \verb|program.warn|
+writes a line on the error stream, which the shell keeps apart from
+what \verb|print| prints, so a complaint does not end up in a file
+the output was sent to:
+
+\begin{zeno}[file=hello-all.zeno, fails=yes]
+import program
+
+let names = program.arguments()
+if len(names) == 0 {
+    program.warn("usage: zeno run hello-all.zeno <names>")
+    program.exit(2)
+}
+for name in names {
+    print("hello,", name)
+}
+\end{zeno}
+
+A number outside 0 to 255 is a \verb|ValueError|: on Linux,
+\verb|exit(256)| would arrive as 0, a failure that looks like a
+success.
+
+\verb|program.environment(name)| reads the environment the program
+was started in, the names and text a shell sets, such as
+\verb|HOME|. It gives \verb|none| for a name that is not set, which
+the program must look at before it uses the text:
+
+\begin{zeno}[run=no]
+import program
+
+let home = program.environment("HOME")
+if home is none {
+    print("no home folder")
+} else {
+    print("home is", home)
+}
+\end{zeno}
+
+A firmware build refuses \verb|program.environment|: a board has no
+environment. Chapter 34 of \texttt{docs/decisions.md} gives the
+reasons for all three.
 
 \section{Files}
 

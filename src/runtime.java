@@ -1992,6 +1992,39 @@ final class Z {
 
     static String[] arguments = new String[0];
 
+    // `program.exit(code)`: what was printed goes out, and the program
+    // ends with `code`.
+    static Object b_program_exit(Object[] args, int line) {
+        arity("exit", args, 1, 1, line);
+        long code = wholeArg("exit", args[0], line);
+        if (code < 0 || code > 255) {
+            throw raiseError("ValueError", "a program ends with a number from 0 to 255, not " + code, line);
+        }
+        flush();
+        System.err.flush();
+        System.exit((int) code);
+        return null;
+    }
+
+    // `program.environment(name)`: the text, or none. A name with `=` or
+    // a zero byte in it is in no environment.
+    static Object b_program_environment(Object[] args, int line) {
+        arity("environment", args, 1, 1, line);
+        String name = text("environment", args[0], line);
+        if (name.isEmpty() || name.indexOf('=') >= 0 || name.indexOf('\0') >= 0) return null;
+        return System.getenv(name);
+    }
+
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    static Object b_program_warn(Object[] args, int line) {
+        arity("warn", args, 1, 1, line);
+        String said = text("warn", args[0], line);
+        flush();
+        System.err.print(said + "\n");
+        System.err.flush();
+        return null;
+    }
+
     static Object b_program_arguments(Object[] args, int line) {
         arity("arguments", args, 0, 0, line);
         return new ZList(new java.util.ArrayList<Object>(java.util.Arrays.asList((Object[]) arguments)));
@@ -2085,6 +2118,9 @@ final class Z {
         BUILTINS.put("files.exists", Z::b_files_exists);
         BUILTINS.put("files.remove", Z::b_files_remove);
         BUILTINS.put("program.arguments", Z::b_program_arguments);
+        BUILTINS.put("program.exit", Z::b_program_exit);
+        BUILTINS.put("program.environment", Z::b_program_environment);
+        BUILTINS.put("program.warn", Z::b_program_warn);
         BUILTINS.put("json.parse", Z::b_json_parse);
         BUILTINS.put("json.write", Z::b_json_write);
         for (String name : WIDTHS.keySet()) {

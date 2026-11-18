@@ -2362,6 +2362,41 @@ V b_files_remove(const Args& args, int line) {
 
 std::vector<string> arguments;
 
+// `program.exit(code)`: what was printed goes out, and the program ends
+// with `code`. `_Exit` ends it at once: the program runs on a thread of
+// its own, and nothing is to be torn down under it.
+V b_program_exit(const Args& args, int line) {
+    arity("exit", args, 1, 1, line);
+    int64_t code = wholeArg("exit", args[0], line);
+    if (code < 0 || code > 255) raiseError("ValueError", "a program ends with a number from 0 to 255, not " + num(code), line);
+    flush();
+    fflush(stderr);
+    std::_Exit((int)code);
+}
+
+// `program.environment(name)`: the text, or none. A name with `=` or a
+// zero byte in it is in no environment (and C would read only the part
+// before the zero).
+V b_program_environment(const Args& args, int line) {
+    arity("environment", args, 1, 1, line);
+    const string& name = text("environment", args[0], line);
+    if (name.empty() || name.find_first_of(string("=\0", 2)) != string::npos) return V();
+    const char* value = getenv(name.c_str());
+    if (value == nullptr) return V();
+    string got = value;
+    return S(validUtf8(got) ? got : lossy(got));
+}
+
+// `program.warn(text)`: one line on the error stream, after what was printed.
+V b_program_warn(const Args& args, int line) {
+    arity("warn", args, 1, 1, line);
+    string said = text("warn", args[0], line) + "\n";
+    flush();
+    fwrite(said.data(), 1, said.size(), stderr);
+    fflush(stderr);
+    return V();
+}
+
 V b_program_arguments(const Args& args, int line) {
     arity("arguments", args, 0, 0, line);
     return strings(arguments);
@@ -2430,7 +2465,7 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
             {"time.sleep", b_time_sleep}, {"time.now", b_time_now},
             {"files.read", b_files_read}, {"files.write", b_files_write}, {"files.append", b_files_append},
             {"files.exists", b_files_exists}, {"files.remove", b_files_remove},
-            {"program.arguments", b_program_arguments}, {"json.parse", b_json_parse}, {"json.write", b_json_write},
+            {"program.arguments", b_program_arguments}, {"program.exit", b_program_exit}, {"program.environment", b_program_environment}, {"program.warn", b_program_warn}, {"json.parse", b_json_parse}, {"json.write", b_json_write},
         };
         for (auto& w : WIDTHS) {
             b[w.first] = sized(w.first, false);

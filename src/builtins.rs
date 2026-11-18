@@ -127,6 +127,35 @@ fn program_arguments(machine: &mut dyn Machine, args: Vec<Value>, span: Span) ->
     Ok(Value::list(machine.outside().arguments.iter().map(Value::str).collect()))
 }
 
+/// `program.exit(code)`: end the program here, and give `code` to what
+/// started it: 0 says that all went well, and 1 to 255 that something
+/// did not. It is not an error, so no `try` stops it (decision 34.1).
+fn program_exit(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("exit", &args, 1, 1, span)?;
+    let code = whole("exit", &args[0], span)?;
+    match u8::try_from(code) {
+        Ok(status) => Err(Control::Exit(status, span)),
+        Err(_) => raise("ValueError", format!("a program ends with a number from 0 to 255, not {code}"), span),
+    }
+}
+
+/// `program.environment(name)`: what the environment the program was
+/// started in says `name` is (`HOME`, `PATH`), or `none` if it does not
+/// say (decision 34.2).
+fn program_environment(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("environment", &args, 1, 1, span)?;
+    let name = text("environment", &args[0], span)?;
+    Ok(machine.outside().variable(name).map_or(Value::None, Value::str))
+}
+
+/// `program.warn(text)`: the text and a line end on the error stream,
+/// which the shell keeps apart from what `print` prints (decision 34.3).
+fn program_warn(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("warn", &args, 1, 1, span)?;
+    machine.warn(text("warn", &args[0], span)?);
+    Ok(Value::None)
+}
+
 /// `program.run(name, words)`: start another program with these words,
 /// wait until it ends, and give the number it ended with (0 says that
 /// all went well, by custom).
@@ -1157,6 +1186,9 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             vec![
                 ("arguments", Value::Builtin(Builtin { name: "arguments", call: program_arguments })),
                 ("run", Value::Builtin(Builtin { name: "run", call: program_run })),
+                ("exit", Value::Builtin(Builtin { name: "exit", call: program_exit })),
+                ("environment", Value::Builtin(Builtin { name: "environment", call: program_environment })),
+                ("warn", Value::Builtin(Builtin { name: "warn", call: program_warn })),
             ],
         ),
         "python" => (

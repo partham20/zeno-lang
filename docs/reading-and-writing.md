@@ -40,6 +40,9 @@ decisions behind each part are 6.11 to 6.20 in
 | The lines of a text | `text.lines()` | `list[str]` | never |
 | A line from the keyboard | `input()`, `input("Name: ")` | `str or none` | never |
 | The command line | `program.arguments()` | `list[str]` | never |
+| The environment | `program.environment(name)` | `str or none` | never |
+| A line on the error stream | `program.warn(text)` | nothing | never |
+| End the program now | `program.exit(code)` | nothing | `ValueError` outside 0 to 255 |
 
 `files` and `program` are modules: `import files`, `import program`.
 `input` is a plain word, like `print`.
@@ -297,6 +300,10 @@ at each call.
 The module has a second function since, `program.run(name, words)`,
 which starts another program with words of its own. It has a page to
 itself: [`running-programs.md`](running-programs.md).
+
+Three more came later: `program.exit(code)`, `program.environment(name)`
+and `program.warn(text)`, on a page of their own:
+[`ending-a-program.md`](ending-a-program.md).
 
 ## One function, through the engines
 

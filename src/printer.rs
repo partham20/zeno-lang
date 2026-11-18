@@ -86,6 +86,9 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
                 if !variant.fields.is_empty() {
                     text += &format!("({})", join(&variant.fields, field));
                 }
+                if let Some((number, _)) = variant.number {
+                    text += &format!(" = {number}");
+                }
                 line(&text, depth + 1, out);
             }
         }

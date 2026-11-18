@@ -1618,6 +1618,32 @@ final class Z {
         self::fileError("cannot remove `" . $path . "`", $line);
     }
 
+    // `program.exit(code)`: what was printed goes out, and the program
+    // ends with `code`.
+    static function b_program_exit(array $args, int $line) {
+        self::arity("exit", $args, 1, 1, $line);
+        $code = self::whole("exit", $args[0], $line);
+        if ($code < 0 || $code > 255) self::raise_("ValueError", "a program ends with a number from 0 to 255, not " . $code, $line);
+        self::flush();
+        exit($code);
+    }
+    // `program.environment(name)`: the text, or none. A name with `=` or
+    // a zero byte in it is in no environment.
+    static function b_program_environment(array $args, int $line) {
+        self::arity("environment", $args, 1, 1, $line);
+        $name = self::text("environment", $args[0], $line);
+        if ($name === "" || strpbrk($name, "=\0") !== false) return null;
+        $value = getenv($name);
+        return $value === false ? null : self::lossy($value);
+    }
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    static function b_program_warn(array $args, int $line) {
+        self::arity("warn", $args, 1, 1, $line);
+        $said = self::text("warn", $args[0], $line);
+        self::flush();
+        fwrite(STDERR, $said . "\n");
+        return null;
+    }
     static function b_program_arguments(array $args, int $line) {
         self::arity("arguments", $args, 0, 0, $line);
         $words = [];

@@ -2045,6 +2045,39 @@ object Z {
 
     var arguments = arrayOf<String>()
 
+    // `program.exit(code)`: what was printed goes out, and the program
+    // ends with `code`.
+    fun b_program_exit(args: Array<Any?>, line: Int): Any? {
+        arity("exit", args, 1, 1, line)
+        val code = wholeArg("exit", args[0], line)
+        if (code < 0 || code > 255) {
+            raiseError("ValueError", "a program ends with a number from 0 to 255, not " + code.toString(), line)
+        }
+        flush()
+        System.err.flush()
+        System.exit(code.toInt())
+        return null
+    }
+
+    // `program.environment(name)`: the text, or none. A name with `=` or
+    // a zero byte in it is in no environment.
+    fun b_program_environment(args: Array<Any?>, line: Int): Any? {
+        arity("environment", args, 1, 1, line)
+        val name = text("environment", args[0], line)
+        if (name.isEmpty() || name.indexOf('=') >= 0 || name.indexOf('\u0000') >= 0) return null
+        return System.getenv(name)
+    }
+
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    fun b_program_warn(args: Array<Any?>, line: Int): Any? {
+        arity("warn", args, 1, 1, line)
+        val said = text("warn", args[0], line)
+        flush()
+        System.err.print(said + "\n")
+        System.err.flush()
+        return null
+    }
+
     fun b_program_arguments(args: Array<Any?>, line: Int): Any? {
         arity("arguments", args, 0, 0, line)
         val out = ArrayList<Any?>()
@@ -2153,6 +2186,9 @@ object Z {
         BUILTINS["files.exists"] = ::b_files_exists
         BUILTINS["files.remove"] = ::b_files_remove
         BUILTINS["program.arguments"] = ::b_program_arguments
+        BUILTINS["program.exit"] = ::b_program_exit
+        BUILTINS["program.environment"] = ::b_program_environment
+        BUILTINS["program.warn"] = ::b_program_warn
         BUILTINS["json.parse"] = ::b_json_parse
         BUILTINS["json.write"] = ::b_json_write
         for (name in WIDTHS.keys) {

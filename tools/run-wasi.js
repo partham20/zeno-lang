@@ -9,7 +9,9 @@ const [file, ...args] = process.argv.slice(2);
 const wasi = new WASI({
   version: "preview1",
   args: [file, ...args],
-  env: {},
+  // The program sees the environment it was started in, as a program
+  // built for the machine would (`program.environment`).
+  env: process.env,
   preopens: { ".": process.cwd() },
   returnOnExit: true,
 });

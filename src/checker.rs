@@ -248,6 +248,14 @@ pub struct Types {
     /// and column it starts at, with the size. It means `count =
     /// u8(count + 1)`, and `checked` makes it that.
     fits: HashMap<(usize, usize), Width>,
+    /// Each call that turns a case of an enum with numbers into its
+    /// number (`int(Ack)`, `u8(Ack)`) or a number into a case
+    /// (`Reply(6)`), by where the call starts (decision 35.2). `checked`
+    /// makes each a call of a function it writes beside the enum.
+    numbered: HashMap<(usize, usize), ast::Numbered>,
+    /// Where each enum is written that such a call uses: those are the
+    /// enums that get the two functions.
+    numbered_enums: HashSet<(usize, usize)>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -453,11 +461,11 @@ pub fn check_with_types(program: &Program, strict: bool) -> (Vec<Error>, Types) 
 /// statement is checked once.
 pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
     let (errors, types) = check_by(&program, rules);
-    if !errors.is_empty() || types.fits.is_empty() {
+    if !errors.is_empty() || (types.fits.is_empty() && types.numbered.is_empty()) {
         return (program, errors, types);
     }
-    let Types { fits, .. } = types;
-    let program = program.with_fits(&fits);
+    let Types { fits, numbered, numbered_enums, .. } = types;
+    let program = program.with_fits(&fits).with_numbers(numbered, &numbered_enums);
     let (errors, types) = check_by(&program, rules);
     (program, errors, types)
 }
@@ -734,6 +742,9 @@ struct EnumInfo {
     /// everything has (a build with no collector), if some case carries
     /// values: those are what there is to free.
     owned: bool,
+    /// `Ack = 6`: the number of each case, in order, when the enum has
+    /// them (decision 35.1).
+    numbers: Option<Vec<i64>>,
 }
 
 struct CaseInfo {
@@ -1616,6 +1627,9 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
         ("program", "run") => Ty::Builtin("program.run"),
+        ("program", "exit") => Ty::Builtin("program.exit"),
+        ("program", "environment") => Ty::Builtin("program.environment"),
+        ("program", "warn") => Ty::Builtin("program.warn"),
         ("python", "module") => Ty::Builtin("python.module"),
         ("python", "copy") => Ty::Builtin("python.copy"),
         ("node", "module") => Ty::Builtin("node.module"),
@@ -2717,12 +2731,14 @@ impl Checker {
                 }
                 StmtKind::Enum(decl) => {
                     let carries = decl.variants.iter().any(|case| !case.fields.is_empty());
+                    let numbers = self.case_numbers(decl, statement.span);
                     let info = Rc::new(EnumInfo {
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
                         cases: RefCell::new(Vec::new()),
                         carries,
                         owned: carries && self.one_owner,
+                        numbers,
                     });
                     self.declare(env, &decl.name, Ty::Enum(info.clone()), false, statement.span);
                     self.enums.insert(info.id.clone(), info.clone());
@@ -5348,7 +5364,10 @@ impl Checker {
                         );
                     }
                 }
-                let ty = self.call(&callee, arguments, span);
+                let ty = match self.numbered(&callee, &mut arguments, span) {
+                    Some(ty) => ty,
+                    None => self.call(&callee, arguments, span),
+                };
                 if matches!(callee, Ty::Builtin("program.arguments")) {
                     // The list of arguments is new at each call.
                     self.types.made.insert(expr as *const Expr as usize);
@@ -5620,6 +5639,115 @@ impl Checker {
                 other => format!("`{by}` needs a function to call, but this is {other}"),
             };
             self.error(message, function.span);
+        }
+    }
+
+    /// The numbers written for the cases of an enum (`Ack = 6`), if it
+    /// has them, after the rules of decision 35.1: a number for every
+    /// case or for none, only on a case that carries nothing, each one
+    /// an int, and no two the same.
+    fn case_numbers(&mut self, decl: &ast::Enum, span: Span) -> Option<Vec<i64>> {
+        let numbered: Vec<&ast::Variant> = decl.variants.iter().filter(|case| case.number.is_some()).collect();
+        if numbered.is_empty() {
+            return None;
+        }
+        let mut numbers = Vec::new();
+        let mut sound = true;
+        for case in &decl.variants {
+            let Some((number, at)) = case.number else {
+                self.error(
+                    format!(
+                        "`{}` has no number, and the other cases of `{}` have one. Give every case a number, or none",
+                        case.name, decl.name
+                    ),
+                    span,
+                );
+                sound = false;
+                continue;
+            };
+            if !case.fields.is_empty() {
+                self.error(
+                    format!(
+                        "`{}` carries values, so it cannot also stand for a number. Only an enum whose cases carry \
+                         nothing can have numbers",
+                        case.name
+                    ),
+                    at,
+                );
+                sound = false;
+                continue;
+            }
+            let Ok(number) = i64::try_from(number) else {
+                self.error(format!("{number} is too big for an int, and the number of a case is an int"), at);
+                sound = false;
+                continue;
+            };
+            if let Some(index) = numbers.iter().position(|&taken| taken == number) {
+                self.error(
+                    format!(
+                        "`{}` and `{}` are both {number}. Each case needs a number of its own, so that a number \
+                         gives back one case",
+                        decl.variants[index].name, case.name
+                    ),
+                    at,
+                );
+                sound = false;
+                continue;
+            }
+            numbers.push(number);
+        }
+        sound.then_some(numbers)
+    }
+
+    /// `int(Ack)` or `u8(Ack)`: a case of an enum with numbers, as its
+    /// number. `Reply(6)`: the case whose number that is, or `none`
+    /// (decision 35.2). Each is noted, for `checked` to turn into a call
+    /// of a function it writes, and its type is given here. `None` for
+    /// any other call, which `call` checks.
+    fn numbered(&mut self, callee: &Ty, arguments: &mut [Argument], span: Span) -> Option<Ty> {
+        match callee {
+            Ty::Enum(info) if info.numbers.is_some() => {
+                if self.arity(&info.name, arguments, 1, 1, span) && arguments[0].name.is_none() {
+                    let what = format!("the number given to `{}`", ast::shown_name(&info.name));
+                    let given = arguments[0].ty.clone();
+                    self.expect(&given, &Ty::Int, &what, arguments[0].span);
+                }
+                self.types.numbered.insert((span.line, span.col), ast::Numbered::Case(info.name.clone()));
+                self.types.numbered_enums.insert((info.id.0, info.id.1));
+                Some(Ty::Optional(Box::new(Ty::EnumValue(info.clone()))))
+            }
+            Ty::Enum(info) => Some(self.error(
+                format!(
+                    "`{0}` is an enum, so there is nothing to build: a value of it is one of its cases, written by \
+                     its name. If the cases stand for numbers, write them: `Ack = 6`, and `{0}(6)` gives the case \
+                     that is 6",
+                    ast::shown_name(&info.name)
+                ),
+                span,
+            )),
+            Ty::Builtin(name) if *name == "int" || ints::width(name).is_some() => {
+                let [argument] = arguments else { return None };
+                let Ty::EnumValue(info) = &argument.ty else { return None };
+                if argument.name.is_some() {
+                    return None;
+                }
+                if info.numbers.is_none() {
+                    return Some(self.error(
+                        format!(
+                            "the cases of `{}` stand for no number. To turn a case into one, write a number for \
+                             each case: `Ack = 6`",
+                            ast::shown_name(&info.name)
+                        ),
+                        argument.span,
+                    ));
+                }
+                self.types.numbered.insert((span.line, span.col), ast::Numbered::Number(info.name.clone()));
+                self.types.numbered_enums.insert((info.id.0, info.id.1));
+                argument.ty = Ty::Int;
+                argument.written = None;
+                None
+            }
+            _ => None,
         }
     }
 
@@ -6001,6 +6129,45 @@ impl Checker {
                 }
                 self.can_raise("FileError", span);
                 Ty::Int
+            }
+            // `program.exit(code)`: the program ends here, with this
+            // number for what started it (34.1). A number written down
+            // that no program can end with is a mistake found now.
+            "program.exit" => {
+                if self.arity("exit", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Int, "the number `program.exit` ends the program with", arguments[0].span);
+                    if let Some(Written::Number(code)) = &arguments[0].written {
+                        if !(0..=255).contains(code) {
+                            self.error(
+                                format!("a program ends with a number from 0 to 255, not {code}"),
+                                arguments[0].span,
+                            );
+                        }
+                    }
+                }
+                Ty::None
+            }
+            // `program.environment("HOME")`: what the environment says,
+            // or `none` (34.2). A board has no environment.
+            "program.environment" => {
+                if self.arity("environment", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the name `program.environment` looks up", arguments[0].span);
+                }
+                if self.firmware {
+                    self.error(
+                        "a firmware build cannot use `program.environment`: a board has no environment to look in. \
+                         Give the program what it needs as a `const`",
+                        span,
+                    );
+                }
+                Ty::Optional(Box::new(Ty::Str))
+            }
+            // `program.warn(text)`: one line on the error stream (34.3).
+            "program.warn" => {
+                if self.arity("warn", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the text `program.warn` writes", arguments[0].span);
+                }
+                Ty::None
             }
             // `char(65)`: the character with that code, as a str.
             "char" => {

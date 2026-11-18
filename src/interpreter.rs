@@ -57,22 +57,28 @@ const TICKS_PER_LOOK: u32 = 1 << 16;
 /// going to the screen, which is how the tests check output. `outside`
 /// is what is typed at the program, and the words after the file on the
 /// command line.
+#[cfg(test)]
 pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, Result<(), Error>) {
+    let ran = run_ending(program, capture, outside);
+    (ran.output, ran.result)
+}
+
+/// The same, with what the program wrote on the error stream and the
+/// number it ended with: what `zeno run` hands back to the shell.
+pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
-                let result = interpreter
-                    .run_statements(&program.statements, &env)
-                    .map_err(ops::escaped);
+                let finished = interpreter.run_statements(&program.statements, &env);
                 // Another language that was started beside the program
                 // (`import python`) is told the program is over.
                 crate::bridge::close();
-                (interpreter.output.unwrap_or_default(), result)
+                Ran::ended(interpreter.output.unwrap_or_default(), interpreter.warned, finished)
             })
             .expect("could not start the interpreter thread")
             .join()
@@ -100,7 +106,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Optio
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 let env = Scope::child(&builtins::globals());
                 let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
                 let mut tested = Vec::new();
@@ -160,6 +166,7 @@ impl Session {
     pub fn start(program: Program, page: Page, capture: bool) -> (Session, Result<(), Error>) {
         let interpreter = Interpreter {
             output: capture.then(String::new),
+            warned: String::new(),
             depth: 0,
             board: Board::new(),
             page,
@@ -170,8 +177,8 @@ impl Session {
         let env = Scope::child(&builtins::globals());
         let mut session = Session { interpreter, env, program };
         session.interpreter.begin_turn();
-        let result = session.interpreter.run_statements(&session.program.statements, &session.env).map_err(ops::escaped);
-        (session, result)
+        let result = session.interpreter.run_statements(&session.program.statements, &session.env);
+        (session, in_page(result))
     }
 
     /// The page calls one of the functions it was given: the one that
@@ -187,13 +194,24 @@ impl Session {
         self.interpreter.depth = 0;
         self.interpreter.begin_turn();
         let span = Span { line: 1, col: 1 };
-        self.interpreter.call(function, arguments, Vec::new(), span).map(|_| ()).map_err(ops::escaped)
+        in_page(self.interpreter.call(function, arguments, Vec::new(), span).map(|_| ()))
     }
 
     /// What has been printed and kept since the last time this was asked.
     #[cfg(test)]
     pub fn printed(&mut self) -> String {
         self.interpreter.output.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+}
+
+/// How a turn of a program in a page finished. A page cannot end:
+/// `program.exit` ends the turn that is running, and the page stays as
+/// it is, with its buttons (decision 34.1).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn in_page(finished: Result<(), Control>) -> Result<(), Error> {
+    match finished {
+        Err(Control::Exit(..)) => Ok(()),
+        other => other.map_err(ops::escaped),
     }
 }
 
@@ -336,6 +354,8 @@ impl Scope {
 pub struct Interpreter {
     /// `Some` collects printed text; `None` prints straight to the screen.
     output: Option<String>,
+    /// What `program.warn` wrote, when printed text is collected.
+    warned: String,
     /// The simulated board, for the `board` module.
     board: Board,
     /// The page, for the `web` module: simulated, unless the program is
@@ -368,6 +388,17 @@ impl Machine for Interpreter {
         match &mut self.output {
             Some(buffer) => buffer.push_str(text),
             None => print_text(text),
+        }
+    }
+
+    fn warn(&mut self, text: &str) {
+        match &mut self.output {
+            // Kept apart from what is printed, as the shell keeps it.
+            Some(_) => {
+                self.warned.push_str(text);
+                self.warned.push('\n');
+            }
+            None => warn_line(text),
         }
     }
 
@@ -1495,6 +1526,86 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
             assert_eq!(output(source), "3 [\"a.txt\", \"two words\", \"--strict\"]\n3\n");
         });
         assert_eq!(output(source), "0 []\n0\n");
+    }
+
+    /// Run a program in both engines, for everything a run gives.
+    fn ending(source: &str) -> crate::value::Ran {
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let complaints = crate::checker::check(&program, false);
+        assert!(complaints.is_empty(), "the checker rejected a working program: {complaints:?}\n{source}");
+        crate::vm::run_both_ending(&program, source)
+    }
+
+    #[test]
+    fn a_program_can_end_with_a_number_of_its_choosing() {
+        let ran = ending("import program\nprint(\"one\")\nprogram.exit(7)\nprint(\"two\")");
+        assert_eq!((ran.output.as_str(), ran.status, ran.result), ("one\n", 7, Ok(())));
+        // From inside calls, a loop, a `try` and a function that `map`
+        // calls: no `except` sees it, not even one that names no kind.
+        let ran = ending(
+            "import program\n\
+             function look(n: int) -> int {\n    if n == 3 {\n        try { program.exit(0) } except { print(\"caught\") }\n    }\n    return n\n}\n\
+             for i in range(2) {\n    try {\n        print([1, 2, 3, 4].map(look))\n    } except ValueError {\n        print(\"no\")\n    }\n}\n\
+             print(\"never\")",
+        );
+        assert_eq!((ran.output.as_str(), ran.status, ran.result), ("", 0, Ok(())));
+        // A number no program can end with is a ValueError, which can be
+        // caught, as `char(0)` is.
+        assert_eq!(
+            error("import program\nlet code = 256\nprogram.exit(code)"),
+            "uncaught ValueError: a program ends with a number from 0 to 255, not 256"
+        );
+        assert_eq!(
+            output("import program\nlet codes = [-1, 300]\nfor code in codes {\n    try { program.exit(code) } except ValueError as e { print(e) }\n}"),
+            "a program ends with a number from 0 to 255, not -1\na program ends with a number from 0 to 255, not 300\n"
+        );
+        // A number written down that no program can end with is found
+        // before the program runs.
+        let program = parser::parse(lexer::lex("import program\nprogram.exit(-1)").unwrap()).unwrap();
+        let complaints = crate::checker::check(&program, false);
+        assert_eq!(complaints.first().map(|error| error.message.as_str()), Some("a program ends with a number from 0 to 255, not -1"));
+    }
+
+    #[test]
+    fn a_warning_goes_on_the_error_stream() {
+        let ran = ending("import program\nprint(\"out\")\nprogram.warn(\"careful\")\nprogram.warn(\"\")\nprint(\"out again\")");
+        assert_eq!(ran.output, "out\nout again\n");
+        assert_eq!(ran.warned, "careful\n\n");
+        assert_eq!(ran.status, 0);
+        // An error ends the program with 1, as it always did.
+        let ran = ending("import program\nprogram.warn(\"about to fail\")\nprint([1][3])");
+        assert_eq!((ran.warned.as_str(), ran.status), ("about to fail\n", 1));
+    }
+
+    #[test]
+    fn the_environment_of_the_program() {
+        use crate::value::testing::with_environment;
+        let source = "import program\n\
+                      let home = program.environment(\"ZENO_HOME\")\n\
+                      if home is none { print(\"none\") } else { print(home.upper()) }\n\
+                      print(program.environment(\"ZENO_EMPTY\") == \"\")\n\
+                      print(program.environment(\"ZENO_NOT_SET\"))";
+        with_environment(&[("ZENO_HOME", "/home/partha"), ("ZENO_EMPTY", "")], || {
+            assert_eq!(output(source), "/HOME/PARTHA\ntrue\nnone\n");
+        });
+        with_environment(&[], || {
+            assert_eq!(output(source), "none\nfalse\nnone\n");
+        });
+    }
+
+    #[test]
+    fn a_test_that_ends_the_program_fails() {
+        let program = parser::parse(
+            lexer::lex("import program\ntest \"ends\" {\n    program.exit(2)\n}\ntest \"goes on\" {\n    assert 1 == 1\n}").unwrap(),
+        )
+        .unwrap();
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside(), None);
+        let tested = tested.expect("the tests ran");
+        assert_eq!(output, "  FAILED  ends\n  ok      goes on\n");
+        assert_eq!(
+            tested[0].failure.as_ref().map(|error| error.message.as_str()),
+            Some("the program ended here, with `program.exit(2)`")
+        );
     }
 
     #[test]

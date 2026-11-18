@@ -87,6 +87,7 @@ Samples, none of them final:
 - [`examples/blink.zeno`](examples/blink.zeno): the same language on a microcontroller. It blinks the LED of a simulated board.
 - [`examples/signal.zeno`](examples/signal.zeno): a traffic light on three pins, as a state machine. It builds for firmware with no collector.
 - [`examples/packet.zeno`](examples/packet.zeno): sensor readings packed into six-byte frames and unpacked again, with `u8`, `u16` and the bit operators.
+- [`examples/protocol.zeno`](examples/protocol.zeno): a small serial protocol whose commands and status codes are numbers on the wire and names in the program: an enum whose cases stand for numbers, `int(Ok)` and `Command(byte)`.
 - [`examples/generics.zeno`](examples/generics.zeno): a ring buffer written once with `class Ring[T]`, and used for bytes, voltages and text.
 
 ## One language, every job
@@ -675,6 +676,23 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     is the same in every engine, every build and every target. See
     [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and chapter
     33 of [`docs/decisions.md`](docs/decisions.md))
+35. Ending a program, its environment, and the error stream (done,
+    after 0.5.1 and not yet released: `program.exit(code)` ends the
+    program with a number for the shell, which no `try` stops;
+    `program.environment(name)` gives `str or none`;
+    `program.warn(text)` writes a line on the error stream. In every
+    engine, every build and all fifteen target languages, and
+    `tools/targets.py` now holds each target to the number a program
+    ends with and to what it warned.
+    See [`docs/ending-a-program.md`](docs/ending-a-program.md) and
+    chapter 34 of [`docs/decisions.md`](docs/decisions.md))
+36. A case of an enum can stand for a number (done, after 0.5.1 and
+    not yet released: `Ack = 6` in the enum, for every case or for
+    none; `int(Ack)` and `u8(Ack)` give the number, `Reply(6)` gives
+    `Reply or none`. The checker writes two plain functions beside the
+    enum, so it is the same in every engine, build and target.
+    See [`docs/enum-numbers.md`](docs/enum-numbers.md) and chapter 35
+    of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

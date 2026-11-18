@@ -5007,6 +5007,22 @@ impl Emitter<'_> {
                 words.made = true;
                 Ok(words)
             }
+            // `program.exit(code)`: C's own `exit`, after the code is
+            // checked, which can raise as `char(n)` can.
+            ("program", "exit", [code]) if code.kind == Kind::Int => {
+                let call = format!("zeno_program_exit({}, {})", code.code, self.at(span));
+                Ok(self.called(call, &vals, Kind::None))
+            }
+            // `program.environment(name)`: a copy of the text, or NULL.
+            ("program", "environment", [name]) if name.kind == Kind::Str => {
+                let call = format!("zeno_program_environment({})", name.code);
+                self.built = !self.collector;
+                Ok(self.called(call, &vals, Kind::Optional(Box::new(Kind::Str))))
+            }
+            ("program", "warn", [text]) if text.kind == Kind::Str => {
+                let call = format!("zeno_program_warn({})", text.code);
+                Ok(self.called(call, &vals, Kind::None))
+            }
             // `program.run(name, words)` starts another program, which
             // only `zeno run` does so far.
             ("program", "run", _) => Err(cannot("`program.run`", span)),
@@ -6613,6 +6629,17 @@ pub(crate) mod tests {
     /// printed, what it wrote as errors, and whether it finished cleanly.
     /// `None` if there is no C compiler here to try it with.
     fn build_and_run(name: &str, c: &str, flags: &[&str]) -> Option<(String, String, bool)> {
+        let ran = built_output(name, c, flags)?;
+        Some((
+            String::from_utf8_lossy(&ran.stdout).into_owned(),
+            String::from_utf8_lossy(&ran.stderr).into_owned(),
+            ran.status.success(),
+        ))
+    }
+
+    /// The same, with everything the run gave: the number it ended with
+    /// among the rest.
+    fn built_output(name: &str, c: &str, flags: &[&str]) -> Option<std::process::Output> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
         let (c_file, binary) = (dir.join("test.c"), dir.join(program_file("test")));
@@ -6626,11 +6653,7 @@ pub(crate) mod tests {
         assert!(built.status.success(), "the C does not compile:\n{complaints}");
         let ran = crate::value::testing::run(&mut Command::new(&binary)).expect("the program runs");
         let _ = std::fs::remove_dir_all(&dir);
-        Some((
-            String::from_utf8_lossy(&ran.stdout).into_owned(),
-            String::from_utf8_lossy(&ran.stderr).into_owned(),
-            ran.status.success(),
-        ))
+        Some(ran)
     }
 
     /// The heart of these tests: the compiled program must print exactly
@@ -12619,6 +12642,118 @@ print(maybe)
              class Stack[T] {\n    items: list[T]\n\n    function top(self) -> T raises Empty {\n        \
              if len(self.items) == 0 {\n            raise Empty(\"nothing on the stack\")\n        }\n        \
              return self.items[0]\n    }\n}\n\nclass Empty {\n    why: str\n}\n",
+        );
+    }
+
+    /// An enum whose cases have numbers (decisions 35.1 and 35.2): a
+    /// case as its number, a number as a case or `none`, in a module of
+    /// its own too, in every engine and build.
+    #[test]
+    fn the_numbers_of_an_enum_are_the_same_in_every_build() {
+        same_as_interpreter(
+            "enum-numbers",
+            "enum Reply {\n    Ack = 6\n    Nak = 21\n    Old = -1\n    Big = 0x7FFF_FFFF_FFFF_FFFF\n}\n\
+             print(int(Ack), int(Nak), int(Old), int(Big))\n\
+             print(Reply(6), Reply(21), Reply(-1), Reply(5))\n\
+             let byte: u8 = u8(Nak)\nprint(byte + 1)\n\
+             function decode(code: int) -> str {\n    let reply = Reply(code)\n    if reply is none {\n        return \"unknown\"\n    }\n\
+             \x20   match reply {\n        case Ack { return \"ack\" }\n        case Nak { return \"nak\" }\n        case _ { return \"other\" }\n    }\n}\n\
+             for code in [6, 21, 7, -1] {\n    print(code, decode(code))\n}\n\
+             let replies = [Ack, Old, Nak]\nprint(replies.map(function(r: Reply) -> int { return int(r) }))\n\
+             print(Reply(int(Old)) == Old, Reply.Ack)\n\
+             try {\n    print(u8(Old))\n} except OverflowError as e {\n    print(e)\n}\n",
+        );
+    }
+
+    #[test]
+    fn the_numbers_of_an_enum_follow_the_rules() {
+        let refused = |source: &str| {
+            let program = crate::modules::testing::load(source).program.expect("the program parses");
+            let errors = crate::checker::checked(program, crate::checker::Rules::default()).1;
+            errors.first().map(|error| error.message.clone()).unwrap_or_default()
+        };
+        assert_eq!(
+            refused("enum A {\n    X = 1\n    Y\n}\n"),
+            "`Y` has no number, and the other cases of `A` have one. Give every case a number, or none"
+        );
+        assert_eq!(
+            refused("enum A {\n    X = 1\n    Y = 1\n}\n"),
+            "`X` and `Y` are both 1. Each case needs a number of its own, so that a number gives back one case"
+        );
+        assert_eq!(
+            refused("enum A {\n    X(v: int) = 1\n    Y = 2\n}\n"),
+            "`X` carries values, so it cannot also stand for a number. Only an enum whose cases carry nothing can have numbers"
+        );
+        assert_eq!(
+            refused("enum A {\n    X\n}\nprint(int(X))\n"),
+            "the cases of `A` stand for no number. To turn a case into one, write a number for each case: `Ack = 6`"
+        );
+        assert_eq!(
+            refused("enum A {\n    X = 1\n}\nlet a: A = A(1)\n"),
+            "`a` should be A, but this is A or none. Check it with `is not none` first"
+        );
+        assert_eq!(refused("enum A {\n    X = 1\n}\nprint(X == 1)\n").is_empty(), false);
+    }
+
+    /// `program.exit`, `program.warn` and `program.environment`
+    /// (decisions 34.1 to 34.3): the same printed text, the same lines on
+    /// the error stream and the same number at the end, in both engines
+    /// and in C and LLVM builds.
+    #[test]
+    fn a_program_ends_warns_and_reads_its_environment_alike_in_every_build() {
+        let source = "import program\n\
+            let word = program.environment(\"ZENO_TEST_WORD\")\n\
+            if word is none {\n    print(\"no word\")\n} else {\n    print(\"the word is\", word, len(word))\n}\n\
+            print(program.environment(\"ZENO_TEST_NEVER_SET\"))\n\
+            program.warn(\"first\")\n\
+            let big = 256\n\
+            try {\n    program.exit(big)\n} except ValueError as e {\n    print(e)\n}\n\
+            function stop(code: int) {\n    try {\n        program.exit(code)\n    } except {\n        print(\"caught\")\n    }\n}\n\
+            print(\"before\")\n\
+            program.warn(f\"ending with {1 + 2}\")\n\
+            stop(3)\n\
+            print(\"after\")\n";
+        crate::value::testing::with_environment(&[("ZENO_TEST_WORD", "வணக்கம்")], || {
+            let program = crate::modules::testing::program(source);
+            let ran = crate::vm::run_both_ending(&program, source);
+            assert_eq!(ran.result, Ok(()));
+            assert_eq!(
+                ran.output,
+                "the word is வணக்கம் 7\nnone\na program ends with a number from 0 to 255, not 256\nbefore\n"
+            );
+            assert_eq!(ran.warned, "first\nending with 3\n");
+            assert_eq!(ran.status, 3);
+            let c = compile(source).expect("the program compiles");
+            let llvm = crate::emit_llvm::tests::compile(source).expect("the program compiles through LLVM");
+            let built = [
+                ("C", built_output("ending", &c, &[])),
+                ("LLVM", crate::emit_llvm::tests::built_output("ending", &llvm, Build::Ordinary, &[])),
+            ];
+            for (how, output) in built {
+                let Some(output) = output else { continue };
+                assert_eq!(String::from_utf8_lossy(&output.stdout), ran.output, "{how}");
+                assert_eq!(String::from_utf8_lossy(&output.stderr), ran.warned, "{how}");
+                assert_eq!(output.status.code(), Some(3), "{how}");
+            }
+        });
+        // A firmware build ends and warns the same way. It has no
+        // environment to read: a board has none.
+        let source = "import program\nprint(\"one\")\nprogram.warn(\"two\")\nprogram.exit(4)\nprint(\"three\")\n";
+        let firmware = compile_firmware(source).expect("a firmware build can end");
+        if let Some(output) = built_output("ending-firmware", &firmware, &[]) {
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "one\n");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), "two\n");
+            assert_eq!(output.status.code(), Some(4));
+        }
+        let program = crate::modules::testing::built("import program\nprint(program.environment(\"HOME\"))\n");
+        let rules = crate::checker::Rules { strict: false, one_owner: false, firmware: true };
+        let errors = crate::checker::checked(program, rules).1;
+        assert_eq!(
+            errors.first().map(|error| error.message.as_str()),
+            Some(
+                "a firmware build cannot use `program.environment`: a board has no environment to look in. \
+                 Give the program what it needs as a `const`"
+            )
         );
     }
 

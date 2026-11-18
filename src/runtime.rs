@@ -2430,6 +2430,47 @@ mod z {
         }
     }
 
+    /// `program.exit(code)`: what was printed goes out, and the program
+    /// ends with `code`.
+    pub fn b_program_exit(args: Vec<V>, line: usize) -> R {
+        arity("exit", &args, 1, 1, line)?;
+        let code = whole_arg("exit", &args[0], line)?;
+        match u8::try_from(code) {
+            Ok(status) => {
+                flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(i32::from(status))
+            }
+            Err(_) => raise_error("ValueError", format!("a program ends with a number from 0 to 255, not {code}"), line),
+        }
+    }
+
+    /// `program.environment(name)`: the text, or none. A name with `=` or
+    /// a zero byte in it is in no environment.
+    pub fn b_program_environment(args: Vec<V>, line: usize) -> R {
+        arity("environment", &args, 1, 1, line)?;
+        let name = text("environment", &args[0], line)?;
+        if name.is_empty() || name.contains(['=', '\0']) {
+            return Ok(V::None);
+        }
+        Ok(match std::env::var_os(&*name) {
+            Some(value) => st(value.to_string_lossy().into_owned()),
+            None => V::None,
+        })
+    }
+
+    /// `program.warn(text)`: one line on the error stream, after what was
+    /// printed.
+    pub fn b_program_warn(args: Vec<V>, line: usize) -> R {
+        arity("warn", &args, 1, 1, line)?;
+        let said = text("warn", &args[0], line)?;
+        flush();
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "{said}");
+        let _ = stderr.flush();
+        Ok(V::None)
+    }
+
     pub fn b_program_arguments(args: Vec<V>, line: usize) -> R {
         arity("arguments", &args, 0, 0, line)?;
         Ok(ARGUMENTS.with(|a| strings(a.borrow().iter())))
@@ -2538,6 +2579,9 @@ mod z {
             "files.exists" => b_files_exists,
             "files.remove" => b_files_remove,
             "program.arguments" => b_program_arguments,
+            "program.exit" => b_program_exit,
+            "program.environment" => b_program_environment,
+            "program.warn" => b_program_warn,
             "json.parse" => b_json_parse,
             "json.write" => b_json_write,
             "Error" => b_Error,

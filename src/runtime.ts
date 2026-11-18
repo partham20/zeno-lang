@@ -49,6 +49,8 @@ const Z = (function () {
   class Raise { declare value: any; declare line: any; constructor(value: any, line: any) { this.value = value; this.line = line; } }
   // A mistake in the program, which nothing catches.
   class Fatal { declare message: any; declare line: any; constructor(message: any, line: any) { this.message = message; this.line = line; } }
+  // `program.exit` in a page: the run ends, and the page stays.
+  class Exit { declare code: any; constructor(code: any) { this.code = code; } }
 
   function fatal(message: any, line: any) { throw new Fatal(message, line); }
   function raise(kind: any, message: any, line: any) { throw new Raise(new ZError(kind, message, null), line); }
@@ -1486,6 +1488,32 @@ const Z = (function () {
       fileError("cannot remove `" + path + "`", line);
     },
 
+    // `program.exit(code)`: what was printed goes out, and Node ends
+    // with `code`. A page cannot end: the run stops, and the page stays.
+    "program.exit"(args: any, line: any) {
+      arity("exit", args, 1, 1, line);
+      const code = whole("exit", args[0], line);
+      if (code < 0 || code > 255) raise("ValueError", "a program ends with a number from 0 to 255, not " + code, line);
+      flush();
+      if (inNode) process.exit(Number(code));
+      throw new Exit(code);
+    },
+    // `program.environment(name)`: the text, or none. A page has no environment.
+    "program.environment"(args: any, line: any) {
+      arity("environment", args, 1, 1, line);
+      const name = text("environment", args[0], line);
+      if (!inNode || !Object.prototype.hasOwnProperty.call(process.env, name)) return null;
+      return process.env[name];
+    },
+    // `program.warn(text)`: one line on the error stream, after what was printed.
+    "program.warn"(args: any, line: any) {
+      arity("warn", args, 1, 1, line);
+      const said = text("warn", args[0], line);
+      flush();
+      if (inNode) fs.writeSync(2, said + "\n");
+      else writePage(said + "\n");
+      return null;
+    },
     "program.arguments"(args: any, line: any) { arity("arguments", args, 0, 0, line); return inNode ? process.argv.slice(2) : []; },
 
     "json.parse"(args: any, line: any) {
@@ -1598,6 +1626,7 @@ const Z = (function () {
     } catch (e: any) {
       flush();
       let message;
+      if (e instanceof Exit) return;
       if (e instanceof Raise) {
         message = "error: uncaught " + shownName(e.value.kind) + ": " + show(e.value) + "\n" + where(e.line);
       } else if (e instanceof Fatal) {
