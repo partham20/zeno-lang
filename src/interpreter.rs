@@ -2351,6 +2351,205 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         }
     }
 
+    /// Is there a PHP on this machine for `import php` to start? The
+    /// tests use named arguments, which PHP has from 8.
+    fn php_is_here() -> bool {
+        std::process::Command::new("php")
+            .args(["-r", "exit(PHP_MAJOR_VERSION >= 8 ? 0 : 1);"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn a_class_of_php_is_used_from_zeno() {
+        if !php_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own, and so does an array,
+        // as a list or a dict: in PHP an array is a value. Calling a class
+        // makes an object, a dot after a class is a constant or what is
+        // `static` there, a named argument is a named argument, and a
+        // function that changes what it is given is given a variable.
+        assert_eq!(
+            output(
+                "import php\n\
+                 let strrev = php.callable(\"strrev\")\n\
+                 print(strrev(\"abc\"), php.callable(\"str_repeat\")(\"ab\", 3), php.callable(\"intdiv\")(7, 2), php.callable(\"sqrt\")(16), php.callable(\"strlen\")(\"h\u{e9}llo\"), php.callable(\"ucfirst\")(\"zeno \u{1f600}\\t\\\"q\\\"\"))\n\
+                 print(php.constant(\"PHP_INT_MAX\"), php.constant(\"M_PI\") > 3.14, php.constant(\"PHP_VERSION\") != \"\", php.constant(\"DateTime::ATOM\"), php.constant(\"NAN\"), php.constant(\"INF\"), php.callable(\"is_nan\")(php.constant(\"NAN\")))\n\
+                 let DateTime = php.type(\"DateTime\")\n\
+                 let utc = php.type(\"DateTimeZone\")(\"UTC\")\n\
+                 let day = DateTime(\"2026-11-18\", utc)\n\
+                 print(day.format(\"l\"), day.format(\"Y\") + \"!\", DateTime.ATOM, day.getTimestamp() + 1, day == DateTime(\"2026-11-18\", utc), day == DateTime(\"2026-11-19\", utc), day == 3)\n\
+                 day.modify(\"+1 month\")\n\
+                 let later = day.format\n\
+                 print(later(\"Y-m-d\"), DateTime.createFromFormat(\"Y-m-d\", \"2026-01-02\", utc).format(\"D\"), php.callable(\"DateTime::createFromFormat\")(\"Y\", \"2027\", utc).format(\"Y\"), DateTime[\"createFromFormat\"](\"Y\", \"2028\", utc).format(\"Y\"))\n\
+                 print(php.callable(\"htmlspecialchars\")(\"<a>&amp;\", double_encode=false), php.callable(\"number_format\")(1234.5, 2, thousands_separator=\" \"), php.callable(\"round\")(2.5), php.callable(\"floor\")(7), php.callable(\"max\")(1, 2.5), php.callable(\"str_pad\")(\"7\", 3, \"0\", php.constant(\"STR_PAD_LEFT\")))\n\
+                 let parts = php.callable(\"explode\")(\",\", \"a,b,c\")\n\
+                 parts.append(\"d\")\n\
+                 print(parts, len(parts), php.callable(\"implode\")(\"-\", parts), php.callable(\"array_flip\")([\"a\", \"b\"]), php.callable(\"array_sum\")([1, 2, 3.5]), php.callable(\"array_keys\")([\"x\": 1, \"y\": 2]), php.callable(\"range\")(1, 3))\n\
+                 print(php.callable(\"json_decode\")(\"{\\\"a\\\": [1, 2.0, null, true, {\\\"k\\\": \\\"v\\\"}], \\\"e\\\": []}\", true), php.callable(\"json_encode\")([\"a\": [1, 2.5], \"b\": [3]]))\n\
+                 let found = php.variable()\n\
+                 print(php.callable(\"preg_match\")(\"/(\\\\d+)-(\\\\d+)/\", \"tel 12-34\", found), found.value, found.value[2] + \"!\")\n\
+                 let numbers = php.variable([3, 1, 2])\n\
+                 php.callable(\"sort\")(numbers)\n\
+                 numbers.value = numbers.value + [0]\n\
+                 print(numbers.value, php.copy(numbers), php.callable(\"count\")(numbers), php.callable(\"array_reverse\")(numbers))"
+            ),
+            "cba ababab 3 4.0 6 Zeno \u{1f600}\t\"q\"\n\
+             9223372036854775807 true true Y-m-d\\TH:i:sP NaN inf true\n\
+             Wednesday 2026! Y-m-d\\TH:i:sP 1794960001 true false false\n\
+             2026-12-18 Fri 2027 2028\n\
+             &lt;a&gt;&amp; 1 234.50 3.0 7.0 2.5 007\n\
+             [\"a\", \"b\", \"c\", \"d\"] 4 a-b-c-d [\"a\": 0, \"b\": 1] 6.5 [\"x\", \"y\"] [1, 2, 3]\n\
+             [\"a\": [1, 2.0, none, true, [\"k\": \"v\"]], \"e\": []] {\"a\":[1,2.5],\"b\":[3]}\n\
+             1 [\"12-34\", \"12\", \"34\"] 34!\n\
+             [1, 2, 3, 0] [1, 2, 3, 0] 4 [0, 3, 2, 1]\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_value_stays_in_php() {
+        if !php_is_here() {
+            return;
+        }
+        // An object of PHP is the one object there is. `php.copy` makes a
+        // list or a dict of what can be gone through, and of an object that
+        // only holds values. A string that is not text stays in PHP as bytes.
+        assert_eq!(
+            output(
+                "import php\n\
+                 let list = php.type(\"ArrayObject\")([3, 1, 2])\n\
+                 list[0] = 9\n\
+                 list.append(7)\n\
+                 print(len(list), list[0] + 1, 1 in list, 9 in list, php.copy(list), list.count(), list == list, list == php.type(\"ArrayObject\")([9, 1, 2, 7]), list == 3)\n\
+                 var total = 0\n\
+                 for item in list { total = total + item }\n\
+                 print(total)\n\
+                 let ages = php.type(\"ArrayObject\")([\"ann\": 31, \"bob\": 40])\n\
+                 ages[\"cy\"] = [1, [2.5, \"x\", none], [\"k\": [true]]]\n\
+                 print(len(ages), ages[\"ann\"], \"ann\" in ages, \"zed\" in ages, ages[\"cy\"][1][1], ages[\"cy\"][2][\"k\"])\n\
+                 for name, age in php.copy(ages) { print(name, age) }\n\
+                 for value in php.type(\"ArrayIterator\")([\"a\": 1, \"b\": 2]) { print(value) }\n\
+                 let thing = php.callable(\"json_decode\")(\"{\\\"a\\\": 1, \\\"b\\\": {\\\"c\\\": [1]}, \\\"for\\\": 2}\")\n\
+                 thing.a = thing.a + 4\n\
+                 thing.z = \"new\"\n\
+                 thing[\"for\"] = thing[\"for\"] * 2\n\
+                 print(thing.a, thing.b.c, thing[\"z\"], php.copy(thing), php.copy(3), php.copy(\"as it is\"))\n\
+                 let back = php.type(\"Closure\").fromCallable(\"strrev\")\n\
+                 print(back(\"abc\"), php.callable(\"call_user_func\")([php.type(\"DateTime\")(\"2026-11-18\"), \"format\"], \"Y\"), php.callable(\"is_callable\")(back))\n\
+                 let bytes = php.callable(\"hex2bin\")(\"ff006162\")\n\
+                 var sum = 0\n\
+                 for byte in bytes { sum = sum + byte }\n\
+                 print(len(bytes), bytes[0], bytes[3], sum, php.callable(\"bin2hex\")(bytes), bytes == php.callable(\"hex2bin\")(\"ff006162\"), bytes, php.callable(\"hex2bin\")(\"6869\") + \"!\")\n\
+                 let heap = php.type(\"SplMinHeap\")()\n\
+                 heap.insert(3)\n\
+                 heap.insert(1)\n\
+                 print(heap.extract(), len(heap), heap.isEmpty(), php.type(\"SplMinHeap\"), heap.top, php.variable(5))"
+            ),
+            "4 10 true false [9, 1, 2, 7] 4 true true false\n\
+             19\n\
+             3 31 true false x [true]\n\
+             ann 31\n\
+             bob 40\n\
+             cy [1, [2.5, \"x\", none], [\"k\": [true]]]\n\
+             1\n\
+             2\n\
+             5 [1] new [\"a\": 5, \"b\": [\"c\": [1]], \"for\": 4, \"z\": \"new\"] 3 as it is\n\
+             cba 2026 true\n\
+             4 255 98 450 ff006162 true \"\\xFF\\x00ab\" hi!\n\
+             1 1 false SplMinHeap the method `top` of a SplMinHeap a variable of PHP that holds an int\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_php_is_an_error_of_zeno() {
+        if !php_is_here() {
+            return;
+        }
+        // An exception has Zeno's kind where the two mean one thing, a
+        // warning is raised, a file that cannot be used is a FileError, and
+        // every other is an `Error` that says what PHP called it. What PHP
+        // words is not compared.
+        assert_eq!(
+            output(
+                "import php\n\
+                 let list = php.type(\"ArrayObject\")([1])\n\
+                 try { php.callable(\"intdiv\")(1, 0) } except ZeroDivisionError as error { print(1, error.message != \"\") }\n\
+                 try { php.callable(\"str_repeat\")(\"x\", -1) } except ValueError as error { print(2, error.message != \"\") }\n\
+                 try { php.type(\"ArrayIterator\")([1]).seek(5) } except IndexError as error { print(3, error.message.starts_with(\"OutOfBoundsException: \")) }\n\
+                 try { php.callable(\"file_get_contents\")(\"/zeno/no/such/file\") } except FileError as error { print(4, error.message.starts_with(\"file_get_contents(/zeno/no/such/file): \")) }\n\
+                 try { php.type(\"SplFileObject\")(\"/zeno/no/such/file\") } except FileError as error { print(5, error.message.starts_with(\"RuntimeException: \")) }\n\
+                 try { php.callable(\"strlen\")([1]) } except Error as error { print(6, error.kind, error.message.starts_with(\"TypeError: \")) }\n\
+                 try { php.callable(\"json_decode\")(\"{oops\", flags=php.constant(\"JSON_THROW_ON_ERROR\")) } except ValueError as error { print(7, error.message.starts_with(\"JsonException: \")) }\n\
+                 try { php.callable(\"trigger_error\")(\"careful\", php.constant(\"E_USER_WARNING\")) } except Error as error { print(8, error.kind, error.message) }\n\
+                 try { php.type(\"Zeno\\\\NoSuch\") } except FileError as error { print(9, error.message.starts_with(\"PHP has no class `Zeno\\\\NoSuch`. Is its package installed in this folder (`composer require`)? This folder is \")) }\n\
+                 try { php.callable(\"zeno_no_such\") } except Error as error { print(10, error.message) }\n\
+                 try { php.callable(\"echo\") } except Error as error { print(11, error.message) }\n\
+                 try { php.constant(\"ZENO_NO_SUCH\") } except Error as error { print(12, error.message) }\n\
+                 try { php.require(\"zeno-no-such.php\") } except FileError as error { print(13, error.message.starts_with(\"there is no file `\"), error.message.ends_with(\"zeno-no-such.php`\")) }\n\
+                 try { php.callable(\"sort\")([3, 1, 2]) } except Error as error { print(14, error.message) }\n\
+                 try { list.nothing() } except Error as error { print(15, error.message) }\n\
+                 try { php.type(\"ArrayObject\").nothing } except Error as error { print(16, error.message) }\n\
+                 try { php.type(\"Countable\")() } except Error as error { print(17, error.message) }\n\
+                 try { php.type(\"Closure\")() } except Error as error { print(18, error.message) }\n\
+                 try { list() } except Error as error { print(19, error.message) }\n\
+                 try { php.type(\"DateTime\")()[0] } except Error as error { print(20, error.message) }\n\
+                 try { php.type(\"DateTime\")()[\"zone\"] } except Error as error { print(21, error.message) }\n\
+                 try { for x in php.type(\"DateTime\")() { print(x) } } except Error as error { print(22, error.message) }\n\
+                 try { len(php.type(\"DateTime\")()) } except Error as error { print(23, error.message) }\n\
+                 try { print(1 in php.type(\"DateTime\")()) } except Error as error { print(24, error.message) }\n\
+                 try { php.callable(\"hex2bin\")(\"ff\")[3] } except IndexError as error { print(25, error.message) }\n\
+                 print(php.callable(\"error_reporting\")() > 0, \"still here\")"
+            ),
+            "1 true\n\
+             2 true\n\
+             3 true\n\
+             4 true\n\
+             5 true\n\
+             6 Error true\n\
+             7 true\n\
+             8 Error careful\n\
+             9 true\n\
+             10 PHP has no function `zeno_no_such`. One that an extension or a package brings is there when that is installed\n\
+             11 `echo` is part of the language of PHP and not a function, so it cannot be called from Zeno\n\
+             12 PHP has no constant `ZENO_NO_SUCH`\n\
+             13 true true\n\
+             14 `sort` changes its `array` (PHP writes `&$array`), so it needs a variable of PHP to change: `php.variable(value)`\n\
+             15 an ArrayObject has no property or method `nothing`\n\
+             16 the class ArrayObject has no constant, static property or static method `nothing`\n\
+             17 `Countable` is an interface, and no object can be made of it by calling it\n\
+             18 `Closure` is a class that only PHP itself makes objects of, and no object can be made of it by calling it\n\
+             19 an ArrayObject is not a function, and cannot be called\n\
+             20 a DateTime has no items\n\
+             21 a DateTime has no property or method `zone`\n\
+             22 a DateTime cannot be gone through with `for`\n\
+             23 a DateTime has no length\n\
+             24 a DateTime cannot be asked what is `in` it\n\
+             25 there is no byte 3 in 1 bytes\n\
+             true still here\n"
+        );
+        assert_eq!(
+            error("import php\nfunction double(n) { return n * 2 }\nphp.callable(\"array_map\")(double, [1])"),
+            "a function of Zeno cannot be given to PHP yet"
+        );
+        assert_eq!(
+            error("import php\nif php.type(\"ArrayObject\")() { print(1) }"),
+            "a condition must be true or false, but this is a PHP value"
+        );
+        assert_eq!(error("import php\nphp.type()"), "`type` takes 1 argument, but 0 were given");
+        assert_eq!(error("import php\nphp.callable(3)"), "`callable` needs a str, but this is an int");
+        assert_eq!(error("import php\nphp.variable(1, 2)"), "`variable` takes 0 to 1 arguments, but 2 were given");
+        // Each stays where it was made.
+        if python_is_here() {
+            assert_eq!(
+                error("import php\nimport python\npython.module(\"json\").dumps(php.type(\"ArrayObject\")())"),
+                "a PHP value cannot be given to Python. Each stays where it was made"
+            );
+        }
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -2387,7 +2586,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

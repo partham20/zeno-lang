@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php")
 }
 
 /// Every built-in name and what it stands for.
@@ -280,6 +280,43 @@ fn ruby_constant(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 fn ruby_symbol(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     arity("symbol", &args, 1, 1, span)?;
     crate::bridge::symbol(crate::bridge::Lang::Ruby, text("symbol", &args[0], span)?, span)
+}
+
+/// `php.type("DateTime")`: a class of PHP, by its name with its
+/// namespace. Calling it makes an object, and a dot after it is a
+/// constant or something `static`. PHP is started beside the program
+/// the first time it is asked for (`bridge.rs`).
+fn php_type(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("type", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Php, text("type", &args[0], span)?, span)
+}
+
+/// `php.callable("strrev")`: a function of PHP, by its name.
+fn php_callable(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("callable", &args, 1, 1, span)?;
+    crate::bridge::named(crate::bridge::Lang::Php, "function", text("callable", &args[0], span)?, span)
+}
+
+/// `php.constant("PHP_VERSION")`: a constant of PHP, by its name.
+fn php_constant(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("constant", &args, 1, 1, span)?;
+    crate::bridge::named(crate::bridge::Lang::Php, "constant", text("constant", &args[0], span)?, span)
+}
+
+/// `php.require("helper.php")`: a file of PHP, read once, from the
+/// folder of the program.
+fn php_require(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("require", &args, 1, 1, span)?;
+    crate::bridge::named(crate::bridge::Lang::Php, "require", text("require", &args[0], span)?, span)?;
+    Ok(Value::None)
+}
+
+/// `php.variable(value)`: a variable of PHP that holds the value. A
+/// function of PHP that changes what it is given changes this, and
+/// `.value` reads it after.
+fn php_variable(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("variable", &args, 0, 1, span)?;
+    crate::bridge::variable(crate::bridge::Lang::Php, args.first().unwrap_or(&Value::None), span)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1246,6 +1283,17 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("require", Value::Builtin(Builtin { name: "require", call: ruby_require })),
                 ("constant", Value::Builtin(Builtin { name: "constant", call: ruby_constant })),
                 ("symbol", Value::Builtin(Builtin { name: "symbol", call: ruby_symbol })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "php" => (
+            "php",
+            vec![
+                ("type", Value::Builtin(Builtin { name: "type", call: php_type })),
+                ("callable", Value::Builtin(Builtin { name: "callable", call: php_callable })),
+                ("constant", Value::Builtin(Builtin { name: "constant", call: php_constant })),
+                ("require", Value::Builtin(Builtin { name: "require", call: php_require })),
+                ("variable", Value::Builtin(Builtin { name: "variable", call: php_variable })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

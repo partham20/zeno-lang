@@ -13195,3 +13195,149 @@ and so does a program of Zeno.
   for Python.
 - Rubies before 3.1 and other Rubies (JRuby, TruffleRuby) are not
   tested. The helper uses nothing newer than Ruby 2.6.
+
+## 35. The libraries of PHP
+
+The second language of the second version (26.1): `import php`, for
+what comes with PHP and for Composer packages. [`php.md`](php.md) is
+the walkthrough. Chapter 26 holds here as it does for the others (28,
+29, 34): PHP runs beside the program, they talk over a socket,
+numbers and text cross and objects stay, what Zeno gives is a copy, a
+value from there is not a condition, the types are known when the
+program runs, and nothing changes for a program that does not ask.
+What follows is what PHP made different.
+
+### 35.1 `php.type`, `php.callable` and `php.constant`, because PHP keeps the three apart
+
+In Python everything a module has is reached with a dot from the
+module. PHP has no value for a module, a class or a function: a class
+is named by `new` and `::`, a function by being called, a constant by
+being written. Each lives in its own table, and one name can be in
+all three (`count` is a function, and many classes have a method and
+a constant called that). So there is one way in for each.
+
+**Why these names.** `type` is the word Java's module uses for a
+class (29.1), and `class` cannot follow a dot. `callable` is what PHP
+itself calls a value that can be called (`is_callable`,
+`Closure::fromCallable`), and `function` is a word of Zeno.
+`constant` is PHP's own `constant()`. Each takes the name as PHP
+writes it, with its namespace: `"Carbon\\Carbon"`, `"Shop\\total"`,
+`"DateTime::ATOM"`.
+
+**`php.require(path)`** reads a file of PHP that is not in a package,
+from the folder of the program, as `require_once` does. It gives
+none, as Ruby's (34.1).
+
+### 35.2 An array of PHP crosses whole
+
+An array of PHP is a value and not an object: given to a function it
+is copied, as a list of Zeno is not. It is what a list and a dict are
+in PHP, both at once. So it comes across as one of them, whole: a
+list where its keys are 0, 1, 2 and so on in order, a dict for any
+other. `explode(",", "a,b")` gives a list of Zeno, which `append` and
+`len` and everything else of Zeno work on.
+
+**Why not leave it in PHP, as a list of Python stays (26.5).** A list
+of Python is an object: two holders see one list, and changing it is
+seen by both, so a copy would not be the same thing. An array of PHP
+is never shared, so a copy is exactly what PHP would hand to another
+function. Leaving it would only make every result of PHP's functions,
+nearly all of which are arrays, go back to PHP for each item.
+
+**An empty array is a list.** PHP cannot tell `[]` from an empty map.
+A list is the commoner, and an empty list and an empty dict print
+differently but are both empty.
+
+### 35.3 A function that changes its argument is given a variable
+
+`sort(&$array)` and `preg_match($p, $text, &$matches)` change what
+they are given and give back something else. Given a list of Zeno,
+they would change the copy PHP made of it, and nobody would see it.
+`php.variable(value)` is a variable that lives in PHP. Given to such a
+parameter, PHP changes it, and `.value` reads it after.
+
+**A list given where a variable is wanted is an error**, before the
+function is called. PHP knows which parameters are written `&$`, so
+the helper asks it. A program that gave a list and saw nothing happen
+would have no way to find out why.
+
+**Why not change the list of Zeno after the call.** Zeno would have
+to say which argument came back changed, for every call to every
+function, and write it into a list the program may not expect to
+change. `php.variable` says it at the line.
+
+### 35.4 Classes, functions and methods are values the helper makes up
+
+`php.type("DateTime")` gives a value that the helper made for the
+class, since PHP has none. Calling it is `new`. A dot after it is
+the constant of that name, or the static property, or the static
+method. A dot after an object is the method of that name, or the
+property.
+
+**The method before the property.** PHP lets a class have both with
+one name, and a dot in Zeno is one thing. A method is what a program
+of PHP more often reaches by a name, and the property is still
+reached with the name in brackets, `thing["name"]`, which on an
+object that has no items of its own is the property first.
+
+**A name in brackets for the words of Zeno.** `Size::from` and a
+property `for` cannot follow a dot. As for Java (29.10) the name in
+brackets reaches them: `Size["from"]("l")`. An object of a class
+that has items of its own (`ArrayAccess`) keeps its brackets for
+them.
+
+### 35.5 Named arguments are PHP's
+
+`name=value` is PHP 8's `name: value`, by the name of the parameter.
+This is why PHP 8 is the oldest PHP the module says it works with:
+the rest of the helper would run on 7.4.
+
+### 35.6 A warning of PHP is an error of Zeno
+
+PHP reports most of what goes wrong in its functions by a warning on
+the screen and a value of `false`: `file_get_contents` of a file that
+is not there. A program of Zeno would go on with the `false`, and
+fail somewhere else. So the helper turns a warning into an error, and
+the error has the kind of what the warning says: `FileError` for a
+file, `Error` for the rest. A notice and a deprecation only advise,
+and PHP prints them as it always does. `@` before a call in PHP,
+which hides its warning, has no form in Zeno, so a warning is not
+hidden.
+
+`DivisionByZeroError` is `ZeroDivisionError`. `ValueError`,
+`InvalidArgumentException`, `DomainException` and `JsonException` are
+`ValueError`. `OutOfBoundsException` and `OutOfRangeException` are
+`IndexError`. Everything else is `Error`, with PHP's name for it in
+front, but for the plain `Exception` and `Error`, whose name says
+nothing.
+
+**What it costs.** PHP has no exception of its own for a file, so
+whether a warning or a `RuntimeException` is a `FileError` is read
+from its text: "Failed to open stream", "No such file or directory",
+"Permission denied" and a few others. These are the system's words,
+which PHP passes on, and are the same in every PHP 8.
+
+### 35.7 Bytes that are not text stay in PHP
+
+A string of PHP is bytes. Where they read as UTF-8 they are a str,
+as for Ruby (34.5), and bytes that do not stay in PHP. There an item
+is a byte as an int, `len` is how many, and `for` goes through them,
+since a program that kept bytes wants them as numbers.
+
+### 35.8 The helper's names begin with `zeno_` and `Zeno`
+
+A Composer package puts its functions and classes into the one
+program PHP runs, beside the helper's. PHP refuses a second function
+of one name, so a package with a `keep` or a `back` would stop the
+helper from starting. Every function of the helper begins with
+`zeno_`, and every class with `Zeno`.
+
+### 35.9 Left for later
+
+- A function of Zeno given to PHP: `array_map`, `usort`,
+  `preg_replace_callback`. It is the callback that 26.12 leaves.
+- A class of Zeno that extends a class of PHP.
+- `php` in a built program, and in `--target php`, as 26.9 has it
+  for Python.
+- Only PHP 8.3 is tested. PHP 7.4 would run all but named arguments,
+  and is not tried.

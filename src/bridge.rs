@@ -1,6 +1,6 @@
 //! Values that live in another language: `import python`, `import node`,
-//! `import java` and `import ruby` (docs/python.md, docs/node.md,
-//! docs/java.md, docs/ruby.md).
+//! `import java`, `import ruby` and `import php` (docs/python.md,
+//! docs/node.md, docs/java.md, docs/ruby.md, docs/php.md).
 //!
 //! Zeno starts that language's own interpreter beside the program, once,
 //! the first time it is asked for, and the two talk over a socket of this
@@ -10,7 +10,7 @@
 //! side keeps it under.
 //!
 //! Nothing here knows a language but `Lang` and the helper it names
-//! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`). Another language is
+//! (`bridge.py`, `bridge.js`, `bridge.java`, `bridge.rb`, `bridge.php`). Another language is
 //! another helper that speaks the same lines.
 
 use std::rc::Rc;
@@ -27,6 +27,7 @@ pub enum Lang {
     Node,
     Java,
     Ruby,
+    Php,
 }
 
 impl Lang {
@@ -37,6 +38,7 @@ impl Lang {
             Lang::Node => "JavaScript",
             Lang::Java => "Java",
             Lang::Ruby => "Ruby",
+            Lang::Php => "PHP",
         }
     }
 
@@ -48,6 +50,7 @@ impl Lang {
             Lang::Node => "Node",
             Lang::Java => "Java",
             Lang::Ruby => "Ruby",
+            Lang::Php => "PHP",
         }
     }
 }
@@ -435,6 +438,23 @@ pub fn symbol(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "symbol", span).text("name", name).send()
 }
 
+/// What a language has by a name, of a kind Python has no word for:
+/// `php.callable("strrev")` asks for `function`, `php.constant("M_PI")`
+/// for `constant`.
+#[cold]
+#[inline(never)]
+pub fn named(lang: Lang, op: &str, name: &str, span: Span) -> Result {
+    Ask::new(lang, op, span).text("name", name).send()
+}
+
+/// `php.variable(value)`: a variable of PHP that holds the value, for
+/// a function that changes what it is given.
+#[cold]
+#[inline(never)]
+pub fn variable(lang: Lang, value: &Value, span: Span) -> Result {
+    Ask::new(lang, "variable", span).value("value", value)?.send()
+}
+
 /// `java.jar("lib")`: a jar, or a folder of them, where Java then
 /// finds classes.
 #[cold]
@@ -605,6 +625,7 @@ mod link {
     const NODE: &str = include_str!("bridge.js");
     const JAVA: &str = include_str!("bridge.java");
     const RUBY: &str = include_str!("bridge.rb");
+    const PHP: &str = include_str!("bridge.php");
 
     /// How the helper of a language is handed to its program: the
     /// option that says "the program is the next word", and the helper.
@@ -616,6 +637,8 @@ mod link {
             Lang::Node => vec!["-e".to_string(), NODE.to_string()],
             Lang::Java => java_helper(program),
             Lang::Ruby => vec!["-e".to_string(), RUBY.to_string()],
+            // `-r` takes the program without the `<?php` a file begins with.
+            Lang::Php => vec!["-r".to_string(), PHP.trim_start_matches("<?php").to_string()],
         }
     }
 
@@ -698,6 +721,7 @@ mod link {
             Lang::Node => "ZENO_NODE",
             Lang::Java => "ZENO_JAVA",
             Lang::Ruby => "ZENO_RUBY",
+            Lang::Php => "ZENO_PHP",
         }
     }
 
@@ -764,6 +788,7 @@ mod link {
             (_, Lang::Python) => vec!["python3".to_string(), "python".to_string()],
             (_, Lang::Node) => vec!["node".to_string()],
             (_, Lang::Ruby) => vec!["ruby".to_string()],
+            (_, Lang::Php) => vec!["php".to_string()],
             // `JAVA_HOME` is where the tools of Java look for it.
             (_, Lang::Java) => {
                 let mut names = vec!["java".to_string()];

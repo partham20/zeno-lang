@@ -1669,6 +1669,12 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("ruby", "constant") => Ty::Builtin("ruby.constant"),
         ("ruby", "symbol") => Ty::Builtin("ruby.symbol"),
         ("ruby", "copy") => Ty::Builtin("python.copy"),
+        ("php", "type") => Ty::Builtin("php.type"),
+        ("php", "callable") => Ty::Builtin("php.callable"),
+        ("php", "constant") => Ty::Builtin("php.constant"),
+        ("php", "require") => Ty::Builtin("php.require"),
+        ("php", "variable") => Ty::Builtin("php.variable"),
+        ("php", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3384,6 +3390,7 @@ impl Checker {
                     "node" => "node",
                     "java" => "java",
                     "ruby" => "ruby",
+                    "php" => "php",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -6174,7 +6181,22 @@ impl Checker {
                 }
                 Ty::Dynamic
             }
-            "node.module" | "node.global" | "java.type" | "ruby.constant" => {
+            // `php.require("helper.php")` reads a file of PHP, which may
+            // not be there. `php.callable("strrev")` and
+            // `php.constant("M_PI")` name what PHP has, and
+            // `php.variable(value)` is a variable of PHP.
+            "php.require" => {
+                if self.arity("require", arguments, 1, 1, span) {
+                    self.expect(&first, &Ty::Str, "the file given to `php.require`", arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::None
+            }
+            "php.variable" => {
+                self.arity("variable", arguments, 0, 1, span);
+                Ty::Dynamic
+            }
+            "node.module" | "node.global" | "java.type" | "ruby.constant" | "php.type" | "php.callable" | "php.constant" => {
                 let short = name.split('.').nth(1).unwrap_or(name);
                 if self.arity(short, arguments, 1, 1, span) {
                     let what = format!("the name given to `{name}`");
@@ -8308,7 +8330,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random` and `ruby`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby` and `php`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         // A name of the part of `math` that is written in Zeno, which
@@ -10441,6 +10463,28 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import ruby\nruby.module(\"date\")"), "module `ruby` has no `module`");
         assert_eq!(
             strict_error("import ruby\nlet date = ruby.constant(\"Date\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
+        // And PHP's.
+        ok("import php\n\
+            php.require(\"helper.php\")\n\
+            let DateTime = php.type(\"DateTime\")\n\
+            let day = DateTime(\"2026-11-18\")\n\
+            let year: str = day.format(\"Y\")\n\
+            let found = php.variable()\n\
+            php.callable(\"preg_match\")(\"/a/\", \"a\", found, flags=php.constant(\"PREG_OFFSET_CAPTURE\"))\n\
+            for one in php.copy(found) {\n    print(one, year, len(found.value), found.value[0], php.variable(1))\n}");
+        ok("from php import type, callable, constant, require, variable, copy\nrequire(\"a.php\")\nprint(copy(type(\"ArrayObject\")([constant(\"M_PI\"), callable(\"strrev\"), variable()])))");
+        assert_eq!(error("import php\nphp.type(5)"), "the name given to `php.type` should be str, but this is int");
+        assert_eq!(error("import php\nphp.callable(5)"), "the name given to `php.callable` should be str, but this is int");
+        assert_eq!(error("import php\nphp.constant(5)"), "the name given to `php.constant` should be str, but this is int");
+        assert_eq!(error("import php\nphp.require(5)"), "the file given to `php.require` should be str, but this is int");
+        assert_eq!(error("import php\nphp.type()"), "`type` takes 1 argument, but 0 were given");
+        assert_eq!(error("import php\nphp.variable(1, 2)"), "`variable` takes 0 to 1 arguments, but 2 were given");
+        assert_eq!(error("import php\nlet nothing: int = php.require(\"a.php\")"), "`nothing` should be int, but this is none");
+        assert_eq!(error("import php\nphp.module(\"date\")"), "module `php` has no `module`");
+        assert_eq!(
+            strict_error("import php\nlet date = php.type(\"DateTime\")"),
             "strict mode: the type of this cannot be worked out before the program runs"
         );
         // Strict mode wants every type before the program runs, and

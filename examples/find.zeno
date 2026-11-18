@@ -1,0 +1,59 @@
+# Every line of a file that a pattern is found in, and what was found.
+#
+#     zeno run examples/find.zeno "[0-9]+ ms" log.txt
+#     zeno run examples/find.zeno "(error|warning): .*" log.txt
+#
+# The pattern is a regular expression: `[0-9]+` is one digit or more,
+# `a|b` is one or the other, `.*` is anything.
+#
+# Zeno has no patterns for text. PHP has, in the `preg_` functions
+# that come with it, and `import php` lets a Zeno program use them:
+# every function and class that comes with PHP, and any package that
+# `composer require` put beside the program.
+#
+# It needs PHP, 8 or later.
+
+import files
+import php
+import program
+
+# `preg_match_all` gives the number of places the pattern was found
+# in, and writes what it found into its third argument. A function of
+# PHP that changes what it is given needs a variable of PHP to change,
+# and `php.variable()` is one. After the call, `.value` is what PHP
+# put there: a list of lists, which is a list of Zeno by then. What
+# PHP can raise is not known before the program runs, so the function
+# says `raises Error`: any kind.
+function show(pattern: str, name: str) raises Error {
+    let preg_match_all = php.callable("preg_match_all")
+    let found = php.variable()
+    var number = 0
+    var lines = 0
+    for line in files.read(name).lines() {
+        number += 1
+        # PHP writes a pattern between two marks, here `{` and `}`,
+        # and `u` after them says the text is UTF-8.
+        if preg_match_all("{" + pattern + "}u", line, found) > 0 {
+            lines += 1
+            print(f"{number}: {line}")
+            for part in found.value[0] {
+                print(f"    {part}")
+            }
+        }
+    }
+    print(f"The pattern is in {lines} of {number} lines.")
+}
+
+let words = program.arguments()
+if len(words) != 2 {
+    print("usage: zeno run find.zeno <pattern> <file>")
+} else {
+    try {
+        show(words[0], words[1])
+    } except FileError as error {
+        # PHP is not installed, or there is no such file.
+        print(error.message)
+    } except Error as error {
+        print(f"PHP could not do it. {error.message}")
+    }
+}
