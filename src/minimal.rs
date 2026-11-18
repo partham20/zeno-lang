@@ -356,6 +356,11 @@ fn names_of_directive(line: &str) -> (Vec<String>, bool) {
     let rest = line.trim_start().trim_start_matches('#').trim_start();
     if let Some(header) = rest.strip_prefix("include") {
         let header = header.trim().trim_start_matches(['<', '"']).trim_end_matches(['>', '"']);
+        // The header of a board is where it says that it prints itself
+        // (`ZENO_BOARD_PRINTS`), so whatever asks that asks for the header.
+        if header == "ZENO_BOARD" {
+            return (vec!["ZENO_BOARD_PRINTS".to_string()], true);
+        }
         return match HEADERS.iter().find(|(name, _)| *name == header) {
             Some((_, brings)) => (words(brings), false),
             None => (Vec::new(), true),
@@ -369,6 +374,12 @@ fn names_of_directive(line: &str) -> (Vec<String>, bool) {
             return (words(WARNED_OF), false);
         }
         return (vec![name], false);
+    }
+    // The one `#error` of the runtime says that a board which stops
+    // itself cannot write the report of `--memory`: it goes with the
+    // report.
+    if rest.starts_with("error") {
+        return (vec!["zeno_memory_report".to_string()], false);
     }
     // `#pragma comment(lib, "shell32")` names the library that
     // `CommandLineToArgvW` is in.
@@ -512,6 +523,12 @@ fn entries(text: &str) -> Vec<Entry> {
                     out.push(Entry::Close(piece.to_string(), open.pop().expect("an #endif ends an #if")));
                 } else {
                     let (names, with_its_part) = names_of_directive(piece);
+                    // What the header of a board may count on without
+                    // asking: the sized numbers, `bool`, `size_t`, and
+                    // the number of the LED (docs/board.md).
+                    if rest.starts_with("include") && asked.contains("ZENO_BOARD") {
+                        asked.extend(words(&["uint32_t", "bool", "size_t", "ZENO_LED"]));
+                    }
                     out.push(Entry::Item(Item { text: piece.to_string(), names, uses: asked, inside: open.clone(), with_its_part }));
                 }
             }
@@ -922,7 +939,11 @@ mod tests {
         assert_eq!(names_of_directive("#define ZENO_PAGE ((size_t)1 << ZENO_PAGE_BITS)").0, ["ZENO_PAGE"]);
         assert_eq!(names_of_directive("#define zeno_setjmp(place) _setjmp(place)").0, ["zeno_setjmp"]);
         assert!(names_of_directive("#include <math.h>").0.contains(&"floor".to_string()));
-        assert_eq!(names_of_directive("#include ZENO_BOARD"), (Vec::new(), true));
+        // The header of a board comes with what is kept of the board,
+        // and with whatever asks whether the board prints by itself.
+        assert_eq!(names_of_directive("#include ZENO_BOARD"), (vec!["ZENO_BOARD_PRINTS".to_string()], true));
+        assert_eq!(names_of_directive("#include \"vendor.h\""), (Vec::new(), true));
+        assert_eq!(names_of_directive("#error \"no report\"").0, ["zeno_memory_report"]);
     }
 
     #[test]

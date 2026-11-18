@@ -75,8 +75,13 @@ The numbers are the decisions, for anyone who wants the argument.
 \item[A board by its name.] \verb|zeno build --board| takes the
   folder of a board, which today is in a copy of Zeno's repository or
   written by you; it does not load the program onto the board, and a
-  build for a board has no collector (51.9). The one board that comes
-  with Zeno is emulated.
+  build for a board has no collector (51.9). The two boards that come
+  with Zeno are one emulated chip.
+\item[A float on a board.] A board that prints by itself has no
+  \verb|printf| under the program, but a number with a fraction is
+  still made into text by the C library's \verb|snprintf|, which is
+  28 KB of flash on an ARM Cortex-M3. \verb|--memory| does not go with
+  such a board (52.8, 52.9).
 \item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
   wants one of those two compilers (5.5e).
 \item[\texttt{setjmp} in an ordinary build.] An ordinary build uses it

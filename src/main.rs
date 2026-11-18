@@ -578,6 +578,10 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
         Some(folder) => Some((folder, read_board(folder)?)),
         None => None,
     };
+    // For a board `print` is never written as `printf`, and a board
+    // with a header of its own may be the one that prints (decision 52.4).
+    let board_header = board.as_ref().is_some_and(|(_, board)| board.header.is_some());
+    let options = emit_c::Options { board_prints: board.is_some(), board_header, ..options };
     // Compiled code has no room for values of unknown type, so `build`
     // always checks in strict mode. A build with no collector also
     // checks that every list and object has one owner.

@@ -206,6 +206,52 @@ Without that, `./blink | cat` shows nothing for a long time and then
 everything at once, because C saves up output that is not going to a
 terminal.
 
+## Printing, reading and stopping
+
+Pins are one way a program reaches outside itself. There are four
+more, and on a computer the C library does them: `print` is a write
+to a stream, a warning and the message of an error go to the error
+stream, `input` reads a stream, and a program that stops calls `exit`.
+A chip has no streams. A board's header may bring the four itself,
+with one line that says so (decision 52):
+
+```c
+#define ZENO_BOARD_PRINTS
+
+static void zeno_board_print(const char *bytes, size_t count);  /* what the program prints */
+static void zeno_board_warn(const char *bytes, size_t count);   /* a warning, an error's message */
+static int  zeno_board_typed(void);    /* the next byte typed, waiting for it; -1 if none can come */
+static void zeno_board_stop(int status);   /* the program is over: 0, its own number, 1 after an error */
+```
+
+With that line nothing in `runtime.c` writes, reads or stops through
+the C library: every such place goes through five small functions at
+the top of the file (`zeno_out`, `zeno_out_now`, `zeno_say`,
+`zeno_typed`, `zeno_stop`), and they are written once, below the
+board, as the board's four or as the C library's. Without the line a
+header builds as it always did.
+
+Three things to know when writing the four:
+
+- **All four must be there**, also for a program that never reads.
+  A board with nothing to read from answers -1, and `input` gives
+  `none`. A board with one wire writes `zeno_board_warn` as a call to
+  `zeno_board_print`.
+- **A program that reaches its last line is not stopped.** `main`
+  returns 0 to the board's start-up file, which says what comes next.
+  `zeno_board_stop` is for `program.exit` and for an error.
+- **A header may count on** `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`
+  and `ZENO_LED`. Anything else it includes itself.
+
+What is left of the C library on such a board is `memcpy`, `memset`
+and `strlen`, and, for a program with a float in it, `snprintf` and
+`strtod`: a number with a fraction is still made into text by the C
+library. `--memory` does not go with such a board yet: the C says so
+when it is compiled.
+
+[`boards/lm3s6965evb`](../boards/lm3s6965evb) is a whole board written
+this way, and [`board-build.md`](board-build.md) walks through it.
+
 ## What `blink` compiles to
 
 All of `zeno_program` in `blink.c`:
@@ -305,7 +351,12 @@ zeno build --board boards/qemu-cortex-m3 examples/blink.zeno
 
 That board is an ARM Cortex-M3 that QEMU emulates. It has no header of
 its own, so its pins are the simulated ones, on a real processor's
-instructions. The reasons for the four functions are in 5.12.
+instructions. Beside it is the same chip with a header,
+[`boards/lm3s6965evb`](../boards/lm3s6965evb): there a pin is a bit of
+one of the chip's ports, the clock is its SysTick timer, and `print`
+goes out of its UART with no `printf` under it. QEMU emulates those
+registers, and that is the only place the header has run. The reasons
+for the four functions are in 5.12.
 
 ## The tests
 
@@ -316,6 +367,13 @@ instructions. The reasons for the four functions are in 5.12.
   caught and uncaught, at the same line and column everywhere.
 - `a_board_of_its_own_can_be_put_underneath` is the header above, on
   all three kinds of C build.
+- `a_board_can_print_read_and_stop_by_itself` is a header with
+  `ZENO_BOARD_PRINTS` that crosses the two streams, so that anything
+  which still went through the C library would come out of the wrong
+  one. Every kind of build, and the minimal ones.
+- `a_program_prints_through_the_registers_of_a_cortex_m3` runs a
+  program on `boards/lm3s6965evb` in QEMU: pins driven and read back,
+  the clock, a serial port, a line typed to `input`, and an error.
 - `blink_is_three_lines_of_c_and_needs_no_collector` holds the C for
   `blink` to exactly the three lines shown.
 - `examples/signal.zeno`, a traffic light as a state machine, is built
@@ -343,12 +401,12 @@ as `now() - start >= 200 ms` after sleeping that long.
   layer. Until then a program can reach the hardware itself, through
   registers at the addresses the data sheet gives
   ([`unsafe.md`](unsafe.md)).
-- **The runtime is still a desktop runtime.** A firmware build with no
-  collector has no `setjmp`, no garbage collector and no `malloc`
-  ([`pool.md`](pool.md)), but it still calls `printf` and `exit`
-  ([`no-collector.md`](no-collector.md)).
-  The board layer is the first piece of a port, and not the whole of
-  it.
+- **A float is still the C library's to print.** A firmware build
+  with no collector has no `setjmp`, no garbage collector and no
+  `malloc` ([`pool.md`](pool.md)), and on a board that prints itself
+  it has no `printf` and no `exit` either (above). But a number with a
+  fraction is made into text by `snprintf`, which on an ARM chip is
+  28 KB of flash for the first float a program shows.
 - **`now()` is a `double`** of milliseconds. That is exact for
   thousands of years, and slow on a processor with no floating point.
   Whole numbers with a size, such as `u32`, came in the stage after

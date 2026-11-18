@@ -234,6 +234,14 @@ pub struct Options {
     /// are asked for. Every other build writes them behind
     /// `#ifdef ZENO_MEMORY_REPORT` and lets the C compiler choose.
     pub memory_report: bool,
+    /// `--board`: `print` goes through the runtime in a minimal build
+    /// too, and not to `printf`, which a board may not have and which
+    /// costs a chip 20 KB of flash where it does (decision 52.4).
+    pub board_prints: bool,
+    /// `--board`, for a board with a header of its own: the header says
+    /// whether the board or the C library prints, reads and stops, so a
+    /// minimal build writes both halves and the header with them.
+    pub board_header: bool,
 }
 
 /// `emit`, with the options of `Options`.
@@ -244,6 +252,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         release: options.release || options.fast || options.minimal,
         fast: options.fast || options.minimal,
         minimal: options.minimal,
+        board_prints: options.board_prints,
         board_parts: Vec::new(),
         in_place: false,
         text_stays: false,
@@ -440,9 +449,16 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         let definitions: Vec<String> = emitter.definitions.iter().map(tidied).collect();
         let program = tidied(&render(&main));
         let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
+        let mut runtime = with_board_parts(&runtime_of(firmware, collector, options.grows && !collector, true), &emitter.board_parts);
+        if !options.board_header {
+            // With no header of a board there is nobody but the C library
+            // to print, read and stop, and only its half is written. With
+            // one, the header says which half it is (decision 52.4).
+            runtime = crate::minimal::resolved(&runtime, &[("ZENO_BOARD_PRINTS", false)]);
+        }
         return Ok(crate::minimal::assemble(crate::minimal::Parts {
             source,
-            runtime: &with_board_parts(&runtime_of(firmware, collector, options.grows && !collector, true), &emitter.board_parts),
+            runtime: &runtime,
             declarations: declarations.iter().map(String::as_str).collect(),
             functions: definitions.iter().map(String::as_str).collect(),
             program: &program,
@@ -547,7 +563,10 @@ static char *zeno_c_text_copy(const char *text) {
 }
 static void *zeno_c_lend_bytes(int64_t count, int size) {
     void *memory = malloc((size_t)(count > 0 ? count : 1) * (size_t)size);
-    if (!memory) abort();
+    if (!memory) {
+        zeno_sayf("error: out of memory\n");
+        zeno_stop(1);
+    }
     return memory;
 }
 static void zeno_c_store(unsigned char *at, int size, char code, int64_t whole, double real) {
@@ -1091,6 +1110,8 @@ struct Emitter<'a> {
     /// `--minimal`: no checks at all, and C as a person would write it
     /// where that can be done (decisions chapter 30).
     minimal: bool,
+    /// `print` is the runtime's also in a minimal build (`Options`).
+    board_prints: bool,
     /// The parts of `BOARD_PARTS` the program uses, such as
     /// `ZENO_INPUT_PINS` when it makes an input pin (decision 45.4).
     board_parts: Vec<&'static str>,
@@ -5260,7 +5281,9 @@ impl Emitter<'_> {
                 if args.iter().any(|arg| arg.name.is_some()) {
                     return Err(cannot("named arguments to a built-in", span));
                 }
-                if name == "print" && self.minimal {
+                // A build for a board does not hand the line to `printf`
+                // (decision 52.4).
+                if name == "print" && self.minimal && !self.board_prints {
                     return self.print_direct(args, span);
                 }
                 let exprs: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
@@ -16710,9 +16733,9 @@ print(d.value)
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The board in `boards/qemu-cortex-m3`, as its `zeno.board` says it.
-    fn emulated_board() -> (std::path::PathBuf, crate::board_build::Board) {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("boards").join("qemu-cortex-m3");
+    /// A board of `boards/`, as its `zeno.board` says it.
+    fn board_named(name: &str) -> (std::path::PathBuf, crate::board_build::Board) {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("boards").join(name);
         let said = std::fs::read_to_string(folder.join(crate::board_build::FILE)).expect("the board has a `zeno.board`");
         let board = crate::board_build::parse(&said).unwrap_or_else(|errors| panic!("{}", errors[0].message));
         (folder, board)
@@ -16723,7 +16746,13 @@ print(d.value)
     /// errors, and whether it finished cleanly. `None` where the
     /// compiler for ARM or QEMU is not installed.
     fn on_the_emulated_board(name: &str, c: &str, before: &[&str]) -> Option<(String, String, bool)> {
-        let (folder, board) = emulated_board();
+        on_the_board("qemu-cortex-m3", name, c, before)
+    }
+
+    /// The same for any board of `boards/` that QEMU runs. What a test
+    /// has typed (`with_outside`) comes in at its first serial port.
+    fn on_the_board(which: &str, name: &str, c: &str, before: &[&str]) -> Option<(String, String, bool)> {
+        let (folder, board) = board_named(which);
         let there = |tool: &str| Command::new(tool).arg("--version").output().is_ok();
         if !there(&board.compiler) || !there(&board.run[0]) {
             eprintln!("no `{}` or no `{}` here; skipping the run on the emulated board", board.compiler, board.run[0]);
@@ -16751,7 +16780,7 @@ print(d.value)
     /// its `zeno.board` names is there.
     #[test]
     fn the_emulated_board_has_its_files() {
-        let (folder, board) = emulated_board();
+        let (folder, board) = board_named("qemu-cortex-m3");
         assert_eq!(board.missing(&folder), Vec::<String>::new());
         assert_eq!(board.compiler, "arm-none-eabi-gcc");
         // It has no header: its pins are the simulated ones.
@@ -16829,10 +16858,178 @@ print(d.value)
         assert_eq!(printed, wanted);
         assert!(!finished);
         assert_eq!(errors, "error: uncaught IndexError: index 5 is out of range for a list of length 3\n --> test.zeno:54:7\n");
-        // The least C, which checks nothing, so without the mistake.
-        let minimal = compile_minimal(source, Build::NoCollector, false);
+        // The least C, which checks nothing, so without the mistake, as
+        // `--board --minimal` writes it: `print` through the runtime.
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        let options = Options { minimal: true, board_prints: true, ..Default::default() };
+        let minimal = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
         let (printed, errors, finished) = on_the_emulated_board("cortex-m3-minimal", &minimal, &["-Os"]).expect("as above");
         assert_eq!((printed, errors.as_str(), finished), (wanted, "", true));
+    }
+
+    /// A header that says `ZENO_BOARD_PRINTS` brings four functions,
+    /// and then nothing of the program goes through the C library's
+    /// streams or its `exit` (decision 52). This board, on a computer,
+    /// shows it by crossing the two streams: what is printed comes out
+    /// of the error stream, what is said beside it out of the other, and
+    /// the number a program stops with is 40 more than it gave.
+    const PRINTING_BOARD: &str = "#include <stdio.h>\n\
+        #include <stdlib.h>\n\
+        #define ZENO_BOARD_PRINTS\n\
+        #define ZENO_PINS 2\n\
+        static bool my_levels[ZENO_PINS];\n\
+        static bool zeno_board_read(int pin) { return my_levels[pin % 2]; }\n\
+        static void zeno_board_write(int pin, bool level) { my_levels[pin % 2] = level; }\n\
+        static void zeno_board_sleep(double seconds) { (void)seconds; }\n\
+        static double zeno_board_now(void) { return 0.0; }\n\
+        static void zeno_board_print(const char *bytes, size_t count) { fwrite(bytes, 1, count, stderr); }\n\
+        static void zeno_board_warn(const char *bytes, size_t count) { fwrite(bytes, 1, count, stdout); }\n\
+        static int zeno_board_typed(void) {\n\
+        \x20   static const char typed[] = \"Ada\\n\";\n\
+        \x20   static size_t at = 0;\n\
+        \x20   return at < sizeof typed - 1 ? typed[at++] : -1;\n\
+        }\n\
+        static void zeno_board_stop(int status) { exit(status + 40); }\n";
+
+    /// The C of every kind of build, with `PRINTING_BOARD` under it:
+    /// what came out of each stream, and the number it ended with.
+    fn on_the_printing_board(name: &str, source: &str, with_minimal: bool) -> Vec<(String, String, Option<i32>)> {
+        let dir = std::env::temp_dir().join(format!("zeno-test-{}-{name}-header", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temporary folder");
+        let file = dir.join("printing_board.h");
+        std::fs::write(&file, PRINTING_BOARD).expect("the header is written");
+        let flag = format!("-DZENO_BOARD=\"{}\"", file.display());
+        let mut kinds = vec![compile(source).unwrap(), compile_firmware(source).unwrap(), compile_no_collector(source).unwrap()];
+        if with_minimal {
+            let program = crate::modules::testing::built(source);
+            for (build, grows) in [(Build::Ordinary, false), (Build::NoCollector, false), (Build::Firmware, false)] {
+                let (errors, types) = crate::checker::check_by(&program, build.rules());
+                assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+                let options = Options { grows, minimal: true, board_prints: true, board_header: true, ..Default::default() };
+                kinds.push(emit_with(&program, &types, "test.zeno", build, options).expect("it builds"));
+            }
+        }
+        let mut ran = Vec::new();
+        for c in kinds {
+            let Some(output) = built_output(name, &c, &[&flag]) else { break };
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            ran.push((text(&output.stdout), text(&output.stderr), output.status.code()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        ran
+    }
+
+    #[test]
+    fn a_board_can_print_read_and_stop_by_itself() {
+        let source = "import program\n\
+                      print(\"a\", 1, 2.5, [1, 2])\n\
+                      program.warn(\"careful\")\n\
+                      let name = input(\"name? \")\n\
+                      print(f\"hi {name}\")\n\
+                      print(input())\n\
+                      program.exit(3)\n";
+        for (warned, printed, status) in on_the_printing_board("board-prints", source, true) {
+            // Nothing more was typed: the board said so with -1.
+            assert_eq!(printed, "a 1 2.5 [1, 2]\nname? hi Ada\nnone\n");
+            assert_eq!(warned, "careful\n");
+            assert_eq!(status, Some(43));
+        }
+        // The error that stops a program is said through the board too,
+        // and the program stops through it.
+        for (said, printed, status) in on_the_printing_board("board-stops", "let numbers = [1, 2, 3]\nprint(\"before\")\nprint(numbers[5])\n", false) {
+            assert_eq!(printed, "before\n");
+            assert_eq!(said, "error: uncaught IndexError: index 5 is out of range for a list of length 3\n --> test.zeno:3:7\n");
+            assert_eq!(status, Some(41));
+        }
+    }
+
+    /// A minimal build writes `print` as `printf`, and only the half of
+    /// the outside that the C library does. For a board it writes
+    /// `print` through the runtime, and for a board with a header it
+    /// leaves the choice of who prints to the header (decision 52.4).
+    #[test]
+    fn a_minimal_build_prints_through_a_board_that_has_a_header() {
+        let source = "let n = 3\nprint(\"n is\", n)\n";
+        let plain = compile_minimal(source, Build::NoCollector, false);
+        assert!(plain.contains("printf(") && !plain.contains("ZENO_BOARD"), "{plain}");
+        let program = crate::modules::testing::built(source);
+        let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+        // A board with no header: the runtime prints, through the C library.
+        let options = Options { minimal: true, board_prints: true, ..Default::default() };
+        let bare = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+        assert!(!bare.contains("printf(") && !bare.contains("ZENO_BOARD") && bare.contains("fwrite(bytes, 1, count, stdout);"), "{bare}");
+        let options = Options { minimal: true, board_prints: true, board_header: true, ..Default::default() };
+        let board = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+        assert!(!board.contains("printf("), "{board}");
+        for wanted in ["#include ZENO_BOARD\n", "#ifdef ZENO_BOARD_PRINTS\n", "zeno_board_print(bytes, count);", "zeno_print(2, \"n is\", "] {
+            assert!(board.contains(wanted), "no `{wanted}` in:\n{board}");
+        }
+        // The report of `--memory` cannot be written by a board that
+        // stops itself, and the C says so when it is compiled.
+        let options = Options { minimal: true, board_prints: true, board_header: true, memory_report: true, ..Default::default() };
+        let reported = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+        assert!(reported.contains("#error \"`--memory` does not go with a board that prints and stops itself"), "{reported}");
+    }
+
+    /// The board in `boards/lm3s6965evb` is the same chip with a header
+    /// of its own: pins that are registers of the chip, its SysTick
+    /// clock, its UARTs, and `print` through UART0 with no `printf`
+    /// under it. QEMU emulates the chip, so this runs with no hardware.
+    #[test]
+    fn a_program_prints_through_the_registers_of_a_cortex_m3() {
+        let (folder, board) = board_named("lm3s6965evb");
+        assert_eq!(board.missing(&folder), Vec::<String>::new());
+        assert_eq!(board.header.as_deref(), Some("board.h"));
+        assert_eq!(board.sources, ["startup.c"]);
+        let source = "from board import led, pin, input_pin, pull_up, serial\n\
+                      from time import sleep, now\n\
+                      import program\n\
+                      \n\
+                      function half(n: int) -> int {\n\
+                          return 100 // n\n\
+                      }\n\
+                      \n\
+                      let before = now()\n\
+                      led.on()\n\
+                      print(led, led.is_on(), pin(40).is_on(), pin(3).is_on())\n\
+                      led.off()\n\
+                      pin(3).on()\n\
+                      print(led.is_on(), pin(40).is_on(), pin(3).is_on(), pin(4).is_on(), pin(55).is_on())\n\
+                      let button = input_pin(41, pull_up)\n\
+                      print(button.number, pin(3).is_on())\n\
+                      sleep(20 ms)\n\
+                      print(now() - before >= 20 ms, now() - before < 200 ms)\n\
+                      let port = serial(0, 115200 baud)\n\
+                      port.write(\"over the serial port\\n\")\n\
+                      let big: u64 = 18446744073709551615\n\
+                      print(2 ** 40, -7 // 2, big, 0.1 + 0.2, 1e300 * 10.0, true, [1, 2, 3], \"héllo\".upper())\n\
+                      program.warn(\"careful\")\n\
+                      let name = input(\"name? \")\n\
+                      print(f\"hi {name}, {half(4)} is a quarter\")\n";
+        let wanted = "Pin(13) true true false\n\
+                      false false true false false\n\
+                      41 true\n\
+                      true true\n\
+                      over the serial port\n\
+                      1099511627776 -4 18446744073709551615 0.30000000000000004 1e301 true [1, 2, 3] HéLLO\n\
+                      name? hi Ada, 25 is a quarter\n";
+        crate::value::testing::with_outside("Ada\n", &[], || {
+            let checked = compile_no_collector(&format!("{source}print(half(0))\n")).unwrap();
+            let Some((printed, errors, finished)) = on_the_board("lm3s6965evb", "registers", &checked, &["-O2"]) else {
+                return;
+            };
+            assert_eq!(printed, wanted);
+            assert!(!finished);
+            assert_eq!(errors, "careful\nerror: uncaught ZeroDivisionError: division by zero\n --> test.zeno:6:8\n");
+            // The least C, which checks nothing, so without the mistake.
+            let program = crate::modules::testing::built(source);
+            let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+            let options = Options { minimal: true, board_prints: true, board_header: true, ..Default::default() };
+            let minimal = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+            let (printed, errors, finished) = on_the_board("lm3s6965evb", "registers-minimal", &minimal, &["-Os"]).expect("as above");
+            assert_eq!((printed.as_str(), errors.as_str(), finished), (wanted, "careful\n", true));
+        });
     }
 
     /// A function that is handed a port, in a program that makes none,

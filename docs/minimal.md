@@ -102,7 +102,10 @@ each.
    `#define` and `#include` of the runtime that the program does not
    reach is left out, and so is a function of the program that nothing
    calls.
-4. **`print` is `printf`**, or `puts` for words alone.
+4. **`print` is `printf`**, or `puts` for words alone. (Not in a
+   build for a board, `--board`: on a chip `printf` is copied into the
+   program, some 20 KB of it, so `print` stays with the runtime there.
+   Decision 52.4.)
 5. **Statements the short way.** `x += 1`, not `x = (x + 1)`, and the
    top of the program is the body of `main`.
 6. **`-Os`.** The C compiler is asked for a small program.

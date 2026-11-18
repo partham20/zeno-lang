@@ -15651,3 +15651,291 @@ tools are not installed.
 - An end to what is typed over a serial port, so that a program that
   reads to the end can be tried on a board.
 - A trial on a real board.
+
+## 52. `print`, and the end of a program, through the board
+
+A build for a board (chapter 51) still stood on a C library. `print`
+was `fwrite` to a stream, the message of an error was `fprintf`,
+`input` was `fgetc`, and a program that stopped called `exit`. On a
+computer those four are given. On a chip somebody has to bring them:
+`boards/qemu-cortex-m3` does it with newlib and a file of the
+functions newlib leaves open, and `hello` took 9,772 bytes of flash
+there, most of it the C library's streams. A board with a vendor's
+library and no streams at all could not be built for.
+
+This chapter is the second part of item 8 of
+[`missing.md`](missing.md). **A board's header may now bring the four
+itself, and then nothing in the runtime writes, reads or stops through
+the C library.** `hello` takes 936 bytes.
+
+```c
+#define ZENO_BOARD_PRINTS
+
+static void zeno_board_print(const char *bytes, size_t count) { ... }
+static void zeno_board_warn(const char *bytes, size_t count)  { ... }
+static int  zeno_board_typed(void)                             { ... }
+static void zeno_board_stop(int status)                        { ... }
+```
+
+Nothing in the language changes, and nothing a program prints
+changes, on a computer or on a board.
+
+### 52.1 Four functions, and one line that says the board has them
+
+A program reaches outside itself in four ways, pins aside. It prints
+(`print`, the question of `input`). It says something beside what it
+prints: a warning (`program.warn`, 34.3), and the message of the error
+that stops it. It reads what is typed (`input`). And it ends before
+its last line: `program.exit(code)` (34.1), or an error.
+
+| the board writes | for | what it must do |
+|---|---|---|
+| `zeno_board_print(bytes, count)` | `print`, `input`'s question | send these bytes where printed text goes |
+| `zeno_board_warn(bytes, count)` | `program.warn`, an error's message | send them where a person looks for trouble |
+| `zeno_board_typed()` | `input` | the next byte typed, after waiting for it, or -1 if none can ever come |
+| `zeno_board_stop(status)` | `program.exit`, an error | the program is over; 0, the number it gave, or 1 after an error |
+
+**Why bytes and a count, and not one character at a time.** A serial
+port with a queue, a USB endpoint and a debugger's channel all take a
+run of bytes at once, and a call for each character is a cost a board
+cannot take back. A board that can only send one writes the loop
+itself, in three lines. **Why a count and not text that ends in a
+zero**: the runtime knows the length already, and the board would
+count it again.
+
+**Why `warn` is a function of its own.** A computer has two streams so
+that what a program prints can go to a file while what goes wrong
+stays on the screen (34.3). A board has the same two readers: the
+thing the program talks to, and the engineer. A board with one wire
+writes `zeno_board_warn` as a call to `zeno_board_print`, and that is
+then a choice somebody made.
+
+**Why -1 from `typed`.** `input` gives `none` when nothing more can be
+typed, and reading a file on a computer ends. A serial port never
+ends, so a board on one never answers -1 and `input` waits. A board
+with nothing to read from answers -1 at once.
+
+**Why one line says it, `#define ZENO_BOARD_PRINTS`, and the four are
+not simply looked for.** C cannot ask whether a function exists. And
+the headers that were there before this chapter have pins and a clock
+and no printing: without the line they build as they did, on the C
+library (the rule of 45.4: what was written before a part existed
+still builds). **Why all four together, and not each when the program
+uses it**, as the parts of the board are (45.4). A program that never
+calls `input` still must not pull in `fgetc`, and a board that prints
+by itself and reports its errors through `stderr` is a board whose
+errors go nowhere. The four are one decision, "this board has no
+streams", and one line makes it.
+
+### 52.2 The runtime has one way out
+
+Every place in `runtime.c` that wrote to a stream, read from one or
+called `exit` now goes through five functions at the top of the file:
+`zeno_out`, `zeno_out_now` (what was printed is to be seen before a
+wait), `zeno_say`, `zeno_typed` and `zeno_stop`. They are written out
+once, below the board, in two halves: the board's four, or the C
+library's.
+
+**The messages no longer go through `fprintf`.** There were under
+twenty of them (`error: out of memory`, the uncaught error with its
+file and line, the memory pool that is full, the report of
+`--memory`), and between them they used `%s`, `%d` and `%zu`.
+`zeno_sayf` does those three in under forty lines.
+`fprintf` does everything, and on newlib everything is 20 KB of
+flash, in every program that can fail, which is every checked one.
+
+**On a computer nothing changes.** The same bytes go to the same
+stream in the same order: what was printed is still pushed out before
+anything is said on the error stream, so the two keep their order on
+a screen. All the tests that were there pass as they were.
+
+**One place stopped a program with `abort`**: the memory lent to a
+function of C for a list (44.10), when there was none to lend. On
+newlib `abort` raises a signal, which asks for a system with
+processes, and `examples/modbus.zeno` did not link for the second
+board. It says `error: out of memory` and stops with 1 now, as every
+other place that runs out does, on a computer too.
+
+**What still asks the C library for something on such a board**:
+copying and measuring memory (`memcpy`, `memset`, `strlen`, which
+every compiler for a chip brings), and a number with a fraction,
+which `snprintf` makes into text and `strtod` reads. A float in a
+program still costs 28 KB of newlib. That is the next part (52.9).
+
+### 52.3 A program that reaches its last line returns from `main`
+
+`zeno_board_stop` is called by `program.exit` and by an error.
+**A program that simply ends is not stopped: `main` returns 0**, as
+any C program does, to whatever called it, which on a board is the
+start-up file.
+
+**Why not call `zeno_board_stop(0)` there too.** The start-up file
+calls `main` and has to say what comes after it in any case, for C
+that was not written by Zeno as well. A second way to the same place
+would be a second thing to get wrong. The header and the start-up file
+are one board, and on the board that comes with Zeno they share one
+function (`board_stops`).
+
+### 52.4 `--minimal` for a board never writes `printf`
+
+A minimal build writes `print` as `printf` (30.6), and only what the
+program uses. For a board that is changed in two ways.
+
+**In a build for a board, `print` goes through the runtime's
+`zeno_print`, and not to `printf`.** On a computer `printf` is free:
+it is in a library every program shares. On a chip it is copied into
+the program, and newlib's is 20 KB. The first run of the size table
+after 52.2 showed it: with `fprintf` gone from the runtime, the build
+that checks had become smaller than the minimal one on the board with
+a C library (`examples/buffer.zeno`: 15,888 bytes checked, 33,584
+minimal), and the whole difference was `printf`. And a board that
+prints by itself has no `printf` to call at all.
+
+**Why for every board, and not only for one whose header says
+`ZENO_BOARD_PRINTS`.** One rule, "a build for a board", needs no
+reading of the header's C, and is the smaller program on both kinds
+of board.
+
+**For a board with a `header` line, both halves of 52.2 are written
+and the header chooses**, as in a checked build. Zeno would have to
+read the C of the header to know which half is wanted, and the line
+may stand in a file the header includes. **The header is kept in such
+a build even when the program touches no pin**, since it is where the
+line is, and it may count on the sized numbers (`uint32_t` and the
+rest), `bool`, `size_t` and `ZENO_LED` without including anything. In
+a checked build the whole runtime stands above the header, so this
+was always true there.
+
+**A minimal build for a computer is as it was, byte for byte**: `print`
+is `printf`, only the C library's half is written, and
+`print("Hello")` is still one `puts`.
+
+### 52.5 A second board: the same chip, on its own registers
+
+**[`boards/lm3s6965evb`](../boards/lm3s6965evb) is the chip QEMU
+emulates, with a header of its own.** `board.h` is the board layer
+written for real: a pin is a bit of a GPIO port, the clock is the
+SysTick timer, a serial port is a UART, `print` goes out of UART0, and
+a warning and the end of the program go to the debugger
+(semihosting). `startup.c` asks the C library for nothing.
+
+| | pins | `print` | C library under it |
+|---|---|---|---|
+| `boards/qemu-cortex-m3` | simulated: a line of text for each change | newlib's `fwrite` | newlib, whole |
+| `boards/lm3s6965evb` | the chip's ports A to G | the board's UART0 | `memcpy`, `strlen`; `snprintf` only for a float |
+
+**Why keep the first.** Its simulated pins print what a computer
+prints, so every example with a pin in it can be held to the computer
+byte for byte (51.7), and it is the proof that a board with no header
+and a full C library still builds. The second is the proof of this
+chapter, and the pattern for a real board.
+
+**The pins are numbered port by port**, 0 to 7 for PA0 to PA7 up to
+48 to 55 for port G, because that is the order of the data sheet and
+needs no table. **The LED is pin 13 to a Zeno program, as everywhere
+(5.12b), and PF0 on this board**, where the board's LED is. PB5, which
+the numbering would make 13, is not reached. That is the price of
+`led` meaning the same in every program.
+
+**What is tried, and what is not.** QEMU emulates the processor, the
+SysTick timer, the direction and the level of every pin, and the data
+and the flags of the UARTs. A program that drives a pin and reads it
+back, sleeps, prints, reads a line and stops with an error does all of
+that through the same registers a real chip has, and the tests hold
+it to the answers. QEMU does not emulate a pull-up (an input with one
+reads low there), the speed of a UART, or the clocks of the ports.
+**Those lines are written from the data sheet and have been run
+nowhere. None of the folder has run on the chip itself.**
+
+**Two functions stay for the C library's sake**, in `startup.c`:
+`_sbrk`, the memory `snprintf` takes while it makes a float into text,
+and `__assert_func`, what newlib calls if it finds a fault in itself.
+Newlib's own `__assert_func` prints with `fprintf`, which would bring
+every stream back into any program with a float in it. The linker
+leaves both out of a program that has none.
+
+**The UART holds one byte at a time.** The chip can queue sixteen,
+and turning the queue on empties it, in QEMU as on the chip: a byte
+typed before the program started would be lost. A board that is sent
+bytes faster than its program reads them wants the queue and an
+interrupt (52.9).
+
+### 52.6 What it buys, measured
+
+Flash and RAM in bytes, `arm-none-eabi-gcc` 13.2 with newlib 4.4, the
+build that checks:
+
+| program | before this chapter | `qemu-cortex-m3` | `lm3s6965evb` |
+|---|---|---|---|
+| `hello.zeno` | 9,772 | 9,472 | 936 |
+| `blink.zeno` | 29,984 | 29,984 | 3,996 |
+| `signal.zeno` | 31,296 | 31,016 | 4,844 |
+| `buffer.zeno` | 35,536 | 15,888 | 7,464 |
+| `modbus.zeno` | 34,520 | 14,452 | 9,720 |
+| `words.zeno` | 38,432 | 18,704 | 10,408 |
+| `primes.zeno` | 38,568 | 33,032 | 25,360 |
+| `tour.zeno` | 50,184 | 44,504 | 36,840 |
+
+The first column is the only board there was, `qemu-cortex-m3`, the
+commit before. **The second column is the same board now: with
+`fprintf` out of the runtime (52.2), a program that shows no float
+lost 20 KB there too**, with a whole C library still under it.
+`blink` did not move on that board, because its simulated pins print
+with `printf`. `hello` and `blink` take 20 bytes of RAM on the second
+board.
+
+The last two rows show a float, and
+28 KB of what is left is `snprintf`, `strtod` and the memory they
+ask for.
+
+A program of whole numbers and text carries `memcpy`, `memset` and
+`strlen` of the C library and nothing else. `blink` is larger than
+`hello` because `sleep(500 ms)` counts in a `double`, and this
+processor does that in software.
+
+In the minimal build `buffer` went from 33,584 bytes to 13,776 on the
+first board when `print` stopped being `printf` there (52.4). A
+program with a float in it has that machinery anyway, and pays a
+little for the change: `primes` went from 30,304 to 31,880, and 1 KB
+of RAM for the room where a number is made into text.
+
+### 52.7 How it is held to its word
+
+- **`a_board_can_print_read_and_stop_by_itself`** runs on a computer,
+  under every kind of build and the minimal ones, with a header that
+  crosses the streams: what is printed comes out of the error stream,
+  a warning out of the other, and the number a program stops with is
+  40 more than it gave. Nothing reaches the C library's side.
+- **`a_program_prints_through_the_registers_of_a_cortex_m3`** runs on
+  the emulated chip: the LED and pins driven and read back, the clock,
+  a serial port, numbers of 64 bits, a float, a list, a warning, a
+  line typed to `input`, and a division by zero that stops it with
+  its file and line. Checked and minimal.
+- **`tools/board.py` tries every program on both boards** (51.7). On
+  the day this was written: 228 of 228 programs on `qemu-cortex-m3` and 208 of 208
+  on `lm3s6965evb` in the build that checks, and 212 of 212 and 193
+  of 193 in the minimal one. On the board with pins of its own
+  a program that uses the `board` module is left out and counted: a
+  simulated pin prints a line when it changes, and a real one does
+  not.
+
+### 52.8 `--memory` does not go with such a board yet
+
+The report of `--memory` is written as the C library ends the program
+(`atexit`), and a board that stops itself does not end that way.
+**The C says so when it is compiled** (`#error`), and the build stops
+with that line, so nobody waits for a report that cannot come. On a
+board with no `ZENO_BOARD_PRINTS` it works as before.
+
+### 52.9 Left for later
+
+- A float made into text, and read, without `snprintf` and `strtod`:
+  the last 28 KB of C library in a program for a board.
+- The checks without GCC's built-ins (the rest of item 8).
+- The report of `--memory` through the board (52.8).
+- An analog pin, a PWM pin and an interrupt in the header of
+  `boards/lm3s6965evb`: the chip and QEMU have a converter and timers.
+- The UART's queue and an interrupt for what comes in (52.5).
+- A board that runs alone, with no debugger: its warnings out of a
+  serial port, and a loop or a reset where the program stops.
+- A trial on a real board.

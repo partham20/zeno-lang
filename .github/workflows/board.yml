@@ -1,12 +1,14 @@
 # Holds a program built for a board to the same program built for a
-# computer (decision 51.7).
+# computer (decisions 51.7 and 52.7).
 #
 # `zeno build --board boards/qemu-cortex-m3` makes a program for an ARM
 # Cortex-M3 that QEMU emulates: a 32-bit processor with no floating
 # point of its own, 64 KB of RAM and no system under the program.
+# `boards/lm3s6965evb` is the same chip with a header of its own: its
+# pins are registers, and it prints with no `printf` under it.
 # tools/board.py builds every example, every sample of the book and the
-# corner programs in tools/targets/ for that board and for the computer,
-# with and without --minimal, and compares what the two do.
+# corner programs in tools/targets/ for both boards and for the
+# computer, with and without --minimal, and compares what they do.
 #
 # On a push that changes the C backend, the runtime or a board, and by
 # hand from the Actions page ("Run workflow").
@@ -50,6 +52,8 @@ jobs:
           cargo test --release board_build
           cargo test --release emulated_board
           cargo test --release cortex_m3 -- --nocapture
+          cargo test --release a_board_can_print
+          cargo test --release a_minimal_build_prints_through
 
       - name: Every program, built for the board and for the computer
         run: python3 tools/board.py

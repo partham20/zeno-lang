@@ -126,6 +126,63 @@ __attribute__((constructor)) static void zeno_plain_line_ends(void) {
 }
 #endif
 
+/* ---------------------------------------------------------------- Outside
+ *
+ * A program reaches outside itself in four ways: it prints, it says
+ * something beside what it prints (a warning, or the message of the
+ * error that stops it), it reads what is typed, and it ends. On a
+ * computer the C library does the four (`stdout`, `stderr`, `stdin`,
+ * `exit`). A chip has none of those, and a board's header may bring
+ * the four itself (`ZENO_BOARD_PRINTS`, docs/board.md). Everything in
+ * this file goes through the functions declared here, and never to the
+ * C library directly. They are written out below the board, where it
+ * is known who supplies them. */
+static void zeno_out(const char *bytes, size_t count);
+static void zeno_out_now(void);
+static void zeno_say(const char *bytes, size_t count);
+static int zeno_typed(void);
+__attribute__((noreturn)) static void zeno_stop(int status);
+
+/* A message for the error stream, with `%s` (text), `%d` (an int) and
+ * `%zu` (a size) filled in: all that the messages of this file ask of
+ * `fprintf`, without asking the C library for it. */
+static void zeno_sayf(const char *format, ...) {
+    va_list values;
+    va_start(values, format);
+    const char *from = format;
+    for (const char *at = format;; at++) {
+        if (*at != '%' && *at != '\0') continue;
+        if (at > from) zeno_say(from, (size_t)(at - from));
+        if (*at == '\0') break;
+        at++;
+        if (*at == 's') {
+            const char *text = va_arg(values, const char *);
+            zeno_say(text, strlen(text));
+        } else {
+            char digits[24];
+            char *end = digits + sizeof digits, *p = end;
+            unsigned long long number;
+            bool below_zero = false;
+            if (*at == 'z') {
+                at++;
+                number = (unsigned long long)va_arg(values, size_t);
+            } else {
+                long long whole = va_arg(values, int);
+                below_zero = whole < 0;
+                number = (unsigned long long)(below_zero ? -whole : whole);
+            }
+            do {
+                *--p = (char)('0' + number % 10);
+                number /= 10;
+            } while (number != 0);
+            if (below_zero) *--p = '-';
+            zeno_say(p, (size_t)(end - p));
+        }
+        from = at + 1;
+    }
+    va_end(values);
+}
+
 /* The Zeno source file, for error messages. Set at the top of main. */
 static const char *zeno_file = "";
 
@@ -184,9 +241,8 @@ static const char *zeno_kind_shown(const char *kind) {
 #endif
 
 static void zeno_out_of_memory(void) {
-    fflush(stdout);
-    fprintf(stderr, "error: out of memory\n");
-    exit(1);
+    zeno_sayf("error: out of memory\n");
+    zeno_stop(1);
 }
 
 /* Where blocks live: pages.
@@ -818,19 +874,18 @@ static void zeno_free(void *memory) {
 /* What a program built with `zeno build --memory` prints as it ends. */
 #ifdef ZENO_MEMORY_REPORT
 static void zeno_memory_report(void) {
-    fflush(stdout);
     /* "1 block", "2 blocks": the report is read by people. */
-    fprintf(stderr, "memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, %zu collection%s",
-            zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
-            zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_collections, zeno_collections == 1 ? "" : "s");
+    zeno_sayf("memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, %zu collection%s",
+              zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
+              zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_collections, zeno_collections == 1 ? "" : "s");
     if (zeno_blocks_freed_at_once > 0) {
-        fprintf(stderr, ", %zu block%s freed without the collector", zeno_blocks_freed_at_once,
-                zeno_blocks_freed_at_once == 1 ? "" : "s");
+        zeno_sayf(", %zu block%s freed without the collector", zeno_blocks_freed_at_once,
+                  zeno_blocks_freed_at_once == 1 ? "" : "s");
     }
-    fprintf(stderr, "\n");
+    zeno_sayf("\n");
     if (zeno_by_hand_made > 0) {
-        fprintf(stderr, "by hand: %zu block%s from `allocate`, %zu never freed\n", zeno_by_hand_made,
-                zeno_by_hand_made == 1 ? "" : "s", zeno_by_hand_made - zeno_by_hand_freed);
+        zeno_sayf("by hand: %zu block%s from `allocate`, %zu never freed\n", zeno_by_hand_made,
+                  zeno_by_hand_made == 1 ? "" : "s", zeno_by_hand_made - zeno_by_hand_freed);
     }
 }
 #endif
@@ -930,9 +985,8 @@ static size_t zeno_pool_taken = 0;    /* bytes asked of the system, in all */
 static zeno_spare *zeno_pool_spare[ZENO_POOL_STEPS];
 
 static void zeno_pool_full(void) {
-    fflush(stdout);
-    fprintf(stderr, "error: out of memory\n");
-    exit(1);
+    zeno_sayf("error: out of memory\n");
+    zeno_stop(1);
 }
 
 /* Room for `whole` more bytes, from the newest piece or a new one. What
@@ -996,9 +1050,8 @@ static size_t zeno_pool_top = 0;
 static zeno_spare *zeno_pool_spare[ZENO_POOL_STEPS];
 
 static void zeno_pool_full(void) {
-    fflush(stdout);
-    fprintf(stderr, "error: the memory pool is full (ZENO_POOL is %d bytes)\n", (int)ZENO_POOL);
-    exit(1);
+    zeno_sayf("error: the memory pool is full (ZENO_POOL is %d bytes)\n", (int)ZENO_POOL);
+    zeno_stop(1);
 }
 
 /* Memory for a list, an object, an error or kept text, as it was left.
@@ -1072,9 +1125,8 @@ static void zeno_free(void *memory) {
     zeno_spare *block = (zeno_spare *)((char *)memory - sizeof(zeno_head));
 #ifndef ZENO_MINIMAL
     if (block->head.asked == 0) {
-        fflush(stdout);
-        fprintf(stderr, "error: a block of memory was given back twice\n");
-        exit(1);
+        zeno_sayf("error: a block of memory was given back twice\n");
+        zeno_stop(1);
     }
 #endif /* ZENO_MINIMAL */
 #ifdef ZENO_HEAP
@@ -1168,10 +1220,9 @@ static size_t zeno_text_top = 0;
 
 static char *zeno_alloc_text(size_t size) {
     if (size > (size_t)ZENO_TEXT_ROOM - zeno_text_top) {
-        fflush(stdout);
-        fprintf(stderr, "error: a statement built more text than there is room for (ZENO_TEXT_ROOM is %d bytes)\n",
-                (int)ZENO_TEXT_ROOM);
-        exit(1);
+        zeno_sayf("error: a statement built more text than there is room for (ZENO_TEXT_ROOM is %d bytes)\n",
+                  (int)ZENO_TEXT_ROOM);
+        zeno_stop(1);
     }
     char *text = zeno_text_room + zeno_text_top;
     zeno_text_top += size;
@@ -1287,20 +1338,19 @@ static const char *zeno_text_return(size_t mark, const char *text) {
  * program that ran to its last line should have no blocks left. */
 #ifdef ZENO_MEMORY_REPORT
 static void zeno_memory_report(void) {
-    fflush(stdout);
     /* "1 block", "2 blocks": the report is read by people. */
-    fprintf(stderr, "memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, no collector, %zu block%s left at the end\n",
-            zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
-            zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_blocks_held, zeno_blocks_held == 1 ? "" : "s");
+    zeno_sayf("memory: %zu block%s made (%zu byte%s), at most %zu byte%s in use at once, no collector, %zu block%s left at the end\n",
+              zeno_blocks_made, zeno_blocks_made == 1 ? "" : "s", zeno_bytes_made, zeno_bytes_made == 1 ? "" : "s",
+              zeno_most_in_use, zeno_most_in_use == 1 ? "" : "s", zeno_blocks_held, zeno_blocks_held == 1 ? "" : "s");
 #ifdef ZENO_HEAP
-    fprintf(stderr, "pool: %zu byte%s taken from the system, in %d piece%s\n", zeno_pool_taken, zeno_pool_taken == 1 ? "" : "s",
-            zeno_piece_count, zeno_piece_count == 1 ? "" : "s");
-    fprintf(stderr, "text: at most %zu byte%s in use at once, in %d room%s\n", zeno_most_text,
-            zeno_most_text == 1 ? "" : "s", zeno_room_count, zeno_room_count == 1 ? "" : "s");
+    zeno_sayf("pool: %zu byte%s taken from the system, in %d piece%s\n", zeno_pool_taken, zeno_pool_taken == 1 ? "" : "s",
+              zeno_piece_count, zeno_piece_count == 1 ? "" : "s");
+    zeno_sayf("text: at most %zu byte%s in use at once, in %d room%s\n", zeno_most_text,
+              zeno_most_text == 1 ? "" : "s", zeno_room_count, zeno_room_count == 1 ? "" : "s");
 #else /* ZENO_HEAP */
-    fprintf(stderr, "pool: %zu byte%s taken, in a pool of %d\n", zeno_pool_top, zeno_pool_top == 1 ? "" : "s", (int)ZENO_POOL);
-    fprintf(stderr, "text: at most %zu byte%s in use at once, in a room of %d\n", zeno_most_text,
-            zeno_most_text == 1 ? "" : "s", (int)ZENO_TEXT_ROOM);
+    zeno_sayf("pool: %zu byte%s taken, in a pool of %d\n", zeno_pool_top, zeno_pool_top == 1 ? "" : "s", (int)ZENO_POOL);
+    zeno_sayf("text: at most %zu byte%s in use at once, in a room of %d\n", zeno_most_text,
+              zeno_most_text == 1 ? "" : "s", (int)ZENO_TEXT_ROOM);
 #endif /* ZENO_HEAP */
 }
 #endif
@@ -1445,14 +1495,13 @@ static int zeno_raised_col = 0;
 
 /* Nobody caught it: print what `zeno run` prints, and stop. */
 __attribute__((noreturn)) static void zeno_uncaught(void) {
-    fflush(stdout);
 #ifndef ZENO_MINIMAL
-    fprintf(stderr, "error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message,
-            zeno_file_of(zeno_raised_line), zeno_line_of(zeno_raised_line), zeno_raised_col);
+    zeno_sayf("error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message,
+              zeno_file_of(zeno_raised_line), zeno_line_of(zeno_raised_line), zeno_raised_col);
 #else /* ZENO_MINIMAL */
-    fprintf(stderr, "error: uncaught %s: %s\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message);
+    zeno_sayf("error: uncaught %s: %s\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message);
 #endif /* ZENO_MINIMAL */
-    exit(1);
+    zeno_stop(1);
 }
 
 #ifndef ZENO_FIRMWARE
@@ -1546,9 +1595,8 @@ __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *me
  * program is built, so there is very little left to report here. */
 #ifndef ZENO_MINIMAL
 __attribute__((noreturn)) static void zeno_bug(const char *message, int line, int col) {
-    fflush(stdout);
-    fprintf(stderr, "error: %s\n --> %s:%d:%d\n", message, zeno_file_of(line), zeno_line_of(line), col);
-    exit(1);
+    zeno_sayf("error: %s\n --> %s:%d:%d\n", message, zeno_file_of(line), zeno_line_of(line), col);
+    zeno_stop(1);
 }
 #endif /* ZENO_MINIMAL */
 
@@ -2086,11 +2134,12 @@ static void zeno_print(int count, ...) {
     va_list values;
     va_start(values, count);
     for (int i = 0; i < count; i++) {
-        if (i > 0) fputc(' ', stdout);
-        fputs(va_arg(values, const char *), stdout);
+        if (i > 0) zeno_out(" ", 1);
+        const char *text = va_arg(values, const char *);
+        zeno_out(text, strlen(text));
     }
     va_end(values);
-    fputc('\n', stdout);
+    zeno_out("\n", 1);
 }
 
 /* `a << n` and `a >> n`. An int has 64 bits, so `n` is 0 to 63. */
@@ -2609,6 +2658,82 @@ static double zeno_board_now(void) {
 
 #endif /* ZENO_BOARD */
 
+/* The outside (declared at the top of this file). A board header that
+ * says `#define ZENO_BOARD_PRINTS` brings four functions of its own for
+ * it (decision 52):
+ *
+ *   zeno_board_print(bytes, count)   what the program prints
+ *   zeno_board_warn(bytes, count)    what it says beside that: a
+ *                                    warning, and the message of the
+ *                                    error that stops it
+ *   zeno_board_typed()               the next byte that was typed,
+ *                                    after waiting for it, or -1 if
+ *                                    none can ever come
+ *   zeno_board_stop(status)          the program is over: 0, or 1 after
+ *                                    an error, or the number it ended
+ *                                    itself with
+ *
+ * Then nothing here writes, reads or stops through the C library.
+ * Without that line, and on a computer, the C library does the four. */
+#ifdef ZENO_BOARD_PRINTS
+
+static void zeno_out(const char *bytes, size_t count) {
+    zeno_board_print(bytes, count);
+}
+
+/* A board sends each byte as it is given it. */
+static void zeno_out_now(void) {
+}
+
+static void zeno_say(const char *bytes, size_t count) {
+    zeno_board_warn(bytes, count);
+}
+
+static int zeno_typed(void) {
+    return zeno_board_typed();
+}
+
+__attribute__((noreturn)) static void zeno_stop(int status) {
+    zeno_board_stop(status);
+    /* A board that comes back from that has nowhere to go. */
+    for (;;) {
+    }
+}
+
+#ifdef ZENO_MEMORY_REPORT
+/* The report of `--memory` is written as the C library ends the
+ * program, and a board that stops itself does not end that way. */
+#error "`--memory` does not go with a board that prints and stops itself (ZENO_BOARD_PRINTS) yet: decision 52.8"
+#endif /* ZENO_MEMORY_REPORT */
+
+#else /* ZENO_BOARD_PRINTS */
+
+static void zeno_out(const char *bytes, size_t count) {
+    fwrite(bytes, 1, count, stdout);
+}
+
+static void zeno_out_now(void) {
+    fflush(stdout);
+}
+
+/* What was printed so far goes first, so that the two streams keep
+ * their order on a screen. */
+static void zeno_say(const char *bytes, size_t count) {
+    fflush(stdout);
+    fwrite(bytes, 1, count, stderr);
+}
+
+static int zeno_typed(void) {
+    int byte = fgetc(stdin);
+    return byte == EOF ? -1 : byte;
+}
+
+__attribute__((noreturn)) static void zeno_stop(int status) {
+    exit(status);
+}
+
+#endif /* ZENO_BOARD_PRINTS */
+
 /* Registers: `register(u32, 0x40020014)`, then `.read()` and `.write(v)`
  * inside `unsafe { }`.
  *
@@ -2664,9 +2789,8 @@ static void zeno_register_write(int64_t address, int bits, int64_t value) {
     while (i < zeno_register_count && zeno_register_at[i] != address) i++;
     if (i == zeno_register_count) {
         if (i == ZENO_REGISTERS) {
-            fflush(stdout);
-            fprintf(stderr, "error: the simulated board remembers %d registers, and this is one more\n", ZENO_REGISTERS);
-            exit(1);
+            zeno_sayf("error: the simulated board remembers %d registers, and this is one more\n", ZENO_REGISTERS);
+            zeno_stop(1);
         }
         zeno_register_at[i] = address;
         zeno_register_count++;
@@ -4462,8 +4586,8 @@ static void zeno_line_add(char **line, size_t *used, size_t *room, char c) {
  * out, because text ends at one. */
 static const char *zeno_input(const char *question) {
     if (question != NULL) {
-        fputs(question, stdout);
-        fflush(stdout); /* on the screen before the program waits */
+        zeno_out(question, strlen(question));
+        zeno_out_now(); /* on the screen before the program waits */
     }
     char *line = NULL;
     size_t used = 0;
@@ -4471,7 +4595,7 @@ static const char *zeno_input(const char *question) {
     bool carriage = false; /* a "\r" is held back until the next byte is seen */
     bool got = false;      /* was there anything at all, even an empty line? */
     for (;;) {
-        int c = fgetc(stdin);
+        int c = zeno_typed();
         if (c == '\n') {
             got = true;
             break;
@@ -4480,7 +4604,7 @@ static const char *zeno_input(const char *question) {
             zeno_line_add(&line, &used, &room, '\r'); /* it was not before a "\n": it stays */
             carriage = false;
         }
-        if (c == EOF) break;
+        if (c < 0) break;
         got = true;
         if (c == '\r') {
             carriage = true;
@@ -4556,8 +4680,9 @@ static zeno_list *zeno_program_arguments(void) {
 }
 
 /* `program.exit(code)`: the program ends here, and whatever started it
- * is given `code`. `exit` sends what was printed first, and runs what
- * was asked to run at the end (the memory report). */
+ * is given `code`. On a computer that is C's `exit`, which sends what
+ * was printed first, and runs what was asked to run at the end (the
+ * memory report). */
 static void zeno_program_exit(int64_t code, int line, int col) {
 #ifndef ZENO_MINIMAL
     if (code < 0 || code > 255) {
@@ -4565,7 +4690,7 @@ static void zeno_program_exit(int64_t code, int line, int col) {
                   col);
     }
 #endif /* ZENO_MINIMAL */
-    exit((int)code);
+    zeno_stop((int)code);
 }
 
 /* `program.environment(name)`: a copy of what the environment says,
@@ -4614,9 +4739,8 @@ static const char *zeno_program_environment(const char *name) {
 /* `program.warn(text)`: one line on the error stream, after what was
  * printed so far, so that the two keep their order on a screen. */
 static void zeno_program_warn(const char *text) {
-    fflush(stdout);
-    fputs(text, stderr);
-    fputc('\n', stderr);
+    zeno_say(text, strlen(text));
+    zeno_say("\n", 1);
 }
 
 /* --------------------------------------------------- Values that may be none

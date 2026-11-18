@@ -1,0 +1,38 @@
+# The Stellaris LM3S6965 evaluation board (an ARM Cortex-M3, 256 KB of
+# flash, 64 KB of RAM), with a header of its own: the program drives the
+# chip's real pins, serial ports and clock, and prints through the
+# board, with no `printf` under it.
+#
+#     zeno build --board boards/lm3s6965evb examples/hello.zeno
+#
+# QEMU emulates this board (its machine `lm3s6965evb`), and that is the
+# only place these files have run. They have never run on the chip
+# itself. docs/board-build.md walks through them.
+
+about "The LM3S6965 evaluation board (ARM Cortex-M3), on its own pins and serial port"
+
+# The C compiler for ARM chips with no system on them, and the
+# processor it makes code for.
+compiler "arm-none-eabi-gcc"
+flags "-mcpu=cortex-m3" "-mthumb"
+
+# Each function in a part of its own, so that the linker can leave out
+# the ones the program never calls.
+flags "-ffunction-sections" "-fdata-sections"
+
+# What stands between a Zeno program and this chip: its pins, its
+# clock, its serial ports, and where `print` goes (docs/board.md).
+header "board.h"
+
+# What runs before `main`.
+sources "startup.c"
+
+# Where the flash and the RAM of the chip are.
+script "link.ld"
+
+# The start is startup.c, not the one that comes with the compiler.
+link "-nostartfiles" "-Wl,--gc-sections"
+
+# QEMU runs the program. What it prints comes out of the first serial
+# port, which `-nographic` joins to the terminal.
+run "qemu-system-arm" "-M" "lm3s6965evb" "-nographic" "-semihosting" "-kernel"

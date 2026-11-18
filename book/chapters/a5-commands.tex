@@ -144,6 +144,10 @@ Name & What it sets \\
 \verb|ZENO_BOARD| & a header that puts a real board under the program,
   in place of the simulated one: \verb|-DZENO_BOARD='"my_board.h"'|
   (\hyperref[ch-firmware]{Firmware}) \\
+\verb|ZENO_BOARD_PRINTS| & said by such a header, with
+  \verb|#define|, when it brings the four functions that print, warn,
+  read and stop in place of the C library
+  (\hyperref[ch-firmware]{Firmware}) \\
 \verb|ZENO_POOL| & the size of the pool in bytes for a build with no
   collector, 32\,768 unless set: \verb|-DZENO_POOL=25384| \\
 \verb|ZENO_TEXT_ROOM| & the size of the text room in bytes, for the same

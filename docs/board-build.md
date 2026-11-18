@@ -180,22 +180,78 @@ How much of the chip a program takes, in bytes, as
 
 | program | flash | flash, `--minimal` | RAM | RAM, `--minimal` |
 |---|---|---|---|---|
-| `hello.zeno` | 9,772 | 9,240 | 1,756 | 1,756 |
+| `hello.zeno` | 9,472 | 9,432 | 1,756 | 1,756 |
+| `buffer.zeno` | 15,888 | 13,776 | 35,700 | 35,692 |
 | `blink.zeno` | 29,984 | 29,904 | 2,184 | 2,184 |
-| `signal.zeno` | 31,296 | 30,440 | 2,240 | 2,236 |
-| `doorbell.zeno` | 32,680 | 30,328 | 36,144 | 2,232 |
-| `tachometer.zeno` | 33,624 | 31,016 | 36,896 | 2,984 |
-| `primes.zeno` | 38,568 | 30,304 | 36,048 | 2,136 |
-| `thermostat.zeno` | 39,296 | 30,216 | 36,068 | 35,016 |
-| `tour.zeno` | 50,184 | 48,664 | 36,092 | 36,076 |
+| `signal.zeno` | 31,016 | 30,800 | 2,240 | 2,240 |
+| `doorbell.zeno` | 32,280 | 31,464 | 36,144 | 3,260 |
+| `tachometer.zeno` | 33,488 | 32,144 | 36,896 | 4,012 |
+| `primes.zeno` | 33,032 | 31,880 | 36,048 | 3,164 |
+| `thermostat.zeno` | 33,520 | 32,536 | 36,068 | 36,040 |
+| `tour.zeno` | 44,504 | 43,768 | 36,092 | 36,076 |
 
 A program that makes a list or an object, or builds text, has the pool
 and the room for text in its RAM, about 34 KB together, whose sizes
 are fixed when the program is built ([`pool.md`](pool.md)). A program
 with neither, like `blink.zeno`, takes 2 KB. Most of the flash of a
-small program is the C library's `printf` and what it needs:
-`hello.zeno` prints its one line with `puts` and takes 10 KB, and
-`blink.zeno`, whose simulated pins print with `printf`, takes 30 KB.
+small program on this board is the C library: its streams are 8 KB of
+`hello.zeno`, and `printf` is 20 KB more for a program that shows a
+number with a fraction (`primes.zeno`) or drives a simulated pin
+(`blink.zeno`, whose pins print with `printf`). Zeno's own `print`
+does not call `printf`, in the minimal build for a board either.
+
+## The same chip, on its own registers
+
+`boards/qemu-cortex-m3` leans on two things a real board may not
+have: a whole C library under the program, and pins that are only
+text. [`boards/lm3s6965evb`](../boards/lm3s6965evb) is the same chip
+without either. It has a `header` line, and its `board.h` is the board
+layer written for real ([`board.md`](board.md)):
+
+```sh
+zeno build --board boards/lm3s6965evb examples/hello.zeno
+qemu-system-arm -M lm3s6965evb -nographic -semihosting -kernel hello.elf
+```
+
+- **A pin is a bit of one of the chip's seven ports.** Pins 0 to 7 are
+  PA0 to PA7, and so on to 48 to 55 for port G. `led` is PF0, where
+  the board's LED is. `pin(3).on()` gives port A its clock, makes PA3
+  an output and writes its bit, through the registers the data sheet
+  names.
+- **The clock is the SysTick timer**, and `sleep` puts the processor
+  to sleep between its ticks.
+- **`serial(0, ...)` to `serial(2, ...)` are UART0 to UART2.**
+- **`print` goes out of UART0, and the header does it**: the line
+  `#define ZENO_BOARD_PRINTS` and four functions (decision 52). A
+  warning and the message of an error go to the debugger, and so does
+  the end of the program. There is no `printf`, no stream and no
+  `exit` anywhere in the program, and `startup.c` has no `system.c`
+  beside it.
+
+QEMU emulates those registers, so the program runs with no hardware,
+and that is the only place this folder has run. **It has never run on
+the chip itself.** What QEMU does not emulate (a pull-up, the speed of
+a UART, the clocks of the ports) is written from the data sheet and
+has been tried nowhere.
+
+What that buys, in bytes of flash and of RAM, for the build that
+checks:
+
+| program | flash on `qemu-cortex-m3` | flash on `lm3s6965evb` | RAM on `lm3s6965evb` |
+|---|---|---|---|
+| `hello.zeno` | 9,472 | 936 | 20 |
+| `blink.zeno` | 29,984 | 3,996 | 20 |
+| `signal.zeno` | 31,016 | 4,844 | 76 |
+| `buffer.zeno` | 15,888 | 7,464 | 33,968 |
+| `modbus.zeno` | 14,452 | 9,720 | 35,656 |
+| `words.zeno` | 18,704 | 10,408 | 33,980 |
+| `primes.zeno` | 33,032 | 25,360 | 36,028 |
+| `tour.zeno` | 44,504 | 36,840 | 36,072 |
+
+A program of whole numbers and text carries three functions of the C
+library (`memcpy`, `memset`, `strlen`). The first number with a
+fraction that a program shows still brings `snprintf`, 28 KB of it:
+that is the next thing to go ([`missing.md`](missing.md)).
 
 ## A folder for your own board
 
@@ -205,10 +261,13 @@ small program is the C library's `printf` and what it needs:
    that already builds for the board. Copy the startup file and the
    linker script into a new folder, and copy the flags from the
    project's build line into `flags` and `link`.
-2. **Give the C library its few functions**, as `system.c` does here,
-   unless the vendor's package has them (often a file called
-   `syscalls.c`). `print` goes wherever `_write` sends it: a serial
-   port is the usual place.
+2. **Say where `print` goes.** Either give the C library its few
+   functions, as `system.c` of `boards/qemu-cortex-m3` does, unless
+   the vendor's package has them (often a file called `syscalls.c`):
+   `print` then goes wherever `_write` sends it. Or let the board
+   print by itself, as `board.h` of `boards/lm3s6965evb` does: one
+   line and four functions in the header, and no `printf` in the
+   program ([`board.md`](board.md)). The second is far smaller.
 3. **Write the header** with the board's functions, four for pins and
    a clock and more for what the program uses
    ([`board.md`](board.md), and the pages of each part:
@@ -253,9 +312,11 @@ typed until there is no more waits there for ever. Zeno does not
 refuse such a program. `files.read` raises its `FileError`, as for a
 file that is not there.
 
-The runtime still calls `printf` and `exit`, so the board needs a C
-library that has them. A runtime that asks the board for `print`
-instead is the next part of item 8 in [`missing.md`](missing.md).
+A board that prints by itself (`ZENO_BOARD_PRINTS`) has no `printf`
+and no `exit` under the program. A number with a fraction is still
+made into text by the C library's `snprintf`, and `--memory` does not
+go with such a board yet: the report is written as the C library ends
+a program. Both are in [`missing.md`](missing.md).
 
 ## How it is checked
 
@@ -265,16 +326,23 @@ instead is the next part of item 8 in [`missing.md`](missing.md).
   compares what it prints with `zeno run`, for the build that checks
   and the minimal one. It skips the run where the compiler for ARM or
   QEMU is not installed.
+- `cargo test registers_of_a_cortex_m3` does the same on
+  `boards/lm3s6965evb`: pins driven and read back through the chip's
+  registers, the clock, a serial port, a line typed to `input`, a
+  warning, and an error that stops the program.
 - `python3 tools/board.py` builds every example, every sample of the
-  book and the corner programs in `tools/targets/` twice, for the
-  computer and for the board, and compares what the two do. When this
-  page was written, 228 of 228 programs did the same in the build
-  that checks, and 212 of 212 in the minimal one. The rest are left
-  out, and counted: a build with no collector refuses them (176), or
-  they need files, words on their line, or an end to what is typed
-  (16), or, for the minimal build, a check stops them (16). A number
-  with a fraction may differ after its fifteenth digit, because
-  `cosh` and its like come from another C library on the board.
+  book and the corner programs in `tools/targets/` for the computer
+  and for both boards, and compares what they do. When this page was
+  written, 228 of 228 programs did the same on `qemu-cortex-m3` and
+  208 of 208 on `lm3s6965evb` in the build that checks, and 212 of
+  212 and 193 of 193 in the minimal one. The rest are left out, and counted: a build with no
+  collector refuses them (176), or they need files, words on their
+  line, or an end to what is typed, or, for the minimal build, a check
+  stops them, or, on the board with pins of its own, they use the
+  `board` module (a simulated pin prints a line when it changes, and
+  a real one does not). A number with a fraction may differ after its
+  fifteenth digit, because `cosh` and its like come from another C
+  library on the board.
 - The workflow `board` runs all of it on a push that changes the C
   backend, the runtime or a board.
 
@@ -298,6 +366,13 @@ opinion on the same C.
 4. In your copy's `system.c`, make `_write` send the error stream to
    the serial port too. What does a program that stops with an error
    print now, and in what order?
+5. Build `examples/primes.zeno` for `boards/lm3s6965evb` and look at
+   the largest functions with `arm-none-eabi-nm --size-sort`. Which
+   line of the program brings them in? Take that line out and build
+   again.
+6. Copy `boards/lm3s6965evb` and make `zeno_board_warn` in its
+   `board.h` send its bytes out of UART0, as `zeno_board_print` does.
+   That is a board with one wire and no debugger. What is lost?
 5. Write a `board.h` for your copy with the four functions, where
    `zeno_board_write` prints all pins as one line of `0` and `1`. Add
    the `header` line and take the two `-D_POSIX` flags out. Why are

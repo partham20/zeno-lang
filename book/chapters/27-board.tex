@@ -568,6 +568,22 @@ script are written down once as well, in the board's folder, and
 \verb|zeno build --board| builds a program for the board in one step
 (\hyperref[ch-compiling]{Compiling}).
 
+Pins are not the only way out of a program. It prints, it warns and
+says what error stopped it, it reads what is typed, and it stops. On
+a computer the C library does those four, and a chip has no C library
+to speak of. A header that says \verb|#define ZENO_BOARD_PRINTS|
+brings them itself:
+
+\begin{zenofrag}[lang=shell]
+zeno_board_print(bytes, count)   what the program prints
+zeno_board_warn(bytes, count)    a warning, and an error's message
+zeno_board_typed()               the next byte typed, or -1 if none can come
+zeno_board_stop(status)          the program is over
+\end{zenofrag}
+
+Then \verb|print("Hello")| is a few hundred bytes of flash and not ten
+thousand, because no \verb|printf| comes with it.
+
 \begin{why}
 Four functions is the smallest surface a port can have: a board is
 working the day those four are. The checks, such as a pin that does

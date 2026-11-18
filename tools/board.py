@@ -4,6 +4,7 @@
     python3 tools/board.py                  # every program, checked and minimal
     python3 tools/board.py checked          # only the build that checks (or: minimal)
     python3 tools/board.py --only ch12      # only programs whose name has ch12
+    python3 tools/board.py --board lm3s6965evb   # only this board of boards/
     python3 tools/board.py --jobs 1         # one program at a time (one per processor otherwise)
     python3 tools/board.py --sizes          # how much flash and RAM each example takes
 
@@ -12,6 +13,12 @@ Cortex-M3: a 32-bit processor with no floating point of its own, 256 KB
 of flash, 64 KB of RAM and no system under the program. QEMU emulates
 the board, so no hardware is needed. The C that `zeno build` writes must
 do there what it does on a computer.
+
+There are two boards for that chip in boards/. `qemu-cortex-m3` has the
+C library under the program, and the simulated pins of a computer.
+`lm3s6965evb` has a header of its own: the program prints, reads and
+stops through the board, with no `printf`, and its pins are registers
+of the chip. Every program is tried on both.
 
 The programs are the ones tools/targets.py tries: every example, the
 programs in tools/targets/, and every sample of the book that runs.
@@ -29,7 +36,10 @@ Some programs are left out, and counted:
   - one that is given words on its line, or reads or writes a file, or
     reads what is typed to its end: a board has no line, no files, and
     a serial port has no end, so the program waits there for ever;
-  - one that does not fit in the board's memory. These are named.
+  - one that does not fit in the board's memory. These are named;
+  - on the board with pins of its own, one that uses the `board`
+    module: a simulated pin prints a line when it changes, and a real
+    one does not.
 
 A number with a fraction may differ after its fifteenth digit: `cosh`
 and its like are the C library's, the board has another C library than
@@ -57,7 +67,11 @@ import minimal  # noqa: E402  (which programs a check stops)
 from minimal import THE_SYSTEM_STOPS, UNDEFINED  # noqa: E402  (programs with a mistake no build checks)
 
 ZENO = targets.ZENO
-BOARD = targets.REPO / "boards" / "qemu-cortex-m3"
+BOARDS = targets.REPO / "boards"
+
+# The boards QEMU emulates, and whether a board has pins of its own
+# (a header) or the simulated ones.
+OWN_PINS = {"qemu-cortex-m3": False, "lm3s6965evb": True}
 NEEDS = ["arm-none-eabi-gcc", "qemu-system-arm"]
 
 # The two builds that are compared on the board and on the computer.
@@ -75,6 +89,9 @@ QEMU_SAYS = "Timer with period zero, disabling\n"
 
 # A board has no files, and what is typed to it has no end.
 NEEDS_A_SYSTEM = re.compile(r"\bimport files\b|\bfrom files import\b|\bfiles\.|\bread_all\(|\bprogram\.environment\(")
+
+# A program that uses the pins, the ports or the timers of a board.
+USES_THE_BOARD = re.compile(r"^\s*(?:import board\b|from board import\b)", re.MULTILINE)
 
 # A program that reads what is typed, from the keyboard or a serial port.
 READS = re.compile(r"\binput\(|\.read_byte\(|\.has_byte\(")
@@ -135,12 +152,13 @@ def message(errors):
     return next((line for line in errors.splitlines() if line.startswith("error")), "")
 
 
-def try_program(kind, program, scratch):
-    """"pass" | "left out" | "needs a system" | "too big" | "stopped" | the reason it failed."""
+def try_program(kind, program, scratch, boards):
+    """For each board: "pass" | "left out" | "needs a system" | "too big" | "stopped" | "pins" | the reason it failed."""
+    everywhere = lambda result: {board: result for board in boards}
     if program.name in UNDEFINED:
-        return "left out"
+        return everywhere("left out")
     if program.args or NEEDS_A_SYSTEM.search(program.source()):
-        return "needs a system"
+        return everywhere("needs a system")
     folder = scratch / kind / program.name.replace("/", "_").replace("#", "_")
     if kind == "minimal":
         # What a check stops, or would stop if nothing caught the
@@ -148,18 +166,25 @@ def try_program(kind, program, scratch):
         # that checks says which programs those are, as in tools/minimal.py.
         first = minimal.checked_run("no-collector", program, folder / "first")[0]
         if first == "left out":
-            return "left out"
+            return everywhere("left out")
         if first != "ran" or program.name in THE_SYSTEM_STOPS:
-            return "stopped"
+            return everywhere("stopped")
     here, why = built(program, folder / "computer", ["--no-collector"] + KINDS[kind], scratch / "quick-cc")
     if here is None:
         # A build with no collector refuses a program that shares its
         # lists; `zeno build` refuses what only `zeno run` can do.
-        return "left out"
+        return everywhere("left out")
     status, out, errors = targets.run([str(here)], program.folder, program.stdin, timeout=LONGEST)
     if status < -1:
-        return f"the system stopped the build for the computer (signal {-status}), after it printed\n{out[-1000:]}"
-    there, why = built(program, folder / "board", ["--board", str(BOARD)] + KINDS[kind])
+        return everywhere(f"the system stopped the build for the computer (signal {-status}), after it printed\n{out[-1000:]}")
+    return {board: on_one_board(kind, program, folder, board, status, out, errors) for board in boards}
+
+
+def on_one_board(kind, program, folder, board, status, out, errors):
+    """The same program on one board, held to what it did on the computer."""
+    if OWN_PINS[board] and USES_THE_BOARD.search(program.source()):
+        return "pins"
+    there, why = built(program, folder / board, ["--board", str(BOARDS / board)] + KINDS[kind])
     if there is None:
         if re.search(r"region `?(RAM|FLASH)'? overflowed|will not fit in region", why):
             return "too big"
@@ -178,15 +203,16 @@ def try_program(kind, program, scratch):
     return f"{why}\n--- on the computer it printed\n{out[-2000:]}--- on the board it printed\n{out_there[-2000:]}--- and said\n{errors_there[-2000:]}"
 
 
-def size_table(found, scratch):
-    """A table of the flash and the RAM each program takes on the board."""
+def size_table(found, scratch, board):
+    """A table of the flash and the RAM each program takes on a board."""
+    print(f"On `boards/{board}`:\n")
     print("| program | flash, checked | flash, `--minimal` | RAM, checked | RAM, `--minimal` |")
     print("|---|---|---|---|---|")
     for program in found:
         row = []
         for kind in KINDS:
-            folder = scratch / "sizes" / kind / program.name.replace("/", "_")
-            there, _ = built(program, folder, ["--board", str(BOARD)] + KINDS[kind])
+            folder = scratch / "sizes" / board / kind / program.name.replace("/", "_")
+            there, _ = built(program, folder, ["--board", str(BOARDS / board)] + KINDS[kind])
             if there is None:
                 break
             done = subprocess.run(["arm-none-eabi-size", str(there)], capture_output=True, text=True)
@@ -203,6 +229,10 @@ def main():
     only = words[words.index("--only") + 1] if "--only" in words else None
     jobs = int(words[words.index("--jobs") + 1]) if "--jobs" in words else (os.cpu_count() or 1)
     kinds = [kind for kind in KINDS if kind in words] or list(KINDS)
+    boards = [words[words.index("--board") + 1]] if "--board" in words else list(OWN_PINS)
+    if any(board not in OWN_PINS for board in boards):
+        print(f"tools/board.py knows the boards {' and '.join(OWN_PINS)}, and not `{boards[0]}`")
+        return 1
     missing = [tool for tool in NEEDS if shutil.which(tool) is None]
     if missing:
         print(f"tools/board.py needs {' and '.join(missing)}, and there is no such command here. On Debian and Ubuntu:\n"
@@ -216,34 +246,39 @@ def main():
     quick_cc.chmod(0o755)
     found = [p for p in targets.programs(scratch) if only is None or only in p.name]
     if "--sizes" in words:
-        size_table([p for p in found if p.name.startswith("examples/") or only], scratch)
+        for board in boards:
+            size_table([p for p in found if p.name.startswith("examples/") or only], scratch, board)
+            print()
         shutil.rmtree(scratch, ignore_errors=True)
         return 0
 
     pool = ThreadPoolExecutor(max_workers=jobs)
     failed_any = False
     for kind in kinds:
-        counts = {"pass": 0, "left out": 0, "needs a system": 0, "stopped": 0}
-        too_big, failures = [], []
-        results = pool.map(lambda program: try_program(kind, program, scratch), found)
-        for program, result in zip(found, results):
-            if result in counts:
-                counts[result] += 1
-            elif result == "too big":
-                too_big.append(program.name)
-            else:
-                failures.append((program, result))
-        total = counts["pass"] + len(failures)
-        stopped = f"; {counts['stopped']}: a check stops them" if kind == "minimal" else ""
-        print(f"{kind}: {counts['pass']} of {total} programs do on the board what they do on a computer"
-              f" ({counts['left out']} left out: a build with no collector refuses them;"
-              f" {counts['needs a system']}: they need files, words on their line, or an end to what is typed{stopped};"
-              f" {len(too_big)}: too big for the board)")
-        if too_big:
-            print(f"  too big for 256 KB of flash and 64 KB of RAM: {', '.join(too_big)}")
-        for program, why in failures:
-            failed_any = True
-            print(f"\n  FAILED {program.name} ({program.folder / program.file})\n    " + why.replace("\n", "\n    "))
+        results = list(pool.map(lambda program: try_program(kind, program, scratch, boards), found))
+        for board in boards:
+            counts = {"pass": 0, "left out": 0, "needs a system": 0, "stopped": 0, "pins": 0}
+            too_big, failures = [], []
+            for program, result in zip(found, results):
+                result = result[board]
+                if result in counts:
+                    counts[result] += 1
+                elif result == "too big":
+                    too_big.append(program.name)
+                else:
+                    failures.append((program, result))
+            total = counts["pass"] + len(failures)
+            stopped = f"; {counts['stopped']}: a check stops them" if kind == "minimal" else ""
+            pins = f"; {counts['pins']}: they use the board's pins, which are real ones here" if OWN_PINS[board] else ""
+            print(f"{board}, {kind}: {counts['pass']} of {total} programs do on the board what they do on a computer"
+                  f" ({counts['left out']} left out: a build with no collector refuses them;"
+                  f" {counts['needs a system']}: they need files, words on their line, or an end to what is typed{stopped}{pins};"
+                  f" {len(too_big)}: too big for the board)")
+            if too_big:
+                print(f"  too big for 256 KB of flash and 64 KB of RAM: {', '.join(too_big)}")
+            for program, why in failures:
+                failed_any = True
+                print(f"\n  FAILED {program.name} ({program.folder / program.file})\n    " + why.replace("\n", "\n    "))
     shutil.rmtree(scratch, ignore_errors=True)
     return 1 if failed_any else 0
 

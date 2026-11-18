@@ -342,6 +342,7 @@ cargo run -- test examples/sketch.zeno          # a page that draws: its tests p
 cargo run -- playground                         # playground.html: write Zeno programs and run them in a browser, with nothing installed
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build --board boards/qemu-cortex-m3 examples/signal.zeno  # the same for an ARM Cortex-M3, in one step: signal.elf, which QEMU runs
+cargo run -- build --board boards/lm3s6965evb examples/hello.zeno      # the same chip on its own UART, with no printf: hello.elf is 936 bytes of flash
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
@@ -356,7 +357,9 @@ can be put underneath ([`docs/board.md`](docs/board.md)).
 `zeno build --board <folder>` builds a program for a board in one step,
 with the board's own compiler, flags, start-up file and linker script,
 which the folder names
-([`docs/board-build.md`](docs/board-build.md)).
+([`docs/board-build.md`](docs/board-build.md)). A board whose header
+brings four more functions prints, reads and stops by itself, with no
+`printf` and no `exit` under the program.
 
 `import web` gives a program a web page: `web.element("#count").text = "3"`,
 `button.on("click", pressed)`. `zeno build --web` writes one file that a
@@ -808,6 +811,18 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     has no collector.
     See [`docs/board-build.md`](docs/board-build.md) and chapter 51 of
     [`docs/decisions.md`](docs/decisions.md))
+50. `print` and the end of a program through the board (done, after
+    0.5.2 and not yet released: a board's header says
+    `#define ZENO_BOARD_PRINTS` and brings four functions, for what is
+    printed, what is said beside it, what is typed, and stopping. Then
+    nothing of the program goes through the C library's streams or its
+    `exit`. A second board, `boards/lm3s6965evb`, is the emulated
+    Cortex-M3 on its own pin, timer and UART registers: `hello` takes
+    936 bytes of flash there, and 9,472 on the board with a C library
+    under it. A number with a fraction is still made into text by the
+    C library.
+    See [`docs/board.md`](docs/board.md) and chapter 52 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
@@ -856,7 +871,7 @@ src/runtime.js      Zeno's rules in JavaScript, put into each written program; r
 tools/targets.py    builds every example for every target and compares it with `zeno run`
 tools/minimal.py    builds every example with and without `--minimal` and compares the two
 tools/board.py      builds every example for an emulated ARM Cortex-M3 and for the computer and compares the two
-boards/             a folder for each board `zeno build --board` can build for: today one, which QEMU emulates
+boards/             a folder for each board `zeno build --board` can build for: today two, both the Cortex-M3 that QEMU emulates, one on a C library and one on its own registers
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works
 examples/           sample .zeno programs

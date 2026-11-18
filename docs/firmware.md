@@ -245,7 +245,9 @@ firmware build writes today still:
   ([`no-collector.md`](no-collector.md), [`pool.md`](pool.md)),
 - uses variable argument lists in the runtime (`zeno_print`, `zeno_join`:
   Rule 17.1),
-- uses `printf` and `exit` (Rules 21.6 and 21.8),
+- uses `printf` and `exit` (Rules 21.6 and 21.8). A board that brings
+  its own printing takes both away (`ZENO_BOARD_PRINTS`,
+  [`board.md`](board.md)), but for `snprintf` under a float,
 - uses GCC and Clang builtins for checked arithmetic (a language
   extension, Rule 1.2),
 - uses the forward `goto` described above (advisory Rule 15.1).

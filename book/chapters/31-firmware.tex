@@ -164,6 +164,33 @@ A board whose clock moves only when the program sleeps makes a program
 that waits run in no time. That is how firmware is tested on a desk,
 and Zeno's own tests do exactly that.
 
+The same header can take the place of the C library's streams. With
+\verb|#define ZENO_BOARD_PRINTS| it brings four more functions, and
+\verb|print|, \verb|input|, a warning, the message of an error and the
+end of the program all go through them. For a board with one serial
+port and nothing to read from:
+
+\begin{zenofrag}[lang=shell]
+#define ZENO_BOARD_PRINTS
+
+static void zeno_board_print(const char *bytes, size_t count) {
+    HAL_UART_Transmit(&huart2, (uint8_t *)bytes, (uint16_t)count, 100);
+}
+static void zeno_board_warn(const char *bytes, size_t count) {
+    zeno_board_print(bytes, count);
+}
+static int zeno_board_typed(void) { return -1; }
+static void zeno_board_stop(int status) {
+    (void)status;
+    NVIC_SystemReset();
+}
+\end{zenofrag}
+
+This too is a sketch for an STM32, and has not been run on hardware.
+\verb|boards/lm3s6965evb| in Zeno's repository is a whole header of
+this kind, on the registers of the chip QEMU emulates, and Zeno's
+tests run it there.
+
 \section{What the C of blink looks like}
 
 All of \verb|blink|'s program, in a firmware build with no collector,
@@ -182,8 +209,10 @@ takes memory or can raise.
 \section{What this does not claim}
 
 Removing \verb|setjmp| removes one obstacle to MISRA, not all of them.
-The C that a firmware build writes in version 0.1 still uses variable
-argument lists in the runtime, calls \verb|printf| and \verb|exit|, and
+The C that a firmware build writes still uses variable
+argument lists in the runtime, calls \verb|snprintf| for a number with
+a fraction (and \verb|printf| and \verb|exit| on a board that does not
+print by itself), and
 uses GCC and Clang built-ins for checked arithmetic. Taking memory from
 the heap, which MISRA also bans, is answered by \verb|--no-collector|,
 in the next chapter. None of these is hidden, and each is a later piece
@@ -198,7 +227,9 @@ the runtime finds are faults that stop the program, and a \verb|try|
 that hopes to catch one is refused. A real board goes under the program
 as a header of four functions, named with \verb|-DZENO_BOARD|, or by
 the \verb|header| line of the board's folder when
-\verb|zeno build --board| does the whole build.
+\verb|zeno build --board| does the whole build. Four more, behind
+\verb|ZENO_BOARD_PRINTS|, let the board print, read and stop by
+itself, with no C library stream under the program.
 \end{summary}
 
 \begin{tryit}
