@@ -236,7 +236,27 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         shared: HashSet::new(),
         closures: 0,
         below: HashSet::new(),
+        type_names: HashSet::new(),
     };
+
+    // The names of the types first of all: the C of one class may have to
+    // step round the name of a class that is written below it.
+    for statement in &program.statements {
+        match &statement.kind {
+            StmtKind::Class(decl) if !decl.type_params.is_empty() => {
+                for copy in types.class_copies(decl) {
+                    emitter.type_names.insert(format!("z_{}", ident(&copy.name)));
+                }
+            }
+            StmtKind::Class(decl) => {
+                emitter.type_names.insert(format!("z_{}", ident(&decl.name)));
+            }
+            StmtKind::Enum(decl) => {
+                emitter.type_names.insert(format!("z_{}", ident(&decl.name)));
+            }
+            _ => {}
+        }
+    }
 
     // Classes, enums and functions can be used above where they are written,
     // so learn about all of them before compiling anything. Types go first,
@@ -949,6 +969,11 @@ struct Emitter<'a> {
     /// While a function is being compiled: the top-level variables that
     /// are declared below it in the file, which it must not see.
     below: HashSet<String>,
+    /// The C name of every class and enum of the program, known before
+    /// any of them is written. A field may have the name of a type, and
+    /// the function that makes an object has a parameter for each field:
+    /// such a parameter must not take the type's name (decision 31.1).
+    type_names: HashSet<String>,
 
     // For a build with no collector (`zeno build --no-collector`).
     /// False in a build with no collector.
@@ -1429,6 +1454,18 @@ impl Emitter<'_> {
         }
     }
 
+    /// The parameter that brings the value of a field to the function
+    /// that makes the object. It is `z_` and the field's name, as the
+    /// field is in the struct, unless a class or an enum of the program
+    /// has that C name: a parameter called `z_point` would hide the type
+    /// `z_point` from the rest of the function, and `z_point *self` would
+    /// be read as a multiplication. Then it is `z2_point`, which no type
+    /// is called, because every type begins with `z_` (decision 31.1).
+    fn given(&self, field: &str) -> String {
+        let name = format!("z_{field}");
+        if self.type_names.contains(&name) { format!("z2_{field}") } else { name }
+    }
+
     fn declare(&mut self, name: &str, kind: Kind) -> String {
         let c_name = self.c_name(name);
         let variable =
@@ -1833,23 +1870,24 @@ impl Emitter<'_> {
         for (index, (field, kind)) in decl.fields.iter().zip(&kinds).enumerate() {
             let field_type = c_type(kind, span)?;
             let field_name = format!("z_{}", field.name);
-            params.push(format!("{field_type}{field_name}"));
+            let given = self.given(&field.name);
+            params.push(format!("{field_type}{given}"));
             match widths.get(index).copied().flatten() {
                 // `level: u8` is one byte of the struct. The number was
                 // checked when it became a u8, so the cast loses nothing.
                 Some(width) => {
                     body += &format!("    {} {field_name};\n", width.c_type());
-                    fill += &format!("    self->{field_name} = ({}){field_name};\n", width.c_type());
+                    fill += &format!("    self->{field_name} = ({}){given};\n", width.c_type());
                     sized.insert(field.name.clone(), width);
                 }
                 None if !self.collector && is_text(kind) => {
                     // With no collector the object has a copy of its own.
                     body += &format!("    {field_type}{field_name};\n");
-                    fill += &format!("    self->{field_name} = zeno_text_keep({field_name});\n");
+                    fill += &format!("    self->{field_name} = zeno_text_keep({given});\n");
                 }
                 None => {
                     body += &format!("    {field_type}{field_name};\n");
-                    fill += &format!("    self->{field_name} = {field_name};\n");
+                    fill += &format!("    self->{field_name} = {given};\n");
                 }
             }
             let label = if index == 0 { format!("{shown_as}({}=", field.name) } else { format!(", {}=", field.name) };
@@ -2113,12 +2151,13 @@ impl Emitter<'_> {
                 for (position, (field, kind)) in fields.iter().enumerate() {
                     let field_type = c_type(kind, span)?;
                     let place = format!("as.c{index}.z_{field}");
+                    let given = self.given(field);
                     inside += &format!("{field_type}z_{field}; ");
-                    params.push(format!("{field_type}z_{field}"));
+                    params.push(format!("{field_type}{given}"));
                     if texts && is_text(kind) {
-                        fill += &format!("    self->{place} = zeno_text_keep(z_{field});\n");
+                        fill += &format!("    self->{place} = zeno_text_keep({given});\n");
                     } else {
-                        fill += &format!("    self->{place} = z_{field};\n");
+                        fill += &format!("    self->{place} = {given};\n");
                     }
                     if owned[position] || (texts && is_text(kind)) {
                         frees += &format!(" {}", self.drops.code(kind, &format!("self->{place}")));
@@ -12604,6 +12643,59 @@ print(maybe)
              of an imported file: `Point` of the module `shapes` becomes `z_shapes_Point`. \
              Rename one of them, or build with `--llvm`"
         );
+    }
+
+    /// A field may have the name of a class or an enum. The function that
+    /// makes the object has a parameter for each field, and one called as
+    /// a type is would hide the type from the rest of that function.
+    const NAMED_AS_A_TYPE: &str = r#"class point {
+    point: int
+    name: str
+}
+class Line {
+    Dot: int
+    point: point
+    end: Dot
+}
+class Dot {
+    Line: int
+}
+enum Shape {
+    round(Shape: int, point: point)
+    flat
+}
+class new_ {
+    new: u8
+}
+let p = point(3, "here")
+print(p, Line(1, p, Dot(2)), Shape.round(4, p), Shape.flat, new_(5))
+"#;
+
+    #[test]
+    fn a_field_with_the_name_of_a_type_does_not_hide_the_type() {
+        same_as_interpreter("named-as-a-type", NAMED_AS_A_TYPE);
+        let c = compile(NAMED_AS_A_TYPE).expect("it compiles");
+        // The parameter steps aside, and the field keeps its name.
+        assert!(c.contains("static z_point *zeno_new_point(int64_t z2_point, const char *z_name)"), "{c}");
+        assert!(c.contains("    self->z_point = z2_point;\n"), "{c}");
+        // `Dot` is written below `Line`, and is a type all the same.
+        assert!(c.contains("static z_Line *zeno_new_Line(int64_t z2_Dot, z_point *z2_point, z_Dot *z_end)"), "{c}");
+        assert!(c.contains("static z_Shape *zeno_new_Shape_round(int64_t z2_Shape, z_point *z2_point)"), "{c}");
+        // `new_` is `z_new` to C, which is what its field `new` would be.
+        assert!(c.contains("    self->z_new = (uint8_t)z2_new;\n"), "{c}");
+        // A class with no such field is written as it always was.
+        let plain = compile("class Point {\n    x: int\n}\nprint(Point(1))\n").expect("it compiles");
+        assert!(plain.contains("static z_Point *zeno_new_Point(int64_t z_x)"), "{plain}");
+        // And with no collector, where an object has its own copy of its text.
+        let owned = "class point {\n    point: int\n    name: str\n}\nenum Shape {\n    round(Shape: int, name: str)\n    flat\n}\n\
+                     print(point(3, \"here\"), Shape.round(4, \"there\"), Shape.flat)\n";
+        for (name, build) in [("no-collector", Build::NoCollector), ("firmware", Build::Firmware)] {
+            let c = compile_minimal(owned, build, false);
+            assert!(c.contains("zeno_text_keep(z_name)") != matches!(build, Build::Firmware), "{c}");
+            let Some((printed, _, finished)) = build_and_run(&format!("named-as-a-type-{name}"), &c, &["-Os"]) else { return };
+            assert!(finished, "{printed}");
+            assert_eq!(printed, "point(point=3, name=\"here\") round(4, \"there\") flat\n");
+        }
     }
 
     /// A loop with two names: over a dict, a list, text and a range.

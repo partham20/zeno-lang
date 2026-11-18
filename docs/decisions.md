@@ -12197,7 +12197,7 @@ the same, end the same way, and stop with the same message. A program
 that a check stops has no defined result in a minimal build, so it is
 found and left out: the C of the checked build is given a line that
 writes a mark in `zeno_fail` and `zeno_bug`, where every check ends.
-On 2026-11-18: 212, 192, 192 and 209 programs for the four kinds, all
+On 2026-11-18: 213, 193, 193 and 210 programs for the four kinds, all
 the same, and 17 to 20 left out for each. It runs on GitHub on a push
 that changes the C backend (.github/workflows/minimal.yml), on Linux
 with gcc and on macOS with clang.
@@ -12209,7 +12209,7 @@ In short, for the examples:
 
 - **The C** is 23 lines for hello, about 100 for a program of numbers,
   and 300 to 1,000 for a program with lists, objects and text, from
-  about 3,000 every time. Over all the programs of the check it is 6%
+  about 3,000 every time. Over all the programs of the check it is 7%
   of the bytes with no collector and 14% with one.
 - **The program** shrinks less, because the C compiler never put an
   unused function in it. Its code and constants (`text`, as `size`
@@ -12231,3 +12231,48 @@ In short, for the examples:
 - `%` as C's own where both sides are known not to be below zero.
 - A `print` for a board with no `printf`.
 - The uncaught error's place, for a build that wants only that back.
+
+## 31. A field with the name of a type, in C
+
+Found while `zeno build --minimal` was checked (2026-11-18):
+`tools/targets/edge-names.zeno` ran with `zeno run` and every
+`--target`, and `zeno build` wrote C for it that the C compiler
+refused.
+
+### 31.1 The parameter steps aside, and the field keeps its name
+
+A class may have a field with the name of a class or an enum:
+
+    class point {
+        point: int
+    }
+
+Zeno has no rule against it, and `zeno run` runs it. In C a class is a
+type `z_point`, and the function that makes an object had one parameter
+for each field, called as the field is in the struct: `z_point`. Inside
+that function the parameter hid the type, so `z_point *self` was read
+as a multiplication. A field named as another class broke the list of
+parameters itself, and a case of an enum that carries such a value
+broke the same way. `edge-names.zeno` has it by another road: its class
+`new_` is `z_new` in C, which is what its field `new` is.
+
+**Decision.** Such a parameter is `z2_point`. The field stays
+`z_point` in the struct, where C keeps the names of fields apart from
+the names of types, so `self->z_point = z2_point;` is right.
+
+**Why `z2_`.** It is how a second variable of one name is already
+written (`z2_x`), so nothing new is to be learned when reading the C.
+And no type can have that name: every type begins with `z_`.
+
+**Why only where the names meet.** For every program without such a
+field the C is what it was, byte for byte: 2,028 C files compared, the
+363 programs of the corpus built nine ways, and only the nine of
+`edge-names.zeno` differ. The names of all classes and enums are
+gathered before the first class is written, because the type may be
+written below the class that has the field.
+
+**Why not an error.** "The entire language must be unambiguous and
+intuitive": a name that is right for `zeno run` and wrong for `zeno
+build` would be a rule of C showing through. Two classes that C would
+know by one name are still refused (`same_in_c`), since there a name
+would have to be made up for a type the program prints and compares.
