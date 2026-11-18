@@ -575,6 +575,37 @@ final class Z {
         return ua.size <= ub.size ? a : b;
     }
 
+    // What `*` and `/` make of two quantities (decision 43): the operator,
+    // what each side measures ("" for a plain number), and what the answer
+    // measures ("" for a plain number). The answer is in the unit of its
+    // kind with no prefix.
+    static final java.util.Map<String, String> MADE = java.util.Map.ofEntries(
+        java.util.Map.entry("* voltage current", "power"), java.util.Map.entry("* current voltage", "power"),
+        java.util.Map.entry("* current resistance", "voltage"), java.util.Map.entry("* resistance current", "voltage"),
+        java.util.Map.entry("* power time", "energy"), java.util.Map.entry("* time power", "energy"),
+        java.util.Map.entry("* time frequency", ""), java.util.Map.entry("* frequency time", ""),
+        java.util.Map.entry("/ power voltage", "current"), java.util.Map.entry("/ power current", "voltage"),
+        java.util.Map.entry("/ voltage current", "resistance"), java.util.Map.entry("/ voltage resistance", "current"),
+        java.util.Map.entry("/ energy time", "power"), java.util.Map.entry("/ energy power", "time"),
+        java.util.Map.entry("/  time", "frequency"), java.util.Map.entry("/  frequency", "time"));
+
+    static final java.util.Map<String, String> PLAIN = java.util.Map.of(
+        "time", "s", "frequency", "Hz", "voltage", "V", "current", "A", "resistance", "ohm", "power", "W", "energy", "J");
+
+    // `a op b` for two quantities, or a number over a quantity.
+    static Object made(String op, Object a, Quantity b, int line) {
+        String left = a instanceof Quantity qa ? UNITS.get(qa.unit).kind() : "";
+        String right = UNITS.get(b.unit).kind();
+        String kind = MADE.get(op + " " + left + " " + right);
+        if (kind == null || (left.isEmpty() && !isNumber(a))) throw mismatch(op, a, b, line);
+        double x = a instanceof Quantity qa ? apply(convert(qa.unit, PLAIN.get(left)), qa.v) : number(a);
+        if (op.equals("/") && b.v == 0) throw byZero(line);
+        double y = apply(convert(b.unit, PLAIN.get(right)), b.v);
+        double r = op.equals("*") ? x * y : x / y;
+        if (kind.isEmpty()) return r;
+        return new Quantity(r, PLAIN.get(kind));
+    }
+
     static Object unit(Object v, String name, int line) {
         if (!UNITS.containsKey(name)) {
             throw fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line);
@@ -700,6 +731,7 @@ final class Z {
             return new ZList(items);
         }
         if (a instanceof Long x && b instanceof Long y) return mulInt(x, y, line);
+        if (a instanceof Quantity && b instanceof Quantity qb) return made("*", a, qb, line);
         if (a instanceof Quantity || b instanceof Quantity) {
             Quantity q = a instanceof Quantity qa ? qa : (Quantity) b;
             Object other = a instanceof Quantity ? b : a;
@@ -719,12 +751,13 @@ final class Z {
             if (b instanceof Long y && y == 0) throw byZero(line);
             if (b instanceof Quantity y) {
                 String u = common(q.unit, y.unit);
-                if (u == null) throw mismatch("/", a, b, line);
+                if (u == null) return made("/", a, y, line);
                 return apply(convert(q.unit, u), q.v) / apply(convert(y.unit, u), y.v);
             }
             if (!isNumber(b)) throw mismatch("/", a, b, line);
             return new Quantity(q.v / number(b), q.unit);
         }
+        if (b instanceof Quantity qb) return made("/", a, qb, line);
         if (!isNumber(a) || !isNumber(b)) throw mismatch("/", a, b, line);
         if (number(b) == 0) throw byZero(line);
         return number(a) / number(b);

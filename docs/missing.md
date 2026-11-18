@@ -44,7 +44,7 @@ release ([`release.md`](release.md)).
 | 3 | An enum case with a number: `Ack = 6`. **Done** ([`enum-numbers.md`](enum-numbers.md)); a loop over the cases is left | medium | Every protocol and every register field is a number with a name |
 | 4 | Bytes: bytes from and to a file (**done**, [`bytes.md`](bytes.md)), a packed `list[u8]` (**done**, decision 36.2), a list of a fixed length (**done**, [`fixed-lists.md`](fixed-lists.md), decision 36.4; kept off the pool is left) | large | "The first thing a real driver will ask for" (5.13a) |
 | 5 | `u64` and `f32`. **Done** ([`f32.md`](f32.md), chapter 41; [`u64.md`](u64.md), chapter 42) | medium | Counters and timestamps; a board whose float unit is 32 bits |
-| 6 | Units made of units: `V * A` is `W` | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
+| 6 | Units made of units: `V * A` is `W`. **Done** ([`units-made.md`](units-made.md), chapter 43) | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
 | 7 | Inputs on a board, a serial port, an ADC, PWM, interrupts | large, wants a board | The one thing that keeps Zeno off real hardware |
 | 8 | One step from a `.zeno` file to a board: a runtime with no `printf` and no `exit`, the cross-compiler named on the line, checks without GCC built-ins | large | The same |
 | 9 | What a build with no collector still refuses, and `raises` in a function type | medium | Firmware builds should take every program `zeno run` takes |
@@ -87,7 +87,7 @@ C.
 | **Small variables and parameters**: only a field of a class is stored at its size | C | Leave. The C compiler keeps them in registers either way |
 | **The layout of an object**: no promise of the order or the gaps between fields, and no fields of a few bits | C: structs and bit fields. Rust: `repr(C)` | Build after bytes, as a word on the class. A frame or a register block is then a class |
 | **Pointers to more than numbers**, the address of a variable, `p - q`, a 64-bit register ([`unsafe.md`](unsafe.md)) | C, C++, Rust | Build as drivers ask. A pointer to an object first, since that is what a C library hands back |
-| **Units made of units**, and a unit a program names itself (1.15) | None of the seven have units at all. F# does | Build it. Keep the list of units closed, and give it the products and quotients people use: `V * A` is `W`, `V / A` is `ohm`, `1 / s` is `Hz`. A program's own units after that |
+| ~~**Units made of units**~~, and a unit a program names itself (1.15) | None of the seven have units at all. F# does | **Done** (chapter 43): `V * A` is `W`, `V / A` is `ohm`, `W * h` is `J`, `1 / s` is `Hz`, from a closed list. Left: charge (`mAh`), speed, and a program's own units |
 | **Numbers of a fixed number of decimals**, for a processor with no float unit | None as part of the language | Leave for a package |
 | **Code that is built only for one board** | C: `#if`. Rust: `cfg`. Go: build tags | A `const` and an `if` that the compiler drops when it can never be true. No second language inside the language |
 

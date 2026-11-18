@@ -119,6 +119,79 @@ pub fn common(a: &str, b: &str) -> Option<(&'static str, Scale, Scale)> {
     Some((unit, convert(a, unit)?, convert(b, unit)?))
 }
 
+/// What `*` and `/` make of two quantities (decision 43). Each row is
+/// the operator, what the left side measures (`""` for a plain number),
+/// what the right side measures, and what the answer measures (`""` for a
+/// plain number). The list is closed, as the list of units is: these are
+/// the sums a firmware program does every day.
+pub const MADE: &[(&str, &str, &str, &str)] = &[
+    ("*", "voltage", "current", "power"),
+    ("*", "current", "voltage", "power"),
+    ("*", "current", "resistance", "voltage"),
+    ("*", "resistance", "current", "voltage"),
+    ("*", "power", "time", "energy"),
+    ("*", "time", "power", "energy"),
+    ("*", "time", "frequency", ""),
+    ("*", "frequency", "time", ""),
+    ("/", "power", "voltage", "current"),
+    ("/", "power", "current", "voltage"),
+    ("/", "voltage", "current", "resistance"),
+    ("/", "voltage", "resistance", "current"),
+    ("/", "energy", "time", "power"),
+    ("/", "energy", "power", "time"),
+    ("/", "", "time", "frequency"),
+    ("/", "", "frequency", "time"),
+];
+
+/// The unit of each kind with no prefix, which a made quantity is in:
+/// `3.3 V * 20 mA` is `0.066 W`, and `.mW` makes it `66 mW`.
+pub const PLAIN: &[(&str, &str)] = &[
+    ("time", "s"),
+    ("frequency", "Hz"),
+    ("voltage", "V"),
+    ("current", "A"),
+    ("resistance", "ohm"),
+    ("power", "W"),
+    ("energy", "J"),
+];
+
+/// What an answer made by `*` or `/` is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Made {
+    /// A quantity in this unit.
+    Unit(&'static str),
+    /// A plain number, as `10 ms * 1 kHz` is 10 cycles.
+    Number,
+}
+
+/// What `left op right` makes, where `left` is `None` for a plain
+/// number. `None` when the two make nothing on the list.
+pub fn made(op: &str, left: Option<&str>, right: &str) -> Option<Made> {
+    let left_kind = match left {
+        Some(unit) => find(unit)?.1,
+        None => "",
+    };
+    let right_kind = find(right)?.1;
+    let (_, _, _, kind) = MADE.iter().find(|(o, l, r, _)| *o == op && *l == left_kind && *r == right_kind)?;
+    if kind.is_empty() {
+        return Some(Made::Number);
+    }
+    PLAIN.iter().find(|(k, _)| k == kind).map(|(_, unit)| Made::Unit(unit))
+}
+
+/// How to turn a quantity in `unit` into one in the unit of its kind with
+/// no prefix, before it is multiplied or divided.
+pub fn to_plain(unit: &str) -> Option<Scale> {
+    let kind = find(unit)?.1;
+    let (_, plain) = PLAIN.iter().find(|(k, _)| *k == kind)?;
+    convert(unit, plain)
+}
+
+/// For a message: the sums `made` knows, as `V * A is W`.
+pub fn made_list() -> &'static str {
+    "V * A is W, A * ohm is V, W * s is J, V / A is ohm, V / ohm is A, W / V is A, J / s is W, 1 / s is Hz"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +225,30 @@ mod tests {
         assert_eq!(common("mV", "V").map(|(unit, _, _)| unit), Some("mV"));
         assert_eq!(common("ms", "ms").map(|(unit, a, _)| (unit, a.apply(7.0))), Some(("ms", 7.0)));
         assert!(common("ms", "mV").is_none());
+    }
+
+    #[test]
+    fn units_make_units() {
+        assert_eq!(made("*", Some("V"), "mA"), Some(Made::Unit("W")));
+        assert_eq!(made("*", Some("mA"), "kohm"), Some(Made::Unit("V")));
+        assert_eq!(made("/", Some("V"), "mA"), Some(Made::Unit("ohm")));
+        assert_eq!(made("/", Some("kWh"), "h"), Some(Made::Unit("W")));
+        assert_eq!(made("/", None, "ms"), Some(Made::Unit("Hz")));
+        assert_eq!(made("/", None, "kHz"), Some(Made::Unit("s")));
+        assert_eq!(made("*", Some("ms"), "kHz"), Some(Made::Number));
+        assert_eq!(made("*", Some("m"), "m"), None);
+        assert_eq!(made("/", None, "V"), None);
+        assert_eq!(to_plain("mA").map(|scale| scale.apply(20.0)), Some(0.02));
+        assert_eq!(to_plain("kohm").map(|scale| scale.apply(4.7)), Some(4700.0));
+        // Every kind that makes or is made has a unit with no prefix.
+        for (_, left, right, answer) in MADE {
+            for kind in [left, right, answer] {
+                assert!(kind.is_empty() || PLAIN.iter().any(|(k, _)| k == kind), "{kind}");
+            }
+        }
+        for (kind, unit) in PLAIN {
+            assert_eq!(find(unit).map(|(_, k, _)| k), Some(*kind));
+        }
     }
 
     #[test]

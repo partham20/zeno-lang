@@ -354,7 +354,8 @@ them. Both pairs are kept apart on purpose. *(Changed in 6.22: `.rad` and
 meet by themselves.)*
 
 **Was provisional (11.1).** No derived units yet (`V * A` is not `W`), and no
-user-defined units.
+user-defined units. *(Changed in 43: `V * A` is `W`, from a closed list of
+the sums firmware does. A program's own units are still left out.)*
 
 ### 1.16 Comparisons chain: `0 <= i < len`
 
@@ -14079,3 +14080,99 @@ edge-u64.zeno` holds them all to `zeno run`.
 - `u8(x)` and `u8.wrap(x)` straight from a u64, without `int( )` between.
 - A u64 field in a firmware struct is 8 bytes in C; packed layouts of
   registers are item 9 of [`missing.md`](missing.md).
+
+## 43. Units made of units: `V * A` is `W`
+
+```zeno
+let supply = 3.3 V
+let draw = 20 mA
+let power = supply * draw
+print(power, power.mW)          # 0.066 W 66 mW
+print(supply / draw)            # 165 ohm
+print(1 / 2 ms)                 # 500 Hz
+print((5 W * 2 h).Wh)           # 10 Wh
+```
+
+Units are what Zeno has that C does not (1.15), and until now they
+stopped at the sums a firmware program does every day: the power a
+board draws, the resistor for a current, the energy a battery gives,
+the frequency of a period. A program took the numbers out, multiplied,
+and put a unit back by hand, which is the very slip units exist to
+catch. It is the seventh item of [`missing.md`](missing.md).
+Walkthrough: [`units-made.md`](units-made.md).
+
+### 43.1 A closed list of what units make
+
+**Zeno makes a unit from two others only when the pair is on a list:**
+
+| Write | Gives |
+|---|---|
+| voltage `*` current, either way round | power |
+| current `*` resistance, either way round | voltage |
+| power `*` time, either way round | energy |
+| power `/` voltage, power `/` current | current, voltage |
+| voltage `/` current, voltage `/` resistance | resistance, current |
+| energy `/` time, energy `/` power | power, time |
+| a number `/` time, a number `/` frequency | frequency, time |
+| time `*` frequency, either way round | a plain number |
+
+These are Ohm's law, power and energy, and periods, which are nearly
+all the sums with units in a firmware program. Any other pair is
+refused before the program runs, and the message lists these.
+
+**Why a list, and not an algebra of dimensions?** An algebra (F#, the
+`uom` crate of Rust, Boost.Units) makes `m * m` a unit of its own, and
+`V * s / m` too, and then needs a name for each answer or shows it as
+`kg*m^2*s^-3`. That is a feature the size of the rest of the units, and
+most of what it makes has no name a firmware engineer would use. A list
+keeps 1.15's rule that every unit has a name on the list, so a typing
+slip is still an error, and it says in one table what works. A pair can
+be added to the list later without changing any program that works
+now. **Turned down: making a unit for a pair that is not on the list**,
+because a `V * V` in a program is far more often a slip than a sum.
+
+### 43.2 The answer is in the unit with no prefix
+
+**`3.3 V * 20 mA` is `0.066 W`, and `.mW` makes it `66 mW`.** Each side
+is first put in the unit of its kind with no prefix (`V`, `A`, `ohm`,
+`W`, `J`, `s`, `Hz`), the numbers are multiplied or divided, and the
+answer is in that unit of its own kind.
+
+**Why not the "finer unit" of 1.15?** "Finer" compares two units of
+one kind, and here the answer is a third kind. A rule from the prefixes
+(`mV * mA` is `uW`) would need units that are not on the list, and two
+programs that work out the same power would print it in two units. One
+rule, the same every time, is "no prefix"; `.mW` says the rest, as
+`.ms` does for time.
+
+`J` is the energy with no prefix. A program that wants watt-hours
+writes `.Wh`, as it writes `.ms`.
+
+### 43.3 Time times frequency is a plain number
+
+**`10 ms * 1 kHz` is `10.0`**, the number of cycles, as `1 s / 1 ms` is
+`1000.0` by 1.15. A count of cycles has no unit on the list, and a
+float is what it is.
+
+### 43.4 A number over a time is a frequency
+
+**`1 / 2 ms` is `500 Hz`, and `1 / 1 kHz` is `0.001 s`.** Only time and
+frequency turn over: `1 / 2 V` has no unit on the list and is refused.
+A unit binds to its number, so `1 / 2 ms` needs no brackets.
+
+### 43.5 Every engine and build, the same digits
+
+The interpreter, the VM, C, LLVM and all fifteen target languages
+scale each side the same way, `x * times / over` with the same numbers,
+and then multiply or divide once, so they print the same digits. In C
+and LLVM the scales are known when the program is built, and a sum is
+one or two instructions; a quantity is still a `double` with its unit
+known only to the compiler. Division by zero is a `ZeroDivisionError`,
+except where a build has no checks.
+
+### 43.6 Left for later
+
+- More pairs: charge (`mAh`, for battery life), speed (`m / s`),
+  `rpm` and `Hz`.
+- A unit a program names itself.
+- `sum` of quantities, which still wants `+` in a loop (1.15).

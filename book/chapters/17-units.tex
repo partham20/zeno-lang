@@ -199,21 +199,44 @@ print(f"[{supply:8.2f}] [{angle:.1f}]")
 The width counts the unit too, so a column of quantities lines up on
 the right, as numbers do.
 
-\section{What units leave out}
+\section{Units made of units}
 
-In version 0.1 there are no derived units: \verb|V * A| is not
-\verb|W|, and quantities of two kinds cannot be multiplied. A program
-that needs power works it out from the bare numbers and puts the unit
-back:
+Two quantities of the right kinds make a third, so Ohm's law, power,
+energy and periods are written as they are on paper:
 
 \begin{zeno}
-let volts = 12.0 V
-let amps = 2.0 A
-let power = (volts / 1 V) * (amps / 1 A) * 1 W
-print(power)
+let supply = 3.3 V
+let draw = 20 mA
+let power = supply * draw
+print(power, power.mW)
+print(supply / draw, 2 mA * 4.7 kohm)
+print(5 W * 2 h, (5 W * 2 h).Wh)
+print(1 / 2 ms, 10 ms * 1 kHz)
 \end{zeno}
 
-There are no units of a program's own either; that is on the list in
+Voltage times current is power, current times resistance is voltage,
+and power times time is energy, either way round; each divides back.
+A number over a time is a frequency, a number over a frequency is a
+time, and a time times a frequency is a plain number, the count of
+cycles. The answer is in the unit of its kind with no prefix:
+\verb|W|, \verb|A|, \verb|V|, \verb|ohm|, \verb|J|, \verb|s| or
+\verb|Hz|, and \verb|.mW| or \verb|.Wh| changes it, as for any
+quantity.
+
+Any other pair is refused, with the list of what works:
+
+\begin{zeno}[fails=yes]
+let area = 2 m * 3 m
+\end{zeno}
+
+\begin{why}
+An algebra of dimensions would make \verb|m * m| a unit, and
+\verb|V * V| too, and show them as \verb|m^2|. A short list keeps
+the rule that every unit has a name, so \verb|V * V|, which is far
+more often a slip than a sum, is still caught. (Decision 43.)
+\end{why}
+
+There are no units of a program's own yet; that is on the list in
 \hyperref[app-limits]{Appendix G}.
 
 \verb|min| and \verb|max| take quantities, as long as all of them are

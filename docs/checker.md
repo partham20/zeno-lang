@@ -277,8 +277,8 @@ loops and `try`, are in [`docs/ownership.md`](ownership.md).
   return x }` called with an int and with a str leaves `x` dynamic.
   Written `function id[T](x: T) -> T`, the checker makes a copy for
   each type: see [`generics.md`](generics.md).
-- **Derived units.** `1 s + 500 ms` works, but `V * A` is not `W`: units are
-  grouped by what they measure, with no arithmetic between groups.
+- **Units of a program's own.** `V * A` is `W`, from a closed list of
+  the sums firmware does (decision 43), and any other pair is refused.
 - **Fields of an enum value.** `shape.radius` is refused, because which
   case the value is, is only known inside a `match`. The message shows
   the `match` to write (decision 13.3).

@@ -687,6 +687,67 @@ mod z {
         apply(convert(from, to).unwrap_or((1.0, 1.0)), x)
     }
 
+    /// What `*` and `/` make of two quantities (decision 43): the
+    /// operator, what each side measures ("" for a plain number), and what
+    /// the answer measures ("" for a plain number). The answer is in the
+    /// unit of its kind with no prefix.
+    const MADE: &[(&str, &str, &str, &str)] = &[
+        ("*", "voltage", "current", "power"),
+        ("*", "current", "voltage", "power"),
+        ("*", "current", "resistance", "voltage"),
+        ("*", "resistance", "current", "voltage"),
+        ("*", "power", "time", "energy"),
+        ("*", "time", "power", "energy"),
+        ("*", "time", "frequency", ""),
+        ("*", "frequency", "time", ""),
+        ("/", "power", "voltage", "current"),
+        ("/", "power", "current", "voltage"),
+        ("/", "voltage", "current", "resistance"),
+        ("/", "voltage", "resistance", "current"),
+        ("/", "energy", "time", "power"),
+        ("/", "energy", "power", "time"),
+        ("/", "", "time", "frequency"),
+        ("/", "", "frequency", "time"),
+    ];
+
+    fn plain(kind: &str) -> &'static str {
+        match kind {
+            "time" => "s",
+            "frequency" => "Hz",
+            "voltage" => "V",
+            "current" => "A",
+            "resistance" => "ohm",
+            "power" => "W",
+            _ => "J",
+        }
+    }
+
+    /// `a op b` for two quantities, or a number over a quantity.
+    fn made(op: &str, a: &V, b: &V, line: usize) -> R {
+        let V::Quantity(y, right_unit) = b else {
+            return mismatch(op, a, b, line);
+        };
+        let left = match a {
+            V::Quantity(_, unit) => unit_of(unit).map_or("", |(kind, _)| kind),
+            _ => "",
+        };
+        let right = unit_of(right_unit).map_or("", |(kind, _)| kind);
+        let Some((_, _, _, kind)) = MADE.iter().find(|(o, l, r, _)| *o == op && *l == left && *r == right) else {
+            return mismatch(op, a, b, line);
+        };
+        let x = match a {
+            V::Quantity(x, unit) => in_unit(*x, unit, plain(left)),
+            _ if is_number(a) => number(a),
+            _ => return mismatch(op, a, b, line),
+        };
+        if op == "/" && *y == 0.0 {
+            return by_zero(line);
+        }
+        let y = in_unit(*y, right_unit, plain(right));
+        let r = if op == "*" { x * y } else { x / y };
+        Ok(if kind.is_empty() { V::Float(r) } else { q(r, plain(kind)) })
+    }
+
     pub fn unit(v: V, name: &str, line: usize) -> R {
         if unit_of(name).is_none() {
             return fatal(format!("`{name}` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC"), line);
@@ -846,6 +907,7 @@ mod z {
                 Ok(new_list(items))
             }
             (V::Int(x), V::Int(y)) => x.checked_mul(*y).map(V::Int).map_or_else(|| overflow(line), Ok),
+            (V::Quantity(..), V::Quantity(..)) => made("*", &a, &b, line),
             (V::Quantity(x, u), other) | (other, V::Quantity(x, u)) => {
                 if !is_number(other) {
                     return mismatch("*", &a, &b, line);
@@ -874,13 +936,16 @@ mod z {
             if let V::Quantity(y, w) = &b {
                 return match common(u, w) {
                     Some(c) => Ok(V::Float(in_unit(*x, u, &c) / in_unit(*y, w, &c))),
-                    None => mismatch("/", &a, &b, line),
+                    None => made("/", &a, &b, line),
                 };
             }
             if !is_number(&b) {
                 return mismatch("/", &a, &b, line);
             }
             return Ok(V::Quantity(x / number(&b), u.clone()));
+        }
+        if let V::Quantity(..) = &b {
+            return made("/", &a, &b, line);
         }
         if !is_number(&a) || !is_number(&b) {
             return mismatch("/", &a, &b, line);

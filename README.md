@@ -733,6 +733,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     engine, every build and all fifteen target languages.
     See [`docs/u64.md`](docs/u64.md) and chapter 42 of
     [`docs/decisions.md`](docs/decisions.md))
+42. Units made of units (done, after 0.5.2 and not yet released:
+    `3.3 V * 20 mA` is `0.066 W`, `5 V / 2 mA` is `2500 ohm`,
+    `5 W * 2 h` is `36000 J` and `1 / 2 ms` is `500 Hz`, from a closed
+    list of the sums firmware does; any other pair is refused with the
+    list. In every engine, every build and all fifteen target
+    languages. See [`docs/units-made.md`](docs/units-made.md) and
+    chapter 43 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

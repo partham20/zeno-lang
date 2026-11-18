@@ -540,6 +540,36 @@ module Z
       [unit, convert(a, unit), convert(b, unit)]
     end
 
+    # What `*` and `/` make of two quantities (decision 43): the operator,
+    # what each side measures ("" for a plain number), and what the answer
+    # measures ("" for a plain number). The answer is in the unit of its
+    # kind with no prefix.
+    MADE = {
+      ["*", "voltage", "current"] => "power", ["*", "current", "voltage"] => "power",
+      ["*", "current", "resistance"] => "voltage", ["*", "resistance", "current"] => "voltage",
+      ["*", "power", "time"] => "energy", ["*", "time", "power"] => "energy",
+      ["*", "time", "frequency"] => "", ["*", "frequency", "time"] => "",
+      ["/", "power", "voltage"] => "current", ["/", "power", "current"] => "voltage",
+      ["/", "voltage", "current"] => "resistance", ["/", "voltage", "resistance"] => "current",
+      ["/", "energy", "time"] => "power", ["/", "energy", "power"] => "time",
+      ["/", "", "time"] => "frequency", ["/", "", "frequency"] => "time",
+    }.freeze
+
+    PLAIN = { "time" => "s", "frequency" => "Hz", "voltage" => "V", "current" => "A", "resistance" => "ohm", "power" => "W", "energy" => "J" }.freeze
+
+    # `a op b` for two quantities, or a number over a quantity.
+    def made(op, a, b, line)
+      left = a.is_a?(ZQuantity) ? UNITS[a.unit][0] : ""
+      right = UNITS[b.unit][0]
+      kind = MADE[[op, left, right]]
+      x = left.empty? ? number(a) : apply(convert(a.unit, PLAIN[left]), a.v)
+      mismatch(op, a, b, line) if kind.nil? || x.nil?
+      by_zero(line) if op == "/" && b.v == 0
+      y = apply(convert(b.unit, PLAIN[right]), b.v)
+      r = op == "*" ? x * y : x / y
+      kind.empty? ? r.to_f : ZQuantity.new(r, PLAIN[kind])
+    end
+
     def unit(v, name, line)
       fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line) unless unit?(name)
       x = number(v)
@@ -659,6 +689,7 @@ module Z
         return a * b
       end
       return fits(a * b, line) if a.is_a?(Integer) && b.is_a?(Integer)
+      return made("*", a, b, line) if a.is_a?(ZQuantity) && b.is_a?(ZQuantity)
       if a.is_a?(ZQuantity) || b.is_a?(ZQuantity)
         q, other = a.is_a?(ZQuantity) ? [a, b] : [b, a]
         y = number(other)
@@ -677,6 +708,7 @@ module Z
       if a.is_a?(ZQuantity)
         by_zero(line) if ((b.is_a?(Integer) || b.is_a?(Float)) && b == 0) || (b.is_a?(ZQuantity) && b.v == 0)
         if b.is_a?(ZQuantity)
+          return made("/", a, b, line) if common(a.unit, b.unit).nil?
           x, y, = met("/", a, b, line)
           return x / y
         end
@@ -684,6 +716,7 @@ module Z
         mismatch("/", a, b, line) if y.nil?
         return ZQuantity.new(a.v / y, a.unit)
       end
+      return made("/", a, b, line) if b.is_a?(ZQuantity)
       x = number(a)
       y = number(b)
       mismatch("/", a, b, line) if x.nil? || y.nil?

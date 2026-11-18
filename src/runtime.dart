@@ -781,6 +781,37 @@ class Z {
     return ua.size <= ub.size ? a : b;
   }
 
+  // What `*` and `/` make of two quantities (decision 43): the operator,
+  // what each side measures ("" for a plain number), and what the answer
+  // measures ("" for a plain number). The answer is in the unit of its
+  // kind with no prefix.
+  static const Map<String, String> MADE = {
+    "* voltage current": "power", "* current voltage": "power",
+    "* current resistance": "voltage", "* resistance current": "voltage",
+    "* power time": "energy", "* time power": "energy",
+    "* time frequency": "", "* frequency time": "",
+    "/ power voltage": "current", "/ power current": "voltage",
+    "/ voltage current": "resistance", "/ voltage resistance": "current",
+    "/ energy time": "power", "/ energy power": "time",
+    "/  time": "frequency", "/  frequency": "time",
+  };
+
+  static const Map<String, String> PLAIN = {"time": "s", "frequency": "Hz", "voltage": "V", "current": "A", "resistance": "ohm", "power": "W", "energy": "J"};
+
+  // `a op b` for two quantities, or a number over a quantity.
+  static Object? made(String op, Object? a, ZQuantity b, int line) {
+    final left = a is ZQuantity ? UNITS[a.unit]!.kind : "";
+    final right = UNITS[b.unit]!.kind;
+    final kind = MADE[op + " " + left + " " + right];
+    if (kind == null || (a is! ZQuantity && !isNumber(a))) mismatch(op, a, b, line);
+    final x = a is ZQuantity ? apply(convert(a.unit, PLAIN[left]!)!, a.v) : number(a);
+    if (op == "/" && b.v == 0) byZero(line);
+    final y = apply(convert(b.unit, PLAIN[right]!)!, b.v);
+    final r = op == "*" ? x * y : x / y;
+    if (kind.isEmpty) return r;
+    return ZQuantity(r, PLAIN[kind]!);
+  }
+
   static Object? unit(Object? v, String name, int line) {
     if (!UNITS.containsKey(name)) {
       fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line);
@@ -906,6 +937,7 @@ class Z {
       return <Object?>[for (var t = 0; t < b; t++) ...a];
     }
     if (a is int && b is int) return mulInt(a, b, line);
+    if (a is ZQuantity && b is ZQuantity) return made("*", a, b, line);
     if (a is ZQuantity || b is ZQuantity) {
       final q = (a is ZQuantity ? a : b) as ZQuantity;
       final other = a is ZQuantity ? b : a;
@@ -925,12 +957,13 @@ class Z {
       if (b is int && b == 0) byZero(line);
       if (b is ZQuantity) {
         final u = common(a.unit, b.unit);
-        if (u == null) mismatch("/", a, b, line);
+        if (u == null) return made("/", a, b, line);
         return apply(convert(a.unit, u)!, a.v) / apply(convert(b.unit, u)!, b.v);
       }
       if (!isNumber(b)) mismatch("/", a, b, line);
       return ZQuantity(a.v / number(b), a.unit);
     }
+    if (b is ZQuantity) return made("/", a, b, line);
     if (!isNumber(a) || !isNumber(b)) mismatch("/", a, b, line);
     if (number(b) == 0) byZero(line);
     return number(a) / number(b);

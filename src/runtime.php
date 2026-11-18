@@ -520,6 +520,37 @@ final class Z {
         return [$unit, self::convert($a, $unit), self::convert($b, $unit)];
     }
 
+    // What `*` and `/` make of two quantities (decision 43): the operator,
+    // what each side measures ("" for a plain number), and what the answer
+    // measures ("" for a plain number). The answer is in the unit of its
+    // kind with no prefix.
+    const MADE = [
+        "* voltage current" => "power", "* current voltage" => "power",
+        "* current resistance" => "voltage", "* resistance current" => "voltage",
+        "* power time" => "energy", "* time power" => "energy",
+        "* time frequency" => "", "* frequency time" => "",
+        "/ power voltage" => "current", "/ power current" => "voltage",
+        "/ voltage current" => "resistance", "/ voltage resistance" => "current",
+        "/ energy time" => "power", "/ energy power" => "time",
+        "/  time" => "frequency", "/  frequency" => "time",
+    ];
+
+    const PLAIN = ["time" => "s", "frequency" => "Hz", "voltage" => "V", "current" => "A", "resistance" => "ohm", "power" => "W", "energy" => "J"];
+
+    // `a op b` for two quantities, or a number over a quantity.
+    static function made(string $op, $a, $b, int $line) {
+        $left = $a instanceof ZQuantity ? self::UNITS[$a->unit][0] : "";
+        $right = self::UNITS[$b->unit][0];
+        $key = $op . " " . $left . " " . $right;
+        $x = $left === "" ? self::number($a) : self::apply(self::convert($a->unit, self::PLAIN[$left]), $a->v);
+        if (!array_key_exists($key, self::MADE) || $x === null) self::mismatch($op, $a, $b, $line);
+        if ($op === "/" && $b->v == 0) self::byZero($line);
+        $y = self::apply(self::convert($b->unit, self::PLAIN[$right]), $b->v);
+        $r = $op === "*" ? $x * $y : $x / $y;
+        $kind = self::MADE[$key];
+        return $kind === "" ? (float)$r : new ZQuantity($r, self::PLAIN[$kind]);
+    }
+
     static function unit($v, string $name, int $line) {
         if (!self::isUnit($name)) self::fatal("`" . $name . "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", $line);
         $x = self::number($v);
@@ -635,6 +666,7 @@ final class Z {
             if (!is_int($r)) self::overflow($line);
             return $r;
         }
+        if ($a instanceof ZQuantity && $b instanceof ZQuantity) return self::made("*", $a, $b, $line);
         if ($a instanceof ZQuantity || $b instanceof ZQuantity) {
             [$q, $other] = $a instanceof ZQuantity ? [$a, $b] : [$b, $a];
             $y = self::number($other);
@@ -653,13 +685,14 @@ final class Z {
             if ($b === 0 || $b === 0.0 || ($b instanceof ZQuantity && $b->v == 0)) self::byZero($line);
             if ($b instanceof ZQuantity) {
                 $c = self::common($a->unit, $b->unit);
-                if ($c === null) self::mismatch("/", $a, $b, $line);
+                if ($c === null) return self::made("/", $a, $b, $line);
                 return self::apply($c[1], $a->v) / self::apply($c[2], $b->v);
             }
             $y = self::number($b);
             if ($y === null) self::mismatch("/", $a, $b, $line);
             return new ZQuantity($a->v / $y, $a->unit);
         }
+        if ($b instanceof ZQuantity) return self::made("/", $a, $b, $line);
         $x = self::number($a); $y = self::number($b);
         if ($x === null || $y === null) self::mismatch("/", $a, $b, $line);
         if ($y == 0) self::byZero($line);

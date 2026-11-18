@@ -175,6 +175,24 @@ pub fn quantity(value: Value, unit: &str, span: Span) -> Result {
     }
 }
 
+/// What `*` or `/` makes of two quantities, or of a plain number over a
+/// quantity (decision 43). Each side is first put in the unit of its kind
+/// with no prefix, and the answer is in that unit of its own kind.
+fn made(op: &str, left: (f64, Option<&str>), right: (f64, &str)) -> Option<Value> {
+    let ((x, left_unit), (y, right_unit)) = (left, right);
+    let made = units::made(op, left_unit, right_unit)?;
+    let x = match left_unit {
+        Some(unit) => units::to_plain(unit)?.apply(x),
+        None => x,
+    };
+    let y = units::to_plain(right_unit)?.apply(y);
+    let answer = if op == "*" { x * y } else { x / y };
+    Some(match made {
+        units::Made::Unit(unit) => Value::Quantity(answer, Rc::from(unit)),
+        units::Made::Number => Value::Float(answer),
+    })
+}
+
 /// An operator with a value on each side: `a + b`, `a < b`, `a in b`.
 pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
     use BinaryOp::*;
@@ -258,6 +276,11 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
                 }
                 Ok(Value::list(repeated))
             }
+            // `3.3 V * 20 mA` is a power (decision 43).
+            (Quantity(a, unit), Quantity(b, other)) => match made("*", (*a, Some(unit)), (*b, other)) {
+                Some(value) => Ok(value),
+                None => mismatch(),
+            },
             // Scaling a quantity keeps its unit: 2 * 500 ms is 1000 ms.
             (Quantity(a, unit), other) | (other, Quantity(a, unit)) => match other.number() {
                 Some(b) => Ok(Quantity(a * b, unit.clone())),
@@ -271,10 +294,19 @@ pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
             (Quantity(_, _), Int(0)) => by_zero(),
             (Quantity(a, unit), Quantity(b, other)) => match units::common(unit, other) {
                 Some((_, left, right)) => Ok(Float(left.apply(*a) / right.apply(*b))),
-                None => mismatch(),
+                None => match made("/", (*a, Some(unit)), (*b, other)) {
+                    Some(value) => Ok(value),
+                    None => mismatch(),
+                },
             },
             (Quantity(a, unit), other) => match other.number() {
                 Some(b) => Ok(Quantity(a / b, unit.clone())),
+                None => mismatch(),
+            },
+            // `1 / (2 ms)` is a frequency (decision 43).
+            (Int(_) | Float(_), Quantity(b, other)) => match left.number().and_then(|a| made("/", (a, None), (*b, other))) {
+                _ if *b == 0.0 => by_zero(),
+                Some(value) => Ok(value),
                 None => mismatch(),
             },
             _ => match floats {

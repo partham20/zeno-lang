@@ -1,0 +1,37 @@
+# Units made of units (decision 43): V * A is W, V / A is ohm, 1 / s is Hz.
+let supply = 3.3 V
+let draw = 20 mA
+let power = supply * draw
+print(power, power.mW, draw * supply, power == 66 mW, power > 50 mW)
+let r = supply / draw
+print(r, r.kohm, supply / (4.7 kohm), ((2 mA) * (4.7 kohm)).mV)
+let energy = (5 W) * (2 h)
+print(energy, energy.Wh, energy / (2 h), energy / (5 W), (energy / (5 W)).h)
+print(1 / (2 ms), 2 / (4 ms), 1.5 / (3 s), 1 / (1 kHz), (10 ms) * (1 kHz), (1 kHz) * (10 ms))
+print((12 V) * (500 mA) / (12 V), (100 W) / (230 V), (100 W) / (0.5 A))
+print((1 kWh) / (1 h), ((2 kV) * (3 mA)).kW, (3 A) * (2 Mohm))
+
+function watts(v: V, i: mA) -> W {
+    return v * i
+}
+let loads = [10 mA, 25 mA, 120 mA]
+var total = 0 W
+for load in loads {
+    total += watts(5 V, load)
+}
+print(total, total.mW, f"{total.mW:.1f}")
+let periods = [1 ms, 0.25 ms, 20 ms]
+print([1 / p for p in periods])
+print(f"{supply * draw}", str((1 / (8 ms)).kHz))
+
+try {
+    print(1 / (0 ms))
+} except ZeroDivisionError as e {
+    print("refused:", e.message)
+}
+try {
+    let zero = 0 ohm
+    print(supply / zero)
+} except ZeroDivisionError as e {
+    print("refused:", e.message)
+}

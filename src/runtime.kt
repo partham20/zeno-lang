@@ -633,6 +633,37 @@ object Z {
     // A quantity's number, in the unit `u`, which its own unit can be turned into.
     fun inUnit(q: ZQuantity, u: String): Double = apply(convert(q.unit, u)!!, q.v)
 
+    // What `*` and `/` make of two quantities (decision 43): the operator,
+    // what each side measures ("" for a plain number), and what the answer
+    // measures ("" for a plain number). The answer is in the unit of its
+    // kind with no prefix.
+    val MADE = mapOf(
+        "* voltage current" to "power", "* current voltage" to "power",
+        "* current resistance" to "voltage", "* resistance current" to "voltage",
+        "* power time" to "energy", "* time power" to "energy",
+        "* time frequency" to "", "* frequency time" to "",
+        "/ power voltage" to "current", "/ power current" to "voltage",
+        "/ voltage current" to "resistance", "/ voltage resistance" to "current",
+        "/ energy time" to "power", "/ energy power" to "time",
+        "/  time" to "frequency", "/  frequency" to "time",
+    )
+
+    val PLAIN = mapOf("time" to "s", "frequency" to "Hz", "voltage" to "V", "current" to "A", "resistance" to "ohm", "power" to "W", "energy" to "J")
+
+    // `a op b` for two quantities, or a number over a quantity.
+    fun made(op: String, a: Any?, b: ZQuantity, line: Int): Any? {
+        val left = if (a is ZQuantity) UNITS[a.unit]!!.kind else ""
+        val right = UNITS[b.unit]!!.kind
+        val kind = MADE[op + " " + left + " " + right]
+        if (kind == null || (left.isEmpty() && !isNumber(a))) mismatch(op, a, b, line)
+        val x = if (a is ZQuantity) inUnit(a, PLAIN[left]!!) else number(a)
+        if (op == "/" && b.v == 0.0) byZero(line)
+        val y = inUnit(b, PLAIN[right]!!)
+        val r = if (op == "*") x * y else x / y
+        if (kind.isEmpty()) return r
+        return ZQuantity(r, PLAIN[kind]!!)
+    }
+
     fun unit(v: Any?, name: String, line: Int): Any? {
         if (!UNITS.containsKey(name)) {
             fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line)
@@ -757,6 +788,7 @@ object Z {
             return items
         }
         if (a is Long && b is Long) return mulInt(a, b, line)
+        if (a is ZQuantity && b is ZQuantity) return made("*", a, b, line)
         if (a is ZQuantity || b is ZQuantity) {
             val q = (if (a is ZQuantity) a else b) as ZQuantity
             val other = if (a is ZQuantity) b else a
@@ -775,12 +807,13 @@ object Z {
             if (b is Double && b == 0.0) byZero(line)
             if (b is Long && b == 0L) byZero(line)
             if (b is ZQuantity) {
-                val u = common(a.unit, b.unit) ?: mismatch("/", a, b, line)
+                val u = common(a.unit, b.unit) ?: return made("/", a, b, line)
                 return inUnit(a, u) / inUnit(b, u)
             }
             if (!isNumber(b)) mismatch("/", a, b, line)
             return ZQuantity(a.v / number(b), a.unit)
         }
+        if (b is ZQuantity) return made("/", a, b, line)
         if (!isNumber(a) || !isNumber(b)) mismatch("/", a, b, line)
         if (number(b) == 0.0) byZero(line)
         return number(a) / number(b)

@@ -800,6 +800,47 @@ V f32Op(const string& op, const V& a, const V& b, int line) {
     return F32V(r);
 }
 
+// What `*` and `/` make of two quantities (decision 43): the operator,
+// what each side measures ("" for a plain number), and what the answer
+// measures ("" for a plain number). The answer is in the unit of its kind
+// with no prefix.
+const std::unordered_map<string, string>& madeUnits() {
+    static const std::unordered_map<string, string> m = {
+        {"* voltage current", "power"}, {"* current voltage", "power"},
+        {"* current resistance", "voltage"}, {"* resistance current", "voltage"},
+        {"* power time", "energy"}, {"* time power", "energy"},
+        {"* time frequency", ""}, {"* frequency time", ""},
+        {"/ power voltage", "current"}, {"/ power current", "voltage"},
+        {"/ voltage current", "resistance"}, {"/ voltage resistance", "current"},
+        {"/ energy time", "power"}, {"/ energy power", "time"},
+        {"/  time", "frequency"}, {"/  frequency", "time"},
+    };
+    return m;
+}
+
+const std::unordered_map<string, string>& plainUnits() {
+    static const std::unordered_map<string, string> m = {
+        {"time", "s"}, {"frequency", "Hz"}, {"voltage", "V"}, {"current", "A"}, {"resistance", "ohm"}, {"power", "W"}, {"energy", "J"},
+    };
+    return m;
+}
+
+// `a op b` for two quantities, or a number over a quantity.
+V made(const string& op, const V& a, const V& b, int line) {
+    const Quantity& qb = as<Quantity>(b);
+    bool quantity = a.is(K::QUANTITY);
+    string left = quantity ? units().at(as<Quantity>(a).unit).kind : "";
+    string right = units().at(qb.unit).kind;
+    auto found = madeUnits().find(op + " " + left + " " + right);
+    if (found == madeUnits().end() || (!quantity && !isNumber(a))) mismatch(op, a, b, line);
+    double x = quantity ? apply(convert(as<Quantity>(a).unit, plainUnits().at(left)), as<Quantity>(a).v) : number(a);
+    if (op == "/" && qb.v == 0) byZero(line);
+    double y = apply(convert(qb.unit, plainUnits().at(right)), qb.v);
+    double r = op == "*" ? x * y : x / y;
+    if (found->second.empty()) return F(r);
+    return Q(r, plainUnits().at(found->second));
+}
+
 V add(const V& a, const V& b, int line) {
     if (isU64(a, b)) return u64Op("+", a, b, line);
     if (isF32(a, b)) return f32Op("+", a, b, line);
@@ -848,6 +889,7 @@ V mul(const V& a, const V& b, int line) {
         return O(std::make_shared<List>(std::move(items)));
     }
     if (a.t == V::INT && b.t == V::INT) return I(mulInt(a.i, b.i, line));
+    if (a.is(K::QUANTITY) && b.is(K::QUANTITY)) return made("*", a, b, line);
     if (a.is(K::QUANTITY) || b.is(K::QUANTITY)) {
         const V& qv = a.is(K::QUANTITY) ? a : b;
         const V& other = a.is(K::QUANTITY) ? b : a;
@@ -869,12 +911,13 @@ V div(const V& a, const V& b, int line) {
         if (b.is(K::QUANTITY)) {
             Quantity& y = as<Quantity>(b);
             string u = common(q.unit, y.unit);
-            if (u.empty()) mismatch("/", a, b, line);
+            if (u.empty()) return made("/", a, b, line);
             return F(apply(convert(q.unit, u), q.v) / apply(convert(y.unit, u), y.v));
         }
         if (!isNumber(b)) mismatch("/", a, b, line);
         return Q(q.v / number(b), q.unit);
     }
+    if (b.is(K::QUANTITY)) return made("/", a, b, line);
     if (!isNumber(a) || !isNumber(b)) mismatch("/", a, b, line);
     if (number(b) == 0) byZero(line);
     return F(number(a) / number(b));

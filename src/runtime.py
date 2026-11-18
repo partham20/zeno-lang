@@ -561,6 +561,39 @@ def common(a, b):
     return unit, convert(a, unit), convert(b, unit)
 
 
+# What `*` and `/` make of two quantities (decision 43): the operator,
+# what each side measures ("" for a plain number), and what the answer
+# measures ("" for a plain number). The answer is in the unit of its
+# kind with no prefix.
+MADE = {
+    ("*", "voltage", "current"): "power", ("*", "current", "voltage"): "power",
+    ("*", "current", "resistance"): "voltage", ("*", "resistance", "current"): "voltage",
+    ("*", "power", "time"): "energy", ("*", "time", "power"): "energy",
+    ("*", "time", "frequency"): "", ("*", "frequency", "time"): "",
+    ("/", "power", "voltage"): "current", ("/", "power", "current"): "voltage",
+    ("/", "voltage", "current"): "resistance", ("/", "voltage", "resistance"): "current",
+    ("/", "energy", "time"): "power", ("/", "energy", "power"): "time",
+    ("/", "", "time"): "frequency", ("/", "", "frequency"): "time",
+}
+
+PLAIN = {"time": "s", "frequency": "Hz", "voltage": "V", "current": "A", "resistance": "ohm", "power": "W", "energy": "J"}
+
+
+def _made(op, a, b, line):
+    """`a op b` for two quantities, or a number over a quantity."""
+    left = UNITS[a.unit][0] if type(a) is Quantity else ""
+    right = UNITS[b.unit][0]
+    kind = MADE.get((op, left, right))
+    x = apply(convert(a.unit, PLAIN[left]), a.v) if left else _number(a)
+    if kind is None or x is None:
+        _mismatch(op, a, b, line)
+    if op == "/" and b.v == 0:
+        _by_zero(line)
+    y = apply(convert(b.unit, PLAIN[right]), b.v)
+    r = x * y if op == "*" else x / y
+    return Quantity(r, PLAIN[kind]) if kind else float(r)
+
+
 def unit(v, name, line):
     if name not in UNITS:
         fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line)
@@ -693,6 +726,8 @@ def mul(a, b, line):
         if r > MAX or r < MIN:
             _overflow(line)
         return r
+    if ta is Quantity and tb is Quantity:
+        return _made("*", a, b, line)
     if ta is Quantity or tb is Quantity:
         q, other = (a, b) if ta is Quantity else (b, a)
         y = _number(other)
@@ -726,12 +761,14 @@ def div(a, b, line):
         if tb is Quantity:
             c = common(a.unit, b.unit)
             if c is None:
-                _mismatch("/", a, b, line)
+                return _made("/", a, b, line)
             return apply(c[1], a.v) / apply(c[2], b.v)
         y = _number(b)
         if y is None:
             _mismatch("/", a, b, line)
         return Quantity(a.v / y, a.unit)
+    if tb is Quantity:
+        return _made("/", a, b, line)
     x, y = _number(a), _number(b)
     if x is None or y is None:
         _mismatch("/", a, b, line)

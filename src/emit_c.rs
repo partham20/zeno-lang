@@ -4831,6 +4831,20 @@ impl Emitter<'_> {
             (Mul, Quantity(unit), Int | Float) | (Mul, Int | Float, Quantity(unit)) => {
                 Val::from(format!("({dl} * {dr})"), Quantity(unit.clone()), &parts)
             }
+            // `3.3 V * 20 mA` and `1 / (2 ms)` (decision 43): each side in
+            // the unit of its kind with no prefix, as the interpreter does.
+            (Mul, Quantity(a), Quantity(b)) => {
+                let (kind, l, r) = made("*", Some((&left.code, a)), (&right.code, b), span)?;
+                Val::from(format!("({l} * {r})"), kind, &parts)
+            }
+            (Div, Quantity(a), Quantity(b)) if units::common(a, b).is_none() => {
+                let (kind, l, r) = made("/", Some((&left.code, a)), (&right.code, b), span)?;
+                Val::from(self.divided(&l, &r, span), kind, &parts).failing_if(!self.minimal)
+            }
+            (Div, Int | Float, Quantity(b)) => {
+                let (kind, _, r) = made("/", None, (&right.code, b), span)?;
+                Val::from(self.divided(&dl, &r, span), kind, &parts).failing_if(!self.minimal)
+            }
             (Div, Quantity(a), Quantity(b)) => {
                 let (_, l, r) = in_common(&left, a, &right, b, span)?;
                 Val::from(self.divided(&l, &r, span), Float, &parts).failing_if(!self.minimal)
@@ -6704,6 +6718,24 @@ fn scaled(code: &str, scale: units::Scale) -> String {
     } else {
         code.to_string()
     }
+}
+
+/// What `*` or `/` makes of two quantities, or of a number over one
+/// (decision 43): its kind, and each side scaled to the unit of its own
+/// kind with no prefix. `left` is `None` for a plain number.
+fn made(op: &str, left: Option<(&str, &str)>, right: (&str, &str), span: Span) -> Result<(Kind, String, String), Error> {
+    let refused = || Error::new(format!("units do not make a unit with `{op}` here"), span);
+    let made = units::made(op, left.map(|(_, unit)| unit), right.1).ok_or_else(refused)?;
+    let l = match left {
+        Some((code, unit)) => scaled(code, units::to_plain(unit).ok_or_else(refused)?),
+        None => String::new(),
+    };
+    let r = scaled(right.0, units::to_plain(right.1).ok_or_else(refused)?);
+    let kind = match made {
+        units::Made::Unit(unit) => Kind::Quantity(unit.to_string()),
+        units::Made::Number => Kind::Float,
+    };
+    Ok((kind, l, r))
 }
 
 /// Two quantities, both scaled to the unit they share.
@@ -13878,6 +13910,17 @@ print(m)
              var ys: owned list[u64] = [x // 2 for x in xs]\n\
              ys.sort()\n\
              print(ys, sum([ys[0], ys[1]]), ys == [1, 4611686018427387904, 9223372036854775807])\n",
+        );
+    }
+
+    #[test]
+    fn units_made_of_units_are_the_same_in_every_build() {
+        same_as_interpreter("units-made", include_str!("../tools/targets/edge-units-made.zeno"));
+        // Without `try`, so that the firmware build runs it too.
+        same_as_interpreter(
+            "units-made-plain",
+            "let power = 3.3 V * 20 mA\nprint(power, power.mW, 5 V / 2 mA, 2 mA * 4.7 kohm, (5 W * 2 h).Wh)\n\
+             print(1 / 2 ms, 2.5 / 1 kHz, 10 ms * 1 kHz, 1 kWh / 1 h, 1 kWh / 5 W)\n",
         );
     }
 

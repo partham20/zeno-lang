@@ -335,6 +335,35 @@ const Z = (function () {
     return [unit, convert(a, unit), convert(b, unit)];
   }
 
+  // What `*` and `/` make of two quantities (decision 43): the operator,
+  // what each side measures ("" for a plain number), and what the answer
+  // measures ("" for a plain number). The answer is in the unit of its
+  // kind with no prefix.
+  const MADE: any = {
+    "* voltage current": "power", "* current voltage": "power",
+    "* current resistance": "voltage", "* resistance current": "voltage",
+    "* power time": "energy", "* time power": "energy",
+    "* time frequency": "", "* frequency time": "",
+    "/ power voltage": "current", "/ power current": "voltage",
+    "/ voltage current": "resistance", "/ voltage resistance": "current",
+    "/ energy time": "power", "/ energy power": "time",
+    "/  time": "frequency", "/  frequency": "time",
+  };
+  const PLAIN: any = { time: "s", frequency: "Hz", voltage: "V", current: "A", resistance: "ohm", power: "W", energy: "J" };
+
+  // `a op b` for two quantities, or a number over a quantity.
+  function made(op: any, a: any, b: any, line: any): any {
+    const left = a instanceof Quantity ? UNITS[a.unit][0] : "";
+    const right = UNITS[b.unit][0];
+    const key = op + " " + left + " " + right;
+    const x: any = left ? apply(convert(a.unit, PLAIN[left]), a.v) : number(a);
+    if (!Object.prototype.hasOwnProperty.call(MADE, key) || x === null) mismatch(op, a, b, line);
+    if (op === "/" && b.v === 0) byZero(line);
+    const y = apply(convert(b.unit, PLAIN[right]), b.v);
+    const r = op === "*" ? x * y : x / y;
+    return MADE[key] ? new Quantity(r, PLAIN[MADE[key]]) : float(r);
+  }
+
   function unit(v: any, name: any, line: any) {
     if (!isUnit(name)) fatal("`" + name + "` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line);
     const x = number(v);
@@ -462,6 +491,7 @@ const Z = (function () {
       return Number.isSafeInteger(r) ? (r === 0 ? 0 : r) : int(BigInt(a) * BigInt(b), line);
     }
     if (isInt(a) && isInt(b)) return int(big(a) * big(b), line);
+    if (a instanceof Quantity && b instanceof Quantity) return made("*", a, b, line);
     if (a instanceof Quantity || b instanceof Quantity) {
       const [q, other] = a instanceof Quantity ? [a, b] : [b, a];
       const y = number(other);
@@ -481,13 +511,14 @@ const Z = (function () {
       if (b === 0) byZero(line);
       if (b instanceof Quantity) {
         const c = common(a.unit, b.unit);
-        if (c === null) mismatch("/", a, b, line);
+        if (c === null) return made("/", a, b, line);
         return float(apply(c[1], a.v) / apply(c[2], b.v));
       }
       const y = number(b);
       if (y === null) mismatch("/", a, b, line);
       return new Quantity(a.v / y, a.unit);
     }
+    if (b instanceof Quantity) return made("/", a, b, line);
     const x = number(a), y = number(b);
     if (x === null || y === null) mismatch("/", a, b, line);
     if (y === 0) byZero(line);

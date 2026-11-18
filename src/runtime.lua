@@ -485,6 +485,39 @@ local function met(op, a, b, line)
   return apply(to_a, a.v), apply(to_b, b.v), unit
 end
 
+-- What `*` and `/` make of two quantities (decision 43): the operator,
+-- what each side measures ("" for a plain number), and what the answer
+-- measures ("" for a plain number). The answer is in the unit of its
+-- kind with no prefix.
+local MADE = {
+  ["* voltage current"] = "power", ["* current voltage"] = "power",
+  ["* current resistance"] = "voltage", ["* resistance current"] = "voltage",
+  ["* power time"] = "energy", ["* time power"] = "energy",
+  ["* time frequency"] = "", ["* frequency time"] = "",
+  ["/ power voltage"] = "current", ["/ power current"] = "voltage",
+  ["/ voltage current"] = "resistance", ["/ voltage resistance"] = "current",
+  ["/ energy time"] = "power", ["/ energy power"] = "time",
+  ["/  time"] = "frequency", ["/  frequency"] = "time",
+}
+
+local PLAIN = {time = "s", frequency = "Hz", voltage = "V", current = "A", resistance = "ohm", power = "W", energy = "J"}
+
+-- `a op b` for two quantities, or a number over a quantity.
+local function made(op, a, b, line)
+  local left = is(a, Quantity) and UNITS[a.unit][1] or ""
+  local right = UNITS[b.unit][1]
+  local kind = MADE[op .. " " .. left .. " " .. right]
+  local x
+  if left == "" then x = number(a) else x = apply(convert(a.unit, PLAIN[left]), a.v) end
+  if kind == nil or x == nil then mismatch(op, a, b, line) end
+  if op == "/" and b.v == 0 then by_zero(line) end
+  local y = apply(convert(b.unit, PLAIN[right]), b.v)
+  local r
+  if op == "*" then r = x * y else r = x / y end
+  if kind == "" then return r + 0.0 end
+  return quantity(r, PLAIN[kind])
+end
+
 -- `a op b` where one side is a u64 (decision 42).
 local function u64_op(op, a, b, line)
   if (op == "<<" or op == ">>") and is(a, U64) and (is_int(b) or is(b, U64)) then
@@ -593,6 +626,7 @@ function Z.mul(a, b, line)
     return r
   end
   if ka and kb then return a * b end
+  if is(a, Quantity) and is(b, Quantity) then return made("*", a, b, line) end
   if is(a, Quantity) or is(b, Quantity) then
     local q, other = a, b
     if not is(a, Quantity) then q, other = b, a end
@@ -609,6 +643,7 @@ function Z.div(a, b, line)
   if is(a, Quantity) then
     if (mtype(b) and b == 0) or (is(b, Quantity) and b.v == 0) then by_zero(line) end
     if is(b, Quantity) then
+      if common(a.unit, b.unit) == nil then return made("/", a, b, line) end
       local x, y = met("/", a, b, line)
       return x / y
     end
@@ -616,6 +651,7 @@ function Z.div(a, b, line)
     if y == nil then mismatch("/", a, b, line) end
     return quantity(a.v / y, a.unit)
   end
+  if is(b, Quantity) then return made("/", a, b, line) end
   local x, y = number(a), number(b)
   if x == nil or y == nil then mismatch("/", a, b, line) end
   if y == 0 then by_zero(line) end

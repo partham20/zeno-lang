@@ -657,6 +657,42 @@ static class Z
         return ua.size <= ub.size ? a : b;
     }
 
+    // What `*` and `/` make of two quantities (decision 43): the operator,
+    // what each side measures ("" for a plain number), and what the answer
+    // measures ("" for a plain number). The answer is in the unit of its
+    // kind with no prefix.
+    static readonly System.Collections.Generic.Dictionary<string, string> MADE = new System.Collections.Generic.Dictionary<string, string>
+    {
+        ["* voltage current"] = "power", ["* current voltage"] = "power",
+        ["* current resistance"] = "voltage", ["* resistance current"] = "voltage",
+        ["* power time"] = "energy", ["* time power"] = "energy",
+        ["* time frequency"] = "", ["* frequency time"] = "",
+        ["/ power voltage"] = "current", ["/ power current"] = "voltage",
+        ["/ voltage current"] = "resistance", ["/ voltage resistance"] = "current",
+        ["/ energy time"] = "power", ["/ energy power"] = "time",
+        ["/  time"] = "frequency", ["/  frequency"] = "time",
+    };
+
+    static readonly System.Collections.Generic.Dictionary<string, string> PLAIN = new System.Collections.Generic.Dictionary<string, string>
+    {
+        ["time"] = "s", ["frequency"] = "Hz", ["voltage"] = "V", ["current"] = "A", ["resistance"] = "ohm", ["power"] = "W", ["energy"] = "J",
+    };
+
+    // `a op b` for two quantities, or a number over a quantity.
+    static object made(string op, object a, Quantity b, int line)
+    {
+        Quantity qa = a as Quantity;
+        string left = qa != null ? UNITS[qa.unit].kind : "";
+        string right = UNITS[b.unit].kind;
+        if (!MADE.TryGetValue(op + " " + left + " " + right, out string kind) || (qa == null && !isNumber(a))) throw mismatch(op, a, b, line);
+        double x = qa != null ? apply(convert(qa.unit, PLAIN[left]), qa.v) : number(a);
+        if (op == "/" && b.v == 0) throw byZero(line);
+        double y = apply(convert(b.unit, PLAIN[right]), b.v);
+        double r = op == "*" ? x * y : x / y;
+        if (kind == "") return r;
+        return new Quantity(r, PLAIN[kind]);
+    }
+
     public static object unit(object v, string name, int line)
     {
         if (!UNITS.ContainsKey(name))
@@ -802,6 +838,7 @@ static class Z
             return new ZList(items);
         }
         if (a is long x && b is long y) return mulInt(x, y, line);
+        if (a is Quantity && b is Quantity both) return made("*", a, both, line);
         if (a is Quantity || b is Quantity)
         {
             Quantity q = a as Quantity ?? (Quantity)b;
@@ -825,12 +862,13 @@ static class Z
             if (b is Quantity y)
             {
                 string u = common(q.unit, y.unit);
-                if (u == null) throw mismatch("/", a, b, line);
+                if (u == null) return made("/", a, y, line);
                 return apply(convert(q.unit, u), q.v) / apply(convert(y.unit, u), y.v);
             }
             if (!isNumber(b)) throw mismatch("/", a, b, line);
             return new Quantity(q.v / number(b), q.unit);
         }
+        if (b is Quantity over) return made("/", a, over, line);
         if (!isNumber(a) || !isNumber(b)) throw mismatch("/", a, b, line);
         if (number(b) == 0) throw byZero(line);
         return number(a) / number(b);

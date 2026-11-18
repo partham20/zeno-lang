@@ -732,6 +732,55 @@ func zCommon(a, b string) (string, zScale, zScale, bool) {
 	return unit, sa, sb, true
 }
 
+// What `*` and `/` make of two quantities (decision 43): the operator,
+// what each side measures ("" for a plain number), and what the answer
+// measures ("" for a plain number). The answer is in the unit of its
+// kind with no prefix.
+var zMade = map[string]string{
+	"* voltage current": "power", "* current voltage": "power",
+	"* current resistance": "voltage", "* resistance current": "voltage",
+	"* power time": "energy", "* time power": "energy",
+	"* time frequency": "", "* frequency time": "",
+	"/ power voltage": "current", "/ power current": "voltage",
+	"/ voltage current": "resistance", "/ voltage resistance": "current",
+	"/ energy time": "power", "/ energy power": "time",
+	"/  time": "frequency", "/  frequency": "time",
+}
+
+var zPlain = map[string]string{"time": "s", "frequency": "Hz", "voltage": "V", "current": "A", "resistance": "ohm", "power": "W", "energy": "J"}
+
+// `a op b` for two quantities, or a number over a quantity.
+func zMadeOf(op string, a ZV, b *ZQuantity, line int) ZV {
+	left := ""
+	var x float64
+	ok := true
+	if q, isQ := a.(*ZQuantity); isQ {
+		left = zUnits[q.unit].kind
+		scale, _ := zConvert(q.unit, zPlain[left])
+		x = zApply(scale, q.v)
+	} else {
+		x, ok = zNumber(a)
+	}
+	right := zUnits[b.unit].kind
+	kind, known := zMade[op+" "+left+" "+right]
+	if !known || !ok {
+		zMismatch(op, a, b, line)
+	}
+	if op == "/" && b.v == 0 {
+		zByZero(line)
+	}
+	scale, _ := zConvert(b.unit, zPlain[right])
+	y := zApply(scale, b.v)
+	r := x * y
+	if op == "/" {
+		r = x / y
+	}
+	if kind == "" {
+		return r
+	}
+	return &ZQuantity{r, zPlain[kind]}
+}
+
 func Zunit(v ZV, name string, line int) ZV {
 	if _, ok := zUnits[name]; !ok {
 		Zfatal("`"+name+"` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC", line)
@@ -975,6 +1024,11 @@ func Zmul(a, b ZV, line int) ZV {
 			return zMulInt(x, y, line)
 		}
 	}
+	if q, isQ := b.(*ZQuantity); isQ {
+		if _, both := a.(*ZQuantity); both {
+			return zMadeOf("*", a, q, line)
+		}
+	}
 	q, isQ := a.(*ZQuantity)
 	other := b
 	if !isQ {
@@ -1011,7 +1065,7 @@ func Zdiv(a, b ZV, line int) ZV {
 			}
 			_, sa, sb, ok := zCommon(q.unit, y.unit)
 			if !ok {
-				zMismatch("/", a, b, line)
+				return zMadeOf("/", a, y, line)
 			}
 			return zApply(sa, q.v) / zApply(sb, y.v)
 		case float64:
@@ -1028,6 +1082,9 @@ func Zdiv(a, b ZV, line int) ZV {
 			zMismatch("/", a, b, line)
 		}
 		return &ZQuantity{q.v / y, q.unit}
+	}
+	if q, ok := b.(*ZQuantity); ok {
+		return zMadeOf("/", a, q, line)
 	}
 	x, ok1 := zNumber(a)
 	y, ok2 := zNumber(b)

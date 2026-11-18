@@ -4415,6 +4415,28 @@ impl Emitter<'_> {
         }
     }
 
+    /// What `*` or `/` makes of two quantities, or of a number over one
+    /// (decision 43): its kind, and each side scaled to the unit of its
+    /// own kind with no prefix. `left` is `None` for a plain number.
+    fn made(&mut self, op: &str, left: Option<(&Val, &str)>, right: (&Val, &str), span: Span) -> Result<(Kind, String, String), Error> {
+        let refused = || cannot(format!("`{op}` between these units"), span);
+        let made = units::made(op, left.map(|(_, unit)| unit), right.1).ok_or_else(refused)?;
+        let l = match left {
+            Some((val, unit)) => {
+                let scale = units::to_plain(unit).ok_or_else(refused)?;
+                self.scaled(&val.code, scale)
+            }
+            None => String::new(),
+        };
+        let scale = units::to_plain(right.1).ok_or_else(refused)?;
+        let r = self.scaled(&right.0.code, scale);
+        let kind = match made {
+            units::Made::Unit(unit) => Kind::Quantity(unit.to_string()),
+            units::Made::Number => Kind::Float,
+        };
+        Ok((kind, l, r))
+    }
+
     fn arithmetic(&mut self, op: BinaryOp, left: Val, right: Val, span: Span) -> Result<Val, Error> {
         use BinaryOp::*;
         use Kind::{Float, Int, Quantity, Str};
@@ -4513,6 +4535,21 @@ impl Emitter<'_> {
             (Mul, Quantity(unit), Int | Float) | (Mul, Int | Float, Quantity(unit)) => {
                 let (l, r) = (self.double(&left), self.double(&right));
                 Val::new(self.set(format!("fmul double {l}, {r}")), Quantity(unit.clone()))
+            }
+            // `3.3 V * 20 mA` and `1 / (2 ms)` (decision 43): each side in
+            // the unit of its kind with no prefix, as the interpreter does.
+            (Mul, Quantity(a), Quantity(b)) => {
+                let (kind, l, r) = self.made("*", Some((&left, a)), (&right, b), span)?;
+                Val::new(self.set(format!("fmul double {l}, {r}")), kind)
+            }
+            (Div, Quantity(a), Quantity(b)) if units::common(a, b).is_none() => {
+                let (kind, l, r) = self.made("/", Some((&left, a)), (&right, b), span)?;
+                Val::new(self.call("double", "zeno.div", format!("double {l}, double {r}, {}", at(span))), kind)
+            }
+            (Div, Int | Float, Quantity(b)) => {
+                let l = self.double(&left);
+                let (kind, _, r) = self.made("/", None, (&right, b), span)?;
+                Val::new(self.call("double", "zeno.div", format!("double {l}, double {r}, {}", at(span))), kind)
             }
             // Ten seconds over two seconds is five, with no unit left.
             (Div, Quantity(a), Quantity(b)) => {

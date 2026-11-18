@@ -8227,12 +8227,16 @@ impl Checker {
                 }
                 (Ty::Quantity(_), other) if other.is_number() => Some(left.clone()),
                 (other, Ty::Quantity(_)) if other.is_number() => Some(right.clone()),
+                // `3.3 V * 20 mA` is a power (decision 43).
+                (Ty::Quantity(a), Ty::Quantity(b)) => units::made("*", Some(a), b).map(made_ty),
                 _ => None,
             },
 
             Div if numbers || same_unit => Some(Ty::Float),
             Div => match (left, right) {
                 (Ty::Quantity(_), other) if other.is_number() => Some(left.clone()),
+                (Ty::Quantity(a), Ty::Quantity(b)) => units::made("/", Some(a), b).map(made_ty),
+                (other, Ty::Quantity(b)) if other.is_number() => units::made("/", None, b).map(made_ty),
                 _ => None,
             },
 
@@ -8310,9 +8314,14 @@ impl Checker {
                 }
                 // Degrees and radians meet only when one is changed.
                 if let (Ty::Quantity(a), Ty::Quantity(b)) = (&left, &right) {
-                    if units::convert(a, b).is_some() {
+                    if units::convert(a, b).is_some() && units::common(a, b).is_none() {
                         message += &format!(". Change one of them first, with `.{a}` or `.{b}`");
                     }
+                }
+                // The units that make other units (decision 43).
+                let quantity = |ty: &Ty| matches!(ty, Ty::Quantity(_));
+                if matches!(op, Mul | Div) && (quantity(&left) && quantity(&right) || matches!(op, Div) && left.is_number() && quantity(&right)) {
+                    message += &format!(". The units Zeno makes from others are {}", units::made_list());
                 }
                 // One way to write it: the pointer first, then how far.
                 if matches!(op, Add) && fits(&left, &Ty::Int) && matches!(right, Ty::Pointer(_)) {
@@ -8322,6 +8331,14 @@ impl Checker {
                 if comparison { Ty::Bool } else { ty }
             }
         }
+    }
+}
+
+/// The type of what `*` or `/` made from two quantities (decision 43).
+fn made_ty(made: units::Made) -> Ty {
+    match made {
+        units::Made::Unit(unit) => Ty::Quantity(Rc::from(unit)),
+        units::Made::Number => Ty::Float,
     }
 }
 
@@ -9833,6 +9850,27 @@ mod tests {
         assert_eq!(
             error("let t = 5 sec"),
             "`sec` is not a unit Zeno knows. Some that it does: s, ms, us, Hz, V, mV, A, mA, W, degC"
+        );
+    }
+
+    #[test]
+    fn units_make_units_from_a_closed_list() {
+        // Decision 43: the answer is in the unit of its kind with no prefix.
+        ok("let p: W = 3.3 V * 20 mA\nlet r: ohm = 5 V / 2 mA\nlet i: A = 12 V / (4.7 kohm)\nlet v: V = 2 mA * 1 kohm");
+        ok("let e: J = 5 W * 2 h\nlet p: W = 1 kWh / 1 h\nlet t: s = 1 kWh / 5 W\nlet f: Hz = 1 / 2 ms\nlet t2: s = 1 / 1 kHz");
+        ok("let cycles: float = 10 ms * 1 kHz\nlet mw: mW = (3.3 V * 20 mA).mW");
+        let list = "V * A is W, A * ohm is V, W * s is J, V / A is ohm, V / ohm is A, W / V is A, J / s is W, 1 / s is Hz";
+        assert_eq!(
+            error("let a = 2 m * 3 m"),
+            format!("`*` does not work between a quantity in m and a quantity in m. The units Zeno makes from others are {list}")
+        );
+        assert_eq!(
+            error("let a = 1 / 2 V"),
+            format!("`/` does not work between int and a quantity in V. The units Zeno makes from others are {list}")
+        );
+        assert_eq!(
+            error("let p: mW = 3.3 V * 20 mA"),
+            "`p` should be a quantity in mW, but this is a quantity in W. Convert it with `.mW`"
         );
     }
 
