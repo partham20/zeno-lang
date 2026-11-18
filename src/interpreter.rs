@@ -69,6 +69,9 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 let result = interpreter
                     .run_statements(&program.statements, &env)
                     .map_err(ops::escaped);
+                // Another language that was started beside the program
+                // (`import python`) is told the program is over.
+                crate::bridge::close();
                 (interpreter.output.unwrap_or_default(), result)
             })
             .expect("could not start the interpreter thread")
@@ -123,6 +126,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Optio
                         tested.push(Tested { name: name.clone(), failure });
                     }
                 }
+                crate::bridge::close();
                 (interpreter.output.unwrap_or_default(), started.map(|()| tested))
             })
             .expect("could not start the interpreter thread")
@@ -1638,7 +1642,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
                  try { builtins.int(\"x\") } except ValueError as error { print(1, error.message) }\n\
                  try { builtins.list()[2] } except IndexError as error { print(2, error.message) }\n\
                  try { builtins.dict()[\"k\"] } except KeyError as error { print(3, error.message) }\n\
-                 try { builtins.divmod(1, 0) } except ZeroDivisionError as error { print(4, error.message) }\n\
+                 try { builtins.divmod(1, 0) } except ZeroDivisionError as error { print(4, error.message.ends_with(\"by zero\")) }\n\
                  try { python.module(\"math\").exp(1000.0) } except OverflowError as error { print(5, error.message) }\n\
                  try { builtins.open(\"/zeno/no/such/file\") } except FileError as error { print(6, error.message.starts_with(\"FileNotFoundError: \")) }\n\
                  try { builtins.len(5) } except Error as error { print(7, error.kind, error.message) }\n\
@@ -1650,7 +1654,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
             "1 invalid literal for int() with base 10: 'x'\n\
              2 list index out of range\n\
              3 there is no key 'k'\n\
-             4 integer division or modulo by zero\n\
+             4 true\n\
              5 math range error\n\
              6 true\n\
              7 Error TypeError: object of type 'int' has no len()\n\
@@ -1678,6 +1682,155 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         );
         assert_eq!(error("import python\npython.module()"), "`module` takes 1 argument, but 0 were given");
         assert_eq!(error("import python\npython.module(3)"), "`module` needs a str, but this is an int");
+    }
+
+    /// Is there a Node on this machine for `import node` to start?
+    fn node_is_here() -> bool {
+        std::process::Command::new("node")
+            .args(["-e", "process.exit(0)"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn a_module_of_node_is_used_from_zeno() {
+        if !node_is_here() {
+            return;
+        }
+        // Numbers and text come across as Zeno's own. A number of
+        // JavaScript that is whole is an int. Named arguments are the
+        // one object of options that goes last, and a promise is
+        // waited for.
+        assert_eq!(
+            output(
+                "import node\n\
+                 let path = node.module(\"path\")\n\
+                 print(path.posix.join(\"a\", \"b\", \"c.txt\"), path.extname(\"x.tar.gz\"), len(path.sep))\n\
+                 let Math = node.global(\"Math\")\n\
+                 print(Math.max(3, 9, 4) + 1, Math.sqrt(16.0) + 1, Math.PI > 3.14, Math.sqrt(2.0) < 1.5, Math.nothing is none)\n\
+                 let Number = node.global(\"Number\")\n\
+                 print(Number(\"0x10\"), Number(\"2.5\") + 1, Number.isNaN(Number(\"x\")), Number.MAX_SAFE_INTEGER + 1, Number(\"1e21\"))\n\
+                 print(node.global(\"String\")(9007199254740993), node.global(\"BigInt\")(\"9007199254740993\") + 1, node.global(\"undefined\") is none)\n\
+                 let util = node.module(\"util\")\n\
+                 print(util.inspect(\"h\u{e9}llo \u{1F600}\\t\\\"q\\\"\"), util.inspect([1, [2, [3]]], depth=0, compact=true))\n\
+                 let waited = node.module(\"timers/promises\").setTimeout(1, \"waited for\")\n\
+                 print(waited, node.global(\"Promise\").resolve(41) + 1)\n\
+                 let day = node.new(node.global(\"Date\"), 0)\n\
+                 let year = day.getUTCFullYear\n\
+                 print(day.toISOString(), year() + 1, node.new(node.global(\"URL\"), \"https://zeno-lang.org/a?b=1\").searchParams.get(\"b\"))"
+            ),
+            "a/b/c.txt .gz 1\n\
+             10 5 true true true\n\
+             16 3.5 true 9007199254740992 1e21\n\
+             9007199254740993 9007199254740994 true\n\
+             'h\u{e9}llo \u{1F600}\\t\"q\"' [ 1, [Array] ]\n\
+             waited for 42\n\
+             1970-01-01T00:00:00.000Z 1971 1\n"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_number_or_text_stays_in_node() {
+        if !node_is_here() {
+            return;
+        }
+        // An array of JavaScript is the one array there is. `node.copy`
+        // makes a list of Zeno of it, and a dict of a plain object.
+        assert_eq!(
+            output(
+                "import node\n\
+                 let items = node.global(\"Array\").of(0, 1, 2)\n\
+                 items.push(10)\n\
+                 items[0] = \"zero\"\n\
+                 print(items, len(items), items[3] + 1, 10 in items, 11 not in items, items[9] is none)\n\
+                 var seen: list[str] = []\n\
+                 for item in items {\n    seen.append(str(item))\n}\n\
+                 print(seen.join(\"-\"), [items], f\"{items[0]:>6}|\")\n\
+                 let copy = node.copy(items)\n\
+                 copy.append(11)\n\
+                 print(copy, len(items), node.copy(3), items == items, items == node.global(\"Array\").of(), items == 3)\n\
+                 let ages = node.global(\"Object\")(ann=31, bob=40)\n\
+                 ages[\"cy\"] = [1.5, none, true]\n\
+                 ages.dee = 5\n\
+                 for name, age in node.copy(ages) {\n    print(name, age)\n}\n\
+                 for name in ages {\n    print(name)\n}\n\
+                 print(\"ann\" in ages, len(ages), ages.ann + ages[\"bob\"], ages)\n\
+                 let seen_by = node.new(node.global(\"Map\"))\n\
+                 seen_by.set(\"k\", [1, 2])\n\
+                 seen_by[7] = \"seven\"\n\
+                 print(len(seen_by), \"k\" in seen_by, seen_by[7], seen_by[\"k\"], node.copy(seen_by))\n\
+                 let bytes = node.global(\"Buffer\").alloc(2)\n\
+                 bytes[1] = 255\n\
+                 print(len(bytes), node.copy(bytes), node.copy(node.new(node.global(\"Set\"), [3, 3, 4])))\n\
+                 let given = node.global(\"Array\").of([2.5, \"x\", none], [\"k\": [true]], 2 ** 62)\n\
+                 print(given, node.global(\"Array\").isArray(given[0]), given[2] == 2 ** 62)"
+            ),
+            "[ 'zero', 1, 2, 10 ] 4 11 true true true\n\
+             zero-1-2-10 [[ 'zero', 1, 2, 10 ]]   zero|\n\
+             [\"zero\", 1, 2, 10, 11] 4 3 true false false\n\
+             ann 31\nbob 40\ncy [1.5, none, true]\ndee 5\n\
+             ann\nbob\ncy\ndee\n\
+             true 4 71 { ann: 31, bob: 40, cy: [ 1.5, null, true ], dee: 5 }\n\
+             2 true seven [ 1, 2 ] [\"k\": [1, 2], 7: \"seven\"]\n\
+             2 [0, 255] [3, 4]\n\
+             [ [ 2.5, 'x', null ], { k: [ true ] }, 4611686018427387904n ] true true\n"
+        );
+    }
+
+    #[test]
+    fn an_error_of_node_is_an_error_of_zeno() {
+        if !node_is_here() {
+            return;
+        }
+        // What JavaScript throws is an `Error` that says what it was
+        // called there. What the system refused is a FileError.
+        assert_eq!(
+            output(
+                "import node\n\
+                 let JSON = node.global(\"JSON\")\n\
+                 try { JSON.parse(\"{oops\") } except Error as error { print(1, error.kind, error.message.starts_with(\"SyntaxError: \")) }\n\
+                 try { node.module(\"fs\").readFileSync(\"/zeno/no/such/file\") } except FileError as error { print(2, error.message.starts_with(\"ENOENT: \")) }\n\
+                 try { node.module(\"fs/promises\").readFile(\"/zeno/no/such/file\") } except FileError as error { print(3, error.message.starts_with(\"ENOENT: \")) }\n\
+                 try { node.module(\"zeno-no-such-module\") } except FileError as error { print(4, error.message.starts_with(\"Node has no module `zeno-no-such-module`\")) }\n\
+                 try { node.global(\"zeno_no_such_thing\") } except Error as error { print(5, error.message) }\n\
+                 try { node.global(\"eval\")(\"throw 5\") } except Error as error { print(6, error.message) }\n\
+                 try { node.new(node.global(\"Map\"), 5) } except Error as error { print(7, error.message.starts_with(\"TypeError: \")) }\n\
+                 try { node.new(node.global(\"Math\")) } except Error as error { print(8, error.message) }\n\
+                 try { node.copy(node.new(node.global(\"Map\"), [[1.5, 2]])) } except ValueError as error { print(9, error.message) }\n\
+                 try { node.global(\"Promise\").reject(node.new(node.global(\"Error\"), \"no\")) } except Error as error { print(10, error.message) }\n\
+                 print(\"still here\")"
+            ),
+            "1 Error true\n2 true\n3 true\n4 true\n\
+             5 JavaScript has nothing called `zeno_no_such_thing`\n\
+             6 thrown: 5\n7 true\n\
+             8 TypeError: this is not a function, and cannot be called\n\
+             9 a dict in Zeno has keys that are str or int, and this one has the key 1.5\n\
+             10 no\nstill here\n"
+        );
+        assert_eq!(
+            error("import node\nfunction double(n) { return n * 2 }\nnode.global(\"Array\").of(1).map(double)"),
+            "a function of Zeno cannot be given to JavaScript yet"
+        );
+        assert_eq!(
+            error("import node\nif node.global(\"process\") { print(1) }"),
+            "a condition must be true or false, but this is a JavaScript value"
+        );
+        assert_eq!(error("import node\nnode.new()"), "`new` takes the class to make an object of, and then what it is made from, but nothing was given");
+        assert_eq!(error("import node\nnode.new(3)"), "`new` needs a class of JavaScript, but this is an int");
+        assert_eq!(error("import node\nnode.global(3)"), "`global` needs a str, but this is an int");
+        // Each stays where it was made.
+        if python_is_here() {
+            assert_eq!(
+                error("import node\nimport python\npython.module(\"builtins\").len(node.global(\"process\"))"),
+                "a JavaScript value cannot be given to Python. Each stays where it was made"
+            );
+            assert_eq!(
+                output("import node\nimport python\nprint(python.module(\"sys\") == node.global(\"process\"), python.module(\"math\").floor(node.global(\"Math\").PI))"),
+                "false 3\n"
+            );
+        }
     }
 
     #[test]
@@ -1716,7 +1869,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");

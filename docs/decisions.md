@@ -11293,7 +11293,7 @@ rounds (24.29).
   for the whole language, and it was decided once (5.19c).
 - A loop that takes items one at a time, for what never ends.
 - `python` in a built program, and in `--target py` (26.9).
-- JavaScript and Java, then the rest of 26.1.
+- Java, then the rest of 26.1. JavaScript is chapter 28.
 
 ## 27. The registry: a package by its name
 
@@ -11601,3 +11601,180 @@ package is on the page a few minutes after it is published.
 - A licence line, and running a package's tests before it is taken.
 - Versions before a release (`v1.2.0-rc1`).
 - Saying in the lock which registry a line came from.
+
+## 28. The libraries of JavaScript
+
+The second language of the first version (26.1): `import node`, for
+the library that comes with Node and for the packages of npm.
+[`node.md`](node.md) is the walkthrough. Everything in chapter 26
+holds here unless this chapter says otherwise: Node runs beside the
+program (26.2), they talk over a socket (26.3), numbers and text cross
+and everything else stays (26.5), what Zeno gives is a copy (26.6), a
+value from there is not a condition (26.7), the types are known when
+the program runs (26.9), and nothing changes for a program that does
+not ask (26.11). What follows is what JavaScript made different.
+
+### 28.1 The module is called `node`, and the values "JavaScript"
+
+`import node`, `node.module("fs")`. A message says "a JavaScript
+value".
+
+**Why `node`.** It is the program that is started, and the one whose
+rules decide where a package is looked for. JavaScript in a browser
+has no `fs` and no npm. `import javascript` would promise more than
+is there, and `import npm` would name the place the packages come
+from and leave out the library Node has without it.
+
+**Why the values are "JavaScript".** A message about a value speaks
+of the language the value is written in. `ZENO_NODE` names the Node
+to use, as `ZENO_PYTHON` does (26.10). Only `node` is looked for: it
+has no second name.
+
+### 28.2 `node.global` and `node.new`, because JavaScript has both
+
+Python has everything in a module, `builtins` included, and makes an
+object by calling its class. JavaScript has neither: `JSON`, `Math`,
+`Date` and `process` are in no module, and a class has to be given to
+`new`.
+
+`node.global(name)` gives what JavaScript has under that name
+everywhere. `node.new(Class, a, b)` is `new Class(a, b)`.
+
+**Why not make `Class(a, b)` do `new`.** Calling and `new` are two
+things in JavaScript, and one value can take both with different
+answers: `Date()` gives a str and `new Date()` a date. Guessing which
+was meant would be right most of the time, and wrong with nothing to
+say so.
+
+**Alternatives rejected.** A module of pretend, `node.module("global")`:
+it reads like a package that might not be installed. A `new` word in
+the language: one module's need is not the language's.
+
+### 28.3 A number that is whole is an int
+
+JavaScript has one kind of number. One that is whole arrives as an
+int, and any other as a float.
+
+**Why.** Nearly every whole number a library returns is a count, a
+size, an index or a year, and in Zeno those are ints: `items[n]` needs
+one. Had every number arrived as a float, each of them would need
+`int(...)` around it. The other way round costs less: an int goes
+where a float is wanted.
+
+**The cost.** `Math.sqrt(16.0)` is `4` and prints so, where Zeno's own
+would print `4.0`. JavaScript does not keep which was written, so
+there is nothing to go by.
+
+**Past what is exact.** A whole number above 9007199254740991 arrives
+as a float: by then JavaScript's number is not exact, and an int would
+say that it is. An int of Zeno above that goes as a `BigInt`, since a
+number would silently round it, and a `BigInt` that fits 64 bits comes
+back as an int.
+
+**`null` and `undefined` are both `none`.** Zeno has one nothing. A
+field that an object does not have is therefore `none`, with no error.
+That is JavaScript's rule and it is kept, because a library's own
+documentation is written to it.
+
+### 28.4 Named arguments are the object of options
+
+`thing(1, key=3)` is `thing(1, {key: 3})`.
+
+**Why.** JavaScript has no named arguments, and its libraries agree
+on what stands in for them: one object, last. So the Zeno call reads
+as the same call does with Python (26.4), and a program does not have
+to build an object first for the common case.
+
+**Why refuse nothing.** Whether a function takes options is not known
+before it is called. Giving named arguments to one that does not is
+one argument more than it reads, which JavaScript ignores.
+
+`node.global("Object")(a=1, b="x")` makes such an object by itself,
+which is `python.module("builtins").dict(a=1, b="x")` for JavaScript.
+`node.new` takes no named arguments: no function that comes with Zeno
+takes any, and one exception would be a second rule.
+
+### 28.5 A promise is waited for
+
+A call or a field that gives a promise gives what the promise
+resolves to. One that is rejected is an error at that line.
+
+**Why.** A Zeno program is one line after another. There is nothing
+it could do with a promise but wait for it, and writing that wait on
+every call would be a word that never changes. Because of it the
+whole promise side of Node works today: `fs/promises`,
+`timers/promises`, `fetch`.
+
+**The cost.** A program cannot start two things and wait for both.
+That waits for the day a function of Zeno can be given to JavaScript
+(28.10).
+
+### 28.6 What a method is called on
+
+`thing.name` in JavaScript gives a function that no longer knows
+`thing`. The helper keeps, with each value, the object it was read
+from, and calls it on that. So `start.getFullYear()` works, and so
+does keeping `start.getFullYear` in a name and calling it later, which
+in JavaScript itself fails.
+
+**Why go further than JavaScript does.** In Zeno a method taken from
+an object stays that object's: `let get = box.get` and then `get()`
+is `box.get()`. A Zeno program that reads a method and calls it later
+is written to that rule.
+
+### 28.7 `==` is the same object; `print` is what the console shows
+
+`a == b` on two values of JavaScript is `a === b`.
+
+**Why not compare what is in them.** JavaScript has no such
+comparison, and each library that needs one writes its own. Inventing
+one here would give answers no JavaScript program gets.
+`node.copy(a) == node.copy(b)` compares what is in them, by Zeno's
+rule, and says so.
+
+`print(thing)` shows what `console.log(thing)` shows, because that is
+what a person who uses the library has seen. A value that writes
+itself, a date or an error or a URL, is shown as it writes itself:
+`str(thing)` should be the text the value means.
+
+### 28.8 An error of JavaScript is `Error`, or `FileError`
+
+What JavaScript throws is an `Error` of Zeno, and its message begins
+with JavaScript's name for it (`TypeError: ...`). An error that the
+system gave, which is one with an `errno` and a `syscall`, is a
+`FileError`. No Node, and no such module, are a `FileError` too
+(26.8).
+
+**Why no `ValueError` or `IndexError`.** JavaScript's `RangeError`
+and `TypeError` do not mean what Zeno's kinds mean: `RangeError` is
+thrown for a bad length and for a stack that is too deep. Matching
+names that only look alike would make `except ValueError` catch
+things it was not written for. Reading past the end of an array is
+not an error in JavaScript at all.
+
+### 28.9 A module is looked for from the folder of the program
+
+`node.module("dayjs")` looks in `node_modules` beside the `.zeno`
+file, then in each folder above. `node.module("./helper.js")` is a
+file beside the program. For Python the folder of the program is the
+first place looked in, before the installed packages, so a
+`helper.py` beside the program is `python.module("helper")`.
+
+**Why.** It is where each language looks for a program of its own,
+and it is where Zeno's own `import` looks (7.1). A program then finds
+its modules wherever it is run from. Looking from the folder Zeno was
+started in, which is what a helper started with `-e` or `-c` does by
+itself, would make `zeno run project/main.zeno` fail for a program
+that runs when started inside `project`.
+
+This changed Python as chapter 26 first had it. It was in no release.
+
+### 28.10 Left for later
+
+- A function of Zeno given to JavaScript. More of JavaScript needs it
+  than of Python: `map`, `on("data", f)`, a server.
+- Node ends when the program does. A server or a timer started there
+  does not keep the program alive.
+- Starting two things and waiting for both (28.5).
+- `node` in a built program, and in `--target js`, as 26.9 has it for
+  Python.

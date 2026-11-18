@@ -1,0 +1,50 @@
+# The SHA-256 of a file: the long number a download page prints beside
+# a file, so that you can tell the file you got is the file they made.
+#
+#     zeno run examples/checksum.zeno zeno.tar.gz
+#     zeno run examples/checksum.zeno zeno.tar.gz 9f86d081884c7d65...
+#
+# With the number from the page as a second word, it says whether the
+# two are the same.
+#
+# Zeno has no SHA-256 of its own. Node has one, in the `crypto` that
+# comes with it, and `import node` lets a Zeno program use it: that
+# module, and any package that `npm install` put in the folder.
+#
+# It needs Node.
+
+import node
+import program
+
+# `crypto`, the hash and the bytes of the file stay in JavaScript, and
+# Zeno asks Node for each call. What `digest` gives is a str of
+# JavaScript, so it arrives as a str of Zeno. What Node can throw is
+# not known before the program runs, so the function says `raises
+# Error`: any kind.
+function sha256_of(name: str) -> str raises Error {
+    let hash = node.module("crypto").createHash("sha256")
+    hash.update(node.module("fs").readFileSync(name))
+    return hash.digest("hex")
+}
+
+let words = program.arguments()
+if len(words) < 1 or len(words) > 2 {
+    print("usage: zeno run checksum.zeno <file> [the number it should have]")
+} else {
+    try {
+        let found = sha256_of(words[0])
+        if len(words) == 1 {
+            print(f"{found}  {words[0]}")
+        } else if found == words[1].lower() {
+            print(f"{words[0]} is the file that number was made from.")
+        } else {
+            print(f"{words[0]} is NOT that file. Its number is")
+            print(f"  {found}")
+        }
+    } except FileError as error {
+        # Node is not installed, or there is no such file.
+        print(error.message)
+    } except Error as error {
+        print(f"Node could not do it. {error.message}")
+    }
+}

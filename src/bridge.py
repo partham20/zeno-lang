@@ -162,6 +162,14 @@ def main():
     global count
     port, token, first = os.environ.pop("ZENO_BRIDGE").split()
     count = int(first)
+    # A module is looked for where Python looks for the modules of a
+    # program: first in the folder the program is in.
+    home = os.environ.pop("ZENO_PROGRAM", None)
+    if home:
+        if sys.path and sys.path[0] == "":
+            sys.path[0] = home
+        else:
+            sys.path.insert(0, home)
     link = socket.create_connection(("127.0.0.1", int(port)))
     link.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     lines = link.makefile("r", encoding="utf-8", newline="\n")

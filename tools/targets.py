@@ -247,7 +247,7 @@ def main():
                 failures.append((program, result))
         total = passed + len(failures)
         print(f"{target}: {passed} of {total} programs print what `zeno run` prints"
-              + (f" ({len(left_out)} left out: they use the board, a page, manual memory, another program, Python"
+              + (f" ({len(left_out)} left out: they use the board, a page, manual memory, another program, Python, Node"
                  + (", the keyboard, the command line, files or sleep" if spec.get("page") else "") + ")" if left_out else ""))
         for program, why in failures:
             failed_any = True

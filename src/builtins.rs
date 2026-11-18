@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node")
 }
 
 /// Every built-in name and what it stands for.
@@ -183,6 +183,33 @@ fn python_copy(_: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result 
     match args.remove(0) {
         Value::Foreign(foreign) => crate::bridge::copy(&foreign, span),
         other => Ok(other),
+    }
+}
+
+/// `node.module("fs")`: a module of JavaScript, as `require("fs")`
+/// gives it in Node. It stays in Node, which Zeno starts beside the
+/// program the first time it is asked for (`bridge.rs`).
+fn node_module(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("module", &args, 1, 1, span)?;
+    crate::bridge::module(crate::bridge::Lang::Node, text("module", &args[0], span)?, span)
+}
+
+/// `node.global("JSON")`: what JavaScript has under that name with no
+/// module asked for: `JSON`, `Math`, `Date`, `fetch`, `console`.
+fn node_global(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("global", &args, 1, 1, span)?;
+    crate::bridge::global(crate::bridge::Lang::Node, text("global", &args[0], span)?, span)
+}
+
+/// `node.new(Date, 2026, 10, 18)`: what `new Date(2026, 10, 18)` is in
+/// JavaScript. The class comes first, then what it is made from.
+fn node_new(_: &mut dyn Machine, mut args: Vec<Value>, span: Span) -> Result {
+    if args.is_empty() {
+        return fatal("`new` takes the class to make an object of, and then what it is made from, but nothing was given", span);
+    }
+    match args.remove(0) {
+        Value::Foreign(class) if class.lang == crate::bridge::Lang::Node => crate::bridge::new(&class, &args, span),
+        other => wrong_type("new", "a class of JavaScript", &other, span),
     }
 }
 
@@ -1119,6 +1146,15 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
             "python",
             vec![
                 ("module", Value::Builtin(Builtin { name: "module", call: python_module })),
+                ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
+            ],
+        ),
+        "node" => (
+            "node",
+            vec![
+                ("module", Value::Builtin(Builtin { name: "module", call: node_module })),
+                ("global", Value::Builtin(Builtin { name: "global", call: node_global })),
+                ("new", Value::Builtin(Builtin { name: "new", call: node_new })),
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),

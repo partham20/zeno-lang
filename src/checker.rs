@@ -1618,6 +1618,10 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("program", "run") => Ty::Builtin("program.run"),
         ("python", "module") => Ty::Builtin("python.module"),
         ("python", "copy") => Ty::Builtin("python.copy"),
+        ("node", "module") => Ty::Builtin("node.module"),
+        ("node", "global") => Ty::Builtin("node.global"),
+        ("node", "new") => Ty::Builtin("node.new"),
+        ("node", "copy") => Ty::Builtin("python.copy"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3306,6 +3310,7 @@ impl Checker {
                     "json" => "json",
                     "web" => "web",
                     "python" => "python",
+                    "node" => "node",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -5931,6 +5936,26 @@ impl Checker {
                 self.arity("copy", arguments, 1, 1, span);
                 Ty::Dynamic
             }
+            // `node.module("fs")`, `node.global("JSON")`: the same for
+            // JavaScript. Node may not be installed, or may not have
+            // the module.
+            "node.module" | "node.global" => {
+                let short = &name["node.".len()..];
+                if self.arity(short, arguments, 1, 1, span) {
+                    let what = format!("the name given to `{name}`");
+                    self.expect(&first, &Ty::Str, &what, arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::Dynamic
+            }
+            // `node.new(Class, ...)`: the class, then what the object
+            // is made from.
+            "node.new" => {
+                if arguments.is_empty() {
+                    self.error("`new` takes the class to make an object of, and then what it is made from, but nothing was given", span);
+                }
+                Ty::Dynamic
+            }
             // `program.arguments()`: the words the program was started
             // with, as a new list.
             "program.arguments" => {
@@ -8009,7 +8034,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         ok("from math import sqrt\nimport math\nlet x: float = sqrt(2) + math.pi\nlet n: int = math.floor(x)\nlet parts: list[str] = \"a b\".split()");
@@ -10080,6 +10105,25 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(error("import python\npython.module()"), "`module` takes 1 argument, but 0 were given");
         assert_eq!(error("import python\npython.copy()"), "`copy` takes 1 argument, but 0 were given");
         assert_eq!(error("import python\npython.eval(\"1\")"), "module `python` has no `eval`");
+        // JavaScript's is let through in the same way.
+        ok("import node\n\
+            let fs = node.module(\"fs\")\n\
+            let watcher = node.new(node.global(\"Map\"), [[1, fs.constants]])\n\
+            watcher[\"k\"] = fs.readFileSync(\"x\", encoding=\"utf8\")\n\
+            let size: int = fs.statSync(\"x\").size\n\
+            for name in node.copy(fs.readdirSync(\".\")) {\n    print(name, size, len(watcher))\n}");
+        ok("from node import module, global, new, copy\nprint(copy(new(global(\"Set\"))), module(\"os\").EOL)");
+        assert_eq!(error("import node\nnode.module(5)"), "the name given to `node.module` should be str, but this is int");
+        assert_eq!(error("import node\nnode.global()"), "`global` takes 1 argument, but 0 were given");
+        assert_eq!(
+            error("import node\nnode.new()"),
+            "`new` takes the class to make an object of, and then what it is made from, but nothing was given"
+        );
+        assert_eq!(error("import node\nnode.require(\"fs\")"), "module `node` has no `require`");
+        assert_eq!(
+            strict_error("import node\nlet os = node.module(\"os\")"),
+            "strict mode: the type of this cannot be worked out before the program runs"
+        );
         // Strict mode wants every type before the program runs, and
         // Python's are not known then: the same as for `json.parse`.
         assert_eq!(

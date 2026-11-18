@@ -71,6 +71,9 @@ pub fn run_with(program: &Program, capture: bool, outside: Outside) -> (String, 
                 let nothing: Rc<[Cell]> = Rc::from(Vec::new());
                 vm.frames.push(Frame::new(main, nothing, 1, Vec::new(), Span { line: 1, col: 1 }));
                 let result = vm.run(0).map(|_| ()).map_err(ops::escaped);
+                // Another language that was started beside the program
+                // (`import python`) is told the program is over.
+                crate::bridge::close();
                 (vm.output.unwrap_or_default(), result)
             })
             .expect("could not start the VM thread")
@@ -1423,7 +1426,7 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             ("print(\"before\")\nbreak", "`break` outside a loop"),
             ("function f() { continue }\nprint(\"before\")\nf()", "`continue` outside a loop"),
             ("print(\"before\")\nlet x = 1\nlet x = 2", "`x` is already declared in this block"),
-            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"),
+            ("print(\"before\")\nimport nothing", "there is no module `nothing`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"),
             ("print(\"before\")\nfrom math import nothing", "module `math` has no `nothing`"),
             ("print(\"before\")\nprint(5 parsecs)", "`parsecs` is not a unit Zeno knows"),
         ] {

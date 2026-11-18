@@ -45,6 +45,12 @@ Python is started the first time `python.module` is called, once, and
 stays until the program ends. A program that imports `python` and
 never calls it starts nothing.
 
+A module is looked for where Python would look for it if the program
+were a program of Python in the same place: among the packages that
+are installed, and first in the folder the `.zeno` file is in. So a
+`helper.py` beside the program is `python.module("helper")`, wherever
+the program is run from.
+
 ## Values go across in two ways
 
 **`none`, a bool, an int, a float and a str go as themselves.** What

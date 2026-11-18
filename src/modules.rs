@@ -1567,7 +1567,7 @@ mod tests {
         assert_eq!(
             error("import shapes\nimport drivers.uart\nimport shapes\n"),
             "there is no module `shapes`. `import shapes` reads the file `shapes.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
         );
         assert_eq!(load("import shapes\nimport shapes\nfrom shapes import x\n").program.unwrap_err().len(), 1);
         assert_eq!(
@@ -1580,7 +1580,7 @@ mod tests {
             "`import shapes` goes at the top of the file, not inside a function or a block. \
              Only a module that comes with Zeno, such as `math`, can be imported in here"
         );
-        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`");
+        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`");
         assert_eq!(
             error("import test\n"),
             "`test.zeno` is the file the program starts in, and no file imports that one. \
@@ -1817,7 +1817,7 @@ mod tests {
         assert_eq!(
             needs("import filters\nimport control\n", "==> control.zeno\nlet x = 1\n==> lib/filters.zeno\nimport control\n"),
             "there is no module `control`. `import control` reads the file `lib/control.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web` and `python`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python` and `node`"
         );
         // A file is one module, and a module is one file.
         assert_eq!(

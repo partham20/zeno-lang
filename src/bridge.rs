@@ -22,13 +22,24 @@ type Result<T = Value> = std::result::Result<T, Control>;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
     Python,
+    Node,
 }
 
 impl Lang {
-    /// As a message names it: "a Python value".
+    /// The language, as a message names it: "a Python value".
     pub fn name(self) -> &'static str {
         match self {
             Lang::Python => "Python",
+            Lang::Node => "JavaScript",
+        }
+    }
+
+    /// The program that runs it, which is what is started and can be
+    /// missing.
+    pub fn runtime(self) -> &'static str {
+        match self {
+            Lang::Python => "Python",
+            Lang::Node => "Node",
         }
     }
 }
@@ -73,6 +84,9 @@ fn write(lang: Lang, value: &Value, depth: usize, out: &mut String, span: Span) 
     match value {
         Value::None => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        // A number of JavaScript holds whole numbers exactly up to 2^53.
+        // A bigger int goes as text, and arrives as a BigInt.
+        Value::Int(n) if lang == Lang::Node && n.unsigned_abs() > (1 << 53) => out.push_str(&format!("[\"i\",\"{n}\"]")),
         Value::Int(n) => out.push_str(&n.to_string()),
         Value::Float(x) if x.is_nan() => out.push_str("[\"f\",\"nan\"]"),
         Value::Float(x) if x.is_infinite() => out.push_str(if *x > 0.0 { "[\"f\",\"inf\"]" } else { "[\"f\",\"-inf\"]" }),
@@ -105,6 +119,9 @@ fn write(lang: Lang, value: &Value, depth: usize, out: &mut String, span: Span) 
             out.push_str("]]");
         }
         Value::Foreign(foreign) if foreign.lang == lang => out.push_str(&format!("[\"p\",{}]", foreign.id)),
+        Value::Foreign(foreign) => {
+            return fatal(format!("a {} value cannot be given to {}. Each stays where it was made", foreign.lang.name(), lang.name()), span);
+        }
         Value::Function(_) | Value::Builtin(_) | Value::Method(..) | Value::BoundMethod(..) => {
             return fatal(format!("a function of Zeno cannot be given to {} yet", lang.name()), span);
         }
@@ -223,7 +240,11 @@ impl Reader<'_> {
         if text.contains(['.', 'e', 'E']) {
             return text.parse().ok().map(Wire::Float);
         }
-        text.parse().ok().map(Wire::Int)
+        // A whole number too big for an int is a float.
+        match text.parse() {
+            Ok(n) => Some(Wire::Int(n)),
+            Err(_) => text.parse().ok().map(Wire::Float),
+        }
     }
 
     fn hex(&mut self) -> Option<u32> {
@@ -305,8 +326,9 @@ fn read(lang: Lang, wire: Wire) -> Option<Value> {
                     "nan" => f64::NAN,
                     "inf" => f64::INFINITY,
                     "-inf" => f64::NEG_INFINITY,
-                    _ => return None,
+                    other => other.parse().ok()?,
                 }),
+                ("i", Wire::Text(digits)) => Value::Int(digits.parse().ok()?),
                 ("l", Wire::List(items)) => {
                     Value::list(items.into_iter().map(|item| read(lang, item)).collect::<Option<Vec<Value>>>()?)
                 }
@@ -374,6 +396,12 @@ pub fn module(lang: Lang, name: &str, span: Span) -> Result {
     Ask::new(lang, "import", span).text("name", name).send()
 }
 
+/// `node.global("JSON")`: something JavaScript has without asking for
+/// a module.
+pub fn global(lang: Lang, name: &str, span: Span) -> Result {
+    Ask::new(lang, "global", span).text("name", name).send()
+}
+
 /// `thing.name`
 pub fn field(foreign: &Foreign, name: &str, span: Span) -> Result {
     Ask::new(foreign.lang, "get", span).on(foreign).text("name", name).send()
@@ -386,8 +414,17 @@ pub fn set_field(foreign: &Foreign, name: &str, value: &Value, span: Span) -> Re
 
 /// `thing(1, 2, name=3)`
 pub fn call(foreign: &Foreign, positional: &[Value], named: &[(String, Value)], span: Span) -> Result {
+    called("call", foreign, positional, named, span)
+}
+
+/// `node.new(Class, 1, 2)`: what `new Class(1, 2)` is in JavaScript.
+pub fn new(foreign: &Foreign, positional: &[Value], span: Span) -> Result {
+    called("new", foreign, positional, &[], span)
+}
+
+fn called(op: &str, foreign: &Foreign, positional: &[Value], named: &[(String, Value)], span: Span) -> Result {
     let lang = foreign.lang;
-    let mut ask = Ask::new(lang, "call", span).on(foreign);
+    let mut ask = Ask::new(lang, op, span).on(foreign);
     ask.line.push_str(",\"args\":[");
     for (at, arg) in positional.iter().enumerate() {
         if at > 0 {
@@ -478,6 +515,13 @@ pub fn close() {
     link::close();
 }
 
+/// Where the program that is run is. A module of the other language is
+/// looked for from there, as it would be for a program of that language
+/// in the same folder.
+pub fn program_at(path: &str) {
+    link::program_at(path);
+}
+
 // --------------------------------------------------------------- The socket
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -493,6 +537,24 @@ mod link {
     use crate::value::{fatal, raise};
 
     const PYTHON: &str = include_str!("bridge.py");
+    const NODE: &str = include_str!("bridge.js");
+
+    /// How the helper of a language is handed to its program: the
+    /// option that says "the program is the next word", and the helper.
+    fn helper(lang: Lang) -> [&'static str; 2] {
+        match lang {
+            Lang::Python => ["-c", PYTHON],
+            Lang::Node => ["-e", NODE],
+        }
+    }
+
+    /// The variable of the environment that names the program to use.
+    fn named_by(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Python => "ZENO_PYTHON",
+            Lang::Node => "ZENO_NODE",
+        }
+    }
 
     /// How long the helper has to start and say hello.
     const PATIENCE: Duration = Duration::from_secs(30);
@@ -508,6 +570,18 @@ mod link {
         static LINKS: RefCell<Vec<(Lang, Link)>> = const { RefCell::new(Vec::new()) };
         /// What Zeno has let go of since the last line was sent.
         static FREED: RefCell<Vec<(Lang, u64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The folder of the program that is run, where that is a file. It
+    /// is said before the program starts, on another thread than the
+    /// one the program runs on.
+    static HOME: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+    pub fn program_at(path: &str) {
+        let folder = std::fs::canonicalize(path).ok().and_then(|file| file.parent().map(|folder| folder.to_path_buf()));
+        if let Ok(mut home) = HOME.lock() {
+            *home = folder;
+        }
     }
 
     pub fn freed(lang: Lang, id: u64) {
@@ -532,14 +606,13 @@ mod link {
     }
 
     /// The programs to try, in order. `ZENO_PYTHON` names one, for a
-    /// Python that is not the first one found.
+    /// Python that is not the first one found, and `ZENO_NODE` a Node.
     fn programs(lang: Lang) -> Vec<String> {
-        match lang {
-            Lang::Python => match std::env::var("ZENO_PYTHON") {
-                Ok(named) if !named.is_empty() => vec![named],
-                _ if cfg!(windows) => vec!["python".to_string(), "python3".to_string(), "py".to_string()],
-                _ => vec!["python3".to_string(), "python".to_string()],
-            },
+        match (std::env::var(named_by(lang)), lang) {
+            (Ok(named), _) if !named.is_empty() => vec![named],
+            (_, Lang::Python) if cfg!(windows) => vec!["python".to_string(), "python3".to_string(), "py".to_string()],
+            (_, Lang::Python) => vec!["python3".to_string(), "python".to_string()],
+            (_, Lang::Node) => vec!["node".to_string()],
         }
     }
 
@@ -585,7 +658,7 @@ mod link {
     }
 
     fn start(lang: Lang, span: Span) -> Result<Link> {
-        let cannot = |why: String| raise("FileError", format!("cannot start {}: {why}", lang.name()), span);
+        let cannot = |why: String| raise("FileError", format!("cannot start {}: {why}", lang.runtime()), span);
         let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
             return cannot("this machine gave no socket to talk to it over".to_string());
         };
@@ -595,13 +668,17 @@ mod link {
         let token = secret();
         let programs = programs(lang);
         for program in &programs {
-            if !is_python_3(program) {
+            if lang == Lang::Python && !is_python_3(program) {
                 continue;
             }
-            let started = Command::new(program)
-                .args(["-c", PYTHON])
-                .env("ZENO_BRIDGE", format!("{} {token} {}", address.port(), first_number()))
-                .spawn();
+            let mut command = Command::new(program);
+            command.args(helper(lang)).env("ZENO_BRIDGE", format!("{} {token} {}", address.port(), first_number()));
+            // Never the folder of a Zeno that started this one.
+            match HOME.lock().ok().and_then(|home| home.clone()) {
+                Some(folder) => command.env("ZENO_PROGRAM", folder),
+                None => command.env_remove("ZENO_PROGRAM"),
+            };
+            let started = command.spawn();
             let mut child = match started {
                 Ok(child) => child,
                 Err(_) => continue,
@@ -629,13 +706,16 @@ mod link {
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
-        match std::env::var("ZENO_PYTHON") {
-            Ok(named) if !named.is_empty() => raise("FileError", format!("there is no {} at `{named}`, which `ZENO_PYTHON` names", lang.name()), span),
+        let variable = named_by(lang);
+        match std::env::var(variable) {
+            Ok(named) if !named.is_empty() => {
+                raise("FileError", format!("there is no {} at `{named}`, which `{variable}` names", lang.runtime()), span)
+            }
             _ => raise(
                 "FileError",
                 format!(
-                    "there is no {} to run. Zeno looked for `{}`. `ZENO_PYTHON` can name one that is somewhere else",
-                    lang.name(),
+                    "there is no {} to run. Zeno looked for `{}`. `{variable}` can name one that is somewhere else",
+                    lang.runtime(),
                     programs.join("`, then `")
                 ),
                 span,
@@ -692,12 +772,12 @@ mod link {
                 // what the old one kept.
                 let (_, mut gone) = links.remove(at);
                 let _ = gone.child.wait();
-                return fatal(format!("{} stopped while Zeno was waiting for its answer", lang.name()), span);
+                return fatal(format!("{} stopped while Zeno was waiting for its answer", lang.runtime()), span);
             }
             Ok(answer)
         })?;
 
-        let wrong = || fatal(format!("{} answered with a line Zeno cannot read", lang.name()), span);
+        let wrong = || fatal(format!("{} answered with a line Zeno cannot read", lang.runtime()), span);
         let Some(Wire::Object(mut members)) = parse(&answer) else { return wrong() };
         let Some((name, value)) = members.pop() else { return wrong() };
         match (name.as_str(), value) {
@@ -725,8 +805,10 @@ mod link {
 
     pub fn close() {}
 
+    pub fn program_at(_: &str) {}
+
     pub fn ask(lang: Lang, _: String, span: Span) -> Result {
-        raise("FileError", format!("cannot start {}: a page cannot start a program", lang.name()), span)
+        raise("FileError", format!("cannot start {}: a page cannot start a program", lang.runtime()), span)
     }
 }
 

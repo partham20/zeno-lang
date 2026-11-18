@@ -392,8 +392,8 @@ fn test(path: &str, strict: bool, asked: bool, only: Option<&str>) -> Option<Tal
         return None;
     }
     value::print_line(path);
+    bridge::program_at(path);
     let (_, tested) = interpreter::run_tests(&program, false, value::Outside::started_with(Vec::new()).with_page(own_page(path)), only);
-    bridge::close();
     let tested = match tested {
         Ok(tested) => tested,
         Err(error) => {
@@ -481,13 +481,12 @@ fn run(path: &str, strict: bool, on_vm: bool, arguments: Vec<String>, owned: boo
     let (files, program) = check(path, rules)?;
     // The words after the file are the program's (`program.arguments()`),
     // and what it reads with `input()` is the keyboard.
+    bridge::program_at(path);
     let outside = value::Outside::started_with(arguments).with_page(own_page(path));
     let (_, result) = match on_vm {
         true => vm::run_with(&program, false, outside),
         false => interpreter::run_with(&program, false, outside),
     };
-    // A Python that `import python` started is told the program is over.
-    bridge::close();
     match result {
         Ok(()) => Some(()),
         Err(error) => {
