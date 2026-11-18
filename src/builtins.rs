@@ -25,12 +25,12 @@ pub const ERROR_TYPES: &[&str] =
     &["Error", "ValueError", "IndexError", "KeyError", "ZeroDivisionError", "OverflowError", "FileError"];
 
 /// The end of the message for an `import` of a module there is not.
-pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`";
+pub const MODULES: &str = "So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`";
 
 /// True for the name of a module that comes with Zeno. Any other module
 /// is a file of the program: see `modules.rs`.
 pub fn comes_with_zeno(name: &str) -> bool {
-    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php" | "lua" | "csharp")
+    matches!(name, "math" | "time" | "board" | "files" | "program" | "json" | "web" | "python" | "node" | "java" | "random" | "ruby" | "php" | "lua" | "csharp" | "c")
 }
 
 /// Every built-in name and what it stands for.
@@ -356,6 +356,13 @@ fn csharp_assembly(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result 
     arity("assembly", &args, 1, 1, span)?;
     crate::bridge::jar(crate::bridge::Lang::CSharp, text("assembly", &args[0], span)?, span)?;
     Ok(Value::None)
+}
+
+/// `c.library(library, declarations)`: a library of C, and the
+/// functions of it that the declarations name (decision 44).
+fn c_library(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("library", &args, 2, 2, span)?;
+    crate::bridge_c::library(&args[0], &args[1], span)
 }
 
 /// The number a program ended with. One that was stopped from outside
@@ -1468,6 +1475,7 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("copy", Value::Builtin(Builtin { name: "copy", call: python_copy })),
             ],
         ),
+        "c" => ("c", vec![("library", Value::Builtin(Builtin { name: "library", call: c_library }))]),
         "json" => (
             "json",
             vec![

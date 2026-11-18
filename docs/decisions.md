@@ -14176,3 +14176,158 @@ except where a build has no checks.
   `rpm` and `Hz`.
 - A unit a program names itself.
 - `sum` of quantities, which still wants `+` in a loop (1.15).
+
+## 44. The libraries of C, Go and Rust
+
+The third version of using other languages' libraries (26.1):
+`import c`, for a library of C, and for a library of Go or Rust built
+with the C interface each of them has. [`c.md`](c.md) is the
+walkthrough. Chapter 26 holds here too: nothing changes for a program
+that does not ask, the helper runs beside Zeno and not inside it, and
+what can be refused is refused with a message that says what to do.
+What follows is what C made different.
+
+### 44.1 The module is `c`, and it has one function
+
+**`c.library(library, declarations)`.** Every other language could be
+asked what a thing is: Python has `dir`, Java has reflection. C cannot.
+A library of C knows the names of its functions and nothing of what
+they take or give, and that is only in the header. So the program
+says it, and the words it says it in are the ones it would copy from
+the header: `"double cbrt(double x);"`. That is one thing to learn
+for a person who knows C, and nothing new to learn for the library.
+
+**Why not read the header itself.** A header is written for the C
+preprocessor: macros, `#ifdef`s for each system, other headers it
+includes. Reading it right is the work of a C compiler, and the whole
+of `<stdio.h>` is hundreds of declarations a program does not use.
+The program declares the few it calls, and may still `#include` the
+header, so that the compiler checks that the two agree (44.3).
+
+**Why `c` and not `native` or `ffi`.** The module is named for the
+language its libraries are written in, as `python` and `csharp` are
+(40.1). Go and Rust come through it because what they give C is a
+library of C (44.6).
+
+### 44.2 The library is named as the compiler would be told it
+
+One text or a list: a bare name is `-l` (`"z"` is `-lz`), a name with
+`/` or the ending of a file (`.c`, `.so`, `.a`, `.o`, `.dylib`,
+`.dll`) is a file, found from the program's folder, and a word that
+starts with `-` goes to the compiler as it is. `none` is the C
+library every program has. A person who has built with the library
+in C already knows what to write.
+
+**Why a `.c` file may be given.** A board's firmware has C already
+(a checksum, a protocol), and testing it from a Zeno program on the
+computer, with no board, is the first thing a firmware engineer will
+want. Building it with the rest costs nothing more.
+
+### 44.3 The C compiler works out the types
+
+Zeno writes a small file of C with a function for each declaration,
+which takes the arguments from a table and calls the real one, and
+builds it with the library. What a type is (a whole number with a
+sign or without, how many bytes, a float, a pointer) is worked out
+from that file by the compiler, with `_Generic`, so that `uLong`,
+`size_t` and `time_t` are known on this machine exactly as C knows
+them, and a declaration that disagrees with an included header is the
+compiler's error.
+
+**Why not libffi.** It does the same at run time, but it is one more
+thing to have installed, and it believes the declaration without a
+header to check it against. A C compiler is there already wherever
+`zeno build` is used.
+
+**It is built once.** The result is kept in Zeno's cache, under a
+number made from the declarations, the files given and when they last
+changed. The first run takes about half a second; the next is
+immediate.
+
+### 44.4 The library is loaded by a helper in C
+
+As for every other language, the library runs in a helper beside the
+program ([`bridge.c`](../src/bridge.c), built once and kept), spoken
+to over the same lines (26.3). A fault in C (a pointer that is
+wrong, memory that is not there) stops the helper, and Zeno stops the
+program with an error at the line that called it, instead of
+crashing with no word of where.
+
+**What it costs.** A call goes to the helper and back: under a
+tenth of a millisecond, which is nothing for a checksum of a frame and too much
+for a call in a loop of a million. The calls with no cost are the
+ones `zeno build` makes (44.8).
+
+### 44.5 Values go across as C would take them
+
+- A number is checked to fit the type the function takes, and is an
+  `OverflowError` if it does not, as `u8(300)` is. A `uint64_t`
+  above the top of `int` comes back as `u64` (42).
+- A `str` given for a `char *` (or any pointer to bytes) is copied
+  with the `\0` C expects. A `char *` given back is copied into a
+  `str`, or a list of bytes if it is not UTF-8.
+- A list given for a pointer is lent: copied into memory of the type
+  it points to, and copied back into the list afterwards, unless the
+  pointer is to `const`. That is how a buffer is filled.
+- Any other pointer given back is kept as it is: given back to C,
+  compared with `==`, printed. Zeno never looks inside it and never
+  frees it: a library that hands out memory has a function to free
+  it, which the program calls, as it would in C. `NULL` is `none`.
+
+**Why lend a copy, and not the list's own memory.** A list of Zeno
+is not laid out as an array of C is (its items are values, which may
+be of any size), and a list may change length while C holds it. A
+copy for the length of a call is the one that cannot go wrong.
+
+### 44.6 Go and Rust come in through C
+
+A library of Go built with `-buildmode=c-shared` or `c-archive`, or
+of Rust built as a `cdylib` or `staticlib` with `extern "C"`
+functions, is a library of C, and `c.library` takes it. There is no
+`import go` or `import rust`: neither has a way to load a library and
+ask it for its functions at run time, as Python or Java do, and both
+of them build the C interface well. Building it is done by their own
+tools (`go build`, `cargo`), which a person who writes Go or Rust
+already uses.
+
+### 44.7 What is refused, and why
+
+- **A function that takes `...`**, such as `printf`: the types of what
+  it takes are not in its declaration. The message says to declare it
+  with the types the program gives, or to write a function of C that
+  calls it.
+- **A function given as an argument** (a callback): a function of
+  Zeno lives in Zeno, and C would call it from inside the helper.
+  It can come later (44.9).
+- **A struct given or given back whole**, not through a pointer: its
+  fields would need a type of Zeno for each struct. A pointer to one
+  is fine, and is kept as any other pointer is.
+
+### 44.8 Nothing changes for a program that does not ask
+
+`import c` itself starts nothing; the first `c.library` builds and
+starts the helper. Every function that does it is out of the way of
+the rest of Zeno (`#[cold]`, never inlined), so that the speed of a
+program without it does not move.
+
+**The one thing that does change**, as in 26.11: `c` is now the name
+of a module that comes with Zeno. A file of the program called
+`c.zeno` can no longer be imported as `import c`, and a package cannot
+be called `c`. One test had three files called `a`, `b` and `c`
+importing each other; it now calls the third one `d`, and that, with
+the message that lists the modules, is the only line of the tests
+from before that changed.
+
+`zeno build` and `--target` refuse `import c` with a message, as they
+refuse `import python`.
+
+### 44.9 Left for later
+
+- **`zeno build` calling the functions directly.** The C that
+  `zeno build` writes can call a declared function as C calls it, with
+  no helper and no cost. That is the one firmware needs, for a
+  vendor's HAL on the board, and it is the next step.
+- A function of Zeno given to C as a callback.
+- Structs by value, with a class of Zeno for each.
+- Reading the declarations from a header, for a library with many
+  functions.

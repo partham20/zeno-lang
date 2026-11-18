@@ -1954,7 +1954,7 @@ mod tests {
         assert_eq!(
             error("import shapes\nimport drivers.uart\nimport shapes\n"),
             "there is no module `shapes`. `import shapes` reads the file `shapes.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`"
         );
         assert_eq!(load("import shapes\nimport shapes\nfrom shapes import x\n").program.unwrap_err().len(), 1);
         assert_eq!(
@@ -1967,7 +1967,7 @@ mod tests {
             "`import shapes` goes at the top of the file, not inside a function or a block. \
              Only a module that comes with Zeno, such as `math`, can be imported in here"
         );
-        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`");
+        assert_eq!(error("import maths\n"), "there is no module `maths`. `import maths` reads the file `maths.zeno`, and there is no such file. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`");
         assert_eq!(
             error("import test\n"),
             "`test.zeno` is the file the program starts in, and no file imports that one. \
@@ -1975,9 +1975,9 @@ mod tests {
         );
         assert_eq!(error("import a\n==> a.zeno\nimport a\n"), "`a` imports itself. A file cannot import the file it is");
         assert_eq!(
-            mistake("import a\n==> a.zeno\nimport b\n==> b.zeno\nimport c\n==> c.zeno\n\nimport a\n"),
+            mistake("import a\n==> a.zeno\nimport b\n==> b.zeno\nimport d\n==> d.zeno\n\nimport a\n"),
             (
-                "these files import each other: `a` imports `b`, `b` imports `c`, and `c` imports `a`. \
+                "these files import each other: `a` imports `b`, `b` imports `d`, and `d` imports `a`. \
                  An imported file runs before the file that imports it, and here none of them can be the first. \
                  Move what they share into a file of its own, and import that"
                     .to_string(),
@@ -2204,7 +2204,7 @@ mod tests {
         assert_eq!(
             needs("import filters\nimport control\n", "==> control.zeno\nlet x = 1\n==> lib/filters.zeno\nimport control\n"),
             "there is no module `control`. `import control` reads the file `lib/control.zeno`, and there is no such file. \
-             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
+             So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`"
         );
         // A file is one module, and a module is one file.
         assert_eq!(

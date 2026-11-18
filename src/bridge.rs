@@ -33,6 +33,7 @@ pub enum Lang {
     Php,
     Lua,
     CSharp,
+    C,
 }
 
 impl Lang {
@@ -46,6 +47,7 @@ impl Lang {
             Lang::Php => "PHP",
             Lang::Lua => "Lua",
             Lang::CSharp => "C#",
+            Lang::C => "C",
         }
     }
 
@@ -60,6 +62,7 @@ impl Lang {
             Lang::Php => "PHP",
             Lang::Lua => "Lua",
             Lang::CSharp => ".NET",
+            Lang::C => "C",
         }
     }
 }
@@ -127,6 +130,9 @@ fn write(lang: Lang, value: &Value, depth: usize, out: &mut String, span: Span) 
         // `{:?}` always writes a point or an exponent, so that a float
         // arrives as a float.
         Value::Float(x) => out.push_str(&format!("{x:?}")),
+        Value::F32(x) => return write(lang, &Value::Float(f64::from(*x)), depth, out, span),
+        Value::U64(n) if *n > i64::MAX as u64 => out.push_str(&format!("[\"u\",\"{n}\"]")),
+        Value::U64(n) => out.push_str(&n.to_string()),
         Value::Str(text) => write_text(text, out),
         Value::List(items) => {
             out.push_str("[\"l\",[");
@@ -363,6 +369,7 @@ fn read(lang: Lang, wire: Wire) -> Option<Value> {
                     other => other.parse().ok()?,
                 }),
                 ("i", Wire::Text(digits)) => Value::Int(digits.parse().ok()?),
+                ("u", Wire::Text(digits)) => Value::U64(digits.parse().ok()?),
                 ("l", Wire::List(items)) => {
                     Value::list(items.into_iter().map(|item| read(lang, item)).collect::<Option<Vec<Value>>>()?)
                 }
@@ -522,7 +529,49 @@ fn called(op: &str, foreign: &Foreign, positional: &[Value], named: &[(String, V
         ask.line.push(']');
     }
     ask.line.push(']');
-    ask.send()
+    if lang != Lang::C {
+        return ask.send();
+    }
+    // A list given to C for a pointer is the memory it points to. What
+    // the function wrote there comes back with the answer, and the
+    // list is made to hold it.
+    let mut members = link::ask_members(lang, ask.line, span)?;
+    if let Some(at) = members.iter().position(|(name, _)| name == "back") {
+        let (_, back) = members.remove(at);
+        let Wire::List(back) = back else { return fatal("C answered with a line Zeno cannot read".to_string(), span) };
+        for pair in back {
+            let Wire::List(mut pair) = pair else { continue };
+            let (Some(items), Some(Wire::Int(index))) = (pair.pop(), pair.pop()) else { continue };
+            let (Some(Value::List(list)), Some(Value::List(new))) = (positional.get(index as usize), read(lang, items)) else { continue };
+            let new = std::mem::take(&mut *new.borrow_mut());
+            let mut old = list.borrow_mut();
+            // An f32 or a u64 stays one.
+            let kept: Vec<Value> = new
+                .into_iter()
+                .enumerate()
+                .map(|(at, value)| match (old.get(at), value) {
+                    (Some(Value::F32(_)), Value::Float(x)) => Value::F32(x as f32),
+                    (Some(Value::U64(_)), Value::Int(n)) if n >= 0 => Value::U64(n as u64),
+                    (_, value) => value,
+                })
+                .collect();
+            *old = kept;
+        }
+    }
+    link::answer(lang, members, span)
+}
+
+/// `c.library("z", declarations)`: the stubs that call the declared
+/// functions, already built (`bridge_c.rs`), loaded by the C helper.
+#[cold]
+#[inline(never)]
+pub fn c_library(stubs: &str, label: &str, span: Span) -> Result {
+    Ask::new(Lang::C, "import", span).text("name", stubs).text("label", label).send()
+}
+
+/// The folder of the program that is run, where that is a file.
+pub fn home() -> Option<std::path::PathBuf> {
+    link::home()
 }
 
 /// `thing[index]`
@@ -653,6 +702,8 @@ mod link {
             // Lua takes no program that begins with `-`, as a comment does.
             Lang::Lua => vec!["-e".to_string(), format!(" {LUA}")],
             Lang::CSharp => csharp_helper(program),
+            // The helper is a program of its own (`programs`).
+            Lang::C => Vec::new(),
         }
     }
 
@@ -831,6 +882,7 @@ mod link {
             Lang::Php => "ZENO_PHP",
             Lang::Lua => "ZENO_LUA",
             Lang::CSharp => "ZENO_DOTNET",
+            Lang::C => "CC",
         }
     }
 
@@ -858,6 +910,10 @@ mod link {
     /// is said before the program starts, on another thread than the
     /// one the program runs on.
     static HOME: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+    pub fn home() -> Option<std::path::PathBuf> {
+        HOME.lock().ok().and_then(|home| home.clone())
+    }
 
     pub fn program_at(path: &str) {
         let folder = std::fs::canonicalize(path).ok().and_then(|file| file.parent().map(|folder| folder.to_path_buf()));
@@ -907,6 +963,9 @@ mod link {
             (_, Lang::Lua) => vec!["lua".to_string(), "lua5.4".to_string(), "luajit".to_string()],
             // `DOTNET_ROOT` is where .NET is when it is not on the path,
             // and `~/.dotnet` is where Microsoft's script puts it.
+            // The helper, built by the C compiler. Where it cannot be,
+            // there is nothing to start, and `start` says why.
+            (_, Lang::C) => crate::bridge_c::helper().into_iter().collect(),
             (_, Lang::CSharp) => {
                 let file = if cfg!(windows) { "dotnet.exe" } else { "dotnet" };
                 let mut names = vec!["dotnet".to_string()];
@@ -980,6 +1039,12 @@ mod link {
         // Windows has no named pipes that a file can be, and there, or
         // where no pipe can be made, Lua needs LuaSocket.
         let piped = lang == Lang::Lua && cfg!(unix);
+        // C has no interpreter to start: the helper is built first.
+        if lang == Lang::C {
+            if let Err(why) = crate::bridge_c::helper() {
+                return raise("FileError", why, span);
+            }
+        }
         let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
             return cannot("this machine gave no socket to talk to it over".to_string());
         };
@@ -1175,7 +1240,30 @@ mod link {
     }
 
     /// Send one line and read the answer.
-    pub fn ask(lang: Lang, mut line: String, span: Span) -> Result {
+    pub fn ask(lang: Lang, line: String, span: Span) -> Result {
+        let members = ask_members(lang, line, span)?;
+        answer(lang, members, span)
+    }
+
+    /// What the answer holds: the value, or the error.
+    pub(super) fn answer(lang: Lang, mut members: Vec<(String, Wire)>, span: Span) -> Result {
+        let wrong = || fatal(format!("{} answered with a line Zeno cannot read", lang.runtime()), span);
+        let Some((name, value)) = members.pop() else { return wrong() };
+        match (name.as_str(), value) {
+            ("ok", value) => match read(lang, value) {
+                Some(value) => Ok(value),
+                None => wrong(),
+            },
+            ("err", Wire::List(mut said)) if said.len() == 2 => match (said.pop(), said.pop()) {
+                (Some(Wire::Text(message)), Some(Wire::Text(kind))) => raise(&kind, message, span),
+                _ => wrong(),
+            },
+            _ => wrong(),
+        }
+    }
+
+    /// Send the line, and read the line that answers it.
+    pub(super) fn ask_members(lang: Lang, mut line: String, span: Span) -> Result<Vec<(String, Wire)>> {
         // What Zeno printed is on the screen before the other side prints.
         let _ = std::io::stdout().flush();
         let freed: Vec<u64> = FREED.with(|freed| {
@@ -1211,19 +1299,9 @@ mod link {
             Ok(answer)
         })?;
 
-        let wrong = || fatal(format!("{} answered with a line Zeno cannot read", lang.runtime()), span);
-        let Some(Wire::Object(mut members)) = parse(&answer) else { return wrong() };
-        let Some((name, value)) = members.pop() else { return wrong() };
-        match (name.as_str(), value) {
-            ("ok", value) => match read(lang, value) {
-                Some(value) => Ok(value),
-                None => wrong(),
-            },
-            ("err", Wire::List(mut said)) if said.len() == 2 => match (said.pop(), said.pop()) {
-                (Some(Wire::Text(message)), Some(Wire::Text(kind))) => raise(&kind, message, span),
-                _ => wrong(),
-            },
-            _ => wrong(),
+        match parse(&answer) {
+            Some(Wire::Object(members)) => Ok(members),
+            _ => fatal(format!("{} answered with a line Zeno cannot read", lang.runtime()), span),
         }
     }
 }
@@ -1236,6 +1314,18 @@ mod link {
     use crate::value::raise;
 
     pub fn freed(_: Lang, _: u64) {}
+
+    pub fn home() -> Option<std::path::PathBuf> {
+        None
+    }
+
+    pub(super) fn ask_members(lang: Lang, _: String, span: Span) -> Result<Vec<(String, super::Wire)>> {
+        raise("FileError", format!("cannot start {}: a page cannot start a program", lang.runtime()), span)
+    }
+
+    pub(super) fn answer(lang: Lang, _: Vec<(String, super::Wire)>, span: Span) -> Result {
+        raise("FileError", format!("cannot start {}: a page cannot start a program", lang.runtime()), span)
+    }
 
     pub fn close() {}
 

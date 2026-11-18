@@ -1,0 +1,35 @@
+# Frames of Modbus RTU, checked by the C that a board's firmware
+# already has. `import c` builds modbus.c beside this file, once, and
+# calls it as it is (docs/c.md).
+#
+#     zeno run examples/modbus.zeno
+import c
+
+let modbus = c.library("modbus.c", [
+    "uint16_t modbus_crc(const uint8_t *frame, size_t length);",
+    "int modbus_good(const uint8_t *frame, size_t length);",
+])
+
+# Ask device 1 for 3 registers, from register 0x006B.
+function request(device: int, first: int, count: int) -> list[int] {
+    var frame = [device, 3, first >> 8, first & 0xFF, count >> 8, count & 0xFF]
+    let crc = modbus.modbus_crc(frame, len(frame))
+    frame.append(crc & 0xFF)
+    frame.append(crc >> 8)
+    return frame
+}
+
+function shown(frame: list[int]) -> str {
+    return [f"{byte:02X}" for byte in frame].join(" ")
+}
+
+let asked = request(1, 0x6B, 3)
+print("request: ", shown(asked))
+print("good:    ", modbus.modbus_good(asked, len(asked)) == 1)
+
+# The reply, as it came down the wire, and once more with one bit
+# flipped on the way.
+var reply = [0x01, 0x03, 0x06, 0x02, 0x2B, 0x00, 0x00, 0x00, 0x64, 0x05, 0x7A]
+print("reply:   ", shown(reply), modbus.modbus_good(reply, len(reply)) == 1)
+reply[4] = reply[4] ^ 0x10
+print("damaged: ", shown(reply), modbus.modbus_good(reply, len(reply)) == 1)

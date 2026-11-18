@@ -15,6 +15,7 @@
 mod ast;
 mod board;
 mod bridge;
+mod bridge_c;
 mod builtins;
 mod bytecode;
 mod checker;

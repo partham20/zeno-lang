@@ -1890,6 +1890,7 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("csharp", "type") => Ty::Builtin("csharp.type"),
         ("csharp", "assembly") => Ty::Builtin("csharp.assembly"),
         ("csharp", "copy") => Ty::Builtin("python.copy"),
+        ("c", "library") => Ty::Builtin("c.library"),
         ("json", "parse") => Ty::Builtin("json.parse"),
         ("json", "write") => Ty::Builtin("json.write"),
         ("web", "element") => Ty::Builtin("web.element"),
@@ -3724,6 +3725,7 @@ impl Checker {
                     "php" => "php",
                     "lua" => "lua",
                     "csharp" => "csharp",
+                    "c" => "c",
                     _ => {
                         self.error(
                             format!("there is no module `{path}`. {}", crate::builtins::MODULES),
@@ -6714,6 +6716,24 @@ impl Checker {
                 self.can_raise("FileError", span);
                 Ty::None
             }
+            // `c.library("m", ["double cbrt(double x);"])`: a library of
+            // C, and the declarations of its functions. Either may be one
+            // text or a list of them. The library may not be there, and
+            // the declarations are read only when the program runs.
+            "c.library" => {
+                if self.arity("library", arguments, 2, 2, span) {
+                    // The library may be `none`: the C library every
+                    // program has.
+                    for (at, what) in [(0, "the library given to `c.library`"), (1, "the declarations given to `c.library`")] {
+                        let ty = &arguments[at].ty;
+                        if !fits(ty, &Ty::Str) && !fits(ty, &Ty::list(Ty::Str)) && !(at == 0 && matches!(ty, Ty::None)) {
+                            self.expect(ty, &Ty::Str, what, arguments[at].span);
+                        }
+                    }
+                }
+                self.can_raise("FileError", span);
+                Ty::Dynamic
+            }
             "java.jar" => {
                 if self.arity("jar", arguments, 1, 1, span) {
                     self.expect(&first, &Ty::Str, "the jar or folder given to `java.jar`", arguments[0].span);
@@ -9225,7 +9245,7 @@ mod tests {
         ok("let a: list[int or none] = [none]\nlet b = [1] + a\nvar c = []\nc += [1]\nlet d = [1, \"x\"] + [2]\nprint(b, c, d)");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         // A name of the part of `math` that is written in Zeno, which

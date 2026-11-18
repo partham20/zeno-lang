@@ -2984,6 +2984,138 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         );
     }
 
+    /// Is there a C compiler for `import c` to build with?
+    fn cc_is_here() -> bool {
+        crate::bridge_c::helper().is_ok()
+    }
+
+    /// A program that uses `helper.c`, a file of C written for the
+    /// tests, which is put in a folder of its own.
+    fn with_c_helper(source: &str) -> String {
+        let folder = std::env::temp_dir().join(format!("zeno-c-tests-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&folder);
+        let helper = "#include <stdint.h>\n\
+              #include <stdlib.h>\n\
+              #include <string.h>\n\
+              typedef struct counter { int count; } counter;\n\
+              counter *counter_new(void) { counter *c = calloc(1, sizeof *c); return c; }\n\
+              void counter_add(counter *c, int by) { c->count += by; }\n\
+              int counter_get(const counter *c) { return c->count; }\n\
+              void counter_free(counter *c) { free(c); }\n\
+              uint16_t crc16(const uint8_t *data, size_t length) {\n\
+                  uint16_t crc = 0xFFFF;\n\
+                  for (size_t i = 0; i < length; i++) {\n\
+                      crc ^= data[i];\n\
+                      for (int b = 0; b < 8; b++) crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;\n\
+                  }\n\
+                  return crc;\n\
+              }\n\
+              const char *greet(const char *name) { static char out[64]; strcpy(out, \"hello, \"); strncat(out, name, 50); return out; }\n\
+              float half(float x) { return x / 2; }\n\
+              uint64_t biggest(void) { return UINT64_MAX; }\n\
+              int8_t same8(int8_t x) { return x; }\n\
+              _Bool positive(int x) { return x > 0; }\n\
+              void fill(double *out, int n) { for (int i = 0; i < n; i++) out[i] = i * 1.5; }\n\
+              void bump(uint8_t *bytes, size_t n) { for (size_t i = 0; i < n; i++) bytes[i] += STEP; }\n\
+              void *nothing(void) { return NULL; }\n\
+              const char *odd(void) { return \"\\377ab\"; }\n";
+        std::fs::write(folder.join("helper.c"), helper).expect("the folder of the tests can be written");
+        source.replace("{folder}", &folder.to_string_lossy().replace('\\', "/"))
+    }
+
+    #[test]
+    fn a_library_of_c_is_used_from_zeno() {
+        if !cc_is_here() {
+            return;
+        }
+        // The functions are the ones declared, as C declares them. A
+        // number goes in as the type the function takes, and comes back
+        // as Zeno's own.
+        assert_eq!(
+            output(&with_c_helper(
+                "import c\n\
+                 let m = c.library(\"m\", [\"double sqrt(double x);\", \"double frexp(double x, int *exponent);\", \"int abs(int);\"])\n\
+                 let e = [0]\n\
+                 print(m.sqrt(2.0), m.frexp(8.0, e), e, m.abs(-5), m.sqrt(16))\n\
+                 let mine = c.library([\"{folder}/helper.c\", \"-DSTEP=3\"], [\n\
+                     \"/* An opaque struct: Zeno keeps the pointer and never looks inside. */ typedef struct counter counter;\",\n\
+                     \"counter *counter_new(void);\",\n\
+                     \"void counter_add(counter *c, int by);\",\n\
+                     \"int counter_get(const counter *c);\",\n\
+                     \"void counter_free(counter *c);\",\n\
+                     \"uint16_t crc16(const uint8_t *data, size_t length);\",\n\
+                     \"const char *greet(const char *name);\",\n\
+                     \"float half(float x);\",\n\
+                     \"uint64_t biggest(void);\",\n\
+                     \"int8_t same8(int8_t x);\",\n\
+                     \"bool positive(int x);\",\n\
+                     \"void fill(double *out, int n);\",\n\
+                     \"void bump(uint8_t *bytes, size_t n);\",\n\
+                     \"void *nothing(void);\",\n\
+                     \"const char *odd(void);\",\n\
+                 ])\n\
+                 let k = mine.counter_new()\n\
+                 mine.counter_add(k, 5)\n\
+                 mine.counter_add(k, 7)\n\
+                 print(mine.counter_get(k), k == k, k == mine.nothing(), mine.nothing())\n\
+                 mine.counter_free(k)\n\
+                 let data: list[u8] = [49, 50, 51, 52, 53, 54, 55, 56, 57]\n\
+                 print(mine.crc16(data, len(data)), mine.crc16(\"123456789\", 9), mine.greet(\"Partha\"))\n\
+                 print(mine.half(3.0), mine.biggest(), mine.same8(-3), mine.positive(2), mine.positive(-1), mine.odd())\n\
+                 let out = [0.0, 0.0, 0.0]\n\
+                 mine.fill(out, 3)\n\
+                 let bytes: list[u8] = [1, 2, 255]\n\
+                 mine.bump(bytes, 3)\n\
+                 print(out, bytes, mine.bump(bytes, 0))\n\
+                 print(m, mine.crc16)"
+            )),
+            "1.4142135623730951 0.5 [4] 5 4.0\n\
+             12 true false none\n\
+             19255 19255 hello, Partha\n\
+             1.5 18446744073709551615 -3 true false [255, 97, 98]\n\
+             [0.0, 1.5, 3.0] [4, 5, 2] none\n\
+             <C library m> uint16_t crc16(const uint8_t *data, size_t length)\n"
+        );
+    }
+
+    #[test]
+    fn a_mistake_with_a_library_of_c_is_an_error_of_zeno() {
+        if !cc_is_here() {
+            return;
+        }
+        let sqrt = "import c\nlet m = c.library(\"m\", \"double sqrt(double);\")\n";
+        assert_eq!(
+            error(&format!("{sqrt}print(m.cbrt(8.0))")),
+            "uncaught Error: the library `m` has no function `cbrt` among those declared for it. Declared: sqrt"
+        );
+        assert_eq!(error(&format!("{sqrt}m.sqrt(\"x\")")), "uncaught Error: the 1st parameter of `sqrt` (`double`) takes a number, and this is a str");
+        assert_eq!(error(&format!("{sqrt}m.sqrt()")), "uncaught Error: `sqrt` takes 1 argument, but 0 were given");
+        assert_eq!(
+            error(&with_c_helper("import c\nlet h = c.library([\"{folder}/helper.c\", \"-DSTEP=1\"], \"int8_t same8(int8_t x);\")\nh.same8(300)")),
+            "uncaught OverflowError: the 1st parameter of `same8` (`int8_t`) holds -128 to 127, and this is 300"
+        );
+        assert_eq!(
+            error("import c\nc.library(\"zeno_has_no_such_library\", \"int f(void);\")"),
+            "uncaught FileError: C has no library `zeno_has_no_such_library`. Is it installed, with what building with it needs (on Debian and Ubuntu, its package that ends in `-dev`)?"
+        );
+        assert_eq!(
+            error("import c\nc.library(\"m\", \"int zeno_has_no_such_function(int x);\")"),
+            "uncaught Error: the library `m` has no function `zeno_has_no_such_function`, which was declared"
+        );
+        assert_eq!(
+            error("import c\nc.library(\"m\", \"int printf(const char *format, ...);\")"),
+            "uncaught ValueError: `printf` takes any number of arguments (`...`), and Zeno cannot know their types. Declare it with the ones the program gives, under another name of C, or write a function of C that calls it"
+        );
+        assert_eq!(
+            error("import c\nc.library(\"m\", [])"),
+            "uncaught ValueError: `c.library` was given no declarations. It takes the functions the program uses, as C declares them: \"int abs(int n);\""
+        );
+        assert_eq!(
+            check_error("import c\nc.library(5, \"double sqrt(double);\")"),
+            "the library given to `c.library` should be str, but this is int"
+        );
+    }
+
     #[test]
     fn format_strings() {
         assert_eq!(output("let n = 3\nprint(f\"{n} + {n} = {n + n}\")"), "3 + 3 = 6\n");
@@ -3020,7 +3152,7 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         assert_eq!(output("import math\nfrom math import sqrt, floor\nprint(sqrt(16), floor(2.7), math.ceil(2.1), math.pi > 3.14)"), "4.0 2 3 true\n");
         assert_eq!(
             error("import radio"),
-            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua` and `csharp`"
+            "there is no module `radio`. So far Zeno has `math`, `time`, `board`, `files`, `program`, `json`, `web`, `python`, `node`, `java`, `random`, `ruby`, `php`, `lua`, `csharp` and `c`"
         );
         assert_eq!(error("from math import nope"), "module `math` has no `nope`");
         assert_eq!(error("from time import sleep\nsleep(500)"), "`sleep` needs a time with a unit, such as `500 ms`, but this is an int");
