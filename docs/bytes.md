@@ -135,10 +135,16 @@ list comes back through a pointer, as `files.read` does there.
 `Files.readAllBytes`, and so on, with each byte made a number of that
 language.
 
-**What it costs today.** A `list[u8]` in a compiled program still
-keeps each item in eight bytes, because the runtime has one kind of
-list (5.13a). A file of a megabyte takes eight megabytes as a list.
-The next stage stores a `list[u8]` one byte to an item.
+**One byte to an item.** In a compiled program a `list[u8]` keeps each
+item in one byte (decision 36.2), so a file of a megabyte takes a
+megabyte as a list. An 8 MB file read and written back takes 13 MB in
+all; before 36.2 it took 64 MB. This is true of every `list[u8]`, not
+only one that came from a file: a list written out, a comprehension, a
+field of an object. Nothing in a program changes, and nothing has to be
+asked for. The runtime has a set of functions for a list of bytes
+(`zeno_bytes_append`, `zeno_bytes_at`, `zeno_bytes_str`, and so on)
+beside the ones for a list of slots, and the compiler picks them
+wherever the type is `list[u8]`.
 
 ## How it is tested
 
@@ -146,6 +152,9 @@ The next stage stores a `list[u8]` one byte to an item.
   with the messages; `bytes_from_and_to_a_file_are_the_same_in_every_build`
   holds the C build, the firmware build, the build with no collector and
   LLVM to the interpreter.
+  `a_list_of_bytes_is_packed_and_does_what_any_list_does` holds every
+  method and operator on a packed list, in every build, to the
+  interpreter.
 - `tools/targets.py`: `tools/targets/edge-bytes.zeno` (every byte from
   0 to 255, the files `files.read` refuses, a folder, a missing folder,
   items that are no byte) and `examples/hexdump.zeno`, in all fifteen

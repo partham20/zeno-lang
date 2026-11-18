@@ -71,6 +71,10 @@ pub enum Kind {
     None,
     /// A number with a unit; the string is the unit, such as "ms".
     Quantity(String),
+    /// A `u8` as an item of a list, which a compiled program stores in
+    /// one byte (decision 36.2). Only ever inside `List`: the item, once
+    /// read, is an `Int`.
+    Byte,
     List(Box<Kind>),
     /// `dict[str, int]`: the kind of its keys, and of its values.
     Dict(Box<Kind>, Box<Kind>),
@@ -244,6 +248,10 @@ pub struct Types {
     /// `[Circle(1.0), Square(2.0)]` is a list of `Shape`, and `[1, 2]` a
     /// list of `int or none`, where the place wants one.
     items: HashMap<usize, Kind>,
+    /// Each list written out, list comprehension and call that makes a
+    /// new `list[u8]`, which a compiled program stores a byte an item
+    /// (decision 36.2).
+    bytes: HashSet<usize>,
     /// Each `count += 1` whose place holds a sized number, by the line
     /// and column it starts at, with the size. It means `count =
     /// u8(count + 1)`, and `checked` makes it that.
@@ -363,6 +371,12 @@ impl Types {
         self.looks.get(&(Arc::as_ptr(decl) as usize)).cloned().unwrap_or_default()
     }
 
+    /// Whether `expr` makes a new `list[u8]`: a list written out, a list
+    /// comprehension, or a call such as `map` whose list is new.
+    pub fn makes_bytes(&self, expr: &ast::Expr) -> bool {
+        self.bytes.contains(&(expr as *const ast::Expr as usize))
+    }
+
     /// If `expr` is a list written out where a list of an interface, or
     /// of values that may be `none`, is wanted: the kind of its items.
     pub fn items(&self, expr: &ast::Expr) -> Option<&Kind> {
@@ -396,6 +410,7 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             Kind::Owned(inner) => Kind::Owned(Box::new(Kind::Optional(inner))),
             inner => Kind::Optional(Box::new(inner)),
         },
+        list @ Ty::List(_) if is_bytes(list) => Kind::List(Box::new(Kind::Byte)),
         Ty::List(item) => Kind::List(Box::new(kind_within(item, depth))),
         Ty::Dict(key, value) => Kind::Dict(Box::new(kind_within(key, depth)), Box::new(kind_within(value, depth))),
         Ty::Owned(inner) => Kind::Owned(Box::new(kind_within(inner, depth))),
@@ -421,6 +436,15 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             State::NotChecked => Kind::Other(ty.to_string()),
         },
         other => plain_kind(other),
+    }
+}
+
+/// `list[u8]`, as it is or with one owner.
+fn is_bytes(ty: &Ty) -> bool {
+    match ty {
+        Ty::Owned(inner) | Ty::Borrowed(inner) => is_bytes(inner),
+        Ty::List(item) => matches!(**item, Ty::Sized(width) if width.bits == 8 && !width.signed),
+        _ => false,
     }
 }
 
@@ -1701,6 +1725,9 @@ struct Argument {
     span: Span,
     /// The number, if the argument is one written out: `f(7)`.
     written: Option<Written>,
+    /// Where the argument's expression is, to note it when it turns out
+    /// to be a list of bytes written out (`f([1, 2])`, 36.2). 0 for none.
+    place: usize,
 }
 
 struct Checker {
@@ -2091,15 +2118,20 @@ impl Checker {
     /// `let b: u8 = 7` needs no `u8(7)`. This gives the type the value has
     /// there, after checking that the number fits. Anything that is not a
     /// written number keeps the type it was given.
-    fn adapted(&mut self, written: Option<Written>, given: Ty, wanted: &Ty, span: Span) -> Ty {
+    fn adapted(&mut self, written: Option<Written>, place: usize, given: Ty, wanted: &Ty, span: Span) -> Ty {
         let Some(written) = written else {
             return given;
         };
-        match written_fits(&written, wanted) {
+        let ty = match written_fits(&written, wanted) {
             None => given,
             Some(Ok(())) => sized_as(&given, wanted),
             Some(Err(message)) => self.error(message, span),
+        };
+        // `[1, 2]` where a `list[u8]` is wanted is made as a list of bytes.
+        if matches!(written, Written::List(_)) && place != 0 && is_bytes(&ty) {
+            self.types.bytes.insert(place);
         }
+        ty
     }
 
     /// A value of type `from` goes where a `to` is wanted, and the two fit.
@@ -3049,7 +3081,7 @@ impl Checker {
                     // `x = v` keeps `v`. `x += v` only reads it.
                     None => {
                         let given = self.kept(value, &wanted, env);
-                        self.adapted(written(value), given, &wanted, value.span)
+                        self.adapted(written(value), value as *const Expr as usize, given, &wanted, value.span)
                     }
                     Some(op) => {
                         // `xs[next()] += 1` is `xs[next()] = xs[next()] + 1`,
@@ -3270,7 +3302,7 @@ impl Checker {
                     Some(value) => {
                         let wanted = declared.as_ref().unwrap_or(&Ty::Invalid);
                         let given = self.kept(value, wanted, env);
-                        self.adapted(written(value), given, wanted, value.span)
+                        self.adapted(written(value), value as *const Expr as usize, given, wanted, value.span)
                     }
                     None => Ty::None,
                 };
@@ -3433,10 +3465,13 @@ impl Checker {
                         if asks_more(wanted_item) {
                             self.types.items.insert(value as *const Expr as usize, kind(wanted_item));
                         }
+                        if is_bytes(&wanted) {
+                            self.types.bytes.insert(value as *const Expr as usize);
+                        }
                         for item in items {
                             // The list keeps the item.
                             let item_type = self.kept(item, wanted_item, env);
-                            let item_type = self.adapted(written(item), item_type, wanted_item, item.span);
+                            let item_type = self.adapted(written(item), item as *const Expr as usize, item_type, wanted_item, item.span);
                             if !fits(&item_type, wanted_item) {
                                 self.error(
                                     format!("`{name}` should be {wanted}, but this item is {item_type}"),
@@ -3449,7 +3484,7 @@ impl Checker {
                     }
                     _ => {
                         let given = self.fresh_list(value, given, &wanted);
-                        let given = self.adapted(written(value), given, &wanted, value.span);
+                        let given = self.adapted(written(value), value as *const Expr as usize, given, &wanted, value.span);
                         self.expect(&given, &wanted, &format!("`{name}`"), value.span)
                     }
                 }
@@ -3678,7 +3713,7 @@ impl Checker {
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
                 let given = self.kept(default, &slot.ty, env);
-                let given = self.adapted(written(default), given, &slot.ty, default.span);
+                let given = self.adapted(written(default), default as *const Expr as usize, given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
@@ -4411,7 +4446,7 @@ impl Checker {
             let value_type = match &told {
                 Some((_, wanted)) => {
                     let given = self.kept(value, wanted, env);
-                    let given = self.adapted(written(value), given, wanted, value.span);
+                    let given = self.adapted(written(value), value as *const Expr as usize, given, wanted, value.span);
                     if fits(&given, wanted) {
                         self.arrives(&given, wanted, "a value of this dict", value.span);
                         wanted.clone()
@@ -4806,7 +4841,7 @@ impl Checker {
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
                 let given = self.kept(default, &slot.ty, &scope);
-                let given = self.adapted(written(default), given, &slot.ty, default.span);
+                let given = self.adapted(written(default), default as *const Expr as usize, given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
@@ -4954,6 +4989,9 @@ impl Checker {
     /// The type of an expression.
     fn expr(&mut self, expr: &Expr, env: &Env) -> Ty {
         let ty = self.expr_inner(expr, env);
+        if matches!(expr.kind, ExprKind::List(_) | ExprKind::ListComp { .. } | ExprKind::Call { .. }) && is_bytes(&ty) {
+            self.types.bytes.insert(expr as *const Expr as usize);
+        }
         if let (ExprKind::Field { name, .. }, Ty::Optional(_)) = (&expr.kind, &ty) {
             // Remembered for the message, should this be used as if it
             // were there (see `none_first`).
@@ -5063,7 +5101,7 @@ impl Checker {
                 if let Some((_, wanted_item)) = told {
                     for item in items {
                         let item_type = self.kept(item, &wanted_item, env);
-                        let item_type = self.adapted(written(item), item_type, &wanted_item, item.span);
+                        let item_type = self.adapted(written(item), item as *const Expr as usize, item_type, &wanted_item, item.span);
                         if !fits(&item_type, &wanted_item) {
                             self.error(
                                 format!("this is a list of {wanted_item} here, but this item is {item_type}"),
@@ -5344,6 +5382,7 @@ impl Checker {
                         ty,
                         span: arg.value.span,
                         written: written(&arg.value),
+                        place: &arg.value as *const Expr as usize,
                     });
                 }
                 // Which parameter a plain argument is for is counted from
@@ -5623,7 +5662,7 @@ impl Checker {
         let found = self.errors.len();
         let callee = function.ty.clone().looked_at();
         let arguments = |types: Vec<Ty>| -> Vec<Argument> {
-            types.into_iter().map(|ty| Argument { name: None, ty, span: function.span, written: None }).collect()
+            types.into_iter().map(|ty| Argument { name: None, ty, span: function.span, written: None, place: 0 }).collect()
         };
         // `on` hands the event to a function that asks for it, and
         // nothing to one that does not.
@@ -5849,7 +5888,7 @@ impl Checker {
                     );
                 }
                 for (argument, wanted) in arguments.iter().zip(&callable.params) {
-                    let given = self.adapted(argument.written.clone(), argument.ty.clone(), wanted, argument.span);
+                    let given = self.adapted(argument.written.clone(), argument.place, argument.ty.clone(), wanted, argument.span);
                     self.expect(&given, wanted, "an argument", argument.span);
                 }
                 callable.returns.clone()
@@ -5911,7 +5950,7 @@ impl Checker {
             self.sees(&slots[index], &argument.ty, argument.span);
             let label = format!("`{}` of `{what}`", slots[index].name);
             let given =
-                self.adapted(argument.written.clone(), argument.ty.clone(), &slots[index].ty, argument.span);
+                self.adapted(argument.written.clone(), argument.place, argument.ty.clone(), &slots[index].ty, argument.span);
             self.expect(&given, &slots[index].ty, &label, argument.span);
         }
 
@@ -6060,7 +6099,7 @@ impl Checker {
                     self.expect(&first, &Ty::Str, &format!("the path given to `files.{short}`"), arguments[0].span);
                     if count == 2 {
                         let given = &arguments[1];
-                        let ty = self.adapted(given.written.clone(), given.ty.clone(), &bytes, given.span);
+                        let ty = self.adapted(given.written.clone(), given.place, given.ty.clone(), &bytes, given.span);
                         self.expect(&ty, &bytes, "the bytes given to `files.write_bytes`", given.span);
                     }
                 }
@@ -6393,7 +6432,7 @@ impl Checker {
         let apply = |checker: &mut Checker, function: &Argument, types: Vec<Ty>| {
             let arguments = types
                 .into_iter()
-                .map(|ty| Argument { name: None, ty, span: function.span, written: None })
+                .map(|ty| Argument { name: None, ty, span: function.span, written: None, place: 0 })
                 .collect();
             checker.call(&function.ty.clone().looked_at(), arguments, function.span)
         };
@@ -6495,7 +6534,7 @@ impl Checker {
                 if self.arity(name, arguments, 1, 1, span) {
                     let value = &arguments[0];
                     let wanted = Ty::Sized(*width);
-                    let given = self.adapted(value.written.clone(), value.ty.clone(), &wanted, value.span);
+                    let given = self.adapted(value.written.clone(), value.place, value.ty.clone(), &wanted, value.span);
                     self.expect(&given, &wanted, "the value written to this register", value.span);
                 }
                 Ty::None
@@ -6583,7 +6622,7 @@ impl Checker {
             (Ty::List(item), "append") => {
                 if self.arity(name, arguments, 1, 1, span) {
                     let added = &arguments[0];
-                    let given = self.adapted(added.written.clone(), added.ty.clone(), item, added.span);
+                    let given = self.adapted(added.written.clone(), added.place, added.ty.clone(), item, added.span);
                     self.expect(&given, item, "an item added to this list", added.span);
                 }
                 Ty::None
@@ -6598,7 +6637,7 @@ impl Checker {
                     let at = &arguments[0];
                     self.expect(&at.ty, &Ty::Int, "the position given to `insert`", at.span);
                     let added = &arguments[1];
-                    let given = self.adapted(added.written.clone(), added.ty.clone(), item, added.span);
+                    let given = self.adapted(added.written.clone(), added.place, added.ty.clone(), item, added.span);
                     self.expect(&given, item, "an item put in this list", added.span);
                 }
                 Ty::None
@@ -6655,7 +6694,7 @@ impl Checker {
             (Ty::List(item), "find") => {
                 if self.arity(name, arguments, 1, 1, span) {
                     let wanted = &arguments[0];
-                    let given = self.adapted(wanted.written.clone(), wanted.ty.clone(), item, wanted.span);
+                    let given = self.adapted(wanted.written.clone(), wanted.place, wanted.ty.clone(), item, wanted.span);
                     // It is compared and not kept, so a look will do.
                     let (given, item) = (given.looked_at(), (**item).clone().looked_at());
                     self.expect(&given, &item, "the item `find` looks for", wanted.span);
@@ -6924,7 +6963,7 @@ impl Checker {
                 || self.callable(&argument.ty).is_some_and(|(slots, _)| slots.len() == takes.len());
             if fits {
                 let takes =
-                    takes.into_iter().map(|ty| Argument { name: None, ty, span: argument.span, written: None }).collect();
+                    takes.into_iter().map(|ty| Argument { name: None, ty, span: argument.span, written: None, place: 0 }).collect();
                 let returns = self.call(&argument.ty, takes, argument.span);
                 self.bind(&pattern.returns, &returns, &mut found);
             }

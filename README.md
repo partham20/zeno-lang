@@ -699,6 +699,10 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     every engine, every build and all fifteen target languages.
     See [`docs/bytes.md`](docs/bytes.md) and chapter 36 of
     [`docs/decisions.md`](docs/decisions.md))
+38. A `list[u8]` is stored one byte to an item (done, after 0.5.1 and
+    not yet released: in C and LLVM, every `list[u8]`, with nothing
+    to write. An 8 MB file read and written back takes 13 MB where it
+    took 64. Decision 36.2)
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

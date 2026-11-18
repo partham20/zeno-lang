@@ -42,7 +42,7 @@ release ([`release.md`](release.md)).
 | 1 | A library written in Zeno. **Done** ([`library-in-zeno.md`](library-in-zeno.md)) | medium | Every later library function is then written once, and not once for each engine and each target |
 | 2 | The small library gaps. **Done:** `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp`, random numbers, and `program.exit`, `program.environment` and `program.warn` ([`ending-a-program.md`](ending-a-program.md)) | small | First use of 1. Every one is asked for by ordinary programs |
 | 3 | An enum case with a number: `Ack = 6`. **Done** ([`enum-numbers.md`](enum-numbers.md)); a loop over the cases is left | medium | Every protocol and every register field is a number with a name |
-| 4 | Bytes: bytes from and to a file (**done**, [`bytes.md`](bytes.md)), a packed `list[u8]`, a list of a fixed length | large | "The first thing a real driver will ask for" (5.13a) |
+| 4 | Bytes: bytes from and to a file (**done**, [`bytes.md`](bytes.md)), a packed `list[u8]` (**done**, decision 36.2), a list of a fixed length | large | "The first thing a real driver will ask for" (5.13a) |
 | 5 | `u64` and `f32` | medium | Counters and timestamps; a board whose float unit is 32 bits |
 | 6 | Units made of units: `V * A` is `W` | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
 | 7 | Inputs on a board, a serial port, an ADC, PWM, interrupts | large, wants a board | The one thing that keeps Zeno off real hardware |
@@ -78,7 +78,7 @@ C.
 
 | Missing | What the others have | Recommendation |
 |---|---|---|
-| **A packed `list[u8]`**: an item takes eight bytes (5.13a) | C: `uint8_t buf[64]`. Rust: `Vec<u8>`, `[u8; 64]`. Go: `[]byte` | Build it. A list whose items are a sized number stores them at that size |
+| ~~**A packed `list[u8]`**: an item takes eight bytes (5.13a)~~ | C: `uint8_t buf[64]`. Rust: `Vec<u8>`, `[u8; 64]`. Go: `[]byte` | **Done** (36.2): a `list[u8]` takes one byte an item. Lists of the other sized numbers still take eight |
 | **A list of a fixed length**, whose size is known when the program is built and which needs no pool | C, C++, Rust and Go arrays | Build with the packed list. A buffer in firmware is nearly always this |
 | ~~Bytes from and to a file~~ (6.16) | All seven | **Done** (chapter 36): `files.read_bytes` gives a `list[u8]`, `files.write_bytes` takes one |
 | **`u64`** (2.8d), and `i64` as a name | All but JavaScript and Python, which have big numbers | Build it, with its own rule: an operator between two `u64` gives a `u64`, checked, and it mixes with an `int` only when written |
@@ -183,7 +183,7 @@ that comes with it.
 | Sized whole numbers to 64 bits | yes | yes | no | no | yes | yes | yes | to 32 |
 | A 32-bit float | yes | yes | no | no | yes | yes | yes | no |
 | A list of a fixed length | yes | yes | no | no | yes | yes | yes | no |
-| Bytes packed one to a byte | yes | yes | yes | yes | yes | yes | yes | no |
+| Bytes packed one to a byte | yes | yes | yes | yes | yes | yes | yes | yes |
 | Registers and raw pointers | yes | yes | no | no | no | yes | some | yes |
 | Interrupts | yes | yes | no | no | no | yes | no | no |
 | Builds with no library under it | yes | yes | no | no | no | yes | no | nearly |

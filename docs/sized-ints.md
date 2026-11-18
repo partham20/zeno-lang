@@ -550,10 +550,9 @@ the number is in range before it got there.
 
 ## What it does not do yet
 
-- **A `list[u8]` is not packed.** Each item still takes eight bytes,
-  because the runtime has one list type for everything
-  ([`compiler.md`](compiler.md)). A packed list, or a `bytes` type, is
-  its own stage.
+- **Only a `list[u8]` is packed.** Since decision 36.2 a `list[u8]`
+  takes one byte an item in C and LLVM. A list of `i8`, `u16`, `i16`,
+  `u32` or `i32` still takes eight bytes an item.
 - **No `u64`.** Half its values do not fit in an `int`, and then "the
   sum is an int" stops being true (decision 2.8d).
 - **A `u8` does not go where a `u16` is wanted** without `u16( )`,

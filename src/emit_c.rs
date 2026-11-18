@@ -196,6 +196,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         firmware,
         collector,
         built: false,
+        makes_bytes: false,
         marks: 0,
         holds: 0,
         walked: None,
@@ -981,6 +982,8 @@ struct Emitter<'a> {
     /// The statement being compiled has built text, which lasts until the
     /// statement is over. See `text_begin`.
     built: bool,
+    /// The call about to be compiled makes a new `list[u8]` (36.2).
+    makes_bytes: bool,
     /// How many places in the text room have been noted, to number them.
     marks: usize,
     /// How many values are being held for a moment, to number them. See
@@ -1112,6 +1115,8 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
     Ok(match kind {
         // A pin is its number.
         Kind::Int | Kind::Pin => "int64_t ".to_string(),
+        // Only ever an item of a list; read, it is an int.
+        Kind::Byte => "uint8_t ".to_string(),
         // A register is its address.
         Kind::Register(_) => "int64_t ".to_string(),
         // A raw pointer is exactly C's: `uint8_t *`.
@@ -1274,6 +1279,7 @@ fn invoke(function: &str, kind: &FunctionKind, args: &[String], span: Span) -> R
 fn key(kind: &Kind) -> String {
     match kind {
         Kind::Int => "int".to_string(),
+        Kind::Byte => "u8".to_string(),
         Kind::Float => "float".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
@@ -1296,6 +1302,8 @@ fn key(kind: &Kind) -> String {
 /// C that puts a value into a list slot.
 fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     let member = match kind {
+        // A list of bytes holds bytes, not slots (decision 36.2).
+        Kind::Byte => return Ok(format!("((int64_t)({code}))")),
         Kind::Int | Kind::Pin | Kind::Register(_) => "i",
         Kind::Float | Kind::Quantity(_) => "f",
         Kind::Bool => "b",
@@ -1315,9 +1323,35 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
     Ok(format!("(zeno_slot){{.{member} = {code}}}"))
 }
 
+/// C for the item of `list` at `index`, unchecked: the slot, or the byte.
+fn item_at(list: &str, index: &str, item: &Kind) -> String {
+    match item {
+        Kind::Byte => format!("ZENO_BYTES({list})[{index}]"),
+        _ => format!("{list}->items[{index}]"),
+    }
+}
+
+/// The runtime function that does `what` to a list of `item`s:
+/// `zeno_list_append`, or `zeno_bytes_append` for a list of bytes.
+fn list_fn(item: &Kind, what: &str) -> String {
+    match item {
+        Kind::Byte => format!("zeno_bytes_{what}"),
+        _ => format!("zeno_list_{what}"),
+    }
+}
+
+/// The kind of an item once it is read out of a list: a byte is an int.
+fn read_kind(item: &Kind) -> Kind {
+    match item {
+        Kind::Byte => Kind::Int,
+        item => item.clone(),
+    }
+}
+
 /// C that takes a value back out of a list slot.
 fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
     Ok(match kind {
+        Kind::Byte => format!("((int64_t){slot})"),
         Kind::Int | Kind::Pin | Kind::Register(_) => format!("{slot}.i"),
         Kind::Float | Kind::Quantity(_) => format!("{slot}.f"),
         Kind::Bool => format!("{slot}.b"),
@@ -1398,10 +1432,12 @@ impl Emitter<'_> {
     ///
     /// The runtime's `zeno_list_at` checks the index first. A minimal
     /// build has no check, so there it is C's own `[ ]`.
-    fn slot_at(&self, list: &str, index: &str, span: Span) -> String {
-        match self.minimal {
-            true => format!("{list}->items[{index}]"),
-            false => format!("*zeno_list_at({list}, {index}, {})", self.at(span)),
+    fn slot_at(&self, list: &str, index: &str, item: &Kind, span: Span) -> String {
+        match (self.minimal, item) {
+            (true, Kind::Byte) => format!("ZENO_BYTES({list})[{index}]"),
+            (false, Kind::Byte) => format!("*zeno_bytes_at({list}, {index}, {})", self.at(span)),
+            (true, _) => format!("{list}->items[{index}]"),
+            (false, _) => format!("*zeno_list_at({list}, {index}, {})", self.at(span)),
         }
     }
 
@@ -3232,7 +3268,7 @@ impl Emitter<'_> {
                     self.line(format!("zeno_text_drop({place}->s);"));
                     self.line(format!("*{place} = {slot};"));
                 } else {
-                    self.line(format!("{} = {slot};", self.slot_at(&object.code, &index.code, span)));
+                    self.line(format!("{} = {slot};", self.slot_at(&object.code, &index.code, &item, span)));
                 }
             }
             _ => return Err(cannot("an assignment to this", target.span)),
@@ -3588,7 +3624,7 @@ impl Emitter<'_> {
             // items, and so does the copy the loop walks: the body may
             // give the list new items while the loop looks at the old.
             (_, false) if !self.collector && is_text(&item) => format!("zeno_list_copy_text({})", list.code),
-            (_, false) => format!("zeno_list_copy({})", list.code),
+            (_, false) => format!("{}({})", list_fn(&item, "copy"), list.code),
         };
         self.line(format!("zeno_list *{items} = {source};"));
 
@@ -3612,23 +3648,23 @@ impl Emitter<'_> {
         if let Some((list, value)) = &values {
             self.hold_copy(value.clone(), list);
         }
-        let c_type_of_item = c_type(&item, span)?;
+        let c_type_of_item = c_type(&read_kind(&item), span)?;
         // With two names over a list, the second is the item and the
         // first is the position. Over a dict the first is the key, which
         // is the item of the list of keys.
         let c_name = match (second, &values) {
-            (Some(second), None) => self.declare(second, item.clone()),
-            _ => self.declare(variable, item.clone()),
+            (Some(second), None) => self.declare(second, read_kind(&item)),
+            _ => self.declare(variable, read_kind(&item)),
         };
         self.line(format!("for (int64_t {position} = 0; {position} < {items}->len; {position}++) {{"));
         self.indent += 1;
-        let value = from_slot(&item, &format!("{items}->items[{position}]"), span)?;
+        let value = from_slot(&item, &item_at(&items, &position, &item), span)?;
         self.line(format!("{c_type_of_item}{c_name} = {value};"));
         match (second, &values) {
             (Some(second), Some((list, kind))) => {
                 let c_type = c_type(kind, span)?;
                 let c_name = self.declare(second, kind.clone());
-                let value = from_slot(kind, &format!("{list}->items[{position}]"), span)?;
+                let value = from_slot(kind, &item_at(list, &position, kind), span)?;
                 self.line(format!("{c_type}{c_name} = {value};"));
             }
             (Some(_), None) => {
@@ -3919,7 +3955,11 @@ impl Emitter<'_> {
                     false => Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span)),
                 }
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, span),
+            ExprKind::Call { callee, args } => {
+                // `map` that makes a list of bytes is told so (36.2).
+                self.makes_bytes = self.types.makes_bytes(expr);
+                self.call(callee, args, span)
+            }
 
             ExprKind::Field { object, name, .. } => self.field(object, name, span),
             ExprKind::Index { object, index } => {
@@ -3958,10 +3998,11 @@ impl Emitter<'_> {
                     return Err(cannot("`[ ]` on anything but a list, a dict or a str", span));
                 };
                 let slot = match self.minimal {
-                    true => self.slot_at(&list.code, &index.code, span),
-                    false => format!("({})", self.slot_at(&list.code, &index.code, span)),
+                    true => self.slot_at(&list.code, &index.code, item, span),
+                    false => format!("({})", self.slot_at(&list.code, &index.code, item, span)),
                 };
-                let mut val = Val::from(from_slot(item, &slot, span)?, *item.clone(), &[&list, &index]).failing_if(!self.minimal);
+                let mut val =
+                    Val::from(from_slot(item, &slot, span)?, read_kind(item), &[&list, &index]).failing_if(!self.minimal);
                 val.reads = true;
                 Ok(self.lend(val))
             }
@@ -4017,6 +4058,9 @@ impl Emitter<'_> {
                 if let Some(wanted) = self.types.items(expr) {
                     item = Some(disown(wanted.clone()).0);
                 }
+                if self.types.makes_bytes(expr) {
+                    item = Some(Kind::Byte);
+                }
                 let Some(item) = item else {
                     return Err(cannot("a list whose items are not all one type", span));
                 };
@@ -4027,7 +4071,8 @@ impl Emitter<'_> {
                     slots.push(to_slot(&item, &val.code, span)?);
                 }
                 let parts: Vec<&Val> = vals.iter().collect();
-                let mut val = Val::from(format!("zeno_list_of({})", slots.join(", ")), Kind::List(Box::new(item)), &parts);
+                let made = list_fn(&item, "of");
+                let mut val = Val::from(format!("{made}({})", slots.join(", ")), Kind::List(Box::new(item)), &parts);
                 val.made = true;
                 Ok(val)
             }
@@ -4084,7 +4129,10 @@ impl Emitter<'_> {
             // `[n * n for n in items if n > 0]` is a loop that fills a list.
             ExprKind::ListComp { element, variable, iterable, condition } => {
                 let list = self.new_temp();
-                self.line(format!("zeno_list *{list} = zeno_list_new(0);"));
+                // A list of `u8`s is a list of bytes (36.2).
+                let bytes = self.types.makes_bytes(expr);
+                let new = if bytes { "zeno_bytes_new" } else { "zeno_list_new" };
+                self.line(format!("zeno_list *{list} = {new}(0);"));
                 // Until it is full, the list is nobody's. If working out
                 // an item fails, the failure frees what there is of it.
                 let filling = self.hold(Kind::List(Box::new(Kind::None)), &list);
@@ -4104,7 +4152,8 @@ impl Emitter<'_> {
                 self.stays(&item, element.span)?;
                 let item = self.keep(item, is_written(element));
                 self.fits_a_slot(&item.kind, span)?;
-                self.line(format!("zeno_list_append({list}, {});", to_slot(&item.kind, &item.code, span)?));
+                let item = if bytes { self.coerce(item, &Kind::Byte, span)? } else { item };
+                self.line(format!("{}({list}, {});", list_fn(&item.kind, "append"), to_slot(&item.kind, &item.code, span)?));
                 self.own_end(own, true);
                 if (!self.collector && is_text(&item.kind)) || self.drops.owns(&item.kind) {
                     // The list has copies of its items, or is the owner
@@ -4201,6 +4250,14 @@ impl Emitter<'_> {
                     return Err(cannot("a function used where a function of a different shape is wanted", span))
                 }
             },
+            // A number going into a list of bytes: the checker has seen
+            // that it fits.
+            (Kind::Int, Kind::Byte) => val.code.clone(),
+            // A list of bytes is a list of `u8` that the checker knows
+            // about. One made where it did not say so is a mistake here.
+            (Kind::List(from), Kind::List(item)) if (**from == Kind::Byte) != (**item == Kind::Byte) => {
+                return Err(cannot("a list of bytes where another list is wanted, or the other way round", span));
+            }
             // Anything else the checker has already agreed to as it is.
             _ => return Ok(val),
         };
@@ -4494,7 +4551,7 @@ impl Emitter<'_> {
     ///
     /// They walk the list as it was when they began, as `zeno run` does, so
     /// `f` may change the list without confusing the loop.
-    fn over_list(&mut self, name: &str, mut vals: Vec<Val>, item: &Kind, span: Span) -> Result<Val, Error> {
+    fn over_list(&mut self, name: &str, mut vals: Vec<Val>, item: &Kind, bytes: bool, span: Span) -> Result<Val, Error> {
         let takes = if name == "reduce" { 2 } else { 1 };
         let kind = match vals.get(1).map(|function| &function.kind) {
             Some(Kind::Function(kind)) if kind.params.len() == takes && vals.len() == takes + 1 => (**kind).clone(),
@@ -4525,7 +4582,7 @@ impl Emitter<'_> {
         // walks one: a copy with copies of the items, which the function
         // that is called cannot pull away.
         let texts = !self.collector && is_text(item);
-        let copy = if texts { "zeno_list_copy_text" } else { "zeno_list_copy" };
+        let copy = if texts { "zeno_list_copy_text".to_string() } else { list_fn(item, "copy") };
         // A list that the statement owns is out of every function's
         // reach, so it is walked as it is.
         let own = vals[0].passing;
@@ -4533,8 +4590,8 @@ impl Emitter<'_> {
             true => self.line(format!("zeno_list *{items} = {};", vals[0].code)),
             false => self.line(format!("zeno_list *{items} = {copy}({});", vals[0].code)),
         }
-        let slot = format!("{items}->items[{position}]");
-        let each = Val::plain(from_slot(item, &slot, span)?, item.clone());
+        let slot = item_at(&items, &position, item);
+        let each = Val::plain(from_slot(item, &slot, span)?, read_kind(item));
 
         // What `sort` does when every key is known.
         let mut after = Vec::new();
@@ -4555,7 +4612,7 @@ impl Emitter<'_> {
                 let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
                 let mut inside = Vec::new();
                 let sorted = if own { items.clone() } else { vals[0].code.clone() };
-                after.push(format!("zeno_list_sort_by({sorted}, {out}, {by}, {});", self.at(span)));
+                after.push(format!("{}({sorted}, {out}, {by}, {});", list_fn(item, "sort_by"), self.at(span)));
                 if !self.collector && is_text(&kind.returns) {
                     self.marks += 1;
                     let mark = format!("m{}", self.marks);
@@ -4574,7 +4631,11 @@ impl Emitter<'_> {
                 let out = self.new_temp();
                 let arg = self.coerce(each, &kind.params[0], span)?.code;
                 let call = invoke(&function, &kind, &[arg], span)?;
-                let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
+                // A function that gives a `u8` makes a list of bytes.
+                let made = if bytes { Kind::Byte } else { kind.returns.clone() };
+                let new = list_fn(&made, "new");
+                let append = list_fn(&made, "append");
+                let mut before = vec![format!("zeno_list *{out} = {new}({items}->len);")];
                 let mut inside = Vec::new();
                 if !self.collector && is_text(&kind.returns) {
                     // With no collector the text each call gives back is
@@ -4587,9 +4648,9 @@ impl Emitter<'_> {
                     inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &kept, span)?));
                     inside.push(format!("zeno_text_top = {mark};"));
                 } else {
-                    inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &call, span)?));
+                    inside.push(format!("{append}({out}, {});", to_slot(&made, &call, span)?));
                 }
-                let mut result = Val::plain(out, Kind::List(Box::new(kind.returns.clone())));
+                let mut result = Val::plain(out, Kind::List(Box::new(made)));
                 result.made = true;
                 (before, inside, result)
             }
@@ -4608,9 +4669,10 @@ impl Emitter<'_> {
                 };
                 let mut result = Val::plain(out.clone(), Kind::List(Box::new(item.clone())));
                 result.made = true;
+                let (new, append) = (list_fn(item, "new"), list_fn(item, "append"));
                 (
-                    vec![format!("zeno_list *{out} = zeno_list_new(0);")],
-                    vec![format!("if ({call}) zeno_list_append({out}, {taken});")],
+                    vec![format!("zeno_list *{out} = {new}(0);")],
+                    vec![format!("if ({call}) {append}({out}, {taken});")],
                     result,
                 )
             }
@@ -4698,7 +4760,7 @@ impl Emitter<'_> {
 
             (Add, Str, Str) => Val::from(format!("zeno_join(2, {l}, {r})"), Str, &parts),
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
-                let joined = format!("zeno_list_concat({l}, {r})");
+                let joined = format!("{}({l}, {r})", list_fn(a, "concat"));
                 // With no collector a list of text has its own copy of
                 // each item, and so has the list that `+` makes.
                 let code = match !self.collector && is_text(a) {
@@ -5004,7 +5066,7 @@ impl Emitter<'_> {
             // runtime for the call (decision 36.1).
             ("files", "read_bytes", [path]) if path.kind == Kind::Str => {
                 let call = format!("zeno_files_read_bytes({}, {})", path.code, self.at(span));
-                let returns = Kind::List(Box::new(Kind::Int));
+                let returns = Kind::List(Box::new(Kind::Byte));
                 self.built = !self.collector;
                 let mut bytes = if self.firmware {
                     self.checked_call(call, returns, &["FileError".to_string()], span)?
@@ -5015,7 +5077,7 @@ impl Emitter<'_> {
                 Ok(bytes)
             }
             ("files", "write_bytes", [path, bytes])
-                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Int)) =>
+                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Byte)) =>
             {
                 let call = format!("zeno_files_write_bytes({}, {}, {})", path.code, bytes.code, self.at(span));
                 self.built = !self.collector;
@@ -5256,6 +5318,7 @@ impl Emitter<'_> {
 
     /// `object.name(args)`: a method of a class, or of a list.
     fn method(&mut self, object: &Expr, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let makes_bytes = std::mem::take(&mut self.makes_bytes);
         let receiver = self.expr(object)?;
         match receiver.kind.clone() {
             Kind::Class(class) => {
@@ -5393,17 +5456,19 @@ impl Emitter<'_> {
                 let vals = self.sequence_after(vec![receiver], &exprs)?;
                 let parts: Vec<&Val> = vals.iter().collect();
                 match (name, vals.as_slice()) {
-                    ("map" | "filter" | "reduce", _) => self.over_list(name, vals, &item, span),
+                    ("map" | "filter" | "reduce", _) => {
+                        self.over_list(name, vals, &item, makes_bytes, span)
+                    }
                     // With a function, `sort` is a walk that asks for
                     // the key of each item, and then the sorting.
-                    ("sort", [_, _]) => self.over_list(name, vals, &item, span),
+                    ("sort", [_, _]) => self.over_list(name, vals, &item, false, span),
                     ("append", [list, value]) => {
                         self.stays(value, span)?;
                         self.fits_a_slot(&item, span)?;
                         let value = self.keep(value.clone(), is_written(&args[0].value));
                         let value = self.coerce(value, &item, span)?;
                         let slot = to_slot(&value.kind, &value.code, span)?;
-                        self.line(format!("zeno_list_append({}, {slot});", list.code));
+                        self.line(format!("{}({}, {slot});", list_fn(&item, "append"), list.code));
                         let mut val = Val::from(String::new(), Kind::None, &parts);
                         val.pre_calls = true;
                         Ok(val)
@@ -5412,10 +5477,10 @@ impl Emitter<'_> {
                         let slot = match vals.get(1) {
                             // `pop(2)`: the item at that position.
                             Some(position) if position.kind == Kind::Int => {
-                                format!("zeno_list_pop_at({}, {}, {})", list.code, position.code, self.at(span))
+                                format!("{}({}, {}, {})", list_fn(&item, "pop_at"), list.code, position.code, self.at(span))
                             }
                             Some(_) => return Err(cannot("`pop` with a position that is not an int", span)),
-                            None => format!("zeno_list_pop({}, {})", list.code, self.at(span)),
+                            None => format!("{}({}, {})", list_fn(&item, "pop"), list.code, self.at(span)),
                         };
                         let mut code = from_slot(&item, &slot, span)?;
                         if !self.collector && is_text(&item) {
@@ -5423,7 +5488,7 @@ impl Emitter<'_> {
                             // it, and the list's copy is freed.
                             code = format!("zeno_text_take({code})");
                         }
-                        let mut val = Val::from(code, *item.clone(), &parts);
+                        let mut val = Val::from(code, read_kind(&item), &parts);
                         // It changes the list, which is as visible as a call.
                         val.fails = true;
                         val.calls = true;
@@ -5436,15 +5501,19 @@ impl Emitter<'_> {
                         let value = self.keep(value.clone(), is_written(&args[1].value));
                         let value = self.coerce(value, &item, span)?;
                         let slot = to_slot(&value.kind, &value.code, span)?;
-                        let call = format!("zeno_list_insert({}, {}, {slot}, {})", list.code, position.code, self.at(span));
+                        let insert = list_fn(&item, "insert");
+                        let call = format!("{insert}({}, {}, {slot}, {})", list.code, position.code, self.at(span));
                         Ok(self.called(call, &vals, Kind::None))
                     }
                     ("reverse", [list]) => {
-                        let call = format!("zeno_list_reverse({})", list.code);
+                        let call = format!("{}({})", list_fn(&item, "reverse"), list.code);
                         Ok(self.called(call, &vals, Kind::None))
                     }
                     // The runtime compares two slots, and has to be told
                     // which member of the slot to read.
+                    ("sort", [list]) if *item == Kind::Byte => {
+                        Ok(self.called(format!("zeno_bytes_sort({})", list.code), &vals, Kind::None))
+                    }
                     ("sort", [list]) => {
                         let kind = match &*item {
                             Kind::Int => 0,
@@ -5469,8 +5538,17 @@ impl Emitter<'_> {
                             let each = self.drops.code(&item, &place);
                             self.line(format!("for (int64_t i = 0; i < {}->len; i++) {each}", list.code));
                         }
-                        let call = format!("zeno_list_clear({})", list.code);
+                        let call = format!("{}({})", list_fn(&item, "clear"), list.code);
                         Ok(self.called(call, &vals, Kind::None))
+                    }
+                    ("find", [list, value]) if *item == Kind::Byte => {
+                        let mut val = Val::from(
+                            format!("zeno_found(zeno_bytes_find({}, {}))", list.code, value.code),
+                            Kind::Optional(Box::new(Kind::Int)),
+                            &parts,
+                        );
+                        val.reads = true;
+                        Ok(val)
                     }
                     ("find", [list, value]) => {
                         let same = self.eq_adapter(&item, span)?;
@@ -5491,7 +5569,8 @@ impl Emitter<'_> {
                             Some(_) => return Err(cannot("`slice` with a position that is not an int", span)),
                             None => "0, true".to_string(),
                         };
-                        let slice = format!("zeno_list_slice({}, {}, {ends}, {})", list.code, from.code, self.at(span));
+                        let slice =
+                            format!("{}({}, {}, {ends}, {})", list_fn(&item, "slice"), list.code, from.code, self.at(span));
                         // With no collector a list of text has its own
                         // copy of each item, and so has the slice.
                         let code = match !self.collector && is_text(&item) {
@@ -5685,6 +5764,9 @@ impl Emitter<'_> {
     /// `x in items`, `x not in items`, and the same for a piece of a str.
     fn contains(&mut self, op: BinaryOp, left: Val, right: Val, span: Span) -> Result<Val, Error> {
         let code = match (&left.kind, &right.kind) {
+            (Kind::Int, Kind::List(items)) if **items == Kind::Byte => {
+                format!("zeno_bytes_contains({}, {})", right.code, left.code)
+            }
             (item, Kind::List(items)) if item == &**items => {
                 let same = self.eq_adapter(item, span)?;
                 format!("zeno_list_contains({}, {}, {same})", right.code, to_slot(item, &left.code, span)?)
@@ -5722,7 +5804,9 @@ impl Emitter<'_> {
             Kind::Register(_) => format!("zeno_str_register({})", val.code),
             Kind::Quantity(unit) => format!("zeno_str_quantity({}, {})", val.code, c_string(unit)),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_show_{}({})", ident(name), val.code),
+            Kind::List(item) if **item == Kind::Byte => format!("zeno_bytes_str({})", val.code),
             Kind::List(item) => format!("zeno_list_str({}, {})", val.code, self.repr_adapter(item, span)?),
+            Kind::Byte => format!("zeno_str_int({})", val.code),
             Kind::Dict(_, value) if !plain_value(value) && !matches!(**value, Kind::Other(_)) => {
                 format!("zeno_dict_str_with({}, {})", val.code, self.repr_adapter(value, span)?)
             }
@@ -5754,11 +5838,12 @@ impl Emitter<'_> {
     /// Objects, enum values and lists are equal when their contents are.
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
-            Kind::Int | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) => format!("({a} == {b})"),
+            Kind::Int | Kind::Byte | Kind::Float | Kind::Bool | Kind::Pin | Kind::Quantity(_) => format!("({a} == {b})"),
             // Two pointers are equal when they point at the same item.
             Kind::Pointer(_) | Kind::Register(_) => format!("({a} == {b})"),
             Kind::Str => format!("(strcmp({a}, {b}) == 0)"),
             Kind::Class(name) | Kind::Enum(name) => format!("zeno_same_{}({a}, {b})", ident(name)),
+            Kind::List(item) if **item == Kind::Byte => format!("zeno_bytes_eq({a}, {b})"),
             Kind::List(item) => format!("zeno_list_eq({a}, {b}, {})", self.eq_adapter(item, span)?),
             Kind::Dict(_, value) if !plain_value(value) && !matches!(**value, Kind::Other(_)) => {
                 format!("zeno_dict_eq_with({a}, {b}, {})", self.eq_adapter(value, span)?)
@@ -5778,6 +5863,19 @@ impl Emitter<'_> {
         let plain = |kind: &Kind| matches!(kind, Kind::Int | Kind::Float | Kind::Bool | Kind::Str | Kind::Quantity(_));
         if plain(&left.kind) && plain(&right.kind) || !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
             return comparison(op, left, right, span);
+        }
+        // A list of bytes and a list of ints hold numbers alike, and are
+        // equal when the numbers are (36.2).
+        let ints = Kind::List(Box::new(Kind::Int));
+        let bytes = Kind::List(Box::new(Kind::Byte));
+        let mixed = match (&left.kind, &right.kind) {
+            (a, b) if *a == bytes && *b == ints => Some((&left.code, &right.code)),
+            (a, b) if *a == ints && *b == bytes => Some((&right.code, &left.code)),
+            _ => None,
+        };
+        if let Some((bytes, ints)) = mixed {
+            let same = format!("zeno_bytes_eq_ints({bytes}, {ints})");
+            return Ok(if op == BinaryOp::NotEq { format!("(!{same})") } else { same });
         }
         // Everything else is equal when its contents are. `x == none` and
         // `x == 5`, where `x` may be `none`, first bring both sides to the
@@ -6110,6 +6208,10 @@ impl Emitter<'_> {
                 let list = &vals[0];
                 let Kind::List(item) = &list.kind else { unreachable!() };
                 let code = match (name, &**item) {
+                    ("sum", Kind::Byte) => format!("zeno_bytes_sum({})", list.code),
+                    (_, Kind::Byte) => {
+                        format!("zeno_bytes_best({}, {}, {}, {})", list.code, name == "min", c_string(name), self.at(span))
+                    }
                     ("sum", Kind::Int) => format!("zeno_list_sum_int({}, {})", list.code, self.at(span)),
                     ("sum", Kind::Float) => format!("zeno_list_sum_float({})", list.code),
                     // A quantity is kept as a float, in its own unit.
@@ -6126,7 +6228,7 @@ impl Emitter<'_> {
                     ),
                     _ => return Err(cannot(format!("`{name}` of a list of anything but ints or floats"), span)),
                 };
-                let mut val = Val::from(code, (**item).clone(), &parts).failing_if(!self.minimal);
+                let mut val = Val::from(code, read_kind(item), &parts).failing_if(!self.minimal);
                 val.reads = true;
                 val
             }
@@ -13369,6 +13471,134 @@ try {
         // Uncaught, it stops the program as `files.read` does.
         let path = scratch("bytes-uncaught.bin");
         same_as_interpreter("bytes-uncaught", &format!("import files\nprint(len(files.read_bytes(\"{path}\")))\n"));
+    }
+
+    const PACKED: &str = r#"# Every way a list[u8] is made and used.
+function checksum(bytes: list[u8]) -> int {
+    var sum = 0
+    for b in bytes {
+        sum = (sum + b) % 256
+    }
+    return sum
+}
+
+function make(n: int) -> list[u8] {
+    var out: list[u8] = []
+    for i in range(n) {
+        out.append(u8(i * 7 % 256))
+    }
+    return out
+}
+
+function first[T](xs: list[T]) -> T {
+    return xs[0]
+}
+
+class Frame {
+    kind: u8
+    payload: list[u8]
+}
+
+let a: list[u8] = [1, 2, 3, 255]
+print(a, len(a), a[0], a[3])
+a[1] = 200
+a.append(9)
+print(a)
+let b = make(10)
+print(b, checksum(b))
+let c = a + b
+print(len(c), c[4], c[5])
+print(c.slice(2, 5), a.slice(1))
+print(a == [1, 200, 3, 255, 9], a != b, 3 in a, 4 in a)
+print(a.find(255), a.find(77))
+var d = [u8(n) for n in range(5)]
+d.insert(0, 99)
+print(d, d.pop(), d.pop(0), d)
+d.reverse()
+print(d)
+d.sort()
+print(d)
+d.sort(function(x: u8) -> int { return 0 - x })
+print(d)
+let e = [u8(n * n % 256) for n in range(20) if n % 3 == 0]
+print(e, sum(e), min(e), max(e))
+let doubled = e.map(function(x: u8) -> int { return x * 2 })
+print(doubled)
+let small = e.filter(function(x: u8) -> bool { return x < 50 })
+print(small)
+let as_bytes = e.map(function(x: u8) -> u8 { return u8.wrap(x * 3) })
+print(as_bytes)
+print(first(a), first([u8(7)]))
+let f = Frame(3, [0x7E, 0x10])
+f.payload.append(0x20)
+print(f.kind, f.payload, len(f.payload))
+let frames = [f, Frame(4, [])]
+print(frames[1].payload, len(frames))
+let table = ["one": a, "two": b]
+print(table["one"][0], len(table["two"]))
+let nested: list[list[u8]] = [[1, 2], [3]]
+nested[0].append(4)
+print(nested)
+var maybe: list[u8] or none = none
+print(maybe)
+maybe = [5, 6]
+if maybe is not none {
+    print(maybe[1])
+}
+var wrapped = [u8(250)]
+wrapped[0] = u8.wrap(wrapped[0] + 10)
+print(wrapped)
+d.clear()
+print(d, len(d))
+var big: list[u8] = []
+for i in range(1000) {
+    big.append(u8(i % 256))
+}
+print(len(big), big[999], checksum(big))
+print(str(a), f"{a}")
+"#;
+
+    const PACKED_OWNED: &str = r#"function make(n: int) -> owned list[u8] {
+    var out: owned list[u8] = []
+    for i in range(n) {
+        out.append(u8(i * 7 % 256))
+    }
+    return out
+}
+function total(bytes: owned list[u8]) -> int {
+    var sum = 0
+    for b in bytes {
+        sum = sum + b
+    }
+    return sum
+}
+let a: owned list[u8] = [1, 2, 3, 255]
+a[1] = 200
+a.append(9)
+print(a, len(a), total(a))
+let b = make(40)
+print(b.slice(30), total(b))
+let c: owned list[u8] = [u8(n) for n in range(10) if n % 2 == 0]
+c.reverse()
+print(c, c.pop(), c.find(4), 4 in c, sum(c), min(c), max(c))
+let s = str(c)
+print(s, f"{c}", c == [6, 4, 2])
+let m: owned list[u8] = c.map(function(x: u8) -> u8 { return u8(x + 1) })
+print(m)
+"#;
+
+    #[test]
+    fn a_list_of_bytes_is_packed_and_does_what_any_list_does() {
+        // One byte to an item: the list is made by the functions for
+        // bytes, in C and in LLVM (decision 36.2).
+        let c = compile(PACKED).expect("the program compiles");
+        assert!(c.contains("zeno_bytes_of(") && c.contains("ZENO_BYTES("), "the list[u8] is not packed");
+        same_as_interpreter("packed", PACKED);
+        no_collector_as_interpreter("packed-owned", PACKED_OWNED);
+        // A position outside the list stops the program, at the same
+        // place, in every build.
+        same_as_interpreter("packed-outside", "let a: list[u8] = [1, 2]\nprint(a[2])\n");
+        same_as_interpreter("packed-pop", "var a: list[u8] = []\nprint(a.pop())\n");
     }
 
     #[test]

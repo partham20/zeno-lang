@@ -250,6 +250,29 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_char_here", "declare ptr @zeno_char_here(ptr, ptr)"),
     ("zeno_list_new", "declare ptr @zeno_list_new(i64)"),
     ("zeno_list_of", "declare ptr @zeno_list_of(i32 signext, ...)"),
+    // A list of bytes (decision 36.2): the same struct, with a byte for
+    // each item. A byte goes in and comes out as an i64.
+    ("zeno_bytes_new", "declare ptr @zeno_bytes_new(i64)"),
+    ("zeno_bytes_of", "declare ptr @zeno_bytes_of(i32 signext, ...)"),
+    ("zeno_bytes_append", "declare void @zeno_bytes_append(ptr, i64)"),
+    ("zeno_bytes_at", "declare ptr @zeno_bytes_at(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_bytes_copy", "declare ptr @zeno_bytes_copy(ptr)"),
+    ("zeno_bytes_concat", "declare ptr @zeno_bytes_concat(ptr, ptr)"),
+    ("zeno_bytes_pop", "declare i64 @zeno_bytes_pop(ptr, i32 signext, i32 signext)"),
+    ("zeno_bytes_pop_at", "declare i64 @zeno_bytes_pop_at(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_bytes_insert", "declare void @zeno_bytes_insert(ptr, i64, i64, i32 signext, i32 signext)"),
+    ("zeno_bytes_str", "declare ptr @zeno_bytes_str(ptr)"),
+    ("zeno_bytes_eq", "declare zeroext i1 @zeno_bytes_eq(ptr, ptr)"),
+    ("zeno_bytes_eq_ints", "declare zeroext i1 @zeno_bytes_eq_ints(ptr, ptr)"),
+    ("zeno_bytes_find", "declare i64 @zeno_bytes_find(ptr, i64)"),
+    ("zeno_bytes_contains", "declare zeroext i1 @zeno_bytes_contains(ptr, i64)"),
+    ("zeno_bytes_reverse", "declare void @zeno_bytes_reverse(ptr)"),
+    ("zeno_bytes_clear", "declare void @zeno_bytes_clear(ptr)"),
+    ("zeno_bytes_sort", "declare void @zeno_bytes_sort(ptr)"),
+    ("zeno_bytes_sort_by", "declare void @zeno_bytes_sort_by(ptr, ptr, i32 signext, i32 signext, i32 signext)"),
+    ("zeno_bytes_slice", "declare ptr @zeno_bytes_slice(ptr, i64, i64, i1 zeroext, i32 signext, i32 signext)"),
+    ("zeno_bytes_sum", "declare i64 @zeno_bytes_sum(ptr)"),
+    ("zeno_bytes_best", "declare i64 @zeno_bytes_best(ptr, i1 zeroext, ptr, i32 signext, i32 signext)"),
     ("zeno_list_append", "declare void @zeno_list_append(ptr, i64)"),
     ("zeno_list_copy", "declare ptr @zeno_list_copy(ptr)"),
     ("zeno_list_drop", "declare void @zeno_list_drop(ptr)"),
@@ -885,6 +908,9 @@ struct Emitter<'a> {
     collector: bool,
     /// `zeno build --memory`: report the memory used as the program ends.
     memory: bool,
+    /// The call about to be made gives a list[u8], so a `map` makes
+    /// a list of bytes (decision 36.2).
+    makes_bytes: bool,
     /// What a `for` loop is about to walk. If that is a list made right
     /// there, as in `for pin in [2, 3, 5]`, the loop frees it.
     walked: Option<usize>,
@@ -994,6 +1020,7 @@ const LED: i64 = crate::board::LED;
 fn described(kind: &Kind) -> String {
     match kind {
         Kind::Int => "an int".to_string(),
+        Kind::Byte => "a byte".to_string(),
         Kind::Float => "a float".to_string(),
         Kind::Str => "a str".to_string(),
         Kind::Bool => "a bool".to_string(),
@@ -1091,6 +1118,7 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
 fn key(kind: &Kind) -> String {
     match kind {
         Kind::Int => "int".to_string(),
+        Kind::Byte => "u8".to_string(),
         Kind::Float => "float".to_string(),
         Kind::Bool => "bool".to_string(),
         Kind::Pin => "pin".to_string(),
@@ -1110,11 +1138,53 @@ fn key(kind: &Kind) -> String {
     }
 }
 
+/// The runtime function that does `what` to a list of `item`s:
+/// `zeno_list_append`, or `zeno_bytes_append` for a list of bytes (36.2).
+fn list_fn(item: &Kind, what: &'static str) -> &'static str {
+    let bytes = *item == Kind::Byte;
+    match (what, bytes) {
+        ("new", true) => "zeno_bytes_new",
+        ("new", false) => "zeno_list_new",
+        ("append", true) => "zeno_bytes_append",
+        ("append", false) => "zeno_list_append",
+        ("copy", true) => "zeno_bytes_copy",
+        ("copy", false) => "zeno_list_copy",
+        ("concat", true) => "zeno_bytes_concat",
+        ("concat", false) => "zeno_list_concat",
+        ("pop", true) => "zeno_bytes_pop",
+        ("pop", false) => "zeno_list_pop",
+        ("pop_at", true) => "zeno_bytes_pop_at",
+        ("pop_at", false) => "zeno_list_pop_at",
+        ("insert", true) => "zeno_bytes_insert",
+        ("insert", false) => "zeno_list_insert",
+        ("reverse", true) => "zeno_bytes_reverse",
+        ("reverse", false) => "zeno_list_reverse",
+        ("clear", true) => "zeno_bytes_clear",
+        ("clear", false) => "zeno_list_clear",
+        ("slice", true) => "zeno_bytes_slice",
+        ("slice", false) => "zeno_list_slice",
+        ("sort_by", true) => "zeno_bytes_sort_by",
+        ("sort_by", false) => "zeno_list_sort_by",
+        _ => unreachable!("no runtime function for `{what}` on a list"),
+    }
+}
+
+/// The kind of an item once it is read out of a list: a byte is an int.
+fn read_kind(item: &Kind) -> Kind {
+    match item {
+        Kind::Byte => Kind::Int,
+        item => item.clone(),
+    }
+}
+
 /// The IR type that holds a Zeno value of this kind.
 fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
     Ok(match kind {
         // A pin of the board is its number, and a register its address.
         Kind::Int | Kind::Pin | Kind::Register(_) => "i64",
+        // Only ever an item of a list of bytes (36.2), and it travels
+        // as a whole number, as an int does.
+        Kind::Byte => "i64",
         // A raw pointer is an address, and nothing more.
         Kind::Pointer(_) => "ptr",
         // A quantity is a float. Its unit has done its work in the
@@ -1304,6 +1374,7 @@ pub fn emit_with(
         firmware,
         collector,
         memory,
+        makes_bytes: false,
         walked: None,
         functions: HashMap::new(),
         classes: HashMap::new(),
@@ -2502,7 +2573,7 @@ impl Emitter<'_> {
                 let slot = self.to_slot(&new, span)?;
                 // The runtime checks the index and gives back the address
                 // of that item's slot.
-                let place = self.list_place(&object.code, &index.code, span);
+                let place = self.list_place(&object.code, &index.code, &item, span);
                 if owns {
                     // The item that was there is freed, as a field's old
                     // value is, and the new one takes its place.
@@ -2513,7 +2584,7 @@ impl Emitter<'_> {
                     let old = self.set(format!("load ptr, ptr {place}"));
                     self.run("zeno_text_drop", format!("ptr {old}"));
                 }
-                self.ins(format!("store i64 {slot}, ptr {place}"));
+                self.store_item(&slot, &place, &item);
             }
             _ => return Err(cannot("an assignment to this", target.span)),
         }
@@ -2818,7 +2889,7 @@ impl Emitter<'_> {
             emitter.place(&nothing);
             emitter.end("ret void");
             emitter.place(&there);
-            let (count, slot) = emitter.walk_open("item", "%list");
+            let (count, slot) = emitter.walk_open("item", "%list", &item);
             let each = emitter.from_slot(&item, &slot, span)?;
             emitter.free(&item, &each.code, span)?;
             emitter.count_close(&count);
@@ -3059,7 +3130,7 @@ impl Emitter<'_> {
 
     /// Begin a loop over the items of the list at `items`. Returns the
     /// loop, and the slot of this trip's item.
-    fn walk_open(&mut self, variable: &str, items: &str) -> (Count, String) {
+    fn walk_open(&mut self, variable: &str, items: &str, item: &Kind) -> (Count, String) {
         let (count, trip) = self.count_open(variable, "0");
         // A list starts with how many items it has.
         let len = self.set(format!("load i64, ptr {items}"));
@@ -3068,27 +3139,54 @@ impl Emitter<'_> {
         // Its third field is where the items are, one slot after another.
         // This `getelementptr` has no `i32 0` in front: it steps along an
         // array of slots, where the others stepped into a struct.
-        let slot = self.slot_of(items, &trip);
+        let slot = self.slot_of(items, &trip, item);
         (count, slot)
     }
 
     /// The address of item `index` of the list at `list`. The runtime
     /// checks the index; with `--fast` it is worked out here, unchecked.
-    fn list_place(&mut self, list: &str, index: &str, span: Span) -> String {
+    fn list_place(&mut self, list: &str, index: &str, item: &Kind, span: Span) -> String {
+        let (step, checked) = match item {
+            Kind::Byte => ("i8", "zeno_bytes_at"),
+            _ => ("i64", "zeno_list_at"),
+        };
         if self.fast {
             let array_at = self.field_at("%zeno_list", list, 2);
             let array = self.set(format!("load ptr, ptr {array_at}"));
-            return self.set(format!("getelementptr i64, ptr {array}, i64 {index}"));
+            return self.set(format!("getelementptr {step}, ptr {array}, i64 {index}"));
         }
-        self.call("ptr", "zeno_list_at", format!("ptr {list}, i64 {index}, {}", at(span)))
+        self.call("ptr", checked, format!("ptr {list}, i64 {index}, {}", at(span)))
+    }
+
+    /// The slot at `place`, as an i64: a byte is read and made wide.
+    fn load_item(&mut self, place: &str, item: &Kind) -> String {
+        match item {
+            Kind::Byte => {
+                let byte = self.set(format!("load i8, ptr {place}"));
+                self.set(format!("zext i8 {byte} to i64"))
+            }
+            _ => self.set(format!("load i64, ptr {place}")),
+        }
+    }
+
+    /// Put `slot` at `place`: a byte is cut down to its eight bits.
+    fn store_item(&mut self, slot: &str, place: &str, item: &Kind) {
+        match item {
+            Kind::Byte => {
+                let byte = self.set(format!("trunc i64 {slot} to i8"));
+                self.ins(format!("store i8 {byte}, ptr {place}"));
+            }
+            _ => self.ins(format!("store i64 {slot}, ptr {place}")),
+        }
     }
 
     /// The slot at position `at` of the list at `items`.
-    fn slot_of(&mut self, items: &str, at: &str) -> String {
+    fn slot_of(&mut self, items: &str, at: &str, item: &Kind) -> String {
         let array_at = self.field_at("%zeno_list", items, 2);
         let array = self.set(format!("load ptr, ptr {array_at}"));
-        let slot_at = self.set(format!("getelementptr i64, ptr {array}, i64 {at}"));
-        self.set(format!("load i64, ptr {slot_at}"))
+        let step = if *item == Kind::Byte { "i8" } else { "i64" };
+        let slot_at = self.set(format!("getelementptr {step}, ptr {array}, i64 {at}"));
+        self.load_item(&slot_at, item)
     }
 
     /// The first part of a `for` loop: `for i in range(...)` or `for x in
@@ -3257,7 +3355,7 @@ impl Emitter<'_> {
                         (self.call("ptr", "zeno_list_copy_text", format!("ptr {}", list.code)), (**item).clone())
                     }
                     Kind::List(item) => {
-                        (self.call("ptr", "zeno_list_copy", format!("ptr {}", list.code)), (**item).clone())
+                        (self.call("ptr", list_fn(item, "copy"), format!("ptr {}", list.code)), (**item).clone())
                     }
                     // A str is looped over one character at a time: the
                     // loop walks a list of them, which is its own.
@@ -3265,7 +3363,7 @@ impl Emitter<'_> {
                     _ => return Err(cannot("a `for` loop over anything but a list, a str or `range(...)`", span)),
                 };
                 self.text_given_back(begin);
-                let (count, slot) = self.walk_open(variable, &items);
+                let (count, slot) = self.walk_open(variable, &items, &item);
                 if second.is_some() && values.is_none() {
                     // Over a list the first name is the position.
                     let trip = self.load("i64", &count.counter);
@@ -3286,7 +3384,7 @@ impl Emitter<'_> {
         let (value, first) = match (&values, first) {
             (Some((list, _)), _) => {
                 let trip = self.load("i64", &count.counter);
-                let slot = self.slot_of(list, &trip);
+                let slot = self.slot_of(list, &trip, &value_kind);
                 (self.from_slot(&value_kind, &slot, span)?.fixed(), Some(value))
             }
             (None, first) => (value, first),
@@ -4089,7 +4187,10 @@ impl Emitter<'_> {
                     return Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span));
                 }
             }
-            ExprKind::Call { callee, args } => self.call_expr(callee, args, span)?,
+            ExprKind::Call { callee, args } => {
+                self.makes_bytes = self.types.makes_bytes(expr);
+                self.call_expr(callee, args, span)?
+            }
             ExprKind::Field { object, name, .. } => self.field(object, name, span)?,
             ExprKind::Index { object, index } => {
                 let list = self.expr(object)?;
@@ -4109,8 +4210,8 @@ impl Emitter<'_> {
                     // The runtime checks the index and gives back the
                     // address of that item's slot.
                     Kind::List(item) => {
-                        let place = self.list_place(&list.code, &position.code, span);
-                        let slot = self.set(format!("load i64, ptr {place}"));
+                        let place = self.list_place(&list.code, &position.code, item, span);
+                        let slot = self.load_item(&place, item);
                         let val = self.from_slot(item, &slot, span)?;
                         self.lend(val)
                     }
@@ -4136,7 +4237,8 @@ impl Emitter<'_> {
             ExprKind::List(items) => self.list(expr, items, span)?.made(),
             ExprKind::Dict(entries) => self.dict(expr, entries, span)?.made(),
             ExprKind::ListComp { element, variable, iterable, condition } => {
-                self.comprehension(element, variable, iterable, condition.as_deref(), span)?.made()
+                let bytes = self.types.makes_bytes(expr);
+                self.comprehension(element, variable, iterable, condition.as_deref(), bytes, span)?.made()
             }
             ExprKind::Function(decl) => self.closure(decl, span)?,
         })
@@ -4315,7 +4417,7 @@ impl Emitter<'_> {
             (Add, Str, Str) => Val::new(self.join(&[l, r]), Str),
             // A new list with the items of both.
             (Add, Kind::List(a), Kind::List(b)) if a == b => {
-                let mut joined = self.call("ptr", "zeno_list_concat", format!("ptr {l}, ptr {r}"));
+                let mut joined = self.call("ptr", list_fn(a, "concat"), format!("ptr {l}, ptr {r}"));
                 if !self.collector && is_text(a) {
                     // With no collector a list of text has its own copy
                     // of each item, and so has the list that `+` makes.
@@ -4453,6 +4555,19 @@ impl Emitter<'_> {
         if plain(&left.kind) && plain(&right.kind) || !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
             return self.ordered(op, left, right, span);
         }
+        // A list of bytes and a list of ints are equal when their
+        // numbers are (36.2).
+        let ints = Kind::List(Box::new(Kind::Int));
+        let bytes = Kind::List(Box::new(Kind::Byte));
+        let mixed = match (&left.kind, &right.kind) {
+            (a, b) if *a == bytes && *b == ints => Some((left.code.clone(), right.code.clone())),
+            (a, b) if *a == ints && *b == bytes => Some((right.code.clone(), left.code.clone())),
+            _ => None,
+        };
+        if let Some((bytes, ints)) = mixed {
+            let same = self.call("i1", "zeno_bytes_eq_ints", format!("ptr {bytes}, ptr {ints}"));
+            return Ok(if op == BinaryOp::Eq { same } else { self.set(format!("xor i1 {same}, true")) });
+        }
         // Everything else is equal when its contents are. `x == none` and
         // `x == 5`, where `x` may be `none`, first bring both sides to
         // the same kind.
@@ -4517,6 +4632,9 @@ impl Emitter<'_> {
     /// `x in items`, `x not in items`, and the same for a piece of a str.
     fn contains(&mut self, op: BinaryOp, left: Val, right: Val, span: Span) -> Result<Val, Error> {
         let found = match (&left.kind, &right.kind) {
+            (Kind::Int, Kind::List(items)) if **items == Kind::Byte => {
+                self.call("i1", "zeno_bytes_contains", format!("ptr {}, i64 {}", right.code, left.code))
+            }
             // `none in items` and `2 in items`, where the items may be
             // `none`, first become what the list holds.
             (item, Kind::List(items)) if joined(item, items).as_ref() == Some(&**items) => {
@@ -4640,7 +4758,7 @@ impl Emitter<'_> {
     /// as a whole number, `ptrtoint` does the same for an address.
     fn to_slot(&mut self, val: &Val, span: Span) -> Result<String, Error> {
         Ok(match &val.kind {
-            Kind::Int | Kind::Pin | Kind::Register(_) => val.code.clone(),
+            Kind::Int | Kind::Byte | Kind::Pin | Kind::Register(_) => val.code.clone(),
             Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast double {} to i64", val.code)),
             // "Zero extend": the one bit, with 63 zeros in front.
             Kind::Bool => self.set(format!("zext i1 {} to i64", val.code)),
@@ -4663,6 +4781,7 @@ impl Emitter<'_> {
     /// And out of a list again.
     fn from_slot(&mut self, kind: &Kind, slot: &str, span: Span) -> Result<Val, Error> {
         let code = match kind {
+            Kind::Byte => return Ok(Val::new(slot.to_string(), Kind::Int)),
             Kind::Int | Kind::Pin | Kind::Register(_) => slot.to_string(),
             Kind::Float | Kind::Quantity(_) => self.set(format!("bitcast i64 {slot} to double")),
             // "Truncate": keep the lowest bit.
@@ -4721,6 +4840,10 @@ impl Emitter<'_> {
         if let Some(wanted) = self.types.items(expr) {
             item = Some(shared(wanted));
         }
+        // A list[u8] keeps one byte to an item (decision 36.2).
+        if self.types.makes_bytes(expr) {
+            item = Some(Kind::Byte);
+        }
         let Some(item) = item else {
             return Err(cannot("a list whose items are not all one type", span));
         };
@@ -4735,8 +4858,9 @@ impl Emitter<'_> {
             let val = self.coerce(val, &item, span)?;
             slots += &format!(", i64 {}", self.to_slot(&val, span)?);
         }
-        self.uses("zeno_list_of");
-        let list = self.set(format!("call ptr (i32, ...) @zeno_list_of({slots})"));
+        let of = if item == Kind::Byte { "zeno_bytes_of" } else { "zeno_list_of" };
+        self.uses(of);
+        let list = self.set(format!("call ptr (i32, ...) @{of}({slots})"));
         Ok(Val::new(list, Kind::List(Box::new(item))))
     }
 
@@ -4804,9 +4928,11 @@ impl Emitter<'_> {
         variable: &str,
         iterable: &Expr,
         condition: Option<&Expr>,
+        bytes: bool,
         span: Span,
     ) -> Result<Val, Error> {
-        let list = self.call("ptr", "zeno_list_new", "i64 0");
+        // A list of `u8`s is a list of bytes (36.2).
+        let list = self.call("ptr", if bytes { "zeno_bytes_new" } else { "zeno_list_new" }, "i64 0");
         // Until it is full, the list is nobody's. If working out an item
         // fails, the failure frees what there is of it.
         let filling = self.hold(Kind::List(Box::new(Kind::None)), &list);
@@ -4846,8 +4972,9 @@ impl Emitter<'_> {
                 }
             }
         }
+        let item = if bytes { self.coerce(item, &Kind::Byte, span)? } else { item };
         let slot = self.to_slot(&item, span)?;
-        self.run("zeno_list_append", format!("ptr {list}, i64 {slot}"));
+        self.run(list_fn(&item.kind, "append"), format!("ptr {list}, i64 {slot}"));
         self.own_end(own, true)?;
         if let Some(mark) = self.text_end(begin) {
             self.text_back(&mark);
@@ -4918,6 +5045,12 @@ impl Emitter<'_> {
                     return Err(cannot("a function used where a function of a different shape is wanted", span))
                 }
             },
+            // A number going into a list of bytes: the checker has seen
+            // that it fits (36.2).
+            (Kind::Int, Kind::Byte) => val.code.clone(),
+            (Kind::List(from), Kind::List(item)) if (**from == Kind::Byte) != (**item == Kind::Byte) => {
+                return Err(cannot("a list of bytes where another list is wanted, or the other way round", span));
+            }
             // Anything else the checker has already agreed to as it is.
             _ => return Ok(val),
         };
@@ -5242,7 +5375,7 @@ impl Emitter<'_> {
             // yet. `files.write_bytes(path, bytes)` lends the list to the
             // runtime for the call (decision 36.1).
             ("files", "read_bytes", [path]) if path.kind == Kind::Str => {
-                let returns = Kind::List(Box::new(Kind::Int));
+                let returns = Kind::List(Box::new(Kind::Byte));
                 let list = format!("ptr {}, {}", path.code, at(span));
                 self.code.built = !self.collector;
                 if self.firmware {
@@ -5255,7 +5388,7 @@ impl Emitter<'_> {
                 Ok(self.came_back(bytes).made())
             }
             ("files", "write_bytes", [path, bytes])
-                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Int)) =>
+                if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Byte)) =>
             {
                 let list = format!("ptr {}, ptr {}, {}", path.code, bytes.code, at(span));
                 self.code.built = !self.collector;
@@ -5490,6 +5623,11 @@ impl Emitter<'_> {
             // `sum`, `min` and `max` of one list of numbers.
             ("sum" | "min" | "max", [Val { kind: Kind::List(item), code, .. }]) => {
                 let (returns, function, args) = match (name, &**item) {
+                    ("sum", Kind::Byte) => ("i64", "zeno_bytes_sum", format!("ptr {code}")),
+                    (_, Kind::Byte) => {
+                        let said = self.string(name);
+                        ("i64", "zeno_bytes_best", format!("ptr {code}, i1 {}, ptr {said}, {}", name == "min", at(span)))
+                    }
                     ("sum", Kind::Int) => ("i64", "zeno_list_sum_int", format!("ptr {code}, {}", at(span))),
                     ("sum", Kind::Float) => ("double", "zeno_list_sum_float", format!("ptr {code}")),
                     (_, Kind::Int | Kind::Float) | ("min" | "max", Kind::Quantity(_)) => {
@@ -5504,7 +5642,7 @@ impl Emitter<'_> {
                     }
                     _ => return Err(cannot(format!("`{name}` of a list of anything but ints or floats"), span)),
                 };
-                Val::new(self.call(returns, function, args), (**item).clone())
+                Val::new(self.call(returns, function, args), read_kind(item))
             }
             ("min" | "max", [first, rest @ ..])
                 if !rest.is_empty()
@@ -5540,6 +5678,7 @@ impl Emitter<'_> {
 
     /// `object.name(args)`: a method of a class, of a str, or of a list.
     fn method(&mut self, object: &Expr, name: &str, args: &[Arg], span: Span) -> Result<Val, Error> {
+        let makes_bytes = std::mem::take(&mut self.makes_bytes);
         let receiver = self.expr(object)?;
         match receiver.kind.clone() {
             Kind::Class(class) => {
@@ -5648,10 +5787,10 @@ impl Emitter<'_> {
                 Ok(if name == "split" || name == "lines" { val.made() } else { val })
             }
             Kind::List(item) => match (name, args) {
-                ("map" | "filter" | "reduce", _) => self.over_list(name, &receiver, &item, args, span),
+                ("map" | "filter" | "reduce", _) => self.over_list(name, &receiver, &item, args, makes_bytes, span),
                 // With a function, `sort` is a walk that asks for the
                 // key of each item, and then the sorting.
-                ("sort", [_]) => self.over_list(name, &receiver, &item, args, span),
+                ("sort", [_]) => self.over_list(name, &receiver, &item, args, false, span),
                 ("append", [arg]) if arg.name.is_none() => {
                     let value = self.expr(&arg.value)?;
                     self.stays(&value, span)?;
@@ -5659,7 +5798,7 @@ impl Emitter<'_> {
                     let value = self.keep(value, is_written(&arg.value));
                     let value = self.fit(value, &item, span)?;
                     let slot = self.to_slot(&value, span)?;
-                    self.run("zeno_list_append", format!("ptr {}, i64 {slot}", receiver.code));
+                    self.run(list_fn(&item, "append"), format!("ptr {}, i64 {slot}", receiver.code));
                     Ok(Val::nothing())
                 }
                 ("pop", []) | ("pop", [Arg { name: None, .. }]) => {
@@ -5671,9 +5810,9 @@ impl Emitter<'_> {
                                 return Err(cannot("`pop` with a position that is not an int", span));
                             }
                             let pop = format!("ptr {}, i64 {}, {}", receiver.code, position.code, at(span));
-                            self.call("i64", "zeno_list_pop_at", pop)
+                            self.call("i64", list_fn(&item, "pop_at"), pop)
                         }
-                        None => self.call("i64", "zeno_list_pop", format!("ptr {}, {}", receiver.code, at(span))),
+                        None => self.call("i64", list_fn(&item, "pop"), format!("ptr {}, {}", receiver.code, at(span))),
                     };
                     let val = self.from_slot(&item, &slot, span)?;
                     if self.collector || !is_text(&item) {
@@ -5696,15 +5835,19 @@ impl Emitter<'_> {
                     let value = self.fit(value, &item, span)?;
                     let slot = self.to_slot(&value, span)?;
                     let insert = format!("ptr {}, i64 {}, i64 {slot}, {}", receiver.code, position.code, at(span));
-                    self.run("zeno_list_insert", insert);
+                    self.run(list_fn(&item, "insert"), insert);
                     Ok(Val::nothing())
                 }
                 ("reverse", []) => {
-                    self.run("zeno_list_reverse", format!("ptr {}", receiver.code));
+                    self.run(list_fn(&item, "reverse"), format!("ptr {}", receiver.code));
                     Ok(Val::nothing())
                 }
                 // The runtime compares two slots, and has to be told how
                 // to read one: 0 a whole number, 1 a float, 2 text.
+                ("sort", []) if *item == Kind::Byte => {
+                    self.run("zeno_bytes_sort", format!("ptr {}", receiver.code));
+                    Ok(Val::nothing())
+                }
                 ("sort", []) => {
                     let kind = match &*item {
                         Kind::Int => 0,
@@ -5721,13 +5864,23 @@ impl Emitter<'_> {
                 // items that frees each, and then the call.
                 ("clear", []) => {
                     if self.drops.owns(&item) || (!self.collector && is_text(&item)) {
-                        let (count, slot) = self.walk_open("item", &receiver.code);
+                        let (count, slot) = self.walk_open("item", &receiver.code, &item);
                         let each = self.from_slot(&item, &slot, span)?;
                         self.free(&item, &each.code, span)?;
                         self.count_close(&count);
                     }
-                    self.run("zeno_list_clear", format!("ptr {}", receiver.code));
+                    self.run(list_fn(&item, "clear"), format!("ptr {}", receiver.code));
                     Ok(Val::nothing())
+                }
+                // A byte is looked for by its number: one that is no
+                // byte is not there (-1).
+                ("find", [arg]) if arg.name.is_none() && *item == Kind::Byte => {
+                    let value = self.expr(&arg.value)?;
+                    if value.kind != Kind::Int {
+                        return Err(cannot("`find` on a list[u8] with anything but a number", span));
+                    }
+                    let at = self.call("i64", "zeno_bytes_find", format!("ptr {}, i64 {}", receiver.code, value.code));
+                    Ok(self.found(&at))
                 }
                 ("find", [arg]) if arg.name.is_none() => {
                     let same = self.eq_adapter(&item, span)?;
@@ -5739,7 +5892,7 @@ impl Emitter<'_> {
                 }
                 ("slice", [_]) | ("slice", [_, _]) => {
                     let ends = self.slice_ends(args, span)?;
-                    let mut slice = self.call("ptr", "zeno_list_slice", format!("ptr {}, {ends}, {}", receiver.code, at(span)));
+                    let mut slice = self.call("ptr", list_fn(&item, "slice"), format!("ptr {}, {ends}, {}", receiver.code, at(span)));
                     if !self.collector && is_text(&item) {
                         // With no collector a list of text has its own
                         // copy of each item, and so has the slice.
@@ -6439,7 +6592,7 @@ impl Emitter<'_> {
     ///
     /// They walk the list as it was when they began, as `zeno run` does,
     /// so `f` may change the list without confusing the loop.
-    fn over_list(&mut self, name: &str, list: &Val, item: &Kind, args: &[Arg], span: Span) -> Result<Val, Error> {
+    fn over_list(&mut self, name: &str, list: &Val, item: &Kind, args: &[Arg], bytes: bool, span: Span) -> Result<Val, Error> {
         let wrong = || cannot(format!("the list method `{name}` called this way"), span);
         if args.iter().any(|arg| arg.name.is_some()) {
             return Err(wrong());
@@ -6472,7 +6625,7 @@ impl Emitter<'_> {
         // walks one: a copy with copies of the items, which the function
         // that is called cannot pull away.
         let texts = !self.collector && is_text(item);
-        let copy = if texts { "zeno_list_copy_text" } else { "zeno_list_copy" };
+        let copy = if texts { "zeno_list_copy_text" } else { list_fn(item, "copy") };
         // A list that the statement owns is out of every function's
         // reach, so it is walked as it is.
         let own = list.passing;
@@ -6488,15 +6641,17 @@ impl Emitter<'_> {
             }
             _ => 0,
         };
+        // What `map` makes: a list[u8] keeps one byte to an item.
+        let made = if bytes && name == "map" { Kind::Byte } else { kind.returns.clone() };
         let out = match name {
             "map" | "sort" => {
                 let len = self.set(format!("load i64, ptr {items}"));
-                self.call("ptr", "zeno_list_new", format!("i64 {len}"))
+                self.call("ptr", list_fn(&made, "new"), format!("i64 {len}"))
             }
             "filter" if kind.returns != Kind::Bool => {
                 return Err(cannot("`filter` with a function that does not return a bool", span))
             }
-            "filter" => self.call("ptr", "zeno_list_new", "i64 0"),
+            "filter" => self.call("ptr", list_fn(item, "new"), "i64 0"),
             _ => String::new(),
         };
 
@@ -6512,7 +6667,7 @@ impl Emitter<'_> {
             }
             false => None,
         };
-        let (count, slot) = self.walk_open(name, &items);
+        let (count, slot) = self.walk_open(name, &items, item);
         let each = self.from_slot(item, &slot, span)?;
         let result = match (name, &total) {
             ("map" | "sort", _) => {
@@ -6520,12 +6675,14 @@ impl Emitter<'_> {
                 if mark.is_some() {
                     made.code = self.call("ptr", "zeno_text_keep", format!("ptr {}", made.code));
                 }
+                let into = if bytes && name == "map" { Kind::Byte } else { kind.returns.clone() };
+                let made = self.coerce(made, &into, span)?;
                 let slot = self.to_slot(&made, span)?;
-                self.run("zeno_list_append", format!("ptr {out}, i64 {slot}"));
+                self.run(list_fn(&into, "append"), format!("ptr {out}, i64 {slot}"));
                 if let Some(mark) = &mark {
                     self.text_back(mark);
                 }
-                Val::new(out.clone(), Kind::List(Box::new(kind.returns.clone()))).made()
+                Val::new(out.clone(), Kind::List(Box::new(into))).made()
             }
             ("filter", _) => {
                 let wanted = self.invoke(&function, &kind, vec![each.clone()], span)?;
@@ -6541,7 +6698,7 @@ impl Emitter<'_> {
                     }
                     false => slot,
                 };
-                self.run("zeno_list_append", format!("ptr {out}, i64 {taken}"));
+                self.run(list_fn(item, "append"), format!("ptr {out}, i64 {taken}"));
                 Val::new(out.clone(), Kind::List(Box::new(item.clone()))).made()
             }
             (_, Some((total, ty))) => {
@@ -6559,7 +6716,7 @@ impl Emitter<'_> {
         let result = match name {
             "sort" => {
                 let sorted = if own { &items } else { &list.code };
-                self.run("zeno_list_sort_by", format!("ptr {sorted}, ptr {out}, i32 {by}, {}", at(span)));
+                self.run(list_fn(item, "sort_by"), format!("ptr {sorted}, ptr {out}, i32 {by}, {}", at(span)));
                 self.run(if mark.is_some() { "zeno_list_drop_text" } else { "zeno_list_drop" }, format!("ptr {out}"));
                 Val::nothing()
             }
@@ -6616,6 +6773,9 @@ impl Emitter<'_> {
             }
             // The runtime knows how to lay a list out, and is handed a
             // function that shows one item.
+            Kind::List(item) if **item == Kind::Byte => {
+                self.call("ptr", "zeno_bytes_str", format!("ptr {}", val.code))
+            }
             Kind::List(item) => {
                 let show = self.repr_adapter(item, span)?;
                 self.call("ptr", "zeno_list_str", format!("ptr {}, ptr {show}", val.code))
@@ -6664,6 +6824,7 @@ impl Emitter<'_> {
     fn equal(&mut self, kind: &Kind, a: &str, b: &str, span: Span) -> Result<String, Error> {
         Ok(match kind {
             Kind::Int | Kind::Pin | Kind::Register(_) => self.set(format!("icmp eq i64 {a}, {b}")),
+            Kind::Byte => self.set(format!("icmp eq i64 {a}, {b}")),
             // Two pointers are equal when they point at the same item.
             Kind::Pointer(_) => self.set(format!("icmp eq ptr {a}, {b}")),
             Kind::Float | Kind::Quantity(_) => self.set(format!("fcmp oeq double {a}, {b}")),
@@ -6680,6 +6841,7 @@ impl Emitter<'_> {
                 let same = self.same_enum(name, span)?;
                 self.set(format!("call i1 {same}(ptr {a}, ptr {b})"))
             }
+            Kind::List(item) if **item == Kind::Byte => self.call("i1", "zeno_bytes_eq", format!("ptr {a}, ptr {b}")),
             Kind::List(item) => {
                 let same = self.eq_adapter(item, span)?;
                 self.call("i1", "zeno_list_eq", format!("ptr {a}, ptr {b}, ptr {same}"))

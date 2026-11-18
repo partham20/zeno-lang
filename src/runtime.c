@@ -2946,6 +2946,216 @@ static double zeno_list_best_float(zeno_list *list, bool smallest, const char *n
     return best;
 }
 
+/* ---------------------------------------------------------- Lists of bytes
+ *
+ * A `list[u8]` is a zeno_list whose `items` are bytes and not slots, so
+ * that each item takes one byte and not eight (decision 36.2). `len` and
+ * `room` count bytes. The struct is the same, so a list of bytes is made
+ * an owner's, given back and freed as every other list is; only what
+ * reads or writes the items needs to know, and the compiler, which knows
+ * the type, calls the functions below for it. */
+
+#define ZENO_BYTES(list) ((uint8_t *)(list)->items)
+
+static zeno_list *zeno_bytes_new(int64_t room) {
+    zeno_list *list = (zeno_list *)zeno_alloc(sizeof(zeno_list));
+    list->len = 0;
+    list->room = room;
+    list->items = room > 0 ? (zeno_slot *)zeno_alloc_rows((size_t)room) : NULL;
+    return list;
+}
+
+__attribute__((noinline)) static void zeno_bytes_grow(zeno_list *list) {
+    int64_t room = list->room < 8 ? 8 : list->room * 2;
+    list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len, (size_t)room);
+    list->room = room;
+}
+
+/* A byte goes in and comes out as an int64_t, which is how the compiled
+ * program holds every whole number; the checker has seen that it fits. */
+static void zeno_bytes_append(zeno_list *list, int64_t item) {
+    if (list->len == list->room) zeno_bytes_grow(list);
+    ZENO_BYTES(list)[list->len++] = (uint8_t)item;
+}
+
+/* `[1, 2, 3]` where a list[u8] is wanted. Each byte travels through
+ * `...` as an int64_t. */
+static zeno_list *zeno_bytes_of(int count, ...) {
+    zeno_list *list = zeno_bytes_new(count);
+    va_list items;
+    va_start(items, count);
+    for (int i = 0; i < count; i++) ZENO_BYTES(list)[i] = (uint8_t)va_arg(items, int64_t);
+    va_end(items);
+    list->len = count;
+    return list;
+}
+
+static zeno_list *zeno_bytes_copy(zeno_list *list) {
+    zeno_list *copy = zeno_bytes_new(list->len);
+    if (list->len > 0) memcpy(copy->items, list->items, (size_t)list->len);
+    copy->len = list->len;
+    return copy;
+}
+
+static zeno_list *zeno_bytes_concat(zeno_list *a, zeno_list *b) {
+    zeno_list *joined = zeno_bytes_new(a->len + b->len);
+    if (a->len > 0) memcpy(ZENO_BYTES(joined), a->items, (size_t)a->len);
+    if (b->len > 0) memcpy(ZENO_BYTES(joined) + a->len, b->items, (size_t)b->len);
+    joined->len = a->len + b->len;
+    return joined;
+}
+
+static uint8_t *zeno_bytes_at(zeno_list *list, int64_t i, int line, int col) {
+#ifndef ZENO_UNCHECKED
+    if (i < 0 || i >= list->len) {
+        zeno_fail("IndexError",
+                  zeno_join(4, "index ", zeno_str_int(i), " is out of range for a list of length ",
+                            zeno_str_int(list->len)),
+                  line, col);
+    }
+#else
+    (void)line;
+    (void)col;
+#endif
+    return &ZENO_BYTES(list)[i];
+}
+
+static int64_t zeno_bytes_pop(zeno_list *list, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (list->len == 0) zeno_fail("IndexError", "cannot pop from an empty list", line, col);
+#endif /* ZENO_MINIMAL */
+    return ZENO_BYTES(list)[--list->len];
+}
+
+static int64_t zeno_bytes_pop_at(zeno_list *list, int64_t at, int line, int col) {
+    int64_t item = *zeno_bytes_at(list, at, line, col);
+    memmove(ZENO_BYTES(list) + at, ZENO_BYTES(list) + at + 1, (size_t)(list->len - at - 1));
+    list->len--;
+    return item;
+}
+
+static void zeno_bytes_insert(zeno_list *list, int64_t at, int64_t item, int line, int col) {
+#ifndef ZENO_MINIMAL
+    if (at < 0 || at > list->len) {
+        zeno_fail("IndexError",
+                  zeno_join(4, "cannot insert at ", zeno_str_int(at), " in a list of length ",
+                            zeno_str_int(list->len)),
+                  line, col);
+    }
+#endif /* ZENO_MINIMAL */
+    zeno_bytes_append(list, item);
+    memmove(ZENO_BYTES(list) + at + 1, ZENO_BYTES(list) + at, (size_t)(list->len - 1 - at));
+    ZENO_BYTES(list)[at] = (uint8_t)item;
+}
+
+static const char *zeno_bytes_str(zeno_list *list) {
+    /* At most "255, " for each, the brackets and the end. */
+    char *text = zeno_alloc_text((size_t)list->len * 5 + 3);
+    char *end = text;
+    *end++ = '[';
+    for (int64_t i = 0; i < list->len; i++) {
+        if (i > 0) {
+            *end++ = ',';
+            *end++ = ' ';
+        }
+        unsigned n = ZENO_BYTES(list)[i];
+        if (n >= 100) *end++ = (char)('0' + n / 100);
+        if (n >= 10) *end++ = (char)('0' + n / 10 % 10);
+        *end++ = (char)('0' + n % 10);
+    }
+    *end++ = ']';
+    *end = '\0';
+    return text;
+}
+
+static bool zeno_bytes_eq(zeno_list *a, zeno_list *b) {
+    return a->len == b->len && (a->len == 0 || memcmp(a->items, b->items, (size_t)a->len) == 0);
+}
+
+/* `bytes == [1, 2]`, where the list written out is a list of ints. */
+static bool zeno_bytes_eq_ints(zeno_list *bytes, zeno_list *ints) {
+    if (bytes->len != ints->len) return false;
+    for (int64_t i = 0; i < bytes->len; i++) {
+        if (ZENO_BYTES(bytes)[i] != ints->items[i].i) return false;
+    }
+    return true;
+}
+
+static int64_t zeno_bytes_find(zeno_list *list, int64_t item) {
+    if (item < 0 || item > 255 || list->len == 0) return -1;
+    const uint8_t *at = memchr(list->items, (int)item, (size_t)list->len);
+    return at == NULL ? -1 : (int64_t)(at - ZENO_BYTES(list));
+}
+
+static bool zeno_bytes_contains(zeno_list *list, int64_t item) {
+    return zeno_bytes_find(list, item) >= 0;
+}
+
+static void zeno_bytes_reverse(zeno_list *list) {
+    for (int64_t i = 0, j = list->len - 1; i < j; i++, j--) {
+        uint8_t item = ZENO_BYTES(list)[i];
+        ZENO_BYTES(list)[i] = ZENO_BYTES(list)[j];
+        ZENO_BYTES(list)[j] = item;
+    }
+}
+
+static void zeno_bytes_clear(zeno_list *list) {
+    list->len = 0;
+}
+
+/* Smallest first. With only 256 values a byte can have, counting how
+ * many there are of each is quicker than any sort that compares, and
+ * needs no room but the counts. */
+static void zeno_bytes_sort(zeno_list *list) {
+    int64_t counts[256] = {0};
+    for (int64_t i = 0; i < list->len; i++) counts[ZENO_BYTES(list)[i]]++;
+    int64_t at = 0;
+    for (int value = 0; value < 256; value++) {
+        for (int64_t k = 0; k < counts[value]; k++) ZENO_BYTES(list)[at++] = (uint8_t)value;
+    }
+}
+
+/* `bytes.sort(key)`: the bytes go into a list of slots for the heapsort
+ * that every list uses, and come back in their new order. */
+static void zeno_bytes_sort_by(zeno_list *list, zeno_list *keys, int kind, int line, int col) {
+    zeno_list *slots = zeno_list_new(list->len);
+    for (int64_t i = 0; i < list->len; i++) slots->items[i].i = ZENO_BYTES(list)[i];
+    slots->len = list->len;
+    zeno_list_sort_by(slots, keys, kind, line, col);
+    for (int64_t i = 0; i < list->len; i++) ZENO_BYTES(list)[i] = (uint8_t)slots->items[i].i;
+    zeno_list_drop(slots);
+}
+
+static zeno_list *zeno_bytes_slice(zeno_list *list, int64_t from, int64_t to, bool to_end, int line, int col) {
+    zeno_slice_ends(from, &to, to_end, list->len, "list", line, col);
+    zeno_list *slice = zeno_bytes_new(to - from);
+    if (to > from) memcpy(slice->items, ZENO_BYTES(list) + from, (size_t)(to - from));
+    slice->len = to - from;
+    return slice;
+}
+
+/* No sum of bytes can overflow an int: a list would need more than
+ * 2^55 of them. */
+static int64_t zeno_bytes_sum(zeno_list *list) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < list->len; i++) total += ZENO_BYTES(list)[i];
+    return total;
+}
+
+static int64_t zeno_bytes_best(zeno_list *list, bool smallest, const char *name, int line, int col) {
+#ifndef ZENO_MINIMAL
+    zeno_list_not_empty(list, name, line, col);
+#else /* ZENO_MINIMAL */
+    (void)name;
+#endif /* ZENO_MINIMAL */
+    int64_t best = ZENO_BYTES(list)[0];
+    for (int64_t i = 1; i < list->len; i++) {
+        int64_t item = ZENO_BYTES(list)[i];
+        if (smallest ? item < best : item > best) best = item;
+    }
+    return best;
+}
+
 /* ------------------------------------------------------- Text into numbers */
 
 /* The blank characters that `strip`, `split`, `int` and `float` skip. */
@@ -3321,7 +3531,7 @@ static const char *zeno_file_read(const char *path, const char **result) {
     return NULL;
 }
 
-/* The bytes of a file, one to an item of a list[u8] (decision 36.1). */
+/* The bytes of a file, one to an item of a list[u8] (decisions 36.1, 36.2). */
 static const char *zeno_file_read_bytes(const char *path, zeno_list **result) {
     int at = zeno_file_at(path);
     if (at == 0) return zeno_join(3, "there is no file `", path, "`");
@@ -3332,20 +3542,12 @@ static const char *zeno_file_read_bytes(const char *path, zeno_list **result) {
         if (file != NULL) (void)fclose(file);
         return zeno_join(3, "cannot read `", path, "`");
     }
-    zeno_list *bytes = zeno_list_new((int64_t)size);
-    unsigned char piece[512];
-    long left = size;
-    while (left > 0) {
-        size_t want = left < (long)sizeof piece ? (size_t)left : sizeof piece;
-        size_t got = fread(piece, 1, want, file);
-        if (got != want) {
-            (void)fclose(file);
-            return zeno_join(3, "cannot read `", path, "`");
-        }
-        for (size_t i = 0; i < got; i++) bytes->items[bytes->len++].i = piece[i];
-        left -= (long)got;
-    }
+    /* The bytes go straight into the list, which has room for them all. */
+    zeno_list *bytes = zeno_bytes_new((int64_t)size);
+    size_t got = size > 0 ? fread(bytes->items, 1, (size_t)size, file) : 0;
     (void)fclose(file);
+    if (got != (size_t)size) return zeno_join(3, "cannot read `", path, "`");
+    bytes->len = (int64_t)size;
     *result = bytes;
     return NULL;
 }
@@ -3354,14 +3556,7 @@ static const char *zeno_file_read_bytes(const char *path, zeno_list **result) {
  * checker saw to that. */
 static const char *zeno_file_put_bytes(const char *path, zeno_list *bytes) {
     FILE *file = fopen(path, "wb");
-    bool good = file != NULL;
-    unsigned char piece[512];
-    int64_t done = 0;
-    while (good && done < bytes->len) {
-        size_t count = 0;
-        while (count < sizeof piece && done < bytes->len) piece[count++] = (unsigned char)bytes->items[done++].i;
-        good = fwrite(piece, 1, count, file) == count;
-    }
+    bool good = file != NULL && (bytes->len == 0 || fwrite(bytes->items, 1, (size_t)bytes->len, file) == (size_t)bytes->len);
     if (file != NULL && fclose(file) != 0) good = false;
     return good ? NULL : zeno_join(3, "cannot write `", path, "`");
 }
@@ -3417,7 +3612,7 @@ static void zeno_files_remove(const char *path, int line, int col) {
 static zeno_list *zeno_files_read_bytes(const char *path, int line, int col) {
     zeno_list *bytes = NULL;
     zeno_file_done(zeno_file_read_bytes(path, &bytes), line, col);
-    return bytes != NULL ? bytes : zeno_list_new(0);
+    return bytes != NULL ? bytes : zeno_bytes_new(0);
 }
 
 static void zeno_files_write_bytes(const char *path, zeno_list *bytes, int line, int col) {

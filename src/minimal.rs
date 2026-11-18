@@ -325,7 +325,7 @@ const HEADERS: &[(&str, &[&str])] = &[
     ("stdlib.h", &["malloc", "calloc", "realloc", "free", "exit", "abort", "atexit", "strtod", "atoi", "llabs"]),
     (
         "string.h",
-        &["strlen", "strcmp", "strncmp", "strchr", "strrchr", "strstr", "strpbrk", "memcpy", "memmove", "memset", "memcmp"],
+        &["strlen", "strcmp", "strncmp", "strchr", "strrchr", "strstr", "strpbrk", "memcpy", "memmove", "memset", "memcmp", "memchr"],
     ),
     ("signal.h", &["sigaction", "sigemptyset", "siginfo_t", "SIGSEGV", "SIGBUS", "SA_SIGINFO", "SA_NODEFER", "signal", "SIG_DFL"]),
     ("sys/mman.h", &["mmap", "munmap", "mprotect", "PROT_READ", "PROT_WRITE", "MAP_PRIVATE", "MAP_ANONYMOUS", "MAP_ANON", "MAP_FAILED"]),

@@ -258,6 +258,12 @@ second can, so it is written. A \verb|list[u8]| is not a
 \verb|list[int]| could append 300. Copy it,
 \verb|[int(b) for b in frame]|.
 
+A compiled program stores a \verb|list[u8]| one byte to an item, as C
+stores \verb|uint8_t buf[64]|: a megabyte read from a file is a
+megabyte in memory. Nothing has to be asked for, and nothing in the
+program changes. Lists of the other sized types still take eight bytes
+an item. (Decision 36.2.)
+
 There is no \verb|u64|. An \verb|int| is 64 bits with a sign, so half
 the values of a \verb|u64| would not fit in one, and "arithmetic gives
 an \verb|int|" would stop being true. (Decision 2.8d.)

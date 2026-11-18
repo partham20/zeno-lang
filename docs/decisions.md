@@ -3151,9 +3151,10 @@ the size reaches the generated code is the one place it pays.
 sum is unsigned arithmetic: `-field` and `field < -1` come out wrong.
 The cast to `int64_t` at the read is what keeps 2.8a true in C.
 
-**Lists are the gap.** A `list[u8]` still uses eight bytes an item,
-because the runtime has one list type (5.5h). A packed list, or a
-`bytes` type, is the stage that fixes it.
+**Lists were the gap.** A `list[u8]` used eight bytes an item, because
+the runtime had one list type (5.5h). *Changed in 36.2:* a `list[u8]`
+is now stored one byte to an item. Lists of the other small types
+(`i8`, `u16`, and so on) still take eight bytes an item.
 
 ### 5.14 A generic is compiled once for each set of types
 
@@ -7254,7 +7255,7 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 5.11l | `_setjmp` is the name on Linux and macOS | A limit of 0.1 | Those are the systems Zeno is built and tested on. A firmware build has no `setjmp` at all |
 | 5.11o | In `--llvm --firmware` an error comes back through a pointer and not as a pair | Settled until a board says otherwise | A pointer is the same on every processor, and LLVM removes it for small functions |
 | 5.11p | The drop of a list that is certainly empty stays a call | Settled as it is | It is a call that does nothing, and removing it changes no program. It is an exercise in [`llvm.md`](llvm.md) |
-| 5.13a | Only a field of an object is stored small. A `list[u8]` takes eight bytes an item | A limit of 0.1 | The runtime has one list type. A packed list of bytes is the first thing a real driver will ask for, and is a stage of its own |
+| 5.13a | Only a field of an object is stored small. A `list[u8]` takes eight bytes an item | A limit of 0.1. Changed in 36.2: a `list[u8]` takes one byte an item | The runtime has one list type. A packed list of bytes is the first thing a real driver will ask for, and is a stage of its own |
 | 5.14c | Two copies of a generic that would get the same C name are refused | Settled | Names that could never clash would be unreadable, and reading the C is half the point of that build |
 | 5.15e | A method cannot take out what its object owns while the object is lent | A limit of 0.1 | The four rules of 5.8d stay four. The smallest growth is written in that section |
 | 5.16h | `list[int or none]` with no collector | A limit of 0.1 | A number that may be `none` sits in a block of its own inside a list, and those blocks have no owner yet |
@@ -12961,7 +12962,58 @@ for the whole file, and in a firmware build says whether it worked, as
 file as bytes (`list(f.read())` in Python, `File.binread(path).bytes`
 in Ruby, `os.ReadFile` in Go).
 
-### 36.2 Left for later
+### 36.2 A `list[u8]` is stored one byte to an item
+
+In C and LLVM every list was an array of eight-byte slots, so a file of
+a megabyte, read with `read_bytes`, took eight megabytes. Now a
+`list[u8]` keeps one byte for each item. Nothing in the language
+changes: the same program prints the same thing, and only the memory
+it takes is different (an 8 MB file read and written back takes 13 MB
+in all, where it took 64 MB).
+
+**Every `list[u8]`, not only the ones from a file.** `[1, 2, 3]` where
+a `list[u8]` is wanted, `[u8(n) for n in numbers]`, a field
+`payload: list[u8]`, a `map` whose function gives a `u8`: each is
+stored packed. A program cannot tell the difference, so there is no
+choice to make and nothing to write. **Turned down: a `bytes` type**
+(36.1), and **turned down: `packed list[u8]`**, a word that asks for
+it. Both would put a question of storage on the page that the compiler
+can answer alone, and the second would leave the slow way as the one a
+beginner meets first.
+
+**Only `list[u8]`.** A byte is what files, protocols and buffers are
+made of; a list of `u16` or `i32` is rarer and takes eight bytes an
+item still. Packing them is the same work again for each width, and
+waits until a program asks for it.
+
+**How it is built.** The runtime keeps one struct for a list,
+`zeno_list`, with a length, the room and the items. For a `list[u8]`
+the items are bytes, read through `ZENO_BYTES(list)`, and a set of
+functions does for them what the list functions do for slots:
+`zeno_bytes_of`, `zeno_bytes_append`, `zeno_bytes_at`, `_pop`,
+`_insert`, `_copy`, `_concat`, `_slice`, `_str`, `_eq`, `_find`,
+`_contains`, `_reverse`, `_clear`, `_sort`, `_sort_by`, `_sum` and
+`_best`. A byte goes into and comes out of them as an `int64_t`, so the
+code around them does not change. `sort` is a counting sort, since
+there are only 256 values; `find` and `contains` are `memchr`; `==` is
+`memcmp`.
+
+The checker marks each place a list is made whose type is `list[u8]`
+(a list written out, a comprehension, a call such as `read_bytes`), and
+the emitters make a packed list there. The kind the emitters share
+gains `Kind::Byte`, which appears only as the item of a list: an item
+read out of one is an `int` again, as a field of a small type is
+(5.13a). A packed list and a list of slots never meet: where one would
+be stored as the other the emitter stops with an error, so that a
+place the checker did not mark is found by the tests and not by a
+program that prints the wrong numbers. The one comparison between them
+that a program can write, `bytes == [1, 2, 3]` where the right side is
+a `list[int]`, has its own function, `zeno_bytes_eq_ints`.
+
+The interpreter, the VM and the fifteen target languages are as they
+were: there a list of numbers is already the language's own.
+
+### 36.3 Left for later
 
 **Text from bytes, and bytes from text** (the UTF-8 of a `str`, and a
 `str` from bytes that are UTF-8), which a protocol that carries a name
