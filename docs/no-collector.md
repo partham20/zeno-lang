@@ -278,10 +278,12 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 `for ch in text`): the loop frees it. Both are in
 [`temporaries.md`](temporaries.md).
 
-Since 0.8.0 two more are fine. A function that is kept takes what it
-uses from outside it ([`kept-functions.md`](kept-functions.md)). And a
+Since 0.8.0 three more are fine. A function that is kept takes what it
+uses from outside it ([`kept-functions.md`](kept-functions.md)). A
 list or an object can fill a type parameter, as in `Stack[Frame]`
-([`generic-owned.md`](generic-owned.md)).
+([`generic-owned.md`](generic-owned.md)). And a dict of lists or of
+objects owns its values, as a list owns its items
+([`dict-owned.md`](dict-owned.md)).
 
 The first two rows are by design: with no collector nothing is shared.
 The last is a limit of version 0.1 (decisions, 11.2).

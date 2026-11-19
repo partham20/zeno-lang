@@ -2174,6 +2174,9 @@ struct Checker {
     /// `Stack[T]` in its outline and in each copy. `take T` is read by
     /// them (decision 56.11).
     type_params: HashSet<usize>,
+    /// The `d[key]` that look at a value a dict owns, for the message
+    /// when one is kept (decision 56.12).
+    dict_values: HashSet<usize>,
     /// The declarations of the named functions whose bodies are being
     /// checked, the innermost last. See `Spot`.
     within: Vec<usize>,
@@ -2340,6 +2343,7 @@ impl Checker {
             captured: Vec::new(),
             keeping: None,
             type_params: HashSet::new(),
+            dict_values: HashSet::new(),
             within: Vec::new(),
         }
     }
@@ -4308,6 +4312,11 @@ impl Checker {
                     // `ages["Ada"] = 36` puts the key in, or gives it a
                     // new value if it is there already.
                     self.expect(&index_type.widened(), key, "a key of this dict", index.span);
+                    // A value that was there under the key is freed, so
+                    // this is held to the rules of taking out (56.12).
+                    if self.one_owner && value.is_owned() && root(list).is_some() && self.takes_out(list, 0, "replace a value of this dict", env, span).is_none() {
+                        return (Ty::Invalid, Ty::Invalid, None);
+                    }
                     return ((**value).clone(), (**value).clone(), None);
                 }
                 // What is not known may be a dict, whose keys can be text.
@@ -4943,6 +4952,11 @@ impl Checker {
                 ),
                 "until the loop is over",
             ),
+            Looking::DictLoop => (
+                name.clone(),
+                format!("the `for` on line {line} is walking a dict that `{name}` owns, and is still looking at its values."),
+                "until the loop is over",
+            ),
             Looking::Case => (
                 name.clone(),
                 format!(
@@ -5151,6 +5165,26 @@ impl Checker {
                         "`{name}` holds an owned value, which cannot be taken out of the object it is in. \
                          Use it where it is, or pass it to a parameter that looks"
                     ),
+                    // `d.get(key)` of a dict that owns its values (56.12).
+                    ExprKind::Call { callee, .. }
+                        if matches!(&callee.kind, ExprKind::Field { name, .. } if name == "get") && self.one_owner =>
+                    {
+                        format!(
+                            "`get` gives a look at {} that the dict owns, or `none`, and a look cannot be kept. \
+                             Test it where it is, or pass it to a parameter that looks. To take the value out \
+                             of the dict, use `pop(key)`",
+                            an_owned(&match inner.clone() {
+                                Ty::Optional(value) => *value,
+                                other => other,
+                            }
+                            .looked_at())
+                        )
+                    }
+                    ExprKind::Index { .. } if self.dict_values.contains(&(expr as *const Expr as usize)) => format!(
+                        "this value is {}, which has one owner: the dict. `[ ]` only looks at it. \
+                         Use it where it is, pass it to a parameter that looks, or take it out with `pop(key)`",
+                        an_owned(&inner)
+                    ),
                     ExprKind::Index { .. } if matches!(inner, Ty::Optional(_)) => format!(
                         "this item is {}, which has one owner: the list. `[ ]` only looks at it. \
                          Use it where it is, or pass it to a parameter that looks. To move it out and leave `none` \
@@ -5218,8 +5252,12 @@ impl Checker {
                         );
                     }
                 }
-                // The dict keeps the value.
-                None => self.item(value, env).looked_at().widened(),
+                // The dict keeps the value. With no collector it owns one
+                // that has one owner, as a list owns its items (56.12).
+                None => match self.item(value, env) {
+                    owned if self.one_owner && owned.is_owned() => owned,
+                    ty => ty.looked_at().widened(),
+                },
             };
             if !matches!(key_type, Ty::Str | Ty::Int) && !key_type.is_loose() {
                 return self.error(format!("a key of a dict is a str or an int, and this is {key_type}"), key.span);
@@ -5282,18 +5320,6 @@ impl Checker {
                  Leave the key out instead"
                     .to_string(),
             ),
-            // With no collector the dict would have to free what it
-            // holds, and a value that has one owner cannot be in a dict
-            // yet.
-            _ if self.one_owner
-                && !matches!(plain, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Sized(_) | Ty::Quantity(_) | Ty::Param(_))
-                && !plain.is_loose() =>
-            {
-                Some(format!(
-                    "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is {plain}. \
-                     Keep those in a list, and the position of each in the dict"
-                ))
-            }
             _ => None,
         }
     }
@@ -5417,7 +5443,11 @@ impl Checker {
         if let (true, Some(name)) = (item.is_look(), root(iterable)) {
             let in_method = name == "self" && self.frame().takes_self.is_some();
             if let Some(variable) = env.get(name).filter(|variable| variable.ty.is_owned() || in_method) {
-                self.owned.walked.push((variable.id, iterable.span.line_in_file(), Looking::Loop));
+                let looking = match variable.ty.clone().looked_at() {
+                    Ty::Dict(..) => Looking::DictLoop,
+                    _ => Looking::Loop,
+                };
+                self.owned.walked.push((variable.id, iterable.span.line_in_file(), looking));
             }
         }
         before
@@ -6375,6 +6405,12 @@ impl Checker {
                                 self.owned.emptied.push(owner);
                             }
                         }
+                        // The same for a dict that owns its values (56.12).
+                        if self.one_owner && matches!(name.as_str(), "pop" | "clear") && owns_values(&object) {
+                            if let Some(owner) = self.takes_out(receiver, looked, "take a value out of this dict", env, span) {
+                                self.owned.emptied.push(owner);
+                            }
+                        }
                         let method = self.field(&object, name, callee.span);
                         // A method that takes out what its object owns:
                         // calling it is taking out, for whoever calls.
@@ -6564,8 +6600,14 @@ impl Checker {
                 self.index_inside(index, length);
                 let index_type = self.look(index, env);
                 if let Ty::Dict(key, value) = &object {
-                    // `ages["Ada"]`: the value kept under that key.
+                    // `ages["Ada"]`: the value kept under that key. One
+                    // that has one owner stays in the dict, which owns
+                    // it, and this is a look at it (decision 56.12).
                     self.expect(&index_type.widened(), key, "a key of this dict", index.span);
+                    if self.one_owner && value.is_owned() {
+                        self.dict_values.insert(expr as *const Expr as usize);
+                        return lent(value);
+                    }
                     return (**value).clone();
                 }
                 // What is not known may be a dict, whose keys can be text.
@@ -8390,6 +8432,17 @@ impl Checker {
                 }
                 self.expect(&arguments[0].ty.widened(), key, "the key given to `get`", arguments[0].span);
                 match arguments.get(1) {
+                    // Who would own what it gives: the dict, or the caller?
+                    Some(instead) if self.one_owner && value.is_owned() => self.error(
+                        format!(
+                            "a value of this dict is {}, which has one owner: the dict. `get` with a second \
+                             value would give either a look at the dict's or the value given, and nobody could \
+                             tell who frees it. Write `get(key)`, which gives a look or `none`, and test it \
+                             with `is not none`",
+                            an_owned(value)
+                        ),
+                        instead.span,
+                    ),
                     Some(instead) => {
                         self.expect(
                             &instead.ty.widened(),
@@ -8399,6 +8452,8 @@ impl Checker {
                         );
                         (**value).clone()
                     }
+                    // A value that has one owner stays in the dict.
+                    None if self.one_owner && value.is_owned() => Ty::Optional(Box::new(lent(value))),
                     None => Ty::Optional(value.clone()),
                 }
             }
@@ -8412,6 +8467,15 @@ impl Checker {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::list((**key).clone())
             }
+            (Ty::Dict(_, value), "values") if self.one_owner && value.is_owned() => self.error(
+                format!(
+                    "a value of this dict is {}, which has one owner: the dict. A list of the values would be \
+                     a second owner of each. Loop over the dict with `for key, value in` instead, which lends \
+                     each value in turn",
+                    an_owned(value)
+                ),
+                span,
+            ),
             (Ty::Dict(_, value), "values") => {
                 self.arity(name, arguments, 0, 0, span);
                 Ty::list((**value).clone())
@@ -9515,6 +9579,8 @@ const REGISTER_METHODS: &[&str] = &["read", "write"];
 enum Looking {
     /// A `for` loop, or a comprehension, walking a list.
     Loop,
+    /// A `for` loop walking a dict that owns its values (decision 56.12).
+    DictLoop,
     /// A `case` of a `match`, which gave names to parts of the value.
     Case,
 }
@@ -9586,6 +9652,12 @@ fn borrowable(ty: &Ty) -> bool {
 /// owner, and frees them when it is freed.
 fn owns_items(ty: &Ty) -> bool {
     matches!(ty, Ty::List(item) | Ty::Fixed(item, _) if item.is_owned())
+}
+
+/// Is this a dict whose values have one owner each? It is their owner,
+/// and frees them when it is freed (decision 56.12).
+fn owns_values(ty: &Ty) -> bool {
+    matches!(ty, Ty::Dict(_, value) if value.is_owned())
 }
 
 /// A list of a fixed length, as anything that only reads it sees it: a
@@ -12657,19 +12729,66 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // In an ordinary build `owned` in front makes it so by request.
         ok("let d: owned dict[str, int] = [\"a\": 1]\nd[\"b\"] = 2\nprint(d)");
-        // The dict frees what it holds in one step, so with no collector
-        // it holds only what needs no freeing of its own (decision 10.14).
+        // A dict of numbers or text frees what it holds in one step.
         one_owner_ok("let times = [\"blink\": 500 ms]\nlet bytes: dict[str, u8] = [\"a\": 200]\nprint(times, bytes)");
+        // One of lists or objects owns them, as a list owns its items
+        // (decision 56.12).
+        one_owner_ok("let d = [\"a\": [1, 2]]\nprint(d)");
+        one_owner_ok("class P {\n n: int\n}\nlet d: dict[str, P] = [:]\nd[\"a\"] = P(1)\nprint(d)");
+    }
+
+    #[test]
+    fn a_dict_owns_its_values() {
+        // With no collector a dict owns its lists and objects, as a list
+        // owns its items (decision 56.12).
+        const BANK: &str = "class Frame {\n id: int\n}\nlet d: dict[str, Frame] = [\"a\": Frame(1)]\n";
+        let good = |source: &str| one_owner_ok(&format!("{BANK}{source}"));
+        let bad = |source: &str| one_owner_error(&format!("{BANK}{source}"));
+        // `d[key]` lends, `d[key] = value` takes, `pop` hands over, `clear`
+        // frees, a loop lends each value, and `get(key)` lends or is `none`.
+        good("print(d[\"a\"].id)\nd[\"b\"] = Frame(2)\nlet f = d.pop(\"a\")\nprint(f.id)\nd.clear()");
+        good("for key, frame in d {\n print(key, frame.id)\n}\nprint(d.get(\"a\") is none, d.keys())");
+        good("let f = Frame(3)\nd[\"c\"] = f\nlet e = [\"x\": [1], \"y\": [2, 3]]\ne[\"x\"].append(4)\nprint(e)");
+        // What a look cannot do, with the dict's words.
         assert_eq!(
-            one_owner_error("let d = [\"a\": [1, 2]]\nprint(d)"),
-            "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is list[int]. \
-             Keep those in a list, and the position of each in the dict"
+            bad("let f = d[\"a\"]"),
+            "this value is an owned Frame, which has one owner: the dict. `[ ]` only looks at it. \
+             Use it where it is, pass it to a parameter that looks, or take it out with `pop(key)`"
         );
         assert_eq!(
-            one_owner_error("class P {\n n: int\n}\nlet d: dict[str, P] = [:]\nprint(d)"),
-            "with no collector a value of a dict is an int, a float, a bool or a str for now, and this is P. \
-             Keep those in a list, and the position of each in the dict"
+            bad("let g = d.get(\"a\")"),
+            "`get` gives a look at an owned Frame that the dict owns, or `none`, and a look cannot be kept. \
+             Test it where it is, or pass it to a parameter that looks. To take the value out of the dict, use `pop(key)`"
         );
+        assert_eq!(
+            bad("print(d.get(\"a\", Frame(2)).id)"),
+            "a value of this dict is an owned Frame, which has one owner: the dict. `get` with a second value would \
+             give either a look at the dict's or the value given, and nobody could tell who frees it. Write \
+             `get(key)`, which gives a look or `none`, and test it with `is not none`"
+        );
+        assert_eq!(
+            bad("let vs = d.values()"),
+            "a value of this dict is an owned Frame, which has one owner: the dict. A list of the values would be a \
+             second owner of each. Loop over the dict with `for key, value in` instead, which lends each value in turn"
+        );
+        // The three guards of `pop()`.
+        assert_eq!(
+            bad("for k, f in d {\n d[\"b\"] = Frame(2)\n}"),
+            "the `for` on line 5 is walking a dict that `d` owns, and is still looking at its values. \
+             Nothing can replace a value of this dict until the loop is over"
+        );
+        assert_eq!(
+            bad("function f(e: dict[str, Frame]) -> Frame {\n return e.pop(\"a\")\n}"),
+            "only the owner can take a value out of this dict: somebody else may have been lent it. Here `e` only looks at it"
+        );
+        assert_eq!(
+            bad("print(d[\"a\"].id, d.pop(\"a\").id)"),
+            "this line has already looked at `d`, and the look might still be in use. Do the other thing on a line of its own first"
+        );
+        assert!(bad("let f = Frame(1)\nd[\"b\"] = f\nprint(f.id)").contains(GONE));
+        // With a collector a dict is shared, and these rules are not
+        // asked for: what built before builds the same.
+        ok("owned class P {\n n: int\n}\nlet d: dict[str, P] = [:]\nd[\"a\"] = P(1)\nlet vs = d.values()\nprint(d.get(\"a\", P(2)).n)");
     }
 
     #[test]

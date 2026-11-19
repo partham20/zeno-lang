@@ -524,24 +524,17 @@ The loop with two names works there: the value is looked at, and the
 two lists the loop made are freed when it ends, also when a `break`
 or a `return` leaves it early.
 
-Values that are lists or objects do not (10.14, a limit of version 0.1):
-
-```
-error: with no collector a value of a dict is an int, a float, a bool or
-a str for now, and this is list[float]. Keep those in a list, and the
-position of each in the dict
-```
-
-A dict of lists would own its lists, and every way into the dict
-would need a rule about who owns what comes out. Those rules exist
-for a list of owned items, and the decision lists what they would be
-for a dict. No program for a board has needed them yet.
+Values that are lists or objects work too, since 0.8.0: the dict owns
+them, as a list owns its items, and the loop's value is a look at each.
+Until then they were refused (10.14). Each way into such a dict, and
+the two that are refused, `get(key, instead)` and `values()`, are in
+[`dict-owned.md`](dict-owned.md).
 
 ## What a dict cannot do yet
 
 - A value cannot be `none` or `T or none`. Leave the key out (10.11).
-- With no collector a value is an int, a float, a bool, text, a sized
-  number or a quantity (10.14).
+- With no collector, `get(key, instead)` and `values()` on a dict of
+  lists or objects ([`dict-owned.md`](dict-owned.md)).
 - A key cannot be an enum case.
 
 ## Things to try

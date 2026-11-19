@@ -17312,7 +17312,120 @@ copy with a collector
 (`a_value_with_one_owner_fills_a_type_parameter_every_way`). The
 targets run the program, and nine print what `zeno run` prints here.
 
-### 56.12 Left for later
+### 56.12 A dict that owns its values
+
+```zeno
+let channels: dict[str, Channel] = [:]     # refused with no collector until 0.8.0
+channels["volts"] = Channel("volts", [12, 13])
+channels["volts"] = Channel("volts", [14])    # the old one is freed
+let amps = channels.pop("amps")
+```
+
+**The need.** A program with no collector could keep lists and objects
+in a list, in a field and, since 56.11, in a generic, but not under a
+key: a dict's values had to be copied when stored (10.14). A table of
+channels by name, or of handlers by command, had to be a list with a
+second dict of positions beside it.
+
+**The rule.** A dict owns its values, as a list owns its items
+(5.15c). 10.14 wrote out what that means for each way into a dict,
+and the plan kept it (9.5), so this part builds what was written:
+
+| Written | With one owner |
+|---|---|
+| `d[key]` | a look at the value |
+| `d[key] = value` | takes the new value, and frees the one that was there |
+| `d.pop(key)` | hands the value to whoever receives it |
+| `d.clear()`, and the end of the dict | free every value |
+| `for key, value in d` | a look at each value, for the body |
+| `d.get(key)` | a look, or `none` |
+| `d.get(key, instead)` | refused |
+| `d.values()` | refused |
+
+A look is the look a parameter gets: it is read, changed in place and
+passed on, and not kept. The message for keeping one names the owner
+and the way out, `pop(key)`, as the message for an item of a list
+names `pop()`.
+
+**The two refusals.** `get(key, instead)` gives either a look at a
+value the dict owns or `instead`, which only the line owns, and
+nothing after the line can tell which, so nothing could know whether
+to free it. Making `instead` a look too would leave the value it was
+made from with no owner; making the dict's value a copy would copy a
+list on every call. `get(key)` and a test say the same thing with an
+owner for every value, so the message says to write that. `values()`
+would be a second list of the same objects, which is a second owner of
+each; the loop with two names gives the same values one at a time as
+looks, so the message says to write that. `keys()` is not touched: a
+key is a number or text, which is copied.
+
+**The guards.** `pop`, a store and `clear` free a value or hand it
+over, so they are held to the three guards of a list's `pop()`
+(5.15e), by the same code (`takes_out`): only the owner, not while a
+loop walks the dict, not on a line that has already looked at it. The
+loop message says "a dict" and "its values", and each says what was
+being done: "take a value out of", "replace a value of".
+
+**Only with one owner.** With a collector nothing changes. A dict of
+lists or of shared objects was fine there; a dict of objects of an
+`owned class` is still refused by `zeno build`, as it was ("cannot
+compile a dict with these keys and values yet"), since a dict that is
+itself shared cannot be the owner of what it holds (5.15c). The rules
+above are asked for only where every value has one owner, so `zeno
+run` and a build with a collector check every program as before.
+
+**How it is built.** The checker: a dict's index lends the value when
+it is owned, `get(key)` gives a look or `none`, and the two refusals
+and the guards are beside those of a list. `runtime.c` is not changed,
+since any change there changes the C of every program. Instead each
+program with such a dict gets three functions of its own for each kind
+of value, `zeno_dict_put_values_{kind}`, `zeno_dict_clear_values_{kind}`
+and `zeno_dict_drop_values_{kind}`, written by `Drops` beside the free
+functions of lists. They free a value with the free function its kind
+already has, and call the runtime's own `zeno_dict_set`,
+`zeno_dict_clear` and `zeno_dict_drop`. A store over a key that is not
+there frees `NULL`, which does nothing. The LLVM build defines the
+same three in IR. A loop over a dict written where the loop walks it
+frees the values with the dict when there is one name, and with the
+list of values the loop made when there are two. A list of dicts that
+own their values gets a free function of its own name, so that it
+cannot meet the one for a list of plain dicts.
+
+**What it costs.** Nothing for a program that does not use it: the C,
+IR, `zeno join` and bytecode of every program that was there before
+are those of 0.7.0 (`tools/same.py`). The words of a refusal change in
+the builds with one owner of six programs that are refused still, for
+another reason further down: `examples/channels.zeno` keeps what `get`
+gives, and `edge-fixed`, `edge-json`, `edge-lists`, `io` and `text`
+meet a rule of one owner that was behind the dict's. Two pieces of the
+book that were refused now build with no collector and print what
+`zeno run` prints, with 0 blocks left: `book/10-dicts#3` and
+`book/15-function-values#3`.
+
+**Found on the way.** A function that is given a parameter that may
+be `none`, and reads a field of it after testing it, read the field
+before the test in every build of C and LLVM of 0.7.0, because the
+compilers read a parameter's fields once at the start of a function
+that cannot change them (22.8). A function such as
+`id_of(f: Frame or none)` then read through `NULL` when given `none`.
+Such a parameter is now left out of that read. No program in the
+repository wrote one, so no C changed
+(`a_parameter_that_may_be_none_is_read_after_its_test`).
+
+**Tests.** The checker: each row of the table, keeping a look from
+`[ ]` and from `get`, the two refusals, the three guards, and a build
+with a collector as it was (`a_dict_owns_its_values`). Both compilers:
+[`tools/targets/edge-dict-owned.zeno`](../tools/targets/edge-dict-owned.zeno),
+a dict of objects and one of lists each way in the table, a dict of
+enum values, a dict in a field and dicts in a list, a dict made where
+a loop walks it, and a thousand stores over one key, with no collector
+through C and LLVM with the same memory report and 0 blocks left, and
+in the ordinary and firmware builds of both. The C of the three
+functions, the name of a list of dicts that own their values, and the
+refusal with a collector (`a_dict_owns_its_values_every_way`). The
+targets run the program.
+
+### 56.13 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17332,6 +17445,10 @@ targets run the program, and nine print what `zeno run` prints here.
 - **`take` in front of a value of a dict.** A dict cannot hold a value
   that may be `none` yet. Refused with "...and not a value out of a
   dict yet".
+- **`get(key, instead)` and `values()` on a dict that owns its
+  values.** Refused, with what to write instead (56.12).
+- **A dict of objects of an `owned class`, with a collector.** Refused
+  by `zeno build` as before; `zeno run` runs it.
 - **`take` with one owner on the line that writes the place**:
   `self.current = take self.waiting[0]` is refused, as
   `self.current = self.waiting.pop()` was, because the line looks at

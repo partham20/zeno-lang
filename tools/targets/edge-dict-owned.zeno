@@ -1,0 +1,101 @@
+# A dict that owns its values (decision 56.12): a dict of objects and a
+# dict of lists, each way a dict is used, a dict inside a list and in a
+# field, a thousand stores over one key, and a dict made right where a
+# loop walks it. Every build prints what `zeno run` prints, and a build
+# with no collector leaves nothing.
+
+class Frame {
+    id: int
+    data: list[int]
+}
+
+enum Shape {
+    Dot
+    Circle(radius: int)
+}
+
+class Bank {
+    frames: dict[int, Frame]
+    count: int
+
+    function store(self, id: int, data: take list[int]) {
+        self.frames[id] = Frame(id, data)
+        self.count += 1
+    }
+}
+
+function total(frame: Frame) -> int {
+    var sum = 0
+    for d in frame.data {
+        sum += d
+    }
+    return sum
+}
+
+function id_of(frame: Frame or none) -> int {
+    if frame is none {
+        return -1
+    }
+    return frame.id
+}
+
+function sizes(d: dict[str, list[int]]) -> int {
+    var n = 0
+    for key, values in d {
+        n += len(values)
+    }
+    return n
+}
+
+function main() {
+    # Made, stored over, looked at, looped over, popped, printed.
+    let frames: dict[str, Frame] = [:]
+    frames["a"] = Frame(1, [1, 2])
+    frames["b"] = Frame(2, [3])
+    frames["a"] = Frame(3, [4, 4])
+    print(len(frames), frames["a"].id, total(frames["b"]))
+    print(id_of(frames.get("b")), id_of(frames.get("z")), "a" in frames)
+    for key, frame in frames {
+        print(key, frame.id, total(frame))
+    }
+    let b = frames.pop("b")
+    print(b.id, len(frames), frames)
+
+    # A dict of lists, written out, changed through a look, compared.
+    let lists = ["odd": [1, 3], "even": [2]]
+    lists["odd"].append(5)
+    lists["even"] = [2, 4, 6]
+    print(lists, lists.keys(), sizes(lists))
+    print(lists == ["odd": [1, 3, 5], "even": [2, 4, 6]])
+    let odd = lists.pop("odd")
+    print(odd, len(lists))
+    lists.clear()
+    print(len(lists), lists)
+
+    # Enum values that carry values.
+    let shapes = ["small": Circle(1), "none": Dot]
+    shapes["big"] = Circle(9)
+    print(shapes["big"], len(shapes))
+
+    # In a field, and in a list.
+    let bank = Bank([:], 0)
+    bank.store(7, [7, 7])
+    bank.store(7, [8])
+    bank.store(9, [9])
+    print(bank.count, len(bank.frames), total(bank.frames[7]))
+    let many = [["x": [1]], ["y": [2, 2]]]
+    print(many, sizes(many[1]))
+
+    # A dict made right where the loop walks it.
+    for key, frame in ["p": Frame(10, [1]), "q": Frame(11, [2])] {
+        print(key, frame.id)
+    }
+
+    # A thousand stores over one key.
+    for i in range(1000) {
+        frames["x"] = Frame(i, [i, i])
+    }
+    print(frames["x"].id, total(frames["x"]), len(frames))
+}
+
+main()

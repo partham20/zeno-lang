@@ -873,6 +873,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     number and for a list. See
     [`docs/generic-owned.md`](docs/generic-owned.md) and 56.11 of
     [`docs/decisions.md`](docs/decisions.md))
+58. A dict that owns its values (on `main`, for 0.8.0: with no
+    collector `dict[str, Channel]` and `dict[str, list[int]]` build,
+    and the dict owns its values as a list owns its items: `d[key]`
+    looks, a store frees the old value, `pop` hands it over. See
+    [`docs/dict-owned.md`](docs/dict-owned.md) and 56.12 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

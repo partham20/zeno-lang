@@ -858,6 +858,7 @@ pub fn disowned(kind: Kind) -> Kind {
         Kind::Owned(inner) => disowned(*inner),
         Kind::List(item) => Kind::List(Box::new(disowned(*item))),
         Kind::Optional(inner) => Kind::Optional(Box::new(disowned(*inner))),
+        Kind::Dict(key, value) => Kind::Dict(Box::new(disowned(*key)), Box::new(disowned(*value))),
         Kind::Function(function) => Kind::Function(Box::new(FunctionKind {
             params: function.params.into_iter().map(disowned).collect(),
             returns: disowned(function.returns),
@@ -952,7 +953,9 @@ impl Drops {
             Kind::Function(_) => "zeno_closure_drop".to_string(),
             kind if is_text(kind) => "zeno_text_drop".to_string(),
             // A dict frees its two lists, its index and, with no
-            // collector, its copies of any text.
+            // collector, its copies of any text. One that owns its values
+            // frees each of them first (decision 56.12).
+            Kind::Dict(_, value) if self.owns(value) => self.dict_helper("drop", value),
             Kind::Dict(..) => "zeno_dict_drop".to_string(),
             Kind::List(item) if self.texts && is_text(item) => "zeno_list_drop_text".to_string(),
             Kind::List(item) if self.owns(item) => {
@@ -972,6 +975,11 @@ impl Drops {
                     Kind::Class(name) | Kind::Enum(name) => format!("zeno_list_drop_{depth}_{}", ident(name)),
                     Kind::Error => format!("zeno_list_drop_errors{depth}"),
                     Kind::Function(_) => format!("zeno_list_drop_functions{depth}"),
+                    // A list of dicts, by what the dicts hold.
+                    Kind::Dict(_, value) if self.owns(value) => {
+                        format!("zeno_list_drop_dicts{depth}_values_{}", self.values_word(value))
+                    }
+                    Kind::Dict(..) => format!("zeno_list_drop_dicts{depth}"),
                     Kind::List(text) if self.texts && is_text(text) => format!("zeno_list_drop_texts{depth}"),
                     _ => format!("zeno_list_drop_lists{depth}"),
                 };
@@ -983,6 +991,33 @@ impl Drops {
             }
             _ => "zeno_list_drop".to_string(),
         }
+    }
+
+    /// What the name of a function for a dict that owns values of this
+    /// kind ends with, from the function that frees one value: `Point`,
+    /// `lists`, `lists_1_Point`, `dicts`, `errors`, `functions`.
+    fn values_word(&self, value: &Kind) -> String {
+        match self.name(value).as_str() {
+            "zeno_error_drop" => "errors".to_string(),
+            "zeno_closure_drop" => "functions".to_string(),
+            other if other.starts_with("zeno_list_drop") => format!("lists{}", &other["zeno_list_drop".len()..]),
+            other if other.starts_with("zeno_dict_drop") => format!("dicts{}", &other["zeno_dict_drop".len()..]),
+            other => other.trim_start_matches("zeno_drop_").to_string(),
+        }
+    }
+
+    /// The name of a function that works on a dict which owns its values
+    /// of this kind: `drop` frees the dict and each value, `clear` frees
+    /// each value and empties the dict, and `put` stores a value under a
+    /// key and frees the one that was there (decision 56.12). As for the
+    /// lists, each is asked for here and written once.
+    pub fn dict_helper(&self, what: &str, value: &Kind) -> String {
+        let name = format!("zeno_dict_{what}_values_{}", self.values_word(value));
+        let mut wanted = self.wanted.borrow_mut();
+        if !wanted.iter().any(|(known, _)| *known == name) {
+            wanted.push((name.clone(), Kind::Dict(Box::new(Kind::None), Box::new(value.clone()))));
+        }
+        name
     }
 
     /// The statement that frees the owned value in `place`, if `place`
@@ -1840,6 +1875,36 @@ impl Emitter<'_> {
             }
             self.drops_written += wanted.len();
             for (name, item) in wanted {
+                // The functions for a dict that owns its values:
+                //
+                //     static void zeno_dict_drop_values_Point(zeno_dict *dict) {
+                //         if (dict == NULL) return;
+                //         zeno_dict_clear_values_Point(dict);
+                //         zeno_dict_drop(dict);
+                //     }
+                if let (true, Kind::Dict(_, value)) = (name.starts_with("zeno_dict_"), &item) {
+                    let each = self.drops.code(value, &from_slot(value, "dict->values->items[i]", span)?);
+                    let clear = self.drops.dict_helper("clear", value);
+                    let (head, body) = if name.starts_with("zeno_dict_drop_") {
+                        (
+                            format!("static void {name}(zeno_dict *dict)"),
+                            format!("    if (dict == NULL) return;\n    {clear}(dict);\n    zeno_dict_drop(dict);\n"),
+                        )
+                    } else if name.starts_with("zeno_dict_clear_") {
+                        (
+                            format!("static void {name}(zeno_dict *dict)"),
+                            format!("    for (int64_t i = 0; i < dict->values->len; i++) {each}\n    zeno_dict_clear(dict);\n"),
+                        )
+                    } else {
+                        let old = self.drops.code(value, &from_slot(value, "zeno_dict_value(dict, zeno_dict_find(dict, key))", span)?);
+                        (
+                            format!("static void {name}(zeno_dict *dict, zeno_slot key, zeno_slot value)"),
+                            format!("    {old}\n    zeno_dict_set(dict, key, value);\n"),
+                        )
+                    };
+                    self.helper(head, body);
+                    continue;
+                }
                 let each = self.drops.code(&item, &from_slot(&item, "list->items[i]", span)?);
                 self.helper(
                     format!("static void {name}(zeno_list *list)"),
@@ -1849,6 +1914,17 @@ impl Emitter<'_> {
                 );
             }
         }
+    }
+
+    /// `dict_kinds`, for a dict this program makes. A dict that owns its
+    /// values is built where there is no collector (decision 56.12).
+    /// With one, a dict is shared, and could not be the one owner of an
+    /// object of an `owned class`, so it is refused as before.
+    fn dict_letters(&self, key: &Kind, value: &Kind, span: Span) -> Result<(char, char), Error> {
+        if self.collector && self.drops.owns(value) {
+            return Err(cannot("a dict with these keys and values", span));
+        }
+        dict_kinds(key, value, span)
     }
 
     /// The value has arrived where it was going, and has an owner again.
@@ -3468,7 +3544,7 @@ impl Emitter<'_> {
                 self.belongs(val, expr)
             }
             (ExprKind::Dict(entries), Some(kind @ Kind::Dict(key, value))) if entries.is_empty() => {
-                let (key, value) = dict_kinds(key, value, expr.span)?;
+                let (key, value) = self.dict_letters(key, value, expr.span)?;
                 let mut val = Val::plain(format!("zeno_dict_new('{key}', '{value}')"), kind.clone());
                 val.made = true;
                 self.belongs(val, expr)
@@ -3575,7 +3651,13 @@ impl Emitter<'_> {
                 if let Kind::Dict(key, item) = &object.kind {
                     let val = self.coerce(val, item, span)?;
                     let (key, slot) = (to_slot(key, &index.code, span)?, to_slot(item, &val.code, span)?);
-                    self.line(format!("zeno_dict_set({}, {key}, {slot});", object.code));
+                    // A dict that owns its values frees the one that was
+                    // under the key (decision 56.12).
+                    let set = match self.drops.owns(item) {
+                        true => self.drops.dict_helper("put", item),
+                        false => "zeno_dict_set".to_string(),
+                    };
+                    self.line(format!("{set}({}, {key}, {slot});", object.code));
                     return Ok(());
                 }
                 let Kind::List(item) = &object.kind else {
@@ -3874,6 +3956,9 @@ impl Emitter<'_> {
         // The values of a dict, for a loop with two names: the list of
         // them, and what kind they are.
         let mut values: Option<(String, Kind)> = None;
+        // Whether the list of values owns them: it does when the dict was
+        // made right here and owns its values (decision 56.12).
+        let mut values_owned = false;
         self.walked = Some(iterable as *const Expr as usize);
         let list = self.expr(iterable);
         self.walked = None;
@@ -3887,6 +3972,7 @@ impl Emitter<'_> {
         let list = match &list.kind {
             Kind::Dict(key, value) => {
                 let keys_kind = Kind::List(key.clone());
+                let key = (**key).clone();
                 let value = (**value).clone();
                 // The dict is asked twice, so it is worked out once.
                 let list = match (second, list.made) {
@@ -3898,12 +3984,22 @@ impl Emitter<'_> {
                         let dict = self.temp(list, span)?;
                         let keys = Val::from(format!("zeno_dict_keys({})", dict.code), keys_kind, &[&dict]);
                         let keys = self.temp(keys, span)?;
-                        if second.is_some() {
-                            let name = self.new_temp();
-                            self.line(format!("zeno_list *{name} = zeno_dict_values({});", dict.code));
-                            values = Some((name, value));
+                        match second.is_some() {
+                            // The values go over to their list, and the dict
+                            // is freed without them.
+                            true => {
+                                let name = self.new_temp();
+                                self.line(format!("zeno_list *{name} = zeno_dict_values({});", dict.code));
+                                values_owned = self.drops.owns(&value);
+                                values = Some((name, value));
+                                self.line(format!("zeno_dict_drop({});", dict.code));
+                            }
+                            false => {
+                                let kind = Kind::Dict(Box::new(key), Box::new(value));
+                                let drop = self.drops.code(&kind, &dict.code);
+                                self.line(drop);
+                            }
                         }
-                        self.line(format!("zeno_dict_drop({});", dict.code));
                         keys
                     }
                     false if second.is_some() => {
@@ -3983,7 +4079,10 @@ impl Emitter<'_> {
         // The list of values is the loop's own as well. What is in it
         // still belongs to the dict.
         if let Some((list, value)) = &values {
-            self.hold_copy(value.clone(), list);
+            match values_owned {
+                true => drop(self.hold(Kind::List(Box::new(value.clone())), list)),
+                false => drop(self.hold_copy(value.clone(), list)),
+            }
         }
         let c_type_of_item = c_type(&read_kind(&item), span)?;
         // With two names over a list, the second is the item and the
@@ -4019,7 +4118,10 @@ impl Emitter<'_> {
             });
         }
         if let Some((list, value)) = &values {
-            drops.push(self.drops.code_for_copy(value, list));
+            drops.push(match values_owned {
+                true => self.drops.code(&Kind::List(Box::new(value.clone())), list),
+                false => self.drops.code_for_copy(value, list),
+            });
         }
         Ok((!drops.is_empty()).then(|| drops.join("\n")))
     }
@@ -4456,7 +4558,7 @@ impl Emitter<'_> {
                     return Err(cannot("a dict whose values are not all one type", span));
                 };
                 self.fits_a_slot(&value, span)?;
-                let (key_letter, value_letter) = dict_kinds(&key, &value, span)?;
+                let (key_letter, value_letter) = self.dict_letters(&key, &value, span)?;
                 let mut slots = Vec::new();
                 for (pair, (_, written)) in vals.chunks_mut(2).zip(entries) {
                     if pair[0].kind != key {
@@ -4568,7 +4670,7 @@ impl Emitter<'_> {
                 to => to,
             };
             if let Kind::Dict(key, value) = wanted {
-                let (key, value) = dict_kinds(key, value, span)?;
+                let (key, value) = self.dict_letters(key, value, span)?;
                 val.code = format!("zeno_dict_kinds({}, '{key}', '{value}')", val.code);
                 val.kind = wanted.clone();
                 if val.kind == *to {
@@ -6614,7 +6716,12 @@ impl Emitter<'_> {
                         Ok(val)
                     }
                     ("clear", [dict]) => {
-                        let call = format!("zeno_dict_clear({})", dict.code);
+                        // A dict that owns its values frees each of them.
+                        let clear = match self.drops.owns(&value) {
+                            true => self.drops.dict_helper("clear", &value),
+                            false => "zeno_dict_clear".to_string(),
+                        };
+                        let call = format!("{clear}({})", dict.code);
                         Ok(self.called(call, &vals, Kind::None))
                     }
                     _ => Err(cannot(format!("the dict method `{name}`"), span)),
@@ -10028,6 +10135,49 @@ print("after")
         firmware_as_interpreter("generic-owned-class", owned);
         crate::emit_llvm::tests::same_as_interpreter("generic-owned-class", owned);
         no_collector_as_interpreter("generic-owned-class", owned);
+    }
+
+    #[test]
+    fn a_dict_owns_its_values_every_way() {
+        // A dict of objects, of lists and of enum values, each way a dict
+        // is used, in a field and in a list, a thousand stores over one
+        // key, and a dict made where a loop walks it (decision 56.12).
+        // Every build prints what `zeno run` prints, and with no collector
+        // nothing is left.
+        let source = include_str!("../tools/targets/edge-dict-owned.zeno");
+        no_collector_as_interpreter("dict-owned", source);
+        firmware_as_interpreter("dict-owned", source);
+        crate::emit_llvm::tests::same_as_interpreter("dict-owned", source);
+        // Storing over a key frees what was there, and the end of the dict
+        // frees each value, by functions written for the kind.
+        let c = compile_no_collector(
+            "class Frame {\n    id: int\n}\nlet d: dict[str, Frame] = [:]\nd[\"a\"] = Frame(1)\nd.clear()\nprint(len(d))\n",
+        )
+        .unwrap();
+        for wanted in [
+            "static void zeno_dict_put_values_Frame(zeno_dict *dict, zeno_slot key, zeno_slot value) {\n    \
+             zeno_drop_Frame(((z_Frame *)zeno_dict_value(dict, zeno_dict_find(dict, key)).p));\n    \
+             zeno_dict_set(dict, key, value);\n}",
+            "static void zeno_dict_clear_values_Frame(zeno_dict *dict) {\n    \
+             for (int64_t i = 0; i < dict->values->len; i++) zeno_drop_Frame(((z_Frame *)dict->values->items[i].p));\n    \
+             zeno_dict_clear(dict);\n}",
+            "zeno_dict_clear_values_Frame(z_d);",
+            "zeno_dict_drop_values_Frame(z_d);",
+        ] {
+            assert!(c.contains(wanted), "{wanted}\n{c}");
+        }
+        // A list of dicts is named by what the dicts hold, so a list of
+        // lists of ints and a list of dicts are two functions.
+        let lists = "let a = [[1], [2]]\nlet b = [[\"x\": 1]]\nlet c = [[\"y\": [2]]]\nprint(a, b, c)\n";
+        no_collector_as_interpreter("dict-lists", lists);
+        let c = compile_no_collector(lists).unwrap();
+        for wanted in ["zeno_list_drop_lists1(z_a)", "zeno_list_drop_dicts1(z_b)", "zeno_list_drop_dicts1_values_lists(z_c)"] {
+            assert!(c.contains(wanted), "{wanted}\n{c}");
+        }
+        // With a collector a dict is shared, and cannot be the one owner
+        // of an object of an `owned class`: refused as before.
+        let shared = "owned class P {\n    n: int\n}\nlet d: dict[str, P] = [:]\nd[\"a\"] = P(1)\nprint(d[\"a\"].n)\n";
+        assert!(compile(shared).unwrap_err().contains("cannot compile a dict with these keys and values yet"));
     }
 
     #[test]
