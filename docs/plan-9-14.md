@@ -1464,3 +1464,97 @@ type that does not say so; a firmware build and a build with no
 collector hold it. Both sides are counted when the gap is measured.
 "Raises that kind" means a kind that `except` of that kind would
 catch, which is the test `except` already has.
+
+### 2. 9.1 as built, 2026-11-19: what the review settled
+
+9.1 is accepted (commits e1d726d and 809ff55, chapter 56 of the
+decisions). In review it was built every way, through C and through
+LLVM, with programs of the reviewer's own: a raising type as a
+result, in a field, in a list, in a dict, behind `or none`, under a
+type parameter, as the type of a parameter of a function type, with
+text for an answer, and failing part of the way through `map`,
+`filter`, `reduce` and `sort` a few thousand times. Every build
+printed what `zeno run` prints, and a build with no collector ended
+with 0 blocks left.
+
+**Three things the page left open, and how they were settled.**
+
+- **A fault after `raises` in a type has no rule of its own.** A
+  firmware build already holds a function that says `raises
+  ZeroDivisionError` to raising one by hand (5.19m). Only such a
+  function, or one that raises nothing, can be put in the type, so
+  what comes through it always travels as a value.
+- **A value that already has a plain function type cannot be put
+  where a raising type is wanted, in a firmware build.** It is refused
+  with a message that says to give it the raising type where it is
+  made. Carrying it in a block of its own would cost a block at each
+  such place for a program that can say what it means.
+- **The tests of both compilers check a firmware build as `zeno build
+  --firmware` checks it.** Before, they checked it as an ordinary
+  build, and so `tools/targets/edge-u64.zeno` was built as firmware
+  in a test although `zeno build --firmware` refuses it, in 0.7.0 as
+  well (5.19m).
+
+**Four things the review asked for.** They go in with 9.2.
+
+- **`function() raises ValueError or none` is to be refused**, with a
+  message that says to write the brackets: `(function() raises
+  ValueError) or none`. As built, the line is taken, and means a
+  function that may be missing. A reader can as well take it to say
+  that the function raises `ValueError` or nothing (question 2 of the
+  audit). No program of today has the line, so nothing accepted
+  changes. `function(int) or none` and `function(int) -> int or none`
+  keep the meaning they have.
+- **The note that a plain function is made raising is kept by where
+  the function stands, and the copies of a generic function share
+  that place.** A program whose one line needs the function both ways,
+  in two copies, is refused by a firmware build with "cannot compile a
+  function value that raises where one that does not is wanted", and
+  `zeno run` takes it:
+
+  ```zeno
+  function fill[T](xs: list[T], n: int) -> int {
+      var ys: list[T] = []
+      ys.append(size)
+      return len(ys) + len(xs) + n
+  }
+  ```
+
+  called once with a `list[function(str) -> int raises ValueError]`
+  and once with a `list[function(str) -> int]`. No wrong C is
+  written, since each compiler checks the two are called alike. The
+  note is to be kept for each copy.
+- **A second kind inside `[ ]`**, as in `list[function() raises
+  ValueError, FileError]`, gets the message for a second kind, and not
+  the one about how many types a list takes.
+- **A function that is called straight from the call that made it is
+  never freed with no collector**: `make(2)("5")` leaves one block.
+  0.7.0 does the same, so it is older than this part. It belongs to
+  9.2, where the function made is a value of the statement, and is
+  freed at its end whether the call works or fails.
+
+**What the measurement of the gap gave** (56.4): over 443 programs,
+closing the gap would refuse none that a strict check accepts today.
+The question stays with the owner of the language.
+
+### 3. 9.2, 2026-11-19: three things the code asked
+
+- **A method as a value is refused by both compilers in every build
+  today**, with a collector as well. So 9.2 builds it for every
+  build, as a block that holds the object and one small function that
+  calls the method. Where values are shared the block shares the
+  object. With one owner it looks when it is passed along and takes
+  when it is kept, by the one rule of 9.2. It is a second commit of
+  the same part.
+- **A value that belongs to a function further out cannot be taken**
+  by a function written inside a function written inside it. The
+  function in the middle may be called again, and would have nothing
+  left to give the second time. It is refused, and the message says
+  to hand the value in as a parameter that says `take`.
+- **Where "kept" is decided.** The one place that knows is the place
+  a value is taken over (a `let`, `return`, a field, a parameter that
+  says `take`, `append`). The steps that give a value away there are
+  made one function, so that a function that is kept gives away what
+  it uses by the same rule as `let b = a`, and not by a copy of it.
+  The note for the compilers lists names; what each is, and so how it
+  is freed, is for each copy of a generic function to say.
