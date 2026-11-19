@@ -17068,7 +17068,7 @@ print(d.value)
             // Any digits, with a point anywhere and any power of ten.
             let digits: String = (0..1 + next() % 40).map(|_| (b'0' + (next() % 10) as u8) as char).collect();
             let point = next() as usize % (digits.len() + 1);
-            texts.push(format!("{}.{}e{}", &digits[..point], &digits[point..], next() % 700 - 350));
+            texts.push(format!("{}.{}e{}", &digits[..point], &digits[point..], (next() % 700) as i64 - 350));
             // A whole number exactly between two floats, a hair over it,
             // and one under it: floats from 2^53 are 2 apart or more.
             let low = ((1u128 << 52) | (next() as u128 >> 12)) << (1 + next() % 60);
@@ -17414,11 +17414,13 @@ int main(void) {
             return;
         };
         assert!(finished, "{errors}");
-        assert_eq!(printed, "19655520 pairs, 0 wrong, many of them too big\n");
+        // The harness prints with `printf`, which ends a line with two
+        // bytes on Windows.
+        assert_eq!(printed.replace("\r\n", "\n"), "19655520 pairs, 0 wrong, many of them too big\n");
         // Unoptimized, which is how a compiler with none of this built
         // in sees it.
         let (printed, _, _) = build_and_run("plain-harness-0", &overflow_harness(100_000), &["-O0"]).expect("as above");
-        assert_eq!(printed, "1123240 pairs, 0 wrong, many of them too big\n");
+        assert_eq!(printed.replace("\r\n", "\n"), "1123240 pairs, 0 wrong, many of them too big\n");
     }
 
     /// The same on the chip: a processor of 32 bits, where a number of
@@ -17543,12 +17545,12 @@ while true {
         while ints.len() < pairs {
             // Numbers of every length, and the ones whose product only
             // just fits, or only just does not.
-            let a = (next() >> (next() % 64)) as i64 * if next() % 2 == 0 { 1 } else { -1 };
+            let a = ((next() >> (next() % 64)) as i64).wrapping_mul(if next() % 2 == 0 { 1 } else { -1 });
             let b = match (next() % 4, a) {
                 (0, _) | (_, 0) => (next() >> (next() % 64)) as i64,
                 (1, _) => i64::MAX / a,
                 (2, _) => (i64::MAX / a).wrapping_add(if a < 0 { -1 } else { 1 }),
-                _ => i64::MAX - a.wrapping_abs().max(0) + (next() % 3) as i64 - 1,
+                _ => i64::MAX.wrapping_sub(a.wrapping_abs().max(0)).wrapping_add((next() % 3) as i64 - 1),
             };
             ints.push((a, b));
         }
@@ -17574,7 +17576,7 @@ while true {
                 (0, _) | (_, 0) => next() >> (next() % 64),
                 (1, _) => u64::MAX / a,
                 (2, _) => (u64::MAX / a).wrapping_add(1),
-                _ => u64::MAX - a + next() % 3,
+                _ => (u64::MAX - a).wrapping_add(next() % 3),
             };
             typed += &format!("{}\n{}\n{}\n{}\n", a >> 32, a & 0xFFFF_FFFF, b >> 32, b & 0xFFFF_FFFF);
             wanted += &format!(
@@ -17699,7 +17701,7 @@ print("done")
         let (mut typed, mut wanted) = (String::new(), String::new());
         let mut pairs = 0;
         while pairs < 300 {
-            let a = (next() >> (next() % 64)) as i64 * if next() % 2 == 0 { 1 } else { -1 };
+            let a = ((next() >> (next() % 64)) as i64).wrapping_mul(if next() % 2 == 0 { 1 } else { -1 });
             let b = match (next() % 3, a) {
                 (0, _) | (_, 0) => (next() >> (32 + next() % 32)) as i64,
                 (1, _) => i64::MAX / a,
