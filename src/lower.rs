@@ -1315,6 +1315,35 @@ impl Lowerer {
                 Expr::Rt { name: "field", args: vec![object, Expr::Text(name.clone())], line: at }
             }
             ExprKind::Index { object, index } => self.rt("index", &[object, index], at, out)?,
+            // `take slot.task` is two statements: keep what is there, then
+            // leave `none` in its place. No target's runtime changes.
+            ExprKind::Take(place) => {
+                let at = line(place.span);
+                let (read, store) = match &place.kind {
+                    ExprKind::Field { object, name, .. } => {
+                        let object = self.expr(object, out)?;
+                        let object = self.spill(object, out);
+                        let read = Expr::Rt { name: "field", args: vec![object.clone(), Expr::Text(name.clone())], line: at };
+                        (read, Stmt::SetField { object, name: name.clone(), value: Expr::None, line: at })
+                    }
+                    ExprKind::Index { object, index } => {
+                        let parts = self.ordered(&[object, index], out, |args| args)?;
+                        let mut parts = parts.into_iter().map(|part| self.spill(part, out)).collect::<Vec<_>>().into_iter();
+                        let (object, index) = (parts.next().unwrap_or(Expr::None), parts.next().unwrap_or(Expr::None));
+                        let read = Expr::Rt { name: "index", args: vec![object.clone(), index.clone()], line: at };
+                        (read, Stmt::SetIndex { object, index, value: Expr::None, line: at })
+                    }
+                    // The parser lets nothing else through.
+                    _ => {
+                        out.push(Stmt::Fatal { message: "`take` goes in front of a field or an item".to_string(), line: at });
+                        return Ok(Expr::None);
+                    }
+                };
+                let t = self.temp(VarKind::Value);
+                out.push(self.set(t, read));
+                out.push(store);
+                self.read(t)
+            }
         })
     }
 

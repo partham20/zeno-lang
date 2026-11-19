@@ -485,6 +485,20 @@ impl Vm {
                     let value = pop!();
                     ops::set_item(object, &index, value, span)?;
                 }
+                Op::TakeField(n) => {
+                    let object = pop!();
+                    let name = text(&frame.proto, n);
+                    let value = ops::field(object.clone(), name, span)?;
+                    ops::set_field(object, name, Value::None, span)?;
+                    self.stack.push(value);
+                }
+                Op::TakeIndex => {
+                    let index = pop!();
+                    let object = pop!();
+                    let value = ops::item(&object, &index, span)?;
+                    ops::set_item(object, &index, Value::None, span)?;
+                    self.stack.push(value);
+                }
 
                 // ----------------------------------------------------- Jumps
                 Op::Jump(to) => frame.ip = to as usize,

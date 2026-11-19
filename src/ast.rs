@@ -565,6 +565,7 @@ fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(Node)) {
             fresh_expr(object, visit);
             fresh_expr(index, visit);
         }
+        ExprKind::Take(place) => fresh_expr(place, visit),
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)
@@ -698,6 +699,9 @@ pub enum ExprKind {
     Field { object: Box<Expr>, name: String, at: Span },
     /// `object[index]`
     Index { object: Box<Expr>, index: Box<Expr> },
+    /// `take slot.task`, `take tasks[i]`: what the place holds, which is
+    /// left holding `none` (decision 56.10).
+    Take(Box<Expr>),
 }
 
 /// One piece of an f-string.

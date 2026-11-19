@@ -4307,6 +4307,7 @@ impl Emitter<'_> {
                 self.method_value(object, name, &written)?
             }
             ExprKind::Field { object, name, .. } => self.field(object, name, span)?,
+            ExprKind::Take(place) => self.take_out(place)?,
             ExprKind::Index { object, index } => {
                 let list = self.expr(object)?;
                 let position = self.expr(index)?;
@@ -6931,6 +6932,59 @@ impl Emitter<'_> {
     /// as good as the original. A `var` that such a function uses already
     /// lives in a box of its own (see `declare`), and the block holds the
     /// box's address, so both functions see each other's changes.
+    /// `take slot.task`, `take tasks[i]`: what the place holds, which is
+    /// left holding `none` (decision 56.10). Nothing is freed: whoever
+    /// receives the value owns it, and if nobody does, the statement does
+    /// (`belongs`). Text that a build with no collector kept there leaves
+    /// its keeper as `pop()` makes it leave a list.
+    fn take_out(&mut self, place: &Expr) -> Result<Val, Error> {
+        let span = place.span;
+        match &place.kind {
+            ExprKind::Field { object, name, .. } => {
+                let object = self.expr(object)?;
+                let field = match &object.kind {
+                    Kind::Class(class) => self.field_of(class, name).map(|field| (class.clone(), field)),
+                    _ => None,
+                };
+                let Some((class, (_, index, kind))) = field else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let Kind::Optional(inner) = &kind else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let empty = nothing(inner, span)?;
+                let mut code = self.load_field(&class, &object.code, index, span)?;
+                if !self.collector && is_text(&kind) {
+                    code = self.call("ptr", "zeno_text_take", format!("ptr {code}"));
+                }
+                self.store_field(&class, &object.code, index, empty, span)?;
+                Ok(Val::new(code, kind))
+            }
+            ExprKind::Index { object, index } => {
+                let list = self.expr(object)?;
+                let index = self.expr(index)?;
+                let Kind::List(item) = list.kind.clone() else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let Kind::Optional(inner) = &*item else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let none = Val::new(nothing(inner, span)?.to_string(), (*item).clone());
+                let at = self.list_place(&list.code, &index.code, &item, span);
+                let slot = self.load_item(&at, &item);
+                let mut val = self.from_slot(&item, &slot, span)?;
+                if !self.collector && is_text(&item) {
+                    val = Val::new(self.call("ptr", "zeno_text_take", format!("ptr {}", val.code)), val.kind);
+                }
+                let empty = self.to_slot(&none, span)?;
+                self.store_item(&empty, &at, &item);
+                Ok(val)
+            }
+            // The parser lets nothing else through.
+            _ => Err(cannot("`take` in front of this", span)),
+        }
+    }
+
     /// `counter.bump` used as a value is the function `function(n: int)
     /// -> int { return counter.bump(n) }`, which the checker wrote out
     /// (decision 56.9). The method is bound to the object `counter`

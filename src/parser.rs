@@ -1246,6 +1246,26 @@ impl Parser {
 
     fn negation(&mut self) -> Result<Expr, Error> {
         let span = self.span();
+        // `take slot.task`: what a field or an item holds, which is left
+        // holding `none` (decision 56.10).
+        if self.eat(TokenKind::Take) {
+            let place = self.postfix()?;
+            return match &place.kind {
+                ExprKind::Field { .. } | ExprKind::Index { .. } => Ok(Expr { kind: ExprKind::Take(Box::new(place)), span }),
+                ExprKind::Name(name) => Err(Error::new(
+                    format!(
+                        "`take` goes in front of a field or an item, as in `take slot.task`, and leaves `none` there. \
+                         `{name}` is a variable: `let other = {name}` already gives what it holds away"
+                    ),
+                    place.span,
+                )),
+                _ => Err(Error::new(
+                    "`take` goes in front of a field or an item, as in `take slot.task` or `take tasks[0]`, and \
+                     leaves `none` there",
+                    place.span,
+                )),
+            };
+        }
         if self.eat(TokenKind::Minus) {
             let operand = Box::new(self.negation()?);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, operand }, span });
@@ -2359,6 +2379,28 @@ mod tests {
             panic!("the outer function type should raise")
         };
         assert!(matches!(*inner, Type::Function { raises: None, .. }));
+    }
+
+    #[test]
+    fn take_goes_in_front_of_a_field_or_an_item() {
+        // It binds as a minus does, to the whole place after it
+        // (decision 56.10).
+        assert_eq!(tree("let t = take slot.task"), "let t = (take slot.task)\n");
+        assert_eq!(tree("let t = take slots[i].task"), "let t = (take slots[i].task)\n");
+        assert_eq!(tree("let t = take tasks[0]"), "let t = (take tasks[0])\n");
+        assert_eq!(tree("print(take slot.task is none)"), "print(((take slot.task) is none))\n");
+        assert_eq!(tree("take slot.task"), "(take slot.task)\n");
+        // A variable is given away by `let b = a` already.
+        assert_eq!(
+            error("let t = take task"),
+            "`take` goes in front of a field or an item, as in `take slot.task`, and leaves `none` there. \
+             `task` is a variable: `let other = task` already gives what it holds away"
+        );
+        assert_eq!(
+            error("let t = take make()"),
+            "`take` goes in front of a field or an item, as in `take slot.task` or `take tasks[0]`, and leaves \
+             `none` there"
+        );
     }
 
     #[test]

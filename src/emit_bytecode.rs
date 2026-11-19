@@ -213,7 +213,7 @@ impl Compiler {
             Op::Pop(n) => -(n as i64),
             Op::SetLocal(_) | Op::DefineCell(_) | Op::SetCell(_) | Op::SetCaptured(_) => -1,
             Op::Binary(_) | Op::And(_) | Op::Or(_) | Op::Chain(..) => -1,
-            Op::Append(_) | Op::GetIndex | Op::JumpIfFalse(_) => -1,
+            Op::Append(_) | Op::GetIndex | Op::TakeIndex | Op::JumpIfFalse(_) => -1,
             Op::Return | Op::Raise | Op::Reraise => -1,
             Op::List(n) | Op::Text(n) | Op::Object(n) => 1 - n as i64,
             Op::Dict(n) => 1 - 2 * n as i64,
@@ -1224,6 +1224,24 @@ impl Compiler {
                 self.expr(index);
                 self.emit(Op::GetIndex, span);
             }
+            // `take slot.task`: what is there, leaving `none`. A failure
+            // names the place, as reading it would.
+            ExprKind::Take(place) => match &place.kind {
+                ExprKind::Field { object, name, .. } => {
+                    self.expr(object);
+                    let name = self.text(name);
+                    self.emit(Op::TakeField(name), place.span);
+                }
+                ExprKind::Index { object, index } => {
+                    self.expr(object);
+                    self.expr(index);
+                    self.emit(Op::TakeIndex, place.span);
+                }
+                // The parser lets nothing else through.
+                _ => {
+                    self.mistake("`take` goes in front of a field or an item", span);
+                }
+            },
         }
     }
 }
@@ -1401,7 +1419,7 @@ impl Names {
                     self.expr(&arg.value);
                 }
             }
-            ExprKind::Field { object, .. } => self.expr(object),
+            ExprKind::Field { object, .. } | ExprKind::Take(object) => self.expr(object),
             ExprKind::Index { object, index } => {
                 self.expr(object);
                 self.expr(index);

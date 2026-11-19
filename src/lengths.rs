@@ -163,6 +163,8 @@ impl Reader<'_> {
                 }
             }
             ExprKind::Field { object, .. } => self.expr(object),
+            // It leaves `none` in an item: the list is no longer.
+            ExprKind::Take(place) => self.expr(place),
             ExprKind::Call { callee, args } => {
                 self.expr(callee);
                 for (index, arg) in args.iter().enumerate() {

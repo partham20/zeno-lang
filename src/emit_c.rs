@@ -4308,6 +4308,7 @@ impl Emitter<'_> {
                 self.method_value(object, name, &written)
             }
             ExprKind::Field { object, name, .. } => self.field(object, name, span),
+            ExprKind::Take(place) => self.take_out(place),
             ExprKind::Index { object, index } => {
                 let mut vals = self.sequence(&[object, index])?;
                 let index = vals.pop().expect("two values");
@@ -4940,6 +4941,68 @@ impl Emitter<'_> {
             self.line(line);
         }
         Ok(Val::plain(format!("(&{made}->base)"), kind))
+    }
+
+    /// `take slot.task`, `take tasks[i]`: what the place holds, which is
+    /// left holding `none` (decision 56.10). The value is read into a
+    /// variable of its own, and `none` written where it was, so nothing is
+    /// freed: whoever receives the value owns it, and if nobody does, the
+    /// statement does (`belongs`). Text that a build with no collector
+    /// kept there leaves its keeper as `pop()` makes it leave a list.
+    fn take_out(&mut self, place: &Expr) -> Result<Val, Error> {
+        let span = place.span;
+        match &place.kind {
+            ExprKind::Field { object: reached, name, .. } => {
+                let object = self.expr(reached)?;
+                let object = if is_c_place(&object.code) { object } else { self.temp(object, span)? };
+                let field = match &object.kind {
+                    Kind::Class(class) if !self.classes[class].sized.contains_key(name) => {
+                        self.classes[class].fields.iter().find(|(field, _, _)| field == name)
+                    }
+                    _ => None,
+                };
+                let Some((_, kind @ Kind::Optional(inner), _)) = field else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let (kind, empty) = (kind.clone(), nothing(inner, span)?);
+                let at = format!("{}->z_{name}", object.code);
+                let code = match !self.collector && is_text(&kind) {
+                    true => format!("zeno_text_take({at})"),
+                    false => at.clone(),
+                };
+                let mut val = Val::from(code, kind, &[&object]);
+                val.calls = true;
+                let val = self.temp(val, span)?;
+                self.line(format!("{at} = {empty};"));
+                Ok(val)
+            }
+            ExprKind::Index { object, index } => {
+                let mut vals = self.sequence(&[object, index])?;
+                let index = vals.pop().expect("two values");
+                let list = vals.pop().expect("two values");
+                let Kind::List(item) = &list.kind else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let item = (**item).clone();
+                let Kind::Optional(inner) = &item else {
+                    return Err(cannot("`take` in front of this", span));
+                };
+                let empty = to_slot(&item, &nothing(inner, span)?, span)?;
+                let at = self.new_temp();
+                self.line(format!("zeno_slot *{at} = {};", self.slot_address(&list.code, &index.code, span)));
+                let mut code = from_slot(&item, &format!("(*{at})"), span)?;
+                if !self.collector && is_text(&item) {
+                    code = format!("zeno_text_take({code})");
+                }
+                let mut val = Val::from(code, read_kind(&item), &[&list, &index]);
+                val.calls = true;
+                let val = self.temp(val, span)?;
+                self.line(format!("*{at} = {empty};"));
+                Ok(val)
+            }
+            // The parser lets nothing else through.
+            _ => Err(cannot("`take` in front of this", span)),
+        }
     }
 
     /// `counter.bump` used as a value is the function `function(n: int)
@@ -7480,9 +7543,10 @@ fn names_in_expr(expr: &Expr, inside: bool, names: &mut HashSet<String>) {
             names.insert(name.clone());
         }
         ExprKind::Name(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
-        ExprKind::Unit { value: inner, .. } | ExprKind::Unary { operand: inner, .. } | ExprKind::Field { object: inner, .. } => {
-            each(inner)
-        }
+        ExprKind::Unit { value: inner, .. }
+        | ExprKind::Unary { operand: inner, .. }
+        | ExprKind::Field { object: inner, .. }
+        | ExprKind::Take(inner) => each(inner),
         ExprKind::Binary { left, right, .. } | ExprKind::Index { object: left, index: right } => {
             each(left);
             each(right);
@@ -9889,6 +9953,36 @@ print("after")
         firmware_as_interpreter("method-owned", owned);
         crate::emit_llvm::tests::same_as_interpreter("method-owned", owned);
         no_collector_as_interpreter("method-owned", owned);
+    }
+
+    #[test]
+    fn take_leaves_none_every_way() {
+        // A scheduler that hands its task on, fields and items of every
+        // kind that may be `none`, a thousand rounds, and a value nobody
+        // receives (decision 56.10). Every build prints what `zeno run`
+        // prints, and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-take.zeno");
+        no_collector_as_interpreter("take", source);
+        firmware_as_interpreter("take", source);
+        crate::emit_llvm::tests::same_as_interpreter("take", source);
+        // The value is read into a variable of its own, and `none` is
+        // written where it was. Nothing is freed there.
+        let c = compile_no_collector(
+            "class Task {\n    id: int\n}\nclass Slot {\n    task: Task or none\n}\n\
+             let s = Slot(Task(1))\nlet t = take s.task\nprint(t, s.task)\n",
+        )
+        .unwrap();
+        assert!(c.contains(" = z_s->z_task;\n    z_s->z_task = NULL;\n"), "{c}");
+        // A bad index stops the program at the `take`, in every build.
+        let bad = "class Task {\n    id: int\n}\nlet ts: list[Task or none] = [Task(1)]\nprint(\"before\")\n\
+                   let t = take ts[5]\nprint(\"never\")\n";
+        let wanted = "error: uncaught IndexError: index 5 is out of range for a list of length 1\n --> test.zeno:6:14\n";
+        for (name, c) in [("take-bad", compile(bad)), ("take-bad-firmware", compile_firmware(bad)), ("take-bad-owned", compile_no_collector(bad))] {
+            let Some((printed, errors, finished)) = build_and_run(name, &c.unwrap(), &[]) else {
+                return;
+            };
+            assert_eq!((printed.as_str(), errors.as_str(), finished), ("before\n", wanted, false), "{name}");
+        }
     }
 
     #[test]

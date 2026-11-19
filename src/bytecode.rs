@@ -113,6 +113,12 @@ pub enum Op {
     GetIndex,
     /// Pop an index, an object and, under them, a value. Store the value there.
     SetIndex,
+    /// `take object.name`: replace the object on top with its field named
+    /// by constant n, and leave `none` in the field.
+    TakeField(u32),
+    /// `take object[index]`: pop an index and an object, push the item,
+    /// and leave `none` in its place.
+    TakeIndex,
 
     // --------------------------------------------------------------- Jumps
     /// Carry on from instruction n.
@@ -395,7 +401,7 @@ fn comment(proto: &Proto, at: usize, op: Op) -> String {
     let constant = |n: u32| proto.constants[n as usize].repr();
     match op {
         Op::Const(n) | Op::FormatWith(n) | Op::Unit(n) | Op::Fatal(n) => constant(n),
-        Op::GetField(n) | Op::SetField(n) => format!(".{}", proto.constants[n as usize]),
+        Op::GetField(n) | Op::SetField(n) | Op::TakeField(n) => format!(".{}", proto.constants[n as usize]),
         Op::Required(_, n) | Op::IsCase(n, _) | Op::Except(n, _) => constant(n),
         Op::GetCell(n) | Op::SetCell(n) | Op::DefineCell(n) | Op::NewCell(n) => {
             proto.cells[n as usize].clone()

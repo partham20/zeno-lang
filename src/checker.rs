@@ -1753,8 +1753,11 @@ fn call_in(place: &Expr) -> Option<&Expr> {
             FormatPart::Value { value, .. } => call_in(value),
             FormatPart::Text(_) => None,
         }),
-        // A call, and the few things nobody writes in a place.
-        ExprKind::Call { .. } | ExprKind::Dict(_) | ExprKind::ListComp { .. } | ExprKind::Function(_) => Some(place),
+        // A call, and the few things nobody writes in a place. `take`
+        // changes what it reads, as a call may.
+        ExprKind::Call { .. } | ExprKind::Dict(_) | ExprKind::ListComp { .. } | ExprKind::Function(_) | ExprKind::Take(_) => {
+            Some(place)
+        }
     }
 }
 
@@ -1845,7 +1848,7 @@ fn names_in(expr: &Expr, names: &mut Vec<String>) {
             names_in(callee, names);
             args.iter().for_each(|arg| names_in(&arg.value, names));
         }
-        ExprKind::Field { object, .. } => names_in(object, names),
+        ExprKind::Field { object, .. } | ExprKind::Take(object) => names_in(object, names),
         ExprKind::Index { object, index } => {
             names_in(object, names);
             names_in(index, names);
@@ -3699,6 +3702,8 @@ impl Checker {
                 FormatPart::Value { value, .. } => Some(value),
                 FormatPart::Text(_) => None,
             })),
+            // It changes the place it reads.
+            ExprKind::Take(_) => Some(value),
             // `math.pi` and `Mode.Idle`: a name of a module or an enum.
             ExprKind::Field { object, .. } => match &object.kind {
                 ExprKind::Name(name) if matches!(env.get(name), Some(Variable { ty: Ty::Module(_) | Ty::Enum(_), .. })) => None,
@@ -5125,9 +5130,24 @@ impl Checker {
                          returned or given away. If it is a parameter, write `take` in front of its type \
                          to take the value over"
                     ),
+                    // One that may be `none` can be taken out, leaving
+                    // `none` (decision 56.10).
+                    ExprKind::Field { name, .. } if matches!(inner, Ty::Optional(_)) => format!(
+                        "`{name}` holds an owned value, which cannot be taken out of the object it is in. \
+                         Use it where it is, or pass it to a parameter that looks. To move it out and leave `none` \
+                         in the field, write `take {}`",
+                        crate::printer::expr(expr)
+                    ),
                     ExprKind::Field { name, .. } => format!(
                         "`{name}` holds an owned value, which cannot be taken out of the object it is in. \
                          Use it where it is, or pass it to a parameter that looks"
+                    ),
+                    ExprKind::Index { .. } if matches!(inner, Ty::Optional(_)) => format!(
+                        "this item is {}, which has one owner: the list. `[ ]` only looks at it. \
+                         Use it where it is, or pass it to a parameter that looks. To move it out and leave `none` \
+                         in its place, write `take {}`",
+                        an_owned(&inner),
+                        crate::printer::expr(expr)
                     ),
                     ExprKind::Index { .. } => format!(
                         "this item is {}, which has one owner: the list. `[ ]` only looks at it. \
@@ -6504,6 +6524,7 @@ impl Checker {
                     ty => ty,
                 }
             }
+            ExprKind::Take(place) => self.take_out(place, env),
             ExprKind::Index { object, index } => {
                 let (object, length) = self.look_fixed(object, env);
                 self.index_inside(index, length);
@@ -6536,6 +6557,80 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// `take slot.task`, `take tasks[i]`: what the place holds, which is
+    /// left holding `none` (decision 56.10). So the place must be one
+    /// that may hold `none`. A value that has one owner leaves the object
+    /// or the list it was in, and the guards of `takes_out` hold for it
+    /// as for `pop()`: only the owner may, not while a loop walks it, and
+    /// not on a line that has already looked at it. Whoever receives it
+    /// owns it from here.
+    fn take_out(&mut self, place: &Expr, env: &Env) -> Ty {
+        let looked = self.owned.looking.len();
+        let (inside, declared) = match &place.kind {
+            ExprKind::Field { object, name, at } => {
+                let object_type = self.expr(object, env);
+                let object_type = self.looked(object_type, object);
+                let found = self.field(&object_type, name, place.span);
+                self.field_used(name, &found, *at);
+                if !matches!(found, Ty::Optional(_) | Ty::Invalid) && !found.is_loose() {
+                    let message = match &found {
+                        Ty::BoundMethod(_) | Ty::BuiltinMethod(..) => {
+                            format!("`{name}` is a method. `take` goes in front of a field or an item, and leaves `none` there")
+                        }
+                        ty => format!(
+                            "`take` leaves `none` in `{name}`, and `{name}` is written `{ty}`, which does not allow \
+                             `none`. If it may be empty, declare it as `{name}: {ty} or none`"
+                        ),
+                    };
+                    return self.error(message, place.span);
+                }
+                (object, found)
+            }
+            ExprKind::Index { object, index } => {
+                let (object_type, length) = self.look_fixed(object, env);
+                self.index_inside(index, length);
+                let index_type = self.look(index, env);
+                let item = match object_type {
+                    Ty::List(item) => *item,
+                    ty if ty.is_loose() => return ty,
+                    Ty::Dict(..) => {
+                        return self.error(
+                            "`take` takes an item out of a list or a field out of an object, and not a value out of \
+                             a dict yet",
+                            place.span,
+                        )
+                    }
+                    Ty::Str => {
+                        return self.error(
+                            "`take` leaves `none` in the place of an item, and text is never changed. Read the \
+                             character with `[ ]`",
+                            place.span,
+                        )
+                    }
+                    ty => return self.error(format!("an item cannot be taken from {ty}"), place.span),
+                };
+                self.expect(&index_type, &Ty::Int, "an index", index.span);
+                if !matches!(item, Ty::Optional(_) | Ty::Invalid) && !item.is_loose() {
+                    return self.error(
+                        format!(
+                            "`take` leaves `none` in the place of the item, and the items of this list are written \
+                             `{item}`, which does not allow `none`. To take the item out, use `pop()`. To leave \
+                             `none` in its place, make it a `list[{item} or none]`"
+                        ),
+                        place.span,
+                    );
+                }
+                (object, item)
+            }
+            // The parser lets nothing else through.
+            _ => return Ty::Invalid,
+        };
+        if declared.is_owned() {
+            self.takes_out(inside, looked, "take out what is there", env, place.span);
+        }
+        declared
     }
 
     /// Is `name` a field or a method that `class` keeps to the file it
@@ -11483,7 +11578,7 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         // Giving it a new value fills it again.
         ok("var a = find(1)\nif a is not none { print(send(a))\na = find(2) }\nprint(peek(a))");
         // A look at one cannot be kept, and a field does not give its
-        // value up.
+        // value up by being read. `take` takes it out (decision 56.10).
         assert_eq!(
             error("function keep(p: Packet or none) -> Packet or none { return p }"),
             "`p` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
@@ -11491,9 +11586,10 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         assert_eq!(
             error("owned class Slot { held: Packet or none }\nlet s = Slot(find(1))\nlet p = s.held"),
-            "`held` holds an owned value, which cannot be taken out of the object it is in. \
-             Use it where it is, or pass it to a parameter that looks"
+            "`held` holds an owned value, which cannot be taken out of the object it is in. Use it where it is, \
+             or pass it to a parameter that looks. To move it out and leave `none` in the field, write `take s.held`"
         );
+        ok("owned class Slot { held: Packet or none }\nlet s = Slot(find(1))\nlet p = take s.held\nprint(p is none, s.held is none)");
         // Only the owner may put something else there: that frees what
         // was there.
         assert_eq!(
@@ -13027,6 +13123,80 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         strict_ok("interface Shape {\n    function area(self) -> int\n}\nclass Square is Shape {\n    side: int\n\
                    function area(self) -> int {\n        return self.side * self.side\n    }\n}\n\
                    let s: Shape = Square(2)\nlet f = s.area\nprint(f())\n");
+    }
+
+    #[test]
+    fn take_leaves_none_where_a_value_was() {
+        // `take slot.task` is what the field holds, and leaves `none`
+        // there (decision 56.10).
+        let classes = "class Task {\n    id: int\n}\nclass Slot {\n    task: Task or none\n    id: int\n}\n\
+                       function look(a: Task or none, b: Task or none) -> int {\n    return 1\n}\n";
+        let with = |rest: &str| format!("{classes}{rest}");
+        // Its type is the place's, in every build.
+        for source in [
+            with("let s = Slot(Task(1), 1)\nlet t: Task or none = take s.task\nprint(t is none, s.task)"),
+            with("let ts: list[Task or none] = [Task(1), none]\nlet t = take ts[0]\nprint(t, ts)"),
+            with("let ts: list[str or none, 2] = [\"a\", none]\nlet t: str or none = take ts[0]\nprint(t)"),
+        ] {
+            assert_eq!(errors(&source), Vec::<String>::new(), "{source}");
+            assert_eq!(check(&source, true), Vec::<String>::new(), "{source}");
+            assert_eq!(firmware_errors(&source), Vec::<String>::new(), "{source}");
+            assert_eq!(one_owner(&source), Vec::<String>::new(), "{source}");
+        }
+        // The place must allow `none`.
+        assert_eq!(
+            error(&with("let s = Slot(none, 1)\nlet n = take s.id")),
+            "`take` leaves `none` in `id`, and `id` is written `int`, which does not allow `none`. If it may be \
+             empty, declare it as `id: int or none`"
+        );
+        assert_eq!(
+            error(&with("let ts = [Task(1)]\nlet t = take ts[0]")),
+            "`take` leaves `none` in the place of the item, and the items of this list are written `Task`, which \
+             does not allow `none`. To take the item out, use `pop()`. To leave `none` in its place, make it a \
+             `list[Task or none]`"
+        );
+        assert_eq!(
+            error(&with("let t = take \"abc\"[0]")),
+            "`take` leaves `none` in the place of an item, and text is never changed. Read the character with `[ ]`"
+        );
+        // With one owner, the guards of `pop()` hold.
+        let inside = |body: &str| one_owner(&with(&format!("function f() {{\n{body}\n}}\nf()\n")));
+        assert_eq!(
+            one_owner(&with("function f(s: Slot) -> Task or none {\n    return take s.task\n}\n")),
+            vec!["only the owner can take out what is there: somebody else may have been lent it. Here `s` only looks at it"]
+        );
+        one_owner_ok(&with("function f(s: take Slot) -> Task or none {\n    return take s.task\n}\nprint(f(Slot(Task(1), 2)))\n"));
+        assert_eq!(
+            inside("    let ts: list[Task or none] = [Task(1)]\n    for t in ts {\n        let x = take ts[0]\n    }"),
+            vec!["the `for` on line 13 is walking a list that `ts` owns, and is still looking at its items. Nothing can \
+                  take out what is there until the loop is over"]
+        );
+        assert_eq!(
+            inside("    let s = Slot(Task(1), 1)\n    print(look(s.task, take s.task))"),
+            vec!["this line has already looked at `s`, and the look might still be in use. Do the other thing on a \
+                  line of its own first"]
+        );
+        // After it, on the same line, the field is `none`: nothing to guard.
+        assert_eq!(inside("    let s = Slot(Task(1), 1)\n    print(look(take s.task, s.task))"), Vec::<String>::new());
+        // A method may take out what its own object holds, and whoever
+        // calls it is held to the rule in its place.
+        let method = "class Holder {\n    task: Task or none\n    function hand_on(self) -> Task or none {\n\
+                      return take self.task\n    }\n}\n";
+        one_owner_ok(&with(&format!("{method}let h = Holder(Task(1))\nprint(h.hand_on(), h.task)\n")));
+        assert_eq!(
+            one_owner(&with(&format!("{method}function f(h: Holder) -> Task or none {{\n    return h.hand_on()\n}}\n"))),
+            vec!["only the owner can call `hand_on`, which takes out or replaces something the object owns: somebody \
+                  else may have been lent it. Here `h` only looks at it"]
+        );
+        // Reading an owned field that may be `none` says to take it.
+        assert_eq!(
+            one_owner(&with("function f() -> Task or none {\n    let s = Slot(Task(1), 1)\n    let t = s.task\n    return t\n}\n")),
+            vec!["`task` holds an owned value, which cannot be taken out of the object it is in. Use it where it is, \
+                  or pass it to a parameter that looks. To move it out and leave `none` in the field, write `take s.task`"]
+        );
+        // With a collector the value is shared, and the place still holds
+        // `none` afterwards, as in every build.
+        strict_ok(&with("function f(s: Slot) -> Task or none {\n    return take s.task\n}\nprint(f(Slot(Task(1), 1)))\n"));
     }
 
     #[test]

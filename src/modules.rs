@@ -1539,6 +1539,7 @@ impl<'a> Renamer<'a> {
                 self.expr(object);
                 self.expr(index);
             }
+            ExprKind::Take(place) => self.expr(place),
         }
     }
 }

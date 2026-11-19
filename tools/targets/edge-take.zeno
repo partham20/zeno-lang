@@ -1,0 +1,105 @@
+# `take` in front of a field or an item (decision 56.10): a scheduler
+# that hands its task on, fields and items of every kind that may be
+# `none`, a thousand rounds, and a value nobody receives. Every build
+# prints what `zeno run` prints, and a build with no collector leaves
+# nothing.
+
+class Task {
+    id: int
+    name: str
+    steps: list[int]
+}
+
+class Slot {
+    task: Task or none
+    label: str or none
+    count: int or none
+}
+
+class Scheduler {
+    current: Task or none
+    waiting: list[Task or none]
+    done: int
+
+    function hand_on(self) -> Task or none {
+        return take self.current
+    }
+
+    function park(self) {
+        let task = take self.current
+        self.waiting.append(task)
+        let first = take self.waiting[0]
+        self.current = first
+    }
+}
+
+function run(task: Task) -> int {
+    var total = 0
+    for s in task.steps {
+        total += s
+    }
+    return total
+}
+
+function main() {
+    let slot = Slot(Task(1, "first", [1, 2, 3]), "a label", 7)
+    let task = take slot.task
+    print(slot.task is none, task is none)
+    if task is not none {
+        print(task.name, run(task))
+    }
+    let again = take slot.task
+    print(again is none)
+    let label = take slot.label
+    let count = take slot.count
+    print(label, count, slot.label, slot.count)
+
+    let tasks: list[Task or none] = [Task(2, "two", [2]), none, Task(3, "three", [3, 3])]
+    let t = take tasks[2]
+    print(len(tasks), tasks[2] is none, t is none)
+    let gone = take tasks[1]
+    print(gone is none)
+
+    let s = Scheduler(Task(4, "four", [4]), [Task(5, "five", [5])], 0)
+    s.park()
+    print(s.current is none, len(s.waiting), s.waiting[0] is none)
+    let h = s.hand_on()
+    print(h is none)
+
+    for i in range(1000) {
+        let box = Slot(Task(i, f"task {i}", [i, i]), f"label {i}", i)
+        let inner = take box.task
+        let words = take box.label
+        if inner is not none {
+            s.current = inner
+        }
+        if i == 999 {
+            print(take box.count, box.count, words)
+        }
+    }
+    print(s.current is not none)
+    print(take s.current is not none, s.current is none)
+}
+
+function make() -> Slot {
+    return Slot(Task(9, "nine", [9]), none, none)
+}
+
+function more() {
+    let s = Slot(Task(1, "one", [1]), none, none)
+    print(take s.task)
+    s.task = Task(2, "two", [2])
+    take s.task
+    print(s.task is none)
+    let t = take make().task
+    print(t is not none)
+    var fixed: list[str or none, 3] = ["one", none, "three"]
+    let f = take fixed[2]
+    print(f, fixed[2] is none, len(fixed), fixed)
+    let words: list[str or none] = [f"w{len(fixed)}", "b"]
+    let w = take words[0]
+    print(w, words)
+}
+
+main()
+more()

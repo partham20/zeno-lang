@@ -1023,6 +1023,24 @@ impl Interpreter {
                 let index = self.eval(index, env)?;
                 ops::item(&object, &index, span)
             }
+            // `take slot.task`: read the place, then leave `none` there.
+            ExprKind::Take(place) => match &place.kind {
+                ExprKind::Field { object, name, .. } => {
+                    let object = self.eval(object, env)?;
+                    let value = ops::field(object.clone(), name, place.span)?;
+                    ops::set_field(object, name, Value::None, place.span)?;
+                    Ok(value)
+                }
+                ExprKind::Index { object, index } => {
+                    let object = self.eval(object, env)?;
+                    let index = self.eval(index, env)?;
+                    let value = ops::item(&object, &index, place.span)?;
+                    ops::set_item(object, &index, Value::None, place.span)?;
+                    Ok(value)
+                }
+                // The parser lets nothing else through.
+                _ => fatal("`take` goes in front of a field or an item", span),
+            },
         }
     }
 

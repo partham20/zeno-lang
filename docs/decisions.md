@@ -17110,7 +17110,111 @@ the program, and nine print what `zeno run` prints here (Lua, Dart,
 Kotlin, C# and WebAssembly are not installed on this machine; the
 weekly check has them).
 
-### 56.10 Left for later
+### 56.10 `take` in front of a place: moving out what may be `none`
+
+```zeno
+class Slot {
+    task: Task or none
+}
+
+let task = take slot.task       # slot.task is none now
+if task is not none {
+    run(task)
+}
+```
+
+**The need.** With one owner, an object could not give away what a
+field holds, because nothing would be left in the field (5.8i). A list
+has `pop()`; a field had nothing, so a state machine could not hand on
+the buffer it held.
+
+**The rule.** `take` in front of a field or an item of a list gives
+what is there and leaves `none`. The place must be one that may hold
+`none`, so that what is left is something its type already allows, and
+what comes back may be `none` too, and is tested as any such value is.
+It means the same in every build: where values are shared it still
+leaves `none`, so one program runs the same way under `zeno run` and
+with no collector. The plan weighs the other ways to write it (9.3);
+`take` is the word for "the value goes over, and the place holds
+nothing" since 5.19b, and it was reserved already, so no new word is
+needed and no program that builds today changes.
+
+**Where it goes.** In front of a field, `take slot.task`, or of an item
+of a list, `take tasks[i]`, reached in any way: `take slots[i].task`,
+`take make().task`. It binds as a minus does, to the whole place after
+it. A variable is not a place for it, since `let b = a` gives `a` away
+already, and the parser says so:
+
+```
+error: `take` goes in front of a field or an item, as in `take slot.task`, and leaves `none` there. `task` is a variable: `let other = task` already gives what it holds away
+```
+
+A place that cannot hold `none` gets a message that says how to make
+it one, and for a list, that `pop()` takes an item out:
+
+```
+error: `take` leaves `none` in `id`, and `id` is written `int`, which does not allow `none`. If it may be empty, declare it as `id: int or none`
+error: `take` leaves `none` in the place of the item, and the items of this list are written `Task`, which does not allow `none`. To take the item out, use `pop()`. To leave `none` in its place, make it a `list[Task or none]`
+```
+
+A value of a dict is not a place for it yet: a dict cannot hold a
+value that may be `none` (`get` gives `none` for a key that is not
+there), so there is nothing to leave.
+
+**The guards.** A value that has one owner leaves the object or the
+list it was in. So the three guards of `pop()` (5.15e) hold, by the
+same code (`takes_out` in the checker): only the owner may, not while
+a loop walks the owner, and not on a line that has already looked at
+it. A method may take out what its own object holds, and whoever calls
+the method is held to the rule in its place (5.19k), as for `pop()`.
+After a `take`, on the same line, the place holds `none`, so a look at
+it there needs no guard.
+
+Reading such a field, which a line cannot do with one owner, keeps
+its words, and adds what `take` would do: "To move it out and leave
+`none` in the field, write `take s.task`". The same for an item. It
+says what `take` does rather than that it is the answer, since the line
+may be walking a chain, `at = at.next`, which `take` would cut. The
+words of that refusal change in 15 builds that refused before and
+refuse still: `book/11-classes#11`, `book/13-none#8` and
+`tools/targets/edge-big.zeno`, in the five builds with one owner.
+
+**How it is built.** One new expression, `ExprKind::Take(place)`, last
+of its kind. The parser reads `take` where a minus may go. The checker
+gives it the type of the place (`take_out`). The interpreter reads the
+place and stores `none`; the VM does the same with two new instructions,
+`TakeField` and `TakeIndex`, which no program of before uses. Both
+compilers read the value into a variable of their own and write `none`
+where it was, so nothing is freed there: whoever receives the value
+owns it, and if nobody does, the statement does, as with any value made
+in the middle of a line. With no collector, text that a field or a list
+kept leaves its keeper as `pop()` makes it leave a list
+(`zeno_text_take`). `lower.rs` makes it two statements for the
+targets, keep what is there and then store `none`, so no target's
+runtime changes. `zeno join` writes it `(take slot.task)`, with the
+brackets every operator gets there.
+
+**What it costs.** Nothing for a program that does not use it: the C,
+IR, `zeno join` and bytecode of every program that was there before
+are those of 0.7.0 (`tools/same.py`).
+
+**Tests.** The parser: where `take` binds, and its two messages. The
+checker: the type in every build, a place that cannot hold `none`,
+text, the three guards, a method that takes out of its own object, and
+the message for reading such a field
+(`take_leaves_none_where_a_value_was`). Both compilers:
+[`tools/targets/edge-take.zeno`](../tools/targets/edge-take.zeno),
+a scheduler that hands its task on, fields and items of an object, of
+text and of a number that may be `none`, a list of a fixed length, a
+thousand rounds, and a value that nobody receives, with no collector
+through C and LLVM with the same memory report and 0 blocks left, and
+in the ordinary and firmware builds of both. A bad index stops the
+program at the `take`, at the same line and column, in each build of
+C. The C writes `none` where the value was and frees nothing there
+(`take_leaves_none_every_way`). The targets run the program, and nine
+print what `zeno run` prints here.
+
+### 56.11 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17131,3 +17235,10 @@ weekly check has them).
   own, used as a value.** Refused by both compilers as before.
 - **A method that comes with Zeno used as a value**: `xs.append`,
   `text.upper`. Refused by both compilers as before.
+- **`take` in front of a value of a dict.** A dict cannot hold a value
+  that may be `none` yet. Refused with "...and not a value out of a
+  dict yet".
+- **`take` with one owner on the line that writes the place**:
+  `self.current = take self.waiting[0]` is refused, as
+  `self.current = self.waiting.pop()` was, because the line looks at
+  `self` before it takes out of it. Two lines do it.

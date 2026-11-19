@@ -862,6 +862,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     method. Passed along it looks at `counter`, and kept it takes it.
     See [`docs/method-values.md`](docs/method-values.md) and 56.9 of
     [`docs/decisions.md`](docs/decisions.md))
+56. `take` in front of a place (on `main`, for 0.8.0: `let task = take
+    slot.task` gives what a field or an item holds and leaves `none`
+    there, in every build, so a state machine with no collector can
+    hand on what it holds. See [`docs/take.md`](docs/take.md) and 56.10
+    of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
