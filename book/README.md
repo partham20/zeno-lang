@@ -1,6 +1,6 @@
 # The Zeno Book
 
-The whole of Zeno 0.5, from a first line to the inside of the compiler:
+The whole of Zeno 0.6, from a first line to the inside of the compiler:
 36 chapters in five parts, and seven appendices.
 
 - `chapters/` holds the source, one LaTeX file for each chapter or

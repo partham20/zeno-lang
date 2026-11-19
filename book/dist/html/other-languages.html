@@ -95,7 +95,7 @@
 <header class="bar">
   <button class="menu" aria-label="Contents" onclick="document.body.classList.toggle('open')">☰</button>
   <a class="brand" href="index.html">The Zeno Book</a>
-  <span class="version">Zeno 0.5</span>
+  <span class="version">Zeno 0.6</span>
   <a class="site" href="https://zeno-lang.org">zeno-lang.org</a>
 </header>
 <div class="layout">
@@ -661,8 +661,7 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>names.add(<span class="st">&quot;bob&quot;</span>)</span>
 <span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>java.type(<span class="st">&quot;java.util.Collections&quot;</span>).sort(names)</span>
 <span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a>print(names, len(names), names[<span class="dv">0</span>], <span class="st">&quot;bob&quot;</span> <span class="kw">in</span> names, names == [<span class="st">&quot;ann&quot;</span>, <span class="st">&quot;bob&quot;</span>, <span class="st">&quot;cy&quot;</span>])</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStoreType=JKS -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=36157 -Dhttp.nonProxyHosts=localhost|127.0.0.1|::1|127.*|0.*|::|169.254.*|api.anthropic.com|api-staging.anthropic.com|api-pr-preview.anthropic.com|mcp-proxy.anthropic.com|mcp-proxy-staging.anthropic.com|registry.npmjs.org|jsr.io|npm.jsr.io|pypi.org|files.pythonhosted.org|index.crates.io|proxy.golang.org|host.docker.internal|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|192.168.*|100.64.0.0/10|*.svc.cluster.local|*.svc.cluster.local -Djdk.http.auth.tunneling.disabledSchemes= -Djdk.http.auth.proxying.disabledSchemes=
-9 2
+<pre class="Output" data-language="Output" style="outputstyle"><code>9 2
 2026-11-18 WEDNESDAY 2026-12-18 2027
 [ann, bob, cy] 3 ann true true</code></pre>
 <p>A list of Zeno passed to a class of Java arrives as a new
@@ -705,8 +704,7 @@ style="zenostyle"><pre class="sourceCode Zeno"><code class="sourceCode zeno"><sp
 <span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>} <span class="kw">except</span> ValueError <span class="kw">as</span> error {</span>
 <span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>    print(error.message)</span>
 <span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
-<pre class="Output" data-language="Output" style="outputstyle"><code>Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStoreType=JKS -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=36157 -Dhttp.nonProxyHosts=localhost|127.0.0.1|::1|127.*|0.*|::|169.254.*|api.anthropic.com|api-staging.anthropic.com|api-pr-preview.anthropic.com|mcp-proxy.anthropic.com|mcp-proxy-staging.anthropic.com|registry.npmjs.org|jsr.io|npm.jsr.io|pypi.org|files.pythonhosted.org|index.crates.io|proxy.golang.org|host.docker.internal|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|192.168.*|100.64.0.0/10|*.svc.cluster.local|*.svc.cluster.local -Djdk.http.auth.tunneling.disabledSchemes= -Djdk.http.auth.proxying.disabledSchemes=
-5 2.5 true
+<pre class="Output" data-language="Output" style="outputstyle"><code>5 2.5 true
 NumberFormatException: For input string: &quot;forty&quot;</code></pre>
 <p>Those are three different methods of Java, and Zeno picked each from
 the type of what it was given.</p>
