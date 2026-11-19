@@ -51,12 +51,16 @@ release ([`release.md`](release.md)).
 | 10 | Several values from one function | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
 | 11 | Generic enums, generic interfaces, and bounds | large | A `Maybe[T]` and a `sort` that asks for an order |
 | 12 | Cleaning up when a block ends, and files read in pieces | medium | An open file, a lock and an interrupt mask all need "and put it back" |
-| 13 | Tools: step through a `.zeno` file in gdb, tests of a compiled program, a message on `assert`, completion and rename in the editor, a REPL | medium, in pieces | Each is small by itself |
-| 14 | More than one thing at a time: tasks, threads, `async` | very large | Last, because it touches memory, errors and every engine |
+| 13 | Tools: tests of a compiled program and a message on `assert` (planned now); step through a `.zeno` file in gdb, completion and rename in the editor, a REPL (**put off**, 2026-11-19) | medium, in pieces | Each is small by itself |
+| 14 | More than one thing at a time: tasks, threads, `async` (**put off**, 2026-11-19; designed in the plan) | very large | Last, because it touches memory, errors and every engine |
 
 Items 1 to 8 are built, and went out in 0.7.0. How items 9 to 14 are
 to be built, part by part, with the ways of writing each that were
-weighed, is in [`plan-9-14.md`](plan-9-14.md).
+weighed, is in [`plan-9-14.md`](plan-9-14.md). Items 9 to 12 are
+being built in full, and of item 13 the tests of a compiled program
+and the message on `assert`. The other tools of item 13 and the whole
+of item 14 are put off: their designs are in the plan, ready for when
+they are taken up.
 
 Calling C from Zeno belongs between 7 and 8. It is being built
 elsewhere, as the third version of the bridges to other languages, so

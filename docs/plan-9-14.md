@@ -24,13 +24,22 @@ the last part of this page.
 | 10 | Several values from one function | 10.1 to 10.4 | 57 |
 | 11 | Generic enums, bounds, generic interfaces | 11.1 to 11.5 | 58 |
 | 12 | Cleaning up when a block ends, and files in pieces | 12.1 to 12.3 | 59 |
-| 13 | Tools | 13.1 to 13.6 | 60 |
-| 14 | More than one thing at a time | 14.1, 14.2 | 61 |
+| 13 | Tools | 13.1 and 13.2. 13.3 to 13.6 are put off | 60 |
+| 14 | More than one thing at a time | put off | 61 |
 
 The order is the order of `missing.md`, and it is kept because later
 items stand on earlier ones: generic enums that own what they carry
 need 9.4, the queue of item 14 needs the generics of item 11, and an
 open file needs the cleaning up of 12.1.
+
+**What is built now, and what is put off** (the owner of the
+language, 2026-11-19). Items 9 to 12 are built in full. Of item 13,
+the message on `assert` (13.1) and tests of a compiled program (13.2)
+are built. The debugger, the REPL, completion and renaming (13.3 to
+13.6), and the whole of item 14, are put off. Their designs stay on
+this page as they were written, for the day they are taken up: each
+says so under its heading. Nothing that is built stands on a part
+that is put off.
 
 ## Rules for every part
 
@@ -1101,7 +1110,8 @@ removing a file or a folder; the date and the time of day.
 
 ## 13. Tools
 
-Six small parts. None of them changes the language but 13.1.
+Six small parts. None of them changes the language but 13.1. The
+first two are built now, and the other four are put off.
 
 ### 13.1 A message on `assert`
 
@@ -1152,6 +1162,9 @@ must print the same, built every way. `--only` works with it (17.5).
 
 ### 13.3 Stepping through a `.zeno` file: `zeno build --debug`
 
+**Put off on 2026-11-19, and not built with the rest of this page.**
+The design below stands as it was written.
+
 The C that a build writes gets a `#line` mark in front of each
 statement, naming the `.zeno` file and the line, and the C compiler
 is asked for `-g -Og`. Then gdb, lldb and every probe for a board
@@ -1172,6 +1185,9 @@ drives it: a breakpoint at a line of a `.zeno` file is reached, and
 walks through a session on the computer and on the emulated board.
 
 ### 13.4 A REPL: `zeno repl`
+
+**Put off on 2026-11-19, and not built with the rest of this page.**
+The design below stands as it was written.
 
 ```
 $ zeno repl
@@ -1204,6 +1220,9 @@ already uses.
 
 ### 13.5 Completion in the editor
 
+**Put off on 2026-11-19, and not built with the rest of this page.**
+The design below stands as it was written.
+
 9.11 left it out because the line being typed does not parse, and
 the checker never sees such a file. The answer keeps the rule of
 9.11, that the server answers from the checker and guesses nothing:
@@ -1227,6 +1246,9 @@ inside an open bracket; a file that cannot be mended. `editors/talk.py`
 asks for it.
 
 ### 13.6 Every use of a name, renaming, and where a field is declared
+
+**Put off on 2026-11-19, and not built with the rest of this page.**
+The design below stands as it was written.
 
 The checker's record (`Use`) says for each use which declaration it
 means. So "every use of this name" is the uses with one declaration,
@@ -1254,6 +1276,11 @@ the Marketplace.
 ---
 
 ## 14. More than one thing at a time
+
+**The whole of this item was put off on 2026-11-19.** Neither part is
+built with the rest of this page, and the question that 14.2 kept for
+the owner of the language waits with it. The design below stands as
+it was written.
 
 `missing.md` says to choose one model, and the one a board can run:
 tasks that take turns, with a queue between them. This is that
@@ -1607,3 +1634,27 @@ is to build it every way through C too, and one program is to write
 `owned` in a build with a collector. And for `self`, the message that
 says to write `take` on the parameter cannot be followed; it is to
 say to put what the function needs in a `let` first.
+
+### 5. 2026-11-19: what is built now is cut down
+
+The owner of the language cut what is built now to items 9 to 12 in
+full, and 13.1 and 13.2 of item 13. Parts 13.3 to 13.6 (stepping
+through a `.zeno` file in a debugger, the REPL, completion, and
+every use of a name with renaming) and the whole of item 14 (the
+module `tasks`, and a task that waits in the middle) are put off.
+
+**Why these.** Items 9 to 12 change what the language can say, and
+each later one stands on an earlier one. 13.1 and 13.2 are small, and
+are what the tests of every later part want: a message on a failed
+`assert`, and the same tests run on the compiled program. The four
+tools that are put off change nothing a program means, so they can
+come at any time. Item 14 is the largest thing on the page and
+touches memory, errors and every engine.
+
+**What it changes on this page.** Nothing in the designs. The table
+at the top and a line under each heading say what is put off. Of the
+two questions this page kept for the owner of the language, the
+second (whether to build 14.2) waits with item 14. The first, about
+`raises` on function values in every strict check (9.1), stays, with
+the number chapter 56 measured. Chapter 60 of the decisions will hold
+13.1 and 13.2 only, and chapter 61 is not begun.
