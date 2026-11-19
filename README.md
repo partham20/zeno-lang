@@ -118,7 +118,7 @@ piece of the compiler:
 
 ## Install
 
-**Windows.** Download `zeno-0.5.2-windows-setup.exe` from the
+**Windows.** Download `zeno-0.6.0-windows-setup.exe` from the
 [releases page](https://github.com/zeno-src/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
@@ -140,10 +140,10 @@ what both do, line by line, and how to take Zeno off again.
 pacman, snap and flatpak, installed from the file:
 
 ```sh
-sudo apt install ./zeno_0.5.2_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.5.2-1-x86_64.pkg.tar.zst         # Arch
-sudo snap install --classic --dangerous zeno_0.5.2_amd64.snap
-flatpak install --user zeno-0.5.2-x86_64.flatpak
+sudo apt install ./zeno_0.6.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.6.0-1-x86_64.pkg.tar.zst         # Arch
+sudo snap install --classic --dangerous zeno_0.6.0_amd64.snap
+flatpak install --user zeno-0.6.0-x86_64.flatpak
 ```
 
 The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
@@ -173,25 +173,25 @@ an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.5.2-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.5.2-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.5.2-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.5.2-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.5.2-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.5.2-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.5.2-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.5.2-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.5.2-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.5.2-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.6.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.6.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.6.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.6.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.6.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.6.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.6.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.6.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.6.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.6.0-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
 `PATH`. It is one file and needs nothing else installed. To build web
 pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.5.2-linux-x86_64.tar.gz
-cd zeno-0.5.2-linux-x86_64
-./zeno --version                 # zeno 0.5.2
+tar -xzf zeno-0.6.0-linux-x86_64.tar.gz
+cd zeno-0.6.0-linux-x86_64
+./zeno --version                 # zeno 0.6.0
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
@@ -686,88 +686,79 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     is the same in every engine, every build and every target. See
     [`docs/library-in-zeno.md`](docs/library-in-zeno.md) and chapter
     33 of [`docs/decisions.md`](docs/decisions.md))
-35. Ending a program, its environment, and the error stream (done,
-    after 0.5.2 and not yet released: `program.exit(code)` ends the
-    program with a number for the shell, which no `try` stops;
-    `program.environment(name)` gives `str or none`;
-    `program.warn(text)` writes a line on the error stream. In every
-    engine, every build and all fifteen target languages, and
-    `tools/targets.py` now holds each target to the number a program
-    ends with and to what it warned.
-    See [`docs/ending-a-program.md`](docs/ending-a-program.md) and
-    chapter 34 of [`docs/decisions.md`](docs/decisions.md))
-36. A case of an enum can stand for a number (done, after 0.5.2 and
-    not yet released: `Ack = 6` in the enum, for every case or for
-    none; `int(Ack)` and `u8(Ack)` give the number, `Reply(6)` gives
-    `Reply or none`. The checker writes two plain functions beside the
-    enum, so it is the same in every engine, build and target.
-    See [`docs/enum-numbers.md`](docs/enum-numbers.md) and chapter 35
-    of [`docs/decisions.md`](docs/decisions.md))
-37. Bytes from and to a file (done, after 0.5.2 and not yet
-    released: `files.read_bytes(path)` gives a `list[u8]`, whatever
-    the file holds, and `files.write_bytes(path, bytes)` writes one. In
-    every engine, every build and all fifteen target languages.
-    See [`docs/bytes.md`](docs/bytes.md) and chapter 36 of
-    [`docs/decisions.md`](docs/decisions.md))
-38. A `list[u8]` is stored one byte to an item (done, after 0.5.2 and
-    not yet released: in C and LLVM, every `list[u8]`, with nothing
-    to write. An 8 MB file read and written back takes 13 MB where it
-    took 64. Decision 36.2)
-39. A list of a fixed length (done, after 0.5.2 and not yet released:
-    `list[u8, 64]` always has 64 items. The count is checked before
-    the program runs, `append`, `pop`, `insert` and `clear` are
-    refused, and a function that never changes a list's length can be
-    given one. `[0] * 64` repeats a list, for any list. In every
-    engine, every build and all fifteen target languages.
-    See [`docs/fixed-lists.md`](docs/fixed-lists.md) and decisions
-    36.3 and 36.4 in [`docs/decisions.md`](docs/decisions.md))
-40. `f32`, a float of 32 bits (done, after 0.5.2 and not yet
-    released: `let gain: f32 = 0.1`, sums done in 32 bits, as by a
-    board's float unit, an f32 wherever a float is wanted, and an f32
-    beside a float refused with a message that says which to write.
-    C writes `float`. In every engine, every build and all fifteen
-    target languages.
-    See [`docs/f32.md`](docs/f32.md) and chapter 41 of
-    [`docs/decisions.md`](docs/decisions.md))
-41. `u64`, a whole number of 64 bits with no sign (done, after 0.5.2
-    and not yet released: `let h: u64 = 0xcbf29ce484222325`, sums
-    that stay `u64` and are checked, `u64.wrap( )` to cut them to 64
-    bits as a hash does, and a `u64` beside an `int` value refused
-    with a message that says which to write. `u8.max`, `int.min` and
-    the ends of every whole type. C writes `uint64_t`. In every
-    engine, every build and all fifteen target languages.
-    See [`docs/u64.md`](docs/u64.md) and chapter 42 of
-    [`docs/decisions.md`](docs/decisions.md))
-42. Units made of units (done, after 0.5.2 and not yet released:
-    `3.3 V * 20 mA` is `0.066 W`, `5 V / 2 mA` is `2500 ohm`,
-    `5 W * 2 h` is `36000 J` and `1 / 2 ms` is `500 Hz`, from a closed
-    list of the sums firmware does; any other pair is refused with the
-    list. In every engine, every build and all fifteen target
-    languages. See [`docs/units-made.md`](docs/units-made.md) and
-    chapter 43 of [`docs/decisions.md`](docs/decisions.md))
-43. Inputs on a board (done, after 0.5.2 and not yet released:
-    `input_pin(2, pull_up)` gives an `InputPin`, read with
-    `is_high()` and `is_low()`, and driving one is refused before the
-    program runs. A board header gains a fifth function,
+35. Ending a program, its environment, and the error stream (done, in
+    0.6.0: `program.exit(code)` ends the program with a number for the
+    shell, which no `try` stops; `program.environment(name)` gives
+    `str or none`; `program.warn(text)` writes a line on the error
+    stream. In every engine, every build and all fifteen target
+    languages, and `tools/targets.py` now holds each target to the
+    number a program ends with and to what it warned. See
+    [`docs/ending-a-program.md`](docs/ending-a-program.md) and chapter
+    34 of [`docs/decisions.md`](docs/decisions.md)) 36. A case of an
+    enum can stand for a number (done, in 0.6.0: `Ack = 6` in the
+    enum, for every case or for none; `int(Ack)` and `u8(Ack)` give
+    the number, `Reply(6)` gives `Reply or none`. The checker writes
+    two plain functions beside the enum, so it is the same in every
+    engine, build and target. See
+    [`docs/enum-numbers.md`](docs/enum-numbers.md) and chapter 35 of
+    [`docs/decisions.md`](docs/decisions.md)) 37. Bytes from and to a
+    file (done, in 0.6.0: `files.read_bytes(path)` gives a `list[u8]`,
+    whatever the file holds, and `files.write_bytes(path, bytes)`
+    writes one. In every engine, every build and all fifteen target
+    languages. See [`docs/bytes.md`](docs/bytes.md) and chapter 36 of
+    [`docs/decisions.md`](docs/decisions.md)) 38. A `list[u8]` is
+    stored one byte to an item (done, in 0.6.0: in C and LLVM, every
+    `list[u8]`, with nothing to write. An 8 MB file read and written
+    back takes 13 MB where it took 64. Decision 36.2) 39. A list of a
+    fixed length (done, in 0.6.0: `list[u8, 64]` always has 64 items.
+    The count is checked before the program runs, `append`, `pop`,
+    `insert` and `clear` are refused, and a function that never
+    changes a list's length can be given one. `[0] * 64` repeats a
+    list, for any list. In every engine, every build and all fifteen
+    target languages. See [`docs/fixed-lists.md`](docs/fixed-lists.md)
+    and decisions 36.3 and 36.4 in
+    [`docs/decisions.md`](docs/decisions.md)) 40. `f32`, a float of 32
+    bits (done, in 0.6.0: `let gain: f32 = 0.1`, sums done in 32 bits,
+    as by a board's float unit, an f32 wherever a float is wanted, and
+    an f32 beside a float refused with a message that says which to
+    write. C writes `float`. In every engine, every build and all
+    fifteen target languages. See [`docs/f32.md`](docs/f32.md) and
+    chapter 41 of [`docs/decisions.md`](docs/decisions.md)) 41. `u64`,
+    a whole number of 64 bits with no sign (done, in 0.6.0: `let h:
+    u64 = 0xcbf29ce484222325`, sums that stay `u64` and are checked,
+    `u64.wrap( )` to cut them to 64 bits as a hash does, and a `u64`
+    beside an `int` value refused with a message that says which to
+    write. `u8.max`, `int.min` and the ends of every whole type. C
+    writes `uint64_t`. In every engine, every build and all fifteen
+    target languages. See [`docs/u64.md`](docs/u64.md) and chapter 42
+    of [`docs/decisions.md`](docs/decisions.md)) 42. Units made of
+    units (done, in 0.6.0: `3.3 V * 20 mA` is `0.066 W`, `5 V / 2 mA`
+    is `2500 ohm`, `5 W * 2 h` is `36000 J` and `1 / 2 ms` is `500
+    Hz`, from a closed list of the sums firmware does; any other pair
+    is refused with the list. In every engine, every build and all
+    fifteen target languages. See
+    [`docs/units-made.md`](docs/units-made.md) and chapter 43 of
+    [`docs/decisions.md`](docs/decisions.md)) 43. Inputs on a board
+    (done, in 0.6.0: `input_pin(2, pull_up)` gives an `InputPin`, read
+    with `is_high()` and `is_low()`, and driving one is refused before
+    the program runs. A board header gains a fifth function,
     `zeno_board_input`, which only a program that reads a pin calls.
-    In every engine and every C and LLVM build.
-    See [`docs/inputs.md`](docs/inputs.md) and chapter 45 of
-    [`docs/decisions.md`](docs/decisions.md))
-44. A serial port on a board (done, after 0.5.2 and not yet released:
-    `serial(1, 115200 baud)` gives a `Serial` that writes text and
-    bytes and reads a byte at a time; the speed has a unit, `baud`.
-    On a computer every port is the terminal. A board header gains
-    four functions, which only a program with a port calls. In every
-    engine and every C and LLVM build.
-    See [`docs/serial.md`](docs/serial.md) and chapter 46 of
-    [`docs/decisions.md`](docs/decisions.md))
-45. Reading a voltage on a board (done, after 0.5.2 and not yet
-    released: `analog_pin(0)` gives an `AnalogPin`; `voltage()` is a
-    quantity in `V`, so `level < 1200 mV` works and `level < 1200` is
-    refused, and `count()` with `max_count` is the converter's own
-    number. A board header says its bits and reference and gains two
-    functions. In every engine and every C and LLVM build.
-    See [`docs/analog.md`](docs/analog.md) and chapter 47 of
+    In every engine and every C and LLVM build. See
+    [`docs/inputs.md`](docs/inputs.md) and chapter 45 of
+    [`docs/decisions.md`](docs/decisions.md)) 44. A serial port on a
+    board (done, in 0.6.0: `serial(1, 115200 baud)` gives a `Serial`
+    that writes text and bytes and reads a byte at a time; the speed
+    has a unit, `baud`. On a computer every port is the terminal. A
+    board header gains four functions, which only a program with a
+    port calls. In every engine and every C and LLVM build. See
+    [`docs/serial.md`](docs/serial.md) and chapter 46 of
+    [`docs/decisions.md`](docs/decisions.md)) 45. Reading a voltage on
+    a board (done, in 0.6.0: `analog_pin(0)` gives an `AnalogPin`;
+    `voltage()` is a quantity in `V`, so `level < 1200 mV` works and
+    `level < 1200` is refused, and `count()` with `max_count` is the
+    converter's own number. A board header says its bits and reference
+    and gains two functions. In every engine and every C and LLVM
+    build. See [`docs/analog.md`](docs/analog.md) and chapter 47 of
     [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
