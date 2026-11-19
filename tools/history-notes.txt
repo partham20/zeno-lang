@@ -563,3 +563,5 @@ d6673ec `tools/same.py` builds every program each way a build can be asked for w
 60dba12 Python's compiled files are kept out of the repository.
 ea5d687 The plan: `raises` after a result belongs to the function it ends, a type ends at a comma, and an ordinary build holds what a function value raises against a type neither way.
 e1d726d `raises` in a function type: `function(str) -> int raises ValueError`. A call through such a value is checked as raising, and a firmware build and a build with no collector now take a raising function as a value, which they refused (decision 56).
+a24bb55 Giving a value away is one function in the checker, so that a function that is kept can give away what it uses by the same rule as `let b = a`. Nothing changes.
+80be701 A function that is kept takes what it uses: `compose(f, g)` builds with no collector (decision 56.8). With it, four fixes from the review of `raises` in a function type, and a function called straight from the call that made it is freed with no collector, which 0.7.0 left.
