@@ -336,8 +336,8 @@ know. So Zeno copies none of them. A board's folder names the tools an
 engineer already has, and Zeno types the one long command that was
 typed by hand before. The flags are in a folder of the board's and not
 in the program's package, because one program is built for two boards
-and one board runs many programs. (Decisions 5.12c and 51; new after
-0.6.0.)
+and one board runs many programs. (Decisions 5.12c and 51; new in
+0.7.)
 \end{why}
 
 \section{What does not compile yet}
@@ -358,6 +358,14 @@ print(outer())
 
 A function written with no name, \verb|let inner = function() { ... }|,
 does compile. \hyperref[app-limits]{Appendix G} has the full list.
+
+A program that uses the library of another language through
+\verb|import python| or one of its like is refused too, because a
+built program must run where that language may not be
+(\hyperref[ch-other-languages]{Libraries of Other Languages}). A
+library of C is the other way round: a build calls it directly and
+links it in, on a board as well (\hyperref[ch-c-libraries]{Libraries
+of C}).
 
 \section{In another language (new in 0.5)}
 

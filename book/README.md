@@ -1,7 +1,7 @@
 # The Zeno Book
 
-The whole of Zeno 0.6, from a first line to the inside of the compiler:
-36 chapters in five parts, and seven appendices.
+The whole of Zeno 0.7, from a first line to the inside of the compiler:
+38 chapters in five parts, and seven appendices.
 
 - `chapters/` holds the source, one LaTeX file for each chapter or
   appendix. `zeno-book.tex` puts them together, and `zeno-book.sty`
@@ -28,6 +28,9 @@ You need:
   that compile, and `zeno.wasm` for the web chapter
   (`cargo build --release --target wasm32-unknown-unknown`)
 - Python 3
+- the languages whose libraries the two chapters on other languages
+  use: Python 3, Node 22, Java, Ruby 3, PHP 8, Lua and the .NET SDK,
+  and Go and `rustc` for the libraries the chapter on C builds
 - XeLaTeX and `latexmk` (TeX Live: `texlive-xetex`,
   `texlive-latex-extra`, `latexmk`)
 - the fonts TeX Gyre Pagella and Heros (`tex-gyre`) and DejaVu Sans
@@ -41,7 +44,7 @@ python3 book/tools/build.py              # samples, PDF and HTML
 python3 book/tools/build.py --samples    # only run the samples
 python3 book/tools/build.py --pdf        # samples and PDF
 python3 book/tools/build.py --html       # samples and HTML
-python3 book/tools/build.py --chapter=12 # only the samples of chapter 12
+python3 book/tools/build.py --chapter=12 # only the samples of the chapter whose file starts with 12
 ```
 
 Work files go in `book/build/`, which git does not keep.

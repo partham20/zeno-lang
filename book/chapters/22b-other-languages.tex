@@ -3,8 +3,8 @@
 A package of Zeno is written in Zeno. Most of the libraries in the
 world are not: Python has one for nearly everything, npm has more
 packages than any other place, and Java has a very large library of
-its own and a jar for whatever else. Since 0.5.2 a Zeno program can
-use all three as they are, with one line at the top:
+its own and a jar for whatever else. A Zeno program can use them as
+they are, with one line at the top:
 
 \begin{zeno}[file=mean.zeno]
 import python
@@ -19,8 +19,12 @@ is in Python. What it gives is the module, and from there the program
 is written as it would be in Python: a dot for what the module has,
 brackets for a call.
 
-The three work the same way, and this chapter takes Python first,
-then says what is different about JavaScript and Java.
+Seven languages are reached this way. Python, JavaScript and Java
+came with 0.5.2, and Ruby, PHP, Lua and C\# with 0.6. They all work
+the same way, so this chapter takes Python first, and then says what
+is different about each of the others. C is the eighth, and it is
+reached in another way, because a library of C can be built into the
+program: it has the next chapter (\hyperref[ch-c-libraries]{Libraries of C}).
 
 \begin{center}
 \begin{tabular}{lP{7.4cm}}
@@ -32,6 +36,15 @@ Written & Gives \\
   \verb|node.new(Class, ...)| and \verb|node.copy(value)| \\
 \verb|import java| & \verb|java.type(name)|, \verb|java.jar(path)| and
   \verb|java.copy(value)| \\
+\verb|import ruby| & \verb|ruby.require(name)|, \verb|ruby.constant(name)|,
+  \verb|ruby.symbol(name)| and \verb|ruby.copy(value)| \\
+\verb|import php| & \verb|php.type(name)|, \verb|php.callable(name)|,
+  \verb|php.constant(name)|, \verb|php.require(path)|,
+  \verb|php.variable(value)| and \verb|php.copy(value)| \\
+\verb|import lua| & \verb|lua.require(name)|, \verb|lua.global(name)|
+  and \verb|lua.copy(value)| \\
+\verb|import csharp| & \verb|csharp.type(name)|,
+  \verb|csharp.assembly(path)| and \verb|csharp.copy(value)| \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -61,6 +74,13 @@ Import & Needs & Zeno looks for \\
 \verb|node| & Node 22 or later & \verb|node|; \verb|ZENO_NODE| names another \\
 \verb|java| & Java 11 or later & \verb|java|, then in \verb|JAVA_HOME|;
   \verb|ZENO_JAVA| names another \\
+\verb|ruby| & Ruby 3 & \verb|ruby|; \verb|ZENO_RUBY| names another \\
+\verb|php| & PHP 8 or later & \verb|php|; \verb|ZENO_PHP| names another \\
+\verb|lua| & Lua 5.1 to 5.4, or LuaJIT & \verb|lua|, then \verb|lua5.4|,
+  then \verb|luajit|; \verb|ZENO_LUA| names another \\
+\verb|csharp| & the .NET SDK, 6 or later & \verb|dotnet|, then in
+  \verb|DOTNET_ROOT|, then in \verb|~/.dotnet|; \verb|ZENO_DOTNET|
+  names another \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -71,7 +91,9 @@ would look for it if the program were written in it and lay in the
 same place: so a \verb|helper.py| beside the program is
 \verb|python.module("helper")|, and an npm package is installed with
 \verb|npm install| in the folder of the program. The program can then
-be run from anywhere.
+be run from anywhere. A gem of Ruby, a package of Composer, a rock of
+Lua and a package of NuGet are each found the same way, and the
+section of each language says where.
 
 \section{Values go across in two ways}
 
@@ -223,14 +245,34 @@ JavaScript & an error the system gave (no such file, no network) is a
 Java & \verb|IOException| and its kinds are a \verb|FileError|;
   \texttt{Index\-OutOf\-Bounds\-Exception} is an \verb|IndexError|;
   \texttt{Illegal\-Argument\-Exception} is a \verb|ValueError| \\
+Ruby & \verb|Errno::...| and \verb|IOError| are a \verb|FileError|;
+  \verb|ArgumentError| is a \verb|ValueError|; \verb|IndexError| and
+  \verb|StopIteration| are an \verb|IndexError|; \verb|KeyError| and
+  \texttt{Zero\-Division\-Error} are the kind of the same name \\
+PHP & a warning or an exception that says a file could not be used is
+  a \verb|FileError|; \verb|ValueError|,
+  \texttt{Invalid\-Argument\-Exception}, \verb|DomainException| and
+  \verb|JsonException| are a \verb|ValueError|;
+  \texttt{OutOf\-Bounds\-Exception} and \texttt{OutOf\-Range\-Exception}
+  are an \verb|IndexError|; \texttt{Division\-ByZero\-Error} is a
+  \texttt{Zero\-Division\-Error} \\
+Lua & \verb|nil|, a message and a number of the system, which is how
+  Lua's functions for files fail, is a \verb|FileError| \\
+C\# & \verb|IOException| and those under it are a \verb|FileError|;
+  \texttt{KeyNot\-Found\-Exception} is a \verb|KeyError|;
+  \texttt{IndexOutOf\-Range\-Exception} and
+  \texttt{ArgumentOutOf\-Range\-Exception} are an \verb|IndexError|;
+  \verb|ArgumentException| and \verb|FormatException| are a
+  \verb|ValueError|; \texttt{DivideBy\-Zero\-Exception} and
+  \verb|OverflowException| are the kinds of nearly the same name \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \noindent Anything else is an \verb|Error|. Two things can go wrong
 before any library is reached, and both are a \verb|FileError|: there
-is no Python (or Node, or Java) to run, or it has no module of that
-name. The message says which one Zeno found, and where it looked.
+is no Python (or Node, or Java, or any other of them) to run, or it
+has no module of that name. The message says which one Zeno found, and where it looked.
 
 \begin{zeno}[file=missing.zeno, dir=python, fails=yes]
 import python
@@ -256,7 +298,7 @@ let title: str = about["title"]       # checked when it happens
 \end{zenofrag}
 
 For the same reason \verb|zeno check --strict| refuses a program that
-imports one of the three.
+imports one of the seven.
 
 \section{JavaScript}
 
@@ -402,9 +444,436 @@ take the number 30 out of a list of numbers, write
 \verb|list.remove(list.indexOf(30))|.
 \end{note}
 
+\section{Ruby}
+
+Ruby brings a library with \verb|require|, and what the library
+brings is a constant: a class, a module, or a plain value whose name
+begins with a capital letter. So Zeno has both:
+
+\begin{zeno}[file=weekday.zeno, dir=ruby]
+import ruby
+
+ruby.require("date")
+let Date = ruby.constant("Date")
+let day = Date.new(2026, 11, 18)
+print(day.strftime("%A"), day.year() + 1, day.next_month())
+\end{zeno}
+
+\verb|ruby.constant| takes the name as Ruby writes it, with \verb|::|
+for what is inside something else (\verb|"Net::HTTP"|). \verb|Math|,
+\verb|Kernel|, \verb|File|, \verb|Time|, \verb|Array| and \verb|Hash|
+are there with no \verb|require|. An object is made as Ruby makes it,
+with \verb|.new(...)|. A gem is installed with \verb|gem install| and
+then required by its name; a file \verb|helper.rb| beside the program
+is \verb|ruby.require("helper")|; and a program that wants exactly the
+gems of the \verb|Gemfile| beside it says
+\verb|ruby.require("bundler/setup")| first, as a program of Ruby does.
+
+What is different from Python:
+
+\begin{itemize}
+\item \textbf{A call has brackets.} In Ruby \verb|words.size| is a
+  call. In Zeno a call has brackets, always, and that holds here:
+  \verb|words.size()|. Without them the program has the method, to be
+  called later, as it would have a method of Zeno.
+\item \textbf{A name Zeno cannot write goes through \texttt{send}.}
+  Ruby's own \verb|send| calls a method by its name as text. That is
+  the way to every name that ends in \verb|?| or \verb|!|, to every
+  operator, and to the names that are words of Zeno.
+\item \textbf{What Ruby writes with no object in front} is a method of
+  \verb|Kernel|: \verb|format|, \verb|rand|, \verb|Integer("42")|.
+\item \textbf{Named arguments are keyword arguments.}
+  \verb|name=value| in a call is \verb|name: value| in Ruby.
+\item \textbf{A symbol stays in Ruby.} \verb|:up| is not the text
+  \verb|"up"| there, and a Hash that has the key \verb|:up| does not
+  have the key \verb|"up"|. \verb|ruby.symbol("up")| makes one.
+\item \textbf{An Integer of Ruby has no largest value.} One that fits
+  64 bits is an int. A larger one stays in Ruby, prints in full, and
+  can be used there.
+\end{itemize}
+
+\begin{zeno}[file=words.zeno, dir=ruby]
+import ruby
+
+let words = ruby.constant("Array").new()
+words.push("pear")
+words.push("apple")
+print(words.size(), words.sort(), words.sort().first(), words.join(" and "))
+print(words.send("empty?"), words.send("include?", "pear"), words.send("class"))
+print(words.size)
+
+let Kernel = ruby.constant("Kernel")
+print(Kernel.format("%05.1f", 3.14159), Kernel.send("Integer", "ff", 16))
+\end{zeno}
+
+\verb|Integer| in the last line begins with a capital letter, so after
+a dot it would be read as the constant, the class \verb|Integer|.
+\verb|send| says that the method is meant. A name that only lacks its
+\verb|?| is pointed out:
+
+\begin{zeno}[file=frozen.zeno, dir=ruby, fails=yes]
+import ruby
+
+print(ruby.constant("Array").new().frozen())
+\end{zeno}
+
+An Array or a Hash of Ruby stays in Ruby, as a list of Python does,
+and \verb|ruby.copy| makes a list or a dict of it. A copy is plain
+data, so a symbol in it is copied as its name:
+
+\begin{zeno}[file=ages.zeno, dir=ruby]
+import ruby
+
+let ages = ruby.constant("Hash").new()
+ages["ann"] = 31
+ages[ruby.symbol("bob")] = 40
+print(len(ages), ages["ann"], ages[ruby.symbol("bob")], ages["bob"], "ann" in ages)
+let copy = ruby.copy(ages)
+print(copy, copy["bob"] + 1)
+
+let Point = ruby.constant("Struct").new(ruby.symbol("x"), ruby.symbol("y"), keyword_init=true)
+let point = Point.new(x=1, y=2)
+point.x = 10
+print(point.x() + point.y(), point == Point.new(x=10, y=2))
+\end{zeno}
+
+\verb|ages["bob"]| is \verb|none|: the key is the symbol, and Ruby
+gives \verb|nil| for a key a Hash does not have.
+
+\begin{note}
+Much of Ruby is written with blocks: \verb|items.map { ... }|,
+\verb|File.open(name) { ... }|. A function of Zeno cannot be the block
+yet, and Zeno says so at the line. Most of them have another form: a
+\verb|for| loop of Zeno goes through anything that has \verb|each|,
+and \verb|File.read| and \verb|File.write| need no block.
+\end{note}
+
+\section{PHP}
+
+PHP keeps three things apart that Zeno reaches by name: its classes,
+its functions and its constants.
+
+\begin{zeno}[file=date.zeno, dir=php]
+import php
+
+let DateTime = php.type("DateTime")
+let day = DateTime("2026-11-18")
+print(day.format("l"), php.callable("ucwords")("hello from zeno"), php.constant("PHP_INT_MAX"))
+\end{zeno}
+
+\verb|php.type("DateTime")| is the class, and calling it is what
+\verb|new DateTime(...)| is in PHP. \verb|php.callable("ucwords")| is
+the function \verb|ucwords| as a value, which is called with brackets
+as any function is. A dot stands where PHP writes \verb|->| or
+\verb|::|, so \verb|DateTime.ATOM| is the constant of the class. A
+class is named with its namespace, and \verb|\| is written \verb|\\|
+in a str of Zeno: \verb|php.type("Carbon\\Carbon")|.
+
+A package from Composer is looked for where PHP would find it:
+\verb|vendor/autoload.php| in the folder of the \verb|.zeno| file,
+then in each folder above. So \verb|composer require| is run in the
+folder of the program. A file of PHP beside the program is read with
+\verb|php.require("helper.php")|.
+
+What is different from Python:
+
+\begin{itemize}
+\item \textbf{An array comes across whole.} An array of PHP is a value,
+  as a list or a dict of Zeno is, and not an object that lives
+  somewhere. So an array that PHP gives is a list of Zeno where its
+  keys are 0, 1, 2 and so on, and a dict for any other. Only an object
+  stays in PHP.
+\item \textbf{Named arguments are PHP's own}, by the name of the
+  parameter.
+\item \textbf{A warning is an error.} In PHP \verb|file_get_contents|
+  of a file that is not there prints a warning and gives \verb|false|,
+  and a program would go on with the \verb|false|. In Zeno it is a
+  \verb|FileError|.
+\item \textbf{A function that changes what it is given needs a
+  variable.} \verb|sort| and \verb|preg_match| write into their
+  argument (PHP writes \verb|&$array|). Given a list of Zeno they would
+  change a copy that nobody sees, so they are given
+  \verb|php.variable(value)|, and its \verb|.value| is what it holds
+  after the call.
+\end{itemize}
+
+\begin{zeno}[file=parts.zeno, dir=php]
+import php
+
+let parts = php.callable("explode")(",", "pear,apple,fig")
+parts.append("plum")
+print(parts, len(parts), php.callable("implode")(" and ", parts))
+print(php.callable("array_flip")(parts), php.callable("array_sum")([1, 2, 3.5]))
+print(php.callable("number_format")(1234567.891, 2, thousands_separator=" "))
+
+let found = php.variable()
+if php.callable("preg_match")("/(\\d+)-(\\d+)/", "tel 12-34", found) == 1 {
+    print(found.value, found.value[1] + found.value[2])
+}
+let numbers = php.variable([3, 1, 2])
+php.callable("sort")(numbers)
+print(numbers.value)
+\end{zeno}
+
+\verb|parts| is a list of Zeno, and \verb|append| is Zeno's. Given a
+plain list, \verb|sort| is not called at all:
+
+\begin{zeno}[file=sort.zeno, dir=php, fails=yes]
+import php
+
+php.callable("sort")([3, 1, 2])
+\end{zeno}
+
+An object stays in PHP, and \verb|php.copy| makes a list or a dict of
+what \verb|foreach| goes through, or of an object that only holds
+values:
+
+\begin{zeno}[file=object.zeno, dir=php]
+import php
+
+let DateTime = php.type("DateTime")
+let utc = php.type("DateTimeZone")("UTC")
+let day = DateTime("2026-11-18", utc)
+day.modify("+1 month")
+print(day.format("Y-m-d"), DateTime.ATOM, day == DateTime("2026-12-18", utc))
+
+let thing = php.callable("json_decode")("{\"name\": \"pen\", \"tags\": [\"a\", \"b\"]}")
+thing.name = thing.name + "cil"
+print(thing.name, thing.tags, php.copy(thing))
+
+try {
+    php.callable("file_get_contents")("/no/such/file")
+} except FileError as error {
+    print(error.message)
+}
+\end{zeno}
+
+\section{Lua}
+
+Lua is small, and is everywhere a program is put inside another
+program. What every program of Lua has, \verb|string|, \verb|table|,
+\verb|math|, \verb|os| and \verb|io|, is given by \verb|lua.global|,
+and a module by \verb|lua.require|:
+
+\begin{zeno}[file=format.zeno, dir=lua]
+import lua
+
+let string = lua.global("string")
+print(string.format("%-6s|%5.2f", "pi", 3.14159), string.rep("ab", 3), string.upper("zeno"))
+\end{zeno}
+
+A module from LuaRocks is installed for the Lua that Zeno starts
+(\verb|luarocks install|), and a file \verb|shapes.lua| beside the
+program is \verb|lua.require("shapes")|. A table, a function and a
+userdata stay in Lua; \verb|lua.copy| makes a list of a table whose
+keys are 1, 2 and so on, and a dict of any other.
+
+What is different from Python:
+
+\begin{itemize}
+\item \textbf{Several values are a list.} A function of Lua can give
+  several values. One value is that value, none is \verb|none|, and
+  several are a list of Zeno, in order.
+\item \textbf{\texttt{nil} and a message is an error.} Most functions
+  of Lua say they failed by giving \verb|nil| and then why. Zeno
+  raises that as an \verb|Error| with the message. Lua has no kinds of
+  error, so every error of Lua is an \verb|Error|, but for the
+  \verb|FileError| of the table above.
+\item \textbf{Lua counts from 1.} A table stays in Lua, and its items
+  are where Lua has them: \verb|t[1]| is the first. The list that
+  \verb|lua.copy| makes counts from 0, as every list of Zeno does.
+\item \textbf{One dot for a method and a function.} Lua writes
+  \verb|object:name(x)| to call a method and \verb|module.name(x)| to
+  call a function. Zeno has one dot, and gives the object to a function
+  that was written as a method: one whose first parameter is called
+  \verb|self|, or one the table has from its metatable. The name in
+  brackets, \verb|p["length"](p)|, is what the table holds, and
+  nothing is given to it.
+\item \textbf{Named arguments are the options.} Lua has none. What a
+  library of Lua takes instead is a table of options, last, and that
+  is what named arguments become.
+\item \textbf{One kind of number before 5.3.} On Lua 5.3 and later a
+  number knows if it is an int or a float. On 5.1, 5.2 and LuaJIT
+  every number is a float, and a whole one arrives as an int.
+\end{itemize}
+
+\begin{zeno}[file=values.zeno, dir=lua]
+import lua
+
+let string = lua.global("string")
+print(string.find("hello", "l"), string.gsub("hello", "l", "L"), string.find("hello", "z"))
+
+let table = lua.global("table")
+let t = table.pack(30, 10, 20)
+t.n = none
+table.sort(t)
+print(t, t[1], len(t), 10 in t, lua.copy(t), lua.copy(t)[0])
+
+try {
+    lua.global("io").open("/no/such/file")
+} except FileError as error {
+    print(error.message)
+}
+\end{zeno}
+
+A module of your own shows the dot and the options. This file lies
+beside the program:
+
+\begin{zeno}[file=shapes.lua, dir=lua, run=no]
+local shapes = {}
+
+local Point = {}
+Point.__index = Point
+Point.__tostring = function(p) return "Point(" .. p.x .. ", " .. p.y .. ")" end
+
+function shapes.Point(x, y)
+    return setmetatable({x = x, y = y}, Point)
+end
+
+function Point:length()
+    return math.sqrt(self.x * self.x + self.y * self.y)
+end
+
+function shapes.greet(name, options)
+    options = options or {}
+    local said = {}
+    for i = 1, options.times or 1 do
+        said[i] = "hello " .. name
+    end
+    local all = table.concat(said, ", ")
+    if options.loud then
+        return all:upper()
+    end
+    return all
+end
+
+return shapes
+\end{zeno}
+
+\begin{zeno}[file=shapes.zeno, dir=lua]
+import lua
+
+let shapes = lua.require("shapes")
+let p = shapes.Point(3, 4)
+print(p, p.length(), p.x)
+print(shapes.greet("ann", times=2, loud=true))
+for word in lua.global("string").gmatch("one two three", "%a+") {
+    print(word)
+}
+\end{zeno}
+
+\verb|p.length()| is Lua's \verb|p:length()|, and the two named
+arguments of \verb|greet| arrived as one table,
+\verb|{times = 2, loud = true}|. A \verb|for| over a function of Lua takes what it gives until it gives
+\verb|nil|, which is how Lua's own \verb|for| goes through
+\verb|gmatch|.
+
+\begin{note}
+On Windows Lua also needs LuaSocket (\verb|luarocks install luasocket|),
+because Lua comes with no way to talk to another program there. That
+was not tried: no Lua with LuaSocket was there to try it with.
+\end{note}
+
+\section{C\# and .NET}
+
+.NET is what C\# runs on, and F\# and Visual Basic too.
+\verb|csharp.type| gives a type by its name with its namespace, and
+calling a type makes an object, as \verb|new| does in C\#:
+
+\begin{zeno}[file=builder.zeno, dir=csharp]
+import csharp
+
+let Builder = csharp.type("System.Text.StringBuilder")
+let text = Builder("Zeno")
+text.Append(" and .NET ").Append(8)
+print(text, text.Length, csharp.type("System.Math").Round(3.14159, 2))
+\end{zeno}
+
+It is the closest of the seven to Java. A type is named as C\# names
+it: with its namespace; without one where a new program of C\# needs
+no \verb|using| (\verb|"File"|, \verb|"Math"|, \verb|"Task"|); with
+C\#'s own words (\verb|"int"|, \verb|"string"|); and made of others,
+\verb|"List<int>"|, \verb|"Dictionary<string, List<int>>"|,
+\verb|"int[]"|.
+
+\begin{zeno}[file=collections.zeno, dir=csharp]
+import csharp
+
+let list = csharp.type("List<int>")()
+list.AddRange([30, 10, 20])
+list.Sort()
+print(list, list[0], len(list), 10 in list, csharp.copy(list))
+
+let ages = csharp.type("Dictionary<string, int>")()
+ages["ann"] = 31
+ages["bob"] = 40
+print(ages, ages["ann"], "bob" in ages, csharp.copy(ages))
+\end{zeno}
+
+What is different from Python:
+
+\begin{itemize}
+\item \textbf{It needs the SDK.} The runtime of .NET alone runs
+  programs but cannot build them, and the first run on a computer
+  builds Zeno's own part on the .NET side with \verb|dotnet build|.
+  That takes some seconds, once. Every later run starts in a tenth of
+  a second.
+\item \textbf{Of several methods, the arguments choose.} C\# can have
+  several methods of one name. The one called is the one the arguments
+  fit, as C\# chooses it: an int of Zeno fits an \verb|int| before a
+  \verb|long|, and both before a \verb|double|. When two fit as well,
+  Zeno does not guess, and the error says which two.
+\item \textbf{A named argument goes to the parameter of that name},
+  as in C\#. The names are those the method gives its parameters.
+\item \textbf{A \texttt{Task} is waited for.} A method that gives a
+  \verb|Task| is one that takes time, and the call gives what the task
+  gives when it is done: \verb|none| for a plain \verb|Task|.
+\item \textbf{A package of NuGet is added to a project beside the
+  program.} Two commands of \verb|dotnet|, shown below the program
+  that follows, make the project and add a package to it. Zeno reads
+  from the project where NuGet keeps each \verb|.dll|.
+\item \textbf{A \texttt{.dll} of your own} is loaded with
+  \verb|csharp.assembly(path)|, which also takes a folder for every
+  \verb|.dll| in it, counted from the folder of the program.
+\end{itemize}
+
+\begin{zeno}[file=methods.zeno, dir=csharp]
+import csharp
+
+let math = csharp.type("System.Math")
+print(math.Max(3, 7), math.Max(2, 3.5), math.Round(2.567, digits=1))
+let text = csharp.type("string")
+print(text.Join("-", ["a", "b"]), text.Join("+", "x", "y", "z"))
+
+let day = csharp.type("DateTime")(2026, 11, 18)
+print(day.DayOfWeek, day.AddDays(10).ToString("yyyy-MM-dd"), day.DayOfWeek == csharp.type("DayOfWeek").Wednesday)
+
+let task = csharp.type("Task")
+print(task.FromResult(7), task.Delay(10))
+
+try {
+    csharp.type("Convert").ToInt32("twelve")
+} except ValueError as error {
+    print(error.message)
+}
+\end{zeno}
+
+\verb|math.Max(3, 7)| and \verb|math.Max(2, 3.5)| are two different
+methods of .NET, and so are the two \verb|Join|. An enum of .NET, such
+as the day of the week, stays there and prints as its name.
+
+These are the two commands that make a project in the folder of the
+program and add a package of NuGet to it. After them,
+\verb|csharp.type("Humanizer.NumberToWordsExtension")| is there:
+
+\begin{zenofrag}[lang=shell]
+dotnet new classlib -n libraries -o .
+dotnet add package Humanizer.Core
+\end{zenofrag}
+
 \section{More than one in a program}
 
-A program can import all three. Each value stays where it was made. A
+A program can import several of them. Each value stays where it was made. A
 str or a number that one gave can be passed to another, because by
 then it is a value of Zeno; a value that stayed in one cannot be given
 to another, and Zeno says so at the line:
@@ -428,7 +897,8 @@ and that can go anywhere.
 Python has \verb|re.match|, JavaScript has \verb|Array.from|, and Java
 has \verb|System.in|; \verb|match|, \verb|from| and \verb|in| are
 words of Zeno, so none of them parses after a dot. Each language has
-its own way around it:
+its own way around it, and in most of them it is the name in
+brackets:
 
 \begin{center}
 \begin{tabular}{lP{8.4cm}}
@@ -438,6 +908,11 @@ Language & Write \\
 Python & \verb|builtins.getattr(re, "match")(p, text)| \\
 JavaScript & \verb|Array["from"](items)|: brackets are a dot there \\
 Java & \verb|System["in"]|, \verb|LocalDate["from"](other)| \\
+Ruby & \verb|thing.send("class")|, \verb|thing.send("in?", list)| \\
+PHP & \verb|Size["from"]("l")|, \verb|thing["for"]| \\
+Lua & \verb|string["match"](text, pattern)| \\
+C\# & \verb|thing["match"]|: on a type, and on an object with no
+  items of its own, the name in brackets is the name after a dot \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -448,16 +923,25 @@ Java & \verb|System["in"]|, \verb|LocalDate["from"](other)| \\
 \item \textbf{A function of Zeno cannot be given to another language.}
   A library that calls back, for progress, a sort key, an event or a
   request to a server, cannot call into Zeno yet, and Zeno says so at
-  the line. Much of Node gives a promise instead, and that works.
+  the line. Much of Node gives a promise instead, and that works. A
+  block of Ruby is such a function too, and so are the lambdas of
+  LINQ in C\#.
+\item \textbf{What a method of C\# puts back in an \texttt{out} or
+  \texttt{ref} parameter} is not seen, and an extension method is
+  called on its class and not on the value.
 \item \textbf{A loop takes everything first.} \verb|for line in thing|
   asks for all the items, then loops. Over something that never ends,
   it never begins.
-\item \textbf{A class of Zeno cannot extend a class of Java}, or be
-  one of its interfaces.
+\item \textbf{A class of Zeno cannot extend a class of Java}, of Ruby
+  or of any other, or be one of its interfaces.
 \item \textbf{Built programs.} \verb|zeno run| and \verb|zeno test| have
-  all three, with and without \verb|--vm|. \verb|zeno build|, in every
+  all seven, with and without \verb|--vm|. \verb|zeno build|, in every
   form and for every target, refuses them, because a built program
-  must run where the other language may not be.
+  must run where the other language may not be. C is the one that a
+  build takes (\hyperref[ch-c-libraries]{Libraries of C}).
+\item \textbf{Where they were tried.} All seven were used on Linux.
+  The tests also run Python, Node, Java and Ruby on Windows and macOS,
+  and the others there only as far as the machine has them.
 \end{itemize}
 
 \section{How it is built}
@@ -487,8 +971,14 @@ let go of since the last one. In Zeno the value is one more kind of
 \verb|Value|, which holds the number, and the operations that both
 engines share (a field, an item, \verb|len|, \verb|==|) ask over the
 socket when they meet it. Nothing on Zeno's side knows Python but the
-name of the helper, so JavaScript and Java are each another helper that
-speaks the same lines. The reasons are chapters 26, 28 and 29 of
+name of the helper, so each of the other six is another helper that
+speaks the same lines. Two of them are not quite like the rest. Lua
+comes with no sockets, so on Linux and macOS its helper talks through
+two named pipes that Zeno makes for it, and on Windows through
+LuaSocket. And the
+helper of .NET is a small program of C\# that \verb|dotnet build|
+makes on the first run and keeps in the folder for what can be made
+again. The reasons are chapters 26, 28, 29 and 37 to 40 of
 \verb|docs/decisions.md|.
 
 \section{Things to try}
@@ -508,4 +998,17 @@ speaks the same lines. The reasons are chapters 26, 28 and 29 of
   Where is the promise?
 \item With Java, call \verb|java.type("java.util.ArrayList")().get(3)|
   inside a \verb|try|. Which kind of error catches it?
+\item With Ruby, make a Hash with the key \verb|ruby.symbol("name")|,
+  and read it with \verb|"name"|. Then read it from \verb|ruby.copy| of
+  the Hash. Why does one find it and not the other?
+\item With PHP, call \verb|php.callable("str_replace")| to change every
+  \verb|a| in a word to \verb|o|. Then ask it how many it changed: its
+  fourth parameter is written \verb|&$count|.
+\item With Lua, take \verb|os| and \verb|string| with
+  \verb|lua.global|. Print \verb|os.date("%A")|, and then
+  \verb|string.byte("abc", 1, 3)|. Which of the two is a list, and
+  where does it count from?
+\item With C\#, make a \verb|csharp.type("List<string>")()|, add three
+  names and call \verb|Sort()|. Then give \verb|Add| a number and read
+  the error.
 \end{enumerate}

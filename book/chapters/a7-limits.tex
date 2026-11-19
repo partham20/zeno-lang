@@ -64,6 +64,26 @@ The numbers are the decisions, for anyone who wants the argument.
   calls \verb|random.seed| (33.8).
 \end{description}
 
+\section{Libraries of other languages}
+
+\begin{description}
+\item[A function of Zeno cannot be given to another language]: not as
+  a callback of C, a block of Ruby, a lambda of LINQ or a sort key of
+  Python (26.12, 44.9).
+\item[The seven that run beside Zeno] (\verb|import python| and its
+  like) are for \verb|zeno run| and \verb|zeno test|. Every build
+  refuses them (26.12).
+\item[From C:] a struct given whole, a function with \verb|...|, the
+  address of a variable, and declarations read from a header by
+  themselves are not there (44.9). \verb|--llvm| and \verb|--target|
+  refuse \verb|import c|, and it has not been run with a
+  cross-compiler's own libraries or on a board.
+\item[A call the C compiler can work out.] A built program's
+  \verb|m.cbrt(27.0)| is worked out by GCC before the program runs,
+  rounded exactly, where \verb|zeno run| asks the library: the two can
+  differ in the last digit.
+\end{description}
+
 \section{Builds}
 
 \begin{description}

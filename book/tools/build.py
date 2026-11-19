@@ -112,6 +112,13 @@ def run(command, cwd, stdin=""):
     env = dict(os.environ)
     env["PATH"] = f"{BIN}:{env['PATH']}"
     env["NO_COLOR"] = "1"
+    # Java says "Picked up ..." for each of these that is set, and the
+    # line would be in the book as something a sample printed.
+    for name in ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS"):
+        env.pop(name, None)
+    # .NET greets its first run on a machine, in the same way.
+    env["DOTNET_NOLOGO"] = "1"
+    env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
     process = subprocess.run(
         command,
         shell=True,
@@ -310,10 +317,15 @@ def html():
     # A P column is a ragged p column, defined in zeno-book.sty. pandoc
     # cannot read the definition, and lays out columns its own way, so
     # its copy of each chapter says p.
+    numbers = chapter_numbers(main)
     for chapter in sorted((GEN / "chapters").glob("*.tex")):
         text = chapter.read_text()
         plain = re.sub(r"^(\\begin\{(?:longtable|tabular)\}.*)$",
                        lambda m: m.group(1).replace("P{", "p{"), text, flags=re.M)
+        # A table of an appendix names a chapter by its number,
+        # \hyperref[ch-math]{\ref*{ch-math}}. LaTeX knows the number, and
+        # pandoc is told it here.
+        plain = re.sub(r"\\ref\*\{(ch-[a-z-]+)\}", lambda m: numbers[m.group(1)], plain)
         # A picture is framed with \fbox in print. pandoc drops what is
         # inside an \fbox, and book.css frames a picture itself.
         plain = re.sub(r"\{\\setlength\{\\fboxsep\}\{0pt\}\\fbox\{(\\includegraphics.*?\})\}\}",
@@ -352,6 +364,19 @@ def html():
     if (DIST / "zeno-book.pdf").exists():
         shutil.copy(DIST / "zeno-book.pdf", out / "zeno-book.pdf")
     print(f"html: {out}/index.html")
+
+
+def chapter_numbers(main):
+    """The number of each chapter by its label, in the order the book has them."""
+    numbers, count = {}, 0
+    body = main[: main.index("\\appendix")] if "\\appendix" in main else main
+    for name in re.findall(r"\\input\{chapters/([^}]+)\}", body):
+        source = GEN / "chapters" / f"{name}.tex"
+        found = re.search(r"\\chapter\{[^\n]*\}\\label\{(ch-[a-z-]+)\}", source.read_text())
+        if found:
+            count += 1
+            numbers[found.group(1)] = str(count)
+    return numbers
 
 
 def tidy_names(out):

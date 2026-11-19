@@ -1,0 +1,506 @@
+\chapter{Libraries of C}\label{ch-c-libraries}
+
+Most of the code a computer runs is C, or is reached through C: the
+library of the system, zlib, SQLite, a vendor's driver, and the code a
+board's firmware already has. Go and Rust can both make a library
+that C can call. Since 0.6 a Zeno program can call any of them, as
+they are:
+
+\begin{zeno}[file=maths.zeno, dir=maths]
+import c
+
+let m = c.library("m", ["double hypot(double x, double y);", "double frexp(double x, int *exponent);"])
+let exponent = [0]
+print(m.hypot(3.0, 4.0), m.frexp(8.0, exponent), exponent)
+\end{zeno}
+
+\verb|c.library| takes two things: the library, and the functions of
+it that the program uses, declared as C declares them. The
+declarations are the lines a header has, copied as they are. From
+there, each function is called as a function of Zeno is.
+
+This is not the bridge of the last chapter. A value of Python stays
+in Python, and Zeno asks for each field of it. C has no such values:
+a function of C takes numbers, text and pointers, and gives one back.
+So the checker reads the declarations and checks every call before the
+program runs, and \verb|zeno build| calls the function directly, with
+nothing in between. That is what firmware needs.
+
+\begin{note}
+Nothing changes for a program that does not say \verb|import c|. What
+C needs is started by the first \verb|c.library| that runs, and a
+program that imports \verb|c| and never calls it starts nothing.
+\end{note}
+
+\section{What it needs}
+
+A C compiler: \verb|cc|, \verb|gcc| or \verb|clang|, the first that is
+installed, or the one \verb|CC| names, as for \verb|zeno build|. Under
+\verb|zeno run|, the first time a program reaches a \verb|c.library|
+Zeno writes a small file of C for the functions it declares and builds
+it with the library. That takes about half a second, and is kept: the
+next run starts at once. It is built again when the declarations
+change, or a file of the library does.
+
+The library itself has to be there with what building with it needs.
+On Debian and Ubuntu that is the package whose name ends in
+\verb|-dev|: \verb|zlib1g-dev| for zlib, \verb|libsqlite3-dev| for
+SQLite.
+
+\section{Naming the library}
+
+The first thing given is one text, or a list of them:
+
+\begin{center}
+\begin{tabular}{lP{8.6cm}}
+\toprule
+Given & What it is \\
+\midrule
+\verb|"z"| & a library of the system, by its name: \verb|-lz|, as C is
+  built with it \\
+\verb|"crc.c"| & a file of C, built with the rest \\
+\verb|"libtemp.so"| & a library that was built already: \verb|.so|,
+  \verb|.a|, \verb|.o|, \verb|.dylib|, \verb|.dll| \\
+\verb|"-DSTEP=3"| & anything that starts with \verb|-| goes to the
+  compiler as it is \\
+\verb|none| & nothing more: for the C library every program has
+  (\verb|strlen|, \verb|abs|) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A file is found from the folder of the program, wherever the program
+is started from, and so is a header it includes.
+
+\begin{zeno}[file=libc.zeno, dir=maths]
+import c
+
+let libc = c.library(none, [
+    "size_t strlen(const char *text);",
+    "int abs(int n);",
+    "char *getenv(const char *name);",
+])
+print(libc.strlen("zeno"), libc.abs(-7), libc.getenv("NO_SUCH_NAME"))
+\end{zeno}
+
+A library that is not there is a \verb|FileError|, which a program can
+catch. The message asks if it is installed, with what building with it
+needs.
+
+\section{Declaring the functions}
+
+The second thing given is the declarations: one text, or a list of
+texts, each declaration ending with \verb|;|. They are C, and only the
+functions the program uses are needed.
+
+\begin{itemize}
+\item A line that starts with \verb|#|, such as
+  \verb|#include <zlib.h>|, is given to C as it is. With the header
+  included, the compiler checks each declaration against it, and a
+  type the header names (\verb|uLong|, \verb|Bytef|) is known.
+\item A \verb|typedef|, a \verb|struct|, a \verb|union| or an
+  \verb|enum| is given to C as it is too.
+\item \verb|int8_t| to \verb|uint64_t|, \verb|size_t| and \verb|bool|
+  can be used with no \verb|#include|.
+\item A declaration with no \verb|(| is a value: a constant or a macro
+  of a header, a constant of an \verb|enum|, or a variable. It has a
+  section below.
+\end{itemize}
+
+When the library and its declarations are written out in the program
+as texts, which is nearly always, Zeno knows every function before the
+program runs, and checks each call as it checks a call of a function
+of Zeno:
+
+\begin{zeno}[file=wrong.zeno, dir=maths, cmd=zeno check {file}, fails=yes]
+import c
+
+let m = c.library("m", ["double hypot(double x, double y);"])
+print(m.hypot("3", 4.0))
+print(m.cube(3.0))
+\end{zeno}
+
+A type that only a header names (\verb|uLong|,
+\texttt{HAL\_Status\-TypeDef}) is taken to be a whole number, as nearly
+all such names are, unless it is one of the names headers give floats
+(\verb|float32_t|). The C compiler sees the real type, and says so if
+the two disagree. A declaration that names a function the library does
+not have is an error when \verb|c.library| is called, and not at the
+first call.
+
+\begin{why}
+C has no way to ask a library what its functions take: a library
+knows the names of its functions and nothing of their types. That is
+why the program declares them. And Zeno does not read a header by
+itself, because a header is written for a C compiler: it is full of
+macros, and means something different on each machine. So the
+declarations are handed to the C compiler, which is there already
+wherever \verb|zeno build| is used, and it works out what
+\verb|uLong| or \verb|size_t| is on this machine. (Decisions 44.1 and
+44.3.)
+\end{why}
+
+\section{Values go across}
+
+\begin{center}
+\begin{tabular}{P{5.2cm}P{7.2cm}}
+\toprule
+C & Zeno \\
+\midrule
+\verb|int|, \verb|uint8_t|, \verb|long|, \verb|size_t| and their like &
+  \verb|int|, checked to fit: an \verb|OverflowError| if it does not \\
+\verb|uint64_t| above the top of \verb|int| & \verb|u64| \\
+\verb|float|, \verb|double| & \verb|float| \\
+\verb|bool|, \verb|_Bool| & \verb|bool| \\
+\verb|const char *| given & a \verb|str|, lent for the call, with the
+  \verb|\0| C expects \\
+\verb|char *| given back & a \verb|str or none|, copied \\
+a pointer to numbers, given & a list, lent for the call: copied in,
+  and back after \\
+any other pointer given back & a C pointer \verb|or none|: given back
+  to C, never looked inside \\
+\verb|NULL| & \verb|none| \\
+\verb|void| & \verb|none| \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{A list for a pointer is lent.} Its items are copied into
+memory of the type the pointer is to, the function is called, and the
+items are copied back into the list afterwards, so a function that
+fills a buffer fills the list. That is how \verb|frexp| gave its
+exponent in the first program. A pointer to \verb|const| is not copied
+back: the function promised not to change it.
+
+\textbf{A pointer that C gives back is kept as it is.} It can be given
+back to C, compared with \verb|==|, tested for \verb|none| and printed,
+and that is all. This is how a library that hands out a handle
+(\verb|FILE *|, \verb|sqlite3 *|, a driver's context) is used. A
+function that gives a handle back through a pointer to a pointer
+(\verb|sqlite3 **db|) is given a list of one \verb|none|, and finds
+the handle in it afterwards.
+
+Zeno never frees memory that C gave it. A library that says the caller
+frees what it returns has a function to do it, and the program calls
+that, as it would in C.
+
+\section{A library of your own}
+
+Here is a small driver as a board's firmware might have it: a header
+and a file of C. Both lie beside the program.
+
+\begin{zeno}[file=sensor.h, dir=sensor, run=no]
+#include <stddef.h>
+#include <stdint.h>
+
+#define SENSOR_CHANNELS 4
+
+typedef enum { SENSOR_OK, SENSOR_BUSY } sensor_status;
+typedef struct sensor sensor;
+
+sensor *sensor_open(uint8_t channel);
+sensor_status sensor_read(sensor *s, uint16_t *samples, size_t count);
+uint16_t sensor_crc(const uint8_t *data, size_t length);
+void sensor_close(sensor *s);
+\end{zeno}
+
+\begin{zeno}[file=sensor.c, dir=sensor, run=no]
+#include "sensor.h"
+#include <stdlib.h>
+
+struct sensor { uint8_t channel; uint16_t next; };
+
+sensor *sensor_open(uint8_t channel) {
+    if (channel >= SENSOR_CHANNELS) return NULL;
+    sensor *s = malloc(sizeof *s);
+    s->channel = channel;
+    s->next = 0;
+    return s;
+}
+
+sensor_status sensor_read(sensor *s, uint16_t *samples, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        samples[i] = (uint16_t)(s->channel * 100 + s->next++);
+    }
+    return SENSOR_OK;
+}
+
+uint16_t sensor_crc(const uint8_t *data, size_t length) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (uint16_t)((crc >> 1) ^ 0xA001) : (uint16_t)(crc >> 1);
+        }
+    }
+    return crc;
+}
+
+void sensor_close(sensor *s) { free(s); }
+\end{zeno}
+
+\begin{zeno}[file=read.zeno, dir=sensor]
+import c
+
+let sensor = c.library("sensor.c", [
+    "#include \"sensor.h\"",
+    "sensor *sensor_open(uint8_t channel);",
+    "sensor_status sensor_read(sensor *s, uint16_t *samples, size_t count);",
+    "uint16_t sensor_crc(const uint8_t *data, size_t length);",
+    "void sensor_close(sensor *s);",
+    "int SENSOR_CHANNELS;",
+    "sensor_status SENSOR_OK;",
+])
+
+print(sensor.SENSOR_CHANNELS, sensor.sensor_open(9))
+let s = sensor.sensor_open(2)
+let samples = [0] * 4
+if sensor.sensor_read(s, samples, len(samples)) == sensor.SENSOR_OK {
+    print(samples)
+}
+sensor.sensor_close(s)
+
+let frame: list[u8] = [1, 3, 0, 107, 0, 3]
+print(sensor.sensor_crc(frame, len(frame)))
+\end{zeno}
+
+\verb|sensor_open(9)| gave \verb|NULL|, which is \verb|none|. \verb|s|
+is the handle: Zeno never looks inside it, and hands it back.
+\verb|samples| was lent and filled. \verb|frame| is a
+\verb|list[u8]| (\hyperref[ch-sized-numbers]{Sized Numbers}), which is
+what bytes are in Zeno.
+
+\section{Values a header names}
+
+The last two declarations of that program have no \verb|(|, and each
+names a value. \verb|SENSOR_CHANNELS| is a macro, and \verb|SENSOR_OK|
+a constant of an \verb|enum|. Each is read by its name, as C reads it,
+every time the program reads it. C cannot declare a macro, so the
+value is not declared again: the header has it, and the declaration
+only tells Zeno its type.
+
+That is how the names of a vendor's HAL are used:
+
+\begin{zenofrag}
+let hal = c.library("hal.c", [
+    "#include \"stm32f4xx_hal.h\"",
+    "void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);",
+    "GPIO_TypeDef *GPIOA;",
+    "uint16_t GPIO_PIN_5;",
+    "GPIO_PinState GPIO_PIN_SET;",
+])
+hal.HAL_GPIO_WritePin(hal.GPIOA, hal.GPIO_PIN_5, hal.GPIO_PIN_SET)
+\end{zenofrag}
+
+A variable that only the library's own file of C has, with no header,
+is declared with \verb|extern|, as C would declare it:
+\verb|"extern uint32_t uptime_ms;"|.
+
+\section{zeno build: C calls C}
+
+\verb|zeno build| writes C, so a function of a library is called
+there as C calls it, with no helper beside the program. The library
+is built in with the program: a file of C is compiled with it, and a
+library is linked.
+
+\begin{zeno}[file=read.zeno, dir=sensor, show=no, cmd=zeno build {file} ;; ./read ;; zeno build --no-collector --minimal {file} ;; ./read ;; grep -c "" read.c ;; grep "sensor_close(" read.c]
+import c
+
+let sensor = c.library("sensor.c", [
+    "#include \"sensor.h\"",
+    "sensor *sensor_open(uint8_t channel);",
+    "sensor_status sensor_read(sensor *s, uint16_t *samples, size_t count);",
+    "uint16_t sensor_crc(const uint8_t *data, size_t length);",
+    "void sensor_close(sensor *s);",
+    "int SENSOR_CHANNELS;",
+    "sensor_status SENSOR_OK;",
+])
+
+print(sensor.SENSOR_CHANNELS, sensor.sensor_open(9))
+let s = sensor.sensor_open(2)
+let samples = [0] * 4
+if sensor.sensor_read(s, samples, len(samples)) == sensor.SENSOR_OK {
+    print(samples)
+}
+sensor.sensor_close(s)
+
+let frame: list[u8] = [1, 3, 0, 107, 0, 3]
+print(sensor.sensor_crc(frame, len(frame)))
+\end{zeno}
+
+Every build does it: a plain one, \verb|--firmware|,
+\verb|--no-collector|, \verb|--owned| and \verb|--minimal|
+(\hyperref[ch-compiling]{Compiling}). The last lines above are the
+whole of the minimal build's C counted, and the two lines of it that
+have \verb|sensor_close|: the declaration, as the program gave it, and
+the call.
+
+A built program prints what \verb|zeno run| prints, and a number that
+does not fit stops it with the same \verb|OverflowError|:
+
+\begin{zeno}[file=channel.zeno, dir=sensor, fails=yes, cmd=zeno run {file} ;; zeno build {file} ;; ./channel]
+import c
+
+let sensor = c.library("sensor.c", ["#include \"sensor.h\"", "sensor *sensor_open(uint8_t channel);"])
+for channel in [2, 300] {
+    print(sensor.sensor_open(channel) is none)
+}
+\end{zeno}
+
+A \verb|--minimal| build does not check this, as it checks nothing.
+
+Three things to know about a build:
+
+\begin{itemize}
+\item \textbf{A \texttt{list[u8]} is handed over where it is}, with no
+  copy, to a function that takes bytes, and what C writes there is
+  what the list holds afterwards. Any other list is copied in and
+  back, as under \verb|zeno run|.
+\item \textbf{The library and its declarations must be written out}
+  in the program as texts, so that they are known while it builds.
+\item \textbf{A file of C cannot have the name the build gives the
+  program's own C}: \verb|read.c| for \verb|read.zeno|. The build says
+  so, and writes nothing.
+\end{itemize}
+
+\verb|zeno build --llvm| and \verb|--target| do not take
+\verb|import c| yet.
+
+\begin{note}
+This was used on Linux x86-64: the system's maths library, zlib,
+SQLite, a file of C beside the program, and libraries of Go and Rust.
+The tests also run it on Windows (MinGW gcc) and on macOS (Apple
+clang), with a file of C and the maths library. It has not been run
+with a cross-compiler or on a board.
+\end{note}
+
+\section{Libraries of Go and Rust}
+
+Go and Rust each build a library that C can call, and \verb|c.library|
+takes that library. The build is done by their own tools.
+
+\textbf{Rust}: mark each function \verb|#[no_mangle] pub extern "C"|,
+and build it as a \verb|cdylib| (a \verb|.so|) or a \verb|staticlib|
+(a \verb|.a|). With Cargo, that is \verb|crate-type = ["cdylib"]|
+under \verb|[lib]| in \verb|Cargo.toml|.
+
+\begin{zeno}[file=filter.rs, dir=rust, run=no]
+#[no_mangle]
+pub extern "C" fn average(values: *const f64, count: usize) -> f64 {
+    let values = unsafe { std::slice::from_raw_parts(values, count) };
+    values.iter().sum::<f64>() / count as f64
+}
+\end{zeno}
+
+\begin{zeno}[file=average.zeno, dir=rust, cmd=rustc -O --crate-type cdylib filter.rs -o libfilter.so ;; zeno run {file}]
+import c
+
+let filter = c.library("libfilter.so", "double average(const double *values, size_t count);")
+let readings = [20.0, 22.0, 21.0, 25.0]
+print(filter.average(readings, len(readings)))
+\end{zeno}
+
+\textbf{Go}: mark each function \verb|//export|, and build with the
+mode \verb|c-shared| (a \verb|.so|) or \verb|c-archive| (a \verb|.a|).
+Go writes \verb|libtemp.h| beside the library, with the declarations.
+
+\begin{zeno}[file=temp.go, dir=go, run=no]
+package main
+
+import "C"
+
+//export Celsius
+func Celsius(f float64) float64 { return (f - 32) * 5 / 9 }
+
+func main() {}
+\end{zeno}
+
+\begin{zeno}[file=temp.zeno, dir=go, cmd=go build -buildmode=c-shared -o libtemp.so temp.go ;; zeno run {file}]
+import c
+
+let temp = c.library("libtemp.so", "double Celsius(double f);")
+print(temp.Celsius(98.6))
+\end{zeno}
+
+There is no \verb|import cpp|. A library of C++ is used through C, as
+Go and Rust are: one with \verb|extern "C"| functions is a library of
+C (decision 44.12).
+
+\section{When C goes wrong}
+
+A mistake Zeno can see before the program runs is found then: a wrong
+argument, a function that is not declared, a declaration Zeno cannot
+take, such as a function with \verb|...|. A number that does not fit
+is found as the program runs.
+
+A mistake inside C, such as reading memory that is not there, is
+another matter. Under \verb|zeno run| C runs beside Zeno, so the
+program stops with an error at the line that called it, and Zeno
+itself does not crash; \verb|try| cannot catch it. In a built program
+C is the program, and it stops as a program of C does.
+
+Text that C gives back is bytes. A byte there that is not part of a
+character of UTF-8 is shown as \verb|\u{fffd}| by \verb|zeno run|; a
+built program prints the bytes as they are.
+
+\section{What is not there yet}
+
+\begin{itemize}
+\item \textbf{The address of a variable} (\verb|&huart2|, a handle of
+  a HAL that the vendor's code defines). Write a function of C that
+  gives it:\\
+  \verb|UART_HandleTypeDef *uart2(void) { return &huart2; }|
+\item \textbf{A function of Zeno given to C}, as a callback.
+\item \textbf{A struct given or given back whole}, not through a
+  pointer.
+\item \textbf{A function that takes \texttt{...}}, such as
+  \verb|printf|.
+\item \textbf{Reading the declarations from a header by itself.} They
+  are copied by hand for now, and only the ones used are needed.
+\item \textbf{A function of a library kept as a value} is refused by a
+  build: \verb|let f = m.hypot| runs under \verb|zeno run| only.
+\item \textbf{\texttt{zeno build --llvm}}, and the other languages of
+  \verb|--target|.
+\end{itemize}
+
+\section{How it is built}
+
+Under \verb|zeno run|, Zeno reads the declarations and writes a small
+file of C with a function for each, which takes its arguments from a
+table of numbers and calls the real one. The C compiler builds that
+with the library. The result is loaded by a small helper written in
+C, which runs beside the program and is spoken to as the helpers of
+the other languages are (\hyperref[ch-other-languages]{Libraries of
+Other Languages}). A fault in C stops the helper and not Zeno.
+
+Under \verb|zeno build| there is no helper. The declarations go into
+the program's C as they were written, each call is a call, and a
+number is checked to fit before it is given. The example
+\verb|examples/modbus.zeno| makes a request of Modbus RTU with the
+checksum written in C (\verb|examples/crc.c|), and it is built for
+both of the emulated boards with the rest of the examples
+(\hyperref[ch-board]{The Board}). The reasons are chapter 44 of
+\verb|docs/decisions.md|.
+
+\section{Things to try}
+
+\begin{enumerate}
+\item Run the first program of this chapter. Then give \verb|hypot| a
+  str and run \verb|zeno check|. Who found the mistake, Zeno or the C
+  compiler?
+\item Declare \verb|"double cbrt(double x);"| and print
+  \verb|m.cbrt(27.0)| under \verb|zeno run|, and then built. The two
+  can differ in the last digit. Which one did the C compiler work out
+  by itself, before the program ran?
+\item Add \verb|uint16_t sensor_peek(const sensor *s);| to the driver
+  of this chapter, and call it from Zeno.
+\item Give \verb|sensor_read| a list of three floats. What does the
+  checker say?
+\item Build \verb|read.zeno| with \verb|--minimal| and find the call of
+  \verb|sensor_crc| in \verb|read.c|. Where is the list's copy?
+\item Call \verb|crc32| of zlib on a file read with
+  \verb|files.read_bytes|.
+\item Write a function in Go that formats a number with
+  \verb|strconv.FormatFloat|, and call it from Zeno. What does Go give
+  back, and who frees it?
+\end{enumerate}

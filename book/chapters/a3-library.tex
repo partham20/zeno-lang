@@ -12,17 +12,17 @@ Function & Gives \\
 \midrule
 \endhead
 \verb|print(a, b, ...)| & shows the values on one line, with spaces between \\
-\verb|input()|, \verb|input(question)| & the next line typed, or \verb|none| at the end (\hyperref[ch-reading-writing]{23}) \\
+\verb|input()|, \verb|input(question)| & the next line typed, or \verb|none| at the end (\hyperref[ch-reading-writing]{\ref*{ch-reading-writing}}) \\
 \verb|len(x)| & how many items, characters or keys \\
-\verb|range(stop)|, \verb|range(start, stop, step)| & a list of whole numbers (\hyperref[ch-control-flow]{7}) \\
+\verb|range(stop)|, \verb|range(start, stop, step)| & a list of whole numbers (\hyperref[ch-control-flow]{\ref*{ch-control-flow}}) \\
 \verb|int(x)|, \verb|float(x)|, \verb|str(x)| & the value as another type; \verb|int| and \verb|float| of text may raise \verb|ValueError| \\
 \verb|char(n)| & the character with Unicode number \verb|n| \\
-\verb|abs(x)| & \verb|x| without its sign (\hyperref[ch-math]{24}) \\
+\verb|abs(x)| & \verb|x| without its sign (\hyperref[ch-math]{\ref*{ch-math}}) \\
 \verb|min(...)|, \verb|max(...)| & the smallest or largest, of numbers or of a list; quantities in one unit too \\
 \verb|sum(xs)| & a list of numbers added up \\
-\verb|u8(n)| and \verb|u16|, \verb|u32|, \verb|i8|, \verb|i16|, \verb|i32| & \verb|n| as a sized number, or \verb|OverflowError| (\hyperref[ch-sized-numbers]{18}) \\
+\verb|u8(n)| and \verb|u16|, \verb|u32|, \verb|i8|, \verb|i16|, \verb|i32| & \verb|n| as a sized number, or \verb|OverflowError| (\hyperref[ch-sized-numbers]{\ref*{ch-sized-numbers}}) \\
 \verb|u8.wrap(n)| and the others & the low bits of \verb|n|, never failing \\
-\verb|allocate(T, n)|, \verb|free(p)| & memory by hand (\hyperref[ch-unsafe]{33}) \\
+\verb|allocate(T, n)|, \verb|free(p)| & memory by hand (\hyperref[ch-unsafe]{\ref*{ch-unsafe}}) \\
 \bottomrule
 \end{longtable}
 \end{center}
@@ -32,7 +32,7 @@ Function & Gives \\
 \begin{center}
 \begin{longtable}{lP{8.1cm}}
 \toprule
-Method & Gives (\hyperref[ch-text]{6}) \\
+Method & Gives (\hyperref[ch-text]{\ref*{ch-text}}) \\
 \midrule
 \endhead
 \verb|upper()|, \verb|lower()| & capitals or small letters, a to z only \\
@@ -53,7 +53,7 @@ Method & Gives (\hyperref[ch-text]{6}) \\
 \begin{center}
 \begin{longtable}{lP{8.1cm}}
 \toprule
-Method & Does (\hyperref[ch-lists]{9}) \\
+Method & Does (\hyperref[ch-lists]{\ref*{ch-lists}}) \\
 \midrule
 \endhead
 \verb|append(x)|, \verb|insert(at, x)| & adds an item \\
@@ -75,7 +75,7 @@ Method & Does (\hyperref[ch-lists]{9}) \\
 \begin{center}
 \begin{longtable}{lP{8.1cm}}
 \toprule
-Written & Does (\hyperref[ch-dicts]{10}) \\
+Written & Does (\hyperref[ch-dicts]{\ref*{ch-dicts}}) \\
 \midrule
 \endhead
 \verb|d[key]|, \verb|d[key] = v| & reads (or \verb|KeyError|), stores \\
@@ -96,7 +96,7 @@ Written & Does (\hyperref[ch-dicts]{10}) \\
 Name & Is \\
 \midrule
 \endhead
-\multicolumn{2}{l}{\texttt{import math} (\hyperref[ch-math]{24})} \\
+\multicolumn{2}{l}{\texttt{import math} (\hyperref[ch-math]{\ref*{ch-math}})} \\
 \verb|pi|, \verb|e| & the numbers \\
 \verb|sqrt(x)| & square root \\
 \verb|floor(x)|, \verb|ceil(x)|, \verb|round(x)| & to a whole number, an \verb|int| \\
@@ -114,16 +114,17 @@ Name & Is \\
 \verb|pick(items)| & one of the items of a list \\
 \verb|seed(n)| & starts the numbers again from \verb|n| \\
 \midrule
-\multicolumn{2}{l}{\texttt{import time} (\hyperref[ch-units]{17})} \\
+\multicolumn{2}{l}{\texttt{import time} (\hyperref[ch-units]{\ref*{ch-units}})} \\
 \verb|sleep(t)| & waits; \verb|t| has a unit of time \\
 \verb|now()| & a clock that only goes forward, in \verb|ms| \\
 \midrule
-\multicolumn{2}{l}{\texttt{import board} (\hyperref[ch-board]{27})} \\
+\multicolumn{2}{l}{\texttt{import board} (\hyperref[ch-board]{\ref*{ch-board}})} \\
 \verb|led| & the pin of the LED \\
 \verb|pin(n)| & the pin with that number \\
 \verb|register(T, address)| & a register of size \verb|T| \\
 \verb|p.on()|, \verb|off()|, \verb|toggle()|, \verb|is_on()|, \verb|number| & what a \verb|Pin| does \\
-\verb|input_pin(n)|, \verb|input_pin(n, pull_up)|, \verb|pull_down| & a pin the program reads \\
+\verb|input_pin(n)|, \verb|input_pin(n, pull_up)| & a pin the program reads \\
+\verb|pull_up|, \verb|pull_down| & what holds an input when nothing drives it \\
 \verb|b.is_high()|, \verb|is_low()|, \verb|number| & what an \verb|InputPin| does \\
 \verb|analog_pin(n)| & a pin whose voltage is read \\
 \verb|a.voltage()|, \verb|count()|, \verb|max_count|, \verb|number| & what an \verb|AnalogPin| does \\
@@ -134,10 +135,11 @@ Name & Is \\
 \verb|b.interrupt(falling)|, \verb|rising|, \verb|either| & the edges of an input, counted by the board \\
 \verb|i.wait()|, \verb|edges()|, \verb|number| & what an \verb|Interrupt| does \\
 \verb|serial(n, 115200 baud)| & a serial port \\
-\verb|s.write(text)|, \verb|write_bytes(bytes)|, \verb|read_byte()|, \verb|has_byte()| & what a \verb|Serial| does \\
+\verb|s.write(text)|, \verb|write_bytes(bytes)| & what a \verb|Serial| sends \\
+\verb|s.read_byte()|, \verb|has_byte()| & and what it reads \\
 \verb|r.read()|, \verb|r.write(v)|, \verb|r.address| & what a \verb|Register| does, inside \verb|unsafe| \\
 \midrule
-\multicolumn{2}{l}{\texttt{import files} (\hyperref[ch-reading-writing]{23})} \\
+\multicolumn{2}{l}{\texttt{import files} (\hyperref[ch-reading-writing]{\ref*{ch-reading-writing}})} \\
 \verb|read(path)| & the whole file, as text \\
 \verb|write(path, text)|, \verb|append(path, text)| & writes, or adds to the end \\
 \verb|exists(path)| & \verb|bool| \\
@@ -145,17 +147,17 @@ Name & Is \\
 \verb|read_bytes(path)| & the whole file, as a \verb|list[u8]| \\
 \verb|write_bytes(path, bytes)| & writes a \verb|list[u8]|, one byte an item \\
 \midrule
-\multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{23})} \\
+\multicolumn{2}{l}{\texttt{import program} (\hyperref[ch-reading-writing]{\ref*{ch-reading-writing}})} \\
 \verb|arguments()| & the words after the file \\
 \verb|environment(name)| & what the environment says \verb|name| is, or \verb|none| \\
 \verb|warn(text)| & one line on the error stream \\
 \verb|exit(code)| & ends the program with \verb|code|, 0 to 255; \verb|ValueError| outside \\
 \midrule
-\multicolumn{2}{l}{\texttt{import json} (\hyperref[ch-reading-writing]{23})} \\
+\multicolumn{2}{l}{\texttt{import json} (\hyperref[ch-reading-writing]{\ref*{ch-reading-writing}})} \\
 \verb|parse(text)| & the value JSON text describes; \verb|ValueError| if it is not JSON \\
 \verb|write(value)| & a value, or an object field by field, as JSON on one line \\
 \midrule
-\multicolumn{2}{l}{\texttt{import web} (\hyperref[ch-web]{34})} \\
+\multicolumn{2}{l}{\texttt{import web} (\hyperref[ch-web]{\ref*{ch-web}})} \\
 \verb|element(selector)| & the first element that answers to it \\
 \verb|elements(selector)| & every one, as a list \\
 \verb|create(tag, text)| & a new element, not yet on the page \\
@@ -181,6 +183,34 @@ Name & Is \\
 \verb|e.draw_rect|, \verb|draw_circle| & on a canvas: a filled rectangle or circle \\
 \verb|e.draw_line|, \verb|draw_text| & on a canvas: a line, or text \\
 \verb|e.erase()| & the canvas is empty again \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section*{The libraries of other languages}
+
+\begin{center}
+\begin{longtable}{lP{8.1cm}}
+\toprule
+Name & Is \\
+\midrule
+\endhead
+\multicolumn{2}{l}{\texttt{import c} (\hyperref[ch-c-libraries]{\ref*{ch-c-libraries}})} \\
+\verb|library(what, declarations)| & a library of C, of Go or of Rust, with the functions the program declares \\
+\midrule
+\multicolumn{2}{l}{\texttt{import python} and the six like it (\hyperref[ch-other-languages]{\ref*{ch-other-languages}})} \\
+\verb|python.module(name)| & a module of Python \\
+\verb|node.module(name)|, \verb|global(name)| & a module, a global of JavaScript \\
+\verb|node.new(Class, ...)| & a new object of JavaScript \\
+\verb|java.type(name)|, \verb|jar(path)| & a class of Java; where a jar is \\
+\verb|ruby.require(name)| & loads a library of Ruby \\
+\verb|ruby.constant(name)|, \verb|symbol(name)| & a constant of Ruby; a symbol \\
+\verb|php.type(name)|, \verb|callable(name)| & a class, a function of PHP \\
+\verb|php.constant(name)| & a constant of PHP \\
+\verb|php.require(path)|, \verb|variable(value)| & reads a file of PHP; a variable for a function to change \\
+\verb|lua.require(name)|, \verb|global(name)| & a module of Lua; what Lua has everywhere \\
+\verb|csharp.type(name)|, \verb|assembly(path)| & a type of .NET; where a \verb|.dll| is \\
+\verb|copy(value)| & in each of the seven: a collection there, as a list or a dict of Zeno \\
 \bottomrule
 \end{longtable}
 \end{center}

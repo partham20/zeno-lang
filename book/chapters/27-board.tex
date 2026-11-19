@@ -551,10 +551,10 @@ port needs four more, and \verb|ZENO_SERIALS|, the number of ports:
 \verb|zeno_board_serial_open|, \verb|_write|, \verb|_ready| and
 \verb|_read|. One that reads a voltage needs
 \verb|zeno_board_analog| and \verb|zeno_board_analog_read|, with the
-converter's bits and reference, one that makes a PWM signal needs
-\verb|zeno_board_pwm(pin, hertz, duty)|, and one with an interrupt
-needs \verb|zeno_board_interrupt|, \verb|zeno_board_edges| and
-\verb|zeno_board_edges_wait|. Only a program that uses them calls them, so a header
+converter's bits and reference. One that makes a PWM signal needs
+\verb|zeno_board_pwm|, which takes the pin, the hertz and the duty.
+One with an interrupt needs three: \verb|zeno_board_interrupt|,
+\verb|zeno_board_edges| and \verb|zeno_board_edges_wait|. Only a program that uses them calls them, so a header
 with four still builds every other program.
 
 The simulated board is these four, written for a computer. For a real

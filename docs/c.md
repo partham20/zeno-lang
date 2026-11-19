@@ -241,6 +241,13 @@ a function that takes bytes where it is, with no copy, and what C
 writes there is what the list holds afterwards. Any other list is
 copied in and back, as in `zeno run`.
 
+One thing can differ in the last digit. A call the C compiler can work
+out by itself, such as `m.cbrt(27.0)` with the number written in the
+program, is worked out by GCC or Clang while it builds, rounded
+exactly (`3.0`), where `zeno run` asks the library as the program runs
+(`3.0000000000000004` with glibc). Given a number the compiler cannot
+see, both ask the library.
+
 For `zeno build`, the library and its declarations must be written out
 in the program as texts, so that they are known while it builds. A
 file of C cannot have the name the build gives the program's own C

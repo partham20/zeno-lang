@@ -102,8 +102,8 @@ Option & With & What it does \\
   compiler, flags, start-up files and linker script, and the program
   comes out as \verb|name.elf|. Built with no collector. Goes with
   \verb|--minimal|, \verb|--release|, \verb|--fast| and
-  \verb|--memory| (\hyperref[ch-compiling]{Compiling}; new after
-  0.6.0) \\
+  \verb|--memory| (\hyperref[ch-compiling]{Compiling}; new in
+  0.7) \\
 \verb|--llvm| & \verb|build| & write LLVM IR in place of C and hand it
   to \verb|clang|. Goes with the three options around it \\
 \verb|--web| & \verb|build| & write a web page that runs the program:
@@ -133,8 +133,8 @@ the program printed.
 
 \section{Telling the C compiler}
 
-A build writes C, and two names can be set when that C is compiled,
-with \verb|-D| on the \verb|cc| or \verb|clang| line:
+A build writes C, and these names can be set when that C is compiled,
+with \verb|-D| on the line of the C compiler:
 
 \begin{longtable}{lP{8.6cm}}
 \toprule
@@ -152,5 +152,31 @@ Name & What it sets \\
   collector, 32\,768 unless set: \verb|-DZENO_POOL=25384| \\
 \verb|ZENO_TEXT_ROOM| & the size of the text room in bytes, for the same
   build \\
+\verb|ZENO_PLAIN_C| & asks GCC or Clang for the checks written in
+  plain C, which every other C compiler gets unasked
+  (\hyperref[ch-firmware]{Firmware}; new in 0.7) \\
+\bottomrule
+\end{longtable}
+
+\section{Names in the environment}
+
+Zeno finds the other programs it needs by their usual names. A name
+in the environment says where another one is:
+
+\begin{longtable}{lP{8.6cm}}
+\toprule
+Name & What it names \\
+\midrule
+\endhead
+\verb|CC| & the C compiler of \verb|zeno build| and of
+  \verb|import c|, in place of \verb|cc|, \verb|gcc| or \verb|clang| \\
+\verb|ZENO_PYTHON|, \verb|ZENO_NODE| & the Python or the Node that
+  \verb|import python| or \verb|import node| starts
+  (\hyperref[ch-other-languages]{Libraries of Other Languages}) \\
+\verb|ZENO_JAVA|, \verb|ZENO_RUBY| & the same for \verb|import java|
+  and \verb|import ruby| \\
+\verb|ZENO_PHP|, \verb|ZENO_LUA| & and for \verb|import php| and
+  \verb|import lua| \\
+\verb|ZENO_DOTNET| & the \verb|dotnet| of \verb|import csharp| \\
 \bottomrule
 \end{longtable}
