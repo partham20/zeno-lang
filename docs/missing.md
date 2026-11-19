@@ -54,6 +54,10 @@ release ([`release.md`](release.md)).
 | 13 | Tools: step through a `.zeno` file in gdb, tests of a compiled program, a message on `assert`, completion and rename in the editor, a REPL | medium, in pieces | Each is small by itself |
 | 14 | More than one thing at a time: tasks, threads, `async` | very large | Last, because it touches memory, errors and every engine |
 
+Items 1 to 8 are built, and went out in 0.7.0. How items 9 to 14 are
+to be built, part by part, with the ways of writing each that were
+weighed, is in [`plan-9-14.md`](plan-9-14.md).
+
 Calling C from Zeno belongs between 7 and 8. It is being built
 elsewhere, as the third version of the bridges to other languages, so
 it is not on this list. What matters for firmware is that it works in
