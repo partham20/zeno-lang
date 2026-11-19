@@ -1,7 +1,7 @@
 # Written by tools/package.sh when a version is released.
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
 PackageIdentifier: ZenoLang.Zeno
-PackageVersion: 0.6.0
+PackageVersion: 0.7.0
 InstallerType: inno
 Scope: user
 ProductCode: '{BFA50675-706F-4C99-A355-0C786FDB36B9}_is1'
@@ -18,13 +18,13 @@ Commands:
   - zeno
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.6.0/zeno-0.6.0-windows-setup.exe
-    InstallerSha256: 6589CF71701DC6EC9BA68F1F00BA5E5AE1E0A90742BAE533AA8E6DE18B3DBE8A
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-windows-setup.exe
+    InstallerSha256: 3657A01AAF66F2D810CD280A427C9374BA7CFD887262BC1851C6CBAEB598861A
   - Architecture: x86
-    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.6.0/zeno-0.6.0-windows-setup.exe
-    InstallerSha256: 6589CF71701DC6EC9BA68F1F00BA5E5AE1E0A90742BAE533AA8E6DE18B3DBE8A
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-windows-setup.exe
+    InstallerSha256: 3657A01AAF66F2D810CD280A427C9374BA7CFD887262BC1851C6CBAEB598861A
   - Architecture: arm64
-    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.6.0/zeno-0.6.0-windows-setup.exe
-    InstallerSha256: 6589CF71701DC6EC9BA68F1F00BA5E5AE1E0A90742BAE533AA8E6DE18B3DBE8A
+    InstallerUrl: https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-windows-setup.exe
+    InstallerSha256: 3657A01AAF66F2D810CD280A427C9374BA7CFD887262BC1851C6CBAEB598861A
 ManifestType: installer
 ManifestVersion: 1.28.0
