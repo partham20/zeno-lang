@@ -210,9 +210,8 @@ takes memory or can raise.
 
 Removing \verb|setjmp| removes one obstacle to MISRA, not all of them.
 The C that a firmware build writes still uses variable
-argument lists in the runtime, calls \verb|snprintf| for a number with
-a fraction (and \verb|printf| and \verb|exit| on a board that does not
-print by itself), and
+argument lists in the runtime, calls \verb|printf| and \verb|exit| on
+a board that does not print by itself, and
 uses GCC and Clang built-ins for checked arithmetic. Taking memory from
 the heap, which MISRA also bans, is answered by \verb|--no-collector|,
 in the next chapter. None of these is hidden, and each is a later piece

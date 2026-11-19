@@ -28,9 +28,10 @@
  *
  * And one thing is added. `print` there is C's `printf`, which shows a
  * whole number by itself but not a float the way Zeno writes one. So
- * `zeno_str_float` is in two pieces there: `zeno_float_text` writes the
- * float into sixty-four bytes it is handed, with no memory asked for,
- * and `zeno_quantity_text` does the same for the number of a quantity.
+ * `zeno_float_text`, which writes a float into sixty-four bytes it is
+ * handed with no memory asked for, is called there by the program
+ * itself, and `zeno_quantity_text` is added, which does the same for
+ * the number of a quantity.
  * `zeno_radix` is in two pieces in the same way, for `{n:x}` and
  * `{reg:08b}`: `zeno_radix_text` writes into bytes it is handed.
  *
@@ -1898,71 +1899,312 @@ static const char *zeno_str_bool(bool b) {
     return b ? "true" : "false";
 }
 
-/* A float as text: the fewest digits that read back as the same float, and
- * always with a `.0` or an exponent so it cannot be mistaken for an int.
- * 0.1 + 0.2 prints as 0.30000000000000004, and 3.0 as 3.0. */
-#ifndef ZENO_MINIMAL
-static const char *zeno_str_float(double x) {
-#else /* ZENO_MINIMAL */
-static const char *zeno_float_text(double x, char out[64]) {
-#endif /* ZENO_MINIMAL */
-    if (x != x) return "NaN";
-    if (x == INFINITY) return "inf";
-    if (x == -INFINITY) return "-inf";
+/* ------------------------------------------------ A float and its digits
+ *
+ * Three things are done here with whole numbers, and with no help
+ * from the C library: a float is made into the fewest digits that name
+ * it, a float is written with a fixed number of decimals, and text is
+ * read as the nearest float (decision 53). Each is exact. `snprintf`
+ * and `strtod` do the same on a computer. A chip has to carry them,
+ * 28 KB of flash on an ARM Cortex-M3, and they do not answer alike on
+ * every C library.
+ *
+ * A float is a whole number times a power of two: 0.1 is
+ * 3602879701896397 / 2^55. Working out its digits in base ten exactly
+ * can take whole numbers of more than a thousand bits, so the sums are
+ * done on numbers kept as a row of 32-bit words, the lowest word first,
+ * with their length beside them. Each function gives the new length. */
 
-    /* Find the shortest run of digits that still names this exact float. */
-    char digits[40];
-    int precision = 1;
-    for (; precision < 17; precision++) {
-        snprintf(digits, sizeof digits, "%.*e", precision - 1, x);
-        if (strtod(digits, NULL) == x) break;
+/* How many words hold the numbers a float's digits are worked out with
+ * (they stay under 1,200 bits), and the numbers text is read with (under
+ * 3,800 bits). No more than ZENO_READ_DIGITS digits of a text are kept:
+ * a text that lies exactly between two floats never has more than 767,
+ * so with these and a note of whether anything but 0 followed, the
+ * nearest float is still the right one. */
+#define ZENO_DIGIT_WORDS 40
+#define ZENO_READ_WORDS 120
+#define ZENO_READ_DIGITS 770
+
+static int zeno_big_set(uint32_t *a, uint64_t value) {
+    a[0] = (uint32_t)value;
+    a[1] = (uint32_t)(value >> 32);
+    return a[1] != 0 ? 2 : a[0] != 0 ? 1 : 0;
+}
+
+/* How many bits a has: 0 for 0, 3 for 5. */
+static int zeno_big_bits(const uint32_t *a, int n) {
+    if (n == 0) return 0;
+    int bits = (n - 1) * 32;
+    for (uint32_t top = a[n - 1]; top != 0; top >>= 1) bits++;
+    return bits;
+}
+
+/* a = a * by */
+static int zeno_big_times(uint32_t *a, int n, uint32_t by) {
+    uint64_t carry = 0;
+    for (int i = 0; i < n; i++) {
+        carry += (uint64_t)a[i] * by;
+        a[i] = (uint32_t)carry;
+        carry >>= 32;
     }
-    snprintf(digits, sizeof digits, "%.*e", precision - 1, x);
+    if (carry != 0) a[n++] = (uint32_t)carry;
+    return n;
+}
 
-    /* `digits` now looks like -d.ddddde+XX. Pull it apart. */
-    char mantissa[24];
+/* a = a * 10^power */
+static int zeno_big_times_ten_to(uint32_t *a, int n, int power) {
+    static const uint32_t tens[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000};
+    for (; power >= 9; power -= 9) n = zeno_big_times(a, n, 1000000000u);
+    return power > 0 ? zeno_big_times(a, n, tens[power]) : n;
+}
+
+/* a = a + more, for a small number */
+static int zeno_big_plus(uint32_t *a, int n, uint32_t more) {
+    for (int i = 0; more != 0; i++) {
+        if (i == n) {
+            a[n++] = more;
+            break;
+        }
+        uint64_t sum = (uint64_t)a[i] + more;
+        a[i] = (uint32_t)sum;
+        more = (uint32_t)(sum >> 32);
+    }
+    return n;
+}
+
+/* a = a * 2^bits */
+static int zeno_big_shift(uint32_t *a, int n, int bits) {
+    if (n == 0) return 0;
+    int words = bits / 32, rest = bits % 32;
+    uint32_t spill = rest == 0 ? 0 : a[n - 1] >> (32 - rest);
+    for (int i = n - 1; i >= 0; i--) {
+        uint32_t low = i > 0 && rest != 0 ? a[i - 1] >> (32 - rest) : 0;
+        a[i + words] = (a[i] << rest) | low;
+    }
+    for (int i = 0; i < words; i++) a[i] = 0;
+    n += words;
+    if (spill != 0) a[n++] = spill;
+    return n;
+}
+
+/* a = a / 2, with what does not divide dropped */
+static int zeno_big_halve(uint32_t *a, int n) {
+    for (int i = 0; i < n; i++) a[i] = (a[i] >> 1) | (i + 1 < n ? a[i + 1] << 31 : 0);
+    return n > 0 && a[n - 1] == 0 ? n - 1 : n;
+}
+
+/* -1, 0 or 1, as a is below b, the same, or above it. */
+static int zeno_big_compare(const uint32_t *a, int an, const uint32_t *b, int bn) {
+    if (an != bn) return an < bn ? -1 : 1;
+    for (int i = an - 1; i >= 0; i--) {
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+/* a = a + b */
+static int zeno_big_add(uint32_t *a, int an, const uint32_t *b, int bn) {
+    uint64_t carry = 0;
+    int n = an > bn ? an : bn;
+    for (int i = 0; i < n; i++) {
+        carry += (uint64_t)(i < an ? a[i] : 0) + (i < bn ? b[i] : 0);
+        a[i] = (uint32_t)carry;
+        carry >>= 32;
+    }
+    if (carry != 0) a[n++] = (uint32_t)carry;
+    return n;
+}
+
+/* a = a - b, for an a that is not below b */
+static int zeno_big_subtract(uint32_t *a, int an, const uint32_t *b, int bn) {
+    uint64_t borrow = 0;
+    for (int i = 0; i < an; i++) {
+        uint64_t take = (uint64_t)(i < bn ? b[i] : 0) + borrow;
+        borrow = (uint64_t)a[i] < take;
+        a[i] = (uint32_t)((uint64_t)a[i] - take);
+    }
+    while (an > 0 && a[an - 1] == 0) an--;
+    return an;
+}
+
+/* a = a / by, and what is left over is given back */
+static uint32_t zeno_big_divide(uint32_t *a, int *n, uint32_t by) {
+    uint64_t left = 0;
+    for (int i = *n - 1; i >= 0; i--) {
+        left = (left << 32) | a[i];
+        a[i] = (uint32_t)(left / by);
+        left %= by;
+    }
+    while (*n > 0 && a[*n - 1] == 0) (*n)--;
+    return (uint32_t)left;
+}
+
+/* What a has from 2^under up, a small number, which is taken out of a. */
+static uint32_t zeno_big_take(uint32_t *a, int *n, int under) {
+    int word = under / 32, bit = under % 32;
+    if (word >= *n) return 0;
+    uint32_t taken = a[word] >> bit;
+    if (bit != 0 && word + 1 < *n) taken |= a[word + 1] << (32 - bit);
+    a[word] &= (UINT32_C(1) << bit) - 1;
+    *n = word + 1;
+    while (*n > 0 && a[*n - 1] == 0) (*n)--;
+    return taken;
+}
+
+/* The digits of mantissa * 2^exponent, a number above zero. They are
+ * written to `digits`, and how many there are is given back. The number
+ * is 0.d1d2d3... times 10^*point.
+ *
+ * Each float owns a stretch of the number line: every number nearer to
+ * it than to the float on either side. Any digits inside that stretch
+ * read back as this float. The float below is as far away as the one
+ * above, unless this float is the first of its power of two (`narrow`),
+ * when the one below is half as far. The two ends of the stretch belong
+ * to the float whose mantissa is even, which is where a reader that
+ * rounds to even sends them.
+ *
+ * The method is Steele and White's, as Burger and Dybvig wrote it down
+ * ("Printing Floating-Point Numbers Quickly and Accurately", 1996).
+ * `r / s` is the part of the number not yet written, and `above / s`
+ * and `below / s` are how far the stretch still reaches each way. A
+ * digit is taken off the front of r, and then: is what has been written
+ * so far, or that with its last digit one higher, inside the stretch?
+ *
+ * A float stops at the first length where either is (the fewest digits
+ * that name it), and takes the nearer of the two, or the even one when
+ * they are as near (decision 24.21). An f32 (`rounded`) is rounded from
+ * its exact value at each length in turn, and stops at the first length
+ * where that reads back (decision 41.8). */
+static int zeno_float_digits(uint64_t mantissa, int exponent, bool narrow, bool rounded, char *digits, int *point) {
+    uint32_t r[ZENO_DIGIT_WORDS], s[ZENO_DIGIT_WORDS], above[ZENO_DIGIT_WORDS], below[ZENO_DIGIT_WORDS], sum[ZENO_DIGIT_WORDS];
+    bool even = (mantissa & 1) == 0;
+    int twos = narrow ? 2 : 1;
+    int rn = zeno_big_set(r, mantissa), sn = zeno_big_set(s, 1);
+    int an = zeno_big_set(above, 1), bn = zeno_big_set(below, 1);
+    if (exponent >= 0) {
+        rn = zeno_big_shift(r, rn, exponent + twos);
+        sn = zeno_big_shift(s, sn, twos);
+        an = zeno_big_shift(above, an, exponent + twos - 1);
+        bn = zeno_big_shift(below, bn, exponent);
+    } else {
+        rn = zeno_big_shift(r, rn, twos);
+        sn = zeno_big_shift(s, sn, twos - exponent);
+        an = zeno_big_shift(above, an, twos - 1);
+    }
+
+    /* Which power of ten the number is under. The number is from 2^two
+     * to twice that, so it is over 10^floor(two * log10(2)); and
+     * 78913 / 2^18 is near enough to log10(2) for every float. The
+     * guess is right or one too low, and is then put right. */
+    int two = exponent - 1;
+    for (uint64_t left = mantissa; left != 0; left >>= 1) two++;
+    int power = two >= 0 ? (two * 78913 >> 18) + 1 : 1 - ((-two * 78913 + 262143) >> 18);
+    if (power >= 0) {
+        sn = zeno_big_times_ten_to(s, sn, power);
+    } else {
+        rn = zeno_big_times_ten_to(r, rn, -power);
+        an = zeno_big_times_ten_to(above, an, -power);
+        bn = zeno_big_times_ten_to(below, bn, -power);
+    }
+    memcpy(sum, r, (size_t)rn * sizeof *r);
+    int reach = zeno_big_compare(sum, zeno_big_add(sum, rn, above, an), s, sn);
+    if (even ? reach >= 0 : reach > 0) {
+        power++;
+    } else {
+        rn = zeno_big_times(r, rn, 10);
+        an = zeno_big_times(above, an, 10);
+        bn = zeno_big_times(below, bn, 10);
+    }
+    *point = power;
+
     int count = 0;
-    const char *p = digits;
-    bool negative = *p == '-';
-    if (negative) p++;
-    for (; *p != 'e'; p++) {
-        if (*p != '.') mantissa[count++] = *p;
+    for (;;) {
+        int digit = 0;
+        while (zeno_big_compare(r, rn, s, sn) >= 0) {
+            rn = zeno_big_subtract(r, rn, s, sn);
+            digit++;
+        }
+        /* Written so far, is it inside the stretch? And with one more? */
+        int low = zeno_big_compare(r, rn, below, bn);
+        bool as_it_is = even ? low <= 0 : low < 0;
+        memcpy(sum, r, (size_t)rn * sizeof *r);
+        int high = zeno_big_compare(sum, zeno_big_add(sum, rn, above, an), s, sn);
+        bool one_more = even ? high >= 0 : high > 0;
+        /* Which of the two is nearer to the number itself? */
+        memcpy(sum, r, (size_t)rn * sizeof *r);
+        int half = zeno_big_compare(sum, zeno_big_shift(sum, rn, 1), s, sn);
+        bool up = half > 0 || (half == 0 && (digit & 1) != 0);
+        bool done = rounded ? (up ? one_more : as_it_is) : (as_it_is || one_more);
+        if (done || count == 17) {
+            if (!rounded && as_it_is != one_more) up = one_more;
+            digits[count++] = (char)('0' + digit + (up ? 1 : 0));
+            return count;
+        }
+        digits[count++] = (char)('0' + digit);
+        rn = zeno_big_times(r, rn, 10);
+        an = zeno_big_times(above, an, 10);
+        bn = zeno_big_times(below, bn, 10);
     }
-    int exponent = atoi(p + 1);
-    while (count > 1 && mantissa[count - 1] == '0') count--; /* 1.50 is 1.5 */
+}
 
-#ifndef ZENO_MINIMAL
-    char out[64];
-#endif /* ZENO_MINIMAL */
-    char *o = out;
+/* Digits as Zeno shows a float: always with a `.0` or an exponent, so
+ * that it cannot be taken for an int, and with an exponent below 0.0001
+ * and from 1e16. Gives where the text ends. */
+static char *zeno_float_layout(char *o, bool negative, const char *digits, int count, int point) {
+    while (count > 1 && digits[count - 1] == '0') count--; /* 1.50 is 1.5 */
+    int exponent = point - 1;
     if (negative) *o++ = '-';
-    double size = fabs(x);
-    if (size != 0.0 && (size < 1e-4 || size >= 1e16)) {
+    if (exponent < -4 || exponent >= 16) {
         /* Very small or very big: 1.5e-7 */
-        *o++ = mantissa[0];
+        *o++ = digits[0];
         if (count > 1) {
             *o++ = '.';
-            for (int i = 1; i < count; i++) *o++ = mantissa[i];
+            for (int i = 1; i < count; i++) *o++ = digits[i];
         }
-        o += sprintf(o, "e%d", exponent);
+        *o++ = 'e';
+        if (exponent < 0) *o++ = '-';
+        int size = exponent < 0 ? -exponent : exponent;
+        if (size >= 100) *o++ = (char)('0' + size / 100);
+        if (size >= 10) *o++ = (char)('0' + size / 10 % 10);
+        *o++ = (char)('0' + size % 10);
     } else if (exponent < 0) {
         /* 0.00123 */
         *o++ = '0';
         *o++ = '.';
         for (int i = 0; i < -exponent - 1; i++) *o++ = '0';
-        for (int i = 0; i < count; i++) *o++ = mantissa[i];
+        for (int i = 0; i < count; i++) *o++ = digits[i];
     } else {
         /* 123.45, or 1200.0 */
-        for (int i = 0; i <= exponent; i++) *o++ = i < count ? mantissa[i] : '0';
+        for (int i = 0; i <= exponent; i++) *o++ = i < count ? digits[i] : '0';
         *o++ = '.';
         if (count <= exponent + 1) *o++ = '0';
-        for (int i = exponent + 1; i < count; i++) *o++ = mantissa[i];
+        for (int i = exponent + 1; i < count; i++) *o++ = digits[i];
     }
-#ifndef ZENO_MINIMAL
-    return zeno_copy(out, (size_t)(o - out));
-}
-#else /* ZENO_MINIMAL */
     *o = '\0';
+    return o;
+}
+
+/* A float as text: the fewest digits that read back as the same float, and
+ * always with a `.0` or an exponent so it cannot be mistaken for an int.
+ * 0.1 + 0.2 prints as 0.30000000000000004, and 3.0 as 3.0. The text is
+ * written to `out`, unless it is one of the three that are always the
+ * same. */
+static const char *zeno_float_text(double x, char out[64]) {
+    if (x != x) return "NaN";
+    if (x == INFINITY) return "inf";
+    if (x == -INFINITY) return "-inf";
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    uint64_t fraction = bits & ((UINT64_C(1) << 52) - 1);
+    int field = (int)(bits >> 52) & 0x7FF;
+    char digits[20] = "0";
+    int count = 1, point = 1;
+    if (field != 0) {
+        count = zeno_float_digits(fraction | (UINT64_C(1) << 52), field - 1075, fraction == 0 && field > 1, false, digits, &point);
+    } else if (fraction != 0) {
+        count = zeno_float_digits(fraction, -1074, false, false, digits, &point);
+    }
+    zeno_float_layout(out, (bits >> 63) != 0, digits, count, point);
     return out;
 }
 
@@ -1972,30 +2214,50 @@ static const char *zeno_str_float(double x) {
     return text == out ? zeno_copy(out, strlen(out)) : text;
 }
 
+#ifdef ZENO_MINIMAL
 static const char *zeno_quantity_text(double x, char out[64]) {
     if (x == floor(x) && fabs(x) < 1e15) {
-        snprintf(out, 64, "%lld", (long long)x);
-        return out;
+        int64_t whole = (int64_t)x;
+        uint64_t size = whole < 0 ? 0 - (uint64_t)whole : (uint64_t)whole;
+        char *p = out + 63;
+        *p = '\0';
+        do {
+            *--p = (char)('0' + size % 10);
+            size /= 10;
+        } while (size != 0);
+        if (whole < 0) *--p = '-';
+        return p;
     }
     return zeno_float_text(x, out);
 }
 #endif /* ZENO_MINIMAL */
 
-/* An f32 (decision 41.8): the float with the fewest digits that reads
- * back as the same f32. It is then written as a float is, so f32(0.1)
- * prints as 0.1, though as a float it is 0.10000000149011612. */
-static double zeno_f32_shown(float x) {
-    if (x != x || x == 0.0f || x == INFINITY || x == -INFINITY) return (double)x;
-    char digits[40];
-    for (int precision = 1; precision <= 9; precision++) {
-        snprintf(digits, sizeof digits, "%.*e", precision - 1, (double)x);
-        if (strtof(digits, NULL) == x) return strtod(digits, NULL);
+/* An f32 (decision 41.8): the fewest digits that read back as the same
+ * f32, written as a float with those digits is. So f32(0.1) prints as
+ * 0.1, though as a float it is 0.10000000149011612. */
+static const char *zeno_f32_text(float x, char out[64]) {
+    if (x != x) return "NaN";
+    if (x == INFINITY) return "inf";
+    if (x == -INFINITY) return "-inf";
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    uint32_t fraction = bits & 0x7FFFFFu;
+    int field = (int)(bits >> 23) & 0xFF;
+    char digits[20] = "0";
+    int count = 1, point = 1;
+    if (field != 0) {
+        count = zeno_float_digits(fraction | 0x800000u, field - 150, fraction == 0 && field > 1, true, digits, &point);
+    } else if (fraction != 0) {
+        count = zeno_float_digits(fraction, -149, false, true, digits, &point);
     }
-    return (double)x;
+    zeno_float_layout(out, (bits >> 31) != 0, digits, count, point);
+    return out;
 }
 
 static const char *zeno_str_f32(float x) {
-    return zeno_str_float(zeno_f32_shown(x));
+    char out[64];
+    const char *text = zeno_f32_text(x, out);
+    return text == out ? zeno_copy(out, strlen(out)) : text;
 }
 
 /* `a / b` on two f32s, which C does in 32 bits. */
@@ -2038,11 +2300,80 @@ static const char *zeno_str_quantity(double x, const char *unit) {
  * compiled; these functions do what it asked for.
  */
 
-/* `{x:.2f}`: a fixed number of decimals. */
+/* `{x:.2f}`: a fixed number of decimals. They are rounded from the
+ * float's exact value, and a float exactly between two goes to the even
+ * digit: 0.125 is `0.12` and 0.375 is `0.38`. */
 static const char *zeno_fixed(double x, int decimals) {
-    int length = snprintf(NULL, 0, "%.*f", decimals, x);
-    char *text = zeno_alloc_text((size_t)length + 1);
-    snprintf(text, (size_t)length + 1, "%.*f", decimals, x);
+    if (x != x) return "NaN";
+    if (x == INFINITY) return "inf";
+    if (x == -INFINITY) return "-inf";
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    uint64_t mantissa = bits & ((UINT64_C(1) << 52) - 1);
+    int field = (int)(bits >> 52) & 0x7FF;
+    int exponent = field == 0 ? -1074 : field - 1075;
+    if (field != 0) mantissa |= UINT64_C(1) << 52;
+
+    /* The float is mantissa * 2^exponent: a whole number, and after it
+     * `part / 2^under`, which is below 1. */
+    uint32_t whole[ZENO_DIGIT_WORDS], part[ZENO_DIGIT_WORDS];
+    int wn, pn = 0, under = 0;
+    if (exponent >= 0) {
+        wn = zeno_big_shift(whole, zeno_big_set(whole, mantissa), exponent);
+    } else {
+        under = -exponent;
+        wn = zeno_big_set(whole, under < 64 ? mantissa >> under : 0);
+        pn = zeno_big_set(part, under < 64 ? mantissa & ((UINT64_C(1) << under) - 1) : mantissa);
+    }
+
+    /* The digits of the whole number, from the right, nine at a time. */
+    char lead[320];
+    char *first = lead + sizeof lead;
+    do {
+        uint32_t nine = zeno_big_divide(whole, &wn, 1000000000u);
+        for (int i = 0; i < 9 && (i == 0 || wn > 0 || nine != 0); i++) {
+            *--first = (char)('0' + nine % 10);
+            nine /= 10;
+        }
+    } while (wn > 0);
+    size_t leading = (size_t)(lead + sizeof lead - first);
+
+    /* Two bytes are left free in front: for a `-`, and for one digit
+     * more if the rounding goes all the way up, as 9.99 to `10.0`. */
+    char *text = zeno_alloc_text(leading + (size_t)decimals + 4);
+    char *start = text + 2, *o = start;
+    memcpy(o, first, leading);
+    o += leading;
+    if (decimals > 0) *o++ = '.';
+    for (int i = 0; i < decimals; i++) {
+        /* Ten times what is left: its whole part is the next digit. */
+        pn = zeno_big_times(part, pn, 10);
+        *o++ = (char)('0' + zeno_big_take(part, &pn, under));
+    }
+    *o = '\0';
+
+    /* What is left now says which way the last digit goes: up when it
+     * is over half, and to the even digit when it is exactly half. */
+    bool up = false;
+    if (pn > 0 && zeno_big_bits(part, pn) == under) {
+        bool half = part[pn - 1] == UINT32_C(1) << ((under - 1) % 32);
+        for (int i = 0; half && i < pn - 1; i++) half = part[i] == 0;
+        up = !half || ((o[-1] - '0') & 1) != 0;
+    }
+    if (up) {
+        char *p = o - 1;
+        for (; p >= start; p--) {
+            if (*p == '.') continue;
+            if (*p != '9') {
+                (*p)++;
+                break;
+            }
+            *p = '0';
+        }
+        if (p < start) *--start = '1';
+    }
+    if ((bits >> 63) != 0) *--start = '-';
+    memmove(text, start, (size_t)(o - start) + 1);
     return text;
 }
 
@@ -2805,9 +3136,15 @@ static void zeno_register_write(int64_t address, int bits, int64_t value) {
 
 /* A register as `print` shows it. */
 static const char *zeno_str_register(int64_t address) {
-    char buffer[40];
-    int length = snprintf(buffer, sizeof buffer, "Register(0x%08llx)", (unsigned long long)address);
-    return zeno_copy(buffer, (size_t)length);
+    /* Eight digits of hexadecimal, or more when the address needs them. */
+    char buffer[40] = "Register(0x";
+    char *o = buffer + 11;
+    uint64_t at = (uint64_t)address;
+    int digits = 8;
+    while (digits < 16 && (at >> (digits * 4)) != 0) digits++;
+    for (int i = digits - 1; i >= 0; i--) *o++ = "0123456789abcdef"[(at >> (i * 4)) & 15];
+    *o++ = ')';
+    return zeno_copy(buffer, (size_t)(o - buffer));
 }
 
 /* ------------------------------------------------------------ Manual memory
@@ -4077,13 +4414,167 @@ static bool zeno_read_int(const char *text, int64_t *result) {
     return good;
 }
 
+/* The float nearest to n * 10^tens, for an n above zero. `more` says
+ * that the number is a little over that: digits that were not all 0
+ * were left off the end of n. A number exactly between two floats goes
+ * to the one whose mantissa is even. Both n and what it is divided by
+ * can take ZENO_READ_WORDS words. */
+static double zeno_big_float(uint32_t *n, int nn, int tens, bool more) {
+    uint32_t m[ZENO_READ_WORDS];
+    int mn = zeno_big_set(m, 1);
+    if (tens >= 0) {
+        nn = zeno_big_times_ten_to(n, nn, tens);
+    } else {
+        mn = zeno_big_times_ten_to(m, mn, -tens);
+    }
+    /* The number is n / m. One of the two is doubled until n has 63
+     * bits more than m, so that n / m has 63 or 64 bits before its
+     * point: more than the 53 a float keeps, and the bit after them. */
+    int shift = zeno_big_bits(m, mn) + 63 - zeno_big_bits(n, nn);
+    if (shift >= 0) {
+        nn = zeno_big_shift(n, nn, shift);
+    } else {
+        mn = zeno_big_shift(m, mn, -shift);
+    }
+    /* A long division, one bit at a time. */
+    uint64_t q = 0;
+    mn = zeno_big_shift(m, mn, 63);
+    for (int i = 63; i >= 0; i--) {
+        if (zeno_big_compare(n, nn, m, mn) >= 0) {
+            nn = zeno_big_subtract(n, nn, m, mn);
+            q |= UINT64_C(1) << i;
+        }
+        mn = zeno_big_halve(m, mn);
+    }
+    more = more || nn != 0;
+
+    /* The number is from 2^exponent to twice that. A float keeps 53
+     * bits of it, and fewer where floats are at their smallest and lie
+     * 2^-1074 apart. */
+    int top = (q >> 63) != 0 ? 64 : 63;
+    int exponent = top - 1 - shift;
+    if (exponent > 1023) return INFINITY;
+    int keep = exponent >= -1022 ? 53 : exponent + 1075;
+    if (keep < 0) return 0.0;
+    int drop = top - keep;
+    uint64_t mantissa = drop == 64 ? 0 : q >> drop;
+    bool half = ((q >> (drop - 1)) & 1) != 0;
+    bool rest = more || (q & ((UINT64_C(1) << (drop - 1)) - 1)) != 0;
+    if (half && (rest || (mantissa & 1) != 0)) mantissa++;
+
+    /* The bits of the float. One of the smallest is its mantissa and no
+     * more, also when it was rounded up to the first of the others. */
+    uint64_t bits = mantissa;
+    if (exponent >= -1022) {
+        if (mantissa == UINT64_C(1) << 53) {
+            mantissa >>= 1;
+            exponent++;
+        }
+        if (exponent > 1023) return INFINITY;
+        bits = ((uint64_t)(exponent + 1023) << 52) | (mantissa & ((UINT64_C(1) << 52) - 1));
+    }
+    double x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+
+/* Where `text` goes on after the letters of `word`, in capitals or not;
+ * NULL if it does not begin with them. */
+static const char *zeno_after_letters(const char *text, const char *word) {
+    for (; *word != '\0'; text++, word++) {
+        if ((*text | 0x20) != *word) return NULL;
+    }
+    return text;
+}
+
+/* Read a float out of text: `2.5`, `-.5`, `1e-3`, `6.02E23`, `inf`,
+ * `infinity`, `nan`, with a `+` or a `-` before any of them and blanks
+ * around. Gives `false` for anything else. The float is the nearest one
+ * to the number that is written, however many digits it has. */
 static bool zeno_read_float(const char *text, double *result) {
-    const char *p = zeno_strip(text);
-    char *end = NULL;
-    /* C's own reader also takes hexadecimal and `nan(...)`; Zeno does not. */
-    bool good = *p != '\0' && strpbrk(p, "xX(") == NULL;
-    *result = good ? strtod(p, &end) : 0.0;
-    return good && end != p && *end == '\0';
+    *result = 0.0;
+    const char *p = text;
+    while (zeno_is_blank(*p)) p++;
+    bool negative = *p == '-';
+    if (*p == '-' || *p == '+') p++;
+    double x = 0.0;
+    const char *end;
+    if ((end = zeno_after_letters(p, "infinity")) != NULL || (end = zeno_after_letters(p, "inf")) != NULL) {
+        x = INFINITY;
+    } else if ((end = zeno_after_letters(p, "nan")) != NULL) {
+        x = NAN;
+    } else {
+        /* The number is n * 10^tens: n is its digits from the first
+         * that is not 0, as many as are kept. They wait in `nine` and
+         * go into n nine at a time. */
+        uint32_t n[ZENO_READ_WORDS];
+        int nn = 0, kept = 0, waiting = 0;
+        uint32_t nine = 0;
+        int64_t tens = 0;
+        bool any = false, more = false, after_point = false;
+        for (;; p++) {
+            if (*p == '.' && !after_point) {
+                after_point = true;
+                continue;
+            }
+            if (*p < '0' || *p > '9') break;
+            any = true;
+            uint32_t digit = (uint32_t)(*p - '0');
+            if (kept == 0 && digit == 0) {
+                if (after_point) tens--;
+            } else if (kept < ZENO_READ_DIGITS) {
+                nine = nine * 10 + digit;
+                kept++;
+                if (++waiting == 9) {
+                    nn = zeno_big_plus(n, zeno_big_times(n, nn, 1000000000u), nine);
+                    nine = 0;
+                    waiting = 0;
+                }
+                if (after_point) tens--;
+            } else {
+                more = more || digit != 0;
+                if (!after_point) tens++;
+            }
+        }
+        if (!any) return false;
+        if (waiting > 0) nn = zeno_big_plus(n, zeno_big_times_ten_to(n, nn, waiting), nine);
+        if (*p == 'e' || *p == 'E') {
+            p++;
+            bool down = *p == '-';
+            if (*p == '-' || *p == '+') p++;
+            if (*p < '0' || *p > '9') return false;
+            int power = 0;
+            for (; *p >= '0' && *p <= '9'; p++) {
+                if (power < 100000) power = power * 10 + (*p - '0');
+            }
+            tens += down ? -power : power;
+        }
+        end = p;
+        /* The number is 0.ddd... * 10^point. The smallest float is
+         * about 10^-323 and the largest about 10^308. */
+        int64_t point = kept + tens;
+        if (kept == 0 || point < -330) {
+            x = 0.0;
+        } else if (point > 310) {
+            x = INFINITY;
+        } else if (kept <= 15 && tens >= -22 && tens <= 22) {
+            /* Most numbers a program reads are short: `2.5`, `1013.25`.
+             * With no more than 15 digits and a power of ten no more
+             * than 22, n and the power are both floats exactly, and
+             * the processor's one multiplication or division gives the
+             * float nearest to the answer by itself (Clinger, 1990). */
+            static const double powers[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
+                                            1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+            double whole = (double)(int64_t)(((uint64_t)(nn > 1 ? n[1] : 0) << 32) | n[0]);
+            x = tens < 0 ? whole / powers[-tens] : whole * powers[tens];
+        } else {
+            x = zeno_big_float(n, nn, (int)tens, more);
+        }
+    }
+    while (zeno_is_blank(*end)) end++;
+    if (*end != '\0') return false;
+    *result = negative ? -x : x;
+    return true;
 }
 
 /* The ValueError for text that is not a number. `what` is "an int" or

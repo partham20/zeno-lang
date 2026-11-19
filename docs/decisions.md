@@ -15849,6 +15849,254 @@ board with no `ZENO_BOARD_PRINTS` it works as before.
   serial port, and a loop or a reset where the program stops.
 - A trial on a real board.
 
+## 53. A float and its digits, with no C library
+
+Three things in the runtime were done by the C library: `print(x)`
+of a float found its digits with `snprintf` and `strtod` in a loop,
+`{x:.2f}` was `snprintf`, and `float("2.5")` was `strtod`. On a
+computer those are given. On a chip they are the largest thing in the
+program: 28 KB of flash on an ARM Cortex-M3 for the first float a
+program shows (52.6), with the memory `snprintf` asks for while it
+works.
+
+This chapter is the third part of item 8 of
+[`missing.md`](missing.md). **The runtime now does all three itself,
+with whole numbers, and exactly.** `snprintf`, `sprintf`,
+`strtod`, `strtof` and `atoi` are not called anywhere in it.
+`primes.zeno` takes 7,884 bytes on that chip, where it took 25,360.
+
+Nothing in the language changes. What a program prints changes in two
+places, and in both a build now prints what `zeno run` always did
+(53.2, 53.4).
+
+### 53.1 Whole numbers, in rows of 32-bit words
+
+A float is a whole number times a power of two: 0.1 is
+3602879701896397 / 2^55. Its digits in base ten are worked out
+exactly, and exact sums on the smallest and the largest floats take
+whole numbers of more than a thousand bits. The runtime keeps such a
+number as a row of 32-bit words with its length beside it, and has a
+dozen small functions for them (`zeno_big_times`, `zeno_big_shift`,
+`zeno_big_compare` and their like): multiply by a small number, add,
+subtract, compare, double, halve. Every row is on the stack of the
+function that uses it, of a size fixed when the C is compiled. No
+memory is asked for.
+
+**Why whole numbers.** Sums on floats are rounded, and a method that
+rounds on the way gives now and then another last digit, which is the
+one thing this code is for. With whole numbers the answer is the same
+on every processor, with or without floating point of its own.
+
+**Rejected.**
+- *A smaller `printf`* (newlib has one, and vendors have theirs).
+  Each rounds its own way and none gives "the fewest digits", so the
+  loop round `snprintf` and `strtod` would stay, and what a program
+  prints would depend on the C library under it.
+- *The fast methods with tables* (Grisu, Ryu). They are several times
+  faster and carry tables of powers of ten, some 10 KB of them in
+  Ryu, on a chip where flash is what this chapter is about.
+- *`__int128`.* 32-bit compilers do not have it.
+
+### 53.2 The fewest digits that name a float
+
+The rule is the one of 24.21 and does not change: the fewest digits
+that read back as this float and no other; of two such texts the
+nearer; of two equally near the one that ends in an even digit.
+
+The method is Steele and White's, in the form Burger and Dybvig gave
+it ("Printing Floating-Point Numbers Quickly and Accurately", 1996).
+Each float owns a stretch of the number line: every number nearer to
+it than to the float on either side. Digits are taken off the front
+of the float's exact value one at a time, and after each the code
+asks whether what is written so far, or that with its last digit one
+higher, already lies inside the stretch. The first time one does, it
+stops.
+
+**One answer changes, and it is the build that was wrong.** The C
+tried each length in turn with the float's exact value rounded to
+that length, and took the first that read back. But the fewest digits
+are not always the rounded ones. A power of two has the float below
+it half as far away as the float above, so its stretch reaches twice
+as far up as down:
+
+```zeno
+print(2.0 ** -44.0)
+```
+
+`zeno run` printed `5.684341886080802e-14`, 16 digits, which reads
+back as that float. The exact value rounded to 16 digits ends in
+`...801`, which is below the stretch, so a build went on to 17 and
+printed `5.6843418860808015e-14`. A build now prints what `zeno run`
+prints. It can only happen to a float that is exactly a power of two:
+46 of the 2,098 there are had another text.
+
+Which power of ten a float is under is guessed from its bits with
+whole numbers too (`two * 78913 >> 18` is `two * log10(2)` near enough
+for every float), and put right by one comparison. There is no call
+to `log10` or `ceil`.
+
+### 53.3 An `f32` takes the same road
+
+The rule of 41.8 does not change: each length from 1 digit to 9,
+rounded from the exact value, until one reads back as the same f32.
+`zeno_f32_text` asks the same function for digits with that rule,
+where it called `snprintf`, `strtof` and `strtod`. `zeno_f32_shown`,
+which gave the float with those digits, is gone: nothing needs it.
+
+### 53.4 `{x:.2f}` is exact, and a NaN is `NaN`
+
+The float is split into its whole part and what is after the point.
+The whole part is divided by 1,000,000,000 until nothing is left,
+which gives its digits nine at a time. What is after the point is
+multiplied by ten once for each decimal, and what comes out over the
+point each time is the next digit. What is left at the end says which
+way the last digit goes: up when it is over half, and to the even
+digit when it is exactly half, as before (`{0.125:.2f}` is `0.12`).
+
+**One answer changes.** A float that is not a number printed as the C
+library writes it, `nan` or `-nan`, where `zeno run` prints `NaN`:
+
+```zeno
+let x = float("nan")
+print(f"{x:.2f}")
+```
+
+A build prints `NaN` now, and `inf` and `-inf` as before. Text is
+made the same way on Linux, macOS, Windows and a chip, whatever their
+C libraries do with a NaN.
+
+### 53.5 `float("2.5")` gives the nearest float, however long the text
+
+What is accepted does not change: a sign, then `inf`, `infinity` or
+`nan` in capitals or not, or digits with a point anywhere and `e` and
+a power after them; blanks around it. `1.` and `.5` are floats; `.`,
+`1e`, `1_000.0`, `0x10` and `nan(1)` are a `ValueError`.
+
+The digits are gathered into a whole number `n` and a power of ten.
+For most text that is all there is to do: with no more than 15 digits
+and a power no more than 22, `n` and the power are both floats
+exactly, and the processor's one multiplication or division gives the
+nearest float by itself (Clinger, 1990). Any other text is `n`
+divided by a power of ten, or multiplied by one, as whole numbers: a
+long division gives 64 bits of the answer and says whether anything
+was left, and the 53 a float keeps are rounded from that, to even on
+a tie. The smallest floats, which keep fewer bits, come out of the
+same division.
+
+**No more than 770 digits are kept**, with a note of whether any that
+were dropped was not 0. A text that lies exactly between two floats
+never has more than 767 digits, so text of any length is read as the
+nearest float, in a fixed 960 bytes of stack.
+
+`float( )` no longer makes a copy of its text to cut the blanks off.
+
+### 53.6 What it costs, and what it buys, measured
+
+On an ARM Cortex-M3 (`arm-none-eabi-gcc` 13.2, `-Os`) the digits of a
+float take 1,192 bytes of flash, `{x:.2f}` 908, `float( )` 1,428 and
+184 of powers of ten, and the functions for long whole numbers under
+them some 700: **4.4 KB where the C library took 28**.
+A program that uses one of the three carries only that one.
+
+Flash in bytes, the build that checks:
+
+| program | `qemu-cortex-m3` before | now | `lm3s6965evb` before | now |
+|---|---|---|---|---|
+| `primes.zeno` | 33,032 | 16,172 | 25,360 | 7,884 |
+| `tour.zeno` | 44,504 | 22,000 | 36,840 | 14,032 |
+| `instruments.zeno` | 52,816 | 31,296 | 45,136 | 23,336 |
+
+A program with no float in it is the same size as before. On
+`lm3s6965evb` a program now has of the C library `memcpy`, `memset`,
+`strlen` and their like, and the functions of `math` it calls. The
+soft floating point of a chip with none of its own comes with the
+compiler, and is some 3 KB.
+
+**The quick way of reading (53.5) costs flash on such a chip.** Its
+one multiplication or division of floats brings the compiler's
+functions for them, 2.2 KB, into a program that reads a float and
+never multiplies or divides one itself: `sentence.zeno` is 19,932
+bytes on `lm3s6965evb` and would be 17,696 without it. It stays,
+because a program that reads a float nearly always does sums with it
+and has those functions anyway, and without it reading is three and a
+half times slower than it was, on a computer too. **Rejected:** the
+quick way only where the processor has floating point of its own.
+Each compiler says that with a macro of its own, and the C Zeno
+writes would read text one way on one chip and another way on the
+next.
+
+While it works, a float's digits take 800 bytes of stack, `{x:.2f}`
+640, and a long text read as a float 960. The C library asked `_sbrk`
+for memory in their place, and kept 2 KB of its own: `primes` has
+33,952 bytes of RAM in use on `lm3s6965evb`, where it had 36,028.
+
+On a computer (a million of each, x86-64, `-O2`):
+
+| | before | now |
+|---|---|---|
+| `str(x)` of floats that need 17 digits | 5.8 s | 0.96 s |
+| `str(x)` of 0.25, 0.5, 0.75, ... | 1.85 s | 0.35 s |
+| `f"{x:.2f}"` | 0.51 s | 0.06 s |
+| `float(text)` of six short texts | 0.11 s | 0.11 s |
+
+Writing is five to eight times faster, because the old way called
+`snprintf` and `strtod` once for each length it tried. Reading is as
+fast as `strtod` for the short text programs mostly read, and three
+and a half times slower for text of 16 digits and more, which goes
+the long way (0.38 s for a million of them).
+
+### 53.7 How it is held to its word
+
+- **`a_float_is_written_and_read_with_no_c_library`** types 12,020
+  floats at a program that prints each as it is and with 0, 2 and 9
+  decimals, 6,000 f32s, and some 11,400 texts to read: every kind of
+  float (any bits, readings, powers of two, the smallest ones), text
+  with too few digits and far too many, whole numbers exactly between
+  two floats with a hair over and under, and halves of the smallest
+  floats in 750 digits. What comes out has to be what Rust's own
+  functions give, under `zeno run`, in a build and in a firmware
+  build. It also reads the runtime for the five calls that are gone.
+- **`floats_are_written_and_read_on_a_cortex_m3`** types some 400 of
+  them at the serial port of both emulated boards: floats of every
+  kind, f32s, text of 750 digits, text that is no float. Each board
+  prints what `zeno run` prints, in the build that checks and in the
+  minimal one. On `lm3s6965evb` there is no C library under the
+  digits, and on both the processor is a 32-bit one with no floating
+  point of its own. It has not run on a real chip.
+- While it was written the C was compared with the C library of this
+  computer (glibc, which is exact) on several million floats and
+  texts, a part of them with the address and undefined-behaviour
+  checkers on.
+- **`tools/board.py`** (51.7): 228 of 228 programs on `qemu-cortex-m3`
+  and 208 of 208 on `lm3s6965evb` in the build that checks, 212 of
+  212 and 193 of 193 in the minimal one.
+
+### 53.8 What stays with the C library
+
+- **A minimal build for a computer** still writes `{x:.2f}` as
+  `printf`'s own `%.2f` (30.6): `printf` is there anyway. So there a
+  NaN with decimals is still `nan`. A minimal build for a board goes
+  through the runtime (52.4) and prints `NaN`.
+- `import c` shows a pointer with `snprintf("%p")` (chapter 44). Only
+  a program that imports C has it.
+- The simulated board prints a pin's change with `printf`
+  (`qemu-cortex-m3`, and every computer).
+- `math.sqrt`, `math.sin` and the rest are the C library's.
+
+### 53.9 Left for later
+
+- **The C++ and Lua targets** (`--target cpp`, `--target lua`) still
+  find a float's digits the way the C did, and print 17 digits for
+  the 46 powers of two of 53.2. Found while this was written, and
+  next to be put right. JavaScript, Python, Go, Java, PHP and Ruby
+  print the 16; C#, Dart and Kotlin are still to be tried.
+- The checks without GCC's built-ins (the rest of item 8).
+- `{x:.2f}` through the runtime in a minimal build for a computer
+  too, if the NaN there ever matters.
+- The rest of 52.9: `--memory` through the board, an analog pin, a
+  PWM pin and an interrupt on `boards/lm3s6965evb`, a board that runs
+  alone, and a trial on a real board.
+
 ## 54. The history: every commit, under its release
 
 [`HISTORY.md`](../HISTORY.md), at the root of the repository, lists

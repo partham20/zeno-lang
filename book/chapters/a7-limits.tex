@@ -77,11 +77,13 @@ The numbers are the decisions, for anyone who wants the argument.
   written by you; it does not load the program onto the board, and a
   build for a board has no collector (51.9). The two boards that come
   with Zeno are one emulated chip.
-\item[A float on a board.] A board that prints by itself has no
-  \verb|printf| under the program, but a number with a fraction is
-  still made into text by the C library's \verb|snprintf|, which is
-  28 KB of flash on an ARM Cortex-M3. \verb|--memory| does not go with
-  such a board (52.8, 52.9).
+\item[\texttt{--memory} on a board that prints by itself.] The
+  report is written as the C library ends a program, and such a board
+  has no C library under the program (52.8).
+\item[A NaN with decimals in a minimal build for a computer.] There
+  \verb|{x:.2f}| is \verb|printf|'s own, so a float that is not a
+  number is shown as the C library writes it, \verb|nan|. Every other
+  build prints \verb|NaN|, as \verb|zeno run| does (53.8).
 \item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
   wants one of those two compilers (5.5e).
 \item[\texttt{setjmp} in an ordinary build.] An ordinary build uses it

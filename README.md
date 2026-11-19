@@ -819,10 +819,19 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `exit`. A second board, `boards/lm3s6965evb`, is the emulated
     Cortex-M3 on its own pin, timer and UART registers: `hello` takes
     936 bytes of flash there, and 9,472 on the board with a C library
-    under it. A number with a fraction is still made into text by the
-    C library.
+    under it.
     See [`docs/board.md`](docs/board.md) and chapter 52 of
     [`docs/decisions.md`](docs/decisions.md))
+51. A float into text, and text into a float, with no C library (done,
+    after 0.6.0 and not yet released: the runtime works out the digits
+    of a float, `{x:.2f}` and `float("2.5")` itself, with whole
+    numbers and exactly, where it called `snprintf` and `strtod`. On a
+    Cortex-M3 that is 4 KB of flash where the C library took 28:
+    `primes` takes 7,884 bytes there, and took 25,360. Writing a float
+    is five times faster on a computer. A build now prints
+    `5.684341886080802e-14` for `2.0 ** -44.0` and `NaN` for a NaN
+    with decimals, as `zeno run` always did.
+    See chapter 53 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

@@ -243,11 +243,12 @@ Three things to know when writing the four:
 - **A header may count on** `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`
   and `ZENO_LED`. Anything else it includes itself.
 
-What is left of the C library on such a board is `memcpy`, `memset`
-and `strlen`, and, for a program with a float in it, `snprintf` and
-`strtod`: a number with a fraction is still made into text by the C
-library. `--memory` does not go with such a board yet: the C says so
-when it is compiled.
+What is left of the C library on such a board is `memcpy`, `memset`,
+`strlen` and their like, and the functions of `math` a program calls.
+A number with a fraction is made into text, and read out of text, by
+the runtime itself, with whole numbers and no `snprintf` or `strtod`
+(decision 53). `--memory` does not go with such a board yet: the C
+says so when it is compiled.
 
 [`boards/lm3s6965evb`](../boards/lm3s6965evb) is a whole board written
 this way, and [`board-build.md`](board-build.md) walks through it.
@@ -401,12 +402,14 @@ as `now() - start >= 200 ms` after sleeping that long.
   layer. Until then a program can reach the hardware itself, through
   registers at the addresses the data sheet gives
   ([`unsafe.md`](unsafe.md)).
-- **A float is still the C library's to print.** A firmware build
-  with no collector has no `setjmp`, no garbage collector and no
-  `malloc` ([`pool.md`](pool.md)), and on a board that prints itself
-  it has no `printf` and no `exit` either (above). But a number with a
-  fraction is made into text by `snprintf`, which on an ARM chip is
-  28 KB of flash for the first float a program shows.
+- **A float costs flash on a chip with no floating point.** A
+  firmware build with no collector has no `setjmp`, no garbage
+  collector and no `malloc` ([`pool.md`](pool.md)), on a board that
+  prints itself it has no `printf` and no `exit` either (above), and
+  a float is made into text by the runtime itself, in 1 to 4 KB
+  (decision 53; it was 28 KB of the C library). The sums on floats
+  are the compiler's own functions there, some 3 KB, and they are
+  slow.
 - **`now()` is a `double`** of milliseconds. That is exact for
   thousands of years, and slow on a processor with no floating point.
   Whole numbers with a size, such as `u32`, came in the stage after

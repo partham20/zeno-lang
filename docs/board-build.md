@@ -182,23 +182,25 @@ How much of the chip a program takes, in bytes, as
 |---|---|---|---|---|
 | `hello.zeno` | 9,472 | 9,432 | 1,756 | 1,756 |
 | `buffer.zeno` | 15,888 | 13,776 | 35,700 | 35,692 |
+| `primes.zeno` | 16,172 | 14,876 | 35,684 | 2,800 |
+| `thermostat.zeno` | 17,760 | 15,516 | 35,704 | 35,676 |
+| `tour.zeno` | 22,000 | 19,648 | 35,724 | 35,716 |
 | `blink.zeno` | 29,984 | 29,904 | 2,184 | 2,184 |
 | `signal.zeno` | 31,016 | 30,800 | 2,240 | 2,240 |
 | `doorbell.zeno` | 32,280 | 31,464 | 36,144 | 3,260 |
 | `tachometer.zeno` | 33,488 | 32,144 | 36,896 | 4,012 |
-| `primes.zeno` | 33,032 | 31,880 | 36,048 | 3,164 |
-| `thermostat.zeno` | 33,520 | 32,536 | 36,068 | 36,040 |
-| `tour.zeno` | 44,504 | 43,768 | 36,092 | 36,076 |
 
 A program that makes a list or an object, or builds text, has the pool
 and the room for text in its RAM, about 34 KB together, whose sizes
 are fixed when the program is built ([`pool.md`](pool.md)). A program
 with neither, like `blink.zeno`, takes 2 KB. Most of the flash of a
 small program on this board is the C library: its streams are 8 KB of
-`hello.zeno`, and `printf` is 20 KB more for a program that shows a
-number with a fraction (`primes.zeno`) or drives a simulated pin
-(`blink.zeno`, whose pins print with `printf`). Zeno's own `print`
-does not call `printf`, in the minimal build for a board either.
+`hello.zeno`, and `printf` is 20 KB more for a program that drives a
+simulated pin (`blink.zeno` and the three after it: a simulated pin
+prints with `printf`). Zeno's own `print` does not call `printf`, in
+the minimal build for a board either, and a number with a fraction is
+made into text by the runtime itself (decision 53): `primes.zeno`,
+which shows one, was 33,032 bytes when `snprintf` did that.
 
 ## The same chip, on its own registers
 
@@ -243,15 +245,19 @@ checks:
 | `blink.zeno` | 29,984 | 3,996 | 20 |
 | `signal.zeno` | 31,016 | 4,844 | 76 |
 | `buffer.zeno` | 15,888 | 7,464 | 33,968 |
+| `primes.zeno` | 16,172 | 7,884 | 33,952 |
 | `modbus.zeno` | 14,452 | 9,720 | 35,656 |
 | `words.zeno` | 18,704 | 10,408 | 33,980 |
-| `primes.zeno` | 33,032 | 25,360 | 36,028 |
-| `tour.zeno` | 44,504 | 36,840 | 36,072 |
+| `tour.zeno` | 22,000 | 14,032 | 34,608 |
 
-A program of whole numbers and text carries three functions of the C
-library (`memcpy`, `memset`, `strlen`). The first number with a
-fraction that a program shows still brings `snprintf`, 28 KB of it:
-that is the next thing to go ([`missing.md`](missing.md)).
+A program carries of the C library `memcpy`, `memset`, `strlen` and
+their like, and the functions of `math` it calls. A number with a
+fraction is made into text, and read out of text, by Zeno's own
+runtime with whole numbers (decision 53): that is 1 to 4 KB of flash,
+where the C library's `snprintf` and `strtod` were 28 KB. `primes.zeno`
+shows one such number and was 25,360 bytes on `lm3s6965evb` before.
+The sums on floats themselves are the compiler's, some 3 KB on a chip
+with no floating point of its own.
 
 ## A folder for your own board
 
@@ -313,10 +319,13 @@ refuse such a program. `files.read` raises its `FileError`, as for a
 file that is not there.
 
 A board that prints by itself (`ZENO_BOARD_PRINTS`) has no `printf`
-and no `exit` under the program. A number with a fraction is still
-made into text by the C library's `snprintf`, and `--memory` does not
-go with such a board yet: the report is written as the C library ends
-a program. Both are in [`missing.md`](missing.md).
+and no `exit` under the program, and no `snprintf` under a float.
+`--memory` does not go with such a board yet: the report is written
+as the C library ends a program ([`missing.md`](missing.md)). The
+text of one statement has 1,024 bytes in a build with no collector,
+unless `-DZENO_TEXT_ROOM` says otherwise
+([`no-collector.md`](no-collector.md)), and the largest float written
+with decimals, `f"{x:.2f}"` of 1e308, is 312 of them.
 
 ## How it is checked
 
@@ -368,8 +377,8 @@ opinion on the same C.
    print now, and in what order?
 5. Build `examples/primes.zeno` for `boards/lm3s6965evb` and look at
    the largest functions with `arm-none-eabi-nm --size-sort`. Which
-   line of the program brings them in? Take that line out and build
-   again.
+   of them make a float into text, and which line of the program
+   brings them in? Take that line out and build again.
 6. Copy `boards/lm3s6965evb` and make `zeno_board_warn` in its
    `board.h` send its bytes out of UART0, as `zeno_board_print` does.
    That is a board with one wire and no debugger. What is lost?

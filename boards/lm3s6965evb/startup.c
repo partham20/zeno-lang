@@ -88,15 +88,15 @@ __attribute__((noreturn)) void board_stops(int status) {
     }
 }
 
-/* The two things the C library still asks for. A number with a
- * fraction is made into text by the C library's `snprintf`, and that
- * is the one piece of it a Zeno program on this board still uses. A
- * program that shows no such number never comes here, and the linker
- * leaves both out.
+/* Two things the C library asks of a system. Zeno's runtime no longer
+ * comes here: it makes a number with a fraction into text by itself
+ * (decision 53), and of the C library a Zeno program uses `memcpy`,
+ * `strlen` and their like, which ask for nothing. These are for C that
+ * a program brings with `import c`. Where nothing calls them the
+ * linker leaves both out.
  *
- * The first is memory: `snprintf` takes a little while it works, from
- * the end of the variables up to the stack, less what the stack is
- * given. */
+ * The first is memory, for C that calls `malloc`: from the end of the
+ * variables up to the stack, less what the stack is given. */
 #define STACK_ROOM 8192
 
 void *_sbrk(ptrdiff_t more) {

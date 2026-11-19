@@ -7495,7 +7495,7 @@ fn atom(code: &str) -> String {
 fn printf_of(val: &Val, spec: Option<&str>) -> Option<(String, Option<String>)> {
     if val.kind == Kind::F32 {
         if spec.is_none() {
-            return Some(("%s".to_string(), Some(format!("zeno_float_text(zeno_f32_shown({}), (char[64]){{0}})", val.code))));
+            return Some(("%s".to_string(), Some(format!("zeno_f32_text({}, (char[64]){{0}})", val.code))));
         }
         let wide = Val { code: format!("((double){})", val.code), kind: Kind::Float, ..val.clone() };
         return printf_of(&wide, spec);
@@ -16970,6 +16970,269 @@ print(d.value)
         let options = Options { minimal: true, board_prints: true, board_header: true, memory_report: true, ..Default::default() };
         let reported = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
         assert!(reported.contains("#error \"`--memory` does not go with a board that prints and stops itself"), "{reported}");
+    }
+
+    /// Decision 53: the runtime makes a float into text, writes it with
+    /// a fixed number of decimals and reads it out of text by itself,
+    /// with whole numbers and exactly, and asks the C library for none
+    /// of it. This holds it to what Rust answers, which is what
+    /// `zeno run` prints, over many thousands of floats.
+    #[test]
+    fn a_float_is_written_and_read_with_no_c_library() {
+        for gone in ["snprintf(", "sprintf(", "strtod(", "strtof(", "atoi(", "sscanf("] {
+            assert!(!RUNTIME.contains(gone), "the runtime calls `{gone}`");
+        }
+        // Numbers of every kind, from a row that is the same each time.
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut floats: Vec<f64> = vec![
+            0.0, -0.0, 0.1, 0.1 + 0.2, 2f64.powi(-44), 1e15 + 0.25, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e16, 1e-4,
+            9.999999999999999e-5, 0.125, 0.375, 9.995, 1e21, 1e23, f64::INFINITY, f64::NEG_INFINITY, f64::NAN,
+        ];
+        for i in 0..12000 {
+            let bits = next();
+            floats.push(match i % 6 {
+                // Any float at all.
+                0 => f64::from_bits(bits),
+                // What a sensor reads.
+                1 => (bits % 2_000_000) as f64 / 1000.0 - 1000.0,
+                // Near 1.
+                2 => f64::from_bits((bits & 0x800F_FFFF_FFFF_FFFF) | ((963 + next() % 120) << 52)),
+                // The smallest ones, which have fewer bits.
+                3 => f64::from_bits(bits & 0x800F_FFFF_FFFF_FFFF),
+                // Whole.
+                4 => (bits >> (next() % 64)) as f64,
+                // A power of two, where the float below is nearer than the one above.
+                _ => f64::from_bits(bits & 0xFFF0_0000_0000_0000),
+            });
+        }
+
+        // A float written: as it is, and with decimals.
+        let writes = "while true {\n    let line = input()\n    if line is none {\n        break\n    }\n    let x = float(line)\n    print(x, f\"{x:.0f} {x:.2f} {x:.9f}\")\n}\n";
+        let typed: String = floats.iter().map(|x| format!("{x:e}\n")).collect();
+        let wanted: String =
+            floats.iter().map(|x| format!("{} {x:.0} {x:.2} {x:.9}\n", crate::value::float_text(*x))).collect();
+        assert!(wanted.contains("5.684341886080802e-14 0 0.00 0.000000000\n") && wanted.contains("NaN NaN NaN NaN\n"));
+        same_floats("floats-written", writes, &typed, &wanted);
+
+        // An f32 written.
+        let narrow: Vec<f32> = (0..6000)
+            .map(|i| match i % 3 {
+                0 => f32::from_bits(next() as u32),
+                1 => (next() % 200_000) as f32 / 100.0 - 1000.0,
+                _ => f32::from_bits((next() as u32) & 0xFF80_0000),
+            })
+            .collect();
+        let writes = "while true {\n    let line = input()\n    if line is none {\n        break\n    }\n    let x = f32(float(line))\n    print(x, f\"{x:.3f}\")\n}\n";
+        let typed: String = narrow.iter().map(|x| format!("{:e}\n", *x as f64)).collect();
+        let wanted: String = narrow.iter().map(|x| format!("{} {:.3}\n", crate::value::f32_text(*x), *x as f64)).collect();
+        same_floats("f32s-written", writes, &typed, &wanted);
+
+        // A float read. First what `zeno run` takes and what it refuses.
+        let mut texts: Vec<String> = [
+            " 2.5 ", "+2.5", "1.", ".5", "-.5e1", "1E5", "INF", "-Infinity", "+inf", "nan", "NaN", "0", "-0", "000.000",
+            "00012.5000", "1e400", "-1e400", "1e-400", "0e999999999", "1e999999999", "1e-999999999", "4.9e-324", "2.47e-324",
+            "2.48e-324", "1.7976931348623158e308", "1.7976931348623159e308", "9007199254740993", "9007199254740992.99999999999999999999",
+            "", " ", ".", "e5", "1e", "1e+", "1_0", "0x10", "nan(1)", "infinit", "in", "1.2.3", "--1", "+-1", "1 2", "1e5.0", "1f",
+            "NaN0", "-", "+",
+        ]
+        .iter()
+        .map(|text| text.to_string())
+        .collect();
+        for (i, x) in floats.iter().enumerate().filter(|(_, x)| x.is_finite()).take(4000) {
+            // Digits enough, too few, and far too many.
+            texts.push(format!("{:.*e}", (next() % 25) as usize, x));
+            // Any digits, with a point anywhere and any power of ten.
+            let digits: String = (0..1 + next() % 40).map(|_| (b'0' + (next() % 10) as u8) as char).collect();
+            let point = next() as usize % (digits.len() + 1);
+            texts.push(format!("{}.{}e{}", &digits[..point], &digits[point..], next() % 700 - 350));
+            // A whole number exactly between two floats, a hair over it,
+            // and one under it: floats from 2^53 are 2 apart or more.
+            let low = ((1u128 << 52) | (next() as u128 >> 12)) << (1 + next() % 60);
+            let between = low + (1u128 << low.trailing_zeros().min(127)) / 2;
+            if i % 4 == 0 {
+                let exact = (low as f64) as u128 == low;
+                assert!(exact);
+                let gap = 1u128 << ((127 - low.leading_zeros()) - 52);
+                let between = low + gap / 2;
+                texts.push(between.to_string());
+                texts.push(format!("{between}.{}1", "0".repeat(next() as usize % 30)));
+                texts.push((between - 1).to_string());
+            }
+            let _ = between;
+            // Half of one of the smallest floats but one: exactly between
+            // two of them, in some 750 digits.
+            if i % 40 == 0 {
+                let odd = f64::from_bits((next() >> (12 + next() % 52)) | 1);
+                let exact = format!("{odd:.1080e}");
+                let (digits, power) = exact.split_once('e').expect("an exponent");
+                let mut left = 0;
+                let halved: String = digits
+                    .bytes()
+                    .filter(u8::is_ascii_digit)
+                    .map(|digit| {
+                        let now = left * 10 + (digit - b'0') as u32;
+                        left = now % 2;
+                        (b'0' + (now / 2) as u8) as char
+                    })
+                    .collect();
+                assert_eq!(left, 0);
+                let end = halved.trim_end_matches('0').len();
+                texts.push(format!("0.{}e{power}", &halved[..end]));
+                texts.push(format!("0.{}1e{power}", &halved[..end]));
+                texts.push(format!("0.{}e{power}", &halved[..end - 1]));
+                texts.push(format!("0.{}{}e{power}", &halved[..end], "0".repeat(900)));
+            }
+        }
+        let reads = "while true {\n    let line = input()\n    if line is none {\n        break\n    }\n    try {\n        print(float(line))\n    } except ValueError {\n        print(\"no\")\n    }\n}\n";
+        let typed: String = texts.iter().map(|text| format!("{text}\n")).collect();
+        let wanted: String = texts
+            .iter()
+            .map(|text| match text.trim_matches([' ', '\t']).parse::<f64>() {
+                Ok(x) => format!("{}\n", crate::value::float_text(x)),
+                Err(_) => "no\n".to_string(),
+            })
+            .collect();
+        assert_eq!(wanted.matches("no\n").count(), 20);
+        same_floats("floats-read", reads, &typed, &wanted);
+    }
+
+    /// `source` reads what is typed a line at a time: it prints `wanted`
+    /// under `zeno run`, and built, with and without `--firmware`.
+    fn same_floats(name: &str, source: &str, typed: &str, wanted: &str) {
+        crate::value::testing::with_outside(typed, &[], || {
+            let ran = interpreted(source);
+            assert!(ran == wanted, "zeno run: {}", first_difference(&ran, wanted));
+            for firmware in [false, true] {
+                let c = if firmware { compile_firmware(source) } else { compile(source) }.expect("it builds");
+                let name = format!("{name}-{firmware}");
+                let Some((printed, errors, finished)) = build_and_run(&name, &c, &["-O1"]) else { return };
+                assert!(finished, "{errors}");
+                assert!(printed == wanted, "built (firmware: {firmware}): {}", first_difference(&printed, wanted));
+            }
+        });
+    }
+
+    /// The same on the chip (decision 53.7): a 32-bit processor with no
+    /// floating point of its own, and on `boards/lm3s6965evb` no C
+    /// library under the digits. QEMU emulates it. Floats, f32s and
+    /// texts are typed at its serial port, and it prints what `zeno run`
+    /// prints, in the build that checks and in the minimal one.
+    #[test]
+    fn floats_are_written_and_read_on_a_cortex_m3() {
+        let source = r#"var narrow = false
+while true {
+    let line = input()
+    if line is none {
+        break
+    }
+    if line == "end" {
+        break
+    }
+    if line == "f32" {
+        narrow = true
+        continue
+    }
+    try {
+        let x = float(line)
+        if narrow {
+            let y = f32(x)
+            print(y, f"{y:.3f}")
+        } else if abs(x) < 1e15 {
+            print(x, f"{x:.0f} {x:.2f} {x:.9f}")
+        } else {
+            # A build for a board has 1,024 bytes for the text of one
+            # statement, and the largest float has 309 digits.
+            print(x)
+        }
+    } except ValueError {
+        print("no")
+    }
+}
+"#;
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut typed: Vec<String> = [
+            "0", "-0", "0.1", "0.30000000000000004", "5.684341886080802e-14", "1000000000000000.25", "5e-324", "1.7976931348623157e308",
+            "2.2250738585072014e-308", "1e16", "0.0001", "9.999999999999999e-5", "0.125", "0.375", "9.995", "1e23", "inf", "-Infinity",
+            "nan", " 2.5 ", "+.5e1", "1.", "1e400", "1e-400", "9007199254740993", "2.4703282292062327e-324", "2.4703282292062328e-324",
+            "", ".", "1e", "1_0", "0x10", "nan(1)", "1.2.3",
+        ]
+        .iter()
+        .map(|text| text.to_string())
+        .collect();
+        // Some 750 digits each: the two smallest floats but one, exactly.
+        typed.push(format!("{:.760e}", f64::from_bits(1)));
+        typed.push(format!("{:.760e}", f64::from_bits(3)));
+        for i in 0..240 {
+            let bits = next();
+            let x = match i % 6 {
+                0 => f64::from_bits(bits & 0x7FEF_FFFF_FFFF_FFFF),
+                1 => (bits % 2_000_000) as f64 / 1000.0 - 1000.0,
+                2 => f64::from_bits((bits & 0x800F_FFFF_FFFF_FFFF) | ((963 + next() % 120) << 52)),
+                3 => f64::from_bits(bits & 0x800F_FFFF_FFFF_FFFF),
+                4 => (bits >> (next() % 64)) as f64,
+                _ => f64::from_bits(bits & 0x7FE0_0000_0000_0000),
+            };
+            typed.push(match i % 5 {
+                0 => format!("{:.*e}", (next() % 25) as usize, x),
+                _ => format!("{x:e}"),
+            });
+        }
+        typed.push("f32".to_string());
+        for i in 0..120 {
+            let x = match i % 3 {
+                0 => f32::from_bits((next() as u32) & 0xFF7F_FFFF),
+                1 => (next() % 200_000) as f32 / 100.0 - 1000.0,
+                _ => f32::from_bits((next() as u32) & 0x7F00_0000),
+            };
+            typed.push(format!("{:e}", x as f64));
+        }
+        typed.push("end\n".to_string());
+        crate::value::testing::with_outside(&typed.join("\n"), &[], || {
+            let wanted = interpreted(source);
+            assert!(wanted.contains("5.684341886080802e-14 0 0.00 0.000000000\n") && wanted.contains("-inf\nNaN\n2.5 2 2.50 2.500000000\n") && wanted.contains(&"no\n".repeat(7)), "{wanted}");
+            assert!(wanted.contains("\n5e-324 0 0.00 0.000000000\n1.5e-323 0 0.00 0.000000000\n"), "{wanted}");
+            assert_eq!(wanted.lines().count(), typed.len() - 2);
+            let checked = compile_no_collector(source).unwrap();
+            let program = crate::modules::testing::built(source);
+            let (_, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+            for (which, header) in [("lm3s6965evb", true), ("qemu-cortex-m3", false)] {
+                let Some((printed, errors, finished)) = on_the_board(which, &format!("floats-{which}"), &checked, &["-O2"]) else {
+                    return;
+                };
+                assert!(finished, "{which}: {errors}");
+                assert!(printed == wanted, "{which}:\n{}", first_difference(&printed, &wanted));
+                let options = Options { minimal: true, board_prints: true, board_header: header, ..Default::default() };
+                let minimal = emit_with(&program, &types, "test.zeno", Build::NoCollector, options).expect("it builds");
+                let (printed, errors, finished) = on_the_board(which, &format!("floats-minimal-{which}"), &minimal, &["-Os"]).expect("as above");
+                assert!(finished, "{which}, minimal: {errors}");
+                assert!(printed == wanted, "{which}, minimal:\n{}", first_difference(&printed, &wanted));
+            }
+        });
+    }
+
+    /// The first line where what was printed is not what was wanted.
+    fn first_difference(printed: &str, wanted: &str) -> String {
+        match printed.lines().zip(wanted.lines()).position(|(got, want)| got != want) {
+            Some(at) => format!(
+                "line {}: printed `{}`, wanted `{}`",
+                at + 1,
+                printed.lines().nth(at).unwrap_or_default(),
+                wanted.lines().nth(at).unwrap_or_default()
+            ),
+            None => format!("{} lines printed, {} wanted", printed.lines().count(), wanted.lines().count()),
+        }
     }
 
     /// The board in `boards/lm3s6965evb` is the same chip with a header

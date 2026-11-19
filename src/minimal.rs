@@ -318,7 +318,7 @@ const HEADERS: &[(&str, &[&str])] = &[
         "stdint.h",
         &[
             "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "uintptr_t", "intptr_t",
-            "INT64_C", "UINT64_C", "INT64_MIN", "INT64_MAX", "UINT32_MAX", "UINT64_MAX", "UINTPTR_MAX", "SIZE_MAX",
+            "INT64_C", "UINT64_C", "UINT32_C", "INT64_MIN", "INT64_MAX", "UINT32_MAX", "UINT64_MAX", "UINTPTR_MAX", "SIZE_MAX",
         ],
     ),
     ("stdio.h", STDIO),

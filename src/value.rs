@@ -543,8 +543,17 @@ pub mod testing {
             .stderr(Stdio::piped())
             .spawn()?;
         // A program that never reads may be gone before this is written.
-        let _ = child.stdin.take().expect("a pipe").write_all(outside.typed.unwrap_or_default().as_bytes());
-        child.wait_with_output()
+        // It is written from a thread of its own: a program that prints
+        // as it reads would wait for its output to be taken, and this
+        // for its input to be.
+        let mut pipe = child.stdin.take().expect("a pipe");
+        let typed = outside.typed.unwrap_or_default();
+        let writer = std::thread::spawn(move || {
+            let _ = pipe.write_all(typed.as_bytes());
+        });
+        let output = child.wait_with_output();
+        let _ = writer.join();
+        output
     }
 }
 

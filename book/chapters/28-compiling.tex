@@ -324,8 +324,9 @@ $ arm-none-eabi-size hello.elf
     920      16       4     940     3ac hello.elf
 \end{zenofrag}
 
-A number with a fraction is still made into text by the C library,
-and the first one a program shows brings 28 KB of it.
+A number with a fraction is made into text by Zeno's own runtime on
+both boards, with whole numbers. The C library's \verb|snprintf| would
+be 28 KB of this chip's flash, and the runtime's digits are 1 to 4.
 
 \begin{why}
 Building C for a target is a job the target's own tools already do
@@ -335,7 +336,7 @@ engineer already has, and Zeno types the one long command that was
 typed by hand before. The flags are in a folder of the board's and not
 in the program's package, because one program is built for two boards
 and one board runs many programs. (Decisions 5.12c and 51; new after
-0.5.2.)
+0.6.0.)
 \end{why}
 
 \section{What does not compile yet}

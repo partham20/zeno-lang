@@ -247,7 +247,8 @@ firmware build writes today still:
   Rule 17.1),
 - uses `printf` and `exit` (Rules 21.6 and 21.8). A board that brings
   its own printing takes both away (`ZENO_BOARD_PRINTS`,
-  [`board.md`](board.md)), but for `snprintf` under a float,
+  [`board.md`](board.md)), and a float is made into text with no
+  `snprintf` (decision 53),
 - uses GCC and Clang builtins for checked arithmetic (a language
   extension, Rule 1.2),
 - uses the forward `goto` described above (advisory Rule 15.1).
