@@ -557,3 +557,5 @@ What is on `main` since 0.7.0 was released.
 
 fdf8c23 The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
 d4f3faa The benchmark figures of 0.7.0.
+3a1ee8c The version on `main` is 0.8.0, and the notes of 0.8.0 are begun.
+14ce321 `docs/plan-9-14.md`: the plan for items 9 to 14 of what Zeno lacks, with the design of each part, the ways weighed, the tests, and how each is shown to cost nothing.

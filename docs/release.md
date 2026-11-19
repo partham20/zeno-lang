@@ -166,6 +166,24 @@ worse. 0.5.0 went out with the count alone and its `zeno run --vm` was
 a few in a hundred slower than 0.4.0's; 0.5.1 mended it (decision
 24.29).
 
+Before any of those, and after every change to the compiler:
+
+```sh
+python3 tools/same.py --old path/to/old/zeno
+```
+
+It builds every example, every program of `tools/targets/`, every
+sample of the book and every benchmark with both `zeno` programs, each
+way a build can be asked for (ordinary, `--firmware`,
+`--no-collector`, `--owned`, `--release`, `--fast`, `--minimal`,
+`--memory` and three through LLVM), and compares the C and the IR they
+write byte for byte, with `zeno join` and `zeno bytecode` beside them.
+Nothing is compiled, so it takes about a minute. A program given the
+same C runs the same instructions and takes the same flash, so where
+every file is the same no built program can have become slower or
+larger, and only the two engines of `zeno run` are left to count. Each
+file that differs is a change to explain or to mend.
+
 ## Where each one is built
 
 GitHub lends three kinds of machine: Linux on x86-64, macOS on Apple
