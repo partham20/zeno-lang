@@ -1746,3 +1746,25 @@ with no comparison of speed against 0.7.0. `docs/release.md` asks
 for one before every release that adds code; the owner of the
 language has put it off for this one, and the release notes say that
 the engines were not timed.
+
+### 7. 9.6, 2026-11-19: the list owns a block for each number
+
+9.6 chose A, flags packed beside the values, and named B, a block
+for each number that the list owns, as what to build "if the code
+shows that A touches more than the runtime's list functions and the
+places both compilers read and write an item". The code showed it,
+and B is built, for a build with no collector alone.
+
+**Why A is not built now.** The flags need a second array in the
+runtime's list. The runtime is written whole into every C file, so a
+change to its list changes the C of every program, also of one with
+no such list, and section 6 forbids that. The other way to have A, a
+second kind of list with flags, needs a copy of every list function
+in both compilers for each program that uses one.
+
+**What B costs.** One block of the pool for each number that is
+there, and nothing for a `none`. That is more memory than A, and the
+page for it says so, and says that a list of an enum, or a number
+that stands for "nothing", is the cheap way on a small board. With a
+collector nothing changes. A stays under "Left for later", for a day
+when the runtime's list may change.
