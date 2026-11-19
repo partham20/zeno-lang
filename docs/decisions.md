@@ -17425,7 +17425,48 @@ functions, the name of a list of dicts that own their values, and the
 refusal with a collector (`a_dict_owns_its_values_every_way`). The
 targets run the program.
 
-### 56.13 Left for later
+### 56.13 What was known when the benchmarks stopped
+
+On 2026-11-19 the owner of the language stopped the benchmarks for
+items 9 to 13: the parts are tested and pushed, and the engines are
+timed later if he asks. `tools/same.py` stays, as a test. This is what
+had been measured by then, on the build machine (4 cores, Linux).
+
+**Counts** (cachegrind, the sizes of `bench/run.py --count`), 0.7.0
+against 9.1 to 9.4 with the cures below:
+
+| | `zeno run --vm` | `zeno run` |
+|---|---|---|
+| fib | -0.51% | 0.00% |
+| loop | -0.57% | 0.00% |
+| sort | +0.08% | -0.02% |
+| strings | -0.11% | 0.00% |
+| trees | -0.18% | +0.14% |
+| nbody | -0.15% | -0.21% |
+
+The count of `trees` under `zeno run` moves by 0.1 to 0.3% from one
+run of the same build to the next, with where `malloc` puts things and
+the seeds of the hash tables; the best of two runs at size 12 was
+-0.01%.
+
+**Cures that brought the counts back.** 9.1 made `ast::Type` bigger,
+which cost `zeno run` 0.57%: the kind after `raises` is boxed now.
+9.3's two arms cost the VM 0.6%: they call a cold function of their
+own (`take_out`), and the two instructions come after the
+superinstructions. The interpreter's arm for `take` is in a cold
+function too, since it had grown the frame of `eval` from 0x448 to
+0x478 bytes.
+
+**The clock** (`bench/compare.py`, best of 6 rounds, the VM, builds
+under names of the same length, before the interpreter's cure): fib
++4.0%, loop -2.8%, sort +1.9%, strings +0.1%, trees +5.1%, nbody
++4.5%. An earlier run of 4 rounds on a busy machine gave, for
+`zeno run`, fib +3.9% and strings +4.0%, and the others within 1%.
+Fewer instructions taking longer points to where the code lies
+(24.29, 50.7), but the cause was not run down: the noise floor and a
+bisect by the clock were begun and stopped.
+
+### 56.14 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
