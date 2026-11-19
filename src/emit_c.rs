@@ -958,6 +958,16 @@ impl Drops {
             Kind::Dict(_, value) if self.owns(value) => self.dict_helper("drop", value),
             Kind::Dict(..) => "zeno_dict_drop".to_string(),
             Kind::List(item) if self.texts && is_text(item) => "zeno_list_drop_text".to_string(),
+            // With no collector a number that may be `none` sits in a
+            // list as a box that the list owns (decision 56.14).
+            Kind::List(item) if self.texts && is_boxed(item) => {
+                let name = "zeno_list_drop_boxes".to_string();
+                let mut wanted = self.wanted.borrow_mut();
+                if !wanted.iter().any(|(known, _)| *known == name) {
+                    wanted.push((name.clone(), (**item).clone()));
+                }
+                name
+            }
             Kind::List(item) if self.owns(item) => {
                 // How many lists deep the items that are not lists lie,
                 // and what frees one of those.
@@ -981,6 +991,7 @@ impl Drops {
                     }
                     Kind::Dict(..) => format!("zeno_list_drop_dicts{depth}"),
                     Kind::List(text) if self.texts && is_text(text) => format!("zeno_list_drop_texts{depth}"),
+                    Kind::List(boxed) if self.texts && is_boxed(boxed) => format!("zeno_list_drop_boxes{depth}"),
                     _ => format!("zeno_list_drop_lists{depth}"),
                 };
                 let mut wanted = self.wanted.borrow_mut();
@@ -1016,6 +1027,26 @@ impl Drops {
         let mut wanted = self.wanted.borrow_mut();
         if !wanted.iter().any(|(known, _)| *known == name) {
             wanted.push((name.clone(), Kind::Dict(Box::new(Kind::None), Box::new(value.clone()))));
+        }
+        name
+    }
+
+    /// The name of a function for the boxes in which, with no collector, a
+    /// list keeps its numbers that may be `none` (decision 56.14), for
+    /// `int`, `float` or `bool`: `box_keep` puts a number into a box of
+    /// the list's own, `box_take` takes it out and frees the box, and
+    /// `list_keep_boxes` gives a list that was just made a box of its own
+    /// for each item. Each is asked for here and written once.
+    pub fn box_helper(&self, what: &str, scalar: &str) -> String {
+        let name = format!("zeno_{what}_{scalar}");
+        let kind = match scalar {
+            "float" => Kind::Float,
+            "bool" => Kind::Bool,
+            _ => Kind::Int,
+        };
+        let mut wanted = self.wanted.borrow_mut();
+        if !wanted.iter().any(|(known, _)| *known == name) {
+            wanted.push((name.clone(), Kind::Optional(Box::new(kind))));
         }
         name
     }
@@ -1426,6 +1457,12 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
 }
 
 /// Is this a kind that C holds through a pointer?
+/// A number or a bool that may be `none`. It does not fit in a slot of a
+/// list with its flag, so a list keeps it in a box (`zeno_box_int`).
+pub fn is_boxed(kind: &Kind) -> bool {
+    matches!(kind, Kind::Optional(inner) if !is_pointer(inner))
+}
+
 fn is_pointer(kind: &Kind) -> bool {
     matches!(
         kind,
@@ -1875,6 +1912,10 @@ impl Emitter<'_> {
             }
             self.drops_written += wanted.len();
             for (name, item) in wanted {
+                if let Some((head, body)) = self.box_function(&name, &item, span)? {
+                    self.helper(head, body);
+                    continue;
+                }
                 // The functions for a dict that owns its values:
                 //
                 //     static void zeno_dict_drop_values_Point(zeno_dict *dict) {
@@ -1914,6 +1955,112 @@ impl Emitter<'_> {
                 );
             }
         }
+    }
+
+    /// The functions for the boxes of a list with no collector
+    /// (decision 56.14), or `None` if `name` is not one of them:
+    ///
+    ///     static void *zeno_box_keep_int(zeno_opt_int value) {
+    ///         if (!value.present) return NULL;
+    ///         int64_t *box = (int64_t *)zeno_alloc_raw(sizeof(int64_t));
+    ///         *box = value.value;
+    ///         return box;
+    ///     }
+    ///
+    /// `zeno_box_int` of the runtime makes a box in the text room, which
+    /// is given back when the statement is over. These make one in the
+    /// pool, which the list frees.
+    fn box_function(&self, name: &str, item: &Kind, span: Span) -> Result<Option<(String, String)>, Error> {
+        let scalar = match item {
+            Kind::Optional(inner) if !is_pointer(inner) => scalar(inner, span)?,
+            _ => return Ok(None),
+        };
+        let c = match scalar {
+            "float" => "double",
+            "bool" => "bool",
+            _ => "int64_t",
+        };
+        Ok(Some(if name == "zeno_list_drop_boxes" {
+            (
+                format!("static void {name}(zeno_list *list)"),
+                "    if (list == NULL) return;\n    for (int64_t i = 0; i < list->len; i++) zeno_free(list->items[i].p);\n    zeno_list_drop(list);\n".to_string(),
+            )
+        } else if name.starts_with("zeno_box_keep_") {
+            (
+                format!("static void *{name}(zeno_opt_{scalar} value)"),
+                format!(
+                    "    if (!value.present) return NULL;\n    {c} *box = ({c} *)zeno_alloc_raw(sizeof({c}));\n    *box = value.value;\n    return box;\n"
+                ),
+            )
+        } else if name.starts_with("zeno_box_take_") {
+            (
+                format!("static zeno_opt_{scalar} {name}(void *box)"),
+                format!("    zeno_opt_{scalar} value = zeno_unbox_{scalar}(box);\n    zeno_free(box);\n    return value;\n"),
+            )
+        } else if name.starts_with("zeno_list_keep_boxes_") {
+            let keep = self.drops.box_helper("box_keep", scalar);
+            (
+                format!("static zeno_list *{name}(zeno_list *list)"),
+                format!(
+                    "    for (int64_t i = 0; i < list->len; i++) list->items[i].p = {keep}(zeno_unbox_{scalar}(list->items[i].p));\n    return list;\n"
+                ),
+            )
+        } else {
+            return Ok(None);
+        }))
+    }
+
+    /// With no collector a list keeps its own copy of each item that is
+    /// text, and its own box for each number that may be `none`
+    /// (decision 56.14). `code` is a list just made whose items are still
+    /// another's; this gives it copies of its own.
+    fn keep_items(&self, item: &Kind, code: &str, span: Span) -> Result<String, Error> {
+        Ok(match item {
+            item if is_text(item) => format!("zeno_list_keep_text({code})"),
+            Kind::Optional(inner) => format!("{}({code})", self.drops.box_helper("list_keep_boxes", scalar(inner, span)?)),
+            _ => code.to_string(),
+        })
+    }
+
+    /// Does a list of these keep a copy of its own of each item? Then
+    /// a list just made from another one needs `keep_items`.
+    fn keeps_copies(&self, item: &Kind) -> bool {
+        !self.collector && (is_text(item) || is_boxed(item))
+    }
+
+    /// C that puts a value into a slot of a list that keeps it: with no
+    /// collector a number that may be `none` goes into a box of the
+    /// list's own.
+    fn kept_slot(&self, kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
+        match kind {
+            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => {
+                Ok(format!("(zeno_slot){{.p = {}({code})}}", self.drops.box_helper("box_keep", scalar(inner, span)?)))
+            }
+            _ => to_slot(kind, code, span),
+        }
+    }
+
+    /// C that puts a value that is only looked for (`find`, `in`) into a
+    /// slot. A number that may be `none` goes into a box in the text room,
+    /// which, with no collector, is given back when the statement is over.
+    fn looked_for(&mut self, kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
+        if !self.collector && is_boxed(kind) {
+            self.built = true;
+        }
+        to_slot(kind, code, span)
+    }
+
+    /// C for an item that leaves the list for good (`pop`, `take`), read
+    /// from `slot`: the list's copy of text is freed once the statement
+    /// has its own, and the list's box once the number is out.
+    fn taken(&self, item: &Kind, slot: &str, span: Span) -> Result<String, Error> {
+        Ok(match item {
+            item if !self.collector && is_text(item) => format!("zeno_text_take({})", from_slot(item, slot, span)?),
+            Kind::Optional(inner) if !self.collector && !is_pointer(inner) => {
+                format!("{}({slot}.p)", self.drops.box_helper("box_take", scalar(inner, span)?))
+            }
+            item => from_slot(item, slot, span)?,
+        })
     }
 
     /// `dict_kinds`, for a dict this program makes. A dict that owns its
@@ -3671,8 +3818,7 @@ impl Emitter<'_> {
                     return Err(Self::no_owner(value.span));
                 }
                 let val = self.coerce(val, &item, span)?;
-                self.fits_a_slot(&val.kind, span)?;
-                let slot = to_slot(&val.kind, &val.code, span)?;
+                let slot = self.kept_slot(&val.kind, &val.code, span)?;
                 if owns {
                     // The item that was there is freed, as a field's
                     // old value is, and the new one takes its place.
@@ -3686,6 +3832,15 @@ impl Emitter<'_> {
                     self.line(format!("zeno_slot *{place} = {};", self.slot_address(&object.code, &index.code, span)));
                     self.line(format!("zeno_text_drop({place}->s);"));
                     self.line(format!("*{place} = {slot};"));
+                } else if !self.collector && is_boxed(&val.kind) {
+                    // And with the box it kept the number in (56.14). The
+                    // new box is made first, as the LLVM build makes it,
+                    // so that both use the pool alike.
+                    let (boxed, place) = (self.new_temp(), self.new_temp());
+                    self.line(format!("zeno_slot {boxed} = {slot};"));
+                    self.line(format!("zeno_slot *{place} = {};", self.slot_address(&object.code, &index.code, span)));
+                    self.line(format!("zeno_free({place}->p);"));
+                    self.line(format!("*{place} = {boxed};"));
                 } else {
                     self.line(format!("{} = {slot};", self.slot_at(&object.code, &index.code, &item, span)));
                 }
@@ -4057,6 +4212,8 @@ impl Emitter<'_> {
             // items, and so does the copy the loop walks: the body may
             // give the list new items while the loop looks at the old.
             (_, false) if !self.collector && is_text(&item) => format!("zeno_list_copy_text({})", list.code),
+            // The same for the boxes of numbers that may be `none` (56.14).
+            (_, false) if self.keeps_copies(&item) => self.keep_items(&item, &format!("zeno_list_copy({})", list.code), span)?,
             (_, false) => format!("{}({})", list_fn(&item, "copy"), list.code),
         };
         self.line(format!("zeno_list *{items} = {source};"));
@@ -4518,11 +4675,10 @@ impl Emitter<'_> {
                 let Some(item) = item else {
                     return Err(cannot("a list whose items are not all one type", span));
                 };
-                self.fits_a_slot(&item, span)?;
                 let mut slots = vec![vals.len().to_string()];
                 for val in &vals {
                     let val = self.coerce(val.clone(), &item, span)?;
-                    slots.push(to_slot(&item, &val.code, span)?);
+                    slots.push(self.kept_slot(&item, &val.code, span)?);
                 }
                 let parts: Vec<&Val> = vals.iter().collect();
                 let made = list_fn(&item, "of");
@@ -4605,11 +4761,11 @@ impl Emitter<'_> {
                 let item = self.expr(element)?;
                 self.stays(&item, element.span)?;
                 let item = self.keep(item, is_written(element));
-                self.fits_a_slot(&item.kind, span)?;
                 let item = if bytes { self.coerce(item, &Kind::Byte, span)? } else { item };
-                self.line(format!("{}({list}, {});", list_fn(&item.kind, "append"), to_slot(&item.kind, &item.code, span)?));
+                let slot = self.kept_slot(&item.kind, &item.code, span)?;
+                self.line(format!("{}({list}, {slot});", list_fn(&item.kind, "append")));
                 self.own_end(own, true);
-                if (!self.collector && is_text(&item.kind)) || self.drops.owns(&item.kind) {
+                if self.keeps_copies(&item.kind) || self.drops.owns(&item.kind) {
                     // The list has copies of its items, or is the owner
                     // of them, which was not known when the lines above
                     // were written: a failure half way has to free those
@@ -5097,10 +5253,7 @@ impl Emitter<'_> {
                 let empty = to_slot(&item, &nothing(inner, span)?, span)?;
                 let at = self.new_temp();
                 self.line(format!("zeno_slot *{at} = {};", self.slot_address(&list.code, &index.code, span)));
-                let mut code = from_slot(&item, &format!("(*{at})"), span)?;
-                if !self.collector && is_text(&item) {
-                    code = format!("zeno_text_take({code})");
-                }
+                let code = self.taken(&item, &format!("(*{at})"), span)?;
                 let mut val = Val::from(code, read_kind(&item), &[&list, &index]);
                 val.calls = true;
                 let val = self.temp(val, span)?;
@@ -5215,11 +5368,18 @@ impl Emitter<'_> {
         // that is called cannot pull away.
         let texts = !self.collector && is_text(item);
         let copy = if texts { "zeno_list_copy_text".to_string() } else { list_fn(item, "copy") };
+        // And a list of numbers that may be `none` with boxes of its own
+        // (56.14).
+        let boxes = !self.collector && is_boxed(item);
         // A list that the statement owns is out of every function's
         // reach, so it is walked as it is.
         let own = vals[0].passing;
         match own {
             true => self.line(format!("zeno_list *{items} = {};", vals[0].code)),
+            false if boxes => {
+                let copy = self.keep_items(item, &format!("zeno_list_copy({})", vals[0].code), span)?;
+                self.line(format!("zeno_list *{items} = {copy};"))
+            }
             false => self.line(format!("zeno_list *{items} = {copy}({});", vals[0].code)),
         }
         let slot = item_at(&items, &position, item);
@@ -5294,7 +5454,7 @@ impl Emitter<'_> {
                     inside.push(format!("zeno_list_append({out}, {});", to_slot(&kind.returns, &kept, span)?));
                     inside.push(format!("zeno_text_top = {mark};"));
                 } else {
-                    inside.push(format!("{append}({out}, {});", to_slot(&made, &call, span)?));
+                    inside.push(format!("{append}({out}, {});", self.kept_slot(&made, &call, span)?));
                 }
                 let mut result = Val::plain(out, Kind::List(Box::new(made)));
                 result.made = true;
@@ -5314,6 +5474,7 @@ impl Emitter<'_> {
                 // text it takes.
                 let taken = match texts {
                     true => to_slot(item, &format!("zeno_text_keep({})", each.code), span)?,
+                    false if boxes => self.kept_slot(item, &each.code, span)?,
                     false => slot.clone(),
                 };
                 let mut result = Val::plain(out.clone(), Kind::List(Box::new(item.clone())));
@@ -5424,8 +5585,8 @@ impl Emitter<'_> {
             (Mul, Kind::List(a), Int) => {
                 let repeat = if **a == Kind::Byte { "zeno_bytes_repeat" } else { "zeno_list_repeat" };
                 let repeated = format!("{repeat}({l}, {r}, {})", self.at(span));
-                let code = match !self.collector && is_text(a) {
-                    true => format!("zeno_list_keep_text({repeated})"),
+                let code = match self.keeps_copies(a) {
+                    true => self.keep_items(a, &repeated, span)?,
                     false => repeated,
                 };
                 let mut val = Val::from(code, left.kind.clone(), &parts).failing_if(!self.minimal);
@@ -5436,8 +5597,8 @@ impl Emitter<'_> {
                 let joined = format!("{}({l}, {r})", list_fn(a, "concat"));
                 // With no collector a list of text has its own copy of
                 // each item, and so has the list that `+` makes.
-                let code = match !self.collector && is_text(a) {
-                    true => format!("zeno_list_keep_text({joined})"),
+                let code = match self.keeps_copies(a) {
+                    true => self.keep_items(a, &joined, span)?,
                     false => joined,
                 };
                 let mut val = Val::from(code, left.kind.clone(), &parts);
@@ -6513,10 +6674,9 @@ impl Emitter<'_> {
                     ("sort", [_, _]) => self.over_list(name, vals, &item, false, span),
                     ("append", [list, value]) => {
                         self.stays(value, span)?;
-                        self.fits_a_slot(&item, span)?;
                         let value = self.keep(value.clone(), is_written(&args[0].value));
                         let value = self.coerce(value, &item, span)?;
-                        let slot = to_slot(&value.kind, &value.code, span)?;
+                        let slot = self.kept_slot(&value.kind, &value.code, span)?;
                         self.line(format!("{}({}, {slot});", list_fn(&item, "append"), list.code));
                         let mut val = Val::from(String::new(), Kind::None, &parts);
                         val.pre_calls = true;
@@ -6531,12 +6691,9 @@ impl Emitter<'_> {
                             Some(_) => return Err(cannot("`pop` with a position that is not an int", span)),
                             None => format!("{}({}, {})", list_fn(&item, "pop"), list.code, self.at(span)),
                         };
-                        let mut code = from_slot(&item, &slot, span)?;
-                        if !self.collector && is_text(&item) {
-                            // The list is done with it: the statement gets
-                            // it, and the list's copy is freed.
-                            code = format!("zeno_text_take({code})");
-                        }
+                        // The list is done with it: the statement gets it,
+                        // and the list's copy of text, or its box, is freed.
+                        let code = self.taken(&item, &slot, span)?;
                         let mut val = Val::from(code, read_kind(&item), &parts);
                         // It changes the list, which is as visible as a call.
                         val.fails = true;
@@ -6546,10 +6703,9 @@ impl Emitter<'_> {
                     // The list keeps what it is given, as `append` does.
                     ("insert", [list, position, value]) if position.kind == Kind::Int => {
                         self.stays(value, span)?;
-                        self.fits_a_slot(&item, span)?;
                         let value = self.keep(value.clone(), is_written(&args[1].value));
                         let value = self.coerce(value, &item, span)?;
-                        let slot = to_slot(&value.kind, &value.code, span)?;
+                        let slot = self.kept_slot(&value.kind, &value.code, span)?;
                         let insert = list_fn(&item, "insert");
                         let call = format!("{insert}({}, {}, {slot}, {})", list.code, position.code, self.at(span));
                         Ok(self.called(call, &vals, Kind::None))
@@ -6583,7 +6739,9 @@ impl Emitter<'_> {
                     //     zeno_list_clear(t1);
                     ("clear", [list]) => {
                         let list = self.temp(list.clone(), span)?;
-                        if self.drops.owns(&item) || (!self.collector && is_text(&item)) {
+                        if !self.collector && is_boxed(&item) {
+                            self.line(format!("for (int64_t i = 0; i < {}->len; i++) zeno_free({}->items[i].p);", list.code, list.code));
+                        } else if self.drops.owns(&item) || (!self.collector && is_text(&item)) {
                             let place = from_slot(&item, &format!("{}->items[i]", list.code), span)?;
                             let each = self.drops.code(&item, &place);
                             self.line(format!("for (int64_t i = 0; i < {}->len; i++) {each}", list.code));
@@ -6603,7 +6761,7 @@ impl Emitter<'_> {
                     ("find", [list, value]) => {
                         let same = self.eq_adapter(&item, span)?;
                         let value = self.coerce(value.clone(), &item, span)?;
-                        let slot = to_slot(&item, &value.code, span)?;
+                        let slot = self.looked_for(&item, &value.code, span)?;
                         let mut val = Val::from(
                             format!("zeno_found(zeno_list_find({}, {slot}, {same}))", list.code),
                             Kind::Optional(Box::new(Kind::Int)),
@@ -6623,8 +6781,8 @@ impl Emitter<'_> {
                             format!("{}({}, {}, {ends}, {})", list_fn(&item, "slice"), list.code, from.code, self.at(span));
                         // With no collector a list of text has its own
                         // copy of each item, and so has the slice.
-                        let code = match !self.collector && is_text(&item) {
-                            true => format!("zeno_list_keep_text({slice})"),
+                        let code = match self.keeps_copies(&item) {
+                            true => self.keep_items(&item, &slice, span)?,
                             false => slice,
                         };
                         let mut val = Val::from(code, Kind::List(item.clone()), &parts).failing_if(!self.minimal);
@@ -6873,7 +7031,7 @@ impl Emitter<'_> {
             }
             (item, Kind::List(items)) if item == &**items => {
                 let same = self.eq_adapter(item, span)?;
-                format!("zeno_list_contains({}, {}, {same})", right.code, to_slot(item, &left.code, span)?)
+                format!("zeno_list_contains({}, {}, {same})", right.code, self.looked_for(item, &left.code, span)?)
             }
             // `"Ada" in ages`: is there such a key?
             (item, Kind::Dict(key, _)) if item == &**key => {
@@ -10181,6 +10339,58 @@ print("after")
     }
 
     #[test]
+    fn a_list_of_numbers_that_may_be_none_every_way() {
+        // Ints, floats, u8s and bools that may be `none`, each way a list
+        // is used (decision 56.14). Every build prints what `zeno run`
+        // prints, and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-none-list.zeno");
+        no_collector_as_interpreter("none-list", source);
+        firmware_as_interpreter("none-list", source);
+        crate::emit_llvm::tests::same_as_interpreter("none-list", source);
+        // With no collector the list keeps each number in a box of its
+        // own, in the pool, and frees the boxes with itself.
+        let c = compile_no_collector(
+            "var xs: list[int or none] = [1, none]\nxs.append(3)\nxs[0] = none\nlet x = xs.pop()\nlet ys = xs + xs\nprint(x, ys)\n",
+        )
+        .unwrap();
+        for wanted in [
+            "static void *zeno_box_keep_int(zeno_opt_int value) {\n    if (!value.present) return NULL;\n    \
+             int64_t *box = (int64_t *)zeno_alloc_raw(sizeof(int64_t));\n    *box = value.value;\n    return box;\n}",
+            "static zeno_opt_int zeno_box_take_int(void *box) {\n    zeno_opt_int value = zeno_unbox_int(box);\n    \
+             zeno_free(box);\n    return value;\n}",
+            "static void zeno_list_drop_boxes(zeno_list *list) {\n    if (list == NULL) return;\n    \
+             for (int64_t i = 0; i < list->len; i++) zeno_free(list->items[i].p);\n    zeno_list_drop(list);\n}",
+            "zeno_list_append(z_xs, (zeno_slot){.p = zeno_box_keep_int(",
+            "zeno_free(t",
+            "zeno_box_take_int(zeno_list_pop(z_xs, ",
+            "zeno_list_keep_boxes_int(zeno_list_concat(z_xs, z_xs))",
+            "zeno_list_drop_boxes(z_ys);",
+        ] {
+            assert!(c.contains(wanted), "{wanted}\n{c}");
+        }
+        // With a collector the list is as it was: a box in the text room
+        // for each number, which the collector looks after.
+        let c = compile("var xs: list[int or none] = [1, none]\nxs.append(3)\nprint(xs.pop())\n").unwrap();
+        assert!(c.contains("zeno_list_append(z_xs, (zeno_slot){.p = zeno_box_int("), "{c}");
+        assert!(!c.contains("zeno_box_keep_int"), "{c}");
+        // A box is a block of the pool, so a list too long for the pool
+        // stops the program with the message every full pool gives, in C
+        // and in LLVM alike.
+        let source = "var xs: list[int or none] = []\nprint(\"before\")\nfor n in range(5000) { xs.append(n) }\nprint(len(xs))\n";
+        let full = "error: the memory pool is full (ZENO_POOL is 32768 bytes)\n";
+        let Some((printed, errors, finished)) = build_and_run("none-list-full", &compile_no_collector(source).unwrap(), &[]) else {
+            return;
+        };
+        assert_eq!((printed.as_str(), errors.as_str(), finished), ("before\n", full, false));
+        let ir = crate::emit_llvm::tests::compile_no_collector(source).unwrap();
+        let Some(ran) = crate::emit_llvm::tests::built_output("none-list-full", &ir, Build::NoCollector, &["-DZENO_MEMORY_REPORT"]) else { return };
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "before\n");
+        // (Built with `--memory`, the report of what was taken follows.)
+        assert!(String::from_utf8_lossy(&ran.stderr).starts_with(full));
+        assert!(!ran.status.success());
+    }
+
+    #[test]
     fn a_parameter_that_may_be_none_is_read_after_its_test() {
         // A field of a parameter is read once, at the start, when nothing
         // in the function can change it (decision 22.8). Not one that may
@@ -12292,16 +12502,6 @@ function double(n: int) -> int { return n * 2 }
 function add(a: int, b: int) -> int { return a + b }
 let x = 7
 "#;
-        let refused = |body: &str, why: &str| {
-            let source = format!("{SETTING}{body}\n");
-            let message = compile_no_collector(&source).err().unwrap_or_else(|| "it compiled".to_string());
-            assert!(message.contains(why), "{body}\n{message}");
-            assert!(message.contains("`zeno build --no-collector` leaves the collector out"), "{message}");
-            // Each of these is fine where there is a collector.
-            assert!(compile(&source).is_ok(), "{body}");
-            // The LLVM backend refuses the same program in the same words.
-            crate::emit_llvm::tests::refuses_as_c(&source, &message);
-        };
         // What the checker turns down, because in this build every list
         // and object has one owner. It is the same language with fewer
         // programs in it: each of these is fine where values are shared.
@@ -12367,8 +12567,8 @@ let x = 7
             "the two functions would share it",
         );
 
-        // Whatever else makes a block that nothing owns.
-        refused("let m: owned list[int or none] = [1, none]", "numbers that may be `none`");
+        // A list of numbers that may be `none` was refused here until
+        // 0.8.0; the list owns a box for each (decision 56.14).
 
         // What sits right beside those refusals, and is accepted.
         let accepted = format!(

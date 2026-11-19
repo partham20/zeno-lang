@@ -17466,7 +17466,103 @@ Fewer instructions taking longer points to where the code lies
 (24.29, 50.7), but the cause was not run down: the noise floor and a
 bisect by the clock were begun and stopped.
 
-### 56.14 Left for later
+### 56.14 A list of numbers that may be `none`, with no collector
+
+```zeno
+var readings: list[float or none] = [21.5, none, 22.0]   # refused with no collector until 0.8.0
+readings.append(none)
+readings[1] = 21.0              # a new box, and the old one freed
+let last = readings.pop()       # the box freed, the number kept
+```
+
+**The need.** A number that may be `none` is a number and a flag, and
+the two do not fit in the 64 bits of a slot of a list (5.11i), so a
+list holds the address of a small box for each number, and `NULL` for
+`none`. With a collector the collector frees the boxes. With no
+collector nothing did, and `zeno build --no-collector` refused the
+list (5.16h). A list of readings where some are missing is the plainest
+list a sensor gives.
+
+**Two ways, and the one built.** The plan (9.6) chose A: a second,
+packed list of flags beside the values, one byte an item, used with
+no collector alone. It allowed B, the boxes owned by the list, if A
+turned out to reach past the runtime's list functions and the places
+both compilers read and write an item. It does:
+
+- A list is a `zeno_list` in `runtime.c`, and `runtime.c` is pasted
+  whole into the C of every program. A field of flags in `zeno_list`
+  changes the C of every program, which the rule that a program that
+  does not ask builds as before (`tools/same.py`) does not allow.
+- The other way to A is a second kind of list, with the flags, written
+  into each program that needs it. Then every function on lists has a
+  twin for it (append, insert, pop, a store, slice, `+`, `*`, reverse,
+  find, `in`, map, filter, reduce, a loop's copy, the free), in C and
+  in IR, and every place either compiler picks a list function picks
+  between the two.
+
+B needs neither. The free and the copy that keeps a box of its own
+exist already for text (5.9x), and a box is freed with the same
+`zeno_free` as any block of the pool. So B is built, with no collector
+alone, and A stays on the list (56.15).
+
+**The rule.** With no collector, a list owns the box of each number
+that may be `none`, as it owns its copy of each text. Each way into a
+list makes a box in the pool for a number, and none for `none`. A
+read takes the number out and leaves the box. A store makes the new
+box and frees the old. `pop` and `take` read the number out and free
+the box. `clear` and the end of the list free every box. A list made
+from another (`+`, `*`, a slice, `filter`, `map`, the copy a loop
+walks) gets boxes of its own. `find` and `in` put the number they
+look for in a box in the text room, given back when the statement is
+over. The same holds for `float`, `bool` and the sized numbers.
+
+**Only with no collector.** A build with a collector writes what
+0.7.0 wrote: the boxes are the collector's, in the text room
+(`zeno_box_int`), as before. Nothing is asked for by a word, since
+the only programs that change are ones `--no-collector` refused.
+
+**How it is built.** `runtime.c` is not changed. `Drops` writes, for a
+program that has such a list, the functions it uses:
+`zeno_box_keep_{kind}` (a box from the pool, or `NULL`),
+`zeno_box_take_{kind}` (the number, and the box freed),
+`zeno_list_keep_boxes_{kind}` (a box of its own for each item of a
+list just made) and `zeno_list_drop_boxes` (every box freed, then the
+list). A list of such lists gets the free function of its depth, as
+lists of text do. The store makes the new box before it frees the old
+one, so that C and LLVM take blocks from the pool in the same order
+and give the same memory report. The LLVM build defines the same
+functions in IR, as `zeno.box.keep.int` and the rest.
+
+**What it costs.** Each number that is there takes a block of the
+pool: 8 bytes and the pool's few bytes beside it, against 9 bytes an
+item for A. A list filled from empty holds 679 numbers in the 32,768
+bytes of the pool by default, and the 680th stops the program with the
+message of a full pool (5.9j), in C and in LLVM alike. A number that
+stands for "nothing" in a plain list, or an enum with a case for the
+missing value, costs less on a small board, and `none-list.md` says
+so.
+Nothing for a program that does not have such a list: every program
+that built before writes the C, IR, `zeno join` and bytecode of 0.7.0
+(`tools/same.py`). The words of a refusal change in the builds with
+no collector of `tools/targets/edge-repeat.zeno`, which is refused
+still, for another reason further down.
+
+**Tests.** Both compilers:
+[`tools/targets/edge-none-list.zeno`](../tools/targets/edge-none-list.zeno)
+has lists of ints, floats, u8s and bools that may be `none`, with
+`none` first and last, every method above, `map`, `filter` and
+`reduce`, such a list in a field and in a list, a loop whose body
+appends to the list it walks, and six hundred numbers stored and
+replaced, and a list that outgrows the pool stops with the message of
+a full pool. It is built with no collector through C and LLVM, with the
+same memory report and 0 blocks left, and in the ordinary and firmware
+builds of both, each printing what `zeno run` prints. The same test
+reads the C of the helpers and checks that a build with a collector
+writes `zeno_box_int` and no `zeno_box_keep_int`
+(`a_list_of_numbers_that_may_be_none_every_way`). The targets run the
+program. The page is [`none-list.md`](none-list.md).
+
+### 56.15 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17499,3 +17595,7 @@ bisect by the clock were begun and stopped.
   list is inside any other type: "...and `owned` cannot be written
   inside another type yet". With no collector `Box[list[Frame]]`
   builds.
+- **A packed list of flags beside the numbers** (way A of 56.14), so
+  that an item that may be `none` takes 9 bytes and no block. It needs
+  a field in `zeno_list` or a second kind of list with every list
+  function twice; see 56.14.

@@ -1,0 +1,104 @@
+# A list of numbers that may be `none` (decision 56.14): ints, floats,
+# u8s and bools, each way a list is used, in a field, in a list, as what
+# `map` and `filter` make and `reduce` walks, with `none` first and last,
+# and six hundred items stored and replaced. Every build prints what
+# `zeno run` prints, and a build with no collector leaves nothing.
+
+function total(xs: list[int or none]) -> int {
+    var sum = 0
+    for x in xs {
+        if x is not none {
+            sum += x
+        }
+    }
+    return sum
+}
+
+function main() {
+    var a: list[int or none] = [1, none, 3]
+    let b: list[float or none] = [none, 2.5]
+    let c: list[u8 or none] = [7, none]
+    let d: list[bool or none] = [true, none]
+    print(a, b, c, d)
+    a.append(5)
+    a.append(none)
+    a.insert(0, none)
+    a[1] = 10
+    a[2] = none
+    print(a, total(a), len(a))
+    let p = a.pop()
+    let q = a.pop(0)
+    print(p, q, a)
+    print(a.find(3), a.find(none), a.find(4))
+    var e = a + a
+    e.append(7)
+    e = e + a
+    print(e, e.slice(1, 3))
+    let t = take e[0]
+    print(t, e[0])
+    let r = [x for x in a if x is not none]
+    print(r)
+    let m: list[list[int or none]] = [[1, none], [none]]
+    print(m, len(m[1]))
+    let twice = a * 2
+    print(twice)
+    var w: list[int or none] = []
+    for i in range(300) {
+        w.append(i)
+        w.append(none)
+        w[0] = i
+    }
+    print(len(w), w[0], w[599])
+    w.clear()
+    print(len(w))
+    for x in a {
+        a.append(1)
+        print(x)
+    }
+}
+
+main()
+
+class Readings {
+    name: str
+    values: list[float or none]
+}
+
+function half(x: int or none) -> int or none {
+    if x is none {
+        return none
+    }
+    return x // 2
+}
+
+function present(x: int or none) -> bool {
+    return x is not none
+}
+
+function more() {
+    var r = Readings("volts", [1.5, none])
+    r.values.append(2.5)
+    r.values[0] = none
+    print(r.name, r.values, len(r.values))
+    let xs: list[int or none] = [4, none, 8]
+    let halves = xs.map(half)
+    let kept = xs.filter(present)
+    print(halves, kept, xs.reduce(add_up, 0))
+    var flags: list[bool or none] = [true, none, false]
+    flags.reverse()
+    print(flags, flags.pop(0), flags)
+    let grid: list[list[int or none]] = [[1, none], [none, 2]]
+    var g = grid
+    g[0].append(none)
+    let last = g.pop()
+    print(g, last)
+}
+
+function add_up(total: int, x: int or none) -> int {
+    if x is none {
+        return total
+    }
+    return total + x
+}
+
+more()

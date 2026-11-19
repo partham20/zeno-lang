@@ -318,7 +318,8 @@ reason.
   (`list[int or none]`). Still refused. Each number would sit in a block
   of its own, and the list would have to copy and free them everywhere.
   The message says what to write: an enum with a case for the missing
-  value.
+  value. (Built in 0.8.0: the list owns the block of each number,
+  [`none-list.md`](none-list.md).)
 - **A function that is kept cannot take over a list or an object from
   outside it.** It can look for one line, or look at a `let` at the top
   of the file. To own something it is given it as a parameter.

@@ -442,9 +442,9 @@ own size: the LLVM build always did, and the two reports must agree.
 
 | Refused | Why | When |
 |---|---|---|
-| A list of numbers that may be `none`: `list[int or none]` | each number sits in a block of its own, which the list would have to copy and free everywhere | noted. Use an enum with a `Missing` case |
+| ~~A list of numbers that may be `none`: `list[int or none]`~~ | it builds now, and the list owns the block of each number: [`none-list.md`](none-list.md). An enum with a `Missing` case is still the cheaper list | done in 0.8.0 |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
-| A value with one owner as what a type parameter stands for | the copy for `T` would have to know it moves | noted |
+| ~~A value with one owner as what a type parameter stands for~~ | it builds now: [`generic-owned.md`](generic-owned.md) | done in 0.8.0 |
 | ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: [`audit.md`](audit.md) | done in the audit |
 | ~~A method that pops an item or replaces a field that has one owner~~ | it builds now: [`audit.md`](audit.md) | done in the audit |
 
@@ -513,10 +513,11 @@ cases has a `case` ([`audit.md`](audit.md)).
 5. `Wait(250)` takes 16 bytes of the pool and `Stop` takes none. Use
    `--memory` to find out what a `Set(13, true)` takes, then explain
    the number from `struct z_Command` above.
-6. `list[int or none]` is refused. Write the `Reading` enum from this
-   page, fill a list with five readings, and compare its memory report
-   with the same program using `list[int]` and -1 for "missing". What
-   does the safety cost in bytes?
+6. Fill a `list[int or none]` with five readings, two of them `none`.
+   Write the `Reading` enum from this page and fill a list with the same
+   readings, then do it again with `list[int]` and -1 for "missing".
+   Compare the three memory reports. What does each kind of safety
+   cost in bytes?
 7. `let last = machine.last` is refused because it would leave a hole.
    Rust has `take()`, which leaves a `none` behind and hands you the
    value. What would that look like in Zeno, as one plain word? What

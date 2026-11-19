@@ -337,7 +337,7 @@ report, line for line.
 | Refused | Why | When |
 |---|---|---|
 | ~~A list or object inside an `or none`, an enum case that carries values~~ | both build now: [`enums-and-none.md`](enums-and-none.md) | done in step 4 |
-| A list of `int or none` | each number sits in a block of its own | noted. Use an enum with a case for the missing value |
+| ~~A list of `int or none`~~ | it builds now, and the list owns a block of the pool for each number: [`none-list.md`](none-list.md) | done in 0.8.0 |
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: see below | done in the audit |
 | ~~A method that pops an item or replaces a field that has one owner~~ | it builds now, and the caller is held to rule 1 | done in the audit |

@@ -1775,8 +1775,11 @@ mod tests {
         let root = folder(
             "check-no-collector",
             &[
-                // The checker passes this, and the compiler refuses it.
-                ("gaps.zeno", "var readings: list[int or none] = [1, none, 3]\nprint(len(readings))\n"),
+                // The checker passes this, and the compiler refuses it: a
+                // list of nothing but `none` says nothing of what else it
+                // may hold. (Until 0.8.0 this was a `list[int or none]`,
+                // which a build with no collector now takes, 56.14.)
+                ("gaps.zeno", "let readings = [none]\nprint(len(readings))\n"),
                 ("fine.zeno", "let readings = [1, 2, 3]\nprint(len(readings))\n"),
             ],
         );

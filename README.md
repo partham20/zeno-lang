@@ -879,6 +879,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     looks, a store frees the old value, `pop` hands it over. See
     [`docs/dict-owned.md`](docs/dict-owned.md) and 56.12 of
     [`docs/decisions.md`](docs/decisions.md))
+59. A list of numbers that may be `none` with no collector (on
+    `main`, for 0.8.0: `list[float or none]` builds with
+    `--no-collector`, and the list owns a small block of the pool for
+    each number, as it owns its copy of each text; `none` takes none.
+    See [`docs/none-list.md`](docs/none-list.md) and 56.14 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
