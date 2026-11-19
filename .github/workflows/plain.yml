@@ -1,0 +1,59 @@
+# Holds the plain C of a build to what GCC and Clang are asked for by
+# name (decision 55).
+#
+# The C that `zeno build` writes asks GCC and Clang for a few things by
+# their own names: whether a sum overflowed, two things the collector
+# does, a word in front of a function that never comes back. Each is
+# written a second time in plain C, for a compiler that is neither.
+# tools/plain.py builds every example, every sample of the book and the
+# corner programs in tools/targets/ for each kind of build (the
+# collector, --owned, --no-collector), compiles the C as it is, as
+# plain C read by the standard of 1999, and with tcc (a C compiler that
+# is neither GCC nor Clang), and compares what the three do.
+#
+# On a push that changes the C backend or the runtime, and by hand from
+# the Actions page ("Run workflow").
+
+name: plain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/emit_c.rs"
+      - "src/minimal.rs"
+      - "src/runtime.c"
+      - "tools/plain.py"
+      - "tools/minimal.py"
+      - "tools/targets/**"
+      - ".github/workflows/plain.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  plain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A C compiler that is neither GCC nor Clang, and the one for ARM chips with QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tcc gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
+
+      - name: Zeno
+        run: cargo build --release
+
+      - name: The tests of the plain C
+        run: cargo test --release plain_c -- --nocapture
+
+      - name: Every program, as built, as plain C with gcc, and with tcc
+        run: python3 tools/plain.py
+
+      - name: The examples and the corner programs, as plain C with clang
+        run: |
+          CC=clang python3 tools/plain.py --only examples/
+          CC=clang python3 tools/plain.py --only tools/targets/

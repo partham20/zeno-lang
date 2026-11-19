@@ -84,8 +84,11 @@ The numbers are the decisions, for anyone who wants the argument.
   \verb|{x:.2f}| is \verb|printf|'s own, so a float that is not a
   number is shown as the C library writes it, \verb|nan|. Every other
   build prints \verb|NaN|, as \verb|zeno run| does (53.8).
-\item[GCC and Clang built-ins.] Checked arithmetic uses them, so the C
-  wants one of those two compilers (5.5e).
+\item[A compiler that is neither GCC nor Clang.] It gets the checks
+  in plain C (chapter 55), and tcc builds every example so. No program
+  has been built by IAR's, Keil's or a chip maker's compiler. A
+  firmware build with a collector cannot be built by such a compiler,
+  and its C says so (55.5).
 \item[\texttt{setjmp} in an ordinary build.] An ordinary build uses it
   for \verb|try|, and a firmware build does not use it at all (5.11l,
   12.8).

@@ -486,10 +486,12 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
             c.push('\n');
         }
     }
-    // The top-level code. It is kept out of `main` (and `noinline` makes
-    // sure the C compiler leaves it out) so that every variable of the
-    // program lies below `main`'s on the stack, where the collector looks.
-    c += "\n__attribute__((noinline)) static void zeno_program(void) {\n";
+    // The top-level code. It is kept out of `main` so that every variable
+    // of the program lies below `main`'s on the stack, where the collector
+    // looks. `main` calls it by its address, read from a variable the C
+    // compiler is told it cannot see through (`volatile`), so that no
+    // compiler puts its code inside `main` (decision 55.4).
+    c += "\nstatic void zeno_program(void) {\n";
     c += &render(&main);
     c += "}\n";
 
@@ -522,7 +524,12 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     if emitter.arguments {
         c += "    zeno_program_start(argc, argv);\n";
     }
-    c += "    zeno_program();\n";
+    if collector {
+        c += "    void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */\n";
+        c += "    program();\n";
+    } else {
+        c += "    zeno_program();\n";
+    }
     c += "    return 0;\n}\n";
     Ok(c)
 }
@@ -17237,6 +17244,527 @@ while true {
                 wanted.lines().nth(at).unwrap_or_default()
             ),
             None => format!("{} lines printed, {} wanted", printed.lines().count(), wanted.lines().count()),
+        }
+    }
+
+    // ------------------------------------------------ Plain C (decision 55)
+
+    /// The C of the runtime with its comments taken out.
+    fn without_comments(c: &str) -> String {
+        let mut out = String::new();
+        let mut rest = c;
+        while let Some(at) = rest.find("/*") {
+            out += &rest[..at];
+            rest = rest[at..].find("*/").map_or("", |end| &rest[at + end + 2..]);
+        }
+        out + rest
+    }
+
+    /// Told to be plain C (`ZENO_PLAIN_C`), the runtime asks GCC and
+    /// Clang for nothing by their own names: no `__builtin_`, and no
+    /// `__attribute__` but the one that only Windows reads. And the
+    /// program after it never does.
+    #[test]
+    fn plain_c_asks_gcc_for_nothing() {
+        let plain = without_comments(&crate::minimal::resolved(RUNTIME, &[("ZENO_PLAIN_C", true)]));
+        assert!(!plain.contains("__builtin_"), "a `__builtin_` outside `#ifndef ZENO_PLAIN_C`");
+        let asked: Vec<&str> = plain.lines().filter(|line| line.contains("__attribute__")).collect();
+        assert_eq!(asked, ["__attribute__((constructor)) static void zeno_plain_line_ends(void) {"]);
+        // With the other half kept, each name is there: this test would
+        // pass for a runtime with no marks in it at all.
+        let named = without_comments(&crate::minimal::resolved(RUNTIME, &[("ZENO_PLAIN_C", false)]));
+        for name in ["__builtin_add_overflow", "__builtin_sub_overflow", "__builtin_mul_overflow", "__builtin_ctzll", "__builtin_unwind_init"] {
+            assert!(named.contains(name), "{name}");
+        }
+        // It is decided in one place.
+        assert_eq!(RUNTIME.matches("#define ZENO_PLAIN_C").count(), 1);
+        assert!(RUNTIME.contains("#if !defined(ZENO_PLAIN_C) && !defined(__clang__) && !(defined(__GNUC__) && __GNUC__ >= 5)\n#define ZENO_PLAIN_C\n#endif\n"));
+
+        let source = "let xs = [1, 2, 3]\nvar total = 0\nfor x in xs {\n    total += x * x\n}\nprint(total, 2 ** 10, f\"{total:x}\")\n";
+        for c in [compile(source).unwrap(), compile_no_collector(source).unwrap(), compile_minimal(source, Build::Ordinary, false)] {
+            let program = &c[c.rfind("static void zeno_program(void)").or(c.rfind("int main(")).expect("the program")..];
+            assert!(!program.contains("__"), "{program}");
+        }
+
+        // A firmware build has no `setjmp`, which is what reads the
+        // registers for the collector in plain C. So a firmware build
+        // with a collector says, to a compiler that is neither GCC nor
+        // Clang, that it cannot be built (55.5). No other build says it.
+        let refusal = "#error \"The collector of a firmware build reads the processor's registers in a way that only GCC and Clang have.";
+        let firmware = compile_firmware(source).unwrap();
+        let said = firmware.find(refusal).expect("a firmware build with a collector says so");
+        let before = &firmware[..said];
+        assert!(before.rfind("#ifdef ZENO_PLAIN_C\n").expect("only in plain C") > before.rfind("#endif").expect("an #endif before it"));
+        assert!(!firmware.contains("setjmp"));
+        for c in [compile(source).unwrap(), compile_no_collector(source).unwrap()] {
+            assert!(!c.contains("#error \"The collector"), "{c}");
+        }
+    }
+
+    /// The functions that say whether a sum, a difference or a product
+    /// overflowed, as the runtime has them, written out twice in one C
+    /// file: once with the built-ins of GCC and Clang (their names end
+    /// in `_b`) and once in plain C (`_p`). Then a `main` that holds the
+    /// second to the first: on every pair of the numbers at the edges
+    /// (each power of two, one less, one more, and each of those below
+    /// zero), and on `rounds` pairs of every length, with the products
+    /// that just fit and the ones that just do not.
+    fn overflow_harness(rounds: u32) -> String {
+        let from = RUNTIME.find("/* a + b. Added as numbers with no sign").expect("the four functions begin");
+        let to = RUNTIME.find("static int64_t zeno_add(int64_t a, int64_t b, int line, int col)").expect("and end");
+        let low = RUNTIME.find("/* Which bit of a word is its lowest one").expect("the lowest bit begins");
+        let low_end = RUNTIME.find("/* Look inside every old block of a page").expect("and ends");
+        let functions = format!("{}{}", &RUNTIME[from..to], &RUNTIME[low..low_end]);
+        let named = |ending: &str| {
+            let mut text = functions.clone();
+            for name in ["zeno_add_overflows", "zeno_sub_overflows", "zeno_mul_overflows_u64", "zeno_mul_overflows", "zeno_lowest_bit"] {
+                text = text.replace(&format!("{name}("), &format!("{name}{ending}("));
+            }
+            text
+        };
+        let mut c = "#include <stdbool.h>\n#include <stdint.h>\n#include <stdio.h>\n".to_string();
+        c += &named("_b");
+        c += "#define ZENO_PLAIN_C\n";
+        c += &named("_p");
+        c += &r#"
+static uint64_t state = UINT64_C(0x9E3779B97F4A7C15);
+static uint64_t next(void) {
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    return state;
+}
+static unsigned long pairs = 0, wrong = 0, over = 0;
+static void differs(const char *what, uint64_t a, uint64_t b) {
+    if (wrong++ < 10) printf("%s differs for %08lx%08lx and %08lx%08lx\n", what, (unsigned long)(a >> 32), (unsigned long)(a & 0xFFFFFFFFu), (unsigned long)(b >> 32), (unsigned long)(b & 0xFFFFFFFFu));
+}
+static void pair(uint64_t ua, uint64_t ub) {
+    /* Each is told a different thing to begin with, so that an answer
+     * neither wrote is not taken for one both gave. */
+    int64_t a, b, x = 1, y = 2;
+    uint64_t ux = 1, uy = 2;
+    bool p, q;
+    memcpy(&a, &ua, sizeof a);
+    memcpy(&b, &ub, sizeof b);
+    pairs++;
+    p = zeno_add_overflows_b(a, b, &x), q = zeno_add_overflows_p(a, b, &y);
+    if (p != q || (!p && x != y)) differs("+", ua, ub);
+    over += p;
+    p = zeno_sub_overflows_b(a, b, &x), q = zeno_sub_overflows_p(a, b, &y);
+    if (p != q || (!p && x != y)) differs("-", ua, ub);
+    over += p;
+    p = zeno_mul_overflows_b(a, b, &x), q = zeno_mul_overflows_p(a, b, &y);
+    if (p != q || (!p && x != y)) differs("*", ua, ub);
+    over += p;
+    p = zeno_mul_overflows_u64_b(ua, ub, &ux), q = zeno_mul_overflows_u64_p(ua, ub, &uy);
+    if (p != q || (!p && ux != uy)) differs("* of u64", ua, ub);
+    over += p;
+    if (ua != 0 && zeno_lowest_bit_b(ua) != zeno_lowest_bit_p(ua)) differs("the lowest bit", ua, ua);
+}
+int main(void) {
+    static uint64_t edges[384];
+    int n = 0;
+    for (int k = 0; k < 64; k++) {
+        for (int d = 0; d < 3; d++) {
+            uint64_t edge = ((uint64_t)1 << k) + (uint64_t)d - 1;
+            edges[n++] = edge;
+            edges[n++] = 0 - edge;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) pair(edges[i], edges[j]);
+    }
+    for (long round = 0; round < ROUNDS; round++) {
+        int wide_a = (int)(next() % 65), wide_b = (int)(next() % 65);
+        uint64_t a = wide_a == 0 ? 0 : next() >> (64 - wide_a), b = wide_b == 0 ? 0 : next() >> (64 - wide_b);
+        if (next() & 1) a = 0 - a;
+        if (next() & 1) b = 0 - b;
+        pair(a, b);
+        pair(a, edges[next() % (unsigned)n]);
+        if (a != 0) {
+            /* What the biggest int and the biggest u64 hold of a, and one either side. */
+            uint64_t size = a >> 63 ? 0 - a : a;
+            uint64_t fits = (uint64_t)INT64_MAX / size, fits_u64 = UINT64_MAX / a;
+            pair(a, fits), pair(a, fits + 1), pair(a, fits - 1), pair(a, 0 - fits), pair(a, 0 - fits - 1), pair(a, 1 - fits);
+            pair(a, fits_u64), pair(a, fits_u64 + 1);
+        }
+    }
+    printf("%lu pairs, %lu wrong, %s\n", pairs, wrong, over > pairs / 4 ? "many of them too big" : "few of them too big");
+    return 0;
+}
+"#
+        .replace("ROUNDS", &rounds.to_string());
+        c.replace("#include <stdio.h>\n", "#include <stdio.h>\n#include <string.h>\n")
+    }
+
+    /// The plain C says of every pair what the built-ins say: whether
+    /// the result fits, and what it is. Read as the C of 1999 with
+    /// nothing added, and with what the compiler knows to be undefined
+    /// stopped as it happens, where the compiler can do that.
+    #[test]
+    fn plain_c_finds_an_overflow_where_the_built_ins_do() {
+        let c = overflow_harness(2_000_000);
+        let Some((printed, errors, finished)) = build_and_run("plain-harness", &c, &["-O2", "-std=c99", "-pedantic-errors", "-Wall", "-Werror"]) else {
+            return;
+        };
+        assert!(finished, "{errors}");
+        assert_eq!(printed, "19655520 pairs, 0 wrong, many of them too big\n");
+        // Unoptimized, which is how a compiler with none of this built
+        // in sees it.
+        let (printed, _, _) = build_and_run("plain-harness-0", &overflow_harness(100_000), &["-O0"]).expect("as above");
+        assert_eq!(printed, "1123240 pairs, 0 wrong, many of them too big\n");
+    }
+
+    /// The same on the chip: a processor of 32 bits, where a number of
+    /// 64 is two words and every step of the plain C is the compiler's
+    /// own code for them.
+    #[test]
+    fn plain_c_finds_an_overflow_on_a_cortex_m3() {
+        for flag in ["-O2", "-Os"] {
+            let Some((printed, errors, _)) = on_the_board("qemu-cortex-m3", &format!("plain-harness{flag}"), &overflow_harness(20_000), &[flag]) else {
+                return;
+            };
+            assert_eq!(printed, "342472 pairs, 0 wrong, many of them too big\n", "{flag}: {errors}");
+        }
+    }
+
+    /// A program that adds, takes away and multiplies the numbers it is
+    /// typed, ints and u64s, and reads ints from text. It says `over`
+    /// where the result does not fit.
+    const SUMS: &str = r#"function tried(a: int, b: int) -> str {
+    var line = ""
+    try {
+        line += f"{a + b}"
+    } except OverflowError {
+        line += "over"
+    }
+    try {
+        line += f" {a - b}"
+    } except OverflowError {
+        line += " over"
+    }
+    try {
+        line += f" {a * b}"
+    } except OverflowError {
+        line += " over"
+    }
+    try {
+        line += f" {-a} {abs(b)}"
+    } except OverflowError {
+        line += " over"
+    }
+    return line
+}
+
+function tried_u64(a: u64, b: u64) -> str {
+    var line = ""
+    try {
+        line += f"{a + b}"
+    } except OverflowError {
+        line += "over"
+    }
+    try {
+        line += f" {a - b}"
+    } except OverflowError {
+        line += " over"
+    }
+    try {
+        line += f" {a * b}"
+    } except OverflowError {
+        line += " over"
+    }
+    return line
+}
+
+function typed() -> int raises ValueError {
+    let line = input()
+    if line is none {
+        return 0
+    }
+    return int(line)
+}
+
+var kind = "int"
+while true {
+    let first = input()
+    if first is none {
+        break
+    }
+    if first == "end" {
+        break
+    }
+    if first == "u64" or first == "read" {
+        kind = first
+        continue
+    }
+    try {
+        if kind == "u64" {
+            let a = (u64(int(first)) << 32) | u64(typed())
+            let b = (u64(typed()) << 32) | u64(typed())
+            print(tried_u64(a, b))
+        } else if kind == "read" {
+            print(int(first))
+        } else {
+            let a = int(first)
+            print(tried(a, typed()))
+        }
+    } except ValueError {
+        print("no")
+    }
+}
+"#;
+
+    /// What `SUMS` is typed, and what it then prints, worked out here
+    /// with Rust's own checked arithmetic: `pairs` pairs of ints, as
+    /// many of u64s, and texts to read.
+    fn sums_typed(pairs: usize) -> (String, String) {
+        let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut typed, mut wanted) = (String::new(), String::new());
+        let said = |result: Option<String>| result.unwrap_or_else(|| "over".to_string());
+        let edges = [0, 1, -1, 2, 3, i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1, 1 << 31, 1 << 32, (1 << 32) - 1, 3_037_000_499, 3_037_000_500, -3_037_000_500, 1 << 62, -(1 << 62)];
+        let mut ints: Vec<(i64, i64)> = Vec::new();
+        for a in edges {
+            for b in edges {
+                ints.push((a, b));
+            }
+        }
+        while ints.len() < pairs {
+            // Numbers of every length, and the ones whose product only
+            // just fits, or only just does not.
+            let a = (next() >> (next() % 64)) as i64 * if next() % 2 == 0 { 1 } else { -1 };
+            let b = match (next() % 4, a) {
+                (0, _) | (_, 0) => (next() >> (next() % 64)) as i64,
+                (1, _) => i64::MAX / a,
+                (2, _) => (i64::MAX / a).wrapping_add(if a < 0 { -1 } else { 1 }),
+                _ => i64::MAX - a.wrapping_abs().max(0) + (next() % 3) as i64 - 1,
+            };
+            ints.push((a, b));
+        }
+        for (a, b) in ints {
+            typed += &format!("{a}\n{b}\n");
+            // `-a` and `abs(b)` are in one piece of text: nothing of
+            // it is written when either is too big.
+            let sign = match (a.checked_neg(), b.checked_abs()) {
+                (Some(minus), Some(size)) => format!("{minus} {size}"),
+                _ => "over".to_string(),
+            };
+            wanted += &format!(
+                "{} {} {} {sign}\n",
+                said(a.checked_add(b).map(|n| n.to_string())),
+                said(a.checked_sub(b).map(|n| n.to_string())),
+                said(a.checked_mul(b).map(|n| n.to_string()))
+            );
+        }
+        typed += "u64\n";
+        for round in 0..pairs {
+            let a = if round % 7 == 0 { u64::MAX - next() % 3 } else { next() >> (next() % 64) };
+            let b = match (round % 4, a) {
+                (0, _) | (_, 0) => next() >> (next() % 64),
+                (1, _) => u64::MAX / a,
+                (2, _) => (u64::MAX / a).wrapping_add(1),
+                _ => u64::MAX - a + next() % 3,
+            };
+            typed += &format!("{}\n{}\n{}\n{}\n", a >> 32, a & 0xFFFF_FFFF, b >> 32, b & 0xFFFF_FFFF);
+            wanted += &format!(
+                "{} {} {}\n",
+                said(a.checked_add(b).map(|n| n.to_string())),
+                said(a.checked_sub(b).map(|n| n.to_string())),
+                said(a.checked_mul(b).map(|n| n.to_string()))
+            );
+        }
+        typed += "read\n";
+        for (text, read) in [
+            ("9223372036854775807", "9223372036854775807"),
+            ("9223372036854775808", "no"),
+            ("-9223372036854775808", "-9223372036854775808"),
+            ("-9223372036854775809", "no"),
+            ("92233720368547758070", "no"),
+            ("-92233720368547758080", "no"),
+            (" 1_000 ", "1000"),
+            ("+7", "7"),
+            ("99999999999999999999999999", "no"),
+            ("-0", "0"),
+        ] {
+            typed += &format!("{text}\n");
+            wanted += &format!("{read}\n");
+        }
+        typed += "end\n";
+        (typed, wanted)
+    }
+
+    /// Built as it is and built as plain C, a program finds every
+    /// overflow that `zeno run` finds and prints every result it
+    /// prints. With the collector run before every piece of memory is
+    /// handed out, which in plain C reads the registers with `setjmp`.
+    /// And with tcc, a C compiler that is neither GCC nor Clang, where
+    /// there is one.
+    #[test]
+    fn a_program_overflows_in_plain_c_where_it_does_under_zeno_run() {
+        let (typed, wanted) = sums_typed(3000);
+        assert!(wanted.matches("over").count() > 3000 && wanted.contains("\nover -9223372036854775807 over over\n"), "{wanted}");
+        crate::value::testing::with_outside(&typed, &[], || {
+            let ran = interpreted(SUMS);
+            assert!(ran == wanted, "zeno run: {}", first_difference(&ran, &wanted));
+            let c = compile(SUMS).expect("it builds");
+            // Rather than the frame pointer left out: see decision 55.5.
+            let ways: [&[&str]; 4] = [
+                &["-O2"],
+                &["-O2", "-DZENO_PLAIN_C"],
+                &["-O0", "-DZENO_PLAIN_C"],
+                &["-O2", "-DZENO_PLAIN_C", "-DZENO_COLLECT_ALWAYS", "-fno-omit-frame-pointer"],
+            ];
+            for (at, flags) in ways.iter().enumerate() {
+                let Some((printed, errors, finished)) = build_and_run(&format!("plain-sums-{at}"), &c, flags) else { return };
+                assert!(finished, "{flags:?}: {errors}");
+                assert!(printed == wanted, "{flags:?}: {}", first_difference(&printed, &wanted));
+            }
+            if Command::new("tcc").arg("-v").output().is_err() {
+                eprintln!("no `tcc` here; skipping the build with a compiler that is neither GCC nor Clang");
+                return;
+            }
+            for flags in [&[][..], &["-DZENO_COLLECT_ALWAYS"][..]] {
+                let dir = std::env::temp_dir().join(format!("zeno-test-{}-plain-tcc-{}", std::process::id(), flags.len()));
+                std::fs::create_dir_all(&dir).expect("a temporary folder");
+                let (c_file, binary) = (dir.join("test.c"), dir.join("test"));
+                std::fs::write(&c_file, &c).expect("the C file is written");
+                let built = Command::new("tcc").args(flags).arg("-w").arg("-o").arg(&binary).arg(&c_file).args(LIBRARIES).output().expect("tcc runs");
+                assert!(built.status.success(), "tcc: {}", String::from_utf8_lossy(&built.stderr));
+                let ran = crate::value::testing::run(&mut Command::new(&binary)).expect("the program runs");
+                let _ = std::fs::remove_dir_all(&dir);
+                let printed = String::from_utf8_lossy(&ran.stdout);
+                assert!(ran.status.success() && printed == wanted, "tcc {flags:?}: {}", first_difference(&printed, &wanted));
+            }
+        });
+    }
+
+    /// On the chip, built as plain C: sums, differences and products
+    /// that only just fit are printed as `zeno run` prints them, and
+    /// the first that does not fit stops the program and says so (a
+    /// build for a board cannot catch an overflow).
+    #[test]
+    fn a_program_overflows_in_plain_c_on_a_cortex_m3() {
+        let source = r#"function typed() -> int raises ValueError {
+    let line = input()
+    if line is none {
+        return 0
+    }
+    return int(line)
+}
+
+var kind = "int"
+while true {
+    let first = input()
+    if first is none {
+        break
+    }
+    if first == "end" {
+        break
+    }
+    if first == "u64" {
+        kind = first
+        continue
+    }
+    if kind == "u64" {
+        let a = (u64(int(first)) << 32) | u64(typed())
+        let b = (u64(typed()) << 32) | u64(typed())
+        print(a + b, a * b)
+    } else {
+        let a = int(first)
+        let b = typed()
+        print(a + b, a - b, a * b, -a, abs(b))
+    }
+}
+print("done")
+"#;
+        let mut seed: u64 = 0x94D0_49BB_1331_11EB;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // Pairs of which every result fits, many of them only just.
+        let (mut typed, mut wanted) = (String::new(), String::new());
+        let mut pairs = 0;
+        while pairs < 300 {
+            let a = (next() >> (next() % 64)) as i64 * if next() % 2 == 0 { 1 } else { -1 };
+            let b = match (next() % 3, a) {
+                (0, _) | (_, 0) => (next() >> (32 + next() % 32)) as i64,
+                (1, _) => i64::MAX / a,
+                _ => i64::MIN / a.wrapping_abs().max(1),
+            };
+            let (Some(sum), Some(less), Some(times), Some(minus), Some(size)) = (a.checked_add(b), a.checked_sub(b), a.checked_mul(b), a.checked_neg(), b.checked_abs()) else {
+                continue;
+            };
+            typed += &format!("{a}\n{b}\n");
+            wanted += &format!("{sum} {less} {times} {minus} {size}\n");
+            pairs += 1;
+        }
+        typed += &format!("{}\n1\n1\n0\n{}\n-2\n", i64::MAX - 1, 1_i64 << 62);
+        wanted += &format!("{} {} {} {} 1\n1 1 0 -1 0\n", i64::MAX, i64::MAX - 2, i64::MAX - 1, 1 - i64::MAX);
+        wanted += &format!("{} {} {} {} 2\n", (1_i64 << 62) - 2, (1_i64 << 62) + 2, i64::MIN, -(1_i64 << 62));
+        let mut u64s = String::from("u64\n");
+        let mut wanted_u64s = String::new();
+        pairs = 0;
+        while pairs < 100 {
+            let a = next() >> (next() % 64);
+            let b = if pairs % 2 == 0 { u64::MAX / a.max(1) } else { next() >> (32 + next() % 32) };
+            let (Some(sum), Some(times)) = (a.checked_add(b), a.checked_mul(b)) else { continue };
+            u64s += &format!("{}\n{}\n{}\n{}\n", a >> 32, a & 0xFFFF_FFFF, b >> 32, b & 0xFFFF_FFFF);
+            wanted_u64s += &format!("{sum} {times}\n");
+            pairs += 1;
+        }
+        // Where in the program each thing is worked out: an error says
+        // the line and the column of the one that was too big.
+        let place = |line: &str, piece: &str| {
+            let at = source.lines().position(|found| found.trim() == line).expect("the line is in the program");
+            format!("{}:{}", at + 1, source.lines().nth(at).unwrap_or_default().find(piece).expect("the piece is in the line") + 1)
+        };
+        let ints = "print(a + b, a - b, a * b, -a, abs(b))";
+        let wide = "print(a + b, a * b)";
+        let int_too_big = |piece: &str| format!("error: uncaught OverflowError: the result is too big for an int\n --> test.zeno:{}\n", place(ints, piece));
+        let u64_too_big = |piece: &str| format!("error: uncaught OverflowError: the result is too big for a u64\n --> test.zeno:{}\n", place(wide, piece));
+        // Each way of ending: every result fits, or the last pair is
+        // one too many for one of the signs. (Nothing of a line is
+        // printed when one of its numbers is too big.)
+        let endings = [
+            (format!("{u64s}end\n"), format!("{wanted_u64s}done\n"), String::new()),
+            (format!("{}\n1\n", i64::MAX), String::new(), int_too_big("a + b")),
+            (format!("{}\n-1\n", i64::MIN), String::new(), int_too_big("a + b")),
+            (format!("{}\n1\n", i64::MIN), String::new(), int_too_big("a - b")),
+            (format!("-2\n{}\n", i64::MAX), String::new(), int_too_big("a - b")),
+            ("3037000500\n3037000500\n".to_string(), String::new(), int_too_big("a * b")),
+            (format!("{}\n2\n", 1_i64 << 62), String::new(), int_too_big("a * b")),
+            (format!("{}\n-2\n", (1_i64 << 62) + 1), String::new(), int_too_big("a * b")),
+            (format!("{}\n0\n", i64::MIN), String::new(), int_too_big("-a")),
+            (format!("{u64s}4294967295\n4294967295\n0\n1\n"), wanted_u64s.clone(), u64_too_big("a + b")),
+            (format!("{u64s}1\n0\n1\n0\n"), wanted_u64s.clone(), u64_too_big("a * b")),
+        ];
+        let checked = compile_no_collector(source).unwrap();
+        for (at, (last, printed_last, said)) in endings.iter().enumerate() {
+            // The first board has no C library under its `print`, and
+            // takes every ending. The other takes two.
+            for which in ["lm3s6965evb", "qemu-cortex-m3"] {
+                if which == "qemu-cortex-m3" && at > 1 {
+                    continue;
+                }
+                crate::value::testing::with_outside(&format!("{typed}{last}"), &[], || {
+                    let name = format!("plain-sums-{which}-{at}");
+                    let Some((printed, errors, finished)) = on_the_board(which, &name, &checked, &["-O2", "-DZENO_PLAIN_C"]) else {
+                        return;
+                    };
+                    let wanted = format!("{wanted}{printed_last}");
+                    assert!(printed == wanted, "{which}, ending {at}: {}\n{errors}", first_difference(&printed, &wanted));
+                    assert_eq!(finished, said.is_empty(), "{which}, ending {at}: {errors}");
+                    assert_eq!(&errors, said, "{which}, ending {at}");
+                });
+            }
         }
     }
 

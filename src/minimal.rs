@@ -420,7 +420,9 @@ fn names_of(text: &str) -> Vec<String> {
         return (0..toks.len()).rev().find_map(ident).into_iter().collect();
     }
     let mut at = 0;
-    // `__attribute__((noreturn))` and `__declspec(dllimport)` come first.
+    // `__attribute__((constructor))` and `__declspec(dllimport)` come
+    // first. (`ZENO_NORETURN` in front of a function is one word, and
+    // is passed over like `static`.)
     while is(at, "__attribute__") || is(at, "__declspec") {
         at += 1;
         let mut depth = 0;
@@ -464,7 +466,7 @@ fn names_of(text: &str) -> Vec<String> {
 /// items? The runtime has two such:
 ///
 /// ```c
-/// #if defined(__GNUC__)
+/// #ifndef ZENO_PLAIN_C
 /// __attribute__((noinline))
 /// #endif
 /// static void zeno_mark_stack(void) {
@@ -860,7 +862,7 @@ pub fn assemble(parts: Parts) -> String {
     }
     c.push('\n');
     if collects {
-        c += "__attribute__((noinline)) static void zeno_program(void) {\n";
+        c += "static void zeno_program(void) {\n";
         c += parts.program;
         c += "}\n\n";
         c += &roots;
@@ -868,7 +870,8 @@ pub fn assemble(parts: Parts) -> String {
         c += main_line;
         c += "    void *base = NULL;\n    zeno_stack_base = &base; /* the stack starts here */\n";
         c += &start;
-        c += "    zeno_program();\n";
+        c += "    void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */\n";
+        c += "    program();\n";
     } else {
         c += main_line;
         c += &start;
@@ -922,6 +925,7 @@ mod tests {
         let one = |text: &str| names_of(text).join(" ");
         assert_eq!(one("static void zeno_free(void *memory) { }"), "zeno_free");
         assert_eq!(one("__attribute__((noreturn)) static void zeno_uncaught(void) { }"), "zeno_uncaught");
+        assert_eq!(one("ZENO_NORETURN static void zeno_stop(int status) { }"), "zeno_stop");
         assert_eq!(one("static void zeno_roots(void);"), "zeno_roots");
         assert_eq!(one("static size_t zeno_pool_top = 0;"), "zeno_pool_top");
         assert_eq!(one("static const char *const *zeno_modules = NULL;"), "zeno_modules");

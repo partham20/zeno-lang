@@ -106,7 +106,7 @@ MARKER = (
     "    if (write(2, mark, sizeof mark - 1) < 0) return;\n"
     "}\n"
 )
-ENDS_IN = re.compile(r"^(__attribute__\(\(noreturn\)\) static void zeno_(?:fail|bug)\([^)]*\) \{)$", re.M)
+ENDS_IN = re.compile(r"^(ZENO_NORETURN static void zeno_(?:fail|bug)\([^)]*\) \{)$", re.M)
 
 
 def written(kind, program, out_dir, minimal):

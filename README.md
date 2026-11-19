@@ -276,7 +276,7 @@ collector in the program) and `--memory`.
 to what a person would write by hand: no check of any kind, no line
 numbers carried along, only the parts of Zeno's runtime the program
 uses, and `print` as C's `printf`. `examples/hello.zeno` is 23 lines of
-C that way and `examples/primes.zeno` is 100, from about 3,000 each. A
+C that way and `examples/primes.zeno` is 100, from about 4,500 each. A
 mistake in such a build does what it would do in C, so it is for a
 program that already runs right ([`docs/minimal.md`](docs/minimal.md)).
 Every other build writes the C it always wrote.
@@ -342,7 +342,7 @@ cargo run -- test examples/sketch.zeno          # a page that draws: its tests p
 cargo run -- playground                         # playground.html: write Zeno programs and run them in a browser, with nothing installed
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build --board boards/qemu-cortex-m3 examples/signal.zeno  # the same for an ARM Cortex-M3, in one step: signal.elf, which QEMU runs
-cargo run -- build --board boards/lm3s6965evb examples/hello.zeno      # the same chip on its own UART, with no printf: hello.elf is 936 bytes of flash
+cargo run -- build --board boards/lm3s6965evb examples/hello.zeno      # the same chip on its own UART, with no printf: hello.elf is 932 bytes of flash
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
@@ -406,7 +406,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/release.md`](docs/release.md), [`docs/found-by-the-book.md`](docs/found-by-the-book.md),
   [`docs/vm.md`](docs/vm.md),
   [`docs/llvm.md`](docs/llvm.md), [`docs/board.md`](docs/board.md),
-  [`docs/board-build.md`](docs/board-build.md),
+  [`docs/board-build.md`](docs/board-build.md), [`docs/plain-c.md`](docs/plain-c.md),
   [`docs/web.md`](docs/web.md), [`docs/playground.md`](docs/playground.md),
   [`docs/json.md`](docs/json.md), [`docs/install.md`](docs/install.md),
   [`docs/sized-ints.md`](docs/sized-ints.md), [`docs/generics.md`](docs/generics.md).
@@ -818,7 +818,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     nothing of the program goes through the C library's streams or its
     `exit`. A second board, `boards/lm3s6965evb`, is the emulated
     Cortex-M3 on its own pin, timer and UART registers: `hello` takes
-    936 bytes of flash there, and 9,472 on the board with a C library
+    932 bytes of flash there, and 9,468 on the board with a C library
     under it.
     See [`docs/board.md`](docs/board.md) and chapter 52 of
     [`docs/decisions.md`](docs/decisions.md))
@@ -832,6 +832,16 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     `5.684341886080802e-14` for `2.0 ** -44.0` and `NaN` for a NaN
     with decimals, as `zeno run` always did.
     See chapter 53 of [`docs/decisions.md`](docs/decisions.md))
+52. Checks in plain C, for a C compiler that is neither GCC nor Clang
+    (done, after 0.6.0 and not yet released: the few things the C
+    asked of GCC and Clang by name, the overflow of a sum, a
+    difference and a product first among them, are each written a
+    second time in plain C, and a compiler gets the one it can read.
+    tcc builds every example, and each does what it does built by gcc.
+    On a Cortex-M3 the plain C is as small as the other. No program
+    has been built by IAR's, Keil's or a chip maker's compiler yet.
+    See [`docs/plain-c.md`](docs/plain-c.md) and chapter 55 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
@@ -880,6 +890,7 @@ src/runtime.js      Zeno's rules in JavaScript, put into each written program; r
 tools/targets.py    builds every example for every target and compares it with `zeno run`
 tools/minimal.py    builds every example with and without `--minimal` and compares the two
 tools/board.py      builds every example for an emulated ARM Cortex-M3 and for the computer and compares the two
+tools/plain.py      builds every example as it is, as plain C, and with a C compiler that is neither GCC nor Clang, and compares the three
 boards/             a folder for each board `zeno build --board` can build for: today two, both the Cortex-M3 that QEMU emulates, one on a C library and one on its own registers
 src/error.rs        the error type every stage shares
 docs/               the design decisions, and how each stage works

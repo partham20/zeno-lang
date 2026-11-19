@@ -1278,7 +1278,8 @@ the interpreter that was corrected. 3.6c and 3.14 came about that way.
 flag: one instruction. Checking by hand in plain C is longer, slower and
 easy to get wrong. GCC and Clang cover nearly every microcontroller
 toolchain in use (ARM, RISC-V, AVR, ESP). *(Was provisional (11.2): a plain-C fallback
-can be added for other compilers.)*
+can be added for other compilers. **Added in chapter 55**: the built-ins are
+still what GCC and Clang get.)*
 
 ### 5.5f Compiled strings were not freed at first
 
@@ -7235,7 +7236,7 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | Decision | What was left open | Now | The reason |
 |---|---|---|---|
 | 5.5c | A value of unknown type in a compiled program | Settled: a build is strict | Types that are not written are worked out, so most programs with none written build as they are. One that truly needs a value of any type runs with `zeno run` |
-| 5.5e | Checked arithmetic uses built-ins of GCC and Clang | A limit of 0.1 | They cover the toolchains for ARM, RISC-V, AVR and ESP. Another C compiler needs the checks written out, in one place in `runtime.c` |
+| 5.5e | Checked arithmetic uses built-ins of GCC and Clang | Changed in chapter 55: another C compiler gets the checks in plain C | They cover the toolchains for ARM, RISC-V, AVR and ESP, and are one instruction. The plain C is behind one mark in `runtime.c`, `ZENO_PLAIN_C` |
 | 5.5g | An object that never leaves its function could live on the stack | Settled as it is | It would be an optimisation that changes no program. With no collector the object is freed where its owner ends in any case |
 | 5.5k | A function value is always a block, even one that keeps no variables | Settled | Two function values are equal only when they are the same one, in every engine. The fixed value would save a block and break that for a function written in a loop |
 | 5.5l | A function that can raise cannot be used as a value in a firmware build | A limit of 0.1 | The type `function(str) -> int` does not say whether it raises, and the two sorts are called differently there. The way in is `raises` in a function type |
@@ -16196,3 +16197,307 @@ it turns this file into `/decisions/`. Nothing is written twice. A
 short name of a commit is a link to the commit on GitHub, in the file
 and on the site, so the page can stay one line to a commit and the
 whole of each is one press away.
+
+## 55. Checks in plain C, for a compiler that is neither GCC nor Clang
+
+The C that `zeno build` writes is C as the standard of 1999 has it,
+but for a handful of things it asked of GCC and Clang by their own
+names for them:
+
+- `__builtin_add_overflow`, `__builtin_sub_overflow` and
+  `__builtin_mul_overflow`, which say whether a sum, a difference or a
+  product was too big (5.5e);
+- `__builtin_ctzll` and `__builtin_unwind_init` in the collector;
+- `__attribute__((noreturn))` in front of a function that never comes
+  back, and `__attribute__((noinline))` in front of three that are to
+  stay functions of their own.
+
+A compiler that has none of those names stopped at the first. tcc,
+the Tiny C Compiler, is of that kind, and is the one that could be
+tried here. IAR's compiler, Keil's older one and the compilers some
+chip makers ship are too, as far as their manuals say: none of them
+can be run where Zeno is made.
+
+This chapter is the last part of item 8 of
+[`missing.md`](missing.md). **Each of those things is now written a
+second time in plain C, and one mark, `ZENO_PLAIN_C`, says which of
+the two a compiler gets.** tcc builds every example, in every kind of
+build, and each does what it does built by gcc.
+
+Nothing in the language changes, and a build by GCC or Clang does what
+it did.
+
+### 55.1 One mark, decided in one place
+
+**At the top of `runtime.c`:**
+
+```c
+#if !defined(ZENO_PLAIN_C) && !defined(__clang__) && !(defined(__GNUC__) && __GNUC__ >= 5)
+#define ZENO_PLAIN_C
+#endif
+```
+
+Every place that has two forms asks `#ifndef ZENO_PLAIN_C`, and no
+place asks what the compiler is. GCC has had the three overflow
+built-ins since version 5, so an older GCC, which some chip makers
+still ship, gets the plain C as well.
+
+**Building with `-DZENO_PLAIN_C` asks GCC and Clang for the plain C
+too.** That is what makes it testable: the plain C can be held to the
+built-ins on the same machine, by the same compiler, with no other
+compiler at hand.
+
+**Turned down: asking for each built-in by itself** (`__has_builtin`).
+GCC only has that question since version 10, and five marks are
+thirty-two files to test where one mark is two.
+
+**Turned down: `#define __attribute__(x)`**, the one line that makes
+every attribute vanish. The name belongs to the compiler, and a
+compiler's own headers may use it.
+
+### 55.2 The checks, written out
+
+Four functions say whether a result fits and hand it over when it
+does: `zeno_add_overflows`, `zeno_sub_overflows`,
+`zeno_mul_overflows` and `zeno_mul_overflows_u64`. Each has the
+built-in and the plain C in it, and `zeno_add`, `zeno_sub`, `zeno_mul`,
+the u64 ones and `int("...")` call them.
+
+**A sum and a difference** are worked out as numbers with no sign,
+which C lets wrap round, and the signs are looked at: a sum overflowed
+when `a` and `b` have one sign and the sum has the other. The result
+itself is then C's own `a + b`, worked out only once it is known to
+fit.
+
+**The plain C never works out a number that does not fit**, since that
+is the thing C leaves undefined, and it never turns a number with no
+sign that is too big into one with a sign, which C leaves to the
+compiler (C99, 6.3.1.3). So it is the same on every compiler, and a
+compiler that builds on a mistake not happening has nothing to build
+on.
+
+**A product** is taken as halves of 32 bits, so that every product of
+two halves fits in 64:
+
+```
+a * b = a1 * b1 * 2^64 + (a1 * b0 + a0 * b1) * 2^32 + a0 * b0
+```
+
+The first part fits only as 0, so one of the two top halves is 0.
+What is left of the middle is moved up 32 bits, so it must fit in 32.
+And adding the last part must not carry. For numbers with a sign the
+two are multiplied with their signs taken off, and the product has to
+fit with its sign put back: below zero there is room for one more.
+
+**Turned down: finding out by dividing** (`a > INT64_MAX / b`, as
+CERT's rule INT32-C writes it). A Cortex-M3 has no instruction that
+divides 64 bits: it is a call into the compiler's library of some
+hundreds of steps, for every product a program works out.
+
+**Turned down: a number of 128 bits.** `__int128` is GCC's and Clang's
+again, and on a 32-bit processor they do not have it either.
+
+**A sum of two u64s needs no built-in in either form**: with no sign C
+wraps round, to less than it began with. Both forms are now that one
+line.
+
+### 55.3 The word in front of a function
+
+`ZENO_NORETURN` is `__attribute__((noreturn))` for GCC and Clang,
+`_Noreturn` for a plain compiler that reads the C of 2011, and nothing
+for one that does not. `ZENO_NOINLINE` is the attribute, or nothing.
+
+**With nothing there the C is still right.** The first only lets the
+compiler leave out the way back from a call that never comes back, and
+the second is a hint about speed. A compiler may then warn that a
+function "might return no value" where its last line is a call that
+stops the program (tcc does). It never reaches the end, and C only
+minds if the value of such an end is used (C99, 6.9.1).
+
+### 55.4 The top of the program stays out of `main` without an attribute
+
+The collector looks for the program's variables on the stack below
+`main`'s. So the top-level code is a function of its own,
+`zeno_program`, and it must stay one: put inside `main` by the
+compiler, its variables could lie above the place the collector
+starts from. That was `__attribute__((noinline))`, the one attribute
+that something depended on.
+
+**`main` now calls it by its address, read from a variable the
+compiler cannot see through:**
+
+```c
+void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */
+program();
+```
+
+No compiler can put a function inside `main` when it cannot know which
+function is called. It is done so in every build with a collector, for
+every compiler, and not only in plain C: one way, which every test of
+the collector there already was now tries.
+
+A build with no collector has nothing that looks at the stack. There
+`main` calls `zeno_program` as before, and the attribute is gone, so
+the compiler may put the one inside the other. On the chip that is 4
+to 32 bytes less for most programs: `hello` on `lm3s6965evb` is 932
+bytes, where it was 936.
+
+### 55.5 The collector in plain C
+
+**The lowest bit of a word that is set** is found by halving the word
+six times.
+
+**The registers are read with `setjmp`.** A pointer may be nowhere in
+memory when the collector runs, only in a register. GCC and Clang have
+a name for putting the registers on the stack. Plain C has one thing
+that reads them: `setjmp` copies them into what it is handed. The
+collector looks through that like any other memory, and then calls the
+function that looks through the stack by its address, as in 55.4, so
+that it lies below everything on any compiler.
+
+Two things about it are not as good as the rest of this chapter, and
+both are written down here and not hidden:
+
+- **A C library may keep registers back from `setjmp`.** The C library
+  of Linux scrambles three of them on a 64-bit Intel processor (the
+  stack pointer, the frame pointer and the place to go back to), so
+  that what `setjmp` filled cannot be used to break into a program. A
+  pointer that a compiler kept in the frame pointer and nowhere else
+  would not be seen. With gcc 13 and Clang 18 told to take the plain
+  C, the collector's own function puts that register on the stack as
+  it begins, at `-O1`, `-O2` and `-Os`, so it is seen there. Nothing
+  in C promises that. GCC and Clang never take this path unless they
+  are asked to, and tcc keeps nothing in a register across a call.
+- **A firmware build with a collector cannot be built in plain C, and
+  says so.** A firmware build's promise is that its C has no `setjmp`
+  in it at all ([`firmware.md`](firmware.md)), and that promise is
+  worth more than this corner. So there the plain C is one line,
+  `#error`, that says to build with GCC or Clang, or with
+  `--no-collector` or `--owned`. A build for a board has no collector,
+  and is not touched by this.
+
+The collector is for a computer, where the compiler is nearly always
+one of the two. It was written in plain C all the same so that tcc
+could be used to try the whole of the runtime, and it found nothing.
+
+### 55.6 Found on the way: floats on a compiler that is neither
+
+`a * b + c` is two steps in Zeno, each rounded. A processor that has
+one instruction for both gives another last digit now and then, and a
+C compiler may use it unasked, so the runtime says not to. It said so
+to gcc and to Clang, each in its own words, **and to no other
+compiler at all.**
+
+**The line C itself has for it, `#pragma STDC FP_CONTRACT OFF`
+(C99, 7.12.2), is now given to every compiler but gcc**, which does
+not read it and keeps its own. A compiler for a Cortex-M4F or an M7
+has such an instruction, so this is the kind of compiler it matters
+to. It could not be tried here: tcc never joins the two steps.
+
+### 55.7 What it costs, measured
+
+On a computer (x86-64, `-O2`), a loop of a hundred million rounds,
+each with two products, a sum, a difference and a count:
+
+| | with the built-ins | in plain C |
+|---|---|---|
+| gcc 13 | 0.19 s | 0.23 s |
+| Clang 18 | 0.19 s | 0.24 s |
+
+Fifty million products that nearly fill an int take the same time
+either way (0.22 s with gcc, 0.29 s with Clang). The same two loops
+built by tcc take 4.7 s and 2.0 s, which is tcc's doing and not the
+checks': it does not optimize.
+
+On a Cortex-M3, the functions themselves, in bytes (`-O2`):
+
+| | with the built-in | in plain C |
+|---|---|---|
+| a sum, a difference | 28 | 42 |
+| a product | 190 | 142, and 66 for the u64 one it calls |
+| a product of u64s | 76 | 66 |
+
+And whole programs for `boards/lm3s6965evb`, in bytes of flash:
+
+| program | with the built-ins | in plain C |
+|---|---|---|
+| `hello.zeno` | 932 | 932 |
+| `scheduler.zeno` | 7,472 | 7,188 |
+| `primes.zeno` | 7,884 | 7,780 |
+| `modbus.zeno` | 9,708 | 9,596 |
+| `tour.zeno` | 14,032 | 14,208 |
+| `instruments.zeno` | 23,304 | 23,288 |
+
+**So on the chip the plain C costs nothing to speak of.** A 32-bit
+processor has no overflow flag for a number of 64 bits, and what GCC
+writes for its own built-in there is about what the plain C says. How
+long each takes on a real chip was not measured: QEMU does not keep
+time the way a chip does.
+
+### 55.8 How it is held to its word
+
+- **`plain_c_asks_gcc_for_nothing`** reads the runtime with the mark
+  decided: told to be plain, no `__builtin_` is left in it, and no
+  `__attribute__` but the one only Windows reads (55.9). The program
+  written after it never has either.
+- **`plain_c_finds_an_overflow_where_the_built_ins_do`** takes the
+  four functions as the runtime has them, writes each out in both
+  forms in one C file, and holds the plain one to the built-in on
+  every pair of 384 numbers at the edges (each power of two, one less,
+  one more, and each of those below zero) and on twenty million pairs
+  of every length, with the products that just fit and the ones that
+  just do not. The file is read as the C of 1999 with nothing added.
+  **`plain_c_finds_an_overflow_on_a_cortex_m3`** runs the same on the
+  emulated chip, where a number of 64 bits is two words.
+- **`a_program_overflows_in_plain_c_where_it_does_under_zeno_run`**
+  types 3,000 pairs of ints and 3,000 of u64s at a program that
+  prints each sum, difference and product, or that it was too big.
+  What comes out has to be what Rust's own checked arithmetic gives:
+  under `zeno run`, built, built as plain C, built as plain C with the
+  collector run before every piece of memory is handed out, and built
+  by tcc where there is one.
+- **`a_program_overflows_in_plain_c_on_a_cortex_m3`**: on both
+  emulated boards, built as plain C, 300 pairs that only just fit are
+  printed as `zeno run` prints them, and each of ten pairs that do
+  not fit stops the program with the error, the line and the column
+  of the one sum that was too big.
+- **`tools/plain.py`** builds every example, every sample of the book
+  and the corner programs for the collector, `--owned` and
+  `--no-collector`, and compiles the C three ways: as it is, as plain
+  C read by the standard of 1999 (`-DZENO_PLAIN_C -std=c99
+  -pedantic-errors`, `-O2`), and with tcc. 266, 238 and 238 programs
+  do the same in all three. With Clang in place of gcc the examples and
+  the corner programs do too. The `plain` workflow runs it on GitHub.
+- While it was written the two forms were compared on 291 million
+  pairs, and on 48 million with gcc's checker of undefined behaviour
+  on.
+
+**No program of Zeno's has been built by IAR's, Keil's or a chip
+maker's compiler.** None of them can be run here. What was tried is
+that the C asks for nothing outside the standard of 1999, and that a
+compiler which is neither GCC nor Clang (tcc 0.9.27) builds all of it.
+
+### 55.9 What is still GCC's, or the system's
+
+- **On Windows** one function runs before `main` to keep line ends as
+  they are, by `__attribute__((constructor))`. gcc and Clang are the
+  compilers a build is tried with there. Microsoft's compiler wants
+  more than this chapter gives it, and is a stage of its own.
+- **`import c`** (chapter 44) writes a few lines with `_Generic`,
+  which is the C of 2011, and `zeno run` builds the library it loads
+  with an attribute of GCC's. Only a program that imports C has them.
+- **A board's own files** are written for the board's compiler:
+  `startup.c` and `link.ld` in the two folders that come with Zeno are
+  for `arm-none-eabi-gcc`. A board for IAR or Keil is a folder with
+  their start-up file and their linker's file in it.
+- **The C of 1999** is asked of the compiler (Keil's older compiler
+  reads it with `--c99`), and of the C library `memcpy`, `strlen` and
+  their like, with the functions of `math` a program calls.
+- **`zeno build --llvm`** is Clang by its nature.
+
+### 55.10 Left for later
+
+- A trial with a compiler of a chip maker, when one is at hand.
+- Microsoft's C compiler.
+- The registers read without `setjmp` where the C library has a
+  better way, if a plain compiler on a computer ever needs it.

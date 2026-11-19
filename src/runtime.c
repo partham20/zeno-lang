@@ -91,17 +91,64 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* --------------------------------------------------------- The C compiler
+ *
+ * Nearly all of this file is C as the standard of 1999 has it, which
+ * every C compiler reads. Three things are not, and are asked of GCC and
+ * Clang by their own names for them:
+ *
+ *   - whether a sum, a difference or a product overflowed, which the
+ *     processor knows in one instruction (`__builtin_add_overflow` and
+ *     its like, in GCC from version 5);
+ *   - two things the collector does: the lowest bit of a word that is
+ *     set, and the registers of the processor put on the stack;
+ *   - a word to the compiler that a function never comes back, or is
+ *     to be kept a function of its own.
+ *
+ * Another compiler (IAR's, Keil's older one, a chip maker's own, tcc)
+ * need have none of these names, so each is written here a second time
+ * in plain C, and `ZENO_PLAIN_C` says which of the two is used. It is
+ * decided on the next lines and nowhere else. Building with
+ * `-DZENO_PLAIN_C` asks GCC and Clang for the plain C too, which is how
+ * the plain C is held to the other (decision 55, docs/plain-c.md). */
+#if !defined(ZENO_PLAIN_C) && !defined(__clang__) && !(defined(__GNUC__) && __GNUC__ >= 5)
+#define ZENO_PLAIN_C
+#endif
+
+/* In front of a function that never comes back: it stops the program,
+ * or jumps to an `except`. The compiler then leaves out the way back.
+ * C has had its own word for it since 2011, and before that it is left
+ * unsaid, which costs a little room and nothing else. */
+#ifndef ZENO_PLAIN_C
+#define ZENO_NORETURN __attribute__((noreturn))
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define ZENO_NORETURN _Noreturn
+#else
+#define ZENO_NORETURN
+#endif
+
+/* In front of a function that is called from a quick one and is itself
+ * slow, so that the quick one stays small. Only a hint: nothing goes
+ * wrong where it is left unsaid. */
+#ifndef ZENO_PLAIN_C
+#define ZENO_NOINLINE __attribute__((noinline))
+#else
+#define ZENO_NOINLINE
+#endif
+
 /* `a * b + c` is two steps: multiply and round, then add and round. Some
  * processors (ARM64, and x86 where the compiler is told it may) have one
  * instruction that does both and rounds once, which is faster and now and
  * then gives another last digit: 74.3 where two steps give
  * 74.30000000000001. A C compiler is allowed to pick it without being
  * asked. `zeno run` always takes two steps, so the compiled program must
- * too, and these lines say so to the two families of C compiler. */
-#if defined(__clang__)
-#pragma STDC FP_CONTRACT OFF
-#elif defined(__GNUC__)
+ * too, and these lines say so. The second is how C itself says it (C99,
+ * 7.12.2), for every compiler. gcc alone does not read that line and
+ * has one of its own. */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("fp-contract=off")
+#else
+#pragma STDC FP_CONTRACT OFF
 #endif
 
 /* A 32-bit x86 processor has two sets of float instructions. The old set
@@ -142,7 +189,7 @@ static void zeno_out(const char *bytes, size_t count);
 static void zeno_out_now(void);
 static void zeno_say(const char *bytes, size_t count);
 static int zeno_typed(void);
-__attribute__((noreturn)) static void zeno_stop(int status);
+ZENO_NORETURN static void zeno_stop(int status);
 
 /* A message for the error stream, with `%s` (text), `%d` (an int) and
  * `%zu` (a size) filled in: all that the messages of this file ask of
@@ -505,7 +552,7 @@ static void zeno_mark(uintptr_t word) {
  * (The attribute is for AddressSanitizer, a tool that reports reads of
  * memory nobody declared. Reading the whole stack is exactly that, and
  * here it is on purpose.) */
-#if defined(__GNUC__)
+#ifndef ZENO_PLAIN_C
 __attribute__((no_sanitize_address))
 #endif
 static void zeno_mark_words(const void *start, size_t size) {
@@ -517,8 +564,10 @@ static void zeno_mark_words(const void *start, size_t size) {
 }
 
 /* Mark from the C stack: every local variable of every function that is
- * running now lies between this function's own variable and `main`'s. */
-#if defined(__GNUC__)
+ * running now lies between this function's own variable and `main`'s.
+ * (Kept a function of its own, so that its variable lies below what
+ * zeno_collect has put on the stack.) */
+#ifndef ZENO_PLAIN_C
 __attribute__((noinline))
 #endif
 static void zeno_mark_stack(void) {
@@ -628,6 +677,24 @@ static void zeno_unguard(zeno_page *page) {
 }
 #endif
 
+/* Which bit of a word is its lowest one that is set, for a word that is
+ * not 0. A processor has an instruction for it, and plain C halves the
+ * word six times. */
+static int zeno_lowest_bit(uint64_t word) {
+#ifndef ZENO_PLAIN_C
+    return __builtin_ctzll(word);
+#else
+    int at = 0;
+    if ((word & 0xFFFFFFFFu) == 0) { at += 32; word >>= 32; }
+    if ((word & 0xFFFFu) == 0) { at += 16; word >>= 16; }
+    if ((word & 0xFFu) == 0) { at += 8; word >>= 8; }
+    if ((word & 0xFu) == 0) { at += 4; word >>= 4; }
+    if ((word & 0x3u) == 0) { at += 2; word >>= 2; }
+    if ((word & 0x1u) == 0) at += 1;
+    return at;
+#endif
+}
+
 /* Look inside every old block of a page: a small collection takes what
  * they point at to be in use. */
 static void zeno_mark_old(zeno_page *page) {
@@ -638,12 +705,36 @@ static void zeno_mark_old(zeno_page *page) {
     for (uint32_t w = 0; w * 64 < page->cut; w++) {
         uint64_t old = page->in_use[w] & page->reached[w];
         while (old != 0) {
-            int b = __builtin_ctzll(old);
+            int b = zeno_lowest_bit(old);
             old &= old - 1;
             zeno_mark_words(page->data + ((size_t)w * 64 + (size_t)b) * page->size, page->size);
         }
     }
 }
+
+#ifdef ZENO_PLAIN_C
+/* Mark from the registers and the stack, in plain C. */
+static void zeno_mark_running(void) {
+#ifndef ZENO_FIRMWARE
+    /* `setjmp` is the one thing C has that reads the registers: it
+     * copies them into what it is handed, and that is looked through
+     * like any other memory. (A C library may keep one or two of them
+     * back from it, decision 55.5.) Then the stack, by a call the
+     * compiler cannot see through (`volatile`), so that zeno_mark_stack
+     * is a function of its own below this one on any compiler, and
+     * looks through everything this one put on the stack. */
+    jmp_buf registers;
+    void (*volatile mark_stack)(void) = zeno_mark_stack;
+    (void)setjmp(registers);
+    zeno_mark_words(&registers, sizeof registers);
+    mark_stack();
+#else /* ZENO_FIRMWARE */
+    /* A firmware build has nothing of the C library's that jumps, and
+     * that is what reads the registers in plain C (decision 55.5). */
+#error "The collector of a firmware build reads the processor's registers in a way that only GCC and Clang have. Build with one of them, or with --no-collector or --owned, which have no collector."
+#endif /* ZENO_FIRMWARE */
+}
+#endif
 
 static void zeno_collect(void) {
     if (zeno_pages == NULL || zeno_stack_base == NULL) return;
@@ -668,11 +759,14 @@ static void zeno_collect(void) {
     }
 
     /* Mark. A pointer may be nowhere in memory at this moment, only in one
-     * of the processor's registers. This copies the registers onto the
-     * stack, where zeno_mark_stack will see them. (A builtin of GCC and
-     * Clang, like the ones the checked arithmetic uses further down.) */
+     * of the processor's registers. GCC and Clang have a name for copying
+     * the registers onto the stack, where zeno_mark_stack will see them. */
+#ifndef ZENO_PLAIN_C
     __builtin_unwind_init();
     zeno_mark_stack();
+#else
+    zeno_mark_running();
+#endif
     zeno_roots();
     if (!full) {
         for (zeno_page *page = zeno_pages; page != NULL; page = page->next) {
@@ -713,7 +807,7 @@ static void zeno_collect(void) {
             if (dead == 0) continue;
             page->in_use[w] &= page->reached[w];
             while (dead != 0) {
-                int b = __builtin_ctzll(dead);
+                int b = zeno_lowest_bit(dead);
                 dead &= dead - 1;
                 void **block = (void **)(page->data + ((size_t)w * 64 + (size_t)b) * page->size);
                 *block = page->spare;
@@ -1495,7 +1589,7 @@ static int zeno_raised_col = 0;
 #endif /* ZENO_MINIMAL */
 
 /* Nobody caught it: print what `zeno run` prints, and stop. */
-__attribute__((noreturn)) static void zeno_uncaught(void) {
+ZENO_NORETURN static void zeno_uncaught(void) {
 #ifndef ZENO_MINIMAL
     zeno_sayf("error: uncaught %s: %s\n --> %s:%d:%d\n", zeno_kind_shown(zeno_raised->kind), zeno_raised->message,
               zeno_file_of(zeno_raised_line), zeno_line_of(zeno_raised_line), zeno_raised_col);
@@ -1525,7 +1619,7 @@ static zeno_try *zeno_trying = NULL;
 
 /* `raise`. Inside a `try`, go to its `except` blocks. Outside every `try`,
  * nobody can catch it. */
-__attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, int col) {
+ZENO_NORETURN static void zeno_raise(zeno_error *error, int line, int col) {
     zeno_raised = error;
 #ifndef ZENO_MINIMAL
     zeno_raised_line = line;
@@ -1538,7 +1632,7 @@ __attribute__((noreturn)) static void zeno_raise(zeno_error *error, int line, in
 }
 
 /* No `except` of this `try` wanted the error: pass it outward unchanged. */
-__attribute__((noreturn)) static void zeno_raise_again(void) {
+ZENO_NORETURN static void zeno_raise_again(void) {
 #ifndef ZENO_MINIMAL
     zeno_raise(zeno_raised, zeno_raised_line, zeno_raised_col);
 #else /* ZENO_MINIMAL */
@@ -1552,7 +1646,7 @@ static bool zeno_caught(const char *kind) {
 }
 
 /* An error the runtime itself finds, such as a division by zero. */
-__attribute__((noreturn)) static void zeno_fail(const char *kind, const char *message, int line, int col) {
+ZENO_NORETURN static void zeno_fail(const char *kind, const char *message, int line, int col) {
     zeno_raise(zeno_error_new(kind, message, NULL), line, col);
 }
 
@@ -1584,7 +1678,7 @@ static bool zeno_is(const zeno_error *error, const char *kind) {
  * program, and no `except` sees them. (Making them catchable would put a
  * test after nearly every line of every function. On a real board this is
  * where the fault handler would be called.) */
-__attribute__((noreturn)) static void zeno_fail(const char *kind, const char *message, int line, int col) {
+ZENO_NORETURN static void zeno_fail(const char *kind, const char *message, int line, int col) {
     zeno_note(zeno_error_new(kind, message, NULL), line, col);
     zeno_uncaught();
 }
@@ -1595,7 +1689,7 @@ __attribute__((noreturn)) static void zeno_fail(const char *kind, const char *me
  * decisions.md 4.1). The checker finds nearly all of these before the
  * program is built, so there is very little left to report here. */
 #ifndef ZENO_MINIMAL
-__attribute__((noreturn)) static void zeno_bug(const char *message, int line, int col) {
+ZENO_NORETURN static void zeno_bug(const char *message, int line, int col) {
     zeno_sayf("error: %s\n --> %s:%d:%d\n", message, zeno_file_of(line), zeno_line_of(line), col);
     zeno_stop(1);
 }
@@ -1612,15 +1706,90 @@ static void zeno_by_zero(int line, int col) {
 /* ------------------------------------------------------------ Whole numbers
  *
  * In C, a signed overflow is undefined: the compiler may do anything. Zeno
- * says it is an OverflowError, so every operation is checked. The
- * __builtin_ functions are how GCC and Clang expose the processor's own
- * overflow flag.
+ * says it is an OverflowError, so every operation is checked.
+ *
+ * The four functions that follow say whether a sum, a difference or a
+ * product is too big, and hand it over when it is not. Each is written
+ * twice. The __builtin_ functions are how GCC and Clang expose the
+ * processor's own overflow flag: one instruction after the sum. The
+ * plain C is for every other compiler (`ZENO_PLAIN_C`, at the top of
+ * this file), and never works out a number that does not fit, since
+ * that is the thing C leaves undefined.
  */
+
+/* a + b. Added as numbers with no sign, which C lets wrap round, the sum
+ * overflowed when a and b have one sign and it has the other. */
+static bool zeno_add_overflows(int64_t a, int64_t b, int64_t *sum) {
+#ifndef ZENO_PLAIN_C
+    return __builtin_add_overflow(a, b, sum);
+#else
+    uint64_t wrapped = (uint64_t)a + (uint64_t)b;
+    if ((((uint64_t)a ^ wrapped) & ((uint64_t)b ^ wrapped)) >> 63 != 0) return true;
+    *sum = a + b;
+    return false;
+#endif
+}
+
+/* a - b overflowed when a and b have different signs, and the difference
+ * has not the sign of a. */
+static bool zeno_sub_overflows(int64_t a, int64_t b, int64_t *difference) {
+#ifndef ZENO_PLAIN_C
+    return __builtin_sub_overflow(a, b, difference);
+#else
+    uint64_t wrapped = (uint64_t)a - (uint64_t)b;
+    if ((((uint64_t)a ^ (uint64_t)b) & ((uint64_t)a ^ wrapped)) >> 63 != 0) return true;
+    *difference = a - b;
+    return false;
+#endif
+}
+
+/* a * b for two numbers with no sign. Each is taken as two halves of 32
+ * bits, a = a1 * 2^32 + a0, so that every product of two halves fits in
+ * 64 bits:
+ *
+ *     a * b = a1 * b1 * 2^64 + (a1 * b0 + a0 * b1) * 2^32 + a0 * b0
+ *
+ * The first part fits only when it is 0: a1 or b1 is 0, which leaves
+ * one of the two products in the middle. That one is moved up 32 bits,
+ * so it must itself fit in 32 bits. And adding the last part must not
+ * carry out of the top. */
+static bool zeno_mul_overflows_u64(uint64_t a, uint64_t b, uint64_t *product) {
+#ifndef ZENO_PLAIN_C
+    return __builtin_mul_overflow(a, b, product);
+#else
+    uint32_t a1 = (uint32_t)(a >> 32), a0 = (uint32_t)a, b1 = (uint32_t)(b >> 32), b0 = (uint32_t)b;
+    if (a1 != 0 && b1 != 0) return true;
+    uint64_t middle = (uint64_t)a1 * b0 + (uint64_t)a0 * b1;
+    if (middle >> 32 != 0) return true;
+    uint64_t low = (uint64_t)a0 * b0;
+    uint64_t all = (middle << 32) + low;
+    if (all < low) return true;
+    *product = all;
+    return false;
+#endif
+}
+
+/* a * b. The two are multiplied with their signs taken off, and the
+ * product has to fit with its sign put back: below zero there is room
+ * for one more, since the smallest int is -2^63 and the biggest is
+ * 2^63 - 1. */
+static bool zeno_mul_overflows(int64_t a, int64_t b, int64_t *product) {
+#ifndef ZENO_PLAIN_C
+    return __builtin_mul_overflow(a, b, product);
+#else
+    uint64_t size;
+    uint64_t size_a = a < 0 ? 0 - (uint64_t)a : (uint64_t)a, size_b = b < 0 ? 0 - (uint64_t)b : (uint64_t)b;
+    if (zeno_mul_overflows_u64(size_a, size_b, &size)) return true;
+    if (size > (uint64_t)INT64_MAX + ((a < 0) != (b < 0) ? 1 : 0)) return true;
+    *product = a * b;
+    return false;
+#endif
+}
 
 static int64_t zeno_add(int64_t a, int64_t b, int line, int col) {
 #ifndef ZENO_MINIMAL
     int64_t result;
-    if (__builtin_add_overflow(a, b, &result)) zeno_overflow(line, col);
+    if (zeno_add_overflows(a, b, &result)) zeno_overflow(line, col);
     return result;
 #else /* ZENO_MINIMAL */
     return a + b;
@@ -1630,7 +1799,7 @@ static int64_t zeno_add(int64_t a, int64_t b, int line, int col) {
 static int64_t zeno_sub(int64_t a, int64_t b, int line, int col) {
 #ifndef ZENO_MINIMAL
     int64_t result;
-    if (__builtin_sub_overflow(a, b, &result)) zeno_overflow(line, col);
+    if (zeno_sub_overflows(a, b, &result)) zeno_overflow(line, col);
     return result;
 #else /* ZENO_MINIMAL */
     return a - b;
@@ -1640,7 +1809,7 @@ static int64_t zeno_sub(int64_t a, int64_t b, int line, int col) {
 static int64_t zeno_mul(int64_t a, int64_t b, int line, int col) {
 #ifndef ZENO_MINIMAL
     int64_t result;
-    if (__builtin_mul_overflow(a, b, &result)) zeno_overflow(line, col);
+    if (zeno_mul_overflows(a, b, &result)) zeno_overflow(line, col);
     return result;
 #else /* ZENO_MINIMAL */
     return a * b;
@@ -2520,8 +2689,8 @@ static void zeno_too_big_u64(int line, int col) {
 
 static uint64_t zeno_add_u64(uint64_t a, uint64_t b, int line, int col) {
 #ifndef ZENO_MINIMAL
-    uint64_t result;
-    if (__builtin_add_overflow(a, b, &result)) zeno_too_big_u64(line, col);
+    uint64_t result = a + b; /* with no sign C wraps round, to less than it began with */
+    if (result < a) zeno_too_big_u64(line, col);
     return result;
 #else /* ZENO_MINIMAL */
     return a + b;
@@ -2538,7 +2707,7 @@ static uint64_t zeno_sub_u64(uint64_t a, uint64_t b, int line, int col) {
 static uint64_t zeno_mul_u64(uint64_t a, uint64_t b, int line, int col) {
 #ifndef ZENO_MINIMAL
     uint64_t result;
-    if (__builtin_mul_overflow(a, b, &result)) zeno_too_big_u64(line, col);
+    if (zeno_mul_overflows_u64(a, b, &result)) zeno_too_big_u64(line, col);
     return result;
 #else /* ZENO_MINIMAL */
     return a * b;
@@ -3024,7 +3193,7 @@ static int zeno_typed(void) {
     return zeno_board_typed();
 }
 
-__attribute__((noreturn)) static void zeno_stop(int status) {
+ZENO_NORETURN static void zeno_stop(int status) {
     zeno_board_stop(status);
     /* A board that comes back from that has nowhere to go. */
     for (;;) {
@@ -3059,7 +3228,7 @@ static int zeno_typed(void) {
     return byte == EOF ? -1 : byte;
 }
 
-__attribute__((noreturn)) static void zeno_stop(int status) {
+ZENO_NORETURN static void zeno_stop(int status) {
     exit(status);
 }
 
@@ -3373,7 +3542,7 @@ static zeno_list *zeno_list_new(int64_t room) {
  * apart, what is left of `zeno_list_append` is a compare, a store and a
  * count, which the C compiler puts where the program appends, as a C
  * programmer writes a growing array by hand (decision 23.8). */
-__attribute__((noinline)) static void zeno_list_grow(zeno_list *list) {
+ZENO_NOINLINE static void zeno_list_grow(zeno_list *list) {
     int64_t room = list->room == 0 ? 4 : list->room * 2;
     list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len * sizeof(zeno_slot),
                                               (size_t)room * sizeof(zeno_slot));
@@ -3918,7 +4087,7 @@ static zeno_list *zeno_bytes_new(int64_t room) {
     return list;
 }
 
-__attribute__((noinline)) static void zeno_bytes_grow(zeno_list *list) {
+ZENO_NOINLINE static void zeno_bytes_grow(zeno_list *list) {
     int64_t room = list->room < 8 ? 8 : list->room * 2;
     list->items = (zeno_slot *)zeno_rows_grow((char *)list->items, (size_t)list->len, (size_t)room);
     list->room = room;
@@ -4407,8 +4576,8 @@ static bool zeno_read_int(const char *text, int64_t *result) {
         int digit = *p - '0';
         /* Build the number as a negative when it is one, because the
          * smallest int has no positive twin to pass through. */
-        good = *p >= '0' && *p <= '9' && !__builtin_mul_overflow(n, 10, &n)
-               && !(negative ? __builtin_sub_overflow(n, digit, &n) : __builtin_add_overflow(n, digit, &n));
+        good = *p >= '0' && *p <= '9' && !zeno_mul_overflows(n, 10, &n)
+               && !(negative ? zeno_sub_overflows(n, digit, &n) : zeno_add_overflows(n, digit, &n));
     }
     *result = n;
     return good;
@@ -5455,7 +5624,7 @@ static const char *zeno_dict_show(char kind, zeno_slot item) {
     }
 }
 
-__attribute__((noreturn)) static void zeno_dict_no_key(zeno_dict *dict, zeno_slot key, int line, int col) {
+ZENO_NORETURN static void zeno_dict_no_key(zeno_dict *dict, zeno_slot key, int line, int col) {
     zeno_fail("KeyError", zeno_join(2, "this dict has no key ", zeno_dict_show(dict->key_kind, key)), line, col);
 }
 
@@ -5638,7 +5807,7 @@ static bool zeno_dict_eq_with(zeno_dict *a, zeno_dict *b, bool (*same_value)(zen
 /* A variable that other code can change may have become `none` again since
  * it was checked. These look once more before the value is used. */
 #ifndef ZENO_MINIMAL
-__attribute__((noreturn)) static void zeno_gone(int line, int col) {
+ZENO_NORETURN static void zeno_gone(int line, int col) {
     zeno_bug("this was checked with `is not none`, but it has been set to `none` since", line, col);
 }
 #endif /* ZENO_MINIMAL */

@@ -212,7 +212,8 @@ Removing \verb|setjmp| removes one obstacle to MISRA, not all of them.
 The C that a firmware build writes still uses variable
 argument lists in the runtime, calls \verb|printf| and \verb|exit| on
 a board that does not print by itself, and
-uses GCC and Clang built-ins for checked arithmetic. Taking memory from
+asks GCC and Clang for their built-ins for checked arithmetic (built
+with \verb|-DZENO_PLAIN_C|, the checks are plain C). Taking memory from
 the heap, which MISRA also bans, is answered by \verb|--no-collector|,
 in the next chapter. None of these is hidden, and each is a later piece
 of work. A function that can raise cannot yet be passed around as a

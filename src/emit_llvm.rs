@@ -91,7 +91,7 @@ pub fn runtime(build: Build) -> String {
 pub fn runtime_for(build: Build, grows: bool) -> String {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     // A function that never returns has that said in front of `static`.
-    const NEVER: &str = "__attribute__((noreturn)) ";
+    const NEVER: &str = "ZENO_NORETURN ";
     let mut text = String::new();
     for line in emit_c::runtime_for(firmware, collector, grows && !collector).lines() {
         match line.strip_prefix(NEVER) {

@@ -71,7 +71,8 @@ It is the Zeno, line for line. An \verb|int| is an \verb|int64_t|.
 \verb|d * d| is \verb|zeno_mul|, which checks for overflow with the
 compiler's own built-in and raises an \verb|OverflowError| with the
 line and column (the two numbers after the operands) when the answer
-does not fit. In front of the program stands Zeno's runtime, a small
+does not fit. A C compiler that is neither GCC nor Clang has no such
+built-in, and gets the same check written out in plain C. In front of the program stands Zeno's runtime, a small
 C library for text, lists, errors and \verb|print|, pasted into every
 file so that the C needs nothing else to compile.
 
@@ -147,7 +148,7 @@ print(len(squares), squares[999])
 The C that \verb|zeno build| writes keeps every promise Zeno makes,
 and that takes room. Each sum is checked, each index is checked, each
 error can say its line, and the whole runtime stands in front of the
-program in case it is needed: about 3,000 lines of C for a program of
+program in case it is needed: about 4,500 lines of C for a program of
 one line. Once a program is correct, \verb|--minimal| writes the
 other kind of C: the least that runs it, close to what a person would
 write by hand.

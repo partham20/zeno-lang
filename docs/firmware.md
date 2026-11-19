@@ -249,8 +249,10 @@ firmware build writes today still:
   its own printing takes both away (`ZENO_BOARD_PRINTS`,
   [`board.md`](board.md)), and a float is made into text with no
   `snprintf` (decision 53),
-- uses GCC and Clang builtins for checked arithmetic (a language
-  extension, Rule 1.2),
+- asks GCC and Clang for their built-ins for checked arithmetic (a
+  language extension, Rule 1.2). Built with `-DZENO_PLAIN_C`, or by a
+  compiler that is neither, the checks are plain C
+  ([`plain-c.md`](plain-c.md)),
 - uses the forward `goto` described above (advisory Rule 15.1).
 
 None of these is hidden. Each is a later piece of work, and

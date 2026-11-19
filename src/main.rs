@@ -671,6 +671,19 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
                 );
                 return None;
             }
+            // A firmware build with a collector is the one thing a
+            // compiler that is neither GCC nor Clang is refused, by a
+            // line of the C that says so (decision 55.5). What the
+            // compiler said went straight to the terminal, so which of
+            // the two it was is said here.
+            Ok(_) if kind == emit_c::Build::Firmware => {
+                eprintln!(
+                    "zeno: `{compiler}` could not compile `{c_file}`. If it said above that the collector of a firmware build \
+                     wants GCC or Clang, build with one of them, or with `--no-collector` or `--owned`. \
+                     Anything else it said is a bug in Zeno, not in your program"
+                );
+                return None;
+            }
             Ok(_) => {
                 eprintln!("zeno: `{compiler}` could not compile `{c_file}`. That is a bug in Zeno, not in your program");
                 return None;
