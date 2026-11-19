@@ -860,6 +860,7 @@ pub fn disowned(kind: Kind) -> Kind {
         Kind::Function(function) => Kind::Function(Box::new(FunctionKind {
             params: function.params.into_iter().map(disowned).collect(),
             returns: disowned(function.returns),
+            raises: function.raises,
         })),
         other => other,
     }
@@ -867,7 +868,7 @@ pub fn disowned(kind: Kind) -> Kind {
 
 fn disown_all(kind: FunctionKind) -> (FunctionKind, Vec<bool>) {
     let (params, owned) = kind.params.into_iter().map(disown).unzip();
-    (FunctionKind { params, returns: disown(kind.returns).0 }, owned)
+    (FunctionKind { params, returns: disown(kind.returns).0, raises: kind.raises }, owned)
 }
 
 /// The kind that is there when a value that may be `none` is not.
@@ -1250,16 +1251,6 @@ struct Emitter<'a> {
     labels: usize,
 }
 
-/// A firmware build calls a function that can raise in a different way
-/// from one that cannot, and the type of a function value does not say
-/// which it is. So for now only functions that cannot raise may be values.
-fn raises_as_value(span: Span) -> Error {
-    firmware_cannot(
-        "`zeno build --firmware` cannot compile a function that can raise, used as a value, yet. Call it by its name",
-        span,
-    )
-}
-
 /// The error for something a firmware build has to refuse.
 fn firmware_cannot(what: impl AsRef<str>, span: Span) -> Error {
     Error::new(format!("{}, or build without `--firmware`", what.as_ref()), span)
@@ -1441,7 +1432,8 @@ fn joined(a: &Kind, b: &Kind) -> Option<Kind> {
         // Two functions that take and give back the same things in C.
         (Kind::Function(x), Kind::Function(y)) => {
             let nowhere = Span { line: 0, col: 0 };
-            let (x, y) = (code_type(x, nowhere).ok()?, code_type(y, nowhere).ok()?);
+            // What each raises is the checker's to hold, by the build.
+            let (x, y) = (code_type(x, false, nowhere).ok()?, code_type(y, false, nowhere).ok()?);
             (x == y).then(|| a.clone())
         }
         _ => None,
@@ -1509,20 +1501,32 @@ fn return_type(kind: &Kind, span: Span) -> Result<String, Error> {
 /// The C type of a pointer to the code of a function held as a value. Its
 /// first argument is always the function value itself, which is where a
 /// function written inside another finds the variables it uses.
-fn code_type(kind: &FunctionKind, span: Span) -> Result<String, Error> {
+///
+/// `raising` is for a firmware build, and a function type that says
+/// `raises`: such a function gives back `true` or `false`, and its answer
+/// through a pointer that comes last, as a function that raises does
+/// when it is called by its name (5.5l, 56.5).
+fn code_type(kind: &FunctionKind, raising: bool, span: Span) -> Result<String, Error> {
     let mut params = vec!["zeno_closure *".to_string()];
     for param in &kind.params {
         params.push(c_type(param, span)?.trim_end().to_string());
     }
-    Ok(format!("{}(*)({})", return_type(&kind.returns, span)?, params.join(", ")))
+    if !raising {
+        return Ok(format!("{}(*)({})", return_type(&kind.returns, span)?, params.join(", ")));
+    }
+    if kind.returns != Kind::None {
+        params.push(format!("{}*", c_type(&kind.returns, span)?));
+    }
+    Ok(format!("bool (*)({})", params.join(", ")))
 }
 
 /// C that calls a function held as a value. `function` is mentioned twice,
-/// so it must be a plain name.
-fn invoke(function: &str, kind: &FunctionKind, args: &[String], span: Span) -> Result<String, Error> {
+/// so it must be a plain name. For a function that can raise, in a
+/// firmware build, the last of `args` is where the answer goes.
+fn invoke(function: &str, kind: &FunctionKind, raising: bool, args: &[String], span: Span) -> Result<String, Error> {
     let mut all = vec![function.to_string()];
     all.extend(args.iter().cloned());
-    Ok(format!("(({}){function}->code)({})", code_type(kind, span)?, all.join(", ")))
+    Ok(format!("(({}){function}->code)({})", code_type(kind, raising, span)?, all.join(", ")))
 }
 
 /// A short name for a kind, to build C function names from.
@@ -3151,9 +3155,46 @@ impl Emitter<'_> {
         if self.returns.is_none() {
             return Ok("zeno_uncaught();".to_string());
         }
-        // The checker makes a function say what it raises, so this is a
-        // function value, which has no way to say it.
-        Err(raises_as_value(span))
+        // The checker makes a function say what it raises, and a function
+        // written where a value goes that raises is made as one that can.
+        Err(cannot("an error raised in a function that does not say it raises", span))
+    }
+
+    /// Is this the type of a function that is called as one that can
+    /// raise? Only in a firmware build, where it gives back `true` or
+    /// `false` (5.5l). Every other build calls both kinds alike (56.5).
+    fn raising(&self, kind: &FunctionKind) -> bool {
+        self.firmware && !kind.raises.is_empty()
+    }
+
+    /// A call through the function value in `function` (a plain name),
+    /// in a loop that `over_list` writes. For a function that can raise,
+    /// in a firmware build, the call is tested on a line of its own, and
+    /// a failure leaves as any failure does, freeing what is held.
+    /// Gives those lines, and the C of what the call gives back.
+    fn through(
+        &mut self,
+        function: &str,
+        kind: &FunctionKind,
+        mut args: Vec<String>,
+        span: Span,
+    ) -> Result<(Vec<String>, String), Error> {
+        if !self.raising(kind) {
+            return Ok((Vec::new(), invoke(function, kind, false, &args, span)?));
+        }
+        let leave = self.failed(&kind.raises, span)?;
+        let mut lines = Vec::new();
+        let answer = match kind.returns {
+            Kind::None => String::new(),
+            _ => {
+                let answer = self.new_temp();
+                lines.push(format!("{}{answer};", c_type(&kind.returns, span)?));
+                args.push(format!("&{answer}"));
+                answer
+            }
+        };
+        lines.push(format!("if (!{}) {leave}", invoke(function, kind, true, &args, span)?));
+        Ok((lines, answer))
     }
 
     /// A call, in a firmware build, to something that gives back `true` or
@@ -3359,13 +3400,14 @@ impl Emitter<'_> {
             Type::Owned(inner) | Type::Take(inner) => return self.kind_of_type(inner),
             Type::Length(_) => return None,
             Type::Optional(inner) => return Some(Kind::Optional(Box::new(self.kind_of_type(inner)?))),
-            Type::Function { params, returns } => {
+            Type::Function { params, returns, raises } => {
                 let params = params.iter().map(|param| self.kind_of_type(param)).collect::<Option<Vec<Kind>>>()?;
                 let returns = match returns {
                     Some(returns) => self.kind_of_type(returns)?,
                     None => Kind::None,
                 };
-                return Some(Kind::Function(Box::new(FunctionKind { params, returns })));
+                let raises = raises.iter().cloned().collect();
+                return Some(Kind::Function(Box::new(FunctionKind { params, returns, raises })));
             }
         };
         Some(match (name.as_str(), args.as_slice()) {
@@ -4534,6 +4576,13 @@ impl Emitter<'_> {
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
                 _ => return Err(cannot("this kind of value that may be `none`", span)),
             },
+            // In a firmware build the checker has made a function that
+            // raises nothing as one that can, where a raising type is
+            // wanted (decision 56.5). One that was not would be called
+            // with the wrong arguments.
+            (Kind::Function(from), Kind::Function(wanted)) if self.raising(from) != self.raising(wanted) => {
+                return Err(cannot("a function value that raises where one that does not is wanted, or the other way round", span));
+            }
             (Kind::Function(_), Kind::Function(_)) => match joined(&val.kind, to) {
                 Some(_) => val.code.clone(),
                 None => {
@@ -4632,18 +4681,38 @@ impl Emitter<'_> {
     /// first argument. An ordinary function does not take that argument, so
     /// it gets a small wrapper that does, and one fixed value that points
     /// at the wrapper.
+    ///
+    /// In a firmware build the wrapper of a function that can raise gives
+    /// back `true` or `false`, as the function does. A function that
+    /// raises nothing, put where a function type says `raises`, gets a
+    /// second wrapper of that kind, which always gives back `true`
+    /// (decision 56.5).
     fn function_value(&mut self, name: &str, span: Span) -> Result<Val, Error> {
         let entry = &self.functions[name];
-        if self.firmware && !entry.decl.raises.is_empty() {
-            return Err(raises_as_value(span));
-        }
-        let (target, kind) = (entry.c_name.clone(), entry.kind.clone());
+        let (target, mut kind) = (entry.c_name.clone(), entry.kind.clone());
+        kind.raises = match self.firmware {
+            true => entry.decl.raises.clone(),
+            false => Vec::new(),
+        };
+        // A raising function that raises nothing.
+        let made = match (kind.raises.is_empty(), self.types.made_raising.get(&(span.line, span.col))) {
+            (true, Some(said)) if self.firmware => {
+                kind.raises = vec![said.clone()];
+                true
+            }
+            _ => false,
+        };
         // A function of an imported file has a dot in its name,
         // `shapes.area`, and a name in C cannot. Its name in C can
         // stand in, since no two functions have the same.
         let shown = name;
         let name = if name.contains('.') { target.as_str() } else { name };
-        let value = format!("zeno_value_{name}");
+        // The second wrapper has a prefix of its own, which no name of
+        // the program can make.
+        let (value, wrap) = match made {
+            true => (format!("zeno_raising_value_{name}"), format!("zeno_raising_wrap_{name}")),
+            false => (format!("zeno_value_{name}"), format!("zeno_wrap_{name}")),
+        };
         if self.adapters.insert(value.clone()) {
             let mut params = vec!["zeno_closure *zeno_self".to_string()];
             let mut args = Vec::new();
@@ -4651,14 +4720,26 @@ impl Emitter<'_> {
                 params.push(format!("{}a{index}", c_type(param, span)?));
                 args.push(format!("a{index}"));
             }
+            let raising = self.raising(&kind);
+            if raising && kind.returns != Kind::None {
+                params.push(format!("{}*zeno_result", c_type(&kind.returns, span)?));
+                if !made {
+                    args.push("zeno_result".to_string());
+                }
+            }
             let call = format!("{target}({})", args.join(", "));
-            let call = if kind.returns == Kind::None { call } else { format!("return {call}") };
+            let (returns, call) = match (raising, made, &kind.returns) {
+                (false, _, Kind::None) => (return_type(&kind.returns, span)?, call),
+                (false, _, _) => (return_type(&kind.returns, span)?, format!("return {call}")),
+                (true, false, _) => ("bool ".to_string(), format!("return {call}")),
+                (true, true, Kind::None) => ("bool ".to_string(), format!("{call};\n    return true")),
+                (true, true, _) => ("bool ".to_string(), format!("*zeno_result = {call};\n    return true")),
+            };
             self.helper(
-                format!("static {}zeno_wrap_{name}({})", return_type(&kind.returns, span)?, params.join(", ")),
+                format!("static {returns}{wrap}({})", params.join(", ")),
                 format!("    (void)zeno_self;\n    {call};\n"),
             );
-            self.definitions
-                .push(format!("static zeno_closure {value} = {{(zeno_code)zeno_wrap_{name}, {}}};\n", c_string(shown)));
+            self.definitions.push(format!("static zeno_closure {value} = {{(zeno_code){wrap}, {}}};\n", c_string(shown)));
         }
         Ok(Val::plain(format!("(&{value})"), Kind::Function(Box::new(kind))))
     }
@@ -4681,10 +4762,22 @@ impl Emitter<'_> {
         let Some(kind) = self.types.function(decl).cloned() else {
             return Err(cannot("this function", span));
         };
-        let (kind, owned) = disown_all(kind);
-        if self.firmware && !decl.raises.is_empty() {
-            return Err(raises_as_value(span));
-        }
+        let (mut kind, owned) = disown_all(kind);
+        // In a firmware build one that can raise gives back `true` or
+        // `false`, as a function of the program that can raise does. So
+        // does one that raises nothing, put where a function type says
+        // `raises` (decision 56.5).
+        kind.raises = match (self.firmware, self.types.made_raising.get(&(span.line, span.col))) {
+            (false, _) => Vec::new(),
+            (true, Some(said)) if decl.raises.is_empty() => vec![said.clone()],
+            (true, _) => decl.raises.clone(),
+        };
+        let fallible = self.raising(&kind);
+        // Where its answer goes, if it can raise and gives one back.
+        let answer = match (fallible, &kind.returns) {
+            (true, returns) if *returns != Kind::None => Some(format!("{}*zeno_result", c_type(returns, span)?)),
+            _ => None,
+        };
         self.closures += 1;
         let id = self.closures;
 
@@ -4720,7 +4813,10 @@ impl Emitter<'_> {
         let used = self.used.clone();
 
         let result = match self.parameters(decl, &kind, &owned, span) {
-            Ok(params) => self.body(decl, &kind, false, span).map(|()| params),
+            Ok(mut params) => {
+                params.extend(answer);
+                self.body(decl, &kind, fallible, span).map(|()| params)
+            }
             Err(error) => Err(error),
         };
         self.base = base;
@@ -4739,8 +4835,8 @@ impl Emitter<'_> {
         taken.sort_by(|a, b| a.0.cmp(b.0));
         let mut all_params = vec!["zeno_closure *zeno_self".to_string()];
         all_params.extend(params);
-        let first_line =
-            format!("static {}zeno_fn_{id}({})", return_type(&kind.returns, span)?, all_params.join(", "));
+        let returns = if fallible { "bool ".to_string() } else { return_type(&kind.returns, span)? };
+        let first_line = format!("static {returns}zeno_fn_{id}({})", all_params.join(", "));
         let name = c_string(&decl.name);
         let kind = Kind::Function(Box::new(kind));
 
@@ -4831,7 +4927,13 @@ impl Emitter<'_> {
         for (val, param) in vals[1..].iter().zip(&kind.params) {
             codes.push(self.coerce(val.clone(), param, span)?.code);
         }
-        let call = invoke(&vals[0].code, &kind, &codes, span)?;
+        // In a firmware build a function that can raise gives back
+        // `true` or `false`, and is tested as a call of one by its name.
+        if self.raising(&kind) {
+            let call = invoke(&vals[0].code, &kind, true, &codes, span)?;
+            return self.checked_call(call, kind.returns.clone(), &kind.raises, span);
+        }
+        let call = invoke(&vals[0].code, &kind, false, &codes, span)?;
         Ok(self.called(call, &vals, kind.returns.clone()))
     }
 
@@ -4882,6 +4984,15 @@ impl Emitter<'_> {
         }
         let slot = item_at(&items, &position, item);
         let each = Val::plain(from_slot(item, &slot, span)?, read_kind(item));
+        // In a firmware build with no collector a function that can
+        // raise may fail on any item. Until the loop is over, the copy
+        // that is walked and the list being made are held, so that a
+        // failure frees them on its way out.
+        let holding = self.raising(&kind) && !self.collector;
+        let mut held = Vec::new();
+        if holding && !own {
+            held.push(self.hold_copy(item.clone(), &items));
+        }
 
         // What `sort` does when every key is known.
         let mut after = Vec::new();
@@ -4899,9 +5010,11 @@ impl Emitter<'_> {
                 };
                 let out = self.new_temp();
                 let arg = self.coerce(each, &kind.params[0], span)?.code;
-                let call = invoke(&function, &kind, &[arg], span)?;
+                if holding {
+                    held.push(self.hold(Kind::List(Box::new(kind.returns.clone())), &out));
+                }
+                let (mut inside, call) = self.through(&function, &kind, vec![arg], span)?;
                 let mut before = vec![format!("zeno_list *{out} = zeno_list_new({items}->len);")];
-                let mut inside = Vec::new();
                 let sorted = if own { items.clone() } else { vals[0].code.clone() };
                 after.push(format!("{}({sorted}, {out}, {by}, {});", list_fn(item, "sort_by"), self.at(span)));
                 if !self.collector && is_text(&kind.returns) {
@@ -4921,13 +5034,15 @@ impl Emitter<'_> {
             "map" => {
                 let out = self.new_temp();
                 let arg = self.coerce(each, &kind.params[0], span)?.code;
-                let call = invoke(&function, &kind, &[arg], span)?;
                 // A function that gives a `u8` makes a list of bytes.
                 let made = if bytes { Kind::Byte } else { kind.returns.clone() };
+                if holding {
+                    held.push(self.hold(Kind::List(Box::new(made.clone())), &out));
+                }
+                let (mut inside, call) = self.through(&function, &kind, vec![arg], span)?;
                 let new = list_fn(&made, "new");
                 let append = list_fn(&made, "append");
                 let mut before = vec![format!("zeno_list *{out} = {new}({items}->len);")];
-                let mut inside = Vec::new();
                 if !self.collector && is_text(&kind.returns) {
                     // With no collector the text each call gives back is
                     // in the text room. The new list takes a copy of its
@@ -4951,7 +5066,10 @@ impl Emitter<'_> {
                 }
                 let out = self.new_temp();
                 let arg = self.coerce(each.clone(), &kind.params[0], span)?.code;
-                let call = invoke(&function, &kind, &[arg], span)?;
+                if holding {
+                    held.push(self.hold(Kind::List(Box::new(item.clone())), &out));
+                }
+                let (mut inside, call) = self.through(&function, &kind, vec![arg], span)?;
                 // With no collector the new list has its own copy of each
                 // text it takes.
                 let taken = match texts {
@@ -4961,17 +5079,15 @@ impl Emitter<'_> {
                 let mut result = Val::plain(out.clone(), Kind::List(Box::new(item.clone())));
                 result.made = true;
                 let (new, append) = (list_fn(item, "new"), list_fn(item, "append"));
-                (
-                    vec![format!("zeno_list *{out} = {new}(0);")],
-                    vec![format!("if ({call}) {append}({out}, {taken});")],
-                    result,
-                )
+                inside.push(format!("if ({call}) {append}({out}, {taken});"));
+                (vec![format!("zeno_list *{out} = {new}(0);")], inside, result)
             }
             _ => {
                 let so_far = self.coerce(Val::plain(total.clone(), kind.returns.clone()), &kind.params[0], span)?.code;
                 let arg = self.coerce(each, &kind.params[1], span)?.code;
-                let call = invoke(&function, &kind, &[so_far, arg], span)?;
-                (Vec::new(), vec![format!("{total} = {call};")], Val::plain(total, kind.returns.clone()))
+                let (mut inside, call) = self.through(&function, &kind, vec![so_far, arg], span)?;
+                inside.push(format!("{total} = {call};"));
+                (Vec::new(), inside, Val::plain(total, kind.returns.clone()))
             }
         };
         for line in before {
@@ -4984,6 +5100,9 @@ impl Emitter<'_> {
         }
         self.indent -= 1;
         self.line("}");
+        for key in &held {
+            self.let_go(key);
+        }
         for line in after {
             self.line(line);
         }
@@ -7621,8 +7740,12 @@ pub(crate) mod tests {
     /// The same, as `zeno build --firmware` compiles it.
     fn compile_firmware(source: &str) -> Result<String, String> {
         let program = crate::modules::testing::built(source);
-        let (errors, types) = crate::checker::check_with_types(&program, true);
-        assert!(errors.is_empty(), "the test program has mistakes: {:?}", errors[0].message);
+        let (errors, types) = crate::checker::check_by(&program, Build::Firmware.rules());
+        // A firmware build's check refuses a few programs that `zeno run`
+        // takes (5.19m), and says so, as `zeno build --firmware` does.
+        if let Some(error) = errors.first() {
+            return Err(error.message.clone());
+        }
         emit(&program, &types, "test.zeno", Build::Firmware).map_err(|error| error.message)
     }
 
@@ -9597,15 +9720,34 @@ print("after")
         let parse = "function parse(text: str) -> int raises ValueError { return int(text) }\n";
         let message = refused(&format!("{parse}try {{ print(parse(\"1\")) }} except IndexError {{ print(\"no\") }}"));
         assert!(message.starts_with("nothing in this `try` can reach `except IndexError`."), "{message}");
-        // The type of a function value does not say whether it can raise.
-        let as_value = "`zeno build --firmware` cannot compile a function that can raise, used as a value, yet. Call it by its name, or build without `--firmware`";
-        assert_eq!(refused(&format!("{parse}print([\"1\"].map(parse))")), as_value);
-        assert_eq!(
-            refused("let f = function(text: str) -> int raises ValueError { return int(text) }\nprint(1)"),
-            as_value
-        );
-        // All four are fine in an ordinary build.
+        // A function that can raise, used as a value, builds since a
+        // function type can say `raises` (decision 56.5).
+        assert!(compile_firmware(&format!("{parse}print([\"1\"].map(parse))")).is_ok());
+        assert!(compile_firmware("let f = function(text: str) -> int raises ValueError { return int(text) }\nprint(1)").is_ok());
         assert!(compile(&format!("{parse}print([\"1\"].map(parse))")).is_ok());
+    }
+
+    #[test]
+    fn raising_function_values_match_every_way() {
+        // A function that raises, used as a value through a type that says
+        // so: handed to a parameter, kept in a field and in a list, given
+        // to `map`, `filter`, `reduce` and `sort`, failing inside a loop a
+        // thousand times, and a function that raises nothing put where
+        // the type says `raises` (decision 56). Every build must print
+        // what `zeno run` prints, and with no collector a failure half way
+        // through `map` must free the list it was making.
+        let source = include_str!("../tools/targets/edge-raises-in-types.zeno");
+        firmware_as_interpreter("raising-values", source);
+        no_collector_as_interpreter("raising-values", source);
+        // A plain function where a raising one is wanted gets a wrapper
+        // that says it worked, and a raising one gets one that passes on
+        // what it says.
+        let c = compile_firmware(source).unwrap();
+        assert!(c.contains("static bool zeno_raising_wrap_double(zeno_closure *zeno_self, int64_t a0, int64_t *zeno_result) {\n    (void)zeno_self;\n    *zeno_result = z_double(a0);\n    return true;\n}"), "{c}");
+        assert!(c.contains("static bool zeno_wrap_parse(zeno_closure *zeno_self, const char *a0, int64_t *zeno_result) {\n    (void)zeno_self;\n    return z_parse(a0, zeno_result);\n}"), "{c}");
+        // An ordinary build has neither: both kinds are called alike.
+        let c = compile(source).unwrap();
+        assert!(!c.contains("zeno_raising_") && !c.contains("zeno_result"), "{c}");
     }
 
     #[test]

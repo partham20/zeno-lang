@@ -207,6 +207,11 @@ impl Pointee {
 pub struct FunctionKind {
     pub params: Vec<Kind>,
     pub returns: Kind,
+    /// The kinds of error a call may raise: what the function says after
+    /// `raises`, or what its type says (decision 56.1). Empty if it raises
+    /// none. A firmware build calls such a function another way (5.5l);
+    /// every other build calls both alike, and does not look at this.
+    pub raises: Vec<String>,
 }
 
 /// What the checker worked out that the compiler cannot work out for
@@ -318,6 +323,12 @@ pub struct Types {
     /// Each library of C a program declares with `c.library`, written
     /// out, in the order they are met (decision 44.10).
     pub c_libraries: Vec<Rc<crate::bridge_c::Library>>,
+    /// In a firmware build: each function that raises nothing, named or
+    /// written where a value goes, that arrives where a function type
+    /// says `raises`, by where it starts. Such a function is made as one
+    /// that can raise and never does, so that it is called as the type
+    /// says (decision 56.5). With each, the kind the type says it raises.
+    pub made_raising: HashMap<(usize, usize), String>,
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -451,10 +462,11 @@ fn kind(ty: &Ty) -> Kind {
 /// `kind`, counting how many function types deep it has gone. A function
 /// can return itself, and its type would then never end.
 fn kind_within(ty: &Ty, depth: usize) -> Kind {
-    let function = |params: Vec<&Ty>, returns: &Ty| {
+    let function = |params: Vec<&Ty>, returns: &Ty, raises: Vec<String>| {
         Kind::Function(Box::new(FunctionKind {
             params: params.into_iter().map(|param| kind_within(param, depth + 1)).collect(),
             returns: kind_within(returns, depth + 1),
+            raises,
         }))
     };
     match ty {
@@ -479,7 +491,7 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
         },
         Ty::Error(_) => Kind::Error,
         Ty::Callable(callable) if depth < 4 => {
-            let kind = function(callable.params.iter().collect(), &callable.returns);
+            let kind = function(callable.params.iter().collect(), &callable.returns, callable.raises.iter().cloned().collect());
             match callable.owned {
                 true => Kind::Owned(Box::new(kind)),
                 false => kind,
@@ -487,7 +499,7 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
         }
         Ty::Function(info) if depth < 4 && info.self_type.is_none() => match &*info.state.borrow() {
             State::Checked(signature) | State::Checking(signature) => {
-                function(signature.params.iter().map(|slot| &slot.ty).collect(), &signature.returns)
+                function(signature.params.iter().map(|slot| &slot.ty).collect(), &signature.returns, signature.raises.clone())
             }
             State::NotChecked => Kind::Other(ty.to_string()),
         },
@@ -856,6 +868,9 @@ enum Made {
 struct CallableType {
     params: Vec<Ty>,
     returns: Ty,
+    /// `function(str) -> int raises ValueError`: the one kind of error a
+    /// call through such a value may raise (decision 56.1).
+    raises: Option<String>,
     /// Does a value of this type have one owner? It does where
     /// everything has: a function written where a value goes is kept in
     /// a block of its own, and somebody has to free it.
@@ -1208,6 +1223,9 @@ impl fmt::Display for Ty {
             Ty::List(item) => write!(f, "list[{item}]"),
             Ty::Fixed(item, length) => write!(f, "list[{item}, {length}]"),
             Ty::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
+            // A function that may itself be `none` is written in brackets,
+            // as it is in a program (decision 56.2).
+            Ty::Optional(inner) if matches!(**inner, Ty::Callable(_)) => write!(f, "({inner}) or none"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
             Ty::Owned(inner) => write!(f, "owned {inner}"),
             Ty::Borrowed(inner) => write!(f, "a {inner} that is only looked at"),
@@ -1218,8 +1236,14 @@ impl fmt::Display for Ty {
                 let params: Vec<String> = callable.params.iter().map(as_parameter).collect();
                 write!(f, "function({})", params.join(", "))?;
                 match &callable.returns {
-                    Ty::None => Ok(()),
-                    returns => write!(f, " -> {returns}"),
+                    Ty::None => {}
+                    // A `raises` after it would be read as this one's.
+                    Ty::Callable(returned) if returned.raises.is_some() => write!(f, " -> ({})", callable.returns)?,
+                    returns => write!(f, " -> {returns}")?,
+                }
+                match &callable.raises {
+                    Some(kind) => write!(f, " raises {kind}"),
+                    None => Ok(()),
                 }
             }
             Ty::Function(_) | Ty::BoundMethod(_) | Ty::Builtin(_) | Ty::BuiltinMethod(..) => {
@@ -1351,13 +1375,24 @@ fn same(a: &Ty, b: &Ty) -> bool {
         (Ty::Instance(a), Ty::Instance(b)) => Rc::ptr_eq(a, b),
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
-        (Ty::Callable(a), Ty::Callable(b)) => {
-            a.params.len() == b.params.len()
-                && a.params.iter().zip(&b.params).all(|(a, b)| same(a, b))
-                && same(&a.returns, &b.returns)
-        }
+        (Ty::Callable(a), Ty::Callable(b)) => a.raises == b.raises && same_shape(a, b),
         _ => false,
     }
+}
+
+/// Do two function types take and return the same, whatever they say
+/// they raise?
+fn same_shape(a: &CallableType, b: &CallableType) -> bool {
+    a.params.len() == b.params.len()
+        && a.params.iter().zip(&b.params).all(|(a, b)| same(a, b))
+        && same(&a.returns, &b.returns)
+}
+
+/// May a function that raises `kind` go where a function type that says
+/// `raises wanted` is wanted? It may if `except wanted` would catch it,
+/// which is the test `except` makes (decision 56.4).
+fn caught_by(kind: &str, wanted: &str) -> bool {
+    wanted == "Error" || wanted == kind
 }
 
 /// The type of what C gives back, or of a value it names (44.10).
@@ -1422,6 +1457,11 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         (Ty::CPointer(from), Ty::CPointer(to)) => &**from == "void" || &**to == "void",
         // Any error fits the catch-all `Error`.
         (Ty::Error(_), Ty::Error(to)) => &**to == "Error",
+        // A function type into another of the same shape. What each says
+        // it raises is compared by `Checker::arrives`, which knows the
+        // build: an ordinary build does not hold it against a type that
+        // says nothing (decision 56.4).
+        (Ty::Callable(from), Ty::Callable(to)) => same_shape(from, to),
         // A function going where a function type is wanted is compared in
         // detail by `Checker::expect`, which can look inside it.
         (
@@ -2579,12 +2619,107 @@ impl Checker {
             (from, Ty::Optional(to)) => self.arrives(from, to, what, span),
             (Ty::Owned(from) | Ty::Borrowed(from), to) => self.arrives(from, to, what, span),
             (from, Ty::Borrowed(to)) => self.arrives(from, to, what, span),
+            (Ty::Callable(given), Ty::Callable(wanted)) => {
+                let raises: Vec<String> = given.raises.iter().cloned().collect();
+                self.raises_fit(&raises, false, wanted, to, what, span);
+            }
             (from, Ty::Callable(wanted)) => {
                 if let Some(given) = self.callable(from) {
                     self.expect_function(&given, wanted, to, what, span);
+                    if let Ty::Function(function) | Ty::BoundMethod(function) = from {
+                        let raises = self.signature(function).raises.clone();
+                        self.raises_fit(&raises, true, wanted, to, what, span);
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A function that raises `raises` goes where the function type `to`
+    /// is wanted, and the two have the same shape. Does what it raises
+    /// fit what the type says? `made` is true for a function of the
+    /// program, named or written right here, and false for a value of a
+    /// function type (decisions 56.4, 56.5).
+    fn raises_fit(&mut self, raises: &[String], made: bool, wanted: &CallableType, to: &Ty, what: &str, span: Span) {
+        match &wanted.raises {
+            Some(said) => {
+                if let Some(kind) = raises.iter().find(|kind| !caught_by(kind, said)) {
+                    self.error(
+                        format!(
+                            "{what} should be {to}, but this function can raise {kind}, and the type says it raises \
+                             only {said}. Write `raises Error` on the type to take a function that raises any kind"
+                        ),
+                        span,
+                    );
+                    return;
+                }
+                // A firmware build calls a function that can raise in
+                // another way from one that cannot (5.5l). A function of
+                // the program is made the way the type is called. A value
+                // that is already of a plain function type cannot change.
+                if self.firmware && raises.is_empty() {
+                    match made {
+                        true => {
+                            self.types.made_raising.insert((span.line, span.col), said.clone());
+                        }
+                        false => {
+                            self.error(
+                                format!(
+                                    "{what} should be {to}, and this is a function value that raises nothing. In a \
+                                     firmware build a function that can raise is called in another way from one \
+                                     that cannot, so one kept as the first cannot become the second. Give it the \
+                                     type `{to}` where it is made, or build without `--firmware`"
+                                ),
+                                span,
+                            );
+                        }
+                    }
+                }
+            }
+            // An ordinary build does not hold what a function raises
+            // against a type that says nothing, as it never has. A
+            // firmware build calls the two in different ways, so it has
+            // to (decision 56.4).
+            None => {
+                if let (true, Some(kind)) = (self.firmware, raises.first()) {
+                    let kinds = if raises.len() == 1 { kind.clone() } else { "Error".to_string() };
+                    self.error(
+                        format!(
+                            "{what} should be {to}, which raises nothing, but this function can raise {kind}. \
+                             In a firmware build a call through a function type raises only what the type \
+                             says: write `raises {kinds}` after what it returns, or build without `--firmware`"
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The kind of error after `raises` in a function type, which must be
+    /// a kind of error. A firmware build holds a function that says it
+    /// raises a fault to raising one itself (5.19m), so a type that says
+    /// so needs no rule of its own: only such a function, or one that
+    /// raises nothing, can be put in it (decision 56.1).
+    fn kind_in_type(&mut self, kind: &str, env: &Env, span: Span) -> String {
+        let known = env.get(kind).map(|variable| variable.ty);
+        if !matches!(known, Some(Ty::ErrorType(_) | Ty::Class(_))) {
+            self.error(format!("`{kind}` is not a kind of error"), span);
+        }
+        kind.to_string()
+    }
+
+    /// What a function type says it raises, for a function that raises
+    /// `kinds` and is given the type of a value: `var f = parse`. An
+    /// ordinary build says nothing, as it always has (5.19l). A firmware
+    /// build calls through the value as the type says, so it says what
+    /// the function raises, or `Error` for more than one kind (56.4).
+    fn raises_in_type(&self, kinds: &[String]) -> Option<String> {
+        match (self.firmware, kinds) {
+            (false, _) | (true, []) => None,
+            (true, [kind]) => Some(kind.clone()),
+            (true, _) => Some("Error".to_string()),
         }
     }
 
@@ -2959,13 +3094,14 @@ impl Checker {
             }
             // Each parameter of a function type is a parameter: it looks
             // unless it says `take`.
-            ast::Type::Function { params, returns } => {
+            ast::Type::Function { params, returns, raises } => {
                 let params = params.iter().map(|param| self.resolve_for(param, env, span, true)).collect();
                 let returns = match returns {
                     Some(returns) => self.resolve_for(returns, env, span, false),
                     None => Ty::None,
                 };
-                Ty::Callable(Rc::new(CallableType { params, returns, owned: self.one_owner }))
+                let raises = raises.as_ref().map(|kind| self.kind_in_type(kind, env, span));
+                Ty::Callable(Rc::new(CallableType { params, returns, raises, owned: self.one_owner }))
             }
             ast::Type::Named { name, args } => {
                 let ty = match (name.as_str(), args.as_slice()) {
@@ -3942,6 +4078,7 @@ impl Checker {
                 Some(Ty::Callable(Rc::new(CallableType {
                     params: signature.params.iter().map(|slot| slot.ty.clone()).collect(),
                     returns: signature.returns.clone(),
+                    raises: self.raises_in_type(&signature.raises),
                     owned: self.one_owner,
                 })))
             }
@@ -5318,6 +5455,16 @@ impl Checker {
             };
             params.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id: None });
         }
+        // `function f(g: function() raises A, B)`: the type ends at the
+        // comma, so `B` is a parameter with no type. If it has the name
+        // of a kind of error, somebody meant a second kind (56.3).
+        for pair in decl.params.windows(2) {
+            let after_raises = pair[0].ty.as_ref().is_some_and(crate::parser::ends_in_raises);
+            let known = function.env.get(&pair[1].name).map(|variable| variable.ty);
+            if after_raises && pair[1].ty.is_none() && matches!(known, Some(Ty::ErrorType(_) | Ty::Class(_))) {
+                self.error(crate::parser::ONE_KIND, span);
+            }
+        }
         let declared_return = decl.return_type.as_ref().map(|ty| self.resolve(ty, &function.env, span));
         for kind in &decl.raises {
             let known = function.env.get(kind).map(|variable| variable.ty);
@@ -5334,7 +5481,11 @@ impl Checker {
             let returns = declared_return.unwrap_or(Ty::None);
             self.types.functions.insert(
                 Arc::as_ptr(&function.decl) as usize,
-                FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
+                FunctionKind {
+                    params: params.iter().map(|slot| kind(&slot.ty)).collect(),
+                    returns: kind(&returns),
+                    raises: decl.raises.clone(),
+                },
             );
             self.types
                 .looks
@@ -5529,7 +5680,11 @@ impl Checker {
 
         self.types.functions.insert(
             Arc::as_ptr(&function.decl) as usize,
-            FunctionKind { params: params.iter().map(|slot| kind(&slot.ty)).collect(), returns: kind(&returns) },
+            FunctionKind {
+                params: params.iter().map(|slot| kind(&slot.ty)).collect(),
+                returns: kind(&returns),
+                raises: raises.clone(),
+            },
         );
         self.types.looks.insert(Arc::as_ptr(&function.decl) as usize, params.iter().map(|slot| slot.ty.is_look()).collect());
         let signature = Rc::new(Signature { name, params, returns, raises, takes_out: frame.takes_self == Some(true) });
@@ -6640,6 +6795,12 @@ impl Checker {
                 for (argument, wanted) in arguments.iter().zip(&callable.params) {
                     let given = self.adapted(argument.written.clone(), argument.place, argument.ty.clone(), wanted, argument.span);
                     self.expect(&given, wanted, "an argument", argument.span);
+                }
+                // `convert(text)`, where `convert` is a `function(str) ->
+                // int raises ValueError`, is checked as a call of a
+                // function that says so (decision 56.1).
+                if let Some(kind) = &callable.raises {
+                    self.can_raise(kind, span);
                 }
                 callable.returns.clone()
             }
@@ -8381,7 +8542,14 @@ impl Checker {
                     Ty::Function(_) | Ty::BoundMethod(_) => match self.callable(actual) {
                         Some((slots, returns)) if !slots.iter().any(|slot| slot.ty.is_loose()) && !returns.is_loose() => {
                             let params = slots.into_iter().map(|slot| slot.ty).collect();
-                            Ty::Callable(Rc::new(CallableType { params, returns, owned: self.one_owner }))
+                            let raises = match actual {
+                                Ty::Function(function) | Ty::BoundMethod(function) => {
+                                    let signature = self.signature(function);
+                                    self.raises_in_type(&signature.raises)
+                                }
+                                _ => None,
+                            };
+                            Ty::Callable(Rc::new(CallableType { params, returns, raises, owned: self.one_owner }))
                         }
                         _ => return,
                     },
@@ -8469,7 +8637,12 @@ impl Checker {
             Ty::Callable(callable) => {
                 let params: Option<Vec<Ty>> = callable.params.iter().map(|ty| self.filled(ty, found, span)).collect();
                 let returns = self.filled(&callable.returns, found, span)?;
-                Ty::Callable(Rc::new(CallableType { params: params?, returns, owned: callable.owned }))
+                Ty::Callable(Rc::new(CallableType {
+                    params: params?,
+                    returns,
+                    raises: callable.raises.clone(),
+                    owned: callable.owned,
+                }))
             }
             Ty::Applied(generic, types) => {
                 let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
@@ -12291,6 +12464,183 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // Numbers and text are copied, so any list of them can be sliced.
         one_owner_ok("function tail(xs: list[int]) -> list[int] {\n return xs.slice(1)\n}\nprint(tail([1, 2, 3]))");
+    }
+
+    /// The messages of a firmware build's check, which is strict.
+    fn firmware_errors(source: &str) -> Vec<String> {
+        let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
+        let rules = super::Rules { strict: true, one_owner: false, firmware: true };
+        super::check_by(&program, rules).0.into_iter().map(|error| error.message).collect()
+    }
+
+    const PARSE: &str = "function parse(text: str) -> int raises ValueError {\n    return int(text)\n}\n\
+                         function size(text: str) -> int {\n    return len(text)\n}\n";
+
+    #[test]
+    fn a_call_through_a_function_type_that_raises_is_checked_as_raising() {
+        // It must be caught, or said by the function around it
+        // (decision 56.1), as a call of `parse` by its name must.
+        let apply = "function apply(convert: function(str) -> int raises ValueError, text: str) -> int";
+        assert_eq!(
+            strict_error(&format!("{PARSE}{apply} {{\n    return convert(text)\n}}\nprint(apply(parse, \"1\"))")),
+            "`apply` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        strict_ok(&format!("{PARSE}{apply} raises ValueError {{\n    return convert(text)\n}}\nprint(apply(parse, \"1\"))"));
+        strict_ok(&format!(
+            "{PARSE}{apply} {{\n    try {{\n        return convert(text)\n    }} except ValueError {{\n        return -1\n    }}\n}}\n\
+             print(apply(parse, \"x\"), apply(size, \"abc\"))"
+        ));
+        // A type with no `raises` is checked as it always was.
+        strict_ok(&format!("{PARSE}function apply(convert: function(str) -> int, text: str) -> int {{\n    return convert(text)\n}}\nprint(apply(size, \"1\"))"));
+        // What the type says is part of it, in a message.
+        assert_eq!(
+            error(&format!("{PARSE}let f: function(str) -> int raises ValueError = parse\nlet n: int = f")),
+            "`n` should be int, but this is function(str) -> int raises ValueError"
+        );
+        assert_eq!(error("function f(g: function() raises Nope) {\n}\n"), "`Nope` is not a kind of error");
+    }
+
+    #[test]
+    fn what_a_function_raises_fits_a_type_that_catches_it() {
+        // A function that raises the kind, or nothing, fits; so does any
+        // kind where the type says `raises Error` (decision 56.4).
+        let wants = |raises: &str| format!("function apply(convert: function(str) -> int {raises}, text: str) {{\n    print(1)\n}}\n");
+        strict_ok(&format!("{PARSE}{}apply(parse, \"1\")\napply(size, \"1\")", wants("raises ValueError")));
+        strict_ok(&format!("{PARSE}{}apply(parse, \"1\")\napply(size, \"1\")", wants("raises Error")));
+        let message = "`convert` of `apply` should be function(str) -> int raises FileError, but this function can raise \
+                       ValueError, and the type says it raises only FileError. Write `raises Error` on the type to take \
+                       a function that raises any kind";
+        assert_eq!(strict_error(&format!("{PARSE}{}apply(parse, \"1\")", wants("raises FileError"))), message);
+        // A value of one function type into another.
+        let message = "`g` should be function(str) -> int raises FileError, but this function can raise \
+                       ValueError, and the type says it raises only FileError. Write `raises Error` on the type to take \
+                       a function that raises any kind";
+        assert_eq!(
+            strict_error(&format!(
+                "{PARSE}let f: function(str) -> int raises ValueError = parse\nlet g: function(str) -> int raises FileError = f"
+            )),
+            message
+        );
+        // A function written where a value goes is held to it as well.
+        strict_ok(&format!("{}apply(function(t: str) -> int raises ValueError {{ return int(t) }}, \"1\")", wants("raises ValueError")));
+    }
+
+    #[test]
+    fn an_ordinary_build_does_not_hold_what_a_function_raises_against_a_plain_type() {
+        // As it never has (decision 56.4): a raising function, or a value
+        // of a raising type, goes where the type says nothing. A firmware
+        // build calls the two in different ways, so there it is refused.
+        let plain = "function apply(convert: function(str) -> int, text: str) -> int {\n    return convert(text)\n}\n";
+        let both = [
+            format!("{PARSE}{plain}print(apply(parse, \"1\"))"),
+            format!("{PARSE}{plain}let f: function(str) -> int raises ValueError = parse\nprint(apply(f, \"1\"))"),
+        ];
+        let message = "`convert` of `apply` should be function(str) -> int, which raises nothing, but this function can \
+                       raise ValueError. In a firmware build a call through a function type raises only what the type \
+                       says: write `raises ValueError` after what it returns, or build without `--firmware`";
+        for source in &both {
+            strict_ok(source);
+            assert_eq!(firmware_errors(source), vec![message], "\n{source}");
+        }
+        // `var f = parse` gets a type that says it raises in a firmware
+        // build, and none in any other, as before (5.19l).
+        let kept = format!("{PARSE}function run() -> int raises ValueError {{\n    var f = parse\n    return f(\"1\")\n}}\nprint(run())");
+        strict_ok(&kept);
+        assert_eq!(firmware_errors(&kept), Vec::<String>::new());
+        let unsaid = format!("{PARSE}function run() -> int {{\n    var f = parse\n    return f(\"1\")\n}}\nprint(run())");
+        strict_ok(&unsaid);
+        assert_eq!(
+            firmware_errors(&unsaid),
+            vec!["`run` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"]
+        );
+    }
+
+    #[test]
+    fn a_firmware_build_cannot_make_a_plain_function_value_raise() {
+        // A function of the program that raises nothing is made as one
+        // that can, where a raising type wants it (decision 56.5). A
+        // value already kept as a plain function cannot change how it is
+        // called.
+        let apply = "function apply(convert: function(str) -> int raises ValueError, text: str) -> int raises ValueError {\n\
+                     return convert(text)\n}\n";
+        assert_eq!(firmware_errors(&format!("{PARSE}{apply}print(apply(size, \"1\"))")), Vec::<String>::new());
+        assert_eq!(
+            firmware_errors(&format!("{PARSE}{apply}print(apply(function(t: str) -> int {{ return 2 }}, \"1\"))")),
+            Vec::<String>::new()
+        );
+        let kept = format!("{PARSE}{apply}let f: function(str) -> int = size\nprint(apply(f, \"1\"))");
+        strict_ok(&kept);
+        assert_eq!(
+            firmware_errors(&kept),
+            vec![
+                "`convert` of `apply` should be function(str) -> int raises ValueError, and this is a function value \
+                 that raises nothing. In a firmware build a function that can raise is called in another way from \
+                 one that cannot, so one kept as the first cannot become the second. Give it the type \
+                 `function(str) -> int raises ValueError` where it is made, or build without `--firmware`"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_second_kind_after_raises_in_a_type_is_named_as_one() {
+        // In a list of parameters the type ends at the comma, so a second
+        // kind reads as a parameter with no type (decision 56.3).
+        assert_eq!(error("function f(g: function() raises ValueError, FileError) {\n}\n"), crate::parser::ONE_KIND);
+        // A parameter with any other name is one.
+        ok("function f(g: function() raises ValueError, text) {\n    print(text)\n}\nf(function() { }, \"a\")\n");
+    }
+
+    #[test]
+    fn a_function_type_in_a_message_is_written_as_in_a_program() {
+        // Brackets where `raises` or `or none` would be read otherwise.
+        let make = "function make() -> (function(int) -> int raises ValueError) {\n\
+                    return function(n: int) -> int raises ValueError { return n }\n}\n";
+        assert_eq!(
+            error(&format!("{make}let n: int = make")),
+            "`n` should be int, but this is a function"
+        );
+        assert_eq!(
+            error(&format!("{make}let g: function() -> (function(int) -> int raises ValueError) = make\nlet n: int = g")),
+            "`n` should be int, but this is function() -> (function(int) -> int raises ValueError)"
+        );
+        assert_eq!(
+            error("let f: (function(int) -> int) or none = none\nlet n: int = f"),
+            "`n` should be int, but this is (function(int) -> int) or none. Check it with `is not none` first"
+        );
+    }
+
+    #[test]
+    fn a_fault_after_raises_in_a_type_is_one_raised_by_hand() {
+        // A function that says `raises ZeroDivisionError` must raise it
+        // itself in a firmware build (5.19m), so only such a function, or
+        // one that raises nothing, can be put in the type, and the type
+        // needs no rule of its own (decision 56.1).
+        let apply = "function apply(f: function(int, int) -> int raises ZeroDivisionError) -> int {\n\
+                     try {\n        return f(1, 0)\n    } except ZeroDivisionError {\n        return -1\n    }\n}\n";
+        let by_hand = "function half(a: int, b: int) -> int raises ZeroDivisionError {\n    if b == 0 {\n\
+                       raise ZeroDivisionError(\"nothing to halve\")\n    }\n    return a // b\n}\n";
+        assert_eq!(firmware_errors(&format!("{by_hand}{apply}print(apply(half))")), Vec::<String>::new());
+        let divides = "function half(a: int, b: int) -> int raises ZeroDivisionError {\n    return a // b\n}\n";
+        let refused = firmware_errors(&format!("{divides}{apply}print(apply(half))"));
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].starts_with("`half` says `raises ZeroDivisionError`, but nothing in it raises one itself"), "{refused:?}");
+    }
+
+    #[test]
+    fn a_function_of_an_interface_says_what_its_function_types_raise() {
+        // `raises` is part of a function type, so a class that leaves it
+        // off a parameter has written another first line (decision 56.1).
+        let port = "interface Port {\n    function each(self, convert: function(str) -> int raises ValueError) -> int raises ValueError\n}\n";
+        let class = |ty: &str| {
+            format!("{port}class Uart is Port {{\n    function each(self, convert: {ty}) -> int raises ValueError {{\n\
+                     return convert(\"1\")\n    }}\n}}\n")
+        };
+        strict_ok(&class("function(str) -> int raises ValueError"));
+        assert_eq!(
+            strict_error(&class("function(str) -> int")),
+            "`each` of `Uart` is `function each(self, convert: function(str) -> int) -> int`, and `Port` asks for \
+             `function each(self, convert: function(str) -> int raises ValueError) -> int`. Write the two the same"
+        );
     }
 
     #[test]

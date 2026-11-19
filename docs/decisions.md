@@ -3816,7 +3816,7 @@ This replaces the list in 5.16i.
 - A value that has one owner as what a type parameter stands for.
 - `list[int or none]` (5.16h).
 - A function that can raise, used as a value (the `--firmware` rule,
-  since errors travel as values in this build).
+  since errors travel as values in this build). Builds since 56.1.
 - A method used as a value (`let m = counter.bump`).
 
 ### 5.17h Decided: a plain parameter will look, and a word will take
@@ -7239,7 +7239,7 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 5.5e | Checked arithmetic uses built-ins of GCC and Clang | Changed in chapter 55: another C compiler gets the checks in plain C | They cover the toolchains for ARM, RISC-V, AVR and ESP, and are one instruction. The plain C is behind one mark in `runtime.c`, `ZENO_PLAIN_C` |
 | 5.5g | An object that never leaves its function could live on the stack | Settled as it is | It would be an optimisation that changes no program. With no collector the object is freed where its owner ends in any case |
 | 5.5k | A function value is always a block, even one that keeps no variables | Settled | Two function values are equal only when they are the same one, in every engine. The fixed value would save a block and break that for a function written in a loop |
-| 5.5l | A function that can raise cannot be used as a value in a firmware build | A limit of 0.1 | The type `function(str) -> int` does not say whether it raises, and the two sorts are called differently there. The way in is `raises` in a function type |
+| 5.5l | A function that can raise cannot be used as a value in a firmware build | Changed in chapter 56: a function type says what it raises | The type `function(str) -> int` does not say whether it raises, and the two sorts are called differently there. The way in is `raises` in a function type |
 | 5.7 | Three things about the collector | Changed, twice, and settled once | A build with no heap at all exists: `--no-collector` (5.9). It takes its memory from one fixed pool (5.9h). Counting references was not needed: a program that cannot pause is built with no collector, and one that can keeps the collector as it is |
 | 5.8a, 5.19a | No mark at the call for a value that is taken (`send(take p)`) | Settled | The function's own header says `take` (5.19b), and a use after it is an error that names the line of the call. One way to write a call was worth more than a second reminder |
 | 5.8c, 5.15b | Whether a plain parameter takes or looks | Changed in 5.19a: a plain parameter looks, and `take` takes | The count asked for in 5.15b was made in the audit: most parameters only look |
@@ -16578,3 +16578,302 @@ compiler which is neither GCC nor Clang (tcc 0.9.27) builds all of it.
 - Microsoft's C compiler.
 - The registers read without `setjmp` where the C library has a
   better way, if a plain compiler on a computer ever needs it.
+
+## 56. `raises` in a function type, and what a build still refuses
+
+Item 9 of [`missing.md`](missing.md) has one aim: **a build should
+take what `zeno run` takes.** Nine parts take it there (9.1 to 9.9 of
+[`plan-9-14.md`](plan-9-14.md)). This chapter is written as they
+land, one section or more for each.
+
+The first part is a function type that says what it raises:
+
+```zeno
+function parse(text: str) -> int raises ValueError { ... }
+
+function each(texts: list[str], convert: function(str) -> int raises ValueError) -> int raises ValueError {
+    var total = 0
+    for text in texts {
+        total += convert(text)
+    }
+    return total
+}
+```
+
+Until now a firmware build, and so a build with no collector, refused
+`texts.map(parse)` and `each(texts, parse)` with "cannot compile a
+function that can raise, used as a value, yet" (5.5l). Both build now,
+and print what `zeno run` prints.
+
+### 56.1 The type, and what a call through it does
+
+A function type is written as the first line of a function is, with
+no names: after what it returns it may say `raises` and one kind of
+error. A call through a value of that type can raise that kind, and is
+checked as a call of a function that says so: the caller catches it,
+or says `raises` itself.
+
+```
+error: `each` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error
+```
+
+`var f = parse` gives `f` the whole type, `raises` and all, in a
+firmware build (and with no collector). An ordinary build gives it the
+type it gave before, for the reason in 56.4.
+
+**Why this way of writing it.** It is the function's own first line,
+so there is nothing new to learn, and the printer and every message
+already wrote a function that way. Two others were weighed in the
+plan: `raising function(str) -> int` is one more word in a place no
+other word goes, and cannot say which kind; `function(str) -> int or
+raises ValueError` reads as if the error were a value that comes back,
+which it is nowhere but in the C of a firmware build.
+
+**A fault on a type needs no rule of its own.** In a firmware build a
+division by zero, a bad index and their like stop the program, so a
+function that says `raises ZeroDivisionError` with nothing in it that
+raises one by hand is refused (5.19m, 6.9). The plan asked whether a
+type that says `raises ZeroDivisionError` should be refused the same
+way. It is not: the only functions that can be put in such a type are
+ones that raise nothing, and ones that say `raises ZeroDivisionError`,
+which 5.19m has already held to raising it by hand. So the error that
+comes through the type is always one that travels as a value, and
+`except ZeroDivisionError` around the call catches it in every build.
+Refusing the type would refuse a program that is right.
+
+### 56.2 `raises` after a result belongs to the function it ends
+
+This line built before, and means that `make` raises `Missing`:
+
+```zeno
+function make() -> function(int) -> int raises Missing { ... }
+```
+
+A type that read `raises` for itself would take the word from `make`,
+and the line would come to mean something else without a word of
+warning. The first rule of the plan forbids that. So **`raises`
+belongs to the outermost function whose result it follows**, in a
+first line and in a type alike. A function type that is itself the
+result, and raises, stands in brackets:
+
+```zeno
+function make(n: int) -> (function(int) -> int raises ValueError) raises Missing { ... }
+```
+
+Brackets may stand around a function type and nothing else:
+
+```
+error: brackets in a type go only around a function type, as in `(function(int) -> int raises ValueError)`. One type is written without brackets
+```
+
+**Why not `(int)` too.** It would be a second way to write `int`
+(question 1 of the audit).
+
+**What the brackets also give.** `(function(int) -> int) or none` is a
+function that may be missing, where `function(int) -> int or none`
+is, as it always was, a function whose answer may be `none`. That
+could not be written before. The printer and every message write the
+brackets back where they are needed, so a type in a message is one
+that can be copied into a program.
+
+**Item 10 is not in the way.** Several results will be written
+`-> (int, str)`. One function type in brackets has no comma, so the
+two are told apart by the first comma.
+
+### 56.3 One kind, and the comma
+
+A function's first line may say `raises ValueError, KeyError`. A
+function type stands inside a list of its own:
+
+```zeno
+function each(convert: function(str) -> int raises ValueError, text)
+```
+
+Is `text` a second kind, or a second parameter with no type? The
+second is legal, and was before this part. A rule for the parser
+would be a rule for the reader to know (question 2 of the audit). So
+**in a type `raises` names one kind, and a type ends at the comma.** A
+function that raises two kinds fits `raises Error`.
+
+The message for a second kind comes from where it can be told:
+
+- After a field, a `let` or what a function returns no comma can
+  follow a type, so the parser gives it.
+- In a list of parameters, the checker gives it when a parameter with
+  no type has the name of a kind of error.
+
+```
+error: a function type names one kind of error after `raises`. A function that raises more than one kind fits `raises Error`, which catches every kind
+```
+
+**Why one kind is enough for now.** Every program found so far that
+hands a raising function on raises one kind, or wants any. A list can
+be let in later inside brackets of its own, and no type written today
+would change its meaning.
+
+### 56.4 What fits: the test of `except`
+
+A function fits a type that says `raises K` if every kind it raises
+is one that `except K` would catch: `K` itself, or anything when `K`
+is `Error`. A function that raises nothing fits too.
+
+```
+error: `convert` of `each` should be function(str) -> int raises ValueError, but this function can raise Missing, and the type says it raises only ValueError. Write `raises Error` on the type to take a function that raises any kind
+```
+
+**Why the test of `except`.** It is the one a reader already knows: a
+type that says `raises K` is a promise that `except K` around the call
+is enough.
+
+**The gap in an ordinary build.** In an ordinary build and in `zeno
+run`, a function that raises was accepted where the type says
+nothing, and the call through the value was then checked as raising
+nothing. That is a hole in "a function says what it raises", and it
+is older than this part. **It is left as it is in an ordinary build,
+on both sides**: a function, or a value whose type says `raises`, put
+where a type says nothing, is not held to it there. A firmware build
+and a build with no collector hold it, since they call the two in
+different ways (56.5):
+
+```
+error: `f` of `apply` should be function(str) -> int, which raises nothing, but this function can raise ValueError. In a firmware build a call through a function type raises only what the type says: write `raises ValueError` after what it returns, or build without `--firmware`
+```
+
+**Why it is not closed now.** Closing it would refuse programs that
+build today, which the first rule of the plan forbids without asking.
+So it was measured, as the plan says, and the number goes to the
+owner of the language with the question. The check was run over 443
+programs (every example, every program in `tools/targets/`, every
+sample of the book that `zeno run` runs, and the benchmarks):
+
+- **Accepted by a strict check today and caught by closing the gap:
+  0.** A firmware build is strict, and so is `zeno check --strict`.
+- **Accepted when not strict: 2 programs, 19 places**
+  (`tools/targets/edge-files.zeno` and `edge-bytes.zeno`). Each hands
+  a function written where a value goes, which reads a file and so can
+  raise `FileError`, to a parameter of type `function() -> str`. A
+  strict check refuses all 19 already, for another reason: the
+  function written there does not say `raises`.
+- **A value whose type says `raises`, put where a type says nothing:
+  0.** No program could write one before this part.
+
+### 56.5 How a firmware build calls it
+
+In a firmware build an error travels as a value: a function that can
+raise answers `true` or `false`, and gives its answer through a last
+pointer (5.5l). A value of a type that says `raises` is called that
+way, in C:
+
+```c
+int64_t t16;
+if (!((bool (*)(zeno_closure *, const char *, int64_t *))z_convert->code)(z_convert, z_text, &t16)) { ...; return false; }
+```
+
+and in LLVM, `call zeroext i1` with a `ptr` for the answer. What is
+held at that line (the copy of the list a `for` walks, the list `map`
+is making) is let go on the way out, as on any line that can fail.
+
+**A function that raises nothing, put where a raising type is
+wanted**, is called through a small function written for it, the
+first time it is needed, which calls it and answers `true`:
+
+```c
+static bool zeno_raising_wrap_double(zeno_closure *zeno_self, int64_t a0, int64_t *zeno_result) {
+    (void)zeno_self;
+    *zeno_result = z_double(a0);
+    return true;
+}
+```
+
+A function written where a value goes is compiled the raising way
+from the start when that is where it goes. The checker notes each such
+place (`made_raising`), and both compilers read the note, so neither
+works it out again.
+
+**A value that is already of a plain function type cannot become a
+raising one**, and is refused:
+
+```
+error: `f` of `twice` should be function(int) -> int raises ValueError, and this is a function value that raises nothing. In a firmware build a function that can raise is called in another way from one that cannot, so one kept as the first cannot become the second. Give it the type `function(int) -> int raises ValueError` where it is made, or build without `--firmware`
+```
+
+**Why it is refused and not carried.** The plan left this open: it
+could be carried in a block of its own that holds the plain one and
+calls it, by the rule 9.2 is to bring. That is a block made and freed
+at each such place in a build with no collector, for a program that
+can say what it means where the value is made, by giving it the
+raising type there. The message says so. If a real program needs it,
+9.2's rule is the way in.
+
+**An ordinary build changes not at all.** Both kinds of function are
+called alike there (5.5i). Each compiler also checks, where it puts
+one function value in the place of another, that both are called the
+same way, so a gap in the checker would stop the build with a message
+and not write a wrong call.
+
+The interpreter, the VM and the fifteen targets do not look at
+types, and needed nothing.
+
+### 56.6 What it costs
+
+Nothing for a program that does not use it. `tools/same.py` built
+every program of `tools/targets.py` and every benchmark, 444 in all,
+each of the fifteen ways, with the `zeno` of 0.7.0 and with this one.
+**The 443 that were there before wrote the same C, the same IR, the
+same joined program and the same bytecode, 6,645 builds of 6,645.**
+The fifteen that differ are those of
+`tools/targets/edge-raises-in-types.zeno`, which 0.7.0 cannot read.
+No engine file was touched.
+
+### 56.7 How it is held to its word
+
+- **The parser** (`parser.rs`):
+  `a_function_type_can_say_what_it_raises`,
+  `raises_after_a_result_belongs_to_the_function_it_ends` and
+  `brackets_go_round_a_function_type_and_nothing_else`: each way of
+  writing it, the type in a list of parameters with another after it,
+  and each message.
+- **The checker** (`checker.rs`):
+  `a_call_through_a_function_type_that_raises_is_checked_as_raising`,
+  `what_a_function_raises_fits_a_type_that_catches_it`,
+  `an_ordinary_build_does_not_hold_what_a_function_raises_against_a_plain_type`,
+  `a_firmware_build_cannot_make_a_plain_function_value_raise`,
+  `a_second_kind_after_raises_in_a_type_is_named_as_one`,
+  `a_function_type_in_a_message_is_written_as_in_a_program`,
+  `a_fault_after_raises_in_a_type_is_one_raised_by_hand` (56.1) and
+  `a_function_of_an_interface_says_what_its_function_types_raise`.
+- **Both compilers** (`emit_c.rs`, `emit_llvm.rs`):
+  `raising_function_values_match_every_way` builds
+  `tools/targets/edge-raises-in-types.zeno` in a firmware build and
+  with no collector, through C and through LLVM, and each must print
+  what `zeno run` prints. With no collector it must end with 0 blocks
+  left. The program hands raising functions, and plain ones made
+  raising, to a parameter, into a field, into a list, to `map`,
+  `filter`, `reduce` and `sort`, and fails in each a thousand times.
+  The test also holds the C of the small functions above (and of the
+  one for `parse`, which only passes its answer on) to what this
+  chapter shows, and holds an ordinary build to having none.
+  `what_a_firmware_build_refuses_says_so` lost its rows for a raising
+  function used as a value.
+- **The tests' own firmware build is now checked as `zeno build
+  --firmware` checks it.** The two compilers' tests checked a program
+  for a firmware build with the rules of an ordinary one, and so never
+  saw what the checker notes for a firmware build alone. With the note
+  of 56.5 that mattered, so they use the firmware rules now. One
+  program came out refused that had been built: `edge-u64.zeno` says
+  `raises OverflowError` on a function that only multiplies, which a
+  firmware build refuses (5.19m). Its firmware build is left to the
+  second program of that test, written without `try` for the purpose.
+- **The targets**: the same program is in `tools/targets/`, so every
+  target prints what `zeno run` prints.
+
+### 56.8 Left for later
+
+- **A list of kinds after `raises` in a type**, inside brackets of its
+  own. Refused with "a function type names one kind of error after
+  `raises`...".
+- **A plain function value made raising** where it is used. Refused
+  with "...so one kept as the first cannot become the second...". The
+  way in is the rule of 9.2.
+- **Closing the gap of 56.4 in an ordinary build.** A question for the
+  owner of the language, with the numbers above.

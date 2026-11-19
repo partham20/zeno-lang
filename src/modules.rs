@@ -1377,12 +1377,17 @@ impl<'a> Renamer<'a> {
             }
             Type::Optional(inner) | Type::Owned(inner) | Type::Take(inner) => self.ty(inner, span),
             Type::Length(_) => {}
-            Type::Function { params, returns } => {
+            Type::Function { params, returns, raises } => {
                 for param in params {
                     self.ty(param, span);
                 }
                 if let Some(returns) = returns {
                     self.ty(returns, span);
+                }
+                // A kind of error of another file, `shapes.Bad`, is
+                // renamed as one after a function's `raises` is.
+                if let Some(raises) = raises {
+                    self.named(raises, span);
                 }
             }
         }

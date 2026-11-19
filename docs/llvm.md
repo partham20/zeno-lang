@@ -994,8 +994,10 @@ functions a program can catch, so they follow the same pattern as
 %answer.1)`.
 
 **What it refuses** is what the C firmware build refuses, in the same
-words: a `try` in which nothing can be caught, and a function that can
-raise used as a value.
+words: a `try` in which nothing can be caught. A function that can
+raise, used as a value, builds since 0.8.0: a value of a type that says
+`raises` is called with `call zeroext i1` and a `ptr` for the answer
+([`raises-in-types.md`](raises-in-types.md)).
 
 ## Functions as values
 

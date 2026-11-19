@@ -635,8 +635,10 @@ pub enum Type {
     Named { name: String, args: Vec<Type> },
     /// `str or none`
     Optional(Box<Type>),
-    /// The type of a function: `function(int, int) -> int`
-    Function { params: Vec<Type>, returns: Option<Box<Type>> },
+    /// The type of a function: `function(int, int) -> int`, and the
+    /// kind of error a call of it may raise: `function(str) -> int
+    /// raises ValueError` (decision 56.1).
+    Function { params: Vec<Type>, returns: Option<Box<Type>>, raises: Option<String> },
     /// `owned list[int]`: a value with exactly one owner.
     Owned(Box<Type>),
     /// `take Packet`, on a parameter: the function takes the value over,

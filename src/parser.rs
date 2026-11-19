@@ -18,6 +18,21 @@ use crate::error::Error;
 use crate::lexer;
 use crate::token::{Span, Token, TokenKind};
 
+/// What is said to somebody who names a second kind of error after
+/// `raises` in a function type (decision 56.3).
+pub const ONE_KIND: &str = "a function type names one kind of error after `raises`. A function that raises more \
+                            than one kind fits `raises Error`, which catches every kind";
+
+/// Does this type end in `raises` and a kind, so that a comma after it
+/// could be somebody naming a second kind?
+pub fn ends_in_raises(ty: &Type) -> bool {
+    match ty {
+        Type::Function { raises, .. } => raises.is_some(),
+        Type::Optional(inner) | Type::Owned(inner) | Type::Take(inner) => ends_in_raises(inner),
+        _ => false,
+    }
+}
+
 /// Turn the tokens of a whole file into a syntax tree.
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
     let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new(), in_test: false, tests: Vec::new() };
@@ -334,6 +349,7 @@ impl Parser {
         let keyword = self.advance();
         let name = self.name("a name for the variable")?;
         let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
+        self.one_kind(&ty)?;
         self.expect(TokenKind::Assign)?;
         let value = self.expression()?;
 
@@ -719,7 +735,7 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
 
-        let return_type = if self.eat(TokenKind::Arrow) { Some(self.type_()?) } else { None };
+        let return_type = if self.eat(TokenKind::Arrow) { Some(self.result_type()?) } else { None };
 
         let mut raises = Vec::new();
         if self.eat(TokenKind::Raises) {
@@ -872,6 +888,7 @@ impl Parser {
     fn field(&mut self) -> Result<Field, Error> {
         let name = self.name("a field name")?;
         let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
+        self.one_kind(&ty)?;
         let default = if self.eat(TokenKind::Assign) { Some(self.expression()?) } else { None };
         Ok(Field { name, ty, default })
     }
@@ -928,16 +945,48 @@ impl Parser {
 
     // ---------------------------------------------------------------- Types
 
-    /// `int`, `list[int]`, `str or none`, `function(int) -> int`
+    /// `int`, `list[int]`, `str or none`, `function(int) -> int`,
+    /// `function(str) -> int raises ValueError`
     fn type_(&mut self) -> Result<Type, Error> {
+        self.type_in(true)
+    }
+
+    /// A type that is what a function returns, in its first line or in a
+    /// function type. A `raises` after it belongs to that function, as it
+    /// always has, and not to a function type it may end with: in
+    /// `function make() -> function(int) -> int raises ValueError`, `make`
+    /// raises (decision 56.2). A returned function type that raises
+    /// itself is written in brackets.
+    fn result_type(&mut self) -> Result<Type, Error> {
+        self.type_in(false)
+    }
+
+    /// A type. `raises` says whether a function type here may be followed
+    /// by `raises` and a kind of error of its own.
+    fn type_in(&mut self, raises: bool) -> Result<Type, Error> {
         // `owned list[int]`, `take Packet`: the word, then the type it is
         // about. Both words are reserved, so neither is ever a name
         // (decision 5.19c).
         if self.eat(TokenKind::Owned) {
-            return Ok(Type::Owned(Box::new(self.type_()?)));
+            return Ok(Type::Owned(Box::new(self.type_in(raises)?)));
         }
         if self.eat(TokenKind::Take) {
-            return Ok(Type::Take(Box::new(self.type_()?)));
+            return Ok(Type::Take(Box::new(self.type_in(raises)?)));
+        }
+        // Brackets stand around a function type, and only around one, so
+        // that it can say `raises` where a result is read, or be followed
+        // by `or none` as a whole: `(function(int) -> int) or none`.
+        if self.check(TokenKind::LParen) {
+            self.advance();
+            if !self.check(TokenKind::Function) {
+                return self.error(
+                    "brackets in a type go only around a function type, as in \
+                     `(function(int) -> int raises ValueError)`. One type is written without brackets",
+                );
+            }
+            let ty = self.type_in(true)?;
+            self.expect(TokenKind::RParen)?;
+            return self.or_none(ty);
         }
         let ty = if self.eat(TokenKind::Function) {
             // The type of a function: the types it takes, then what it returns.
@@ -950,8 +999,14 @@ impl Parser {
                 }
             }
             self.expect(TokenKind::RParen)?;
-            let returns = if self.eat(TokenKind::Arrow) { Some(Box::new(self.type_()?)) } else { None };
-            Type::Function { params, returns }
+            let returns = if self.eat(TokenKind::Arrow) { Some(Box::new(self.result_type()?)) } else { None };
+            // One kind of error, and not a list: in a list of parameters
+            // a comma after it begins the next parameter (decision 56.3).
+            let raises = match raises && self.eat(TokenKind::Raises) {
+                true => Some(self.name_in_module("an error type")?),
+                false => None,
+            };
+            Type::Function { params, returns, raises }
         } else {
             let name = self.name_in_module("a type")?;
             // `borrow` was the word for a parameter that only looks.
@@ -984,7 +1039,11 @@ impl Parser {
             }
             Type::Named { name, args }
         };
+        self.or_none(ty)
+    }
 
+    /// `ty`, or `ty or none` if that follows.
+    fn or_none(&mut self, ty: Type) -> Result<Type, Error> {
         if self.eat(TokenKind::Or) {
             if !self.eat(TokenKind::None) {
                 return self.error("only `or none` can follow a type for now");
@@ -992,6 +1051,16 @@ impl Parser {
             return Ok(Type::Optional(Box::new(ty)));
         }
         Ok(ty)
+    }
+
+    /// After the type of a field or a variable, where nothing may follow
+    /// but the end of the line or `=`: a comma after `raises ValueError`
+    /// is somebody naming a second kind of error.
+    fn one_kind(&self, ty: &Option<Type>) -> Result<(), Error> {
+        if self.check(TokenKind::Comma) && ty.as_ref().is_some_and(ends_in_raises) {
+            return self.error(ONE_KIND);
+        }
+        Ok(())
     }
 
     // ---------------------------------------------------------- Expressions
@@ -1497,6 +1566,14 @@ mod tests {
     /// Parse and print the whole program as an outline.
     fn tree(source: &str) -> String {
         printer::print(&parse_source(source).unwrap())
+    }
+
+    /// The type written on the `let` that a source holds.
+    fn type_of(source: &str) -> Type {
+        match &parse_source(source).unwrap().statements[0].kind {
+            StmtKind::Let { ty: Some(ty), .. } => ty.clone(),
+            _ => panic!("not a `let` with a type"),
+        }
     }
 
     /// Parse a single expression and print it with every operator bracketed.
@@ -2207,5 +2284,93 @@ mod tests {
             error("let x = unsafe { p[0] }"),
             "`unsafe { }` is a statement and gives no value. Put the whole line inside the block: `unsafe { x = p[0] }`"
         );
+    }
+
+    #[test]
+    fn a_function_type_can_say_what_it_raises() {
+        // After what it returns, as a function's own first line says it
+        // (decision 56.1), and with nothing returned.
+        assert_eq!(
+            tree("function each(convert: function(str) -> int raises ValueError) { }"),
+            "function each(convert: function(str) -> int raises ValueError)\n"
+        );
+        assert_eq!(tree("let f: function(str) raises FileError = g"), "let f: function(str) raises FileError = g\n");
+        assert_eq!(
+            tree("class Port { send: function(str) -> int raises shapes.Bad }"),
+            "class Port\n    field send: function(str) -> int raises shapes.Bad\n"
+        );
+        // In a list of parameters the type ends at the comma: what comes
+        // next is the next parameter, with a type or without (56.3).
+        assert_eq!(
+            tree("function f(g: function() raises ValueError, count: int, text) { }"),
+            "function f(g: function() raises ValueError, count: int, text)\n"
+        );
+        assert_eq!(
+            tree("let d: dict[str, function() raises ValueError] = [:]"),
+            "let d: dict[str, function() raises ValueError] = [:]\n"
+        );
+        // Where nothing may follow a type, a comma after the kind is
+        // somebody naming a second one.
+        assert_eq!(error("let f: function() raises ValueError, FileError = g"), ONE_KIND);
+        assert_eq!(error("class C { g: function() raises ValueError, FileError }"), ONE_KIND);
+        assert_eq!(error("let f: function() raises = g"), "expected an error type, found `=`");
+    }
+
+    #[test]
+    fn raises_after_a_result_belongs_to_the_function_it_ends() {
+        // `make` raises, as it always has: the type it returns says
+        // nothing about raising (decision 56.2). A returned function type
+        // that raises itself is bracketed when printed.
+        assert_eq!(
+            tree("function make() -> function(int) -> int raises ValueError { }"),
+            "function make() -> function(int) -> int raises ValueError\n"
+        );
+        assert_eq!(
+            tree("function make() -> (function(int) -> int raises ValueError) raises FileError { }"),
+            "function make() -> (function(int) -> int raises ValueError) raises FileError\n"
+        );
+        let returned = |source: &str| match &parse_source(source).unwrap().statements[0].kind {
+            StmtKind::Function(f) => (f.return_type.clone(), f.raises.clone()),
+            _ => unreachable!(),
+        };
+        let (ty, raises) = returned("function make() -> function(int) -> int raises ValueError { }");
+        assert!(matches!(ty, Some(Type::Function { raises: None, .. })));
+        assert_eq!(raises, vec!["ValueError".to_string()]);
+        let (ty, raises) = returned("function make() -> (function(int) -> int raises ValueError) { }");
+        assert!(matches!(ty, Some(Type::Function { raises: Some(_), .. })));
+        assert!(raises.is_empty());
+        // In a type, the same: the outer function type raises.
+        assert_eq!(
+            tree("let f: function() -> function() -> int raises ValueError = g"),
+            "let f: function() -> function() -> int raises ValueError = g\n"
+        );
+        let Type::Function { returns: Some(inner), raises: Some(_), .. } = type_of("let f: function() -> function() -> int raises ValueError = g")
+        else {
+            panic!("the outer function type should raise")
+        };
+        assert!(matches!(*inner, Type::Function { raises: None, .. }));
+    }
+
+    #[test]
+    fn brackets_go_round_a_function_type_and_nothing_else() {
+        // A function type that may be `none` as a whole.
+        assert_eq!(
+            tree("let f: (function(int) -> int) or none = none"),
+            "let f: (function(int) -> int) or none = none\n"
+        );
+        assert!(matches!(type_of("let f: (function(int) -> int) or none = none"), Type::Optional(_)));
+        // Without them `or none` is what the function returns, as today.
+        assert_eq!(tree("let f: function(int) -> int or none = g"), "let f: function(int) -> int or none = g\n");
+        assert!(matches!(type_of("let f: function(int) -> int or none = g"), Type::Function { .. }));
+        // And `raises` before `or none` is the function type's, so the
+        // `or none` can only be about the whole of it.
+        assert_eq!(
+            tree("let f: function() raises ValueError or none = none"),
+            "let f: (function() raises ValueError) or none = none\n"
+        );
+        let message = "brackets in a type go only around a function type, as in \
+                       `(function(int) -> int raises ValueError)`. One type is written without brackets";
+        assert_eq!(error("let x: (int) = 3"), message);
+        assert_eq!(error("function f() -> (int) { }"), message);
     }
 }

@@ -47,7 +47,7 @@ release ([`release.md`](release.md)).
 | 6 | Units made of units: `V * A` is `W`. **Done** ([`units-made.md`](units-made.md), chapter 43) | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
 | 7 | Inputs on a board (**done**, [`inputs.md`](inputs.md), chapter 45), a serial port (**done**, [`serial.md`](serial.md), chapter 46), an ADC (**done**, [`analog.md`](analog.md), chapter 47), PWM (**done**, [`pwm.md`](pwm.md), chapter 48), a timer (**done** as a ticker, [`ticker.md`](ticker.md), chapter 49), interrupts (**done** as edges the board counts, [`interrupts.md`](interrupts.md), chapter 50). No done part has been tried on a real board | large, wants a board | The one thing that keeps Zeno off real hardware |
 | 8 | One step from a `.zeno` file to a board: the board's compiler run by `zeno build --board` (**done**, [`board-build.md`](board-build.md), chapter 51), a runtime with no `printf` and no `exit` (**done** for a board that brings four functions, chapter 52), a float made into text and read with no `snprintf` and no `strtod` (**done**, chapter 53), checks without GCC built-ins (**done**, [`plain-c.md`](plain-c.md), chapter 55). No part has been tried on a real board, or with a compiler that is neither GCC nor Clang but tcc | large | The same |
-| 9 | What a build with no collector still refuses, and `raises` in a function type | medium | Firmware builds should take every program `zeno run` takes |
+| 9 | What a build with no collector still refuses, and `raises` in a function type (**done**, [`raises-in-types.md`](raises-in-types.md), chapter 56) | medium | Firmware builds should take every program `zeno run` takes |
 | 10 | Several values from one function | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
 | 11 | Generic enums, generic interfaces, and bounds | large | A `Maybe[T]` and a `sort` that asks for an order |
 | 12 | Cleaning up when a block ends, and files read in pieces | medium | An open file, a lock and an interrupt mask all need "and put it back" |
@@ -170,7 +170,7 @@ build. They are item 9 in the order.
 
 | Refused | Recommendation |
 |---|---|
-| A function that says `raises`, used as a value in a firmware build (5.5l) | `raises` in a function type: `function(str) -> int raises ValueError` |
+| ~~A function that says `raises`, used as a value in a firmware build (5.5l)~~ | **Done** in 0.8.0: `function(str) -> int raises ValueError` ([`raises-in-types.md`](raises-in-types.md), chapter 56) |
 | `list[int or none]` with no collector (5.16h) | Store the number and a flag side by side, with no block of its own |
 | A dict of lists or objects with no collector (10.14) | The dict owns its values, as a list owns its items |
 | A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d) | One rule each, written in the sections named |

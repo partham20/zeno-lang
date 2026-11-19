@@ -842,6 +842,14 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     has been built by IAR's, Keil's or a chip maker's compiler yet.
     See [`docs/plain-c.md`](docs/plain-c.md) and chapter 55 of
     [`docs/decisions.md`](docs/decisions.md))
+53. `raises` in a function type (on `main`, for 0.8.0:
+    `function(str) -> int raises ValueError` is a function that may
+    raise `ValueError`, and a call through it is checked as a call of
+    one by its name. A firmware build and a build with no collector now
+    take `texts.map(parse)` where `parse` raises, which they refused.
+    A function that returns a raising function writes it in brackets.
+    See [`docs/raises-in-types.md`](docs/raises-in-types.md) and
+    chapter 56 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

@@ -465,7 +465,7 @@ With a collector the value is `{ ptr, ptr }`, as it was.
 | A function that uses another function value and is then returned (`compose`) | the inner one is only looked at | noted, to be tried with real programs |
 | A list or an object as what a type parameter stands for: `same[T](x: T)` | the copy for `T` would have to know it moves | noted |
 | A list of numbers that may be `none` | see [`enums-and-none.md`](enums-and-none.md) | noted |
-| A function that can raise, used as a value | errors travel as values in this build, and a function value does not say whether it raises | noted |
+| ~~A function that can raise, used as a value~~ | builds since 0.8.0: a function type says what it raises ([`raises-in-types.md`](raises-in-types.md)) | done in 9.1 |
 | A method used as a value: `let m = counter.bump` | it would be a look at `counter` that is kept | call it there |
 
 When this step was built a plain parameter took and the word `borrow`

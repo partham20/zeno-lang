@@ -185,12 +185,21 @@ fn function(f: &Function, depth: usize, out: &mut String) {
     block(&f.body, depth + 1, out);
 }
 
+/// What a function returns. A `raises` after it would belong to the
+/// function, so a returned function type that raises is bracketed.
+fn result(ty: &Type) -> String {
+    match ty {
+        Type::Function { raises: Some(_), .. } => format!("({})", type_(ty)),
+        _ => type_(ty),
+    }
+}
+
 /// `function name(params) -> type raises Error`
 fn signature(f: &Function) -> String {
     let space = if f.name.is_empty() { "" } else { " " };
     let mut text = format!("function{space}{}{}({})", f.name, type_params(&f.type_params), join(&f.params, param));
     if let Some(ty) = &f.return_type {
-        text += &format!(" -> {}", type_(ty));
+        text += &format!(" -> {}", result(ty));
     }
     if !f.raises.is_empty() {
         text += &format!(" raises {}", f.raises.join(", "));
@@ -231,14 +240,20 @@ fn type_(ty: &Type) -> String {
     match ty {
         Type::Named { name, args } if args.is_empty() => name.clone(),
         Type::Named { name, args } => format!("{name}[{}]", join(args, type_)),
+        // `function(int) -> int or none` is a function that may return
+        // `none`. A function type that may itself be `none` is bracketed.
+        Type::Optional(inner) if matches!(**inner, Type::Function { .. }) => format!("({}) or none", type_(inner)),
         Type::Optional(inner) => format!("{} or none", type_(inner)),
         Type::Owned(inner) => format!("owned {}", type_(inner)),
         Type::Take(inner) => format!("take {}", type_(inner)),
         Type::Length(n) => n.to_string(),
-        Type::Function { params, returns } => {
+        Type::Function { params, returns, raises } => {
             let mut text = format!("function({})", join(params, type_));
             if let Some(returns) = returns {
-                text += &format!(" -> {}", type_(returns));
+                text += &format!(" -> {}", result(returns));
+            }
+            if let Some(raises) = raises {
+                text += &format!(" raises {raises}");
             }
             text
         }

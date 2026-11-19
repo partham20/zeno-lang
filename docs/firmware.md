@@ -226,12 +226,12 @@ behave differently, and there is a test in `emit_c.rs` that pins it down.
 
 ## What a firmware build does not accept yet
 
-- **A function that can raise, used as a value.** `texts.map(parse)` where
-  `parse` says `raises`. A firmware build calls a function that can raise
-  differently from one that cannot, and the type `function(str) -> int`
-  does not say which it is. Until function types can say `raises`, only
-  functions that cannot raise may be passed around. Call the others by
-  name.
+- ~~**A function that can raise, used as a value.**~~ Builds since 0.8.0:
+  a function type says what it raises, `function(str) -> int raises
+  ValueError`, and `texts.map(parse)` builds where `parse` says
+  `raises`. A firmware build holds a function value to its type, since
+  it calls the two kinds in different ways
+  ([`raises-in-types.md`](raises-in-types.md), chapter 56).
 
 ## What this does not claim
 

@@ -1,0 +1,133 @@
+# Function types that say what they raise (decision 56): handed to a
+# parameter, kept in a field and in a list, given to map, filter, reduce
+# and sort, and caught where they fail.
+class Bad {
+    why: str
+}
+function parse(text: str) -> int raises ValueError {
+    if text == "x" {
+        raise ValueError("not a number: x")
+    }
+    return int(text)
+}
+function measure(text: str) -> int raises Bad {
+    if text == "" {
+        raise Bad("empty")
+    }
+    return len(text)
+}
+function double(n: int) -> int {
+    return n * 2
+}
+function total(texts: list[str], convert: function(str) -> int raises ValueError) -> int raises ValueError {
+    var sum = 0
+    for text in texts {
+        sum += convert(text)
+    }
+    return sum
+}
+function any_kind(text: str, convert: function(str) -> int raises Error) -> int raises Error {
+    return convert(text)
+}
+function twice(n: int, f: function(int) -> int raises ValueError) -> int raises ValueError {
+    return f(f(n))
+}
+class Holder {
+    convert: function(str) -> int raises ValueError
+}
+function is_big(text: str) -> bool raises ValueError {
+    return parse(text) > 3
+}
+function add(sum: int, text: str) -> int raises ValueError {
+    return sum + parse(text)
+}
+function label(text: str) -> str raises ValueError {
+    return f"<{parse(text)}>"
+}
+function words_of(texts: list[str]) -> list[str] raises ValueError {
+    let numbers = texts.map(parse)
+    var out: list[str] = []
+    for n in numbers {
+        out.append(f"n{n}")
+    }
+    return out
+}
+function first_bad(texts: list[str], convert: function(str) -> int raises ValueError) -> str {
+    for text in texts {
+        try {
+            convert(text)
+        } except ValueError {
+            return text
+        }
+    }
+    return "none"
+}
+print(total(["1", "2"], parse))
+try {
+    print(total(["1", "x"], parse))
+} except ValueError as e {
+    print("caught:", e)
+}
+print(twice(3, double))
+print(twice(3, function(n: int) -> int { return n + 1 }))
+print(any_kind("abc", measure), any_kind("7", parse))
+try {
+    print(any_kind("", measure))
+} except Error as e {
+    print("any:", e)
+}
+let h = Holder(parse)
+try {
+    print(h.convert("5"))
+    print(h.convert("x"))
+} except ValueError as e {
+    print("field:", e)
+}
+let fs: list[function(str) -> int raises ValueError] = [parse, function(t: str) -> int { return len(t) }, double_text]
+function double_text(t: str) -> int {
+    return len(t) * 2
+}
+for f in fs {
+    try {
+        print(f("x"))
+    } except ValueError as e {
+        print("list:", e)
+    }
+}
+print(first_bad(["1", "x", "2"], parse), first_bad(["1"], parse))
+var caught = 0
+for i in range(1000) {
+    try {
+        let words = words_of(["1", "2", "x"])
+        print(words)
+    } except ValueError {
+        caught += 1
+    }
+    try {
+        let labels = ["1", "2", "x"].map(label)
+        print(labels)
+    } except ValueError {
+        caught += 1
+    }
+}
+print(caught)
+print(words_of(["7", "8"]), ["5", "2", "9"].filter(is_big), ["1", "2", "3"].reduce(add, 10), ["4"].map(label))
+try {
+    print(["5", "x"].filter(is_big))
+} except ValueError as e {
+    print("filter:", e)
+}
+try {
+    print(["1", "x"].reduce(add, 0))
+} except ValueError as e {
+    print("reduce:", e)
+}
+var keys = ["10", "9", "11"]
+keys.sort(parse)
+print(keys)
+keys.append("x")
+try {
+    keys.sort(parse)
+} except ValueError as e {
+    print("sort:", e, keys)
+}
