@@ -570,3 +570,5 @@ a24bb55 Giving a value away is one function in the checker, so that a function t
 36b2d90 The plan: a function that is kept cannot take a `var`, in any build.
 dc322b6 A function that is kept cannot take a `var`, in any build: with a collector one that said `owned` was taken, and the program stopped with a fault of memory. `self` gets a message that can be followed (decision 56.8).
 e1079cc A method used as a value builds every way: `let m = counter.bump` is the function that calls the method, bound to the object of that line, and it looks or takes by the rule of a kept function (decision 56.9).
+31a0593 A method of an object that no variable holds is refused with words that say what to write, and chapter 56 counts what tools/same.py found.
+0ff7d7e `take slot.task` and `take tasks[i]` give what is there and leave `none`, in every engine and build, so an object with one owner can hand on what it holds (decision 56.10).
