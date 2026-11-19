@@ -4,7 +4,7 @@
 checked, a sum is checked for overflow, an error says the line it
 happened on, and the whole of Zeno's runtime is written in front of the
 program in case it is needed. For a program of one line that is about
-3,000 lines of C.
+4,500 lines of C.
 
 `zeno build --minimal` writes the other kind of C: the least that runs
 the program, close to what a person would write by hand.
@@ -36,7 +36,7 @@ function is_prime(n) {
 }
 ```
 
-`zeno build` writes this for it, after 3,000 lines of runtime:
+`zeno build` writes this for it, after 4,500 lines of runtime:
 
 ```c
 static bool z_is_prime(int64_t z_n) {
@@ -193,29 +193,29 @@ had at one time (what `--memory` reports).
 
 | program | build | lines of C | code | held | asked for |
 |---|---|---|---|---|---|
-| hello | collector | 3,028 → 23 | 1,843 → 1,369 | 632 → 608 | 0 → 0 |
-| blink | `--no-collector` | 2,720 → 95 | 1,842 → 1,733 | 712 → 712 | runs for ever |
-| signal | `--no-collector` | 2,805 → 180 | 3,301 → 2,714 | 824 → 800 | 0 → 0 |
-| primes | collector | 3,073 → 100 | 11,429 → 2,054 | 1,936 → 632 | 192 → 0 |
-| primes | `--no-collector` | 2,768 → 100 | 5,936 → 2,054 | 34,832 → 632 | 46 → 0 |
-| thermostat | collector | 3,149 → 724 | 13,345 → 8,034 | 2,024 → 1,888 | 1,360 → 240 |
-| thermostat | `--no-collector` | 2,852 → 284 | 8,491 → 3,548 | 34,904 → 33,772 | 285 → 224 |
-| ring | collector | 3,158 → 809 | 12,995 → 8,654 | 1,944 → 1,888 | 352 → 176 |
-| ring | `--owned` | 3,006 → 454 | 8,717 → 5,189 | 2,944 → 2,896 | 170 → 147 |
-| ring | `--no-collector` | 2,875 → 383 | 8,061 → 4,451 | 34,856 → 34,776 | 170 → 147 |
-| scheduler | `--no-collector` | 2,964 → 510 | 10,569 → 7,156 | 34,848 → 34,824 | 527 → 527 |
-| shapes | collector | 3,161 → 853 | 15,249 → 11,044 | 2,008 → 1,968 | 848 → 560 |
-| words | collector | 3,230 → 1,045 | 16,490 → 12,826 | 2,008 → 2,000 | 2,432 → 2,400 |
-| words | `--no-collector` | 2,970 → 725 | 13,079 → 9,265 | 34,960 → 34,944 | 529 → 529 |
+| hello | collector | 4,494 → 23 | 1,942 → 1,401 | 648 → 624 | 0 → 0 |
+| blink | `--no-collector` | 4,128 → 95 | 1,838 → 1,765 | 728 → 728 | runs for ever |
+| signal | `--no-collector` | 4,213 → 180 | 3,350 → 2,746 | 840 → 816 | 0 → 0 |
+| primes | collector | 4,539 → 100 | 13,453 → 2,086 | 1,928 → 648 | 192 → 0 |
+| primes | `--no-collector` | 4,176 → 100 | 7,680 → 2,086 | 34,832 → 648 | 46 → 0 |
+| thermostat | collector | 4,615 → 828 | 15,575 → 8,762 | 2,016 → 1,912 | 1,360 → 240 |
+| thermostat | `--no-collector` | 4,260 → 350 | 10,671 → 4,241 | 34,896 → 33,796 | 289 → 224 |
+| ring | collector | 4,624 → 911 | 13,304 → 9,376 | 1,936 → 1,912 | 352 → 176 |
+| ring | `--owned` | 4,415 → 519 | 8,985 → 5,891 | 2,936 → 2,920 | 170 → 147 |
+| ring | `--no-collector` | 4,283 → 447 | 8,317 → 5,105 | 34,848 → 34,800 | 170 → 147 |
+| scheduler | `--no-collector` | 4,372 → 575 | 11,227 → 7,720 | 34,840 → 34,840 | 527 → 527 |
+| shapes | collector | 4,627 → 1,093 | 19,894 → 13,176 | 1,984 → 1,960 | 848 → 560 |
+| words | collector | 4,696 → 1,151 | 17,175 → 13,325 | 2,000 → 2,008 | 2,432 → 2,400 |
+| words | `--no-collector` | 4,378 → 789 | 13,784 → 9,781 | 34,952 → 34,960 | 529 → 529 |
 
-(Linux, x86-64, gcc 13, 2026-11-18. The 34 KB a `--no-collector` build
+(Linux, x86-64, gcc 13, 2026-11-19. The 34 KB a `--no-collector` build
 holds is its pool, 32 KB unless the program is built with another
 size: docs/pool.md.)
 
 Three things to read from it:
 
 - **The C is where the difference is.** 23 lines for hello, about 100
-  for a program of numbers, 300 to 1,000 for a program with lists,
+  for a program of numbers, 350 to 1,150 for a program with lists,
   objects and text.
 - **The program shrinks less: for most examples a quarter to a third of
   its code.** The C compiler never put an unused function into the
