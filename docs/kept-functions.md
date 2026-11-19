@@ -120,8 +120,20 @@ It cannot be taken on every trip round a loop, nor while a loop walks
 it, nor on a line that also uses it, and each of those says so in the
 words `let b = a` gets.
 
-A `var` of the function around stays refused: with no collector nothing
-is shared, and a function that changed it would change the other's.
+A `var` is refused in every build, with a collector or without. It could
+be given a new value after the function took the old one, and the two
+would hold different things:
+
+```
+error: this function is kept, so it takes `xs`, but `xs` is a `var`: the function around it could give it a new value after this one took it. Declare it with `let`
+```
+
+`self` cannot be taken either. It is the object the method was called
+on, and `take` cannot be written on it:
+
+```
+error: this function is kept, so it takes `self`, but `self` is the object the method was called on, and its owner still has it. Put what the function needs in a `let` first, and use that
+```
 
 ## In the C
 
@@ -174,7 +186,8 @@ whether the call worked or raised.
 ## How it is tested
 
 - **The checker**: `a_function_that_is_kept_takes_what_it_uses` has
-  `compose`, and each refusal above in its words.
+  `compose`, and each refusal above in its words, the one for a `var`
+  in every kind of build.
   `with_one_owner_a_function_value_has_one` and
   `an_owned_value_stays_in_the_function_that_holds_it` changed where a
   function that was refused now takes what it uses.
@@ -187,7 +200,9 @@ whether the call worked or raised.
   thousand times in a loop, calls them after the function that made
   them has returned, fails a thousand times through a type that says
   `raises`, and calls `make(2)("5")` on both paths. It also holds the C
-  of `compose` to what this page shows.
+  of `compose` to what this page shows. A second program writes
+  `owned` on a `let` and on a parameter that says `take`, and is built
+  every way, with a collector and without.
 - **The targets** run the same program.
 
 ## Things to try

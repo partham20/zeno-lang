@@ -4874,6 +4874,12 @@ impl Emitter<'_> {
             let Some(source) = self.lookup(zeno_name) else {
                 return Err(cannot(format!("a function that uses `{zeno_name}` from outside it"), span));
             };
+            // A value that is taken is moved out of its variable, which a
+            // box shared with another function cannot allow. The checker
+            // takes only what a `let` or a parameter holds (56.8).
+            if takes.contains(zeno_name) && source.boxed.is_some() {
+                return Err(cannot(format!("a function that takes `{zeno_name}`, which is shared, from outside it"), span));
+            }
             let source = source.boxed.clone().unwrap_or_else(|| source.c_name.clone());
             if takes.contains(zeno_name) {
                 fill.push(format!("{made}->z_{zeno_name} = {source};"));
@@ -9779,7 +9785,18 @@ print("after")
         // and with no collector nothing is left.
         let source = include_str!("../tools/targets/edge-kept-functions.zeno");
         no_collector_as_interpreter("kept-functions", source);
+        firmware_as_interpreter("kept-functions", source);
         crate::emit_llvm::tests::same_as_interpreter("kept-functions", source);
+        // With a collector, a value that says `owned` has one owner, and
+        // is taken the same way (plan, Changes 4).
+        let owned = "function f() -> function() -> int {\n    let xs: owned list[int] = [1, 2]\n\
+                     return function() -> int { return len(xs) }\n}\n\
+                     function g(ys: take owned list[int]) -> function() -> int {\n\
+                     return function() -> int { return len(ys) }\n}\n\
+                     let kept = [f(), g([1, 2, 3])]\nprint(f()(), g([4])(), kept[0]() + kept[1]())\n";
+        firmware_as_interpreter("kept-owned", owned);
+        crate::emit_llvm::tests::same_as_interpreter("kept-owned", owned);
+        no_collector_as_interpreter("kept-owned", owned);
         // What it takes is moved into its block, and freed with it.
         let compose = "function compose(f: take function(int) -> int, g: take function(int) -> int) -> function(int) -> int {\n\
                        return function(n: int) -> int { return f(g(n)) }\n}\n\
@@ -11947,8 +11964,14 @@ let x = 7
         one_owner(
             // A function that is kept takes what it uses (decision 56.8),
             // and the owner holds nothing after it.
-            "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1), len(xs))",
+            "function main() {\n    let xs = [1, 2]\n    let f = function(n: int) -> int { return n + len(xs) }\n\
+             print(f(1), len(xs))\n}\nmain()",
             "was given away on line",
+        );
+        one_owner(
+            // A `var` could be given a new value after it was taken.
+            "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))",
+            "but `xs` is a `var`",
         );
         one_owner(
             "function counter() -> function() -> int {\n    var count = 0\n    return function() -> int { return count }\n}\nprint(counter()())",

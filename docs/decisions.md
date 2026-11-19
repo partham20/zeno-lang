@@ -16960,8 +16960,31 @@ gets the message every look gets, to write `take` on it. A value of a
 function further out cannot be taken by a function written two levels
 in: the function in between may be called again, and would have
 nothing left to give the second time. The message says to hand the
-value in as a parameter that says `take`. A `var` of the function
-around stays refused, by design (5.17c).
+value in as a parameter that says `take`. `self` cannot be taken
+either: it is the object the method was called on, and `take` cannot
+be written on it, so the message says to put what the function needs
+in a `let` first.
+
+**A `var` is refused in every build.** A `var` can be given a new
+value after the function took the old one, and the two would then hold
+different things, or would have to share one variable, which a value
+with one owner cannot do. With no collector a `var` of the function
+around was refused already, by design (5.17c). With a collector, the
+first half of 9.2 took a `var` whose type says `owned`: `zeno build`
+then wrote a program that stopped with a fault of memory, and `zeno
+build --llvm` printed the length of the old list where `zeno run`
+printed the new one (found in the review, plan, Changes 4). 0.7.0
+refused that program, so nothing that built before is touched. The
+message says to declare it with `let`, and does not speak of a
+collector:
+
+```
+error: this function is kept, so it takes `xs`, but `xs` is a `var`: the function around it could give it a new value after this one took it. Declare it with `let`
+```
+
+And each compiler refuses, rather than writes, a taken value it has no
+plain variable for, so a mistake in the checker cannot become a fault
+of memory again.
 
 **How it is built.** The checker writes the names a kept function
 took into `Types.taken`, by its `Spot` (56.5): only names, since what

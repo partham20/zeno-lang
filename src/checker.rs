@@ -5526,6 +5526,20 @@ impl Checker {
                      Use it before it goes",
                     at.line_in_file()
                 ))
+            } else if variable.mutable {
+                // The function around could give it a new value after this
+                // one took it, and where values are shared the two would
+                // then hold different ones (plan, Changes 4).
+                Some(format!(
+                    "this function is kept, so it takes `{name}`, but `{name}` is a `var`: the function around it \
+                     could give it a new value after this one took it. Declare it with `let`"
+                ))
+            } else if name == "self" {
+                Some(
+                    "this function is kept, so it takes `self`, but `self` is the object the method was called on, \
+                     and its owner still has it. Put what the function needs in a `let` first, and use that"
+                        .to_string(),
+                )
             } else if !variable.ty.is_owned() {
                 Some(format!(
                     "this function is kept, so it takes `{name}`, but `{name}` is only looked at here: its owner \
@@ -11860,9 +11874,16 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ok("let add = make_adder(1)\nprint(apply(function(n: int) -> int { return add(n) }, 1), add(2))");
         // A function that is kept takes what it uses (decision 56.8),
         // and the owner holds nothing after that line.
-        ok("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))");
-        ok("var xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))");
-        assert!(error("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(len(xs))").contains(GONE));
+        ok("function main() {\n let xs = [1, 2]\n let f = function(n: int) -> int { return n + len(xs) }\n print(f(1))\n}\nmain()");
+        ok("function main() {\n let xs = [1, 2]\n print(keep(function(n: int) -> int { return n + len(xs) }))\n}\nmain()");
+        assert!(error("function main() {\n let xs = [1, 2]\n let f = function(n: int) -> int { return n + len(xs) }\n print(len(xs))\n}")
+            .contains(GONE));
+        // A `var` cannot be taken: the function around could give it a
+        // new value after the kept one took it.
+        const VAR: &str = "this function is kept, so it takes `xs`, but `xs` is a `var`: the function around it could \
+                           give it a new value after this one took it. Declare it with `let`";
+        assert_eq!(error("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))"), VAR);
+        assert_eq!(error("var xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), VAR);
         // Unless what it uses is a `let` at the top of the file, which
         // is there until the program ends, and which it only looks at.
         ok("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(keep(f), len(xs))");
@@ -12817,6 +12838,36 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // Passed along, it still only looks.
         assert_eq!(inside("    let xs = [1, 2]\n    print([1].map(function(n: int) -> int { return n + len(xs) }), len(xs))"), Vec::<String>::new());
+        // `self` cannot be taken, and `take` cannot be written on it.
+        assert_eq!(
+            one_owner("class Box {\n    xs: list[int]\n    function size(self) -> function() -> int {\n\
+                       return function() -> int { return len(self.xs) }\n    }\n}\nprint(Box([1]).size()())\n"),
+            vec!["this function is kept, so it takes `self`, but `self` is the object the method was called on, and its \
+                  owner still has it. Put what the function needs in a `let` first, and use that"]
+        );
+
+        // With a collector too, a `var` that says `owned` is refused:
+        // it could be given a new value after the function took it.
+        const VAR: &str = "this function is kept, so it takes `xs`, but `xs` is a `var`: the function around it could \
+                           give it a new value after this one took it. Declare it with `let`";
+        let var = "function f() -> int {\n    var xs: owned list[int] = [1, 2]\n    let g = function() -> int { return len(xs) }\n\
+                   return g()\n}\nprint(f())\n";
+        let again = "function f() -> int {\n    var xs: owned list[int] = [1, 2]\n    let g = function() -> int { return len(xs) }\n\
+                     xs = [3, 4, 5]\n    return g()\n}\nprint(f())\n";
+        for source in [var, again] {
+            assert_eq!(errors(source), vec![VAR]);
+            assert_eq!(check(source, true), vec![VAR]);
+            assert_eq!(firmware_errors(source), vec![VAR]);
+        }
+        // A `let` that says `owned`, and a parameter that says `take`,
+        // are taken in every build.
+        let owned = "function f() -> function() -> int {\n    let xs: owned list[int] = [1, 2]\n\
+                     return function() -> int { return len(xs) }\n}\n\
+                     function g(ys: take owned list[int]) -> function() -> int {\n\
+                     return function() -> int { return len(ys) }\n}\nprint(f()(), g([1, 2, 3])())\n";
+        assert_eq!(check(owned, true), Vec::<String>::new());
+        assert_eq!(firmware_errors(owned), Vec::<String>::new());
+        assert_eq!(one_owner(owned), Vec::<String>::new());
     }
 
     #[test]
