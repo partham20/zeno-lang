@@ -14176,8 +14176,18 @@ callgrind and not guessed from timings:
   to each other in `Value`, so "is it either" is one comparison), and
   the work for them lives in its own function, `narrow_binary`.
 
-After both, against 0.5.2: fib, loop and sort run the same count to
-0.03%, strings 0.07% fewer, trees 0.08% more and nbody 0.13% more.
+After both, against 0.5.2, the VM ran fib, loop and sort to the same
+count within 0.03%, strings 0.07% fewer, trees 0.08% more and nbody
+0.13% more.
+
+The interpreter (`zeno run` with no `--vm`) showed the same thing a
+third time: fib ran 0.8% more instructions, every one of them in
+`ops::binary`, which had grown. The VM had long answered two ints and
+two floats itself before calling it. That short part is now
+`ops::fast_binary`, `ops::binary` tries it first for whoever calls,
+and the long part is `binary_rest`. The interpreter's fib went from
+12,888 million instructions to 12,499 million, 2.2% fewer than in
+0.5.2, and the VM's counts did not move.
 The rule stays that a feature a program does not use costs that
 program nothing (decision 34.5 is the same lesson for `program.exit`).
 

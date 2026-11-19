@@ -192,7 +192,58 @@ fn made(op: &str, left: (f64, Option<&str>), right: (f64, &str)) -> Option<Value
 }
 
 /// An operator with a value on each side: `a + b`, `a < b`, `a in b`.
+/// Two ints and two floats, which most operators are between, are
+/// answered here; the rest is in `binary_rest` (decision 42.11).
+#[inline]
 pub fn binary(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
+    match fast_binary(op, &left, &right) {
+        Some(value) => Ok(value),
+        None => binary_rest(op, left, right, span),
+    }
+}
+
+/// The answer of `binary_rest` for two ints or two floats, when it is
+/// an answer and not an error, worked out without calling it. `None`
+/// sends everything else, and every error, the long way.
+#[inline(always)]
+pub fn fast_binary(op: BinaryOp, left: &Value, right: &Value) -> Option<Value> {
+    use BinaryOp::*;
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => Some(match op {
+            Add => Value::Int(a.checked_add(*b)?),
+            Sub => Value::Int(a.checked_sub(*b)?),
+            Mul => Value::Int(a.checked_mul(*b)?),
+            // The result takes the sign of the right side (see below).
+            Mod if *b > 0 => {
+                let r = a % b;
+                Value::Int(if r < 0 { r + b } else { r })
+            }
+            Lt => Value::Bool(a < b),
+            LtEq => Value::Bool(a <= b),
+            Gt => Value::Bool(a > b),
+            GtEq => Value::Bool(a >= b),
+            Eq | Is => Value::Bool(a == b),
+            NotEq | IsNot => Value::Bool(a != b),
+            _ => return None,
+        }),
+        (Value::Float(a), Value::Float(b)) => Some(match op {
+            Add => Value::Float(a + b),
+            Sub => Value::Float(a - b),
+            Mul => Value::Float(a * b),
+            Div if *b != 0.0 => Value::Float(a / b),
+            // NaN compares false with everything, as below.
+            Lt => Value::Bool(a < b),
+            LtEq => Value::Bool(a <= b),
+            Gt => Value::Bool(a > b),
+            GtEq => Value::Bool(a >= b),
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+/// Every operator, the long way: what `binary` is, with the errors.
+pub fn binary_rest(op: BinaryOp, left: Value, right: Value, span: Span) -> Result {
     use BinaryOp::*;
     use Value::{Bool, Float, Int, List, Quantity, Str};
 

@@ -361,9 +361,9 @@ impl Vm {
                 Op::Binary(op) => {
                     let right = pop!();
                     let left = pop!();
-                    let value = match fast_binary(op, &left, &right) {
+                    let value = match ops::fast_binary(op, &left, &right) {
                         Some(value) => value,
-                        None => ops::binary(op, left, right, span)?,
+                        None => ops::binary_rest(op, left, right, span)?,
                     };
                     self.stack.push(value);
                 }
@@ -537,9 +537,9 @@ impl Vm {
                 Op::BinaryJump(op, to) => {
                     let right = pop!();
                     let left = pop!();
-                    let value = match fast_binary(op, &left, &right) {
+                    let value = match ops::fast_binary(op, &left, &right) {
                         Some(value) => value,
-                        None => ops::binary(op, left, right, span)?,
+                        None => ops::binary_rest(op, left, right, span)?,
                     };
                     let at = frame.proto.spans[frame.ip];
                     frame.ip = if truth(value, at)? { frame.ip + 1 } else { to as usize };
@@ -896,49 +896,9 @@ impl Vm {
 /// commonest cases (two ints, two floats) here, every other in `ops`.
 #[inline(always)]
 fn binary_of(op: BinaryOp, left: &Value, right: &Value, span: Span) -> Result<Value, Control> {
-    match fast_binary(op, left, right) {
+    match ops::fast_binary(op, left, right) {
         Some(value) => Ok(value),
-        None => ops::binary(op, left.clone(), right.clone(), span),
-    }
-}
-
-/// The answer of `ops::binary` for two ints or two floats, when it is
-/// an answer and not an error, worked out without calling it. `None`
-/// sends everything else, and every error, the long way.
-#[inline(always)]
-fn fast_binary(op: BinaryOp, left: &Value, right: &Value) -> Option<Value> {
-    use BinaryOp::*;
-    match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Some(match op {
-            Add => Value::Int(a.checked_add(*b)?),
-            Sub => Value::Int(a.checked_sub(*b)?),
-            Mul => Value::Int(a.checked_mul(*b)?),
-            // The result takes the sign of the right side (see ops).
-            Mod if *b > 0 => {
-                let r = a % b;
-                Value::Int(if r < 0 { r + b } else { r })
-            }
-            Lt => Value::Bool(a < b),
-            LtEq => Value::Bool(a <= b),
-            Gt => Value::Bool(a > b),
-            GtEq => Value::Bool(a >= b),
-            Eq | Is => Value::Bool(a == b),
-            NotEq | IsNot => Value::Bool(a != b),
-            _ => return None,
-        }),
-        (Value::Float(a), Value::Float(b)) => Some(match op {
-            Add => Value::Float(a + b),
-            Sub => Value::Float(a - b),
-            Mul => Value::Float(a * b),
-            Div if *b != 0.0 => Value::Float(a / b),
-            // NaN compares false with everything, as in ops.
-            Lt => Value::Bool(a < b),
-            LtEq => Value::Bool(a <= b),
-            Gt => Value::Bool(a > b),
-            GtEq => Value::Bool(a >= b),
-            _ => return None,
-        }),
-        _ => None,
+        None => ops::binary_rest(op, left.clone(), right.clone(), span),
     }
 }
 
