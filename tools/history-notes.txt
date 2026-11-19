@@ -565,3 +565,7 @@ ea5d687 The plan: `raises` after a result belongs to the function it ends, a typ
 e1d726d `raises` in a function type: `function(str) -> int raises ValueError`. A call through such a value is checked as raising, and a firmware build and a build with no collector now take a raising function as a value, which they refused (decision 56).
 a24bb55 Giving a value away is one function in the checker, so that a function that is kept can give away what it uses by the same rule as `let b = a`. Nothing changes.
 80be701 A function that is kept takes what it uses: `compose(f, g)` builds with no collector (decision 56.8). With it, four fixes from the review of `raises` in a function type, and a function called straight from the call that made it is freed with no collector, which 0.7.0 left.
+4c2b97d The plan: what the review of `raises` in a function type settled, and what the first half of 9.2 asked.
+909ca90 The plan: the tests leave out the same firmware builds as before.
+36b2d90 The plan: a function that is kept cannot take a `var`, in any build.
+dc322b6 A function that is kept cannot take a `var`, in any build: with a collector one that said `owned` was taken, and the program stopped with a fault of memory. `self` gets a message that can be followed (decision 56.8).
