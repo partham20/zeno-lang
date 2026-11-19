@@ -1,0 +1,143 @@
+# A value with one owner as what a type parameter stands for (decision
+# 56.11): `same`, `Box`, `Stack` and `Pair` with a list, an object and
+# an enum value that carries values, a stack that hands its items back,
+# and a thousand rounds. Every build prints what `zeno run` prints, and
+# a build with no collector leaves nothing.
+
+class Frame {
+    id: int
+    data: list[int]
+}
+
+enum Shape {
+    Circle(radius: int)
+    Square(side: int)
+}
+
+class Box[T] {
+    value: T
+}
+
+class Pair[A, B] {
+    first: A
+    second: B
+}
+
+class Stack[T] {
+    items: list[T]
+
+    function push(self, x: take T) {
+        self.items.append(x)
+    }
+
+    function pop(self) -> T {
+        return self.items.pop()
+    }
+
+    function size(self) -> int {
+        return len(self.items)
+    }
+}
+
+# A slot that may be empty hands its item on with `take` (56.10).
+class Slot[T] {
+    item: T or none
+
+    function hand_on(self) -> T or none {
+        return take self.item
+    }
+}
+
+function same[T](x: take T) -> T {
+    return x
+}
+
+function count[T](xs: list[T]) -> int {
+    return len(xs)
+}
+
+function area(shape: Shape) -> int {
+    match shape {
+        case Circle(r) { return 3 * r * r }
+        case Square(s) { return s * s }
+    }
+}
+
+function total(frame: Frame) -> int {
+    var sum = 0
+    for d in frame.data {
+        sum += d
+    }
+    return sum
+}
+
+function main() {
+    # `same` with a number, a list, an object and an enum value.
+    let n = same(5)
+    let xs = same([1, 2, 3])
+    let f = same(Frame(1, [4, 5]))
+    let s = same(Circle(2))
+    print(n, xs, f.id, total(f), area(s))
+
+    # `Box` of each.
+    let a = Box(7)
+    let b = Box([8, 9])
+    let c = Box(Frame(2, [10]))
+    let d: Box[Shape] = Box(Square(3))
+    print(a.value, b.value, c.value.id, area(d.value))
+
+    # `Pair` of an object and a list, and of an enum value and a number.
+    let p = Pair(Frame(3, [1, 1, 1]), [2, 2])
+    let q = Pair(Circle(1), 4)
+    print(p.first.id, total(p.first), p.second, area(q.first), q.second)
+
+    # A stack of objects, of lists and of enum values, which hands its
+    # items back.
+    let frames: Stack[Frame] = Stack([])
+    frames.push(Frame(4, [1]))
+    frames.push(Frame(5, [2, 2]))
+    let top = frames.pop()
+    print(frames.size(), top.id, total(top))
+
+    let lists: Stack[list[int]] = Stack([])
+    lists.push([1])
+    lists.push([2, 3])
+    let last = lists.pop()
+    print(lists.size(), last)
+
+    let shapes = Stack([Circle(1)])
+    shapes.push(Square(2))
+    let shape = shapes.pop()
+    print(shapes.size(), area(shape))
+
+    let numbers = Stack([1, 2])
+    numbers.push(3)
+    let three = numbers.pop()
+    print(numbers.size(), three, count(numbers.items))
+    print(count([Frame(6, [])]), count(lists.items))
+
+    # Printed, and handed on out of a slot.
+    print(Box([Frame(7, [7])]), p)
+    let slot = Slot(Frame(8, [8]))
+    let out = slot.hand_on()
+    print(slot.item is none, out)
+    let empty: Slot[list[int]] = Slot(none)
+    print(empty.hand_on())
+
+    # A thousand rounds: each frame goes into a box, out of `same`, onto
+    # the stack and back off it.
+    var sum = 0
+    for i in range(1000) {
+        let box = Box(Frame(i, [i, i]))
+        let kept = same(Frame(i + 1, [i]))
+        frames.push(kept)
+        let back = frames.pop()
+        sum += box.value.id + back.id + total(back)
+        if i % 100 == 0 {
+            frames.push(Frame(i, []))
+        }
+    }
+    print(sum, frames.size())
+}
+
+main()

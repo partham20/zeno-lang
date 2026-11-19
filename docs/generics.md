@@ -314,8 +314,11 @@ define internal double @"z_Cell[float].get"(ptr %arg.self) {
 - **The types cannot be written at the call.** There is no
   `first[int](xs)`. If nothing says what `T` is, put the result where
   its type is written.
-- **A value that has one owner cannot fill a type parameter.**
-  `Stack[owned list[int]]` would need the stack to free what it holds.
+- **A list of objects of an `owned class` cannot fill a type
+  parameter with a collector**, as such a list cannot be inside any
+  other type. With no collector `Stack[list[Frame]]` builds, and any
+  list or object can fill `T` since 0.8.0
+  ([`generic-owned.md`](generic-owned.md)).
 - **An object of a generic class cannot be raised**, because `raises`
   and `except` take a plain name.
 - **A generic inside a function is not compiled.** `zeno run` runs it.

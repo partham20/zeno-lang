@@ -17214,7 +17214,105 @@ C. The C writes `none` where the value was and frees nothing there
 (`take_leaves_none_every_way`). The targets run the program, and nine
 print what `zeno run` prints here.
 
-### 56.11 Left for later
+### 56.11 A value with one owner as what a type parameter stands for
+
+```zeno
+class Stack[T] {
+    items: list[T]
+    function push(self, x: take T) { self.items.append(x) }
+}
+let frames: Stack[Frame] = Stack([])      # refused with no collector until 0.8.0
+```
+
+**The need.** A firmware program wants a queue of frames, a ring of
+buffers, a `Box` of what a sensor read. With no collector every list
+and object has one owner, and none of them could fill a type
+parameter: `same([1, 2])`, `Box(Frame(1, []))` and `Stack[Frame]` were
+refused in every build with no collector (5.16i). A generic was a tool
+for numbers only there.
+
+**The rule.** A copy of a generic is checked as if it had been written
+by hand with the type in the place of `T` (3.16d). With no collector
+that rule was not followed: the checker stopped at the call. The stop
+is taken away, and nothing else is added. `Stack[Frame]` is then a
+class with a list of frames, which a build with no collector has taken
+since 5.15c, and every rule of one owner holds of it in the words it
+has for a class written by hand.
+
+**`take T`.** 5.19f refused it, "because `T` may be a number". It is
+now read for whatever `T` stands for: in a copy where `T` is copied,
+the word changes nothing, which is what it already does where values
+are shared (5.19a). So `function same[T](x: take T) -> T` is right for
+an `int` and for a list, in every build. A generic that keeps or
+returns what it is given and does not say `take` is wrong for a list,
+and the error is inside the copy, with the note that names the copy
+and the line that asked for it. The other ways were weighed. Making
+`take` implied for a `T` would make `count[T](xs: list[T])` take a
+list it only looks at, and the caller lose it. Refusing a list for a
+`T` that is not taken would be a rule a hand-written class does not
+have. Only the checked copy says the same thing as a class written by
+hand, so it is the one rule there is. Whether a written type is a type
+parameter is known by the variable the name finds, which the outline
+and each copy record (`type_params`).
+
+**What the call does.** What `T` stands for is known only once every
+argument has been read, so a call cannot ask the copy what each
+parameter does. It goes by what the generic wrote: a field of a
+generic class, and a parameter written `take T`, take the value; a
+parameter written `T` looks at it, and one written `list[T]` already
+did. A look is never what fills `T`: `T` is the value, and a look at a
+list fills it with the list (`unlent`). The copy then says whether the
+look may be kept, as a hand-written function would. With no collector
+a list that fills `T` is an owned list, whatever the argument was
+called when it was read, so `Box([1])` and `let b: Box[list[int]]` ask
+for the same copy.
+
+**Names.** With no collector every list has one owner, so `owned` says
+nothing in the name of a copy: the copy of `Box` for a list of ints is
+`Box[list[int]]`, and `z_Box_list_int` in the C (5.14c). With a
+collector `Box[owned list[int]]` and `Box[list[int]]` are two copies,
+and keep `owned` in the name.
+
+**An error in a field of a copy.** It had no note, since the fields of
+a copy were worked out outside the note that the methods get. A field
+of `Stack[Packet]` that cannot hold an owned `Packet` now says which
+copy it is in, as a mistake in a method does.
+
+**How it is built.** Only the checker changed. The refusal in the
+`[ ]` of a generic and the two in `infer` went, `take T` is read, a
+call of a generic takes or looks as above, and the names of copies
+drop `owned` with no collector. The compilers build a copy as they
+build any class, and free what it holds by `Drops`, so neither
+`emit_c.rs` nor `emit_llvm.rs` needed a line. The interpreter, the VM
+and the targets were never told what owns what.
+
+**What it costs.** Nothing for a program that does not use it: the C,
+IR, `zeno join` and bytecode of every program that was there before
+are those of 0.7.0 (`tools/same.py`). Two programs that were refused
+with one owner are refused still, with the words a hand-written copy
+gets: `book/19-generics#7` returns an item of a list it only looked at,
+and `tools/targets/edge-modules` keeps a `T` it was only lent, each in
+the five builds with one owner.
+
+**Tests.** The checker: `same`, `Box` and `Stack` with a list, an
+object and an enum value; a parameter written `T` that looks, and one
+written `take T` that takes; `take T` with a number in every build;
+the error inside a copy, with its note; `take` on a copied type that
+is no type parameter, still refused; an `owned class` with a collector
+(`a_value_with_one_owner_can_fill_a_type_parameter`). Both compilers:
+[`tools/targets/edge-generic-owned.zeno`](../tools/targets/edge-generic-owned.zeno),
+`same`, `Box`, `Stack`, `Pair` and a `Slot` that hands on with `take`,
+with a list, an object and an enum value, a stack that hands its items
+back, copies printed, and a thousand rounds, with no collector through
+C and LLVM with the same memory report and 0 blocks left, and in the
+ordinary and firmware builds of both. The same test builds the kept
+function of 56.5 and 56.8 in a generic, taking a list in one copy and a
+number in another, which waited for this part, and an `owned class`
+copy with a collector
+(`a_value_with_one_owner_fills_a_type_parameter_every_way`). The
+targets run the program, and nine print what `zeno run` prints here.
+
+### 56.12 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17224,10 +17322,6 @@ print what `zeno run` prints here.
   way in is the rule of 9.2.
 - **Closing the gap of 56.4 in an ordinary build.** A question for the
   owner of the language, with the numbers above.
-- **A kept function in a generic whose value is a list in one copy and
-  a number in another.** The note is kept for each copy (56.5), so it
-  is ready, but no program can write it yet: a value with one owner
-  cannot fill a type parameter until 9.4. The test waits for 9.4.
 - **A method of an object that no variable holds, used as a value**:
   `make().size`, `a.b.size`, `xs[0].size`. Both compilers refuse it as
   before. Put the object in a `let` first.
@@ -17242,3 +17336,8 @@ print what `zeno run` prints here.
   `self.current = take self.waiting[0]` is refused, as
   `self.current = self.waiting.pop()` was, because the line looks at
   `self` before it takes out of it. Two lines do it.
+- **A list of objects of an `owned class` inside the `[ ]` of a
+  generic, with a collector**: `Box[list[Packet]]`. Refused, as such a
+  list is inside any other type: "...and `owned` cannot be written
+  inside another type yet". With no collector `Box[list[Frame]]`
+  builds.

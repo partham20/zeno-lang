@@ -9986,6 +9986,46 @@ print("after")
     }
 
     #[test]
+    fn a_value_with_one_owner_fills_a_type_parameter_every_way() {
+        // `same`, `Box`, `Stack`, `Pair` and `Slot` with a list, an object
+        // and an enum value that carries values, a thousand rounds, and
+        // what a copy prints (decision 56.11). Every build prints what
+        // `zeno run` prints, and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-generic-owned.zeno");
+        no_collector_as_interpreter("generic-owned", source);
+        firmware_as_interpreter("generic-owned", source);
+        crate::emit_llvm::tests::same_as_interpreter("generic-owned", source);
+        // A copy is named as copies are, without `owned`, which says
+        // nothing where everything has one owner.
+        let c = compile_no_collector(
+            "class Frame {\n    id: int\n}\nclass Stack[T] {\n    items: list[T]\n}\n\
+             let s: Stack[Frame] = Stack([Frame(1)])\nlet t = Stack([[1]])\nprint(len(s.items), len(t.items))\n",
+        )
+        .unwrap();
+        for name in ["zeno_drop_Stack_Frame(", "zeno_drop_Stack_list_int("] {
+            assert!(c.contains(name), "{name}\n{c}");
+        }
+        // With a collector, an object of an `owned class` fills `T` of an
+        // `owned class` copy, which frees it.
+        let owned = "owned class Packet {\n    id: int\n}\nowned class Stack[T] {\n    items: owned list[T]\n\
+                     function push(self, x: take T) { self.items.append(x) }\n}\n\
+                     function same[T](x: take T) -> T { return x }\n\
+                     let s: Stack[Packet] = Stack([])\nfor i in range(100) {\n    s.push(same(Packet(i)))\n}\n\
+                     print(len(s.items), s.items[99].id)\n";
+        // A kept function in a generic takes a list in one copy and a
+        // number in another, and frees each by its kind (56.8, 56.11).
+        let kept = "class Frame {\n    id: int\n}\n\
+                    function hold[T](x: take T) -> function() -> str {\n    return function() -> str { return f\"{x}\" }\n}\n\
+                    let a = hold([1, 2])\nlet b = hold(5)\nlet c = hold(Frame(3))\nprint(a(), b(), c())\n\
+                    for i in range(1000) {\n    let d = hold([i])\n    if i == 999 {\n        print(d())\n    }\n}\n";
+        no_collector_as_interpreter("generic-kept", kept);
+        firmware_as_interpreter("generic-kept", kept);
+        firmware_as_interpreter("generic-owned-class", owned);
+        crate::emit_llvm::tests::same_as_interpreter("generic-owned-class", owned);
+        no_collector_as_interpreter("generic-owned-class", owned);
+    }
+
+    #[test]
     fn each_copy_of_a_generic_makes_its_own_functions_raising() {
         // The same line hands `size` to a list of raising functions in one
         // copy and to a list of plain ones in the other (plan, Changes 2).

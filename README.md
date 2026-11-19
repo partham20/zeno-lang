@@ -867,6 +867,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     there, in every build, so a state machine with no collector can
     hand on what it holds. See [`docs/take.md`](docs/take.md) and 56.10
     of [`docs/decisions.md`](docs/decisions.md))
+57. A value with one owner in a generic (on `main`, for 0.8.0:
+    `Stack[Frame]`, `Box([1, 2])` and `same(frame)` build with no
+    collector, and `function same[T](x: take T) -> T` is right for a
+    number and for a list. See
+    [`docs/generic-owned.md`](docs/generic-owned.md) and 56.11 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

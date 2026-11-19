@@ -2170,6 +2170,10 @@ struct Checker {
     /// The function written where a value goes that `take` is about to
     /// check: it is kept, and takes what it uses (decision 56.8).
     keeping: Option<usize>,
+    /// The type parameters of generics, by variable id: the `T` of
+    /// `Stack[T]` in its outline and in each copy. `take T` is read by
+    /// them (decision 56.11).
+    type_params: HashSet<usize>,
     /// The declarations of the named functions whose bodies are being
     /// checked, the innermost last. See `Spot`.
     within: Vec<usize>,
@@ -2335,6 +2339,7 @@ impl Checker {
             functions_used: Vec::new(),
             captured: Vec::new(),
             keeping: None,
+            type_params: HashSet::new(),
             within: Vec::new(),
         }
     }
@@ -3027,6 +3032,18 @@ impl Checker {
     /// `take` are words about the whole value, so they are only looked
     /// for here, at the front, and `take` only on a parameter.
     ///
+    /// Is this written type a type parameter of a generic, such as the
+    /// `T` of `take T`, or one that may be `none`?
+    fn a_type_parameter(&self, ty: &ast::Type, env: &Env) -> bool {
+        match ty {
+            ast::Type::Named { name, args } if args.is_empty() => {
+                env.get(name).is_some_and(|variable| self.type_params.contains(&variable.id))
+            }
+            ast::Type::Optional(inner) => self.a_type_parameter(inner, env),
+            _ => false,
+        }
+    }
+
     /// A parameter looks at what it is given. If the value has one
     /// owner, the caller goes on owning it, and the parameter's type is
     /// a look at it. `take` is the word for a parameter that takes the
@@ -3034,8 +3051,10 @@ impl Checker {
     fn resolve_for(&mut self, ty: &ast::Type, env: &Env, span: Span, parameter: bool) -> Ty {
         if parameter {
             return match ty {
+                // `take T` is right for whatever `T` stands for: where it
+                // is a number, the word changes nothing (decision 56.11).
                 ast::Type::Take(inner) => match self.resolve_for(inner, env, span, false) {
-                    ty if borrowable(&ty) || ty.is_loose() => ty,
+                    ty if borrowable(&ty) || ty.is_loose() || self.a_type_parameter(inner, env) => ty,
                     ty => self.error(
                         format!(
                             "`take` is for a value that has an owner: a list, an object, a function, an error \
@@ -3096,8 +3115,9 @@ impl Checker {
 
     /// The part of a type after any `owned` or `take`. `inside` says
     /// what the type is written in. A list can hold values that have one
-    /// owner: it is their owner. An `or none`, a function type and the
-    /// `[ ]` of a generic cannot yet.
+    /// owner: it is their owner. So can an `or none` and the `[ ]` of a
+    /// generic (decision 56.11), where the copy is checked as if written
+    /// by hand.
     fn resolve_inside(&mut self, ty: &ast::Type, env: &Env, span: Span, inside: Inside) -> Ty {
         let written = ty as *const ast::Type as usize;
         let ty = match ty {
@@ -3360,17 +3380,6 @@ impl Checker {
                 ty
             }
         };
-        if inside == Inside::Other && ty.is_owned() {
-            // Taking the value back out would have to leave a hole.
-            return self.error(
-                format!(
-                    "{} cannot be kept inside the `[ ]` of a generic yet. \
-                     It lives in a variable, a parameter, a field, or a list that has an owner",
-                    an_owned(&ty)
-                ),
-                span,
-            );
-        }
         // The compilers ask what a written type stands for by where it is
         // written. Inside a copy of a generic only the checker knows.
         if !has_param(&ty) {
@@ -6417,6 +6426,23 @@ impl Checker {
                     });
                     // `u64.wrap(h * prime)`: the product is cut to 64 bits.
                     self.wrap_mode = matches!(callee, Ty::Builtin("u64..of"));
+                    // What a type parameter stands for is known only once
+                    // every argument has been read. So a generic's field,
+                    // and a parameter written `take T`, take the value, and
+                    // a parameter written `T` looks at it (decision 56.11).
+                    let generic_keeps = match &callee {
+                        Ty::Generic(generic) => match &generic.template {
+                            Template::Class(_) => Some(true),
+                            Template::Function(decl) => Some(
+                                match &arg.name {
+                                    None => decl.params.get(position),
+                                    Some(name) => decl.params.iter().find(|param| param.name == *name),
+                                }
+                                .is_some_and(|param| matches!(param.ty, Some(ast::Type::Take(_)))),
+                            ),
+                        },
+                        _ => None,
+                    };
                     let ty = match slot {
                         // A parameter that takes an owned value keeps it:
                         // the caller's variable gives it up.
@@ -6436,6 +6462,14 @@ impl Checker {
                                 ty => ty,
                             }
                         }
+                        _ if generic_keeps == Some(true) => self.take(&arg.value, env),
+                        _ if generic_keeps == Some(false) => match self.expr(&arg.value, env) {
+                            ty if ty.is_owned() => {
+                                self.types.lent.insert(&arg.value as *const Expr as usize);
+                                lent(&ty)
+                            }
+                            ty => ty,
+                        },
                         // Anything else is checked against the parameter
                         // by `call`. A look at an owned value fits there
                         // only if the parameter looks.
@@ -8619,6 +8653,7 @@ impl Checker {
         let env = Scope::child(&generic.env);
         for name in &generic.params {
             env.declare(name, Ty::Alias(Box::new(Ty::Param(Rc::from(name.as_str())))), false);
+            self.type_params.extend(env.get(name).map(|variable| variable.id));
         }
         let span = generic.span;
         let mut slots = Vec::new();
@@ -8863,22 +8898,17 @@ impl Checker {
                     return None;
                 }
             };
-            if ty.is_tied() {
-                self.error(format!("`{name}` would be {ty} here. A value that has one owner cannot fill a type parameter yet"), span);
-                return None;
-            }
-            // With one owner for everything, a list is an owned value
-            // too, whatever it was called when the argument was read.
-            if self.one_owner && ty.is_collection() {
-                self.error(
-                    format!(
-                        "`{name}` would be {ty} here. With no collector a list or a dict has one owner, \
-                         and a value that has one owner cannot fill a type parameter yet"
-                    ),
-                    span,
-                );
-                return None;
-            }
+            // A copy is checked as if it were written by hand with this
+            // type in the place of `T` (decision 56.11). What fills `T` is
+            // the value itself, never a look at it: in the copy a parameter
+            // written `T` looks, and one written `take T` takes.
+            let ty = match unlent(ty) {
+                // With one owner for everything, a list is an owned value
+                // too, whatever it was called when the argument was read.
+                list if self.one_owner && list.is_collection() => Ty::Owned(Box::new(list)),
+                Ty::Optional(list) if self.one_owner && list.is_collection() => Ty::Optional(Box::new(Ty::Owned(list))),
+                ty => ty,
+            };
             types.push(ty);
         }
         Some(types)
@@ -9012,8 +9042,28 @@ impl Checker {
     /// The name of the copy of `generic` for `types`, the scope in which
     /// its type parameters mean those types, and the note that goes under
     /// an error found inside it. `None` if the copies have got out of hand.
+    /// A type as it is spelled in the name of a copy. With no collector
+    /// every list and dict has one owner, so `owned` would say nothing:
+    /// the copy of `Box` for a list of ints is `Box[list[int]]`.
+    fn spelled(&self, ty: &Ty) -> String {
+        fn unowned(ty: &Ty) -> Ty {
+            match ty {
+                Ty::Owned(inner) => unowned(inner),
+                Ty::List(item) => Ty::List(Box::new(unowned(item))),
+                Ty::Fixed(item, length) => Ty::Fixed(Box::new(unowned(item)), *length),
+                Ty::Dict(key, value) => Ty::Dict(Box::new(unowned(key)), Box::new(unowned(value))),
+                Ty::Optional(inner) => Ty::Optional(Box::new(unowned(inner))),
+                other => other.clone(),
+            }
+        }
+        match self.one_owner {
+            true => spelled(&unowned(ty)),
+            false => spelled(ty),
+        }
+    }
+
     fn copy_setting(&mut self, generic: &Rc<Generic>, types: &[Ty], asked: Option<Span>) -> Option<(String, Env, String)> {
-        let spelled: Vec<String> = types.iter().map(spelled).collect();
+        let spelled: Vec<String> = types.iter().map(|ty| self.spelled(ty)).collect();
         let name = format!("{}[{}]", generic.name, spelled.join(", "));
         // `class Node[T] { next: Node[list[T]] or none }` asks for
         // Node[int], Node[list[int]], Node[list[list[int]]], with no end.
@@ -9033,6 +9083,7 @@ impl Checker {
         let mut means = Vec::new();
         for (param, ty) in generic.params.iter().zip(types) {
             env.declare(param, Ty::Alias(Box::new(ty.clone())), false);
+            self.type_params.extend(env.get(param).map(|variable| variable.id));
             means.push(format!("{param} = {}", spelled.get(means.len()).cloned().unwrap_or_default()));
         }
         let mut note = format!("this is inside `{name}`: `{}` with {}", generic.name, means.join(", "));
@@ -9051,7 +9102,7 @@ impl Checker {
             return None;
         };
         let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
-        let key = (generic.at, if alone { String::new() } else { types.iter().map(spelled).collect::<Vec<_>>().join(", ") });
+        let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
         if let Some(Made::Function(copy)) = self.copies.get(&key) {
             return Some(copy.clone());
         }
@@ -9087,7 +9138,7 @@ impl Checker {
         // Checking the generic on its own fills every parameter with
         // `Invalid`, the type that is accepted everywhere.
         let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
-        let key = (generic.at, if alone { String::new() } else { types.iter().map(spelled).collect::<Vec<_>>().join(", ") });
+        let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
         if let Some(Made::Class(copy)) = self.copies.get(&key) {
             return Some(copy.clone());
         }
@@ -9108,7 +9159,11 @@ impl Checker {
             self.classes.insert(copy.id.clone(), copy.clone());
             self.types.class_copies.entry(generic.at).or_default().push(decl.clone());
         }
+        // A mistake in the fields of a copy says which copy it is in, as
+        // one in its methods does.
+        self.copy_notes.push(copy.copy_note.clone());
         self.fill_class(&decl, &copy, &env, generic.span);
+        self.copy_notes.pop();
         self.pending.push((decl, copy.clone()));
         Some(copy)
     }
@@ -9492,6 +9547,17 @@ fn an_owned(ty: &Ty) -> String {
     match ty {
         Ty::Owned(_) => format!("an {ty}"),
         _ => format!("an owned {ty}"),
+    }
+}
+
+/// The value that a look is a look at: what a variable that owns it
+/// would hold. The opposite of `lent`.
+fn unlent(ty: Ty) -> Ty {
+    match ty {
+        Ty::Borrowed(inner) if inner.is_collection() => Ty::Owned(inner),
+        Ty::Borrowed(inner) => *inner,
+        Ty::Optional(inner) => Ty::Optional(Box::new(unlent(*inner))),
+        other => other,
     }
 }
 
@@ -10629,6 +10695,62 @@ mod tests {
     }
 
     #[test]
+    fn a_value_with_one_owner_can_fill_a_type_parameter() {
+        // A copy of a generic is checked as if it were written by hand,
+        // with the type in the place of `T` (decision 56.11).
+        const GENERICS: &str = "class Frame {\n id: int\n data: list[int]\n}\n\
+                                enum Shape {\n Dot\n Circle(r: int)\n}\n\
+                                class Box[T] {\n value: T\n}\n\
+                                class Stack[T] {\n items: list[T]\n\
+                                function push(self, x: take T) { self.items.append(x) }\n\
+                                function pop(self) -> T { return self.items.pop() }\n}\n\
+                                function same[T](x: take T) -> T { return x }\n\
+                                function count[T](xs: list[T]) -> int { return len(xs) }\n";
+        let good = |source: &str| one_owner_ok(&format!("{GENERICS}{source}"));
+        let bad = |source: &str| one_owner_error(&format!("{GENERICS}{source}"));
+        good("let xs = same([1, 2])\nlet f = same(Frame(1, [1]))\nlet s = same(Circle(2))\nprint(xs, f.id, s)");
+        good("let a = Box([1])\nlet b = Box(Frame(1, []))\nlet c: Box[Shape] = Box(Dot)\nprint(a.value, b.value.id, c.value)");
+        good("let s: Stack[Frame] = Stack([])\ns.push(Frame(1, []))\nlet f = s.pop()\nprint(f.id)");
+        good("let ls: Stack[list[int]] = Stack([[1]])\nls.push([2])\nprint(count(ls.items))");
+        // A parameter written `T` looks, so what it is given is still there.
+        good("let fs = [Frame(1, [])]\nprint(count(fs))\nprint(len(fs))");
+        // One written `take T` takes it, as any `take` does.
+        let f = "let f = Frame(1, [])\n";
+        assert!(bad(&format!("{f}let g = same(f)\nprint(f.id)")).contains(GONE));
+        assert!(bad(&format!("{f}let b = Box(f)\nprint(f.id)")).contains(GONE));
+        assert_eq!(
+            bad("function f(p: Frame) -> Frame { return same(p) }"),
+            "`p` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+             If it is a parameter, write `take` in front of its type to take the value over"
+        );
+        // `take T` is right for a number too, in every build: there the
+        // word changes nothing.
+        let numbers = "function same[T](x: take T) -> T { return x }\nprint(same(5), same(\"a\"))";
+        one_owner_ok(numbers);
+        strict_ok(numbers);
+        // `take` on a type that is copied, and is no type parameter, is
+        // still a mistake.
+        assert!(error("function f(x: take int) { }").contains("This is int, which is copied"));
+        // A generic that returns what it only looked at is wrong for a
+        // value with one owner. The error is inside the copy, and says so.
+        let source = format!("{GENERICS}function keep[T](x: T) -> T {{\n return x\n}}\nprint(keep(Frame(1, [])).id)");
+        let program = parser::parse(lexer::lex(&source).unwrap()).unwrap();
+        let (found, _) = super::check_by(&program, super::Rules { strict: true, one_owner: true, firmware: true });
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].message.starts_with("`x` is only looked at here"), "{}", found[0].message);
+        assert_eq!(found[0].span.line, 20);
+        assert_eq!(found[0].note.as_deref(), Some("this is inside `keep[Frame]`: `keep` with T = Frame, which line 22 asks for"));
+        // With a collector, an object of an `owned class` fills `T` as
+        // well, and a copy that holds one is held to the rules of a class
+        // written for it.
+        owned_ok("function same[T](x: take T) -> T { return x }\nlet p = same(make())\nprint(p.id)");
+        assert_eq!(
+            owned_error("class Box[T] {\n value: T\n}\nlet b = Box(make())"),
+            "`value` holds an owned value, so `Box[Packet]` must be an `owned class` itself. A shared object cannot own anything"
+        );
+    }
+
+    #[test]
     fn what_a_generic_cannot_do_yet() {
         assert_eq!(
             error("function first[t](items: list[t]) -> t {\n    return items[0]\n}"),
@@ -10655,10 +10777,6 @@ mod tests {
         assert_eq!(
             error("class Problem[T] {\n    what: T\n}\nfunction f() {\n    raise Problem(4)\n}"),
             "an object of a generic class cannot be raised yet, and this is a Problem[int]"
-        );
-        assert_eq!(
-            error("function keep[T](x: T) -> T {\n    return x\n}\nlet xs: owned list[int] = [1]\nlet ys = keep(xs)"),
-            "`T` would be a list[int] that is only looked at here. A value that has one owner cannot fill a type parameter yet"
         );
     }
 
@@ -11509,10 +11627,17 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             owned_error("function f(g: function(take Packet) -> int) -> int {\n let p = make()\n return g(p) + g(p)\n}"),
             "`p` is given away here, on a line that also uses it. Do the other thing on a line of its own first"
         );
+        // A copy of a generic is checked as if it were written by hand,
+        // so `Stack[Packet]` holds its packets as a class written for them
+        // would (decision 56.11).
         assert_eq!(
             owned_error("class Stack[T] {\n items: list[T]\n}\nfunction f(s: Stack[Packet]) { }"),
-            "an owned Packet cannot be kept inside the `[ ]` of a generic yet. \
-             It lives in a variable, a parameter, a field, or a list that has an owner"
+            "each item of this list is an owned Packet, which has one owner: the list. So the list needs an \
+             owner too. Write `owned list[...]`"
+        );
+        owned_ok(
+            "owned class Stack[T] {\n items: owned list[T]\n}\nfunction f(s: Stack[Packet]) -> int { return len(s.items) }\n\
+             let s: Stack[Packet] = Stack([make()])\nprint(f(s), len(Stack([1]).items))",
         );
         // A list may hold them, and is then their owner. So it has to
         // have an owner itself.
@@ -11916,15 +12041,13 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // Nor as what a type parameter stands for. An item type is fine.
         ok("function first[T](items: list[T]) -> T { return items[0] }\nlet xs = [1, 2]\nprint(first(xs))");
-        assert_eq!(
-            error("function same[T](x: T) -> T { return x }\nlet xs = same([1, 2])"),
-            "`T` would be list[int] here. With no collector a list or a dict has one owner, \
-             and a value that has one owner cannot fill a type parameter yet"
-        );
-        assert_eq!(
-            error("function same[T](x: T) -> T { return x }\nlet p = same(Point(1, 2))"),
-            "`T` would be Point here. A value that has one owner cannot fill a type parameter yet"
-        );
+        // It can, and the copy is checked as if it were written by hand
+        // (decision 56.11): this `same` returns what it only looks at.
+        let looks = "`x` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+                     If it is a parameter, write `take` in front of its type to take the value over";
+        assert_eq!(error("function same[T](x: T) -> T { return x }\nlet xs = same([1, 2])"), looks);
+        assert_eq!(error("function same[T](x: T) -> T { return x }\nlet p = same(Point(1, 2))"), looks);
+        ok("function same[T](x: take T) -> T { return x }\nlet xs = same([1, 2])\nlet p = same(Point(1, 2))\nprint(xs, p.x)");
     }
 
     #[test]

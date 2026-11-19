@@ -341,7 +341,7 @@ report, line for line.
 | ~~A function written where a value goes, a function type that mentions a list or an object, an error that is kept or raised again~~ | all three build now: [`functions-and-errors.md`](functions-and-errors.md) | done in step 5 |
 | ~~A function that uses a list or object declared at the top of the file~~ | it builds now, for a `let`: see below | done in the audit |
 | ~~A method that pops an item or replaces a field that has one owner~~ | it builds now, and the caller is held to rule 1 | done in the audit |
-| A list or object as the `T` of a generic | the copy for `T` would have to know it moves | noted |
+| ~~A list or object as the `T` of a generic~~ | it builds now, and the copy is checked as if written by hand: [`generic-owned.md`](generic-owned.md) | done in 0.8.0 |
 
 The row about the top of the file was the one a firmware program met
 first: a table of numbers at the top of the file that several functions

@@ -257,8 +257,6 @@ line and says what to write instead where there is something.
 |---|---|
 | A list, object or enum value used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
 | A function that uses a `var` of the function around it | the two would share the variable, and nothing is shared. Use `let`, or an object |
-| Keeping a function that uses a list or an object from outside it | it only looks, so it lives for the line that writes it ([`functions-and-errors.md`](functions-and-errors.md)) |
-| A list or an object as what a type parameter stands for | the copy for `T` would have to know it moves |
 | A list of `int or none` | each item sits in a block of its own. Use an enum with a case for the missing value |
 
 Ten things you might expect on this list are not. A plain list or
@@ -280,8 +278,13 @@ walks is fine (`for pin in [2, 3, 5]`, `for word in line.split()`,
 `for ch in text`): the loop frees it. Both are in
 [`temporaries.md`](temporaries.md).
 
+Since 0.8.0 two more are fine. A function that is kept takes what it
+uses from outside it ([`kept-functions.md`](kept-functions.md)). And a
+list or an object can fill a type parameter, as in `Stack[Frame]`
+([`generic-owned.md`](generic-owned.md)).
+
 The first two rows are by design: with no collector nothing is shared.
-The other two are limits of version 0.1 (decisions, 11.2).
+The last is a limit of version 0.1 (decisions, 11.2).
 
 ## What this does not claim
 
