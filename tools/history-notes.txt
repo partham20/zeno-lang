@@ -452,15 +452,20 @@ fbf4aff The failure on Windows is found and mended: a caught error could stop a 
 0c48e5f Book: the functions written in Zeno, in the appendices.
 596a800 The version is 0.5.2, with its release notes. Its speed was compared with 0.5.1 first.
 
-= Unreleased: what firmware needs, and the libraries of five more languages
+= 0.6.0: the release for firmware, and the libraries of five more languages
 
-The work here follows
+The release for firmware. The work follows
 [`docs/missing.md`](docs/missing.md), the list of what Zeno still lacks,
-with firmware first: ending a program with a code, enums that stand for
-numbers, bytes, lists of a fixed length, `f32` and `u64`, units made of
-units, and on a board, inputs, a serial port and reading a voltage. Beside
-that, a Zeno program can now use the libraries of Ruby, PHP, Lua, .NET and
-C, and through C those of Go and Rust.
+with firmware first. A program can now read a board: a button on an input
+pin, bytes on a serial port, a voltage on an analog pin. It has the numbers
+firmware works in: `f32`, `u64`, lists of a fixed length, bytes, enums that
+stand for numbers, and units made of units. Beside that, a Zeno program can
+use the libraries of Ruby, PHP, Lua, .NET and C, and through C those of Go
+and Rust, and it can end with a number for the shell.
+
+The last hours before the release went on trying all of it on Windows and
+macOS, and on making sure that a program which uses none of the new things
+runs as fast as it did in 0.5.2.
 
 == Ending a program, enums as numbers, and bytes
 5135b88 The Homebrew, pacman and winget recipes for 0.5.2, with its checksums.
@@ -493,3 +498,23 @@ b747791 `import c`: a Zeno program calls libraries of C, and of Go and Rust thro
 d21a4a3 The WebAssembly and Rust targets could wake from `sleep` a fraction of a millisecond early. They now wait until the time has passed.
 0635fba A serial port on a board: `serial(1, 115200 baud)`, with `write`, `read_byte` and `has_byte`.
 a2447a7 Reading a voltage on a board: `analog_pin(0)` gives a pin whose `voltage()` is a quantity in volts.
+
+== Ready for 0.6.0: Windows, macOS, and the speed of 0.5.2
+d41ce8a `import c` on Windows and macOS: a file of C beside the program is found on Windows, and on macOS a library that is missing is named in the error.
+9c4ae25 Adding `program.exit` had made the VM run 1 to 3 % more instructions on every benchmark. The exit is carried another way now, and the VM is as fast as in 0.5.2.
+14b9d1b On Windows and macOS a function that a library of C does not have is named, as on Linux. On Windows a built program reads its environment whole in any script.
+032ced2 The trial workflow reports what Ruby said when it stopped.
+4a6b559 `import ruby` did not start on Windows, where Ruby cut its command line short. The helper is handed over as a file there.
+92db930 `==` and the tests for `f32` and `u64` are made cheap again, so the new numbers cost older programs nothing.
+2af235c With no collector, a list that is the default of a field (`items: list[str] = []`) was freed while the new object still pointed at it. It now belongs to the object.
+f11a77a The VM keeps the output, the board, the page and the keyboard behind one pointer, so that adding to them cannot slow its loop. One benchmark had become 6 % slower by the clock.
+bc8a2a1 Sums of two ints or two floats take a short path in the interpreter too, which now runs fewer instructions than in 0.5.2.
+4268b08 The version is 0.6.0, with its release notes.
+356e780 Book: rebuilt for Zeno 0.6.
+
+= Unreleased: what has come since 0.6.0
+
+What is on `main` since 0.6.0 was released.
+
+8d44bb1 The Homebrew, pacman and winget recipes for 0.6.0, with its checksums.
+40ae73a `HISTORY.md`, this page: every commit under its release, written by `tools/history.py` from git and a file of notes. The website shows it at `/history/`.
