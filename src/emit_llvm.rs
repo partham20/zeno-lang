@@ -5004,7 +5004,14 @@ impl Emitter<'_> {
                     let val = Val::new(self.load_field(class, &val.code, index, span)?, kind);
                     Ok(Val { passing, ..self.lend(val) })
                 }
-                None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
+                None => Err(Error::new(
+                    format!(
+                        "`zeno build --llvm` cannot compile a method used as a value of an object that no variable holds, \
+                         `.{name}`, yet. Put the object in a `let` first and use `.{name}` of that: then it builds. \
+                         `zeno run` can still run this program"
+                    ),
+                    span,
+                )),
             },
             Kind::Error if matches!(name, "message" | "kind") => {
                 let at = self.field_at(ERROR, &val.code, if name == "kind" { 0 } else { 1 });
@@ -9218,12 +9225,19 @@ for n in [1, 5] {
 
     #[test]
     fn what_is_not_compiled_yet_says_so() {
+        // A method of an object that no variable holds says what to write.
+        let method = "class Box {\n    function size(self) -> int { return 1 }\n}\nlet f = Box().size\n";
+        assert_eq!(
+            compile(method).expect_err("it should be refused"),
+            "`zeno build --llvm` cannot compile a method used as a value of an object that no variable holds, `.size`, \
+             yet. Put the object in a `let` first and use `.size` of that: then it builds. `zeno run` can still run \
+             this program"
+        );
         let refused = [
             (
                 "function outer() -> int {\n    function inner() -> int { return 1 }\n    return inner()\n}\nprint(outer())\n",
                 "a function with a name inside a function or a block",
             ),
-            ("class Box {\n    function size(self) -> int { return 1 }\n}\nlet f = Box().size\n", "a method used as a value: `size`"),
             (
                 "function f(n: int = 1 + 1) -> int { return n }\nprint(f())\n",
                 "a default value that is not a plain literal",

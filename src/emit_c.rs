@@ -6659,7 +6659,14 @@ impl Emitter<'_> {
                     field.passing = val.passing && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Class(_));
                     Ok(self.lend(field))
                 }
-                None => Err(cannot(format!("a method used as a value: `{name}`"), span)),
+                None => Err(Error::new(
+                    format!(
+                        "`zeno build` cannot compile a method used as a value of an object that no variable holds, \
+                         `.{name}`, yet. Put the object in a `let` first and use `.{name}` of that: then it builds. \
+                         `zeno run` can still run this program"
+                    ),
+                    span,
+                )),
             },
             Kind::Error if matches!(name, "message" | "kind") => {
                 Ok(Val::from(format!("{}->{name}", val.code), Kind::Str, &[&val]))

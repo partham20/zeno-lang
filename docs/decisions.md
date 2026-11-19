@@ -17080,6 +17080,22 @@ at said "but this is a a function that is only looked at", and the
 same for a quantity: the type's own words already begin with "a". Only
 the words change.
 
+**What it costs.** Nothing for a program that does not use it:
+`tools/same.py` finds the C, IR, `zeno join` and bytecode of 0.7.0 for
+every program that was there before. Of the 6,690 builds of 446
+programs, 45 differ: the 15 ways of each of the three new programs of
+9.1 and 9.2. And 8 more builds differ only in the words of a refusal,
+in builds that refused before and refuse still:
+`tools/targets/edge-classes.zeno` with no collector is refused at
+`Node(10).sum`, the next line, where it was refused at `chain.sum`; and
+`tools/targets/values.zeno` with no collector gets the message for a
+`var` of the function around, where it got the one for a method of a
+value that has one owner.
+
+A method of an object that no variable holds is refused by both
+compilers with words that say what to write: "Put the object in a
+`let` first and use `.size` of that: then it builds".
+
 **Tests.** The checker: its type, what it raises, passed along, kept,
 taken, a `var` and `self` refused with no collector, an interface, and
 `make().size` refused as before
