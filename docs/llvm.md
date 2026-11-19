@@ -1566,7 +1566,9 @@ file. In a C build they are in the same file and can be inlined.
   ([`enums-and-none.md`](enums-and-none.md)).
 - **What the C backend also refuses**: a named function, class or enum
   declared inside a function, a default for a parameter that is not
-  a literal, a method used as a value.
+  a literal, a method used as a value of an object that no variable
+  holds (`make().size`; a method of a variable's object builds since
+  0.8.0, [`method-values.md`](method-values.md)).
   The message says so, and `zeno run` runs all of them.
 - **It needs clang**, version 15 or later (the first to write every
   pointer as `ptr`). gcc cannot read IR.

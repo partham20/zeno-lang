@@ -4300,6 +4300,12 @@ impl Emitter<'_> {
                 self.makes_bytes = self.types.makes_bytes(expr);
                 self.call_expr(callee, args, span)?
             }
+            // `counter.bump` as a value: the function the checker wrote
+            // for it (decision 56.9).
+            ExprKind::Field { object, name, .. } if self.types.method_values.contains_key(&(expr as *const Expr as usize)) => {
+                let written = self.types.method_values[&(expr as *const Expr as usize)].clone();
+                self.method_value(object, name, &written)?
+            }
             ExprKind::Field { object, name, .. } => self.field(object, name, span)?,
             ExprKind::Index { object, index } => {
                 let list = self.expr(object)?;
@@ -6918,7 +6924,35 @@ impl Emitter<'_> {
     /// as good as the original. A `var` that such a function uses already
     /// lives in a box of its own (see `declare`), and the block holds the
     /// box's address, so both functions see each other's changes.
+    /// `counter.bump` used as a value is the function `function(n: int)
+    /// -> int { return counter.bump(n) }`, which the checker wrote out
+    /// (decision 56.9). The method is bound to the object `counter`
+    /// holds now, as in `zeno run`, so the function is offered the value
+    /// read here, and not the variable's slot or a global, unless it
+    /// takes the object, which moves it out of the slot itself.
+    fn method_value(&mut self, object: &Expr, method: &str, written: &Arc<Expr>) -> Result<Val, Error> {
+        let (ExprKind::Function(decl), ExprKind::Name(name)) = (&written.kind, &object.kind) else {
+            return Err(cannot("this method used as a value", written.span));
+        };
+        let takes = self.types.taken.get(&spot(self.within, written.span)).is_some_and(|taken| taken.contains(name));
+        if takes {
+            return self.closure_named(decl, method, written.span);
+        }
+        let now = self.expr(object)?;
+        let copy = Variable { place: Place::Value(now.code), kind: now.kind, open: false, owner: false };
+        self.scopes.push(HashMap::from([(name.clone(), copy)]));
+        let made = self.closure_named(decl, method, written.span);
+        self.scopes.pop();
+        made
+    }
+
     fn closure(&mut self, decl: &Arc<Function>, span: Span) -> Result<Val, Error> {
+        self.closure_named(decl, &decl.name, span)
+    }
+
+    /// A function written where a value goes, under the name `print`
+    /// shows: none, or the method's for one used as a value.
+    fn closure_named(&mut self, decl: &Arc<Function>, shown: &str, span: Span) -> Result<Val, Error> {
         let Some(kind) = self.types.function(decl) else {
             return Err(cannot("this function", span));
         };
@@ -7011,7 +7045,7 @@ impl Emitter<'_> {
         let made = self.call("ptr", "zeno_alloc", format!("i64 {}", size_of(&block)));
         self.ins(format!("store ptr {code_name}, ptr {made}"));
         let name_at = self.field_at(&block, &made, 1);
-        let name = self.string(&decl.name);
+        let name = self.string(shown);
         self.ins(format!("store ptr {name}, ptr {name_at}"));
         // With no collector the function has its own copy of any text
         // it uses, which goes when the block goes.

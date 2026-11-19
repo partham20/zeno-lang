@@ -469,7 +469,7 @@ With a collector the value is `{ ptr, ptr }`, as it was.
 | A list or an object as what a type parameter stands for: `same[T](x: T)` | the copy for `T` would have to know it moves | noted |
 | A list of numbers that may be `none` | see [`enums-and-none.md`](enums-and-none.md) | noted |
 | ~~A function that can raise, used as a value~~ | builds since 0.8.0: a function type says what it raises ([`raises-in-types.md`](raises-in-types.md)) | done in 9.1 |
-| A method used as a value: `let m = counter.bump` | it would be a look at `counter` that is kept | call it there |
+| ~~A method used as a value: `let m = counter.bump`~~ | builds since 0.8.0: it is a function that calls the method ([`method-values.md`](method-values.md)) | done in 9.2 |
 
 When this step was built a plain parameter took and the word `borrow`
 marked one that looked. The audit turned that round: a plain parameter

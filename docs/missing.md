@@ -113,7 +113,7 @@ C.
 | **A set** | Python, Java, Rust, C++, JavaScript | A dict of `true` does the work. Write it in Zeno once item 1 is done |
 | **A key of a dict that is not a str or an int**: an enum case, a float | All | Enum cases, once they can be numbers. Floats: leave |
 | **A second name for a type** (`type Volts = float`) | C, C++, Rust, Go | Leave. Units do this job better |
-| **A named function inside a function, in a build**; a method as a value; a default that is not written out | | Build. `zeno run` takes all three, and a build should take what `zeno run` takes |
+| **A named function inside a function, in a build**; ~~a method as a value~~ (**done** in 0.8.0, [`method-values.md`](method-values.md)); a default that is not written out | | Build. `zeno run` takes all three, and a build should take what `zeno run` takes |
 | **More than one thing at a time**: threads, tasks, `async` and `await`, channels | All seven, each its own way | Last and largest. Choose one model, and choose the one a board can run: tasks that take turns, with a queue between them. The README's `async` row waits for this |
 | **Something that gives its values one at a time** (`yield`) | Python, JavaScript, Rust, Go | Leave until a program asks |
 | **Code that writes code**: macros, reflection, running at build time | C, C++, Rust | Leave. It is the hardest thing to keep unambiguous |

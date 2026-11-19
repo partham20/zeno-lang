@@ -4301,6 +4301,12 @@ impl Emitter<'_> {
                 self.call(callee, args, span)
             }
 
+            // `counter.bump` as a value: the function the checker wrote
+            // for it (decision 56.9).
+            ExprKind::Field { object, name, .. } if self.types.method_values.contains_key(&(expr as *const Expr as usize)) => {
+                let written = self.types.method_values[&(expr as *const Expr as usize)].clone();
+                self.method_value(object, name, &written)
+            }
             ExprKind::Field { object, name, .. } => self.field(object, name, span),
             ExprKind::Index { object, index } => {
                 let mut vals = self.sequence(&[object, index])?;
@@ -4767,6 +4773,12 @@ impl Emitter<'_> {
     /// }
     /// ```
     fn closure(&mut self, decl: &Arc<Function>, span: Span) -> Result<Val, Error> {
+        self.closure_named(decl, &decl.name, span)
+    }
+
+    /// A function written where a value goes, under the name `print`
+    /// shows: none, or the method's for one used as a value.
+    fn closure_named(&mut self, decl: &Arc<Function>, shown: &str, span: Span) -> Result<Val, Error> {
         let Some(kind) = self.types.function(decl).cloned() else {
             return Err(cannot("this function", span));
         };
@@ -4845,7 +4857,7 @@ impl Emitter<'_> {
         all_params.extend(params);
         let returns = if fallible { "bool ".to_string() } else { return_type(&kind.returns, span)? };
         let first_line = format!("static {returns}zeno_fn_{id}({})", all_params.join(", "));
-        let name = c_string(&decl.name);
+        let name = c_string(shown);
         let kind = Kind::Function(Box::new(kind));
 
         // The value itself is made here, on the heap, each time this spot
@@ -4928,6 +4940,39 @@ impl Emitter<'_> {
             self.line(line);
         }
         Ok(Val::plain(format!("(&{made}->base)"), kind))
+    }
+
+    /// `counter.bump` used as a value is the function `function(n: int)
+    /// -> int { return counter.bump(n) }`, which the checker wrote out
+    /// (decision 56.9). The method is bound to the object `counter`
+    /// holds now, as in `zeno run`: a `var` given another object after
+    /// this line, or a variable at the top of the file, which the
+    /// function would otherwise read where it is, does not change it. So
+    /// the function is offered a copy of the variable made here, unless
+    /// it takes the object, which moves it out of the variable itself.
+    fn method_value(&mut self, object: &Expr, method: &str, written: &Arc<Expr>) -> Result<Val, Error> {
+        let (ExprKind::Function(decl), ExprKind::Name(name)) = (&written.kind, &object.kind) else {
+            return Err(cannot("this method used as a value", written.span));
+        };
+        let takes = self.types.taken.get(&spot(self.within, written.span)).is_some_and(|taken| taken.contains(name));
+        if takes {
+            return self.closure_named(decl, method, written.span);
+        }
+        let now = self.expr(object)?;
+        let now = self.temp(now, object.span)?;
+        let copy = Variable {
+            c_name: now.code,
+            kind: now.kind,
+            mutable: false,
+            boxed: None,
+            used: Cell::new(false),
+            owner: false,
+            looks: false,
+        };
+        self.scopes.push(HashMap::from([(name.clone(), copy)]));
+        let made = self.closure_named(decl, method, written.span);
+        self.scopes.pop();
+        made
     }
 
     /// A call to a function held in a variable, or to anything else that
@@ -9804,6 +9849,39 @@ print("after")
         let c = compile_no_collector(compose).unwrap();
         assert!(c.contains("    zeno_closure_drop(env->z_f);\n    zeno_closure_drop(env->z_g);\n    zeno_free(env);\n}"), "{c}");
         assert!(c.contains("->z_f = z_f;\n    z_f = NULL;\n"), "{c}");
+    }
+
+    #[test]
+    fn a_method_used_as_a_value_every_way() {
+        // Passed along, kept, taken with the object, through an interface,
+        // raising, and made a thousand times (decision 56.9). Every build
+        // prints what `zeno run` prints, and with no collector nothing is
+        // left.
+        let source = include_str!("../tools/targets/edge-method-values.zeno");
+        no_collector_as_interpreter("method-values", source);
+        firmware_as_interpreter("method-values", source);
+        crate::emit_llvm::tests::same_as_interpreter("method-values", source);
+        // The method is bound to the object the variable holds on that
+        // line, as in `zeno run`: a `var` given another object after it,
+        // at the top of the file or in a function, does not change it.
+        let bound = "class Counter {\n    count: int\n    function bump(self, by: int) -> int {\n\
+                     self.count += by\n        return self.count\n    }\n}\n\
+                     var c = Counter(0)\nlet m = c.bump\nc = Counter(100)\nprint(m(1), c.bump(1))\n\
+                     function f() -> int {\n    var d = Counter(0)\n    let n = d.bump\n    d = Counter(50)\n\
+                     let shared = function() -> int { return d.count }\n    return n(1) * 1000 + shared()\n}\nprint(f())\n";
+        firmware_as_interpreter("method-bound", bound);
+        crate::emit_llvm::tests::same_as_interpreter("method-bound", bound);
+        // With a collector, an object that says `owned` is taken by one
+        // that is kept, and looked at from the top of the file.
+        let owned = "owned class Packet {\n    id: int\n    data: owned list[int]\n\
+                     function size(self) -> int { return len(self.data) }\n}\n\
+                     function make() -> Packet { return Packet(1, [1, 2]) }\n\
+                     function apply(f: function() -> int) -> int { return f() }\n\
+                     function hold() -> function() -> int {\n    let p = make()\n    return p.size\n}\n\
+                     let top = make()\nlet m = top.size\nprint(m(), apply(top.size), hold()(), top.id)\n";
+        firmware_as_interpreter("method-owned", owned);
+        crate::emit_llvm::tests::same_as_interpreter("method-owned", owned);
+        no_collector_as_interpreter("method-owned", owned);
     }
 
     #[test]

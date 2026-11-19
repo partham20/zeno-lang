@@ -3817,7 +3817,8 @@ This replaces the list in 5.16i.
 - `list[int or none]` (5.16h).
 - A function that can raise, used as a value (the `--firmware` rule,
   since errors travel as values in this build). Builds since 56.1.
-- A method used as a value (`let m = counter.bump`).
+- A method used as a value (`let m = counter.bump`). Builds since
+  56.9.
 
 ### 5.17h Decided: a plain parameter will look, and a word will take
 
@@ -17010,7 +17011,90 @@ type has one owner without the word. It is now the statement's, as any
 value made in the middle of a line is, and freed when the line is
 over.
 
-### 56.9 Left for later
+### 56.9 A method used as a value
+
+```zeno
+class Counter {
+    count: int
+    function bump(self, by: int) -> int {
+        self.count += by
+        return self.count
+    }
+}
+
+let c = Counter(0)
+let m = c.bump
+print(m(1), m(2), [1, 2, 3].map(c.bump))
+```
+
+`zeno run` and every target always took `c.bump` as a value. Both
+compilers refused it, in every build, with a collector too: "cannot
+compile a method used as a value". It builds now, every way.
+
+**It is a function that calls the method.** `c.bump` means `function(by:
+int) -> int { return c.bump(by) }`, and the checker writes exactly that
+function out, checks it as it checks one written by hand, and hands it
+to the compilers (`Types.method_values`, by the place of `c.bump`). So
+one rule answers both (plan, 9.2): passed along, it looks at `c`; kept,
+it takes `c` where `c` has one owner, by the rule of 56.8 and in its
+words; with a collector, where the object is shared, it shares it, as
+`zeno run` does. Its type is the method's, less `self`, with what the
+method raises (56.1). Nothing new was needed in either compiler but the
+step from `c.bump` to that function: the block, its `drop`, what it
+takes, and a raising call through it in a firmware build are those of
+any function written where a value goes.
+
+Why not a block of its own, an object and a method, as `zeno run` holds
+it: that is a second kind of function value, with a second way to be
+called and freed, in two compilers and three kinds of build. Written
+out, it is the kind there already is, and the rules that hold for it
+hold here without a line more.
+
+**It is bound to the object of that line.** `zeno run` reads `c` when
+it meets `c.bump`, and keeps that object. A function written by hand
+would read `c` when it is called, and see a `var` given another object
+in between, or a variable at the top of the file, which every function
+reads where it is. So the compilers hand the function a copy of what
+the variable holds on that line, and not the variable: `var c =
+Counter(0)`, `let m = c.bump`, `c = Counter(100)`, `m(1)` gives 1
+everywhere. Where it takes the object, the object is moved out of the
+variable itself, as 56.8 says, and there is no copy to make.
+
+**What it can be.** A method of an object that a variable holds, `x.f`
+with `x` a name: a `let`, a `var`, a parameter, `self`, a loop's
+variable. An object of an interface calls the method of its own class.
+A private method is still private. Any other object, as in
+`make().size`, `a.b.size` or `xs[0].size`, is as it was: `zeno run`
+takes it, and both compilers refuse it, and with one owner the checker
+says to call it there. So does a method of a copy of a generic class,
+and a method with types of its own.
+
+**Passed along, it is the line's.** With no collector, one that is only
+passed along, `apply(c.bump, 1)`, is freed when the line is over, as
+`apply(function(n: int) -> int { ... }, 1)` is. The checker moves the
+note that says so from the function it wrote to `c.bump`, which is what
+the compilers see (found by the test: one block was left).
+
+**Found on the way.** A message about a function that is only looked
+at said "but this is a a function that is only looked at", and the
+same for a quantity: the type's own words already begin with "a". Only
+the words change.
+
+**Tests.** The checker: its type, what it raises, passed along, kept,
+taken, a `var` and `self` refused with no collector, an interface, and
+`make().size` refused as before
+(`a_method_used_as_a_value_is_a_function_that_calls_it`). Both
+compilers: [`tools/targets/edge-method-values.zeno`](../tools/targets/edge-method-values.zeno)
+with no collector through C and LLVM, with the same memory report and
+0 blocks left, and in the ordinary and firmware builds of both; the
+binding to the object of that line, at the top of a file and in a
+function with a `var` that is shared; and an `owned` object taken with
+a collector (`a_method_used_as_a_value_every_way`). The targets run
+the program, and nine print what `zeno run` prints here (Lua, Dart,
+Kotlin, C# and WebAssembly are not installed on this machine; the
+weekly check has them).
+
+### 56.10 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17024,6 +17108,10 @@ over.
   a number in another.** The note is kept for each copy (56.5), so it
   is ready, but no program can write it yet: a value with one owner
   cannot fill a type parameter until 9.4. The test waits for 9.4.
-- **A method as a value** (`let m = counter.bump`), refused by both
-  compilers in every build with "cannot compile a method used as a
-  value". It is the second commit of 9.2.
+- **A method of an object that no variable holds, used as a value**:
+  `make().size`, `a.b.size`, `xs[0].size`. Both compilers refuse it as
+  before. Put the object in a `let` first.
+- **A method of a copy of a generic class, or one with types of its
+  own, used as a value.** Refused by both compilers as before.
+- **A method that comes with Zeno used as a value**: `xs.append`,
+  `text.upper`. Refused by both compilers as before.

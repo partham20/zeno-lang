@@ -857,6 +857,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     builds with no collector. See
     [`docs/kept-functions.md`](docs/kept-functions.md) and 56.8 of
     [`docs/decisions.md`](docs/decisions.md))
+55. A method used as a value (on `main`, for 0.8.0: `let m =
+    counter.bump` builds every way, as the function that calls the
+    method. Passed along it looks at `counter`, and kept it takes it.
+    See [`docs/method-values.md`](docs/method-values.md) and 56.9 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

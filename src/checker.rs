@@ -334,6 +334,11 @@ pub struct Types {
     /// the names of what it takes, in order (decision 56.8). The function
     /// owns them from then on, and frees them when it is freed.
     pub taken: HashMap<Spot, Vec<String>>,
+    /// Each method of an object used as a value, `counter.bump`, by the
+    /// address of that expression: the function written where a value
+    /// goes that it stands for, `function(by: int) -> int { return
+    /// counter.bump(by) }` (decision 56.9). The compilers compile that.
+    pub method_values: HashMap<usize, Arc<Expr>>,
 }
 
 /// Where something stands, told apart in each copy of a generic: the
@@ -1246,7 +1251,11 @@ impl fmt::Display for Ty {
             Ty::Optional(inner) if matches!(**inner, Ty::Callable(_)) => write!(f, "({inner}) or none"),
             Ty::Optional(inner) => write!(f, "{inner} or none"),
             Ty::Owned(inner) => write!(f, "owned {inner}"),
-            Ty::Borrowed(inner) => write!(f, "a {inner} that is only looked at"),
+            // `a function`, `a quantity in V`: one "a" is enough.
+            Ty::Borrowed(inner) => {
+                let inner = inner.to_string();
+                write!(f, "a {} that is only looked at", inner.strip_prefix("a ").unwrap_or(&inner))
+            }
             Ty::Instance(class) => write!(f, "{}", class.name),
             Ty::EnumValue(info) => write!(f, "{}", info.name),
             Ty::Error(kind) => write!(f, "{kind}"),
@@ -5087,11 +5096,13 @@ impl Checker {
             return variable.ty;
         }
         // A function written here is kept, so it takes what it uses
-        // (decision 56.8).
-        if matches!(expr.kind, ExprKind::Function(_)) {
+        // (decision 56.8). So is a method used as a value (56.9).
+        if matches!(expr.kind, ExprKind::Function(_) | ExprKind::Field { .. }) {
             self.keeping = Some(expr as *const Expr as usize);
         }
-        match self.expr(expr, env) {
+        let ty = self.expr(expr, env);
+        self.keeping = None;
+        match ty {
             look if look.is_look() => {
                 let inner = look.clone().looked_at();
                 let item = |name: &String| env.get(name).is_some_and(|variable| self.owned.items.contains(&variable.id));
@@ -5490,6 +5501,92 @@ impl Checker {
         self.owned.moved.extend(again);
         self.owned.moved.extend(breaks);
         self.owned.moved.retain(|id, _| *id < first_inside);
+    }
+
+    /// `counter.bump`, a method of an object named by a variable, used as
+    /// a value: the function `function(by: int) -> int { return
+    /// counter.bump(by) }`, written out here and checked as if it were in
+    /// the program (decision 56.9). So it looks at `counter` when it is
+    /// passed along, and takes it when it is kept, by the rule of 56.8,
+    /// and every compiler builds it as the function it is. None if
+    /// `expr` is something else.
+    fn method_value(&mut self, expr: &Expr, object: &Expr, name: &str, at: Span, env: &Env) -> Option<Ty> {
+        let ExprKind::Name(object_name) = &object.kind else {
+            return None;
+        };
+        let variable = env.get(object_name)?;
+        let Ty::Instance(class) = variable.ty.clone().looked_at() else {
+            return None;
+        };
+        // A method of a copy of a generic class is written with the
+        // class's own `T`, which means nothing here.
+        if class.origin.is_some() || class.fields.borrow().iter().any(|field| field.name == name) {
+            return None;
+        }
+        let method = class.methods.borrow().get(name).cloned()?;
+        // A method with types of its own is written for each call.
+        if !method.decl.type_params.is_empty() {
+            return None;
+        }
+        if self.kept_private(&class, name, at) {
+            return Some(Ty::Invalid);
+        }
+        let span = expr.span;
+        let decl = &method.decl;
+        // Names for its parameters that cannot be the object's.
+        let mut params = Vec::new();
+        for (index, param) in decl.params.iter().skip(1).enumerate() {
+            let mut fresh = format!("a{index}");
+            while fresh == *object_name {
+                fresh.insert(0, 'a');
+            }
+            params.push(Param { name: fresh, ty: param.ty.clone(), default: None });
+        }
+        let args = params
+            .iter()
+            .map(|param| Arg { name: None, value: Expr { kind: ExprKind::Name(param.name.clone()), span } })
+            .collect();
+        let callee = Expr {
+            kind: ExprKind::Field { object: Box::new(Expr { kind: ExprKind::Name(object_name.clone()), span: object.span }), name: name.to_string(), at },
+            span,
+        };
+        let call = Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span };
+        let statement = match decl.return_type {
+            Some(_) => StmtKind::Return(Some(call)),
+            None => StmtKind::Expr(call),
+        };
+        // No name: a function with one is a function of the program,
+        // which cannot reach what a block owns. The compilers give the
+        // value the method's name, which `print` shows.
+        let function = Function {
+            span,
+            name: String::new(),
+            type_params: Vec::new(),
+            params,
+            return_type: decl.return_type.clone(),
+            raises: decl.raises.clone(),
+            body: vec![Stmt { kind: statement, span }],
+        };
+        let written = Arc::new(Expr { kind: ExprKind::Function(Arc::new(function)), span });
+        // Kept, so it takes what it uses.
+        if self.keeping == Some(expr as *const Expr as usize) {
+            self.keeping = Some(&*written as *const Expr as usize);
+        }
+        // An editor sees the object and the method, as they are written,
+        // and not the function written out for them.
+        let (used, functions_used) = (self.types.used.len(), self.functions_used.len());
+        let ty = self.expr(&written, env);
+        // Passed along, it is the statement's, and goes when the line is
+        // over: the compilers know it by what is written.
+        if self.types.lent.remove(&(&*written as *const Expr as usize)) {
+            self.types.lent.insert(expr as *const Expr as usize);
+        }
+        self.types.used.truncate(used);
+        self.functions_used.truncate(functions_used);
+        self.used(object_name, &variable, object.span);
+        self.field_used(name, &Ty::BoundMethod(method), at);
+        self.types.method_values.insert(expr as *const Expr as usize, written);
+        Some(ty)
     }
 
     /// A function written where a value goes is kept: returned, put in a
@@ -6383,6 +6480,9 @@ impl Checker {
             }
 
             ExprKind::Field { object, name, at } => {
+                if let Some(ty) = self.method_value(expr, object, name, *at, env) {
+                    return ty;
+                }
                 let object_type = self.expr(object, env);
                 let tied = object_type.is_tied();
                 let length = fixed_length(&object_type.clone().looked_at());
@@ -11196,8 +11296,21 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             "`xs` of `f` is written `list[int]`, which is a shared list that the function may keep, and this list has one owner. \
              Write the parameter as `owned list[int]`: then it only looks, and any list can be passed to it"
         );
+        // A method used as a value is a function that calls it, and
+        // looks at the object or takes it as any such function does
+        // (decision 56.9). A `let` at the top of the file is only looked
+        // at.
+        owned_ok("let p = make()\nlet m = p.size\nprint(m(), p.id)");
+        owned_ok("function f() -> function() -> int {\n let p = make()\n return p.size\n}\nprint(f()())");
+        assert!(owned_error("function f() -> int {\n let p = make()\n let m = p.size\n return m() + p.id\n}").contains(GONE));
         assert_eq!(
-            owned_error("let p = make()\nlet m = p.size"),
+            owned_error("function f(p: Packet) -> function() -> int {\n return p.size\n}"),
+            "this function is kept, so it takes `p`, but `p` is only looked at here: its owner still has it. \
+             If it is a parameter, write `take` in front of its type to take the value over"
+        );
+        // One that is not a variable's is refused as before.
+        assert_eq!(
+            owned_error("let m = make().size"),
             "a method of a value that has one owner cannot be kept as a value. Call it here: `.size(...)`"
         );
         assert_eq!(
@@ -12868,6 +12981,52 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         assert_eq!(check(owned, true), Vec::<String>::new());
         assert_eq!(firmware_errors(owned), Vec::<String>::new());
         assert_eq!(one_owner(owned), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_method_used_as_a_value_is_a_function_that_calls_it() {
+        // `c.bump` is `function(n: int) -> int { return c.bump(n) }`,
+        // written out by the checker for the compilers (decision 56.9).
+        let counter = "class Counter {\n    count: int\n    function bump(self, by: int) -> int {\n\
+                       self.count += by\n        return self.count\n    }\n\
+                       function check(self, text: str) -> int raises ValueError {\n        return int(text) + self.count\n    }\n}\n\
+                       function apply(f: function(int) -> int, n: int) -> int {\n    return f(n)\n}\n";
+        let with = |rest: &str| format!("{counter}{rest}");
+        // It has the type of a function, so it goes where one goes.
+        ok(&with("let c = Counter(0)\nlet f: function(int) -> int = c.bump\nprint(f(1), apply(c.bump, 2))"));
+        strict_ok(&with("let c = Counter(0)\nlet fs: list[function(int) -> int] = [c.bump]\nprint(fs[0](1))"));
+        // What it raises is part of its type.
+        assert_eq!(firmware_errors(&with("let c = Counter(0)\nlet p: function(str) -> int raises ValueError = c.check\n\
+                                         try {\n    print(p(\"1\"))\n} except ValueError {\n    print(0)\n}\n")), Vec::<String>::new());
+        assert_eq!(
+            strict_error(&with("function f(c: Counter) {\n    let p = c.check\n    print(p(\"1\"))\n}\n")),
+            "`f` can raise ValueError here but does not say so. Add `raises ValueError` to it, or catch the error"
+        );
+        // With one owner, passed along it looks at the object...
+        let inside = |body: &str| one_owner(&with(&format!("function f() {{\n{body}\n}}\nf()\n")));
+        assert_eq!(inside("    let c = Counter(0)\n    print(apply(c.bump, 1), [1, 2].map(c.bump), c.count)"), Vec::<String>::new());
+        // ...and kept it takes it.
+        assert_eq!(
+            inside("    let c = Counter(0)\n    let m = c.bump\n    print(m(1), c.count)"),
+            vec!["`c` was given away on line 16 and holds nothing now. Use it before it goes, or give it only to what \
+                  looks: a parameter without `take`"]
+        );
+        one_owner_ok(&with("function keep(c: take Counter) -> function(int) -> int {\n    return c.bump\n}\nprint(keep(Counter(1))(2))\n"));
+        // A `var`, and `self`, are refused as for any function that is kept.
+        assert_eq!(inside("    var c = Counter(0)\n    let m = c.bump\n    print(m(1))"), vec![super::shared("c")]);
+        let own = "class Box {\n    n: int\n    function get(self) -> int {\n        return self.n\n    }\n\
+                   function getter(self) -> function() -> int {\n        return self.get\n    }\n}\nprint(Box(1).getter()())\n";
+        assert_eq!(
+            one_owner(own),
+            vec!["this function is kept, so it takes `self`, but `self` is the object the method was called on, and its \
+                  owner still has it. Put what the function needs in a `let` first, and use that"]
+        );
+        // With a collector the object is shared, as it is in `zeno run`.
+        strict_ok(own);
+        // Through an interface, the method of the object's own class.
+        strict_ok("interface Shape {\n    function area(self) -> int\n}\nclass Square is Shape {\n    side: int\n\
+                   function area(self) -> int {\n        return self.side * self.side\n    }\n}\n\
+                   let s: Shape = Square(2)\nlet f = s.area\nprint(f())\n");
     }
 
     #[test]

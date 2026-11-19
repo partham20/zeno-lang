@@ -1,0 +1,85 @@
+# A method used as a value (decision 56.9): passed along, kept, taken
+# with the object, through an interface, raising, and made a thousand
+# times. Every build prints what `zeno run` prints, and a build with no
+# collector leaves nothing.
+
+class Counter {
+    count: int
+    names: list[str]
+    function bump(self, by: int) -> int {
+        self.count += by
+        return self.count
+    }
+    function check(self, text: str) -> int raises ValueError {
+        return int(text) + self.count
+    }
+}
+
+interface Shape {
+    function area(self) -> int
+}
+
+class Square is Shape {
+    side: int
+    function area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+function apply(f: function(int) -> int, n: int) -> int {
+    return f(n)
+}
+
+function keep(c: take Counter) -> function(int) -> int {
+    return c.bump
+}
+
+function shape_area(s: take Shape) -> function() -> int {
+    return s.area
+}
+
+function areas(shapes: list[Shape]) -> int {
+    var total = 0
+    for s in shapes {
+        total += apply(function(n: int) -> int { return n * s.area() }, 1)
+    }
+    return total
+}
+
+function main() raises ValueError {
+    let c = Counter(0, ["a"])
+    print(apply(c.bump, 10), [1, 2, 3].map(c.bump), c.count)
+    let m = c.bump
+    print(m(1), m(2), m)
+    let k = keep(Counter(5, ["b", "c"]))
+    print(k(1), k(1))
+    let a = shape_area(Square(4))
+    print(a(), areas([Square(2), Square(3)]))
+    let d = Counter(1, [])
+    let parse = d.check
+    for i in range(1000) {
+        try {
+            print(parse("x"))
+        } except ValueError {
+        }
+    }
+    print(parse("41"))
+    var made: list[function(int) -> int] = []
+    var total = 0
+    for i in range(1000) {
+        let fresh = Counter(i, ["x"])
+        let f = fresh.bump
+        total += f(1)
+        if i % 20 == 0 {
+            let kept = Counter(i, ["y"])
+            made.append(kept.bump)
+        }
+    }
+    print(total, made[49](1), len(made))
+}
+
+try {
+    main()
+} except ValueError as e {
+    print(e.message)
+}
