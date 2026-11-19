@@ -572,3 +572,13 @@ dc322b6 A function that is kept cannot take a `var`, in any build: with a collec
 e1079cc A method used as a value builds every way: `let m = counter.bump` is the function that calls the method, bound to the object of that line, and it looks or takes by the rule of a kept function (decision 56.9).
 31a0593 A method of an object that no variable holds is refused with words that say what to write, and chapter 56 counts what tools/same.py found.
 0ff7d7e `take slot.task` and `take tasks[i]` give what is there and leave `none`, in every engine and build, so an object with one owner can hand on what it holds (decision 56.10).
+2f7ec0b The plan: items 9 to 12 are built in full, and of item 13 the tests of a compiled program and a message on `assert`. The other tools of item 13 and the whole of item 14 are put off, with their designs kept.
+5fba04d The plan: no benchmarks for these parts, and every feature is asked for by a word or a flag, so that a program that does not ask builds and runs as before.
+4a66de7 The plan: which tests of 0.7.0 changed, said exactly.
+052ea30 With no collector a list or an object can fill a type parameter: `Stack[Frame]`, `Box([1, 2])` and `same(frame)` build, and `take T` says that a generic keeps what it is given (decision 56.11).
+74091cd The engines count what 0.7.0 counted again: the kind after `raises` in a type is boxed, and the VM's two arms for `take` call a cold function of their own.
+bd717a7 A function that tests a parameter that may be `none` and then reads a field of it reads the field after the test, in C and LLVM. 0.7.0 read it before, and so read through `NULL` when given `none`.
+697b4bc With no collector a dict of lists or of objects builds, and the dict owns its values as a list owns its items: `d[key]` looks, a store frees the value that was there, `pop` hands it over (decision 56.12).
+2666f98 The two instructions of `take` come after the superinstructions, and the interpreter's `take` is in a cold function of its own.
+9bd9566 What was known of the speed of items 9.1 to 9.4 when the benchmarks stopped (decision 56.13).
+2b90f07 What Zeno lacks: item 9 says which of its parts are done.
