@@ -582,3 +582,5 @@ bd717a7 A function that tests a parameter that may be `none` and then reads a fi
 2666f98 The two instructions of `take` come after the superinstructions, and the interpreter's `take` is in a cold function of its own.
 9bd9566 What was known of the speed of items 9.1 to 9.4 when the benchmarks stopped (decision 56.13).
 2b90f07 What Zeno lacks: item 9 says which of its parts are done.
+59be546 The plan: a list of numbers that may be `none` with no collector owns a block of the pool for each number, since flags beside the list would change the C of every program.
+9dc71d6 With no collector a list of numbers that may be `none` builds, and the list owns a block of the pool for each number, as it owns its copy of each text (decision 56.14).
