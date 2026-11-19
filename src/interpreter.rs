@@ -71,7 +71,7 @@ pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let finished = interpreter.run_statements(&program.statements, &env);
@@ -106,7 +106,7 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Optio
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Board::new(), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
                 let env = Scope::child(&builtins::globals());
                 let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
                 let mut tested = Vec::new();
@@ -168,7 +168,7 @@ impl Session {
             output: capture.then(String::new),
             warned: String::new(),
             depth: 0,
-            board: Board::new(),
+            board: Box::new(Board::new()),
             page,
             outside: Outside::default(),
             ticks: 0,
@@ -356,8 +356,10 @@ pub struct Interpreter {
     output: Option<String>,
     /// What `program.warn` wrote, when printed text is collected.
     warned: String,
-    /// The simulated board, for the `board` module.
-    board: Board,
+    /// The simulated board, for the `board` module. In a box of its
+    /// own, so that what the board comes to hold cannot move the fields
+    /// around it (decisions 34.7 and 50.7).
+    board: Box<Board>,
     /// The page, for the `web` module: simulated, unless the program is
     /// in a browser.
     page: Page,

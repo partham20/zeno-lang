@@ -64,10 +64,10 @@ For `boards/lm3s6965evb`, an ARM Cortex-M3, in bytes of flash:
 
 | program | with the built-ins | in plain C |
 |---|---|---|
-| `hello.zeno` | 932 | 932 |
-| `scheduler.zeno` | 7,472 | 7,188 |
+| `hello.zeno` | 936 | 932 |
+| `scheduler.zeno` | 7,480 | 7,188 |
 | `primes.zeno` | 7,884 | 7,780 |
-| `modbus.zeno` | 9,708 | 9,596 |
+| `modbus.zeno` | 9,720 | 9,596 |
 | `tour.zeno` | 14,032 | 14,208 |
 
 ## What it has been tried with, and what not
@@ -128,9 +128,10 @@ it on every change to the C.
   "Whole numbers" has the four functions that find an overflow, each
   in both forms. The collector has `zeno_lowest_bit` and
   `zeno_mark_running`.
-- `src/emit_c.rs` and `src/minimal.rs`: `main` calls the top of the
-  program by its address in a build with a collector, so that it
-  stays a function of its own with no attribute.
+- `src/emit_c.rs` and `src/minimal.rs`: in a build with a collector
+  the top of the program must stay a function of its own. GCC and
+  Clang are told so with `ZENO_NOINLINE`, and in plain C `main` calls
+  it by its address, so that no compiler can put it inside `main`.
 - `tools/plain.py`: the check.
 - Decisions chapter 55 has the reason for each choice.
 

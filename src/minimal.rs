@@ -793,6 +793,9 @@ pub fn assemble(parts: Parts) -> String {
         }
         roots += "}\n";
         kept.want_all_in(&roots);
+        // The top of the program is a function of its own, kept out of
+        // `main` in the compiler's word (decision 55.4).
+        kept.want_all_in("ZENO_NOINLINE ZENO_PLAIN_C");
         kept.follow();
     }
     // An `#include` of a header whose names are not known here is kept
@@ -862,7 +865,7 @@ pub fn assemble(parts: Parts) -> String {
     }
     c.push('\n');
     if collects {
-        c += "static void zeno_program(void) {\n";
+        c += "ZENO_NOINLINE static void zeno_program(void) {\n";
         c += parts.program;
         c += "}\n\n";
         c += &roots;
@@ -870,8 +873,12 @@ pub fn assemble(parts: Parts) -> String {
         c += main_line;
         c += "    void *base = NULL;\n    zeno_stack_base = &base; /* the stack starts here */\n";
         c += &start;
+        c += "#ifndef ZENO_PLAIN_C\n";
+        c += "    zeno_program();\n";
+        c += "#else\n";
         c += "    void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */\n";
         c += "    program();\n";
+        c += "#endif\n";
     } else {
         c += main_line;
         c += &start;

@@ -15284,6 +15284,60 @@ it by answering 0, which a real board never does.
 - Pressing a button under `zeno run` (45.5).
 - A trial on a real board.
 
+### 50.7 The interpreter keeps the board behind a pointer, and what the clock said about `loop`
+
+Before 0.7.0 went out, `zeno run` was timed against 0.6.0, as every
+release is. `bench/loop.zeno` took 3 to 5% longer, and ran the same
+instructions to the seventh digit (84,061,204,209 where 0.6.0 ran
+84,061,205,164). Building each commit since 0.6.0 put it at this
+chapter's: the commit before it is level.
+
+**What was changed.** The interpreter held the board inside itself,
+between its other fields, and this chapter gave the board two more
+tables, 576 bytes. The VM had the same trouble in 0.6.0 and keeps what
+a program reaches outside itself in a box (34.7). The interpreter now
+keeps the board in one too. That gave back about one part in a
+hundred, and no more.
+
+**What was measured, and left.** The rest is not in what the code
+does. Three things say so:
+
+- The same build, started under names of four lengths, takes 9.80 to
+  10.39 seconds: where things land in memory moves the time by 3%
+  either way, for 0.6.0 as for this one.
+- A simulation of the cache (cachegrind) finds the same reads and the
+  same writes in both, and next to no misses in either.
+- With both versions built another way, so that no branch crosses a
+  32-byte boundary (`-C llvm-args=-x86-branches-within-32B-boundaries`),
+  every branch of the interpreter lies somewhere else, in both. The
+  difference is then 1%: 10.13 and 10.25 seconds, each the mean of
+  four names.
+
+So the time is lost in where the code of the interpreter's loop
+happens to lie for this processor (an Intel Xeon of the Emerald
+Rapids kind), and which branch it is was not found. Another
+processor, or the next change anywhere in Zeno, puts things
+elsewhere. The builds that are released are made by another linker
+for another C library, and their code lies differently again.
+
+**That option is not turned on for the release.** It was made for a
+fault of older Intel processors, which this one does not have, and
+here it only served to move the code. It was tried for ten minutes on
+one machine and one benchmark, it makes every build larger, and what
+it does to the other five benchmarks and to the VM was not measured.
+If `zeno run` is ever to be made steadier by the clock, how its code
+is laid out is the first thing to look at, and it is written down
+here for that.
+
+| `zeno run`, seconds | 0.6.0 | 0.7.0 | |
+|---|---|---|---|
+| fib | 3.10 | 3.07 | −0.9 % |
+| loop | 33.39 | 34.51 | +3.4 % |
+| sort | 14.86 | 14.41 | −3.0 % |
+| strings | 3.22 | 3.24 | +0.7 % |
+| trees | 24.45 | 24.35 | −0.4 % |
+| nbody | 58.31 | 58.32 | 0.0 % |
+
 ## 51. One step to a board: `zeno build --board`
 
 ```sh
@@ -16314,7 +16368,7 @@ function "might return no value" where its last line is a call that
 stops the program (tcc does). It never reaches the end, and C only
 minds if the value of such an end is used (C99, 6.9.1).
 
-### 55.4 The top of the program stays out of `main` without an attribute
+### 55.4 The top of the program stays out of `main`, in the compiler's word or without one
 
 The collector looks for the program's variables on the stack below
 `main`'s. So the top-level code is a function of its own,
@@ -16323,24 +16377,47 @@ compiler, its variables could lie above the place the collector
 starts from. That was `__attribute__((noinline))`, the one attribute
 that something depended on.
 
-**`main` now calls it by its address, read from a variable the
-compiler cannot see through:**
+**GCC and Clang keep the attribute, as `ZENO_NOINLINE`, and `main`
+calls the function by its name.** A compiler that has no such word
+calls it by its address, read from a variable it cannot see through:
 
 ```c
-void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */
-program();
+#ifndef ZENO_PLAIN_C
+    zeno_program();
+#else
+    void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */
+    program();
+#endif
 ```
 
 No compiler can put a function inside `main` when it cannot know which
-function is called. It is done so in every build with a collector, for
-every compiler, and not only in plain C: one way, which every test of
-the collector there already was now tries.
+function is called. A build with no collector has nothing that looks
+at the stack, and there `main` calls `zeno_program` by its name for
+every compiler.
 
-A build with no collector has nothing that looks at the stack. There
-`main` calls `zeno_program` as before, and the attribute is gone, so
-the compiler may put the one inside the other. On the chip that is 4
-to 32 bytes less for most programs: `hello` on `lm3s6965evb` is 932
-bytes, where it was 936.
+**Tried first, and turned down by the count before 0.7.0: one way for
+every compiler.** The first form of this stage called through the
+pointer in every build with a collector, GCC's too, and took the
+attribute off everywhere, so that a build with no collector could have
+the one function put inside the other (4 to 32 bytes less on a chip).
+The comparison with 0.6.0 that a release is held to (docs/release.md)
+found both in the instructions a program runs, with the C of the
+program the same line for line:
+
+| `bench/` program, instructions | 0.6.0 | pointer, no attribute | attribute, by name |
+|---|---|---|---|
+| `fib 30`, `--release` | 24,062,434 | 24,356,168 (+1.2 %) | 24,060,625 |
+| `trees 14`, `--fast --owned` | 288,528,748 | 291,298,958 (+1.0 %) | 288,531,936 |
+
+GCC makes a copy of `fib` for the one place that calls it when it can
+see that place, and cannot when the caller is reached through a
+pointer; and with `zeno_program` inside `main` it lays the loop of
+`trees` out differently. Neither is a mistake of the compiler's, and a
+few bytes on a chip are not worth one instruction in a hundred of
+every program on a computer. What a program asks for nothing of must
+cost it nothing (24.29, 34.5), so GCC and Clang are given what they
+were given in 0.6.0, and only a compiler that could not read that gets
+the other form.
 
 ### 55.5 The collector in plain C
 
@@ -16421,12 +16498,12 @@ And whole programs for `boards/lm3s6965evb`, in bytes of flash:
 
 | program | with the built-ins | in plain C |
 |---|---|---|
-| `hello.zeno` | 932 | 932 |
-| `scheduler.zeno` | 7,472 | 7,188 |
+| `hello.zeno` | 936 | 932 |
+| `scheduler.zeno` | 7,480 | 7,188 |
 | `primes.zeno` | 7,884 | 7,780 |
-| `modbus.zeno` | 9,708 | 9,596 |
+| `modbus.zeno` | 9,720 | 9,596 |
 | `tour.zeno` | 14,032 | 14,208 |
-| `instruments.zeno` | 23,304 | 23,288 |
+| `instruments.zeno` | 23,336 | 23,288 |
 
 **So on the chip the plain C costs nothing to speak of.** A 32-bit
 processor has no overflow flag for a number of 64 bits, and what GCC

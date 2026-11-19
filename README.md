@@ -121,7 +121,7 @@ piece of the compiler:
 
 ## Install
 
-**Windows.** Download `zeno-0.6.0-windows-setup.exe` from the
+**Windows.** Download `zeno-0.7.0-windows-setup.exe` from the
 [releases page](https://github.com/zeno-src/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
@@ -143,10 +143,10 @@ what both do, line by line, and how to take Zeno off again.
 pacman, snap and flatpak, installed from the file:
 
 ```sh
-sudo apt install ./zeno_0.6.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.6.0-1-x86_64.pkg.tar.zst         # Arch
-sudo snap install --classic --dangerous zeno_0.6.0_amd64.snap
-flatpak install --user zeno-0.6.0-x86_64.flatpak
+sudo apt install ./zeno_0.7.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.7.0-1-x86_64.pkg.tar.zst         # Arch
+sudo snap install --classic --dangerous zeno_0.7.0_amd64.snap
+flatpak install --user zeno-0.7.0-x86_64.flatpak
 ```
 
 The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
@@ -176,25 +176,25 @@ an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.6.0-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.6.0-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.6.0-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.6.0-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.6.0-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.6.0-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.6.0-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.6.0-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.6.0-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.6.0-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.7.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.7.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.7.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.7.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.7.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.7.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.7.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.7.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.7.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.7.0-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
 `PATH`. It is one file and needs nothing else installed. To build web
 pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.6.0-linux-x86_64.tar.gz
-cd zeno-0.6.0-linux-x86_64
-./zeno --version                 # zeno 0.6.0
+tar -xzf zeno-0.7.0-linux-x86_64.tar.gz
+cd zeno-0.7.0-linux-x86_64
+./zeno --version                 # zeno 0.7.0
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
@@ -342,7 +342,7 @@ cargo run -- test examples/sketch.zeno          # a page that draws: its tests p
 cargo run -- playground                         # playground.html: write Zeno programs and run them in a browser, with nothing installed
 cargo run -- build --firmware --no-collector examples/signal.zeno  # pins and a clock, built for firmware
 cargo run -- build --board boards/qemu-cortex-m3 examples/signal.zeno  # the same for an ARM Cortex-M3, in one step: signal.elf, which QEMU runs
-cargo run -- build --board boards/lm3s6965evb examples/hello.zeno      # the same chip on its own UART, with no printf: hello.elf is 932 bytes of flash
+cargo run -- build --board boards/lm3s6965evb examples/hello.zeno      # the same chip on its own UART, with no printf: hello.elf is 936 bytes of flash
 cargo run -- build examples/packet.zeno         # u8 and u16 fields, stored in as many bytes in the C struct
 cargo run -- build examples/generics.zeno       # a generic class: one C struct for each type it is used with
 cargo run -- parse examples/tour.zeno           # the syntax tree the parser builds
@@ -773,7 +773,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     and gains two functions. In every engine and every C and LLVM
     build. See [`docs/analog.md`](docs/analog.md) and chapter 47 of
     [`docs/decisions.md`](docs/decisions.md))
-46. A PWM signal on a board (done, after 0.6.0 and not yet released:
+46. A PWM signal on a board (done, in 0.7.0:
     `pwm_pin(9, 1 kHz)` gives a `PwmPin`, made with its frequency;
     `duty(0.25)` is the share of the time on, from 0.0 to 1.0, and
     `pulse(1500 us)` the time on in each period, as a servo wants. A
@@ -781,7 +781,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     header gains one function. In every engine and every C and LLVM
     build. See [`docs/pwm.md`](docs/pwm.md) and chapter 48 of
     [`docs/decisions.md`](docs/decisions.md))
-47. A steady beat on a board (done, after 0.6.0 and not yet released:
+47. A steady beat on a board (done, in 0.7.0:
     `ticker(10 ms)` gives a `Ticker`, whose ticks are 10 ms apart
     whatever the work between them takes. `wait()` waits for the next
     tick and `ticks()` asks without waiting; each gives how many ticks
@@ -790,7 +790,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     for nothing new. In every engine and every C and LLVM build.
     See [`docs/ticker.md`](docs/ticker.md) and chapter 49 of
     [`docs/decisions.md`](docs/decisions.md))
-48. Interrupts on a board (done, after 0.6.0 and not yet released:
+48. Interrupts on a board (done, in 0.7.0:
     `button.interrupt(falling)` gives an `Interrupt`: the board counts
     the pin's edges, `wait()` waits for one and `edges()` asks without
     waiting, so no pulse is lost and the chip can sleep. The program's
@@ -800,7 +800,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     engine and every C and LLVM build.
     See [`docs/interrupts.md`](docs/interrupts.md) and chapter 50 of
     [`docs/decisions.md`](docs/decisions.md))
-49. One step to a board (done, after 0.6.0 and not yet released:
+49. One step to a board (done, in 0.7.0:
     `zeno build --board boards/qemu-cortex-m3 blink.zeno` writes the
     program's C and has the board's own compiler make `blink.elf` of
     it. A board is a folder whose `zeno.board` names the compiler, the
@@ -811,19 +811,19 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     has no collector.
     See [`docs/board-build.md`](docs/board-build.md) and chapter 51 of
     [`docs/decisions.md`](docs/decisions.md))
-50. `print` and the end of a program through the board (done, after
-    0.6.0 and not yet released: a board's header says
+50. `print` and the end of a program through the board (done, in
+    0.7.0: a board's header says
     `#define ZENO_BOARD_PRINTS` and brings four functions, for what is
     printed, what is said beside it, what is typed, and stopping. Then
     nothing of the program goes through the C library's streams or its
     `exit`. A second board, `boards/lm3s6965evb`, is the emulated
     Cortex-M3 on its own pin, timer and UART registers: `hello` takes
-    932 bytes of flash there, and 9,468 on the board with a C library
+    936 bytes of flash there, and 9,472 on the board with a C library
     under it.
     See [`docs/board.md`](docs/board.md) and chapter 52 of
     [`docs/decisions.md`](docs/decisions.md))
 51. A float into text, and text into a float, with no C library (done,
-    after 0.6.0 and not yet released: the runtime works out the digits
+    in 0.7.0: the runtime works out the digits
     of a float, `{x:.2f}` and `float("2.5")` itself, with whole
     numbers and exactly, where it called `snprintf` and `strtod`. On a
     Cortex-M3 that is 4 KB of flash where the C library took 28:
@@ -833,7 +833,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     with decimals, as `zeno run` always did.
     See chapter 53 of [`docs/decisions.md`](docs/decisions.md))
 52. Checks in plain C, for a C compiler that is neither GCC nor Clang
-    (done, after 0.6.0 and not yet released: the few things the C
+    (done, in 0.7.0: the few things the C
     asked of GCC and Clang by name, the overflow of a sum, a
     difference and a product first among them, are each written a
     second time in plain C, and a compiler gets the one it can read.

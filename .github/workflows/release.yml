@@ -157,7 +157,7 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           folder=zeno-$version-${{ matrix.name }}
           mkdir "$folder"
-          cp -r LICENSE README.md docs examples editors "$folder"
+          cp -r LICENSE README.md docs examples editors boards "$folder"
           cp target/wasm32-unknown-unknown/release/zeno.wasm "$folder"
           if [ "$RUNNER_OS" = Windows ]; then
             cp target/${{ matrix.target }}/release/zeno.exe "$folder"

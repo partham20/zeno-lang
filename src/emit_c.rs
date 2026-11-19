@@ -488,10 +488,12 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     }
     // The top-level code. It is kept out of `main` so that every variable
     // of the program lies below `main`'s on the stack, where the collector
-    // looks. `main` calls it by its address, read from a variable the C
-    // compiler is told it cannot see through (`volatile`), so that no
-    // compiler puts its code inside `main` (decision 55.4).
-    c += "\nstatic void zeno_program(void) {\n";
+    // looks. GCC and Clang are told so in their own word, as they always
+    // were: with it they write for a program what they wrote before. A
+    // compiler that has no such word calls it by its address, read from
+    // a variable it is told it cannot see through (`volatile`), so that
+    // it cannot put the code inside `main` either (decision 55.4).
+    c += "\nZENO_NOINLINE static void zeno_program(void) {\n";
     c += &render(&main);
     c += "}\n";
 
@@ -525,8 +527,12 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         c += "    zeno_program_start(argc, argv);\n";
     }
     if collector {
+        c += "#ifndef ZENO_PLAIN_C\n";
+        c += "    zeno_program();\n";
+        c += "#else\n";
         c += "    void (*volatile program)(void) = zeno_program; /* called so, it stays out of `main` */\n";
         c += "    program();\n";
+        c += "#endif\n";
     } else {
         c += "    zeno_program();\n";
     }

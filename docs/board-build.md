@@ -131,7 +131,10 @@ compiler for ARM chips and QEMU. On Debian and Ubuntu:
 sudo apt-get install gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
 ```
 
-Then, in a copy of Zeno's repository:
+Then, in a copy of Zeno's repository, or in the folder an archive of a
+release unpacks to, which has `boards/` since 0.7.0 (`install.sh` puts
+it in `~/.zeno/boards`; the setup program for Windows and the packages
+of apt, pacman, snap, flatpak and Homebrew do not carry it yet):
 
 ```sh
 zeno build --board boards/qemu-cortex-m3 examples/signal.zeno
@@ -180,15 +183,15 @@ How much of the chip a program takes, in bytes, as
 
 | program | flash | flash, `--minimal` | RAM | RAM, `--minimal` |
 |---|---|---|---|---|
-| `hello.zeno` | 9,468 | 9,432 | 1,756 | 1,756 |
-| `buffer.zeno` | 15,872 | 13,776 | 35,700 | 35,692 |
-| `primes.zeno` | 16,168 | 14,876 | 35,684 | 2,800 |
-| `thermostat.zeno` | 17,756 | 15,516 | 35,704 | 35,676 |
+| `hello.zeno` | 9,472 | 9,432 | 1,756 | 1,756 |
+| `buffer.zeno` | 15,888 | 13,776 | 35,700 | 35,692 |
+| `primes.zeno` | 16,172 | 14,876 | 35,684 | 2,800 |
+| `thermostat.zeno` | 17,760 | 15,516 | 35,704 | 35,676 |
 | `tour.zeno` | 22,000 | 19,648 | 35,724 | 35,716 |
-| `blink.zeno` | 29,976 | 29,904 | 2,184 | 2,184 |
+| `blink.zeno` | 29,984 | 29,904 | 2,184 | 2,184 |
 | `signal.zeno` | 31,016 | 30,800 | 2,240 | 2,240 |
-| `doorbell.zeno` | 32,272 | 31,464 | 36,144 | 3,260 |
-| `tachometer.zeno` | 33,480 | 32,144 | 36,896 | 4,012 |
+| `doorbell.zeno` | 32,280 | 31,464 | 36,144 | 3,260 |
+| `tachometer.zeno` | 33,488 | 32,144 | 36,896 | 4,012 |
 
 A program that makes a list or an object, or builds text, has the pool
 and the room for text in its RAM, about 34 KB together, whose sizes
@@ -241,13 +244,13 @@ checks:
 
 | program | flash on `qemu-cortex-m3` | flash on `lm3s6965evb` | RAM on `lm3s6965evb` |
 |---|---|---|---|
-| `hello.zeno` | 9,468 | 932 | 20 |
-| `blink.zeno` | 29,976 | 4,004 | 20 |
-| `signal.zeno` | 31,016 | 4,832 | 76 |
-| `buffer.zeno` | 15,872 | 7,472 | 33,968 |
-| `primes.zeno` | 16,168 | 7,884 | 33,952 |
-| `modbus.zeno` | 14,436 | 9,708 | 35,656 |
-| `words.zeno` | 18,692 | 10,388 | 33,980 |
+| `hello.zeno` | 9,472 | 936 | 20 |
+| `blink.zeno` | 29,984 | 3,996 | 20 |
+| `signal.zeno` | 31,016 | 4,844 | 76 |
+| `buffer.zeno` | 15,888 | 7,464 | 33,968 |
+| `primes.zeno` | 16,172 | 7,884 | 33,952 |
+| `modbus.zeno` | 14,452 | 9,720 | 35,656 |
+| `words.zeno` | 18,704 | 10,408 | 33,980 |
 | `tour.zeno` | 22,000 | 14,032 | 34,608 |
 
 A program carries of the C library `memcpy`, `memset`, `strlen` and

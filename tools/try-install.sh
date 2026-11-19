@@ -32,7 +32,7 @@ fail() { echo "try-install.sh: $*"; exit 1; }
 # A release, in a folder.
 mkdir -p "$work/release/$name" "$work/home"
 cp "$zeno" "$work/release/$name/zeno"
-cp -r LICENSE README.md docs examples editors "$work/release/$name"
+cp -r LICENSE README.md docs examples editors boards "$work/release/$name"
 wasm=target/wasm32-unknown-unknown/release/zeno.wasm
 if [ -f "$wasm" ]; then cp "$wasm" "$work/release/$name"; fi
 (
@@ -50,6 +50,7 @@ install "$work/release" > "$work/said.txt" || { cat "$work/said.txt"; fail "inst
 home=$work/home/.zeno
 [ "$("$home/bin/zeno" --version)" = "zeno $version" ] || fail "the installed zeno does not say $version"
 [ -f "$home/examples/hello.zeno" ] && [ -d "$home/docs" ] || fail "the docs and examples were not installed"
+[ -f "$home/boards/qemu-cortex-m3/zeno.board" ] || fail "the boards were not installed"
 [ "$(HOME="$work/home" bash -c ". '$startup'; zeno run ~/.zeno/examples/hello.zeno")" = "Hello, Zeno!" ] ||
     fail "a new shell does not find zeno"
 if [ -f "$wasm" ]; then

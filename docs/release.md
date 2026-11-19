@@ -16,16 +16,16 @@ one file to download for each kind of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.6.0-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.6.0-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.6.0-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.6.0-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.6.0-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.6.0-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.6.0-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.6.0-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.6.0-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.6.0-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.7.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.7.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.7.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.7.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.7.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.7.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.7.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.7.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.7.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.7.0-windows-arm64.zip` |
 
 Each file unpacks to a folder with `zeno` in it (`zeno.exe` on
 Windows), this README, the `docs`, the `examples` and the `editors`
@@ -99,8 +99,8 @@ the tag is pushed, on the machine the earlier versions were timed on:
 
 ```sh
 cargo build --release
-python3 bench/record.py --version 0.6.0
-git add bench/results/versions/0.6.0.json
+python3 bench/record.py --version 0.7.0
+git add bench/results/versions/0.7.0.json
 ```
 
 [`bench/record.py`](../bench/record.py) times every program with every
@@ -137,7 +137,7 @@ version, and write its paragraph on what the release brought. Then:
 ```sh
 python3 tools/history.py
 git add HISTORY.md tools/history-notes.txt
-git commit -m "History: 0.6.0"
+git commit -m "History: 0.7.0"
 ```
 
 The two files go in a commit of their own, which the page leaves out:

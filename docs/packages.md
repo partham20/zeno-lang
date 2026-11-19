@@ -11,10 +11,10 @@ them can install:
 
 | Its program | On | What is made for it |
 |---|---|---|
-| **apt** | Debian, Ubuntu, Raspberry Pi OS | `zeno_0.6.0_amd64.deb`, and `arm64`, `armhf`, `i386` |
-| **pacman** | Arch, Manjaro | `zeno-lang-bin-0.6.0-1-x86_64.pkg.tar.zst`, and a `PKGBUILD` |
-| **snap** | Ubuntu, and others | `zeno_0.6.0_amd64.snap`, and `arm64`, `armhf` |
-| **flatpak** | most Linux desktops | `zeno-0.6.0-x86_64.flatpak`, and `aarch64` |
+| **apt** | Debian, Ubuntu, Raspberry Pi OS | `zeno_0.7.0_amd64.deb`, and `arm64`, `armhf`, `i386` |
+| **pacman** | Arch, Manjaro | `zeno-lang-bin-0.7.0-1-x86_64.pkg.tar.zst`, and a `PKGBUILD` |
+| **snap** | Ubuntu, and others | `zeno_0.7.0_amd64.snap`, and `arm64`, `armhf` |
+| **flatpak** | most Linux desktops | `zeno-0.7.0-x86_64.flatpak`, and `aarch64` |
 | **Homebrew** | macOS, and Linux | a formula, `Formula/zeno.rb` |
 | **winget** | Windows 10 and 11 | three small files, in `packaging/winget` |
 
@@ -40,10 +40,10 @@ the end of this page, as a list.
 Until then, each package installs from its file:
 
 ```sh
-sudo apt install ./zeno_0.6.0_amd64.deb
-sudo pacman -U zeno-lang-bin-0.6.0-1-x86_64.pkg.tar.zst
-sudo snap install --classic --dangerous zeno_0.6.0_amd64.snap
-flatpak install --user zeno-0.6.0-x86_64.flatpak
+sudo apt install ./zeno_0.7.0_amd64.deb
+sudo pacman -U zeno-lang-bin-0.7.0-1-x86_64.pkg.tar.zst
+sudo snap install --classic --dangerous zeno_0.7.0_amd64.snap
+flatpak install --user zeno-0.7.0-x86_64.flatpak
 ```
 
 and Homebrew, which reads formulas from a repository, reads this one:
