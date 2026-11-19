@@ -195,8 +195,10 @@ How much of the chip a program takes, in bytes, as
 
 A program that makes a list or an object, or builds text, has the pool
 and the room for text in its RAM, about 34 KB together, whose sizes
-are fixed when the program is built ([`pool.md`](pool.md)). A program
-with neither, like `blink.zeno`, takes 2 KB. Most of the flash of a
+are fixed when the program is built ([`pool.md`](pool.md)). Since
+0.8.0 `--pool` and `--text-room` choose them, as in `zeno build --board
+boards/qemu-cortex-m3 --pool 4096 examples/primes.zeno`
+([`pool-size.md`](pool-size.md)). A program with neither, like `blink.zeno`, takes 2 KB. Most of the flash of a
 small program on this board is the C library: its streams are 8 KB of
 `hello.zeno`, and `printf` is 20 KB more for a program that drives a
 simulated pin (`blink.zeno` and the three after it: a simulated pin
@@ -331,8 +333,8 @@ and no `exit` under the program, and no `snprintf` under a float.
 `--memory` does not go with such a board yet: the report is written
 as the C library ends a program ([`missing.md`](missing.md)). The
 text of one statement has 1,024 bytes in a build with no collector,
-unless `-DZENO_TEXT_ROOM` says otherwise
-([`no-collector.md`](no-collector.md)), and the largest float written
+unless `--text-room` says otherwise
+([`pool-size.md`](pool-size.md)), and the largest float written
 with decimals, `f"{x:.2f}"` of 1e308, is 312 of them.
 
 ## How it is checked

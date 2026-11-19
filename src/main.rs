@@ -204,7 +204,13 @@ fn usage() {
     println!("                           It prints what `zeno run` prints (docs/targets.md)");
     println!("  --memory                 with build: the program reports, as it ends,");
     println!("                           how much memory it used and how often the");
-    println!("                           garbage collector ran");
+    println!("                           garbage collector ran. With no collector, a");
+    println!("                           write to a block after it was given back");
+    println!("                           stops the program (docs/pool-size.md)");
+    println!("  --pool <bytes>           with build and --no-collector or --board: the");
+    println!("                           size of the pool (32768 when not given)");
+    println!("  --text-room <bytes>      with build and --no-collector or --board: the");
+    println!("                           size of the text room (1024 when not given)");
 }
 
 /// Read a source file, or print why it could not be read.
@@ -572,7 +578,7 @@ fn how_built(
 /// `hello.zeno` becomes `hello.c` and `hello`, in the folder you are in. The
 /// C file is kept, because reading it is the best way to see what the
 /// compiler did.
-fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options, board: Option<&str>) -> Option<()> {
+fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options, board: Option<&str>, defines: &[String]) -> Option<()> {
     // A mistake in the board's own file is said before anything is built.
     let board = match board {
         Some(folder) => Some((folder, read_board(folder)?)),
@@ -635,6 +641,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
         if memory_report && !options.minimal {
             before.push("-DZENO_MEMORY_REPORT".to_string());
         }
+        before.extend(defines.iter().cloned());
         // A chip has no loader to be told where a library is.
         let libraries = declared.iter().filter(|word| !word.starts_with("-Wl,-rpath,")).cloned();
         let after: Vec<String> = libraries.chain(emit_c::LIBRARIES.iter().map(|library| library.to_string())).collect();
@@ -659,6 +666,7 @@ fn build(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::
             // (A minimal build has those lines written in or left out.)
             command.arg("-DZENO_MEMORY_REPORT");
         }
+        command.args(defines);
         match command.args(optimise(options)).args(["-o", &program_file, &c_file]).args(&declared).args(emit_c::LIBRARIES).status() {
             Ok(status) if status.success() => {
                 println!("Built {name}. Run it with {}", how_to_run(name));
@@ -787,7 +795,7 @@ fn how_to_run(name: &str) -> String {
 /// `hello.zeno` becomes `hello.ll`, `hello_runtime.c` and `hello`. The IR
 /// holds the program. The C file is the runtime the program calls for
 /// text, printing and memory, which a C build has pasted in front of it.
-fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options) -> Option<()> {
+fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emit_c::Options, defines: &[String]) -> Option<()> {
     let (files, program) = load(path)?;
     let (program, errors, types) = checker::checked(program.without_tests(), kind.rules());
     for error in &errors {
@@ -810,7 +818,11 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
     let (ir_file, runtime_file) = (format!("{name}.ll"), format!("{name}_runtime.c"));
     // The parts of the runtime for input pins and serial ports, only if
     // the program makes one (decisions 45.4 and 46.5).
-    let mut runtime = emit_c::with_board_parts(&emit_llvm::runtime_for(kind, options.grows), &emit_c::board_parts_in_ir(&ir));
+    let runtime = match options.spares_checked {
+        true => emit_llvm::runtime_with_spares_checked(options.grows),
+        false => emit_llvm::runtime_for(kind, options.grows),
+    };
+    let mut runtime = emit_c::with_board_parts(&runtime, &emit_c::board_parts_in_ir(&ir));
     if options.fast {
         runtime.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
@@ -835,6 +847,7 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
         // the report. The IR asks for the report to be printed at the end.
         flags.push("-DZENO_MEMORY_REPORT");
     }
+    flags.extend(defines.iter().map(String::as_str));
     let program_file = emit_c::program_file(name);
     flags.extend(["-o", &program_file, &ir_file, &runtime_file]);
     flags.extend(emit_c::LIBRARIES);
@@ -1269,6 +1282,64 @@ fn shown(files: &[modules::File], error: &error::Error) -> String {
     out + "\n"
 }
 
+/// `--pool` and `--text-room`, as the command line gave them.
+struct Sizes {
+    pool: Option<u32>,
+    text_room: Option<u32>,
+}
+
+impl Sizes {
+    /// The first of the two that was given, to name in a message.
+    fn named(&self) -> Option<&'static str> {
+        match (self.pool, self.text_room) {
+            (Some(_), _) => Some("--pool"),
+            (None, Some(_)) => Some("--text-room"),
+            (None, None) => None,
+        }
+    }
+
+    /// What they tell the C compiler: the sizes the runtime takes when
+    /// it is not told (5.9c, 5.9j), in their place.
+    fn defines(&self) -> Vec<String> {
+        let pool = self.pool.map(|bytes| format!("-DZENO_POOL={bytes}"));
+        let text_room = self.text_room.map(|bytes| format!("-DZENO_TEXT_ROOM={bytes}"));
+        pool.into_iter().chain(text_room).collect()
+    }
+}
+
+/// `--pool 4096` or `--pool=4096`, taken out of `args`: a whole number of
+/// bytes above zero, and at most what the runtime's messages can print.
+fn size_option(args: &mut Vec<String>, name: &str) -> Result<Option<u32>, String> {
+    let Some(at) = args.iter().position(|arg| arg == name || arg.strip_prefix(name).is_some_and(|rest| rest.starts_with('='))) else {
+        return Ok(None);
+    };
+    let option = args.remove(at);
+    let given = match option.strip_prefix(name).and_then(|rest| rest.strip_prefix('=')) {
+        Some(given) => given.to_string(),
+        None if at < args.len() => args.remove(at),
+        None => String::new(),
+    };
+    let what = if name == "--pool" { "the pool" } else { "the text room" };
+    // The runtime prints the size in its messages as a C `int`.
+    let most = i32::MAX as u64;
+    match given.parse::<u64>() {
+        Ok(bytes) if bytes > most => {
+            return Err(format!("zeno: `{name}` can be at most {most} bytes, which is 2 GB less a byte (`{given}` is more)"));
+        }
+        Ok(bytes) if bytes > 0 => {}
+        _ => {
+            return Err(format!(
+                "zeno: `{name}` is followed by the size of {what} in bytes, a whole number above zero, e.g.\n        \
+                 zeno build --no-collector {name} 4096 examples/blink.zeno\n      (`{given}` is not one)"
+            ));
+        }
+    }
+    if args.iter().any(|arg| arg == name || arg.starts_with(&format!("{name}="))) {
+        return Err(format!("zeno: `{name}` is given twice. Give it once, with the size of {what}"));
+    }
+    Ok(Some(given.parse().expect("checked above")))
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
     // `zeno run copy.zeno a.txt --strict`: the words after the file of a
@@ -1341,6 +1412,27 @@ fn main() -> ExitCode {
     // and only the parts of the runtime the program uses.
     let minimal = args.iter().any(|arg| arg == "--minimal");
     args.retain(|arg| arg != "--minimal");
+    // `--pool 4096` and `--text-room 2048`: the size of the pool and of
+    // the text room of a build with no collector (decision 56.15).
+    let sizes = match (size_option(&mut args, "--pool"), size_option(&mut args, "--text-room")) {
+        (Ok(pool), Ok(text_room)) => Sizes { pool, text_room },
+        (Err(why), _) | (_, Err(why)) => {
+            eprintln!("{why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(option) = sizes.named() {
+        if args.first().is_some_and(|command| command != "build") {
+            eprintln!("zeno: `{option}` is an option of `zeno build`: it sets a size of the memory of a program built");
+            eprintln!("      with no collector, and no other command builds one");
+            return ExitCode::FAILURE;
+        }
+        if web || target.is_some() {
+            eprintln!("zeno: `{option}` sets a size of the memory of a program compiled with no collector. `--web` and");
+            eprintln!("      `--target` write the program in another language, which looks after its own memory");
+            return ExitCode::FAILURE;
+        }
+    }
     if owned && collector {
         eprintln!("zeno: `--owned` and `--collector` are two ways to free memory. Choose one");
         return ExitCode::FAILURE;
@@ -1381,7 +1473,8 @@ fn main() -> ExitCode {
     };
     let built = |path: &str| {
         let (kind, options) = how_built(no_collector, firmware, release, fast, memory(path));
-        (kind, emit_c::Options { minimal, memory_report: minimal && memory_report, ..options })
+        let spares_checked = memory_report && !minimal && kind == emit_c::Build::NoCollector;
+        (kind, emit_c::Options { minimal, memory_report: minimal && memory_report, spares_checked, ..options })
     };
 
     match args.first().map(String::as_str) {
@@ -1618,10 +1711,26 @@ fn main() -> ExitCode {
                 };
             }
             let (kind, options) = built(path);
+            if let Some(option) = sizes.named() {
+                if kind != emit_c::Build::NoCollector {
+                    eprintln!("zeno: `{option}` sets a size of the memory of a build with no collector, which is fixed when the");
+                    eprintln!("      program is built. Add `--no-collector`, or build for a board with `--board`. A build with");
+                    eprintln!("      a collector takes its memory from the system as it needs it");
+                    return ExitCode::FAILURE;
+                }
+                if options.grows {
+                    eprintln!("zeno: `{option}` sets a size of the memory of a build with no collector for a chip, which is");
+                    eprintln!("      fixed when the program is built. This one is `memory owned` on a computer, whose pool");
+                    eprintln!("      and text room grow as the program needs, so there is no size to set. `--no-collector`");
+                    eprintln!("      asks for the fixed ones");
+                    return ExitCode::FAILURE;
+                }
+            }
+            let defines = sizes.defines();
             let built = match (web, llvm) {
                 (true, _) => build_web(path),
-                (false, true) => build_llvm(path, memory_report, kind, options),
-                (false, false) => build(path, memory_report, kind, options, board.as_deref()),
+                (false, true) => build_llvm(path, memory_report, kind, options, &defines),
+                (false, false) => build(path, memory_report, kind, options, board.as_deref(), &defines),
             };
             match built {
                 Some(()) => ExitCode::SUCCESS,
@@ -1688,6 +1797,42 @@ mod tests {
         assert_eq!(files_memory(&root.join("main.zeno").to_string_lossy()), Some(Owned));
         let root = folder("one-owned", &[("main.zeno", main), ("parts.zeno", "let n = 1\n")]);
         assert_eq!(files_memory(&root.join("main.zeno").to_string_lossy()), None);
+    }
+
+    #[test]
+    fn the_pool_and_the_text_room_are_sized_on_the_command_line() {
+        let words = |line: &str| line.split_whitespace().map(String::from).collect::<Vec<_>>();
+        // Both ways of writing it, taken out of the words, and handed to
+        // the C compiler as the sizes the runtime takes when not told.
+        let mut args = words("build --no-collector --pool 2104 --text-room=64 blink.zeno");
+        let sizes = Sizes { pool: size_option(&mut args, "--pool").unwrap(), text_room: size_option(&mut args, "--text-room").unwrap() };
+        assert_eq!(args, words("build --no-collector blink.zeno"));
+        assert_eq!(sizes.defines(), ["-DZENO_POOL=2104", "-DZENO_TEXT_ROOM=64"]);
+        assert_eq!(sizes.named(), Some("--pool"));
+        let mut args = words("build --no-collector --text-room 64 blink.zeno");
+        let sizes = Sizes { pool: size_option(&mut args, "--pool").unwrap(), text_room: size_option(&mut args, "--text-room").unwrap() };
+        assert_eq!((sizes.named(), sizes.defines()), (Some("--text-room"), vec!["-DZENO_TEXT_ROOM=64".to_string()]));
+        // Not given: nothing, and nothing taken.
+        let mut args = words("build --no-collector blink.zeno");
+        assert_eq!(size_option(&mut args, "--pool"), Ok(None));
+        assert_eq!(args.len(), 3);
+        assert_eq!(Sizes { pool: None, text_room: None }.defines(), Vec::<String>::new());
+        // A size is a whole number of bytes above zero, given once.
+        for (line, said) in [
+            ("--pool 0", "a whole number above zero"),
+            ("--pool -3", "(`-3` is not one)"),
+            ("--pool 4k", "(`4k` is not one)"),
+            ("--pool", "(`` is not one)"),
+            ("--pool= blink.zeno", "(`` is not one)"),
+            ("--pool 2147483648", "can be at most 2147483647 bytes"),
+            ("--pool 16 --pool 32", "is given twice"),
+            ("--text-room 0", "the size of the text room in bytes"),
+        ] {
+            let name = if line.starts_with("--pool") { "--pool" } else { "--text-room" };
+            let why = size_option(&mut words(line), name).unwrap_err();
+            assert!(why.contains(said), "{line}: {why}");
+        }
+        assert_eq!(size_option(&mut words("--pool 2147483647"), "--pool"), Ok(Some(2147483647)));
     }
 
     #[test]
@@ -1786,7 +1931,7 @@ mod tests {
         let at = |name: &str| root.join(name).display().to_string();
         assert!(check(&at("gaps.zeno"), checker::Rules { strict: true, one_owner: true, firmware: true }).is_some());
         assert!(check_no_collector(&at("gaps.zeno")).is_none());
-        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector, emit_c::Options::default(), None).is_none());
+        assert!(build(&at("gaps.zeno"), false, emit_c::Build::NoCollector, emit_c::Options::default(), None, &[]).is_none());
         assert!(check_no_collector(&at("fine.zeno")).is_some());
         let _ = fs::remove_dir_all(&root);
     }

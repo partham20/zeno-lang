@@ -17503,7 +17503,7 @@ both compilers read and write an item. It does:
 B needs neither. The free and the copy that keeps a box of its own
 exist already for text (5.9x), and a box is freed with the same
 `zeno_free` as any block of the pool. So B is built, with no collector
-alone, and A stays on the list (56.15).
+alone, and A stays on the list (56.16).
 
 **The rule.** With no collector, a list owns the box of each number
 that may be `none`, as it owns its copy of each text. Each way into a
@@ -17562,7 +17562,94 @@ writes `zeno_box_int` and no `zeno_box_keep_int`
 (`a_list_of_numbers_that_may_be_none_every_way`). The targets run the
 program. The page is [`none-list.md`](none-list.md).
 
-### 56.15 Left for later
+### 56.15 The size of the pool on the command line, and spare blocks that are checked
+
+```sh
+zeno build --no-collector --pool 2104 readings.zeno     # -DZENO_POOL=2104
+zeno build --no-collector --text-room 64 readings.zeno  # -DZENO_TEXT_ROOM=64
+zeno build --no-collector --memory late.zeno            # a write after free stops it
+```
+
+**The need.** The pool and the text room of a build with no collector
+are fixed when it is built (5.9c, 5.9j), and `--memory` says exactly
+how big each must be. But the only way to give a build that size was
+to run the C compiler by hand with `-DZENO_POOL=`, which `zeno build
+--board` does not let a person do at all. And a write to a block after
+it was given back went unseen: valgrind and the address sanitizer see
+the pool as one array (5.9k).
+
+**Both sizes, and the words.** `--pool N` and `--text-room N`, both,
+because a person who finds one looks for the other, and `--memory`
+prints both. `=` may stand for the space, as with `--target` and
+`--board`. Each hands its `-D` to the C compiler, or to clang with the
+runtime file beside the IR, and to the board's compiler with
+`--board`. The C and the IR do not change: the size is in the command,
+where it was by hand, so a C file written with `--pool` is the C file
+written without it.
+
+**Where they are refused.** They mean something only where the pool
+and the room are arrays of a fixed size: a build with no collector, for
+a chip. With a collector there is no pool; with `memory owned` on a
+computer the pool and the room grow, and their first sizes are not
+what a person means by the size; `--web`, `--target` and every command
+but `build` compile nothing. Each is refused with what to do instead,
+and not ignored, because an option that is taken and does nothing
+leaves a person sure of a size the program does not have. A size must
+be a whole number above zero and at most 2,147,483,647, since the
+runtime prints it in its messages as a C `int`; and given once.
+
+**The check, and why it is asked for by `--memory`.** A block that is
+given back is filled with `0xA5` past the link to the next spare
+block. When the block is handed out again, every such byte must still
+be `0xA5`, and the link must be `NULL` or a spare block of the same
+size in the pool (`zeno_in_pool`), or the program stops with "a block
+of memory was written to after it was given back". The link is looked
+at before it is followed, because a write over it is the worst case: it
+would hand out an address that is no block at all. `0xA5` and not
+zero, because zero is what a block most often holds. It is a check for
+trying a program, so it goes with the option for trying one, `--memory`,
+and not with a word of its own (the plan, 9.7); it is a check, so a
+minimal build leaves it out (30.2).
+
+**Only where it is asked for.** `runtime.c` is not changed, since it
+is written whole into the C of every program, and a check behind an
+`#ifdef` there would still change the text of every C file
+(`tools/same.py`). `with_spares_checked` writes it into the runtime of
+a build that asks: two prototypes after `zeno_spare`, a call in
+`zeno_alloc_raw` before the link is followed, a call in `zeno_free`
+before the block goes on its list, and the two functions after
+`zeno_in_pool`, each behind `#ifdef ZENO_MEMORY_REPORT`, so the C file
+built by hand without that flag has not a byte of it. The LLVM build
+writes the same runtime beside its IR. Each place it goes is found by
+text that must be in the runtime once, so a change to the runtime that
+moves one stops the tests rather than leaving the check out.
+
+**What it costs.** Nothing without `--memory`: the C of every program
+is what 0.7.0 wrote, with or without `--pool`. With it, a block given
+back is written once more and read once more when it comes off its
+list, in proportion to its size. No block is bigger, and the report is
+the same line for line.
+
+**Found on the way.** `docs/pool.md` said `buffer.zeno` needs 25,384
+bytes of pool; the compiler of today needs 17,184 for it, and a pool
+of 20,000 runs it, so a change since the page was written made it
+cheaper. It was not run down. The page and its exercise 2 give the
+numbers of today.
+
+**Tests.** The options: both ways of writing each, the flags they
+make, and each refusal of a size
+(`the_pool_and_the_text_room_are_sized_on_the_command_line`). The
+size: a program runs in the pool its report names and stops a byte
+below, with the flags `--pool` makes
+(`with_no_collector_the_pool_has_an_end`). The check: a write into a
+block and one into its link after `free`, through C and LLVM, each
+stopped; the same C without `--memory` runs to the end; the C differs
+from the plain C by the check alone; and a program that gives back
+hundreds of blocks and keeps to its own runs as `zeno run` runs it, with
+0 blocks left (`with_memory_a_write_to_a_block_given_back_stops_the_program`).
+The page is [`pool-size.md`](pool-size.md).
+
+### 56.16 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after

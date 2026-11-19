@@ -90,10 +90,22 @@ pub fn runtime(build: Build) -> String {
 /// (see `emit_c::Options::grows`).
 pub fn runtime_for(build: Build, grows: bool) -> String {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
+    beside_ir(&emit_c::runtime_for(firmware, collector, grows && !collector), firmware)
+}
+
+/// The same, for `--memory` with no collector: a block that is given back
+/// is filled, and looked at when it is handed out again
+/// (`emit_c::with_spares_checked`, decision 56.15).
+pub fn runtime_with_spares_checked(grows: bool) -> String {
+    beside_ir(&emit_c::with_spares_checked(&emit_c::runtime_for(true, false, grows)), true)
+}
+
+/// The runtime of C as the file beside the IR has it.
+fn beside_ir(runtime: &str, firmware: bool) -> String {
     // A function that never returns has that said in front of `static`.
     const NEVER: &str = "ZENO_NORETURN ";
     let mut text = String::new();
-    for line in emit_c::runtime_for(firmware, collector, grows && !collector).lines() {
+    for line in runtime.lines() {
         match line.strip_prefix(NEVER) {
             Some(rest) => {
                 text += NEVER;
@@ -8248,11 +8260,16 @@ pub(crate) mod tests {
     /// The same, with everything the run gave: the number it ended with
     /// among the rest.
     pub(crate) fn built_output(name: &str, ir: &str, build: Build, flags: &[&str]) -> Option<std::process::Output> {
+        built_beside(name, ir, build, &runtime(build), flags)
+    }
+
+    /// The same, with this runtime in the file beside the IR.
+    pub(crate) fn built_beside(name: &str, ir: &str, build: Build, runtime: &str, flags: &[&str]) -> Option<std::process::Output> {
         let dir = std::env::temp_dir().join(format!("zeno-test-{}-llvm-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temporary folder");
         let (ir_file, runtime_file, binary) = (dir.join("test.ll"), dir.join("test_runtime.c"), dir.join(emit_c::program_file("test")));
         std::fs::write(&ir_file, ir).expect("the IR file is written");
-        let runtime = emit_c::with_board_parts(&runtime(build), &emit_c::board_parts_in_ir(ir));
+        let runtime = emit_c::with_board_parts(runtime, &emit_c::board_parts_in_ir(ir));
         std::fs::write(&runtime_file, runtime).expect("the runtime is written");
         let built = Command::new("clang")
             .args(["-O2", "-Wno-override-module"])

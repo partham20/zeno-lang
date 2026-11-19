@@ -97,6 +97,9 @@ program with the message every full pool gives:
 error: the memory pool is full (ZENO_POOL is 32768 bytes)
 ```
 
+`--pool` gives a build a bigger pool, or the exact one `--memory`
+names ([`pool-size.md`](pool-size.md)).
+
 On a small board, where every block counts, two lists cost less:
 
 - **A number that stands for "nothing"**, in a plain `list[int]`: `-1`

@@ -885,6 +885,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     each number, as it owns its copy of each text; `none` takes none.
     See [`docs/none-list.md`](docs/none-list.md) and 56.14 of
     [`docs/decisions.md`](docs/decisions.md))
+60. The size of the pool on the command line (on `main`, for 0.8.0:
+    `zeno build --no-collector --pool 4096` and `--text-room 2048`, and
+    with `--memory` a write to a block after it was given back stops
+    the program. See [`docs/pool-size.md`](docs/pool-size.md) and
+    56.15 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

@@ -143,6 +143,79 @@ pub fn board_parts_in_ir(ir: &str) -> Vec<&'static str> {
     used
 }
 
+/// The runtime of a build with no collector, made to look for a write to
+/// a block after it was given back (decision 56.15). `zeno build
+/// --memory` asks for it. A block that is given back is filled with one
+/// byte past the link to the next spare block, and when it is handed out
+/// again the byte is looked for, and the link must lead to a spare block
+/// of the same size in the pool. A write that changed either stops the
+/// program. All of it is behind `#ifdef ZENO_MEMORY_REPORT`, so a build
+/// without `--memory` has not a byte of it; and it is written only into
+/// a build that asks, so the C of every other build is what it was.
+pub fn with_spares_checked(runtime: &str) -> String {
+    const PROTOTYPES: &str = "#ifdef ZENO_MEMORY_REPORT
+/* `zeno build --memory`: spare blocks are filled, and looked at when they
+ * are handed out again (zeno_spare_check, below). */
+static void zeno_spare_fill(zeno_spare *block);
+static void zeno_spare_check(zeno_spare *block);
+#endif
+";
+    const DEFINITIONS: &str = "#ifdef ZENO_MEMORY_REPORT
+/* A block that is given back is filled with this byte, after the link to
+ * the next spare block, so that a write to it after it was given back can
+ * be seen when it is handed out again. */
+#define ZENO_SPARE_BYTE 0xA5
+
+static void zeno_spare_fill(zeno_spare *block) {
+    unsigned char *end = (unsigned char *)block + sizeof(zeno_head) + ((size_t)16 << block->head.step);
+    for (unsigned char *byte = (unsigned char *)(block + 1); byte < end; byte++) *byte = ZENO_SPARE_BYTE;
+}
+
+/* The block is about to be handed out again. Every byte after the link is
+ * as zeno_spare_fill left it, and the link is either the end of the list
+ * or a spare block of the same size in the pool. Anything else was
+ * written by a line that still had the block's address after it was
+ * given back. */
+static void zeno_spare_check(zeno_spare *block) {
+    unsigned char *end = (unsigned char *)block + sizeof(zeno_head) + ((size_t)16 << block->head.step);
+    bool untouched = true;
+    for (unsigned char *byte = (unsigned char *)(block + 1); byte < end; byte++) {
+        if (*byte != ZENO_SPARE_BYTE) untouched = false;
+    }
+    zeno_spare *next = block->next;
+    if (next != NULL && !(zeno_in_pool((const char *)next) && next->head.step == block->head.step && next->head.asked == 0)) {
+        untouched = false;
+    }
+    if (!untouched) {
+        zeno_sayf(\"error: a block of memory was written to after it was given back\\n\");
+        zeno_stop(1);
+    }
+}
+#endif
+
+";
+    let places = [
+        ("} zeno_spare;\n", "} zeno_spare;\n".to_string() + PROTOTYPES),
+        (
+            "    if (block != NULL) {\n        zeno_pool_spare[step] = block->next;\n",
+            "    if (block != NULL) {\n#ifdef ZENO_MEMORY_REPORT\n        zeno_spare_check(block);\n#endif\n        zeno_pool_spare[step] = block->next;\n"
+                .to_string(),
+        ),
+        (
+            "    block->head.asked = 0;\n    block->next = zeno_pool_spare[block->head.step];\n",
+            "    block->head.asked = 0;\n#ifdef ZENO_MEMORY_REPORT\n    zeno_spare_fill(block);\n#endif\n    block->next = zeno_pool_spare[block->head.step];\n"
+                .to_string(),
+        ),
+        ("/* `text` is about to be kept in a variable, a field or a list.", DEFINITIONS.to_string() + "/* `text` is about to be kept in a variable, a field or a list."),
+    ];
+    let mut text = runtime.to_string();
+    for (place, with) in places {
+        assert_eq!(text.matches(place).count(), 1, "the runtime of a build with no collector has one `{place}`");
+        text = text.replace(place, &with);
+    }
+    text
+}
+
 /// The same, saying also whether it is for `zeno build --minimal`, which
 /// leaves the checks out (marked `#ifndef ZENO_MINIMAL`).
 fn runtime_of(firmware: bool, collector: bool, grows: bool, minimal: bool) -> String {
@@ -234,6 +307,11 @@ pub struct Options {
     /// are asked for. Every other build writes them behind
     /// `#ifdef ZENO_MEMORY_REPORT` and lets the C compiler choose.
     pub memory_report: bool,
+    /// `--memory` with no collector: a block that is given back is
+    /// filled, and looked at when it is handed out again
+    /// (`with_spares_checked`, decision 56.15). Not in a minimal build,
+    /// which writes no check of any kind.
+    pub spares_checked: bool,
     /// `--board`: `print` goes through the runtime in a minimal build
     /// too, and not to `printf`, which a board may not have and which
     /// costs a chip 20 KB of flash where it does (decision 52.4).
@@ -474,7 +552,11 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     // One C file: the runtime, then the program's types, its top-level
     // variables, a first line for every function (so that they can call each
     // other in any order), the functions themselves, and `main`.
-    let mut c = with_board_parts(&runtime_for(firmware, collector, options.grows && !collector), &emitter.board_parts);
+    let mut runtime = runtime_for(firmware, collector, options.grows && !collector);
+    if options.spares_checked && !collector {
+        runtime = with_spares_checked(&runtime);
+    }
+    let mut c = with_board_parts(&runtime, &emitter.board_parts);
     if options.fast {
         c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
@@ -11613,15 +11695,63 @@ print(shown, longest, n, label(shown).upper() + "!")
         let needed = pool_needed(&report);
         assert!(needed > 1024 && needed < 4096, "{report}");
         // ...and that is exact: it runs in a pool of that size, and not
-        // in one that is a byte smaller.
-        let exact = format!("-DZENO_POOL={needed}");
-        let Some((printed, _, finished)) = build_and_run("exact-pool", &c, &[&exact]) else { return };
+        // in one that is a byte smaller. The sizes are given as
+        // `--pool` gives them to the C compiler (decision 56.15).
+        let pool = |bytes: usize| crate::Sizes { pool: Some(bytes as u32), text_room: None }.defines();
+        let exact = pool(needed);
+        let Some((printed, _, finished)) = build_and_run("exact-pool", &c, &[&exact[0]]) else { return };
         assert!(finished);
         assert_eq!(printed, interpreted(source));
-        let short = format!("-DZENO_POOL={}", needed - 1);
-        let Some((_, errors, finished)) = build_and_run("short-pool", &c, &[&short]) else { return };
+        let short = pool(needed - 1);
+        let Some((_, errors, finished)) = build_and_run("short-pool", &c, &[&short[0]]) else { return };
         assert!(!finished);
         assert_eq!(errors, format!("error: the memory pool is full (ZENO_POOL is {} bytes)\n", needed - 1));
+    }
+
+    #[test]
+    fn with_memory_a_write_to_a_block_given_back_stops_the_program() {
+        // `free(a)` gives the block back, and the next line writes to it.
+        // With `--memory` the block was filled as it was given back, and
+        // is looked at when `allocate` hands it out again (decision 56.15).
+        let into_the_block = "let a = allocate(u8, 16)\nunsafe {\n    free(a)\n    a[12] = 1\n}\nlet b = allocate(u8, 16)\nprint(\"not here\")\n";
+        // The first byte is the link to the next spare block: the link is
+        // looked at too, before it is followed.
+        let into_the_link = "let a = allocate(u8, 16)\nlet c = allocate(u8, 16)\nunsafe {\n    free(c)\n    free(a)\n    a[0] = 1\n}\n\
+                             let b = allocate(u8, 16)\nprint(\"not here\")\n";
+        let said = "error: a block of memory was written to after it was given back\n";
+        let checked = |source: &str| {
+            let program = crate::modules::testing::built(source);
+            let (errors, types) = crate::checker::check_by(&program, Build::NoCollector.rules());
+            assert!(errors.is_empty());
+            let options = Options { spares_checked: true, ..Default::default() };
+            emit_with(&program, &types, "test.zeno", Build::NoCollector, options).unwrap()
+        };
+        for (name, source) in [("into-the-block", into_the_block), ("into-the-link", into_the_link)] {
+            let c = checked(source);
+            let Some((printed, errors, finished)) = build_and_run(&format!("spare-{name}"), &c, &["-DZENO_MEMORY_REPORT"]) else { return };
+            assert_eq!((printed.as_str(), finished), ("", false), "{errors}");
+            assert!(errors.starts_with(said), "{errors}");
+            let ir = crate::emit_llvm::tests::compile_no_collector(source).unwrap();
+            let runtime = crate::emit_llvm::runtime_with_spares_checked(false);
+            let ran = crate::emit_llvm::tests::built_beside(&format!("spare-{name}"), &ir, Build::NoCollector, &runtime, &["-DZENO_MEMORY_REPORT"])
+                .expect("clang, as above");
+            assert!(String::from_utf8_lossy(&ran.stderr).starts_with(said) && !ran.status.success());
+            // The same C, built without `--memory`, has none of it.
+            let Some((printed, _, finished)) = build_and_run(&format!("spare-{name}-unchecked"), &c, &[]) else { return };
+            assert_eq!((printed.as_str(), finished), ("not here\n", true));
+        }
+        // It is written only into a build that asks, so the C of every
+        // other build is what it was, and it is the only difference.
+        let c = checked(into_the_block);
+        let plain = compile_no_collector(into_the_block).unwrap();
+        assert!(c.contains("zeno_spare_check(block);") && !plain.contains("zeno_spare_check"));
+        assert_eq!(with_spares_checked(&plain), c);
+        // A program that gives blocks back and never writes to them runs
+        // as it did, with nothing left.
+        let source = include_str!("../tools/targets/edge-none-list.zeno");
+        let Some((printed, report, finished)) = build_and_run("spare-fine", &checked(source), &["-DZENO_MEMORY_REPORT"]) else { return };
+        assert!(finished && report.contains(" 0 blocks left at the end"), "{report}");
+        assert_eq!(printed, interpreted(source));
     }
 
     #[test]

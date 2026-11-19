@@ -243,21 +243,26 @@ spare and of no use to this program. The list ends up holding 1024
 bytes of items and the pool needed 2104.
 
 So a list that grows costs about twice its final size. `buffer.zeno`
-is nearly all growing lists, which is why it needs 25,384 bytes of
-pool for 13,336 bytes in use at once. Exercises 3 and 4 are two ways
+is nearly all growing lists, which is why it needs 17,184 bytes of
+pool for 12,592 bytes in use at once. Exercises 3 and 4 are two ways
 to get that back.
 
 ## Choosing the size
 
 The pool is `ZENO_POOL` bytes, and 32768 unless you say otherwise.
 That default is only there so that the examples run. On a board you
-choose it, and the report tells you what to choose:
+choose it, and the report tells you what to choose. `--pool` says it
+to `zeno build`, which hands it to the C compiler as `-DZENO_POOL`
+(since 0.8.0, [`pool-size.md`](pool-size.md)):
 
 ```sh
 cargo run -- build --no-collector --memory examples/buffer.zeno
 ./buffer 2>&1 | grep pool
-cc -O2 -DZENO_POOL=25384 -o buffer buffer.c -lm
+cargo run -- build --no-collector --pool 17184 examples/buffer.zeno
 ```
+
+By hand it is the same flag: `cc -O2 -DZENO_POOL=17184 -o buffer
+buffer.c -lm`.
 
 The number in the report is how much of the array was ever cut into
 blocks, and it is exact. The program runs in a pool of that many bytes
@@ -266,11 +271,12 @@ and not in one a byte smaller (the test
 *that run*, of course: a program whose lists depend on its input needs
 the report from its worst input, and some room on top.
 
-Through LLVM it is the same flag, on the runtime file:
+Through LLVM it is the same option, and the same flag on the runtime
+file:
 
 ```sh
-cargo run -- build --llvm --no-collector --memory examples/buffer.zeno
-clang -O2 -Wno-override-module -DZENO_POOL=25384 -o buffer buffer.ll buffer_runtime.c -lm
+cargo run -- build --llvm --no-collector --pool 17184 examples/buffer.zeno
+clang -O2 -Wno-override-module -DZENO_POOL=17184 -o buffer buffer.ll buffer_runtime.c -lm
 ```
 
 The pool lives in the runtime, which both backends share, so nothing
@@ -362,12 +368,11 @@ library. Nothing in the list allocates.
    change `range(3)` to `range(3000)`. Which numbers in the report
    change? Now make the list `[id, id + 1, id + 2, id + 3, id + 4]`.
    Work out the new pool size before you run it.
-2. Compile `buffer.c` by hand with `-DZENO_MEMORY_REPORT
-   -DZENO_POOL=20000`. It stops before it prints a line, having made
-   79 blocks and taken 16,528 bytes. What asked for the block that did
-   not fit? (A frame's samples are in a block of 8192 bytes. Which
-   line of `buffer.zeno` needs a second one while the first is still
-   in use?)
+2. Build `buffer.zeno` with `--no-collector --memory --pool 16000`.
+   It stops before it prints a line, having made 10 blocks and taken
+   8,304 bytes. What asked for the block that did not fit? (A frame's
+   samples are in a block of 8192 bytes. Which line of `buffer.zeno`
+   needs a second one while the first is still in use?)
 3. A comprehension over a range knows how long its list will be before
    it starts: `[n * n for n in range(size)]`. Find where `emit_c.rs`
    writes `zeno_list_new(0)` for a comprehension and pass the length
@@ -381,12 +386,13 @@ library. Nothing in the list allocates.
    list the program can now make? Each size costs one pointer of RAM
    for its list of spares. How much RAM did that save, and when would
    it be worth it?
-6. Put back a little of what the heap checker gave. In `zeno_free`,
-   fill the block with the byte `0xDD`, and in `zeno_alloc`, when the
-   block came from a list of spares, check that every byte after the
-   first pointer is still `0xDD` before wiping it. What kind of bug
-   does that catch? Wrap it in `#ifdef ZENO_POOL_CHECK` and run the
-   tests with it.
+6. Put back a little of what the heap checker gave. (Built in 0.8.0,
+   behind `--memory`: [`pool-size.md`](pool-size.md). Read it after
+   you try.) In `zeno_free`, fill the block with the byte `0xDD`, and
+   in `zeno_alloc`, when the block came from a list of spares, check
+   that every byte after the first pointer is still `0xDD` before
+   wiping it. What kind of bug does that catch? Wrap it in `#ifdef
+   ZENO_POOL_CHECK` and run the tests with it.
 7. `zeno_pool_full` does not say which size was asked for or how much
    of the pool is spare. Add both to the message. Then explain this
    output: a 32 KB pool that is "full" with 20 KB of it spare.
@@ -396,4 +402,5 @@ library. Nothing in the list allocates.
    the compiler then promise that this pool cannot?
 9. Give `zeno build` an option `--pool 4096` that passes
    `-DZENO_POOL=4096` to the C compiler, and one for the text room.
-   Look at how `--memory` does it in `src/main.rs`.
+   Look at how `--memory` does it in `src/main.rs`. (Built in 0.8.0 as
+   `--pool` and `--text-room`. Compare yours with `size_option`.)
