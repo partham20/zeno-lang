@@ -1561,3 +1561,49 @@ The question stays with the owner of the language.
   it uses by the same rule as `let b = a`, and not by a copy of it.
   The note for the compilers lists names; what each is, and so how it
   is freed, is for each copy of a generic function to say.
+
+### 4. 9.2, first half, as built, 2026-11-19: one thing the review found
+
+The first half of 9.2 (commits a24bb55, 80be701 and 056ef17, decision
+56.8) and the four fixes asked in section 2 were reviewed the same
+way: read whole, and built every way with programs of the reviewer's
+own. A kept function that takes a list, an object and text at once,
+that is kept in a field, made in a loop, called after the function
+that made it returned, and that fails through a type that says
+`raises`, prints what `zeno run` prints in every build, with 0 blocks
+left. The four fixes hold.
+
+**A `var` is refused in every build, and it was not.** Decision 56.8
+says that a `var` of the function around stays refused. The code
+refuses it only where everything has one owner. With a collector, a
+`var` whose type says `owned` was taken:
+
+```zeno
+function f() -> int {
+    var xs: owned list[int] = [1, 2]
+    let g = function() -> int { return len(xs) }
+    return g()
+}
+print(f())
+```
+
+`zeno run` prints 2. `zeno build` and `zeno build --firmware` write a
+program that stops with a fault of memory. If `xs` is given a new
+list after the `let g` line, `zeno build --llvm` prints the length of
+the old list where `zeno run` prints the length of the new one. 0.7.0
+refused the program, so no program of before is touched.
+
+The rule, in every build: **a function that is kept cannot take a
+`var`.** A `var` can be given something new after the function was
+made, and the two would then hold different things, or share one
+variable, which a value with one owner cannot do. The message says to
+declare it with `let`, and does not speak of a collector where there
+is one. Each compiler refuses, and does not write, a taken value it
+has no plain variable for.
+
+**Two smaller things.** The test of both compilers builds the new
+program with no collector through C, and every way through LLVM; it
+is to build it every way through C too, and one program is to write
+`owned` in a build with a collector. And for `self`, the message that
+says to write `take` on the parameter cannot be followed; it is to
+say to put what the function needs in a `let` first.
