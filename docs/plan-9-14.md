@@ -102,8 +102,9 @@ A part is done when all of this is true, and not before.
   through.
 - **Windows and macOS** are tried with the `trial` workflow at the end
   of each item.
-- **The speed checks below are run, and their numbers are in the
-  commit message or the chapter.**
+- **`tools/same.py` is run, and what it found is in the commit
+  message or the chapter.** (Until 2026-11-19 this line asked for all
+  the speed checks below; see section 6 of the changes.)
 - **It is written down.** The chapter of the decisions, a page in
   `docs/` that walks through how it is built and ends in "Things to
   try", the rows of [`missing.md`](missing.md) and of the README
@@ -117,6 +118,10 @@ A part is done when all of this is true, and not before.
   each with the message it is refused with.
 
 ### Showing that nothing got slower
+
+**Changed on 2026-11-19 (section 6 of the changes at the end): steps
+2 and 3 below, the counting and the timing of the two engines, are
+not run for the parts of this page. Step 1 stays.**
 
 Timings on a shared machine move by more than the changes they are
 meant to show, so the proof comes in three steps, cheapest first.
@@ -495,6 +500,10 @@ owner, and the list is refused.
 |---|---|---|---|
 | A | The list keeps a second, packed list of flags beside its values: one byte an item, as a `list[u8]` is packed (36.2) | No block for an item at all: 9 bytes an item. Nothing to free, nothing to copy deep | Each thing a list can do must keep the two in step |
 | B | The blocks stay, and the list owns them, as it owns the text in it (5.9x) | The free and the deep copy exist for text | 24 bytes an item and a trip to the pool for each number, which is what firmware cannot afford |
+
+**Changed on 2026-11-19 (section 6 of the changes at the end): A is
+built for a build with no collector alone, where such a list is
+refused today. Every other build keeps the list it writes today.**
 
 **A is chosen**, as `missing.md` already says: "store the number and
 a flag side by side". It is used in every C build and LLVM build and
@@ -1658,3 +1667,81 @@ second (whether to build 14.2) waits with item 14. The first, about
 `raises` on function values in every strict check (9.1), stays, with
 the number chapter 56 measured. Chapter 60 of the decisions will hold
 13.1 and 13.2 only, and chapter 61 is not begun.
+
+### 6. 2026-11-19: no benchmarks, and every feature is asked for
+
+The owner of the language said two things on 2026-11-19, and both
+change how the rest of this page is built.
+
+**No benchmarks for these parts.** "Do not do any benchmark, just
+directly test the code and push it. We can do the benchmark later if
+I want." So steps 2 and 3 of "Showing that nothing got slower" are
+not run: the two engines are not counted and not timed, and no part
+waits for them. The sizes of a board's program are not measured
+again either. Whoever wants the numbers later has `bench/run.py
+--count` and `bench/compare.py`, and every commit to build.
+
+`tools/same.py` stays. It is a test and not a benchmark: it takes
+about a minute, uses no clock, and shows the thing the second rule
+below asks for, that a program which does not use a new feature is
+built into the same C, IR and bytecode as before.
+
+**What was known when the benchmarks stopped**, so that nobody has to
+find it again. Part 9.3 was the first to change the engines. Counted
+against 0.7.0, both engines ran within 0.1% on every benchmark, after
+`raises` was put in a box and the arms of `take` in a function of
+their own. By the clock, `zeno run --vm` took 4.0% longer on `fib`,
+5.1% on `trees` and 4.5% on `nbody` (six rounds, names of one
+length), with the other three inside 2% or faster. Fewer
+instructions and more time has meant, each time it was run down
+before (24.29, 50.7), that the same code landed somewhere else in
+memory. It was not run down this time. A build (`zeno build`) is not
+touched by any of it: its C is the same, byte for byte.
+
+**Every feature is asked for.** "If I want to use anything in this
+feature, I have to mention some keyword or some flag. Only then I can
+use that. Otherwise it will go like the normal one." This is the
+first rule of this page ("nothing that is accepted today may come to
+mean something else") said from the other side, and every part is
+held to both:
+
+- A program that does not write the new word, and is not built with
+  the new flag, runs and builds as it did. `tools/same.py` shows it
+  for a build, and the tests of 0.7.0, all of which still pass,
+  show it for `zeno run`.
+- Each feature begins with something the program or the command line
+  says. The table is what a reader looks for:
+
+| Part | What asks for it |
+|---|---|
+| 9.1 | `raises` written in a function type |
+| 9.2 | A function written where a value goes that is kept, or `object.method` with no call, in a program that a build refused before |
+| 9.3 | `take` in front of a field or an item |
+| 9.4, 9.5, 9.6 | `--no-collector`, with a type that build refused before |
+| 9.7 | `--pool N`, `--text-room N` |
+| 9.8 | A function with a name inside a function, or a default that is not a literal, in a build that refused it before |
+| 10 | `-> (int, str)`, `return a, b`, `let a, b = f()` |
+| 11 | `enum Name[T]`, `[T is Shape]`, `interface Name[T]`, the name `Ordered` where the program has none of its own |
+| 12 | `is Resource` on an `owned class`; `files.read_from`, `files.write_to`, `files.append_to` |
+| 13.1 | A second thing after `assert`: `assert c, "text"` |
+| 13.2 | `zeno test --build` |
+
+- Nothing is switched on for a program that did not ask. Two choices
+  above did that, and are changed:
+  - **9.6.** The packed flags beside a `list[int or none]` were to be
+    used in every C and LLVM build, "so that a list like this gets
+    cheaper everywhere". That would change what an ordinary build
+    writes for a program of today that has such a list. They are now
+    used with no collector alone, where the list is refused today.
+    Every other build keeps its list as it is.
+  - **The strict check of `raises` on function values** (the first
+    question this page kept): it stays off, and is not asked again.
+    If it is ever wanted, it comes as a flag.
+- Where a part could be built either by a new word or by doing more
+  by itself, the word is chosen, and the chapter says so.
+
+**The release.** When the last part is accepted, 0.8.0 is released
+with no comparison of speed against 0.7.0. `docs/release.md` asks
+for one before every release that adds code; the owner of the
+language has put it off for this one, and the release notes say that
+the engines were not timed.
