@@ -113,12 +113,6 @@ pub enum Op {
     GetIndex,
     /// Pop an index, an object and, under them, a value. Store the value there.
     SetIndex,
-    /// `take object.name`: replace the object on top with its field named
-    /// by constant n, and leave `none` in the field.
-    TakeField(u32),
-    /// `take object[index]`: pop an index and an object, push the item,
-    /// and leave `none` in its place.
-    TakeIndex,
 
     // --------------------------------------------------------------- Jumps
     /// Carry on from instruction n.
@@ -232,6 +226,17 @@ pub enum Op {
     BinaryJump(BinaryOp, u32),
     /// `GetLocal a`, `GetField n`: `b.x`.
     LocalField(u16, u32),
+
+    // ------------------------------------------------------------- Rare
+    // Last, after the superinstructions, so that the instructions of
+    // before keep their numbers and the VM's loop is laid out as it was
+    // (decision 56.10).
+    /// `take object.name`: replace the object on top with its field named
+    /// by constant n, and leave `none` in the field.
+    TakeField(u32),
+    /// `take object[index]`: pop an index and an object, push the item,
+    /// and leave `none` in its place.
+    TakeIndex,
 }
 
 /// The code the VM runs: `code` with superinstructions put over the
