@@ -773,7 +773,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     and gains two functions. In every engine and every C and LLVM
     build. See [`docs/analog.md`](docs/analog.md) and chapter 47 of
     [`docs/decisions.md`](docs/decisions.md))
-46. A PWM signal on a board (done, after 0.5.2 and not yet released:
+46. A PWM signal on a board (done, after 0.6.0 and not yet released:
     `pwm_pin(9, 1 kHz)` gives a `PwmPin`, made with its frequency;
     `duty(0.25)` is the share of the time on, from 0.0 to 1.0, and
     `pulse(1500 us)` the time on in each period, as a servo wants. A
@@ -781,7 +781,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     header gains one function. In every engine and every C and LLVM
     build. See [`docs/pwm.md`](docs/pwm.md) and chapter 48 of
     [`docs/decisions.md`](docs/decisions.md))
-47. A steady beat on a board (done, after 0.5.2 and not yet released:
+47. A steady beat on a board (done, after 0.6.0 and not yet released:
     `ticker(10 ms)` gives a `Ticker`, whose ticks are 10 ms apart
     whatever the work between them takes. `wait()` waits for the next
     tick and `ticks()` asks without waiting; each gives how many ticks
@@ -790,7 +790,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     for nothing new. In every engine and every C and LLVM build.
     See [`docs/ticker.md`](docs/ticker.md) and chapter 49 of
     [`docs/decisions.md`](docs/decisions.md))
-48. Interrupts on a board (done, after 0.5.2 and not yet released:
+48. Interrupts on a board (done, after 0.6.0 and not yet released:
     `button.interrupt(falling)` gives an `Interrupt`: the board counts
     the pin's edges, `wait()` waits for one and `edges()` asks without
     waiting, so no pulse is lost and the chip can sleep. The program's
@@ -800,7 +800,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     engine and every C and LLVM build.
     See [`docs/interrupts.md`](docs/interrupts.md) and chapter 50 of
     [`docs/decisions.md`](docs/decisions.md))
-49. One step to a board (done, after 0.5.2 and not yet released:
+49. One step to a board (done, after 0.6.0 and not yet released:
     `zeno build --board boards/qemu-cortex-m3 blink.zeno` writes the
     program's C and has the board's own compiler make `blink.elf` of
     it. A board is a folder whose `zeno.board` names the compiler, the
@@ -812,7 +812,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     See [`docs/board-build.md`](docs/board-build.md) and chapter 51 of
     [`docs/decisions.md`](docs/decisions.md))
 50. `print` and the end of a program through the board (done, after
-    0.5.2 and not yet released: a board's header says
+    0.6.0 and not yet released: a board's header says
     `#define ZENO_BOARD_PRINTS` and brings four functions, for what is
     printed, what is said beside it, what is typed, and stopping. Then
     nothing of the program goes through the C library's streams or its
