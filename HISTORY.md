@@ -25,7 +25,8 @@ to be built is in [`docs/missing.md`](docs/missing.md).
 - [**Zeno 0.5.1**](#zeno-051), 17 November 2026, 6 commits: the VM as fast as it was
 - [**Zeno 0.5.2**](#zeno-052), 18 November 2026, 41 commits: four more targets, a registry, and the libraries of other languages
 - [**Zeno 0.6.0**](#zeno-060), 19 November 2026, 33 commits: the release for firmware, and the libraries of five more languages
-- [**Unreleased**](#unreleased), on `main` now, 2 commits: what has come since 0.6.0
+- [**Zeno 0.7.0**](#zeno-070), 19 November 2026, 18 commits: from a `.zeno` file to a chip in one step
+- [**Unreleased**](#unreleased), on `main` now, 2 commits: what has come since 0.7.0
 
 ## Zeno 0.1.0
 
@@ -638,15 +639,68 @@ runs as fast as it did in 0.5.2.
 - [`4268b08`](https://github.com/zeno-src/zeno-lang/commit/4268b0896c8048e1243213df8d4b1909117a76aa) The version is 0.6.0, with its release notes.
 - [`356e780`](https://github.com/zeno-src/zeno-lang/commit/356e780568da6234f3de1967104de5fd68c0f00d) Book: rebuilt for Zeno 0.6. **This commit is Zeno 0.6.0.**
 
-## Unreleased
+## Zeno 0.7.0
 
-*Not in a release yet · 2 commits · 18 to 19 November 2026*
+*Released 19 November 2026 · 18 commits · [the release on GitHub](https://github.com/zeno-src/zeno-lang/releases/tag/v0.7.0)*
 
-What is on `main` since 0.6.0 was released.
+0.7.0 is the second release for firmware. The board module gets the three
+things it lacked: a PWM signal, a steady beat, and edges counted by an
+interrupt. `zeno build --board` runs the board's own compiler, a board can
+print and stop by itself with no C library under the program, a float is
+made into text by Zeno's own runtime, and the C of a build can be read by a
+C compiler that is neither GCC nor Clang. `hello` takes 936 bytes of flash
+on an ARM Cortex-M3. All of it was tried on two boards that QEMU emulates,
+and none of it on a real one yet. The book has a new chapter on libraries
+of C. This ends the eighth of the fourteen items of `docs/missing.md`.
 
 - [`8d44bb1`](https://github.com/zeno-src/zeno-lang/commit/8d44bb10b792f1bc60d33284b7cf85dac4d4238d) The Homebrew, pacman and winget recipes for 0.6.0, with its checksums.
 - [`40ae73a`](https://github.com/zeno-src/zeno-lang/commit/40ae73a158ab3d10ba2475fcfd55ca5824f41243) `HISTORY.md`, this page: every commit under its release, written by `tools/history.py` from git and a file of notes. The website shows it at `/history/`.
 
+### A PWM signal, a steady beat, and interrupts
+
+*18 November 2026*
+
+- [`7703e47`](https://github.com/zeno-src/zeno-lang/commit/7703e4781178a61495a07c2f057d2c018b7b8eb3) A PWM signal on a board: `pwm_pin(9, 1 kHz)` makes a pin that goes on and off at a frequency, and `duty(0.25)` says for how much of each turn it is on.
+- [`3889409`](https://github.com/zeno-src/zeno-lang/commit/38894099c5cf1b04adc614803a5e04f1544a6636) A steady beat on a board: `ticker(10 ms).wait()` waits for the next beat, so a loop keeps its pace however long its work took.
+- [`fb95f78`](https://github.com/zeno-src/zeno-lang/commit/fb95f78a0c8037a3fb78f70525bd1235cd6a4f5d) Interrupts on a board: `button.interrupt(falling)` counts the edges of an input as they happen, and `wait()` sleeps until one comes.
+
+### One step to a board
+
+*18 to 19 November 2026*
+
+- [`fc034c1`](https://github.com/zeno-src/zeno-lang/commit/fc034c1d4845e67a8aa32b1bc30c4278912d1133) `zeno build --board boards/qemu-cortex-m3 blink.zeno` runs the board's own compiler. A board is a folder with a `zeno.board` file, and every example is run on an emulated ARM Cortex-M3.
+- [`ec52d5e`](https://github.com/zeno-src/zeno-lang/commit/ec52d5e4cd6843c52f4b3d2274877530ee0c19e7) A board that prints, reads and stops by itself: its header says `#define ZENO_BOARD_PRINTS` and brings four functions, and nothing of the program goes through the C library. A second board, `boards/lm3s6965evb`, drives the chip's own registers.
+- [`85e8b0c`](https://github.com/zeno-src/zeno-lang/commit/85e8b0cc58300f9c4b24dc21d581b75df5488ddd) The README says that the five stages since 0.6.0 came after it.
+- [`906865c`](https://github.com/zeno-src/zeno-lang/commit/906865c41d083f2703fd78acb33de2dd4e3fe131) Two chapters of the decisions had the number 49. The history's is now 54.
+
+### A float with no C library, and plain C
+
+*19 November 2026*
+
+- [`767b985`](https://github.com/zeno-src/zeno-lang/commit/767b985b4f9b3f118806eee6bfbe550cdd157fec) A float is made into text, and text into a float, by the runtime itself, with whole numbers and exactly. On a Cortex-M3 that is 4 KB of flash where `snprintf` and `strtod` were 28.
+- [`e4bac94`](https://github.com/zeno-src/zeno-lang/commit/e4bac948964a949ca2e8f5056013d15ddb27bf66) The benchmark figures of 0.6.0.
+- [`eeea2b4`](https://github.com/zeno-src/zeno-lang/commit/eeea2b4f0f08a96c2cc3f80407b971ba1ac02b47) The C++ and Lua targets printed 46 powers of two with 17 digits. They print 16, as `zeno run` does.
+- [`d0bd086`](https://github.com/zeno-src/zeno-lang/commit/d0bd086de01522de6658f3f47ff55ddf6e892433) The version on `main` is 0.7.0, and its release notes are begun.
+- [`eb3c486`](https://github.com/zeno-src/zeno-lang/commit/eb3c486a67e0c61417eee1c58c15b8abe90f5b7c) Every check that asked GCC or Clang for a built-in is written a second time in plain C, so a C compiler that is neither can build a program. tcc builds every example.
+- [`39cef6a`](https://github.com/zeno-src/zeno-lang/commit/39cef6a63a16ad7acf65c45a228f8c9d97a4200c) The table of sizes on the page about minimal builds, measured again.
+
+### Ready for 0.7.0
+
+*19 November 2026*
+
+- [`4d2fd31`](https://github.com/zeno-src/zeno-lang/commit/4d2fd314a98b86839c89a417c55df8d4a69c1a9f) The book for 0.7: Ruby, PHP, Lua and C# in the chapter on the libraries of other languages, and a new chapter on libraries of C.
+- [`951c666`](https://github.com/zeno-src/zeno-lang/commit/951c66600a40978d3e1de3d81537e5e8900092fb) The version is 0.7.0, with its release notes. GCC and Clang get the top of the program as 0.6.0 gave it to them, so a built program runs the instructions it ran before, and the interpreter keeps the board behind a pointer, as the VM does.
+- [`17453fd`](https://github.com/zeno-src/zeno-lang/commit/17453fdb4bca357fefe0ba582a17960516eedee0) Three tests of the last two stages failed in a debug build or on Windows, by their own arithmetic and line ends. They are mended. Nothing of Zeno itself changed. **This commit is Zeno 0.7.0.**
+
+## Unreleased
+
+*Not in a release yet · 2 commits · 19 November 2026*
+
+What is on `main` since 0.7.0 was released.
+
+- [`fdf8c23`](https://github.com/zeno-src/zeno-lang/commit/fdf8c2330e0f775090e1486b61ea4f574cbac26c) The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
+- [`d4f3faa`](https://github.com/zeno-src/zeno-lang/commit/d4f3faa07c57c8c78f2f2b0326d41453f08c69c4) The benchmark figures of 0.7.0.
+
 ---
 
-This file is written by [`tools/history.py`](tools/history.py) from the commits themselves and the notes in [`tools/history-notes.txt`](tools/history-notes.txt). It lists 319 commits, up to `40ae73a` of 18 November 2026. A commit that only brings this file or its notes up to date is not listed.
+This file is written by [`tools/history.py`](tools/history.py) from the commits themselves and the notes in [`tools/history-notes.txt`](tools/history-notes.txt). It lists 337 commits, up to `d4f3faa` of 19 November 2026. A commit that only brings this file or its notes up to date is not listed.

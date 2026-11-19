@@ -512,9 +512,48 @@ bc8a2a1 Sums of two ints or two floats take a short path in the interpreter too,
 4268b08 The version is 0.6.0, with its release notes.
 356e780 Book: rebuilt for Zeno 0.6.
 
-= Unreleased: what has come since 0.6.0
+= 0.7.0: from a `.zeno` file to a chip in one step
 
-What is on `main` since 0.6.0 was released.
+0.7.0 is the second release for firmware. The board module gets the three
+things it lacked: a PWM signal, a steady beat, and edges counted by an
+interrupt. `zeno build --board` runs the board's own compiler, a board can
+print and stop by itself with no C library under the program, a float is
+made into text by Zeno's own runtime, and the C of a build can be read by a
+C compiler that is neither GCC nor Clang. `hello` takes 936 bytes of flash
+on an ARM Cortex-M3. All of it was tried on two boards that QEMU emulates,
+and none of it on a real one yet. The book has a new chapter on libraries
+of C. This ends the eighth of the fourteen items of `docs/missing.md`.
 
 8d44bb1 The Homebrew, pacman and winget recipes for 0.6.0, with its checksums.
 40ae73a `HISTORY.md`, this page: every commit under its release, written by `tools/history.py` from git and a file of notes. The website shows it at `/history/`.
+
+== A PWM signal, a steady beat, and interrupts
+7703e47 A PWM signal on a board: `pwm_pin(9, 1 kHz)` makes a pin that goes on and off at a frequency, and `duty(0.25)` says for how much of each turn it is on.
+3889409 A steady beat on a board: `ticker(10 ms).wait()` waits for the next beat, so a loop keeps its pace however long its work took.
+fb95f78 Interrupts on a board: `button.interrupt(falling)` counts the edges of an input as they happen, and `wait()` sleeps until one comes.
+
+== One step to a board
+fc034c1 `zeno build --board boards/qemu-cortex-m3 blink.zeno` runs the board's own compiler. A board is a folder with a `zeno.board` file, and every example is run on an emulated ARM Cortex-M3.
+ec52d5e A board that prints, reads and stops by itself: its header says `#define ZENO_BOARD_PRINTS` and brings four functions, and nothing of the program goes through the C library. A second board, `boards/lm3s6965evb`, drives the chip's own registers.
+85e8b0c The README says that the five stages since 0.6.0 came after it.
+906865c Two chapters of the decisions had the number 49. The history's is now 54.
+
+== A float with no C library, and plain C
+767b985 A float is made into text, and text into a float, by the runtime itself, with whole numbers and exactly. On a Cortex-M3 that is 4 KB of flash where `snprintf` and `strtod` were 28.
+e4bac94 The benchmark figures of 0.6.0.
+eeea2b4 The C++ and Lua targets printed 46 powers of two with 17 digits. They print 16, as `zeno run` does.
+d0bd086 The version on `main` is 0.7.0, and its release notes are begun.
+eb3c486 Every check that asked GCC or Clang for a built-in is written a second time in plain C, so a C compiler that is neither can build a program. tcc builds every example.
+39cef6a The table of sizes on the page about minimal builds, measured again.
+
+== Ready for 0.7.0
+4d2fd31 The book for 0.7: Ruby, PHP, Lua and C# in the chapter on the libraries of other languages, and a new chapter on libraries of C.
+951c666 The version is 0.7.0, with its release notes. GCC and Clang get the top of the program as 0.6.0 gave it to them, so a built program runs the instructions it ran before, and the interpreter keeps the board behind a pointer, as the VM does.
+17453fd Three tests of the last two stages failed in a debug build or on Windows, by their own arithmetic and line ends. They are mended. Nothing of Zeno itself changed.
+
+= Unreleased: what has come since 0.7.0
+
+What is on `main` since 0.7.0 was released.
+
+fdf8c23 The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
+d4f3faa The benchmark figures of 0.7.0.
