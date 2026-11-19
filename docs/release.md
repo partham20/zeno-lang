@@ -141,7 +141,7 @@ git commit -m "History: 0.6.0"
 ```
 
 The two files go in a commit of their own, which the page leaves out:
-a commit cannot hold its own name (decisions chapter 49). If the notes
+a commit cannot hold its own name (decisions chapter 54). If the notes
 are not touched at all, the script still writes a whole page: the new
 tag makes its heading, and a commit with no line is listed with the
 first line of its message. `python3 tools/history.py --check` fails

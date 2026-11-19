@@ -26,7 +26,7 @@ named Unreleased goes with whichever release now holds its first commit, so a
 tag made before the notes were touched still gets its introduction.
 
 A commit that changes nothing but HISTORY.md and the notes is not listed: the
-commit that writes this file cannot name itself (decisions, chapter 49). So a
+commit that writes this file cannot name itself (decisions, chapter 54). So a
 commit gets its line in a later commit, which holds the two files and no other.
 
 Needs Python 3.9 and git, and a clone with the whole history and its tags
