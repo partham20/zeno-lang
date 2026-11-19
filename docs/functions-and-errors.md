@@ -273,17 +273,20 @@ owner is. The simplest way to be sure of that is this rule:
 > statement that writes it.
 
 It is made, used and freed on that one line. It can go straight into
-`map`, `filter` and `reduce`, or into a parameter that looks. It cannot
-be kept:
+`map`, `filter` and `reduce`, or into a parameter that looks.
+
+**A function that is kept takes what it uses** (since 0.8.0). Put in a
+variable or a field, returned, or given to a parameter that says
+`take`, it takes each value with one owner that it uses, as `let b = a`
+would, and frees them when it is freed:
 
 ```zeno
 let xs = [1, 2]
 let f = function(n: int) -> int { return n + len(xs) }
+print(f(1))          # 3; `xs` holds nothing from the line above on
 ```
 
-```
-error: this function uses a value from outside it that has one owner, so it must be gone before that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, `reduce` or a parameter that looks, or give the function what it needs as a parameter of its own
-```
+[`kept-functions.md`](kept-functions.md) walks through it.
 
 It can change what it looks at (`counter.count += 1`), as any parameter
 that looks can. It cannot take an item out of it or give it away, and
@@ -462,7 +465,7 @@ With a collector the value is `{ ptr, ptr }`, as it was.
 |---|---|---|
 | A function that uses a `var` of the function around it | the two would share it | by design. Use `let`, an object, or a class |
 | Keeping a function that looks at a list or an object | it must be gone before the owner is | by design. Give it a parameter |
-| A function that uses another function value and is then returned (`compose`) | the inner one is only looked at | noted, to be tried with real programs |
+| ~~A function that uses another function value and is then returned (`compose`)~~ | builds since 0.8.0: a function that is kept takes what it uses ([`kept-functions.md`](kept-functions.md)) | done in 9.2 |
 | A list or an object as what a type parameter stands for: `same[T](x: T)` | the copy for `T` would have to know it moves | noted |
 | A list of numbers that may be `none` | see [`enums-and-none.md`](enums-and-none.md) | noted |
 | ~~A function that can raise, used as a value~~ | builds since 0.8.0: a function type says what it raises ([`raises-in-types.md`](raises-in-types.md)) | done in 9.1 |
@@ -529,7 +532,7 @@ This page shows the language as it is now.
 6. Open `handlers.c` and find `zeno_fn_drop_`. There is none, yet
    `scale_by` makes a block. Why does it not need one? Change `scale_by`
    to also use a text and look again.
-7. `compose(f, g)` returns a function that calls both. It is refused
-   today. Rust would write `move |n| g(f(n))`. What would a plain-word
-   way to say "this function takes `f` and `g` with it" look like in
-   Zeno, and how would the block free them?
+7. `compose(f, g)` returns a function that calls both. Since 0.8.0 it
+   builds: a function that is kept takes what it uses. Rust would write
+   `move |n| g(f(n))`. Why does Zeno need no word there? Build it with
+   `--no-collector` and find, in the C, the line that frees `f`.

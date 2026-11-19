@@ -63,7 +63,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::ast::*;
-use crate::checker::{FunctionKind, Kind, Pointee, Types};
+use crate::checker::{spot, FunctionKind, Kind, Pointee, Types};
 use crate::emit_c::{self, is_text, is_written, Build};
 use crate::error::Error;
 use crate::ints::{self, Width};
@@ -984,6 +984,10 @@ struct Emitter<'a> {
     /// How many functions written as values there have been, to give
     /// each a name.
     closures: usize,
+    /// The declaration of the named function being compiled, 0 at the
+    /// top of the file: with a line and a column, where the checker's
+    /// notes are kept (`checker::Spot`).
+    within: usize,
 
     // The finished parts of the file.
     /// The struct types: one for each class and each enum case.
@@ -1455,6 +1459,7 @@ pub fn emit_with(
         scopes: vec![HashMap::new()],
         code: Code::of(&program.statements, Kind::None, false, !firmware),
         closures: 0,
+        within: 0,
         structs: Vec::new(),
         strings: Vec::new(),
         globals: Vec::new(),
@@ -2117,6 +2122,14 @@ impl Emitter<'_> {
     /// Write out one function or method.
     fn function(&mut self, waiting: Waiting) -> Result<(), Error> {
         let Waiting { entry, span, sees } = waiting;
+        let within = std::mem::replace(&mut self.within, Arc::as_ptr(&entry.decl) as usize);
+        let done = self.function_in(entry, span, sees);
+        self.within = within;
+        done
+    }
+
+    /// The body of `function`.
+    fn function_in(&mut self, entry: Entry, span: Span, sees: HashMap<String, Variable>) -> Result<(), Error> {
         self.code = Code::of(&entry.decl.body, entry.kind.returns.clone(), true, !self.firmware);
         // In a firmware build a function that can raise gives back `true`
         // or `false`, and its answer goes out through `%result`.
@@ -6816,7 +6829,7 @@ impl Emitter<'_> {
             false => Vec::new(),
         };
         // A raising function that raises nothing.
-        let made = match (kind.raises.is_empty(), self.types.made_raising.get(&(span.line, span.col))) {
+        let made = match (kind.raises.is_empty(), self.types.made_raising.get(&spot(self.within, span))) {
             (true, Some(said)) if self.firmware => {
                 kind.raises = vec![said.clone()];
                 true
@@ -6919,7 +6932,7 @@ impl Emitter<'_> {
         // function of the program that can raise does. So does one that
         // raises nothing, put where a function type says `raises`
         // (decision 56.5).
-        kind.raises = match (self.firmware, self.types.made_raising.get(&(span.line, span.col))) {
+        kind.raises = match (self.firmware, self.types.made_raising.get(&spot(self.within, span))) {
             (false, _) => Vec::new(),
             (true, Some(said)) if decl.raises.is_empty() => vec![said.clone()],
             (true, _) => decl.raises.clone(),
@@ -6938,14 +6951,29 @@ impl Emitter<'_> {
         }
         let mut mentioned: Vec<String> = mentioned.into_iter().collect();
         mentioned.sort();
+        // A function that is kept takes the values with one owner that it
+        // uses (decision 56.8): the variable out here holds nothing from
+        // this line on, and the block frees them when it goes.
+        let takes = self.types.taken.get(&spot(self.within, span)).cloned().unwrap_or_default();
         let mut taken = Vec::new();
+        let mut owns = Vec::new();
         for name in mentioned {
             if decl.params.iter().any(|param| param.name == name) {
                 continue;
             }
             if let Some(variable) = self.scopes[1..].iter().rev().find_map(|scope| scope.get(&name)) {
                 let mut variable = variable.clone();
-                if !self.collector {
+                if takes.contains(&name) {
+                    let Place::Slot(slot) = &variable.place else {
+                        return Err(cannot(format!("a function that takes `{name}` from outside it"), span));
+                    };
+                    let ty = ir_type(&variable.kind, span)?;
+                    let value = self.load(ty, slot);
+                    self.store(ty, "null", slot);
+                    variable.place = Place::Value(value);
+                    variable.owner = false;
+                    owns.push(taken.len());
+                } else if !self.collector {
                     // With no collector nothing is shared. The function
                     // takes what the variable holds at this moment: a
                     // number, or the address of a list or an object that
@@ -6990,7 +7018,7 @@ impl Emitter<'_> {
         let texts: Vec<usize> = taken
             .iter()
             .enumerate()
-            .filter(|(_, (_, variable))| !self.collector && is_text(&variable.kind))
+            .filter(|(index, (_, variable))| !self.collector && is_text(&variable.kind) && !owns.contains(index))
             .map(|(index, _)| index + first)
             .collect();
         for (index, (_, variable)) in taken.iter().enumerate() {
@@ -7006,16 +7034,23 @@ impl Emitter<'_> {
         }
         if !self.collector {
             let drop_at = self.field_at(&block, &made, 2);
-            if texts.is_empty() {
+            if texts.is_empty() && owns.is_empty() {
                 self.uses("zeno_closure_release");
                 self.ins(format!("store ptr @zeno_closure_release, ptr {drop_at}"));
             } else {
                 let block = block.clone();
+                let owned: Vec<(usize, Kind)> = owns.iter().map(|index| (index + first, taken[*index].1.kind.clone())).collect();
                 self.side(format!("define internal void {drop_name}(ptr %self)"), |emitter| {
                     for index in &texts {
                         let at = emitter.field_at(&block, "%self", *index);
                         let text = emitter.set(format!("load ptr, ptr {at}"));
                         emitter.run("zeno_text_drop", format!("ptr {text}"));
+                    }
+                    // What it took, by the kind of each.
+                    for (index, kind) in &owned {
+                        let at = emitter.field_at(&block, "%self", *index);
+                        let value = emitter.set(format!("load ptr, ptr {at}"));
+                        emitter.free(kind, &value, span)?;
                     }
                     emitter.run("zeno_free", "ptr %self");
                     emitter.end("ret void");

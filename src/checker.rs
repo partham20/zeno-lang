@@ -328,7 +328,25 @@ pub struct Types {
     /// says `raises`, by where it starts. Such a function is made as one
     /// that can raise and never does, so that it is called as the type
     /// says (decision 56.5). With each, the kind the type says it raises.
-    pub made_raising: HashMap<(usize, usize), String>,
+    pub made_raising: HashMap<Spot, String>,
+    /// Each function written where a value goes that is kept, and so
+    /// takes the values with one owner that it uses, by where it starts:
+    /// the names of what it takes, in order (decision 56.8). The function
+    /// owns them from then on, and frees them when it is freed.
+    pub taken: HashMap<Spot, Vec<String>>,
+}
+
+/// Where something stands, told apart in each copy of a generic: the
+/// declaration of the named function it is written in (its address, or 0
+/// for the top of the file), then its line and column. The copies of a
+/// generic share every line and column, and each has a declaration of
+/// its own.
+pub type Spot = (usize, usize, usize);
+
+/// The spot of `span`, inside the function whose declaration is at
+/// `within`.
+pub fn spot(within: usize, span: Span) -> Spot {
+    (within, span.line, span.col)
 }
 
 /// One place where a name is used, for an editor that asks "what is
@@ -2137,6 +2155,12 @@ struct Checker {
     /// What the function literal that was checked last looks at from
     /// outside itself. See `Capture`.
     captured: Vec<Capture>,
+    /// The function written where a value goes that `take` is about to
+    /// check: it is kept, and takes what it uses (decision 56.8).
+    keeping: Option<usize>,
+    /// The declarations of the named functions whose bodies are being
+    /// checked, the innermost last. See `Spot`.
+    within: Vec<usize>,
     strict: bool,
     /// For each file of the program, whether it begins with the line
     /// `strict`. See `strict_at`.
@@ -2298,6 +2322,8 @@ impl Checker {
             copy_notes: Vec::new(),
             functions_used: Vec::new(),
             captured: Vec::new(),
+            keeping: None,
+            within: Vec::new(),
         }
     }
 
@@ -2661,7 +2687,8 @@ impl Checker {
                 if self.firmware && raises.is_empty() {
                     match made {
                         true => {
-                            self.types.made_raising.insert((span.line, span.col), said.clone());
+                            let at = spot(self.within(), span);
+                            self.types.made_raising.insert(at, said.clone());
                         }
                         false => {
                             self.error(
@@ -3104,6 +3131,20 @@ impl Checker {
                 Ty::Callable(Rc::new(CallableType { params, returns, raises, owned: self.one_owner }))
             }
             ast::Type::Named { name, args } => {
+                // `list[function() raises A, B]`: the type ends at the
+                // comma, so `B` reads as one more type in `[ ]`. If it is
+                // the name of a kind of error, a second kind was meant
+                // (decision 56.3).
+                let second_kind = args.windows(2).any(|pair| {
+                    let kind = match &pair[1] {
+                        ast::Type::Named { name, args } if args.is_empty() => env.get(name).map(|variable| variable.ty),
+                        _ => None,
+                    };
+                    crate::parser::ends_in_raises(&pair[0]) && matches!(kind, Some(Ty::ErrorType(_) | Ty::Class(_)))
+                });
+                if second_kind {
+                    return self.error(crate::parser::ONE_KIND, span);
+                }
                 let ty = match (name.as_str(), args.as_slice()) {
                     ("int", []) => Ty::Int,
                     ("float", []) => Ty::Float,
@@ -4971,6 +5012,11 @@ impl Checker {
         Some(variable.id)
     }
 
+    /// The named function whose body is being checked. See `Spot`.
+    fn within(&self) -> usize {
+        self.within.last().copied().unwrap_or(0)
+    }
+
     /// Why the owner `name` cannot give its value away on this line, if
     /// it cannot: a loop or a `case` is looking at it, or the line has
     /// already used it. `giving` says what the line does with it.
@@ -5039,6 +5085,11 @@ impl Checker {
             }
             self.types.moves.insert(expr as *const Expr as usize);
             return variable.ty;
+        }
+        // A function written here is kept, so it takes what it uses
+        // (decision 56.8).
+        if matches!(expr.kind, ExprKind::Function(_)) {
+            self.keeping = Some(expr as *const Expr as usize);
         }
         match self.expr(expr, env) {
             look if look.is_look() => {
@@ -5441,6 +5492,71 @@ impl Checker {
         self.owned.moved.retain(|id, _| *id < first_inside);
     }
 
+    /// A function written where a value goes is kept: returned, put in a
+    /// variable or a field, or given to a parameter that says `take`. So
+    /// each value with one owner that it uses is given to it, as `let b
+    /// = a` gives it, and the function frees them when it is freed
+    /// (decision 56.8). What it takes must be the function around it's
+    /// to give: a value it owns, or a parameter that says `take`.
+    fn takes_what_it_uses(&mut self, function: Rc<FunctionInfo>, captures: Vec<Capture>, env: &Env, span: Span) -> Ty {
+        let mut taken = Vec::new();
+        let mut wrong = false;
+        for capture in captures {
+            let name = capture.name.clone();
+            // The function in the middle may be called again, and would
+            // have nothing left to give the second time.
+            if capture.function != env.function {
+                self.error(
+                    format!(
+                        "this function is kept, so it takes `{name}`, but `{name}` belongs to a function further \
+                         out, and the function in between may be called again with nothing left to give. Hand \
+                         `{name}` to the function in between as a parameter that says `take`"
+                    ),
+                    span,
+                );
+                wrong = true;
+                continue;
+            }
+            let Some(variable) = env.get(&name) else {
+                continue;
+            };
+            let message = if let Some((_, at)) = self.owned.moved.get(&variable.id) {
+                Some(format!(
+                    "`{name}` was given away on line {} and holds nothing now, and this function uses it. \
+                     Use it before it goes",
+                    at.line_in_file()
+                ))
+            } else if !variable.ty.is_owned() {
+                Some(format!(
+                    "this function is kept, so it takes `{name}`, but `{name}` is only looked at here: its owner \
+                     still has it. If it is a parameter, write `take` in front of its type to take the value over"
+                ))
+            } else {
+                self.cannot_give_away(&name, &variable, &format!("this function is kept, so it takes `{name}`"))
+            };
+            if let Some(message) = message {
+                self.error(message, span);
+                wrong = true;
+                continue;
+            }
+            if !self.give_away(&name, &variable, span) {
+                wrong = true;
+                continue;
+            }
+            taken.push(name);
+        }
+        if wrong {
+            return Ty::Invalid;
+        }
+        let at = spot(self.within(), span);
+        self.types.taken.insert(at, taken);
+        let function = Ty::Function(function);
+        match self.one_owner {
+            true => Ty::Owned(Box::new(function)),
+            false => function,
+        }
+    }
+
     // -------------------------------------------------------------- Functions
 
     /// The signature of a function, checking its body first if that has not
@@ -5581,7 +5697,14 @@ impl Checker {
         self.worked_out.push(worked_out);
         // How many mistakes there were before the body was read.
         let mistakes = self.errors.len();
+        let named = !decl.name.is_empty();
+        if named {
+            self.within.push(Arc::as_ptr(decl) as usize);
+        }
         let exits = self.statements(&decl.body, &scope);
+        if named {
+            self.within.pop();
+        }
         // A body with a mistake in it may have a `raise` that was not
         // understood. It gets no second complaint about what it raises.
         let sound = self.errors.len() == mistakes;
@@ -6027,8 +6150,12 @@ impl Checker {
                     above: Rc::from(Vec::new()),
                     copy_note: None,
                 });
+                let kept = self.keeping.take() == Some(expr as *const Expr as usize);
                 self.signature(&function);
                 let captures = std::mem::take(&mut self.captured);
+                if kept && !captures.is_empty() {
+                    return self.takes_what_it_uses(function, captures, env, span);
+                }
                 let mut looks = false;
                 for capture in captures {
                     looks = true;
@@ -6133,8 +6260,11 @@ impl Checker {
                     _ => self.expr(callee, env),
                 };
                 // Calling a function that has an owner only looks at it.
+                // One that a call has just made, as in `make(2)("5")`, is
+                // the statement's, which frees it when it is over.
                 let callee = match callee {
-                    Ty::Owned(_) | Ty::Borrowed(_) => self.looked(callee, &**args_callee(expr)),
+                    Ty::Borrowed(_) => self.looked(callee, &**args_callee(expr)),
+                    callee if callee.is_owned() => self.looked(callee, &**args_callee(expr)),
                     callee => callee,
                 };
                 // Where each argument is going decides what passing it
@@ -11124,17 +11254,16 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         // A `let` at the top of the file is the exception: it is there
         // until the program ends, so every function may look at it.
         owned_ok("let p = make()\nfunction peek() -> int { return p.id }\nprint(peek())");
-        // A function written where a value goes may look at it, and
-        // is then a look itself: it cannot outlive what it looks at.
+        // A function written where a value goes may look at it when it
+        // is passed along. Kept, it takes it, and a parameter that only
+        // looks has nothing to give (decision 56.8).
         assert_eq!(
             owned_error("function f(p: Packet) -> function() -> int {\n return function() -> int { return p.id }\n}"),
-            LOOKS
+            "this function is kept, so it takes `p`, but `p` is only looked at here: its owner still has it. \
+             If it is a parameter, write `take` in front of its type to take the value over"
         );
+        owned_ok("function f(p: take Packet) -> function() -> int {\n return function() -> int { return p.id }\n}");
     }
-
-    const LOOKS: &str = "this function uses a value from outside it that has one owner, so it must be gone before \
-                         that value is, and cannot be kept, returned or given away. Pass it straight to `map`, `filter`, \
-                         `reduce` or a parameter that looks, or give the function what it needs as a parameter of its own";
 
     #[test]
     fn shared_things_cannot_hold_owned_ones() {
@@ -11721,22 +11850,29 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
 
         // A function that uses a list or an object from outside looks
-        // at it. It is lent on the line that writes it, and cannot be kept.
+        // at it when it is only passed along: it is lent on the line that
+        // writes it.
         ok("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, 1), xs)");
         ok("let xs = [1, 2]\nprint(xs.map(function(n: int) -> int { return n + xs[0] }), xs.filter(function(n: int) -> bool { return n > len(xs) }))");
         ok("let t = Task(1)\nprint(apply(function(n: int) -> int {\n t.id += n\n return t.id\n}, 1), t)");
         ok("let xs = [1, 2]\nprint(apply(function(n: int) -> int { return apply(function(m: int) -> int { return m + len(xs) }, n) }, 1))");
         ok("for t in [Task(1), Task(2)] { print(apply(function(n: int) -> int { return n + t.id }, 1)) }");
         ok("let add = make_adder(1)\nprint(apply(function(n: int) -> int { return add(n) }, 1), add(2))");
-        assert_eq!(error("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }"), LOOKS);
-        assert_eq!(error("var xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))"), LOOKS);
-        // Unless what it looks at is a `let` at the top of the file,
-        // which is there until the program ends.
-        ok("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(keep(f))");
+        // A function that is kept takes what it uses (decision 56.8),
+        // and the owner holds nothing after that line.
+        ok("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))");
+        ok("var xs = [1, 2]\nprint(keep(function(n: int) -> int { return n + len(xs) }))");
+        assert!(error("var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(len(xs))").contains(GONE));
+        // Unless what it uses is a `let` at the top of the file, which
+        // is there until the program ends, and which it only looks at.
+        ok("let xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(keep(f), len(xs))");
+        // A parameter that only looks has nothing to give.
         assert_eq!(
             error("function f(xs: list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}"),
-            LOOKS
+            "this function is kept, so it takes `xs`, but `xs` is only looked at here: its owner still has it. \
+             If it is a parameter, write `take` in front of its type to take the value over"
         );
+        ok("function f(xs: take list[int]) -> function(int) -> int {\n return function(n: int) -> int { return n + len(xs) }\n}\nprint(f([1])(2))");
         // The line that lends it is looking at what it uses.
         assert_eq!(
             error("var xs = [1, 2]\nprint(apply(function(n: int) -> int { return n + len(xs) }, send(xs)))"),
@@ -12625,6 +12761,72 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             error("let f: (function(int) -> int) or none = none\nlet n: int = f"),
             "`n` should be int, but this is (function(int) -> int) or none. Check it with `is not none` first"
         );
+    }
+
+    #[test]
+    fn a_function_that_is_kept_takes_what_it_uses() {
+        // Returned, kept in a variable, or given to a parameter that says
+        // `take`, a function written where a value goes takes each value
+        // with one owner that it uses (decision 56.8).
+        let compose = "function compose(f: take function(int) -> int, g: take function(int) -> int) -> function(int) -> int {\n\
+                       return function(n: int) -> int { return f(g(n)) }\n}\n\
+                       function add(k: int) -> function(int) -> int {\n    return function(n: int) -> int { return n + k }\n}\n";
+        one_owner_ok(&format!("{compose}let h = compose(add(1), add(10))\nprint(h(5), h(6))"));
+        let inside = |body: &str| one_owner(&format!("function f() {{\n{body}\n}}\nf()\n"));
+        // What it took is gone from the function around it.
+        assert_eq!(
+            inside("    let xs = [1, 2]\n    let g = function() -> int { return len(xs) }\n    print(len(xs), g())"),
+            vec!["`xs` was given away on line 3 and holds nothing now. Use it before it goes, or give it only to what \
+                  looks: a parameter without `take`"]
+        );
+        // A value of a function further out: the one in between may be
+        // called again.
+        assert_eq!(
+            inside("    let xs = [1, 2]\n    let h = function() -> int {\n        let g = function() -> int { return len(xs) }\n\
+                    return g()\n    }\n    print(h())"),
+            vec!["this function is kept, so it takes `xs`, but `xs` belongs to a function further out, and the function \
+                  in between may be called again with nothing left to give. Hand `xs` to the function in between as a \
+                  parameter that says `take`"]
+        );
+        // The line uses it too.
+        let both = "function both(a: list[int], g: take function() -> int) -> int {\n    return len(a) + g()\n}\n";
+        assert_eq!(
+            one_owner(&format!("{both}function f() {{\n    let xs = [1, 2]\n    print(both(xs, function() -> int {{ return len(xs) }}))\n}}\nf()\n")),
+            vec!["this function is kept, so it takes `xs`, on a line that also uses it. Do the other thing on a line of its own first"]
+        );
+        // Each trip round a loop would take it again.
+        assert_eq!(
+            inside("    let xs = [1, 2]\n    for i in range(2) {\n        let g = function() -> int { return len(xs) }\n        print(g())\n    }"),
+            vec!["`xs` is given away inside a loop, and the loop may come round again with nothing in it. Give it away \
+                  after the loop, or just before a `break`"]
+        );
+        // One made inside the loop is the loop's to give.
+        assert_eq!(inside("    for i in range(2) {\n        let xs = [i]\n        let g = function() -> int { return len(xs) }\n        print(g())\n    }"), Vec::<String>::new());
+        // A list a loop is walking.
+        let walked = "class P {\n    n: int\n}\nfunction f() {\n    let ps = [P(1)]\n    for p in ps {\n\
+                      let g = function() -> int { return len(ps) }\n        print(g())\n        break\n    }\n}\nf()\n";
+        assert_eq!(
+            one_owner(walked),
+            vec!["the `for` on line 6 is walking a list that `ps` owns, and is still looking at its items. `ps` cannot be \
+                  given away until the loop is over"]
+        );
+        // A `var` of the function around stays refused: nothing is shared.
+        assert_eq!(
+            one_owner("function f() -> function() -> int {\n    var n = 1\n    return function() -> int { return n }\n}\nprint(f()())\n"),
+            vec![super::shared("n")]
+        );
+        // Passed along, it still only looks.
+        assert_eq!(inside("    let xs = [1, 2]\n    print([1].map(function(n: int) -> int { return n + len(xs) }), len(xs))"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_second_kind_inside_brackets_is_named_as_one() {
+        // Without the brackets the parser refuses it (its tests have the
+        // words), since it could read as "raises ValueError, or nothing".
+        ok("let f: (function() raises ValueError) or none = none\nprint(f is none)\n");
+        // A second kind inside `[ ]` is named as one (decision 56.3).
+        assert_eq!(error("let fs: list[function() raises ValueError, FileError] = []\n"), crate::parser::ONE_KIND);
+        assert_eq!(error("let fs: dict[str, function() raises ValueError, FileError] = []\n"), crate::parser::ONE_KIND);
     }
 
     #[test]

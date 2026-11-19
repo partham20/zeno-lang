@@ -107,7 +107,10 @@ function make(n: int) -> (function(int) -> int raises ValueError) raises Missing
 Brackets go around a function type and nothing else. They also say
 what could not be said before: `(function(int) -> int) or none` is a
 function that may be missing, and `function(int) -> int or none` is a
-function whose answer may be.
+function whose answer may be. After `raises` they are needed:
+`function() raises ValueError or none` could be read as raising
+`ValueError` or nothing, so it is refused, and the message writes
+`(function() raises ValueError) or none`.
 
 **One kind.** A function that raises two kinds fits `raises Error`. A
 type ends at the comma, so in `convert: function() -> int raises

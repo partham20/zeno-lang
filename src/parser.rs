@@ -1006,7 +1006,17 @@ impl Parser {
                 true => Some(self.name_in_module("an error type")?),
                 false => None,
             };
-            Type::Function { params, returns, raises }
+            let ty = Type::Function { params, returns, raises };
+            // `function() raises ValueError or none` reads as well as "raises
+            // ValueError or nothing" as "a function that may be missing".
+            if ends_in_raises(&ty) && self.check(TokenKind::Or) {
+                return self.error(format!(
+                    "`or none` after what a function type raises could mean that the function raises that or \
+                     nothing. A function that may be missing is written with brackets: `({}) or none`",
+                    crate::printer::type_(&ty)
+                ));
+            }
+            ty
         } else {
             let name = self.name_in_module("a type")?;
             // `borrow` was the word for a parameter that only looks.
@@ -2362,10 +2372,20 @@ mod tests {
         // Without them `or none` is what the function returns, as today.
         assert_eq!(tree("let f: function(int) -> int or none = g"), "let f: function(int) -> int or none = g\n");
         assert!(matches!(type_of("let f: function(int) -> int or none = g"), Type::Function { .. }));
-        // And `raises` before `or none` is the function type's, so the
-        // `or none` can only be about the whole of it.
+        // `raises` before `or none` could be read as "raises ValueError,
+        // or nothing", so it wants the brackets (plan, Changes 2).
         assert_eq!(
-            tree("let f: function() raises ValueError or none = none"),
+            error("let f: function() raises ValueError or none = none"),
+            "`or none` after what a function type raises could mean that the function raises that or nothing. \
+             A function that may be missing is written with brackets: `(function() raises ValueError) or none`"
+        );
+        assert_eq!(
+            error("let f: function(int) -> int raises ValueError or none = none"),
+            "`or none` after what a function type raises could mean that the function raises that or nothing. \
+             A function that may be missing is written with brackets: `(function(int) -> int raises ValueError) or none`"
+        );
+        assert_eq!(
+            tree("let f: (function() raises ValueError) or none = none"),
             "let f: (function() raises ValueError) or none = none\n"
         );
         let message = "brackets in a type go only around a function type, as in \

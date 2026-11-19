@@ -16676,6 +16676,19 @@ could not be written before. The printer and every message write the
 brackets back where they are needed, so a type in a message is one
 that can be copied into a program.
 
+**After `raises`, `or none` wants the brackets** (from the review of
+this part). `function() raises ValueError or none` was taken at first,
+as a function that may be missing. A reader can as well take it to say
+that the function raises `ValueError` or nothing, so it is refused, and
+the message writes the type with its brackets:
+
+```
+error: `or none` after what a function type raises could mean that the function raises that or nothing. A function that may be missing is written with brackets: `(function() raises ValueError) or none`
+```
+
+No program had the line. `function(int) or none` and `function(int) ->
+int or none` keep their meanings.
+
 **Item 10 is not in the way.** Several results will be written
 `-> (int, str)`. One function type in brackets has no comma, so the
 two are told apart by the first comma.
@@ -16701,6 +16714,10 @@ The message for a second kind comes from where it can be told:
   follow a type, so the parser gives it.
 - In a list of parameters, the checker gives it when a parameter with
   no type has the name of a kind of error.
+- Inside `[ ]`, as in `list[function() raises ValueError, FileError]`,
+  the checker gives it when the type after the comma is the name of a
+  kind of error. It gave the message about how many types a list takes
+  at first, which sent the reader the wrong way.
 
 ```
 error: a function type names one kind of error after `raises`. A function that raises more than one kind fits `raises Error`, which catches every kind
@@ -16790,6 +16807,15 @@ from the start when that is where it goes. The checker notes each such
 place (`made_raising`), and both compilers read the note, so neither
 works it out again.
 
+**The note is kept for each copy of a generic.** It was kept by line
+and column at first, and the copies of a generic function share every
+line and column. So a line that hands `size` to a list of raising
+functions in one copy, and to a list of plain ones in the other, was
+refused by a firmware build that `zeno run` took (found in review). A
+note is now kept by a `Spot`: the declaration of the named function it
+is in, then the line and the column. Each copy has a declaration of its
+own, and each compiler knows which function it is writing.
+
 **A value that is already of a plain function type cannot become a
 raising one**, and is refused:
 
@@ -16825,6 +16851,10 @@ The fifteen that differ are those of
 `tools/targets/edge-raises-in-types.zeno`, which 0.7.0 cannot read.
 No engine file was touched.
 
+After 56.8, with its fixes from the review: 445 programs, and again
+6,645 of the 6,645 builds of the 443 old ones the same. The thirty
+that differ are the fifteen ways of each of the two new programs.
+
 ### 56.7 How it is held to its word
 
 - **The parser** (`parser.rs`):
@@ -16859,15 +16889,105 @@ No engine file was touched.
   --firmware` checks it.** The two compilers' tests checked a program
   for a firmware build with the rules of an ordinary one, and so never
   saw what the checker notes for a firmware build alone. With the note
-  of 56.5 that mattered, so they use the firmware rules now. One
-  program came out refused that had been built: `edge-u64.zeno` says
-  `raises OverflowError` on a function that only multiplies, which a
-  firmware build refuses (5.19m). Its firmware build is left to the
-  second program of that test, written without `try` for the purpose.
+  of 56.5 that mattered, so they use the firmware rules now. The same
+  programs are left out of a firmware build as before, 48 of them in
+  C and LLVM, counted at both ends. One is left out by another
+  message: `edge-u64.zeno` was left out by the compiler with "nothing
+  in this `try` can be caught", and is now left out by the checker,
+  since it says `raises OverflowError` on a function that only
+  multiplies (5.19m).
 - **The targets**: the same program is in `tools/targets/`, so every
   target prints what `zeno run` prints.
+- **For 56.8**: `a_function_that_is_kept_takes_what_it_uses` in the
+  checker has `compose` and each refusal in its words, and
+  `a_second_kind_inside_brackets_is_named_as_one` the message inside
+  `[ ]`. Both compilers: `a_kept_function_takes_what_it_uses_every_way`
+  builds `tools/targets/edge-kept-functions.zeno` every way, with the
+  same memory report from C and LLVM and 0 blocks left. It keeps
+  functions in a variable, a field and a list, gives one to a parameter
+  that says `take`, makes them a thousand times, calls them after the
+  function that made them returned, fails a thousand times through a
+  type that says `raises`, and calls `make(2)("5")` on both paths.
+  `each_copy_of_a_generic_makes_its_own_functions_raising` builds the
+  program of the review as firmware, through C and LLVM.
 
-### 56.8 Left for later
+### 56.8 A function that is kept takes what it uses
+
+```zeno
+function compose(f: take function(int) -> int, g: take function(int) -> int) -> function(int) -> int {
+    return function(n: int) -> int { return f(g(n)) }
+}
+```
+
+A build with no collector refused this with "this function uses a
+value from outside it that has one owner, so it must be gone before
+that value is..." (5.17d). A function written where a value goes only
+looked at what it used, and so lived for its line.
+
+**The rule added: a function that is kept takes what it uses.** If it
+is returned, put in a variable or a field, appended, or given to a
+parameter that says `take`, each value with one owner that it uses is
+given to it, as `let b = a` gives it. The function owns them from then
+on, and frees them when it is freed. A function that is only passed
+along, to `map` or to a parameter that looks, looks as before.
+
+**Why no word at the function**, as Rust's `move`. The line already
+says the function is kept: it is after `return` or `=`, or goes to a
+parameter that says `take`. A function that is kept and still only
+looked would be gone before it could be called, so there is no second
+meaning for a word to tell apart. A function's first line says `take`
+for a parameter because a call does not show what the function does
+with it; here the line shows it.
+
+**Where "kept" is known.** A function written where a value goes has
+its type worked out where it is written, and only the place it goes
+knows whether it is kept: `take` in the checker, which every `let`,
+`return`, field, `append` and parameter that says `take` goes
+through. So `take` marks the function it is about to check, and the
+function, when it is checked, gives away what it uses.
+
+**By the one rule of `let b = a`.** The steps of giving a value away
+(a loop or a `case` looking at it, a line that already used it, a
+`let` at the top of the file that a function reads, and the record of
+where it went, which a loop and a `try` read) were made one function,
+`give_away`, in a commit of their own that changed nothing. A kept
+function calls it for each value it takes, so the two cannot drift
+apart, and each message is the one `let b = a` gets.
+
+**What it may take** is the surrounding function's to give: its own
+value, or a parameter that says `take`. A parameter that only looks
+gets the message every look gets, to write `take` on it. A value of a
+function further out cannot be taken by a function written two levels
+in: the function in between may be called again, and would have
+nothing left to give the second time. The message says to hand the
+value in as a parameter that says `take`. A `var` of the function
+around stays refused, by design (5.17c).
+
+**How it is built.** The checker writes the names a kept function
+took into `Types.taken`, by its `Spot` (56.5): only names, since what
+each is, and so how it is freed, is for each copy of a generic to say.
+In the C the function's block holds each value. Making the block moves
+it in and leaves `NULL` behind, so the end of the surrounding function
+frees nothing, and the block's `drop` frees each by its kind. Through
+LLVM the value is loaded from its slot and `null` stored there, and
+the block's drop function frees it. With a collector the value moves
+the same way, and nothing is freed by hand.
+
+**Nothing changes where nothing has one owner.** With a collector and
+no `owned` written, a list or an object is shared, a function does not
+use a value with one owner, and nothing moves: the C, the IR and the
+bytecode of every program of 0.7.0 are what they were (56.6).
+
+**Found on the way: a function called straight from the call that
+made it was never freed.** `make(2)("5")` with no collector left one
+block, in 0.7.0 as well, whether the call worked or raised (found in
+the review of 9.1). The checker made the call of such a function the
+statement's only when its type was written `owned`, and a function
+type has one owner without the word. It is now the statement's, as any
+value made in the middle of a line is, and freed when the line is
+over.
+
+### 56.9 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -16877,3 +16997,10 @@ No engine file was touched.
   way in is the rule of 9.2.
 - **Closing the gap of 56.4 in an ordinary build.** A question for the
   owner of the language, with the numbers above.
+- **A kept function in a generic whose value is a list in one copy and
+  a number in another.** The note is kept for each copy (56.5), so it
+  is ready, but no program can write it yet: a value with one owner
+  cannot fill a type parameter until 9.4. The test waits for 9.4.
+- **A method as a value** (`let m = counter.bump`), refused by both
+  compilers in every build with "cannot compile a method used as a
+  value". It is the second commit of 9.2.

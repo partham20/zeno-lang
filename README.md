@@ -850,6 +850,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     A function that returns a raising function writes it in brackets.
     See [`docs/raises-in-types.md`](docs/raises-in-types.md) and
     chapter 56 of [`docs/decisions.md`](docs/decisions.md))
+54. A function that is kept takes what it uses (on `main`, for 0.8.0:
+    a function written where a value goes, and returned, kept or given
+    to a parameter that says `take`, takes each value with one owner
+    that it uses and frees it when it is freed. So `compose(f, g)`
+    builds with no collector. See
+    [`docs/kept-functions.md`](docs/kept-functions.md) and 56.8 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

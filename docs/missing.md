@@ -173,7 +173,7 @@ build. They are item 9 in the order.
 | ~~A function that says `raises`, used as a value in a firmware build (5.5l)~~ | **Done** in 0.8.0: `function(str) -> int raises ValueError` ([`raises-in-types.md`](raises-in-types.md), chapter 56) |
 | `list[int or none]` with no collector (5.16h) | Store the number and a flag side by side, with no block of its own |
 | A dict of lists or objects with no collector (10.14) | The dict owns its values, as a list owns its items |
-| A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d) | One rule each, written in the sections named |
+| A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d) | One rule each, written in the sections named. **5.17d done** in 0.8.0: a function that is kept takes what it uses ([`kept-functions.md`](kept-functions.md)) |
 | The pool's size on the compiler's line (5.9j); spare blocks not filled with a pattern (5.9k) | `zeno build --pool 4096`. Both are exercises in [`pool.md`](pool.md) already |
 | A function of an interface with a default or of its own type; an owned class as an interface (10.5, 10.10) | With generic interfaces |
 

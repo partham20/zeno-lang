@@ -37,7 +37,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::*;
-use crate::checker::{FunctionKind, Kind, Pointee, Types};
+use crate::checker::{spot, FunctionKind, Kind, Pointee, Types};
 use crate::error::Error;
 use crate::ints::{self, Width};
 use crate::token::Span;
@@ -302,6 +302,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         volatile: HashSet::new(),
         shared: HashSet::new(),
         closures: 0,
+        within: 0,
         below: HashSet::new(),
         type_names: HashSet::new(),
     };
@@ -1207,6 +1208,10 @@ struct Emitter<'a> {
     shared: HashSet<String>,
     /// How many functions with no name have been compiled, to number them.
     closures: usize,
+    /// The declaration of the named function being compiled, 0 at the
+    /// top of the file: with a line and a column, where the checker's
+    /// notes are kept (`checker::Spot`).
+    within: usize,
     /// While a function is being compiled: the top-level variables that
     /// are declared below it in the file, which it must not see.
     below: HashSet<String>,
@@ -2549,7 +2554,10 @@ impl Emitter<'_> {
             params.push(format!("{}*zeno_result", c_type(&kind.returns, span)?));
         }
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-        self.body(decl, kind, fallible, span)?;
+        let within = std::mem::replace(&mut self.within, decl as *const Function as usize);
+        let done = self.body(decl, kind, fallible, span);
+        self.within = within;
+        done?;
         self.scopes.pop();
         self.base = 0;
         self.used = used;
@@ -4695,7 +4703,7 @@ impl Emitter<'_> {
             false => Vec::new(),
         };
         // A raising function that raises nothing.
-        let made = match (kind.raises.is_empty(), self.types.made_raising.get(&(span.line, span.col))) {
+        let made = match (kind.raises.is_empty(), self.types.made_raising.get(&spot(self.within, span))) {
             (true, Some(said)) if self.firmware => {
                 kind.raises = vec![said.clone()];
                 true
@@ -4767,7 +4775,7 @@ impl Emitter<'_> {
         // `false`, as a function of the program that can raise does. So
         // does one that raises nothing, put where a function type says
         // `raises` (decision 56.5).
-        kind.raises = match (self.firmware, self.types.made_raising.get(&(span.line, span.col))) {
+        kind.raises = match (self.firmware, self.types.made_raising.get(&spot(self.within, span))) {
             (false, _) => Vec::new(),
             (true, Some(said)) if decl.raises.is_empty() => vec![said.clone()],
             (true, _) => decl.raises.clone(),
@@ -4849,10 +4857,14 @@ impl Emitter<'_> {
         // Text is copied in too, as a copy of its own that goes when the
         // block goes. A list or an object is looked at where it is: the
         // checker has made sure such a function is gone before they are.
+        // Unless the function is kept: then it takes them (decision
+        // 56.8), the variable out here holds nothing from this line on,
+        // and the block frees them when it goes.
+        let takes = self.types.taken.get(&spot(self.within, span)).cloned().unwrap_or_default();
         let made = self.new_temp();
         let mut fields = String::new();
         let mut fill = Vec::new();
-        let mut texts = Vec::new();
+        let mut frees = Vec::new();
         for (zeno_name, variable) in &taken {
             let field_type = c_type(&variable.kind, span)?;
             let star = if variable.boxed.is_some() { "*" } else { "" };
@@ -4863,9 +4875,15 @@ impl Emitter<'_> {
                 return Err(cannot(format!("a function that uses `{zeno_name}` from outside it"), span));
             };
             let source = source.boxed.clone().unwrap_or_else(|| source.c_name.clone());
-            if !self.collector && is_text(&variable.kind) {
+            if takes.contains(zeno_name) {
+                fill.push(format!("{made}->z_{zeno_name} = {source};"));
+                fill.push(format!("{source} = NULL;"));
+                if !self.collector {
+                    frees.push(self.drops.code(&variable.kind, &format!("env->z_{zeno_name}")));
+                }
+            } else if !self.collector && is_text(&variable.kind) {
                 fill.push(format!("{made}->z_{zeno_name} = zeno_text_keep({source});"));
-                texts.push(format!("z_{zeno_name}"));
+                frees.push(format!("zeno_text_drop(env->z_{zeno_name});"));
             } else {
                 fill.push(format!("{made}->z_{zeno_name} = {source};"));
             }
@@ -4887,16 +4905,17 @@ impl Emitter<'_> {
         self.line(format!("{env} *{made} = ({env} *)zeno_alloc(sizeof({env}));"));
         self.line(format!("{made}->base.code = (zeno_code)zeno_fn_{id};"));
         self.line(format!("{made}->base.name = {name};"));
-        if !self.collector && texts.is_empty() {
+        if !self.collector && frees.is_empty() {
             self.line(format!("{made}->base.drop = zeno_closure_release;"));
         } else if !self.collector {
-            // The text it took copies of goes with it.
-            let mut frees = format!("    {env} *env = ({env} *)zeno_self;\n");
-            for text in &texts {
-                frees += &format!("    zeno_text_drop(env->{text});\n");
+            // The text it took copies of goes with it, and so does what
+            // it took.
+            let mut body = format!("    {env} *env = ({env} *)zeno_self;\n");
+            for free in &frees {
+                body += &format!("    {free}\n");
             }
-            frees += "    zeno_free(env);\n";
-            self.helper(format!("static void zeno_fn_drop_{id}(zeno_closure *zeno_self)"), frees);
+            body += "    zeno_free(env);\n";
+            self.helper(format!("static void zeno_fn_drop_{id}(zeno_closure *zeno_self)"), body);
             self.line(format!("{made}->base.drop = zeno_fn_drop_{id};"));
         }
         for line in fill {
@@ -9751,6 +9770,41 @@ print("after")
     }
 
     #[test]
+    fn a_kept_function_takes_what_it_uses_every_way() {
+        // Returned, kept in a variable, a field and a list, given to a
+        // parameter that says `take`, made a thousand times, called after
+        // the function that made it has returned, failing through a type
+        // that says `raises`, and called straight from the call that made
+        // it (decision 56.8). Every build prints what `zeno run` prints,
+        // and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-kept-functions.zeno");
+        no_collector_as_interpreter("kept-functions", source);
+        crate::emit_llvm::tests::same_as_interpreter("kept-functions", source);
+        // What it takes is moved into its block, and freed with it.
+        let compose = "function compose(f: take function(int) -> int, g: take function(int) -> int) -> function(int) -> int {\n\
+                       return function(n: int) -> int { return f(g(n)) }\n}\n\
+                       print(compose(function(n: int) -> int { return n + 1 }, function(n: int) -> int { return n * 2 })(3))\n";
+        let c = compile_no_collector(compose).unwrap();
+        assert!(c.contains("    zeno_closure_drop(env->z_f);\n    zeno_closure_drop(env->z_g);\n    zeno_free(env);\n}"), "{c}");
+        assert!(c.contains("->z_f = z_f;\n    z_f = NULL;\n"), "{c}");
+    }
+
+    #[test]
+    fn each_copy_of_a_generic_makes_its_own_functions_raising() {
+        // The same line hands `size` to a list of raising functions in one
+        // copy and to a list of plain ones in the other (plan, Changes 2).
+        let source = "function size(text: str) -> int {\n    return len(text)\n}\n\
+                      function parse(text: str) -> int raises ValueError {\n    return int(text)\n}\n\
+                      function fill[T](xs: list[T], n: int) -> int {\n    var ys: list[T] = []\n    ys.append(size)\n\
+                      return len(ys) + len(xs) + n\n}\n\
+                      let raising: list[function(str) -> int raises ValueError] = [parse]\n\
+                      let plain: list[function(str) -> int] = [size]\n\
+                      print(fill(raising, 1), fill(plain, 2))\n";
+        firmware_as_interpreter("generic-raising", source);
+        crate::emit_llvm::tests::firmware_as_interpreter("generic-raising", source);
+    }
+
+    #[test]
     fn a_fault_stops_a_firmware_build_where_an_ordinary_one_catches_it() {
         // The one place the two kinds of build differ, on purpose. The
         // `except` here takes anything. An ordinary build catches the
@@ -11891,8 +11945,10 @@ let x = 7
         // around it.
         one_owner("let f = function(n: int) -> int { return n + x }\nlet g = f\nprint(f(1))", "was given away on line");
         one_owner(
-            "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))",
-            "so it must be gone before that value is",
+            // A function that is kept takes what it uses (decision 56.8),
+            // and the owner holds nothing after it.
+            "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1), len(xs))",
+            "was given away on line",
         );
         one_owner(
             "function counter() -> function() -> int {\n    var count = 0\n    return function() -> int { return count }\n}\nprint(counter()())",

@@ -1,0 +1,109 @@
+# Functions that are kept take the values with one owner that they use
+# (decision 56.8): returned, kept in a variable, a field and a list,
+# given to a parameter that says `take`, and made a thousand times.
+class Sensor {
+    name: str
+    readings: list[int]
+}
+class Alarm {
+    check: function(int) -> bool
+}
+function above(limit: int, names: take list[str]) -> function(int) -> str {
+    return function(n: int) -> str {
+        if n > limit {
+            return names[0]
+        }
+        return names[1]
+    }
+}
+function watcher(sensor: take Sensor) -> function() -> int {
+    return function() -> int {
+        var total = 0
+        for r in sensor.readings {
+            total += r
+        }
+        return total
+    }
+}
+function keep(f: take function(int) -> str) -> str {
+    return f(100)
+}
+function fails(f: take function(int) -> str) -> str raises ValueError {
+    raise ValueError(f(1))
+}
+let say = above(10, ["high", "low"])
+print(say(5), say(50))
+let s = Sensor("t", [1, 2, 3])
+let w = watcher(s)
+print(w())
+let words = ["big", "small"]
+let alarm = Alarm(function(n: int) -> bool { return n > len(words) })
+print(alarm.check(1), alarm.check(9))
+let more = ["x", "y"]
+print(keep(function(n: int) -> str { return more[0] }))
+for i in range(1000) {
+    let local = ["a", "b"]
+    let g = function(n: int) -> str { return local[n % 2] }
+    if i == 999 {
+        print(g(i))
+    }
+    try {
+        let extra = ["e"]
+        print(fails(function(n: int) -> str { return extra[0] }))
+    } except ValueError as e {
+        if i == 0 {
+            print("caught:", e)
+        }
+    }
+}
+var fs: list[function(int) -> str] = []
+for i in range(3) {
+    let tag = [f"t{i}"]
+    fs.append(function(n: int) -> str { return tag[0] })
+}
+for f in fs {
+    print(f(0))
+}
+function compose(f: take function(int) -> int, g: take function(int) -> int) -> function(int) -> int {
+    return function(n: int) -> int { return f(g(n)) }
+}
+function add(k: int) -> function(int) -> int {
+    return function(n: int) -> int { return n + k }
+}
+let h = compose(add(1), add(10))
+print(h(5))
+var total = 0
+for i in range(1000) {
+    let c = compose(add(i), function(n: int) -> int { return n * 2 })
+    total += c(1)
+}
+print(total)
+function strict_with(names: take list[str]) -> (function(int) -> str raises ValueError) {
+    return function(n: int) -> str raises ValueError {
+        if n >= len(names) {
+            raise ValueError(f"no name {n}")
+        }
+        return names[n]
+    }
+}
+let pick = strict_with(["zero", "one"])
+var picked = 0
+for i in range(1000) {
+    try {
+        print(pick(i % 3))
+    } except ValueError as e {
+        picked += 1
+    }
+}
+print(picked)
+function make(k: int) -> (function(str) -> int raises ValueError) {
+    return function(t: str) -> int raises ValueError {
+        return int(t) + k
+    }
+}
+print(make(2)("5"), add(3)(4))
+try {
+    print(make(2)("x"))
+} except ValueError as e {
+    print("caught:", e)
+}

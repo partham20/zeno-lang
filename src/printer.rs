@@ -236,7 +236,7 @@ fn annotation(ty: &Option<Type>) -> String {
     }
 }
 
-fn type_(ty: &Type) -> String {
+pub fn type_(ty: &Type) -> String {
     match ty {
         Type::Named { name, args } if args.is_empty() => name.clone(),
         Type::Named { name, args } => format!("{name}[{}]", join(args, type_)),
