@@ -240,9 +240,10 @@ Is `text` a third kind of error, or a second parameter with no type?
 The parser could be given a rule. A reader would have to know it,
 which is question 2 of the audit. So in a type `raises` names one
 kind, and a function that raises two kinds fits `raises Error`. A
-second name after a comma gets a message that says so. A list could
-be let in later, inside brackets of some kind, without changing what
-any type written today means.
+second name after a comma gets a message that says so (where the
+message comes from is in "Changes to this plan", 1). A list could be
+let in later, inside brackets of some kind, without changing what any
+type written today means.
 
 **What it changes for a program written before: nothing.** A type
 with no `raises` is checked as it is today. In a firmware build and a
@@ -1412,6 +1413,54 @@ alone; `raise e` after a caught error, which names the line of the
 
 ## Changes to this plan
 
-Nothing yet. When building a part shows that a choice above should be
-different, the change and its reason are written here, with the date,
-and in the chapter of the decisions.
+When building a part shows that a choice above should be different,
+or leaves something open, the change and its reason are written here,
+with the date, and in the chapter of the decisions.
+
+### 1. 9.1, 2026-11-19: three things the parser asked
+
+**`raises` after a function that returns a function.** This line
+builds today, and means that `make` raises `Missing`:
+
+```zeno
+function make() -> function(int) -> int raises Missing { ... }
+```
+
+A type that reads `raises` for itself would take the word from
+`make`, and the line would come to mean something else without a
+word of warning, which the first rule of this page forbids. So:
+**`raises` belongs to the outermost function whose result it
+follows**, in a first line and in a type alike. A function type that
+is itself the result, and raises, stands in brackets:
+
+```zeno
+function make() -> (function(int) -> int raises ValueError) raises Missing { ... }
+```
+
+Brackets may stand around a function type and around nothing else:
+`(int)` is refused, since it would be a second way to write `int`.
+They also make something writable that was not: `(function(int) ->
+int) or none` is a function that may be missing, where `function(int)
+-> int or none` is, as it always was, a function whose answer may be.
+Item 10 writes several results as `-> (int, str)`; one function type
+in brackets is told from that by having no comma.
+
+**Where the message for a second kind comes from.** In a list of
+parameters, `convert: function() raises ValueError, IoError` and
+`convert: function() raises ValueError, text` are the same words to
+the parser, and the second is legal today: `text` is a parameter with
+no type. So a type always ends at the comma. Where no comma can
+follow a type (a field, a `let`, what a function returns) the parser
+gives the message. In a list of parameters the checker gives it, when
+a parameter with no type has the name of a kind of error.
+
+**The gap in an ordinary build has two sides.** The page said that an
+ordinary build goes on accepting a function that raises where the
+type does not say so. The same must hold for a value: `var f = parse`
+and then `apply(f)` builds today, and `f` now has a type that says
+`raises`. So the rule is one sentence: in an ordinary build, and in
+`zeno run`, whether a function value raises is not held against a
+type that does not say so; a firmware build and a build with no
+collector hold it. Both sides are counted when the gap is measured.
+"Raises that kind" means a kind that `except` of that kind would
+catch, which is the test `except` already has.
