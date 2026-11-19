@@ -19,3 +19,4 @@
 
 # Pages that `zeno build --web` writes
 *.web.html
+__pycache__/
