@@ -584,3 +584,4 @@ bd717a7 A function that tests a parameter that may be `none` and then reads a fi
 2b90f07 What Zeno lacks: item 9 says which of its parts are done.
 59be546 The plan: a list of numbers that may be `none` with no collector owns a block of the pool for each number, since flags beside the list would change the C of every program.
 9dc71d6 With no collector a list of numbers that may be `none` builds, and the list owns a block of the pool for each number, as it owns its copy of each text (decision 56.14).
+ac6518d The size of the pool and of the text room on the command line, `--pool` and `--text-room`, and with `--memory` a write to a block after it was given back stops the program (decision 56.15).
