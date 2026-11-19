@@ -2151,7 +2151,11 @@ impl Emitter<'_> {
         }
         let outer = std::mem::replace(&mut self.scopes, vec![sees, params]);
         let built_in = |name: &str| self.lookup(name).is_none() && !self.functions.contains_key(name);
-        let once = crate::ast::fields_read_once(entry.decl.params.iter().map(|param| param.name.as_str()), &entry.decl.body, &built_in)
+        // A parameter that may be `none` is read only after a test that it
+        // is not, so its fields cannot be read at the start.
+        let may_be_none = |name: &str| matches!(self.lookup(name), Some(Variable { kind: Kind::Optional(_), .. }));
+        let params = entry.decl.params.iter().map(|param| param.name.as_str()).filter(|name| !may_be_none(name));
+        let once = crate::ast::fields_read_once(params, &entry.decl.body, &built_in)
             .map(|(params, written)| (params.into_iter().collect(), written, HashMap::new()));
         let once = std::mem::replace(&mut self.once, once);
         let mut done = self.block(&entry.decl.body);

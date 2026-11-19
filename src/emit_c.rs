@@ -2620,7 +2620,12 @@ impl Emitter<'_> {
         let arriving = std::mem::take(&mut self.arriving);
         let fallible = std::mem::replace(&mut self.fallible, fallible);
         let built_in = |name: &str| self.lookup_depth(name).is_none() && !self.functions.contains_key(name);
-        let once = crate::ast::fields_read_once(decl.params.iter().map(|param| param.name.as_str()), &decl.body, &built_in)
+        // A parameter that may be `none` is read only after a test that it
+        // is not, so its fields cannot be read at the start.
+        let may_be_none =
+            |name: &str| matches!(self.scopes.iter().rev().find_map(|scope| scope.get(name)), Some(Variable { kind: Kind::Optional(_), .. }));
+        let params = decl.params.iter().map(|param| param.name.as_str()).filter(|name| !may_be_none(name));
+        let once = crate::ast::fields_read_once(params, &decl.body, &built_in)
             .map(|(params, written)| Once { params: params.into_iter().collect(), written, made: HashMap::new() });
         let once = std::mem::replace(&mut self.once, once);
 
@@ -10023,6 +10028,21 @@ print("after")
         firmware_as_interpreter("generic-owned-class", owned);
         crate::emit_llvm::tests::same_as_interpreter("generic-owned-class", owned);
         no_collector_as_interpreter("generic-owned-class", owned);
+    }
+
+    #[test]
+    fn a_parameter_that_may_be_none_is_read_after_its_test() {
+        // A field of a parameter is read once, at the start, when nothing
+        // in the function can change it (decision 22.8). Not one that may
+        // be `none`: the read waits for the test, or the program reads
+        // through NULL. 0.7.0 did, in every build.
+        let source = "class Frame {\n    id: int\n}\n\
+                      function id_of(f: Frame or none) -> int {\n    if f is none {\n        return -1\n    }\n    return f.id\n}\n\
+                      let d: dict[str, Frame] = [\"a\": Frame(1)]\nprint(id_of(d.get(\"a\")), id_of(d.get(\"z\")), id_of(none))\n";
+        firmware_as_interpreter("none-first", source);
+        crate::emit_llvm::tests::same_as_interpreter("none-first", source);
+        let c = compile(source).unwrap();
+        assert!(c.contains("    if (z_f == NULL) {\n        return -1;\n    }\n    return z_f->z_id;\n"), "{c}");
     }
 
     #[test]
