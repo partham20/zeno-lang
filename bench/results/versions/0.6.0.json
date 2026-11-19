@@ -1,0 +1,265 @@
+{
+  "version": "0.6.0",
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "os": "Linux-6.18.44-fc-v653-x86_64-with-glibc2.39",
+    "zeno": "zeno 0.6.0",
+    "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "python": "3.13.18",
+    "date": "2026-11-19"
+  },
+  "big": {
+    "sizes": {
+      "fib": 40,
+      "loop": 1000000000,
+      "sort": 10000000,
+      "strings": 10000000,
+      "trees": 20,
+      "nbody": 10000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "rust": "Rust (rustc -O)",
+      "zeno": "zeno build",
+      "zeno-llvm": "zeno build --llvm",
+      "zeno-nc": "zeno build --no-collector",
+      "zeno-release": "zeno build --release",
+      "zeno-owned": "zeno build --release --owned",
+      "zeno-fast": "zeno build --fast --owned",
+      "zeno-fast-gc": "zeno build --fast"
+    },
+    "times": {
+      "fib": {
+        "c": 0.188,
+        "rust": 0.274,
+        "zeno": 0.652,
+        "zeno-llvm": 0.618,
+        "zeno-nc": 0.536,
+        "zeno-release": 0.175,
+        "zeno-owned": 0.176,
+        "zeno-fast": 0.192,
+        "zeno-fast-gc": 0.197
+      },
+      "loop": {
+        "c": 0.997,
+        "rust": 1.033,
+        "zeno": 1.428,
+        "zeno-llvm": 1.301,
+        "zeno-nc": 1.422,
+        "zeno-release": 1.052,
+        "zeno-owned": 1.075,
+        "zeno-fast": 1.01,
+        "zeno-fast-gc": 0.968
+      },
+      "sort": {
+        "c": 1.232,
+        "rust": 1.302,
+        "zeno": 1.6,
+        "zeno-llvm": 2.318,
+        "zeno-nc": 1.516,
+        "zeno-release": 1.571,
+        "zeno-owned": 1.344,
+        "zeno-fast": 1.23,
+        "zeno-fast-gc": 1.46
+      },
+      "strings": {
+        "c": 1.053,
+        "rust": 0.754,
+        "zeno": 0.805,
+        "zeno-llvm": 1.149,
+        "zeno-release": 0.817,
+        "zeno-owned": 0.865,
+        "zeno-fast": 0.784,
+        "zeno-fast-gc": 0.846
+      },
+      "trees": {
+        "c": 6.549,
+        "rust": 7.887,
+        "zeno": 8.291,
+        "zeno-llvm": 9.158,
+        "zeno-nc": 5.58,
+        "zeno-release": 7.717,
+        "zeno-owned": 4.32,
+        "zeno-fast": 4.101,
+        "zeno-fast-gc": 7.248
+      },
+      "nbody": {
+        "c": 0.503,
+        "rust": 0.397,
+        "zeno": 0.563,
+        "zeno-llvm": 0.603,
+        "zeno-nc": 0.554,
+        "zeno-release": 0.594,
+        "zeno-owned": 0.566,
+        "zeno-fast": 0.525,
+        "zeno-fast-gc": 0.498
+      }
+    }
+  },
+  "small": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "python": "Python 3",
+      "vm": "zeno run --vm",
+      "run": "zeno run"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "python": 0.313,
+        "vm": 0.798,
+        "run": 3.249
+      },
+      "loop": {
+        "c": 0.099,
+        "python": 13.02,
+        "vm": 8.331,
+        "run": 32.923
+      },
+      "sort": {
+        "c": 0.11,
+        "python": 2.485,
+        "vm": 3.905,
+        "run": 14.655
+      },
+      "strings": {
+        "c": 0.103,
+        "python": 0.48,
+        "vm": 1.693,
+        "run": 3.174
+      },
+      "trees": {
+        "c": 0.236,
+        "python": 4.13,
+        "vm": 10.089,
+        "run": 25.168
+      },
+      "nbody": {
+        "c": 0.056,
+        "python": 4.414,
+        "vm": 16.528,
+        "run": 57.762
+      }
+    }
+  },
+  "targets": {
+    "sizes": {
+      "fib": 32,
+      "loop": 100000000,
+      "sort": 1000000,
+      "strings": 1000000,
+      "trees": 16,
+      "nbody": 1000000
+    },
+    "engines": {
+      "c": "C (cc -O2)",
+      "vm": "zeno run --vm",
+      "to-js": "--target js, in Node",
+      "to-py": "--target py, in Python 3",
+      "to-php": "--target php, in PHP",
+      "to-lua": "--target lua, in Lua 5.4",
+      "to-ruby": "--target ruby, in Ruby",
+      "to-go": "--target go, built by go",
+      "to-java": "--target java, built by javac",
+      "to-cpp": "--target cpp, built by g++ -O2",
+      "to-rust": "--target rust, built by rustc -O",
+      "to-wasm": "--target wasm, in Node"
+    },
+    "times": {
+      "fib": {
+        "c": 0.005,
+        "vm": 0.784,
+        "to-js": 0.171,
+        "to-py": 4.17,
+        "to-php": 3.346,
+        "to-lua": 6.308,
+        "to-ruby": 7.14,
+        "to-go": 0.301,
+        "to-java": 0.187,
+        "to-cpp": 0.267,
+        "to-rust": 0.465,
+        "to-wasm": 0.64
+      },
+      "loop": {
+        "c": 0.102,
+        "vm": 8.706,
+        "to-js": 5.006,
+        "to-py": 92.939,
+        "to-php": 42.983,
+        "to-lua": 158.892,
+        "to-ruby": 106.927,
+        "to-go": 7.008,
+        "to-java": 2.065,
+        "to-cpp": 2.256,
+        "to-rust": 6.756,
+        "to-wasm": 10.346
+      },
+      "sort": {
+        "c": 0.107,
+        "vm": 4.312,
+        "to-js": 1.29,
+        "to-py": 26.508,
+        "to-php": 12.497,
+        "to-lua": 37.788,
+        "to-ruby": 25.843,
+        "to-go": 2.051,
+        "to-java": 1.262,
+        "to-cpp": 1.708,
+        "to-rust": 2.511,
+        "to-wasm": 3.237
+      },
+      "strings": {
+        "c": 0.101,
+        "vm": 2.189,
+        "to-js": 0.577,
+        "to-py": 2.176,
+        "to-php": 1.376,
+        "to-lua": 5.695,
+        "to-ruby": 4.339,
+        "to-go": 1.004,
+        "to-java": 0.958,
+        "to-cpp": 1.94,
+        "to-rust": 1.355,
+        "to-wasm": 1.475
+      },
+      "trees": {
+        "c": 0.231,
+        "vm": 10.372,
+        "to-js": 2.907,
+        "to-py": 42.904,
+        "to-php": 24.779,
+        "to-lua": 77.099,
+        "to-ruby": 55.785,
+        "to-go": 3.982,
+        "to-java": 1.276,
+        "to-cpp": 5.534,
+        "to-rust": 5.585,
+        "to-wasm": 5.657
+      },
+      "nbody": {
+        "c": 0.053,
+        "vm": 16.944,
+        "to-js": 15.814,
+        "to-py": 168.621,
+        "to-php": 79.988,
+        "to-lua": 167.885,
+        "to-ruby": 160.223,
+        "to-go": 13.436,
+        "to-java": 5.072,
+        "to-cpp": 12.915,
+        "to-rust": 14.035,
+        "to-wasm": 19.788
+      }
+    }
+  }
+}
