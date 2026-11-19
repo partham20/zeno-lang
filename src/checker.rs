@@ -4865,8 +4865,12 @@ impl Checker {
     /// message that says who is looking, and the words for when it ends.
     fn being_walked(&self, inside: &Expr, env: &Env) -> Option<(String, String, &'static str)> {
         let name = root(inside)?;
-        let variable = env.get(name)?;
-        let (_, line, looking) = self.owned.walked.iter().find(|(id, _, _)| *id == variable.id)?;
+        self.walking(name, env.get(name)?.id)
+    }
+
+    /// The same, for the variable `name` whose number is `id`.
+    fn walking(&self, name: &String, id: usize) -> Option<(String, String, &'static str)> {
+        let (_, line, looking) = self.owned.walked.iter().find(|(walked, _, _)| *walked == id)?;
         Some(match looking {
             Looking::Loop => (
                 name.clone(),
@@ -4967,6 +4971,46 @@ impl Checker {
         Some(variable.id)
     }
 
+    /// Why the owner `name` cannot give its value away on this line, if
+    /// it cannot: a loop or a `case` is looking at it, or the line has
+    /// already used it. `giving` says what the line does with it.
+    fn cannot_give_away(&self, name: &String, variable: &Variable, giving: &str) -> Option<String> {
+        if let Some((_, who, until)) = self.walking(name, variable.id) {
+            return Some(format!("{who} `{name}` cannot be given away {until}"));
+        }
+        if self.owned.looking.contains(&variable.id) {
+            return Some(format!("{giving}, on a line that also uses it. Do the other thing on a line of its own first"));
+        }
+        None
+    }
+
+    /// The owner `name` gives its value away at `span`, and holds nothing
+    /// after it. False, with a message, if it cannot.
+    fn give_away(&mut self, name: &String, variable: &Variable, span: Span) -> bool {
+        // A `let` at the top of the file that a function looks at stays
+        // where it is.
+        if variable.top && !variable.mutable {
+            if let Some(line) = self.reached.get(&variable.id) {
+                self.error(
+                    format!(
+                        "`{name}` is used by a function, on line {line}, so it cannot be given away: the function \
+                         could be called when `{name}` holds nothing. Pass `{name}` to that function instead, \
+                         or give away a copy"
+                    ),
+                    span,
+                );
+                return false;
+            }
+            self.given_top.insert(variable.id, span.line_in_file());
+        }
+        let record = (name.clone(), span);
+        for body in &mut self.owned.tries {
+            body.insert(variable.id, record.clone());
+        }
+        self.owned.moved.insert(variable.id, record);
+        true
+    }
+
     /// The type of an expression whose value is about to be kept. An owner
     /// named here gives its value away.
     fn take(&mut self, expr: &Expr, env: &Env) -> Ty {
@@ -4982,43 +5026,17 @@ impl Checker {
             _ => None,
         };
         if let Some((name, variable)) = owner {
-            if let Some((_, who, until)) = self.being_walked(expr, env) {
-                return self.error(format!("{who} `{name}` cannot be given away {until}"), expr.span);
-            }
-            if self.owned.looking.contains(&variable.id) {
-                return self.error(
-                    format!(
-                        "`{name}` is given away here, on a line that also uses it. \
-                         Do the other thing on a line of its own first"
-                    ),
-                    expr.span,
-                );
+            if let Some(message) = self.cannot_give_away(name, &variable, &format!("`{name}` is given away here")) {
+                return self.error(message, expr.span);
             }
             // The usual checks: that it still holds something, and that
             // this is the function it belongs to.
             if matches!(self.expr(expr, env), Ty::Invalid) {
                 return Ty::Invalid;
             }
-            // A `let` at the top of the file that a function looks at
-            // stays where it is.
-            if variable.top && !variable.mutable {
-                if let Some(line) = self.reached.get(&variable.id) {
-                    return self.error(
-                        format!(
-                            "`{name}` is used by a function, on line {line}, so it cannot be given away: the function \
-                             could be called when `{name}` holds nothing. Pass `{name}` to that function instead, \
-                             or give away a copy"
-                        ),
-                        expr.span,
-                    );
-                }
-                self.given_top.insert(variable.id, expr.span.line_in_file());
+            if !self.give_away(name, &variable, expr.span) {
+                return Ty::Invalid;
             }
-            let record = (name.clone(), expr.span);
-            for body in &mut self.owned.tries {
-                body.insert(variable.id, record.clone());
-            }
-            self.owned.moved.insert(variable.id, record);
             self.types.moves.insert(expr as *const Expr as usize);
             return variable.ty;
         }
