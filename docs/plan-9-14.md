@@ -1707,8 +1707,9 @@ held to both:
 
 - A program that does not write the new word, and is not built with
   the new flag, runs and builds as it did. `tools/same.py` shows it
-  for a build, and the tests of 0.7.0, all of which still pass,
-  show it for `zeno run`.
+  for a build, and the tests of 0.7.0 show it for `zeno run`: they
+  still pass, but for the few that held a refusal which a part of
+  this page lifts.
 - Each feature begins with something the program or the command line
   says. The table is what a reader looks for:
 
