@@ -1003,7 +1003,7 @@ impl Parser {
             // One kind of error, and not a list: in a list of parameters
             // a comma after it begins the next parameter (decision 56.3).
             let raises = match raises && self.eat(TokenKind::Raises) {
-                true => Some(self.name_in_module("an error type")?),
+                true => Some(Box::new(self.name_in_module("an error type")?)),
                 false => None,
             };
             let ty = Type::Function { params, returns, raises };

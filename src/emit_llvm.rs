@@ -2197,7 +2197,7 @@ impl Emitter<'_> {
                     Some(returns) => self.kind_of_type(returns)?,
                     None => Kind::None,
                 };
-                let raises = raises.iter().cloned().collect();
+                let raises = raises.iter().map(|kind| kind.to_string()).collect();
                 return Some(Kind::Function(Box::new(FunctionKind { params, returns, raises })));
             }
         };

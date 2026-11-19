@@ -639,7 +639,10 @@ pub enum Type {
     /// The type of a function: `function(int, int) -> int`, and the
     /// kind of error a call of it may raise: `function(str) -> int
     /// raises ValueError` (decision 56.1).
-    Function { params: Vec<Type>, returns: Option<Box<Type>>, raises: Option<String> },
+    /// The kind is boxed so that a `Type` is no bigger than it was before
+    /// it had one: every statement that holds a type would grow, and the
+    /// interpreter, which matches on statements, would be slower.
+    Function { params: Vec<Type>, returns: Option<Box<Type>>, raises: Option<Box<String>> },
     /// `owned list[int]`: a value with exactly one owner.
     Owned(Box<Type>),
     /// `take Packet`, on a parameter: the function takes the value over,

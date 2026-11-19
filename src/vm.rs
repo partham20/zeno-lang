@@ -485,20 +485,13 @@ impl Vm {
                     let value = pop!();
                     ops::set_item(object, &index, value, span)?;
                 }
+                // Kept out of this function, as `take` is rare and this
+                // loop is hot (decision 56.10).
                 Op::TakeField(n) => {
-                    let object = pop!();
-                    let name = text(&frame.proto, n);
-                    let value = ops::field(object.clone(), name, span)?;
-                    ops::set_field(object, name, Value::None, span)?;
-                    self.stack.push(value);
+                    let name = text(&frame.proto, n).to_string();
+                    self.take_out(Some(&name), span)?
                 }
-                Op::TakeIndex => {
-                    let index = pop!();
-                    let object = pop!();
-                    let value = ops::item(&object, &index, span)?;
-                    ops::set_item(object, &index, Value::None, span)?;
-                    self.stack.push(value);
-                }
+                Op::TakeIndex => self.take_out(None, span)?,
 
                 // ----------------------------------------------------- Jumps
                 Op::Jump(to) => frame.ip = to as usize,
@@ -931,6 +924,34 @@ fn top(stack: &[Value]) -> &Value {
 }
 
 /// Constant number n of a function, which the compiler made a piece of text.
+impl Vm {
+    /// `take object.name` (with the name) or `take object[index]`: what
+    /// is there replaces the object (and the index) on the stack, and
+    /// `none` is left in its place.
+    #[inline(never)]
+    #[cold]
+    fn take_out(&mut self, name: Option<&str>, span: Span) -> Result<(), Control> {
+        let pop = |vm: &mut Vm| vm.stack.pop().expect("the compiler left a value on the stack");
+        let value = match name {
+            Some(name) => {
+                let object = pop(self);
+                let value = ops::field(object.clone(), name, span)?;
+                ops::set_field(object, name, Value::None, span)?;
+                value
+            }
+            None => {
+                let index = pop(self);
+                let object = pop(self);
+                let value = ops::item(&object, &index, span)?;
+                ops::set_item(object, &index, Value::None, span)?;
+                value
+            }
+        };
+        self.stack.push(value);
+        Ok(())
+    }
+}
+
 fn text(proto: &Proto, n: u32) -> &str {
     match &proto.constants[n as usize] {
         Value::Str(text) => text,

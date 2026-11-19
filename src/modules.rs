@@ -1387,7 +1387,7 @@ impl<'a> Renamer<'a> {
                 // A kind of error of another file, `shapes.Bad`, is
                 // renamed as one after a function's `raises` is.
                 if let Some(raises) = raises {
-                    self.named(raises, span);
+                    self.named(&mut **raises, span);
                 }
             }
         }
