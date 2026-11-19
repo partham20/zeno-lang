@@ -17012,6 +17012,11 @@ print(d.value)
             });
         }
 
+        // Every power of two: the float below one is nearer than the
+        // float above, and 46 of them are named by digits that are not
+        // the rounded ones (decision 53.2).
+        floats.extend((-1074..=1023).map(|power| 2f64.powi(power)));
+
         // A float written: as it is, and with decimals.
         let writes = "while true {\n    let line = input()\n    if line is none {\n        break\n    }\n    let x = float(line)\n    print(x, f\"{x:.0f} {x:.2f} {x:.9f}\")\n}\n";
         let typed: String = floats.iter().map(|x| format!("{x:e}\n")).collect();

@@ -15930,6 +15930,15 @@ printed `5.6843418860808015e-14`. A build now prints what `zeno run`
 prints. It can only happen to a float that is exactly a power of two:
 46 of the 2,098 there are had another text.
 
+**The C++ and Lua targets had the same fault**, because their
+runtimes find the digits the way the C did, with their own `%.16e`.
+They keep that way, which is short, and at each length now try the
+rounded digits and then the digits one step higher: the stretch of a
+power of two reaches further up than down, so those are the only
+other ones that can name it. JavaScript, Python, Go, Java, PHP, Ruby
+and Rust were right already. `tools/targets/edge-floats.zeno` prints
+all 2,098 powers of two, on every target.
+
 Which power of ten a float is under is guessed from its bits with
 whole numbers too (`two * 78913 >> 18` is `two * log10(2)` near enough
 for every float), and put right by one comparison. There is no call
@@ -16047,10 +16056,10 @@ the long way (0.38 s for a million of them).
 
 ### 53.7 How it is held to its word
 
-- **`a_float_is_written_and_read_with_no_c_library`** types 12,020
+- **`a_float_is_written_and_read_with_no_c_library`** types 14,118
   floats at a program that prints each as it is and with 0, 2 and 9
   decimals, 6,000 f32s, and some 11,400 texts to read: every kind of
-  float (any bits, readings, powers of two, the smallest ones), text
+  float (any bits, readings, every power of two, the smallest ones), text
   with too few digits and far too many, whole numbers exactly between
   two floats with a hair over and under, and halves of the smallest
   floats in 750 digits. What comes out has to be what Rust's own
@@ -16085,11 +16094,6 @@ the long way (0.38 s for a million of them).
 
 ### 53.9 Left for later
 
-- **The C++ and Lua targets** (`--target cpp`, `--target lua`) still
-  find a float's digits the way the C did, and print 17 digits for
-  the 46 powers of two of 53.2. Found while this was written, and
-  next to be put right. JavaScript, Python, Go, Java, PHP and Ruby
-  print the 16; C#, Dart and Kotlin are still to be tried.
 - The checks without GCC's built-ins (the rest of item 8).
 - `{x:.2f}` through the runtime in a minimal build for a computer
   too, if the NaN there ever matters.

@@ -445,6 +445,22 @@ string join(const std::vector<string>& parts, const string& sep) {
 
 // ------------------------------------------------------------- Showing
 
+// The digits of `text`, which is d.ddde-XX, with the last of them one
+// higher. False when every digit is a 9: one digit fewer names that
+// number, and was tried before.
+static bool stepHigher(char* text) {
+    char* at = strchr(text, 'e');
+    while (at-- > text) {
+        if (*at == '.') continue;
+        if (*at != '9') {
+            (*at)++;
+            return true;
+        }
+        *at = '0';
+    }
+    return false;
+}
+
 // A float as Rust's `{:?}` shows it: the shortest digits that read back
 // as the same number, `.0` on a whole one, and an exponent for one below
 // 1e-4 or from 1e16 up.
@@ -454,11 +470,17 @@ string showFloat(double x) {
     if (x == 0) return std::signbit(x) ? "-0.0" : "0.0";
     string sign = x < 0 ? "-" : "";
     x = std::fabs(x);
-    // The shortest digits that read back as x: try 1 to 17.
+    // The shortest digits that read back as x: try 1 to 17. At each
+    // length the digits rounded from x are tried, and then those one
+    // step higher. A power of two has the float below it half as far
+    // away as the float above, so now and then only the higher digits
+    // name it: 2^-44 is 5.684341886080802e-14, and rounded to 16 digits
+    // it ends in 801 (decisions 24.21 and 53.2).
     char buf[64];
     for (int precision = 1; precision <= 17; precision++) {
         snprintf(buf, sizeof buf, "%.*e", precision - 1, x);
         if (strtod(buf, nullptr) == x) break;
+        if (stepHigher(buf) && strtod(buf, nullptr) == x) break;
     }
     string r = buf;
     size_t e = r.find('e');

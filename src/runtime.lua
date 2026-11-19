@@ -171,6 +171,21 @@ local function copied(items) return table.move(items, 1, #items, 1, {}) end
 
 -- ------------------------------------------------------------- Showing
 
+-- `text`, which is d.ddde-XX, with the last of its digits one higher.
+-- Nothing when every digit is a 9: one digit fewer names that number,
+-- and was tried before.
+local function step_higher(text)
+  local mantissa, power = text:match("^(.-)(e.*)$")
+  for at = #mantissa, 1, -1 do
+    local digit = mantissa:sub(at, at)
+    if digit >= "0" and digit <= "8" then
+      local after = mantissa:sub(at + 1):gsub("9", "0")
+      return mantissa:sub(1, at - 1) .. string.char(digit:byte() + 1) .. after .. power
+    end
+  end
+  return nil
+end
+
 -- A float as Rust's `{:?}` shows it: the shortest digits that read back
 -- as the same number, with `.0` on a whole one, and an exponent for one
 -- below 1e-4 or from 1e16 up.
@@ -183,10 +198,20 @@ local function show_float(x)
   -- The first count that reads back as the same float has the shortest
   -- digits, once the zeros at its end are taken off. The smallest floats
   -- have fewer digits than fifteen, so for them the count starts at one.
+  -- At each count the digits rounded from x are tried, and then those
+  -- one step higher. A power of two has the float below it half as far
+  -- away as the float above, so now and then only the higher digits
+  -- name it: 2^-44 is 5.684341886080802e-14, and rounded to 16 digits
+  -- it ends in 801 (decisions 24.21 and 53.2).
   local text
   for places = (x < 2.2250738585072014e-308 and x > -2.2250738585072014e-308) and 0 or 14, 16 do
     text = fmt("%." .. places .. "e", x)
     if tonumber(text) == x then break end
+    local higher = step_higher(text)
+    if higher and tonumber(higher) == x then
+      text = higher
+      break
+    end
   end
   local sign, lead, rest, exp = text:match("^(-?)(%d)%.?(%d*)e([-+]%d+)$")
   local digits = (lead .. rest):gsub("0+$", "")
