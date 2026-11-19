@@ -1491,9 +1491,12 @@ with 0 blocks left.
   such place for a program that can say what it means.
 - **The tests of both compilers check a firmware build as `zeno build
   --firmware` checks it.** Before, they checked it as an ordinary
-  build, and so `tools/targets/edge-u64.zeno` was built as firmware
-  in a test although `zeno build --firmware` refuses it, in 0.7.0 as
-  well (5.19m).
+  build. The review ran the whole suite before and after the change,
+  with each firmware build that a test leaves out printed: the same
+  48 are left out both times. `tools/targets/edge-u64.zeno` is one of
+  them both times, by another message than before (5.19m now, "nothing
+  in this `try` can be caught" then), so no program lost a firmware
+  build that it had.
 
 **Four things the review asked for.** They go in with 9.2.
 
