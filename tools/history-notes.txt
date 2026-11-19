@@ -559,3 +559,7 @@ fdf8c23 The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
 d4f3faa The benchmark figures of 0.7.0.
 3a1ee8c The version on `main` is 0.8.0, and the notes of 0.8.0 are begun.
 14ce321 `docs/plan-9-14.md`: the plan for items 9 to 14 of what Zeno lacks, with the design of each part, the ways weighed, the tests, and how each is shown to cost nothing.
+d6673ec `tools/same.py` builds every program each way a build can be asked for with two `zeno` programs, and shows that the C, the IR, the joined program and the bytecode they write are the same: the same C means the same speed.
+60dba12 Python's compiled files are kept out of the repository.
+ea5d687 The plan: `raises` after a result belongs to the function it ends, a type ends at a comma, and an ordinary build holds what a function value raises against a type neither way.
+e1d726d `raises` in a function type: `function(str) -> int raises ValueError`. A call through such a value is checked as raising, and a firmware build and a build with no collector now take a raising function as a value, which they refused (decision 56).
