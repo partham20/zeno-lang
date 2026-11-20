@@ -2093,3 +2093,23 @@ report of each failure; and after the last file one line of totals.
    build stops the test program as it stops any program (5.5l); the
    command says which test it was in, by the marks of 4. That is a
    real difference from `zeno test` and is written down as one.
+
+### 13. Item 11, 2026-11-20: the numbers inside chapter 58, and how 11.1 is built
+
+- **Chapter 58 is in two runs**, so that 11.4 can be built by another
+  hand than the rest: 58.1 to 58.19 for 11.1, 11.2, 11.3 and 11.5,
+  and 58.20 onward for 11.4. Where the two meet is the checker's
+  code for interfaces: 11.3 changes what a class says it is from a
+  list of names to a list of types, and 11.4 reads the same list.
+  Whoever pushes second keeps the first's code.
+- **11.1 as the builder means to build it is right:** a copy of a
+  generic enum is an enum of its own with its origin kept, as a copy
+  of a class is; each case expression notes which copy it means; a
+  `match` finds its case in the enum of what it matches on; an enum
+  that is not generic takes none of these roads, so what is written
+  for it does not change. One thing is asked of it: the note of which
+  copy a case means is kept for each copy of the generic it stands
+  in, by declaration, line and column (56.8), since `return Just(x)`
+  in `wrap[T]` means another `Maybe` in each copy of `wrap`. Item 9
+  had this fault once. And what a reader sees is `Maybe[int]`, in
+  every message and in what `print` shows, in every build.
