@@ -205,7 +205,7 @@ impl Parser {
         // somebody most likely meant a name, so say where the word goes.
         let place = match self.peek() {
             TokenKind::Owned => " `owned` is a word of the language, so it cannot be a name. It goes in front of \
-                                 `class`, or in front of a type: `owned list[int]`",
+                                 `class` or `interface`, or in front of a type: `owned list[int]`",
             TokenKind::Take => " `take` is a word of the language, so it cannot be a name. It goes in front of the \
                                 type of a parameter: `frame: take Frame`",
             TokenKind::Strict => " `strict` is a word of the language, so it cannot be a name. It goes alone on the \
@@ -281,12 +281,18 @@ impl Parser {
                 declared.kind
             }
             TokenKind::Class => self.class(false)?,
-            TokenKind::Interface => self.interface()?,
+            TokenKind::Interface => self.interface(false)?,
             // `owned class`. The word is reserved (decision 5.19c): it
             // stands here and in front of a type, and nowhere else.
             TokenKind::Owned if *self.peek_at(1) == TokenKind::Class => {
                 self.advance(); // owned
                 self.class(true)?
+            }
+            // `owned interface`: each object that is one has one owner,
+            // and only an `owned class` can be one (decision 58.22).
+            TokenKind::Owned if *self.peek_at(1) == TokenKind::Interface => {
+                self.advance(); // owned
+                self.interface(true)?
             }
             // `unsafe { ... }`: the lines that Zeno cannot check. The word
             // is reserved, so it never means anything else (decision 5.18a).
@@ -847,7 +853,7 @@ impl Parser {
 
     /// `interface Name { function ... }`: the functions a class must have
     /// to be used as a `Name`, one to a line and each without a body.
-    fn interface(&mut self) -> Result<StmtKind, Error> {
+    fn interface(&mut self, owned: bool) -> Result<StmtKind, Error> {
         self.advance(); // interface
         let name = self.name("a name for the interface")?;
         if self.check(TokenKind::LBracket) {
@@ -920,7 +926,7 @@ impl Parser {
         Ok(StmtKind::Class(Class {
             name,
             type_params: Vec::new(),
-            owned: false,
+            owned,
             fields: Vec::new(),
             methods,
             private: Vec::new(),
@@ -2429,8 +2435,9 @@ mod tests {
         assert_eq!(
             error("let n = owned + 1"),
             "expected an expression, found `owned`. `owned` is a word of the language, so it cannot be a name. It \
-             goes in front of `class`, or in front of a type: `owned list[int]`"
+             goes in front of `class` or `interface`, or in front of a type: `owned list[int]`"
         );
+        assert_eq!(tree("owned interface Shape {\n    function area(self) -> float\n}"), "owned interface Shape\n    function area(self) -> float\n");
         assert_eq!(
             error("queue.take()"),
             "expected a name after `.`, found `take`. `take` is a word of the language, so it cannot be a name. It \

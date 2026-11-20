@@ -3,8 +3,10 @@
 # there can be, and a call through the interface and on the object
 # that mean the same. A function that takes out what its object owns,
 # standing for one of an interface, called through it by the owner,
-# and by a class through its own interface. Every build prints what
-# `zeno run` prints, and a build with no collector leaves nothing.
+# and by a class through its own interface. An `owned interface`, in
+# an owned list, as a parameter that looks and one that takes, and as
+# a field. Every build prints what `zeno run` prints, and a build with
+# no collector leaves nothing.
 
 enum Mode {
     Slow
@@ -61,7 +63,7 @@ class Pump is Motor {
 function drive(motor: Motor) {
     motor.spin()
     motor.spin(7)
-    motor.spin(wait = 2000 ms, back = true, mode = Slow)
+    motor.spin(wait=2000 ms, back=true, mode=Slow)
     print(motor.name(), motor.name("big"))
     motor.stop(1 ms)
 }
@@ -72,7 +74,7 @@ for motor in motors {
 }
 let fan = Fan(2)
 fan.spin()
-fan.spin(label = "direct")
+fan.spin(label="direct")
 fan.stop()
 let pump = Pump(4)
 print(pump.prime(), pump.prime(3), pump.name("x"))
@@ -186,3 +188,94 @@ let tree = Node([Node([Leaf(), Leaf()]), Leaf(), Node([Node([Leaf()])])])
 print(tree.count())
 print(tree.strip())
 print(tree.count())
+
+# An `owned interface` (58.22): with a collector too, each object that
+# is a `Shape` has one owner, which frees it.
+owned class Point {
+    x: int
+    y: int
+}
+
+owned interface Shape {
+    function area(self) -> float
+    function grow(self, by: float)
+    function move_to(self, at: take Point)
+}
+
+owned class Circle is Shape {
+    radius: float
+    centre: Point
+
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+
+    function grow(self, by: float) {
+        self.radius = self.radius * by
+    }
+
+    # It replaces the point its object owns, so a call through a
+    # `Shape` is for the owner of the shape.
+    function move_to(self, at: take Point) {
+        self.centre = at
+    }
+}
+
+owned class Square is Shape {
+    side: float
+
+    function area(self) -> float {
+        return self.side * self.side
+    }
+
+    function grow(self, by: float) {
+        self.side = self.side * by
+    }
+
+    function move_to(self, at: take Point) {
+    }
+}
+
+owned class Frame {
+    inside: Shape
+    spare: Shape or none = none
+}
+
+function total(shapes: owned list[Shape]) -> float {
+    var sum = 0.0
+    for shape in shapes {
+        sum += shape.area()
+    }
+    return sum
+}
+
+function frame(shape: take Shape) -> Frame {
+    return Frame(shape)
+}
+
+function doubled(shape: Shape) -> float {
+    shape.grow(2.0)
+    return shape.area()
+}
+
+var shapes: owned list[Shape] = [Circle(1.0, Point(0, 0)), Square(2.0)]
+shapes.append(Square(1.0))
+print(total(shapes))
+print(doubled(shapes[0]))
+shapes[0].move_to(Point(3, 4))
+let framed = frame(Circle(0.5, Point(1, 1)))
+print(framed.inside.area())
+framed.spare = shapes.pop()
+framed.inside.move_to(Point(5, 5))
+print(framed)
+print(shapes)
+for i in range(1000) {
+    var shape: Shape = Square(float(i))
+    if i % 3 == 0 {
+        shape = Circle(1.0, Point(i, i))
+    }
+    shape.move_to(Point(0, i))
+    shapes.append(shape)
+    let gone = shapes.pop(0)
+}
+print(len(shapes), total(shapes))

@@ -3856,10 +3856,25 @@ impl Checker {
         for name in &decl.is {
             match env.get(name).map(|variable| variable.ty) {
                 Some(Ty::Class(interface)) if interface.interface => {
-                    if decl.owned {
+                    // An object with one owner cannot be where a shared one
+                    // is wanted, nor the other way round: an `owned class`
+                    // is an `owned interface`, and only it is (58.22). With
+                    // no collector both are owned, as everything is.
+                    if info.owned && !interface.owned {
                         self.error(
                             format!(
-                                "an `owned class` cannot be an interface yet. Take `owned` off `{}`, or `is {name}`",
+                                "`{0}` is an owned class, and `{name}` is not an `owned interface`: an object with one \
+                                 owner cannot be where a shared one is wanted. Write `owned interface {name}`, or take \
+                                 `owned` off `{0}`",
+                                decl.name
+                            ),
+                            span,
+                        );
+                    } else if !info.owned && interface.owned {
+                        self.error(
+                            format!(
+                                "`{0}` is not an owned class, and `{name}` is an `owned interface`, whose objects each \
+                                 have one owner. Write `owned class {0}`, or take `owned` off `{name}`",
                                 decl.name
                             ),
                             span,
@@ -10780,10 +10795,24 @@ mod tests {
              Declare what the two share as an `interface`, and let both be it"
         );
         assert_eq!(error("class C is Nothing {\n}"), "`Nothing` is not declared. Declare it with `interface Nothing { ... }`");
+        // An `owned class` is an `owned interface`, and only it is (58.22).
+        let owned_shape = format!("owned {shape}");
         assert_eq!(
-            one_owner_error(&format!("{shape}owned class Dot is Shape {{\n{area}{scale}}}\n")),
-            "an `owned class` cannot be an interface yet. Take `owned` off `Dot`, or `is Shape`"
+            error(&format!("{shape}owned class Dot is Shape {{\n{area}{scale}}}\n")),
+            "`Dot` is an owned class, and `Shape` is not an `owned interface`: an object with one owner cannot be \
+             where a shared one is wanted. Write `owned interface Shape`, or take `owned` off `Dot`"
         );
+        assert_eq!(
+            error(&format!("{owned_shape}class Dot is Shape {{\n{area}{scale}}}\n")),
+            "`Dot` is not an owned class, and `Shape` is an `owned interface`, whose objects each have one owner. \
+             Write `owned class Dot`, or take `owned` off `Shape`"
+        );
+        ok(&format!("{owned_shape}owned class Dot is Shape {{\n{area}{scale}}}\n"));
+        // With no collector everything is owned, said or not, and in a
+        // file that says `memory owned` every class and interface is.
+        one_owner_ok(&format!("{shape}owned class Dot is Shape {{\n{area}{scale}}}\n"));
+        one_owner_ok(&format!("{owned_shape}class Dot is Shape {{\n{area}{scale}}}\n"));
+        ok(&format!("memory owned\n{shape}class Dot is Shape {{\n{area}{scale}}}\nlet d: Shape = Dot()\nprint(d.area())\n"));
         // An interface is nothing that can be built.
         assert_eq!(
             error(&format!("{shape}let s = Shape()")),
@@ -13969,6 +13998,43 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             one_owner_error(&tree("  for kid in self.kids {\n   kid.strip()\n  }\n  self.kids.clear()\n")),
             "only the owner can call `strip`, which takes out or replaces something the object owns (`Node` is a \
              `Tree`, and its `strip` does): somebody else may have been lent it. Here `kid` only looks at it"
+        );
+    }
+
+    #[test]
+    fn an_owned_interface_has_one_owner_with_a_collector_too() {
+        // Each object that is an `owned interface` has one owner, in a
+        // build with a collector as with none (58.22).
+        let shapes = "owned class Point {\n x: int\n}\nowned interface Shape {\n function area(self) -> float\n \
+                      function move_to(self, at: take Point)\n}\nowned class Circle is Shape {\n radius: float\n centre: Point\n \
+                      function area(self) -> float {\n  return self.radius\n }\n function move_to(self, at: take Point) {\n  \
+                      self.centre = at\n }\n}\nowned class Frame {\n inside: Shape\n spare: Shape or none = none\n}\n";
+        let uses = "function total(shapes: owned list[Shape]) -> float {\n var sum = 0.0\n for shape in shapes {\n  sum += shape.area()\n }\n return sum\n}\n\
+                    function frame(shape: take Shape) -> Frame {\n return Frame(shape)\n}\n\
+                    function look(shape: Shape) -> float {\n return shape.area()\n}\n\
+                    var all: owned list[Shape] = [Circle(1.0, Point(0))]\nprint(total(all), look(all[0]))\nall[0].move_to(Point(2))\n\
+                    let f = frame(all.pop())\nf.spare = Circle(2.0, Point(1))\nf.inside.move_to(Point(3))\nprint(f)\n";
+        strict_ok(&format!("{shapes}{uses}"));
+        one_owner_ok(&format!("{shapes}{uses}"));
+        // Given away, it is gone, as an object of an `owned class` is.
+        assert_eq!(
+            error(&format!("{shapes}let c: Shape = Circle(1.0, Point(0))\nlet f = Frame(c)\nprint(c.area())")),
+            "`c` was given away on line 23 and holds nothing now. Use it before it goes, or give it only to what looks: \
+             a parameter without `take`"
+        );
+        // A list of them needs an owner, as a list of objects of an
+        // `owned class` does.
+        assert_eq!(
+            error(&format!("{shapes}let all: list[Shape] = [Circle(1.0, Point(0))]")),
+            "each item of this list is an owned Shape, which has one owner: the list. So the list needs an owner too. \
+             Write `owned list[...]`"
+        );
+        // A function that replaces what its object owns is for the owner,
+        // through the interface as on the object (58.21).
+        assert_eq!(
+            error(&format!("{shapes}function far(shape: Shape) {{\n shape.move_to(Point(9))\n}}")),
+            "only the owner can call `move_to`, which takes out or replaces something the object owns (`Circle` is a \
+             `Shape`, and its `move_to` does): somebody else may have been lent it. Here `shape` only looks at it"
         );
     }
 
