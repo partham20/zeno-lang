@@ -4033,7 +4033,8 @@ impl Checker {
                             all.join(", "),
                             class_name.to_lowercase()
                         ),
-                        span,
+                        // On the method's own line, not the class's.
+                        method.span,
                     );
                 }
                 // So that the one mistake is not reported again for each
@@ -12545,6 +12546,13 @@ mod tests {
             "the method `convert` cannot have type parameters of its own yet. Write it as a function of the file that \
              takes the object first: `function convert[T, U](box: Box[T], ...)`"
         );
+        // The error is on the line of the method, not of the class.
+        let source = "class Box[T] {\n    item: T\n\n    function convert[U](self, change: function(T) -> U) -> U {\n        \
+                      return change(self.item)\n    }\n}\nprint(Box(1).item)";
+        let program = parser::parse(lexer::lex(source).unwrap()).unwrap();
+        let found = super::check(&program, false);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].span.line, 4);
         assert_eq!(
             error("class Problem[T] {\n    what: T\n}\nfunction f() {\n    raise Problem(4)\n}"),
             "an object of a generic class cannot be raised yet, and this is a Problem[int]"
