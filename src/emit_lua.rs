@@ -373,10 +373,14 @@ impl<'a> Printer<'a> {
                 self.depth += 1;
                 self.leave_loop(true);
                 self.depth -= 1;
-                self.line("elseif z_how == 2 then");
-                self.depth += 1;
-                self.next_round(true);
-                self.depth -= 1;
+                // Only a body that holds a `continue` can ask for the next
+                // round, and only then does the loop have its label.
+                if continues(body) {
+                    self.line("elseif z_how == 2 then");
+                    self.depth += 1;
+                    self.next_round(true);
+                    self.depth -= 1;
+                }
                 self.line("end");
             }
             if gives_back {
