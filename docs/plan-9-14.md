@@ -2577,3 +2577,77 @@ below. It should point at the method.
 
 **Item 11 is accepted**: 11.1, 11.2, 11.3 (section 21), 11.4
 (section 19), and 11.5 refused with its reason.
+
+### 23. 12.1, 2026-11-20: accepted, with one fault to mend
+
+Read: 117c236 (the code, in every engine, build and target, with its
+tests and `tools/targets/edge-resource.zeno`) and 9fb78a8 (decisions
+59.1 to 59.5, `docs/resource.md`, the release notes).
+
+**What was tried, with programs of my own.**
+
+- Every way out of a block: its end, a `return` that uses the
+  resource in its value, `break`, `continue`, an error passing
+  through two blocks, an error caught inside, two resources in one
+  block (the last made is released first), one given away on one path
+  only, one taken by a parameter, one returned, one moved, a
+  recursion, an inner `let` of the same name, and a hundred rounds of
+  a loop. `zeno run`, the VM, the six builds and the targets js, py,
+  go, java, ruby and php print the same lines.
+- With no collector (C, LLVM, and with `--firmware`): 0 blocks left
+  at the end. The C build with a collector is clean under valgrind.
+- A resource held as `Resource` through the interface, taken by a
+  parameter of that type, returned as that type and met in the arms
+  of a `match`: released once in each case. `program.exit` releases
+  nothing, as rule 5 says.
+- An error nobody catches: the releases print before the report, in
+  every build. A fault that stops a firmware program releases
+  nothing, as `docs/resource.md` says.
+- Tests: resources at the top of a file used by its tests, a failed
+  `assert` inside a loop, an error leaving a test. `zeno test` and
+  `zeno test --build` print the same bytes in seven builds, with 0
+  blocks left.
+- Each place rule 7 forbids is refused with a message that names it:
+  a `var`, a field, a list, a dict, `or none`, a case of an enum, a
+  result nobody keeps, a call of `release` by hand, a `release` that
+  raises or takes a parameter or gives a value, a class with no
+  `release`, a class that is not `owned`, a use after giving away, a
+  giving away inside a loop, and a function that is kept.
+- `tools/same.py` against a zeno built from tag v0.7.0: 646 of 7,155
+  different, none a program 0.7.0 built (541 before; the 105 are the
+  new program of 12.1 and six new programs of the book's chapter on
+  generics, fifteen ways each). `tools/refused.py` ends with 0.
+
+**The two choices the builder made stand.** A resource may be held as
+`Resource` (`let r: Resource = h`), because `Resource` is an `owned
+interface` (58.22) and one owner is all the rule needs. A bound
+`[T is Resource]` is refused at the call and not at the function, as
+every bound is (58.3).
+
+**The fault.** Several values written out, one of them a resource,
+are taken:
+
+    let a, b = hold("received"), 1
+
+and `a` is never released, in every engine. With no collector its
+block is freed and its `release` never runs. Rule 7 keeps a resource
+to a `let` of one name, and a call that gives several is refused
+already; the values written out must be refused the same way, in a
+`let` and in the plain form, on either side of the comma, with a
+test for each.
+
+**Two messages.**
+
+1. The refusal of a resource among several values ends "or put the
+   values together in an `owned class`". A field cannot hold a
+   resource (rule 7), so that advice leads into the next refusal. It
+   is to say only: give the resource back alone. This corrects the
+   wording I asked for in section 18, item 1, which was mine and
+   wrong.
+2. A resource made in a default (`function f(h: Held = hold("d"))`)
+   is refused with "nothing keeps it, so it would be released at
+   once", which is not what happens there. It is to say that a
+   default cannot make a resource, and to pass one at the call.
+
+**12.1 is accepted.** The fault and the two messages are mended
+before 12.2 is sent, and seen with the last check before the release.
