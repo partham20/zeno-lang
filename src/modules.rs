@@ -1281,7 +1281,7 @@ impl<'a> Renamer<'a> {
                 self.ty(ty, span);
             }
             if let Some(default) = &mut param.default {
-                self.expr(default);
+                self.expr(Arc::make_mut(default));
             }
         }
         if let Some(ty) = &mut function.return_type {
@@ -1303,7 +1303,7 @@ impl<'a> Renamer<'a> {
             self.ty(ty, span);
         }
         if let Some(default) = &mut field.default {
-            self.expr(default);
+            self.expr(Arc::make_mut(default));
         }
     }
 

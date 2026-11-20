@@ -1,0 +1,45 @@
+# Holds the two tables of what a build refuses to what the compilers do
+# (decision 56.19).
+#
+# tools/refused.py builds several hundred small programs, one operation
+# on one type, six ways, with CC and CLANG set to `true`, so nothing is
+# compiled. It fails on a refusal that neither docs/no-collector.md nor
+# docs/compiler.md lists, on a program that C and LLVM do not treat
+# alike, and when tools/refused.txt, which the table test reads, is not
+# what it found.
+#
+# On a push that changes the compiler, and by hand from the Actions page
+# ("Run workflow").
+
+name: refused
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "docs/no-collector.md"
+      - "docs/compiler.md"
+      - "tools/refused.py"
+      - "tools/refused.txt"
+      - ".github/workflows/refused.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  refused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zeno
+        run: cargo build --release
+
+      - name: What a build refuses, against the tables
+        run: python3 tools/refused.py
+
+      - name: The table test, which reads what was found
+        run: cargo test --release what_a_build_with_no_collector_refuses_says_so

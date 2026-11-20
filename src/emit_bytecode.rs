@@ -934,7 +934,7 @@ impl Compiler {
     fn function(&mut self, decl: &Arc<crate::ast::Function>, index: u32, span: Span) {
         let name = if decl.name.is_empty() { "function" } else { &decl.name };
         let params: Vec<String> = decl.params.iter().map(|param| param.name.clone()).collect();
-        let defaults: Vec<&Expr> = decl.params.iter().filter_map(|param| param.default.as_ref()).collect();
+        let defaults: Vec<&Expr> = decl.params.iter().filter_map(|param| param.default.as_deref()).collect();
         let shared = shared_names(&defaults, &decl.body);
         self.functions.push(Function::new(Kind::Function, name, Some(decl.clone()), params, shared));
         self.open();
@@ -993,7 +993,7 @@ impl Compiler {
     /// class, outside any object, so it cannot use another field.
     fn constructor(&mut self, class: &Class, index: u32, span: Span) {
         let params: Vec<String> = class.fields.iter().map(|field| field.name.clone()).collect();
-        let defaults: Vec<&Expr> = class.fields.iter().filter_map(|field| field.default.as_ref()).collect();
+        let defaults: Vec<&Expr> = class.fields.iter().filter_map(|field| field.default.as_deref()).collect();
         let shared = shared_names(&defaults, &[]);
         self.functions.push(Function::new(Kind::Constructor, &class.name, None, params, shared));
         self.open();

@@ -2964,6 +2964,36 @@ impl Checker {
         Some(joined)
     }
 
+    /// If every one of `types` is a function, and all have the same
+    /// parameters, result and error, the function type they share.
+    fn one_function_type(&mut self, types: &[Ty]) -> Option<Ty> {
+        let mut shared: Option<Rc<CallableType>> = None;
+        for ty in types {
+            let callable = match ty.clone().looked_at() {
+                Ty::Callable(callable) => callable,
+                Ty::Function(function) if function.self_type.is_none() => {
+                    let signature = self.signature(&function);
+                    Rc::new(CallableType {
+                        params: signature.params.iter().map(|slot| slot.ty.clone()).collect(),
+                        returns: signature.returns.clone(),
+                        raises: self.raises_in_type(&signature.raises),
+                        owned: self.one_owner,
+                    })
+                }
+                _ => return None,
+            };
+            if callable.params.iter().any(Ty::is_loose) || callable.returns.is_loose() {
+                return None;
+            }
+            match &shared {
+                Some(first) if !same(&Ty::Callable(first.clone()), &Ty::Callable(callable.clone())) => return None,
+                Some(_) => {}
+                None => shared = Some(callable),
+            }
+        }
+        shared.map(Ty::Callable)
+    }
+
     /// If `ty` is a function whose details are known, its parameters and
     /// what it returns.
     fn callable(&mut self, ty: &Ty) -> Option<(Vec<Slot>, Ty)> {
@@ -4432,7 +4462,7 @@ impl Checker {
         for (field, slot) in decl.fields.iter().zip(&fields) {
             if let Some(default) = &field.default {
                 let given = self.kept(default, &slot.ty, env);
-                let given = self.adapted(written(default), default as *const Expr as usize, given, &slot.ty, default.span);
+                let given = self.adapted(written(default), Arc::as_ptr(default) as usize, given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", field.name), default.span);
             }
@@ -5848,8 +5878,24 @@ impl Checker {
         });
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
-                let given = self.kept(default, &slot.ty, &scope);
-                let given = self.adapted(written(default), default as *const Expr as usize, given, &slot.ty, default.span);
+                let given = match slot.ty.is_look() {
+                    // `xs: list[int] = [1, 2]`, where the parameter only
+                    // looks: as for an argument, the list is made at each
+                    // call that leaves it out, and the statement of that
+                    // call owns it.
+                    true => {
+                        self.expecting(default, &slot.ty);
+                        match self.expr(default, &scope) {
+                            ty if ty.is_owned() => {
+                                self.types.lent.insert(Arc::as_ptr(default) as usize);
+                                lent(&ty)
+                            }
+                            ty => ty,
+                        }
+                    }
+                    false => self.kept(default, &slot.ty, &scope),
+                };
+                let given = self.adapted(written(default), Arc::as_ptr(default) as usize, given, &slot.ty, default.span);
                 self.sees(slot, &given, default.span);
                 self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
             }
@@ -6180,7 +6226,38 @@ impl Checker {
                         Ty::list(Ty::U64)
                     } else {
                         // An empty list holds nothing yet, so its item type is open.
-                        Ty::list(self.join_all(&types).unwrap_or(Ty::Dynamic))
+                        let mut joined = self.join_all(&types).unwrap_or(Ty::Dynamic);
+                        // `[[1, none], []]`: an empty list beside other
+                        // lists holds what they hold.
+                        let empty = |item: &Expr| matches!(&item.kind, ExprKind::List(inner) if inner.is_empty());
+                        let full: Vec<Ty> = types.iter().zip(items).filter(|(_, item)| !empty(item)).map(|(ty, _)| ty.clone()).collect();
+                        if joined.has_dynamic() && !full.is_empty() && full.len() < types.len() {
+                            let without = join(&full[0], &full[0]);
+                            let without = full[1..].iter().fold(without, |sum, ty| join(&sum, ty));
+                            if matches!(without.clone().looked_at(), Ty::List(_)) && !without.has_dynamic() {
+                                self.types.items.insert(expr as *const Expr as usize, kind(&without));
+                                joined = without;
+                            }
+                        }
+                        // Two functions of one type, as `[add, function(n:
+                        // int) -> int { return n * 2 }]`, are a list of that
+                        // function type, as if it were written.
+                        if joined.is_loose() {
+                            if let Some(callable) = self.one_function_type(&types) {
+                                self.types.items.insert(expr as *const Expr as usize, kind(&callable));
+                                joined = callable;
+                            }
+                        }
+                        // `[["a", none], [none]]`: the items beside it say
+                        // what `[none]` holds, so a compiler is told.
+                        if let Ty::List(item) = joined.clone().looked_at() {
+                            for (ty, written) in types.iter().zip(items) {
+                                if matches!(written.kind, ExprKind::List(_)) && asks_more(&item) && !same(ty, &joined) {
+                                    self.types.items.insert(written as *const Expr as usize, kind(&item));
+                                }
+                            }
+                        }
+                        Ty::list(joined)
                     }
                 }
             }
@@ -6255,6 +6332,15 @@ impl Checker {
                     (BinaryOp::In | BinaryOp::NotIn, Ty::List(item) | Ty::Fixed(item, _)) => *item,
                     _ => right_type.clone(),
                 };
+                // `[none] in grid`: the items of `grid` say what the list
+                // written on the left holds, so a compiler is told.
+                if let (BinaryOp::In | BinaryOp::NotIn, ExprKind::List(_), Ty::List(element)) =
+                    (op, &tested.kind, beside_left.clone().looked_at())
+                {
+                    if asks_more(&element) && !same(&left_type.clone().looked_at(), &beside_left.clone().looked_at()) {
+                        self.types.items.insert(&**tested as *const Expr as usize, kind(&element));
+                    }
+                }
                 let left = self.real_beside(left_type.clone(), &beside_left, tested);
                 let right = self.real_beside(right_type, &left_type, right_side);
                 // A name that may be `none` is known to be there after a
@@ -9498,7 +9584,15 @@ impl Checker {
                 (numbers || both_strs || same_unit).then_some(Ty::Bool)
             }
             In | NotIn => match (left, &right.as_ints()) {
-                (item, Ty::List(items)) if fits(item, items) || fits(items, item) => Some(Ty::Bool),
+                // `[3] in rows` only looks at the items, so an item with
+                // one owner is compared as the list it is.
+                (item, Ty::List(items)) if {
+                    let (item, items) = (item.clone().looked_at(), items.as_ref().clone().looked_at());
+                    fits(&item, &items) || fits(&items, &item)
+                } =>
+                {
+                    Some(Ty::Bool)
+                }
                 // `"Ada" in ages`: is there such a key?
                 (item, Ty::Dict(key, _)) if fits(item, key) => Some(Ty::Bool),
                 (Ty::Str, Ty::Str) => Some(Ty::Bool),

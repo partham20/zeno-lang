@@ -402,7 +402,9 @@ pub struct Function {
 pub struct Param {
     pub name: String,
     pub ty: Option<Type>,
-    pub default: Option<Expr>,
+    /// Shared, so that a compiler that copies the parameter list keeps
+    /// the node the checker saw, and what the checker noted about it.
+    pub default: Option<Arc<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -444,7 +446,7 @@ impl Function {
     fn fresh_with(&self, visit: &mut dyn FnMut(Node)) -> Function {
         let mut copy = self.clone();
         fresh_block(&mut copy.body, visit);
-        copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(|value| fresh_expr(value, visit));
+        copy.params.iter_mut().filter_map(|param| param.default.as_mut()).for_each(|value| fresh_expr(Arc::make_mut(value), visit));
         copy
     }
 }
@@ -457,7 +459,7 @@ impl Class {
 
     fn fresh_with(&self, visit: &mut dyn FnMut(Node)) -> Class {
         let mut copy = self.clone();
-        copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(value, visit));
+        copy.fields.iter_mut().filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(Arc::make_mut(value), visit));
         for method in &mut copy.methods {
             *method = Arc::new(method.fresh_with(visit));
         }
@@ -492,7 +494,7 @@ fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {
             StmtKind::Class(class) => *class = class.fresh_with(visit),
             StmtKind::Enum(decl) => {
                 let fields = decl.variants.iter_mut().flat_map(|case| &mut case.fields);
-                fields.filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(value, visit));
+                fields.filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(Arc::make_mut(value), visit));
             }
             StmtKind::If { condition, then_block, else_block } => {
                 fresh_expr(condition, visit);
@@ -580,7 +582,9 @@ fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(Node)) {
 pub struct Field {
     pub name: String,
     pub ty: Option<Type>,
-    pub default: Option<Expr>,
+    /// Shared, so that a compiler that copies the parameter list keeps
+    /// the node the checker saw, and what the checker noted about it.
+    pub default: Option<Arc<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

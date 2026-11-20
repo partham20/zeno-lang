@@ -1141,7 +1141,7 @@ impl Lowerer {
                 // A default is worked out at each call of the class, where
                 // the class was written: a function of no arguments.
                 Some(default) => {
-                    let body = vec![ast::Stmt { kind: StmtKind::Return(Some(default.clone())), span: default.span }];
+                    let body = vec![ast::Stmt { kind: StmtKind::Return(Some((**default).clone())), span: default.span }];
                     let decl = ast::Function {
                         span: default.span,
                         name: String::new(),

@@ -714,7 +714,7 @@ impl Parser {
             let at = self.span();
             let name = self.name("a parameter name")?;
             let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
-            let default = if self.eat(TokenKind::Assign) { Some(self.expression()?) } else { None };
+            let default = if self.eat(TokenKind::Assign) { Some(Arc::new(self.expression()?)) } else { None };
             // Arguments are given in order, so a parameter that can be
             // left out has to be after every one that cannot.
             if let (None, Some(before)) = (&default, params.iter().find(|param| param.default.is_some())) {
@@ -889,7 +889,7 @@ impl Parser {
         let name = self.name("a field name")?;
         let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
         self.one_kind(&ty)?;
-        let default = if self.eat(TokenKind::Assign) { Some(self.expression()?) } else { None };
+        let default = if self.eat(TokenKind::Assign) { Some(Arc::new(self.expression()?)) } else { None };
         Ok(Field { name, ty, default })
     }
 

@@ -1252,7 +1252,7 @@ fn leaves(statement: Option<&Stmt>) -> bool {
 /// A class: its fields in order, each with its type and default value, and
 /// its methods.
 struct ClassEntry {
-    fields: Vec<(String, Kind, Option<Expr>)>,
+    fields: Vec<(String, Kind, Option<Arc<Expr>>)>,
     /// The fields that are sized whole numbers, such as `level: u8`. The
     /// struct stores each in that many bits. Everywhere else it is an
     /// `int64_t` like any int, so it is made small on the way in and
@@ -1555,6 +1555,19 @@ pub(crate) fn untyped_list(build: &str, span: Span) -> Error {
     )
 }
 
+/// A dict of objects of an `owned class` where there is a collector: the
+/// dict is shared, and cannot be the one owner of each (decision 56.12).
+pub(crate) fn owned_in_shared_dict(build: &str, span: Span) -> Error {
+    Error::new(
+        format!(
+            "{build} keeps a dict where anything may share it, as there is a collector, and an object of an \
+             `owned class` has one owner. Make it a plain `class`, or build with `--no-collector`, where a dict \
+             owns its values"
+        ),
+        span,
+    )
+}
+
 /// A variable that only ever holds `none`: a build needs a type for it.
 pub(crate) fn only_none(build: &str, span: Span) -> Error {
     Error::new(
@@ -1620,7 +1633,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
             Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt | Kind::Register(_) => "zeno_opt_int ".to_string(),
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "zeno_opt_float ".to_string(),
             Kind::Bool => "zeno_opt_bool ".to_string(),
-            _ => return Err(cannot("this kind of value that may be `none`", span)),
+            _ => return Err(cannot(optional_named(inner), span)),
         },
         Kind::None => {
             return Err(only_none("`zeno build`", span))
@@ -1629,6 +1642,15 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
         // In C an owned value is the same pointer a shared one would be.
         Kind::Owned(inner) => c_type(inner, span)?,
     })
+}
+
+/// What a `T or none` is called whose T no build can hold yet. A u64
+/// that may be `none` would need a fourth flagged kind (decision 56.19).
+pub(crate) fn optional_named(inner: &Kind) -> &'static str {
+    match inner {
+        Kind::U64 => "a u64 that may be `none`",
+        _ => "this kind of value that may be `none`",
+    }
 }
 
 /// Is this a kind that C holds through a pointer?
@@ -1660,7 +1682,7 @@ fn nothing(inner: &Kind, span: Span) -> Result<String, Error> {
         Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt | Kind::Register(_) => "(zeno_opt_int){false, 0}".to_string(),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => "(zeno_opt_float){false, 0.0}".to_string(),
         Kind::Bool => "(zeno_opt_bool){false, false}".to_string(),
-        _ => return Err(cannot("this kind of value that may be `none`", span)),
+        _ => return Err(cannot(optional_named(inner), span)),
     })
 }
 
@@ -1904,7 +1926,7 @@ fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
         Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
-        _ => Err(cannot("this kind of value that may be `none`", span)),
+        _ => Err(cannot(optional_named(inner), span)),
     }
 }
 
@@ -2248,7 +2270,7 @@ impl Emitter<'_> {
     /// object of an `owned class`, so it is refused as before.
     fn dict_letters(&self, key: &Kind, value: &Kind, span: Span) -> Result<(char, char), Error> {
         if self.collector && self.drops.owns(value) {
-            return Err(cannot("a dict with these keys and values", span));
+            return Err(owned_in_shared_dict("`zeno build`", span));
         }
         dict_kinds(key, value, span)
     }
@@ -5157,7 +5179,7 @@ impl Emitter<'_> {
                 Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt => format!("(zeno_opt_int){{true, {}}}", val.code),
                 Kind::Float | Kind::F32 | Kind::Quantity(_) => format!("(zeno_opt_float){{true, {}}}", val.code),
                 Kind::Bool => format!("(zeno_opt_bool){{true, {}}}", val.code),
-                _ => return Err(cannot("this kind of value that may be `none`", span)),
+                _ => return Err(cannot(optional_named(inner), span)),
             },
             // In a firmware build the checker has made a function that
             // raises nothing as one that can, where a raising type is
@@ -6493,7 +6515,7 @@ impl Emitter<'_> {
     fn call_c(
         &mut self,
         c_name: &str,
-        slots: &[(String, Kind, Option<Expr>)],
+        slots: &[(String, Kind, Option<Arc<Expr>>)],
         owned: &[bool],
         lends: &[bool],
         receiver: Option<Val>,
@@ -8423,7 +8445,7 @@ pub(crate) fn in_order(decl: &Function, args: &[Arg], span: Span, build: &str) -
     for (slot, param) in placed.into_iter().zip(&decl.params) {
         let value = match (slot, &param.default) {
             (Some(value), _) => value,
-            (None, Some(default)) if is_literal(default) => default.clone(),
+            (None, Some(default)) if is_literal(default) => (**default).clone(),
             (None, Some(_)) => {
                 return Err(cannot(
                     "a default that is not a plain literal, for a function inside a function that uses variables around it,",
@@ -8487,7 +8509,7 @@ fn declared_in(statements: &[Stmt], names: &mut HashSet<String>) {
             StmtKind::Function(decl) => {
                 names.insert(decl.name.clone());
                 names.extend(decl.params.iter().map(|param| param.name.clone()));
-                exprs.extend(decl.params.iter().filter_map(|param| param.default.as_ref()));
+                exprs.extend(decl.params.iter().filter_map(|param| param.default.as_deref()));
                 declared_in(&decl.body, names);
             }
             StmtKind::Class(class) => {
@@ -11126,7 +11148,7 @@ print("after")
         // With a collector a dict is shared, and cannot be the one owner
         // of an object of an `owned class`: refused as before.
         let shared = "owned class P {\n    n: int\n}\nlet d: dict[str, P] = [:]\nd[\"a\"] = P(1)\nprint(d[\"a\"].n)\n";
-        assert!(compile(shared).unwrap_err().contains("cannot compile a dict with these keys and values yet"));
+        assert!(compile(shared).unwrap_err().contains("keeps a dict where anything may share it"));
     }
 
     #[test]
@@ -17396,7 +17418,7 @@ try {
              call `add` outside it{tail}"
         );
         // (the words of the row on its page, the program, the refusal)
-        let no_collector: [(&str, &str, &str); 8] = [
+        let no_collector: [(&str, &str, &str); 11] = [
             (
                 "Keeping an item of a list of lists or of objects",
                 "let grid = [[1], [2]]\nlet row = grid[0]\nprint(row)\n",
@@ -17443,6 +17465,24 @@ try {
                 "function g(step: int) -> int {\n    function add(x: int) -> int {\n        return x + step\n    }\n\
                  let h = function(y: int) -> int { return add(y) }\n    return h(1)\n}\nprint(g(1))\n",
                 &inner_kept,
+            ),
+            (
+                "Returning or keeping what a parameter only looks at",
+                "function same(row: list[int]) -> list[int] {\n    return row\n}\nprint(same([1, 2]))\n",
+                "`row` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. \
+                 If it is a parameter, write `take` in front of its type to take the value over",
+            ),
+            (
+                "`filter` on a list of lists or of objects",
+                "let rows = [[1], [2, 3]]\nlet long = rows.filter(function(row: list[int]) -> bool { return len(row) > 1 })\nprint(long)\n",
+                "`filter` would put the items it keeps in a second list, and each has one owner. Use a `for` loop \
+                 that makes what the new list needs",
+            ),
+            (
+                "that a `for` or a list comprehension walks",
+                "let rows = [[1], [2, 3]]\nlet copy = [row for row in rows]\nprint(copy)\n",
+                "`row` is a look at an item of the list that the loop is walking. The list owns the item, so it \
+                 cannot be kept, returned or given away. Use it here, or pass it to a parameter that looks",
             ),
         ];
         let yet = " yet. `zeno run` can still run this program";
@@ -17520,6 +17560,19 @@ try {
                 "import program\nif false {\n    print(program.run(\"true\", []))\n}\n",
                 format!("`zeno build` cannot compile `program.run`{yet}"),
             ),
+            (
+                "A u64 that may be `none`",
+                "let big: u64 or none = u64(5)\nprint(big)\n",
+                format!("`zeno build` cannot compile a u64 that may be `none`{yet}"),
+            ),
+            (
+                "A dict of objects of an `owned class`, in a build with a collector",
+                "owned class Frame {\n    id: int\n}\nvar frames: dict[str, Frame] = [:]\nframes[\"a\"] = Frame(1)\nprint(frames[\"a\"].id)\n",
+                "`zeno build` keeps a dict where anything may share it, as there is a collector, and an object of an \
+                 `owned class` has one owner. Make it a plain `class`, or build with `--no-collector`, where a dict \
+                 owns its values"
+                    .to_string(),
+            ),
         ];
         let through_llvm = |message: &str| message.replacen("`zeno build`", "`zeno build --llvm`", 1);
         for (_, source, message) in &no_collector {
@@ -17530,13 +17583,15 @@ try {
             assert_eq!(compile_no_collector(source).unwrap_err(), *message, "\n{source}");
             assert_eq!(crate::emit_llvm::tests::compile_no_collector(source).unwrap_err(), *message, "\n{source}");
         }
-        for (_, source, message) in &every_build {
+        for (key, source, message) in &every_build {
             let program = crate::modules::testing::program(source);
             assert!(crate::vm::run_both(&program, source).1.is_ok(), "`zeno run` refused\n{source}");
             assert_eq!(compile(source).unwrap_err(), *message, "\n{source}");
             assert_eq!(crate::emit_llvm::tests::compile(source).unwrap_err(), through_llvm(message), "\n{source}");
-            assert!(compile_no_collector(source).is_err(), "a build with no collector took it\n{source}");
-            assert!(crate::emit_llvm::tests::compile_no_collector(source).is_err(), "a build with no collector took it\n{source}");
+            // One row is refused only where there is a collector.
+            let refused_without = !key.ends_with("in a build with a collector");
+            assert_eq!(compile_no_collector(source).is_err(), refused_without, "with no collector\n{source}");
+            assert_eq!(crate::emit_llvm::tests::compile_no_collector(source).is_err(), refused_without, "with no collector\n{source}");
         }
         // Each page's table and these rows, one to one.
         let rows = |page: &str, after: &str| -> Vec<String> {
@@ -17562,6 +17617,21 @@ try {
             for key in &keys {
                 assert!(rows.iter().any(|row| row.contains(key)), "no row on the page for `{key}`");
             }
+        }
+        // What tools/refused.py found, by the row each refusal belongs
+        // to: the row must be on its page, and held to a program here.
+        for line in include_str!("../tools/refused.txt").lines() {
+            let [page, row, message] = line.splitn(3, " | ").collect::<Vec<_>>()[..] else {
+                panic!("a line of tools/refused.txt that is not `page | row | message`: {line}");
+            };
+            let (text, keys) = match page {
+                "docs/no-collector.md" => (rows(include_str!("../docs/no-collector.md"), "## What is refused\n"), no_collector.iter().map(|(key, _, _)| *key).collect::<Vec<_>>()),
+                "docs/compiler.md" => (rows(include_str!("../docs/compiler.md"), "## What it compiles so far\n"), every_build.iter().map(|(key, _, _)| *key).collect()),
+                _ => panic!("tools/refused.txt names a page with no table: {line}"),
+            };
+            let found = text.iter().find(|line| line.starts_with(&format!("| {row}")));
+            let found = found.unwrap_or_else(|| panic!("no row of {page} begins `{row}`, for: {message}"));
+            assert!(keys.iter().any(|key| found.contains(key)), "no program here holds the row of: {message}");
         }
     }
 
@@ -17606,6 +17676,88 @@ print(range(4).map(function(x: int) -> int { return x * x }), range(3) == [0, 1,
         for (built, call) in called {
             assert!(built.as_ref().is_ok_and(|code| code.contains(call)), "no `{call}` in {built:?}");
         }
+    }
+
+    #[test]
+    fn a_default_made_for_a_parameter_that_looks_is_the_statements() {
+        // With no collector, `xs: list[int] = [1, 2]` on a parameter that
+        // only looks was refused with advice to name the list with `let`,
+        // which a default cannot do. The list or object is made at each
+        // call that leaves the argument out, and the statement of the call
+        // owns it, as it owns one written in the call. Each call frees
+        // it: 0 blocks are left after a hundred.
+        let source = r#"owned class Tag {
+    name: str
+}
+class Box {
+    n: int
+    function size(self, extra: list[int] = [self.n, 1]) -> int {
+        return self.n + len(extra)
+    }
+}
+let kept = Box(7)
+function show(x: int, xs: list[int] = [x, x + 1], words: list[str] = [f"w{x}", "b"], b: Box = Box(x), d: dict[str, int] = ["k": x]) -> int {
+    return len(xs) + xs[1] + len(words[0]) + b.n + d["k"]
+}
+function named(t: Tag = Tag("x")) -> str {
+    return t.name
+}
+function shared(b: Box = kept) -> int {
+    return b.n
+}
+function boxes(ps: list[Box] = [Box(1), Box(2)]) -> int {
+    return len(ps) + ps[1].n
+}
+var total = 0
+for i in range(100) {
+    total += show(i) + len(named()) + shared() + boxes()
+}
+print(total, show(1, [7, 8]), Box(3).size(), Box(4).size([1, 2, 3]), named(Tag("y")), kept.n)
+"#;
+        no_collector_as_interpreter("looking-default", source);
+        crate::emit_llvm::tests::same_as_interpreter("looking-default", source);
+    }
+
+    #[test]
+    fn what_tools_refused_py_found_builds_in_every_build() {
+        // The first run of tools/refused.py found these refused by a
+        // build that `zeno run` ran (decision 56.19). A default that holds
+        // lists, or bytes, was worked out from a copy of itself, which the
+        // checker had never seen; `[3] in rows` with no collector; two
+        // functions of one type in a list; and `[none]` or `[]` beside
+        // lists that say what they hold, or on the left of `in`.
+        let source = r#"class Holder {
+    v: list[list[int]] = [[1], [2]]
+    bytes: list[u8] = [u8(1), u8(2)]
+}
+function nested(x: list[list[int]] = [[1], [2]], b: list[u8] = [u8(3)]) {
+    print(x, b)
+}
+nested()
+nested([[3]])
+let h = Holder()
+print(h.v, h.bytes)
+let rows = [[1, 2], [3]]
+print([3] in rows, [4] in rows, [1, 2] not in rows)
+function twice(n: int) -> int {
+    return n * 2
+}
+let a = function(n: int) -> int { return n + 1 }
+let fs = [a, twice, function(n: int) -> int { return n - 1 }]
+for f in fs {
+    print(f(3))
+}
+print(len([twice, twice]), [twice, twice].map(function(f: function(int) -> int) -> int { return f(1) }))
+let words = [["a", none], [none]]
+print(words, len(words[1]))
+for w in [["a", none], [none]] {
+    print(w)
+}
+let grid = [[1, none], [none], []]
+print(grid, [none] in grid, [none, none] not in grid, [] in grid, [none] in words)
+"#;
+        no_collector_as_interpreter("refused-py", source);
+        crate::emit_llvm::tests::same_as_interpreter("refused-py", source);
     }
 
     #[test]

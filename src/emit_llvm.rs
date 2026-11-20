@@ -1011,7 +1011,7 @@ struct Entry {
 }
 
 /// What a call can be given: the name, kind and default of each place.
-type Slots = Vec<(String, Kind, Option<Expr>)>;
+type Slots = Vec<(String, Kind, Option<Arc<Expr>>)>;
 
 /// A class: an object is a block of memory holding its fields in order.
 struct ClassEntry {
@@ -1552,7 +1552,7 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
             Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt | Kind::Register(_) => "{ i1, i64 }",
             Kind::Float | Kind::F32 | Kind::Quantity(_) => "{ i1, double }",
             Kind::Bool => "{ i1, i1 }",
-            _ => return Err(cannot("this kind of value that may be `none`", span)),
+            _ => return Err(cannot(emit_c::optional_named(inner), span)),
         },
         Kind::Owned(inner) => ir_type(inner, span)?,
         Kind::None => {
@@ -1599,7 +1599,7 @@ fn scalar(inner: &Kind, span: Span) -> Result<&'static str, Error> {
         Kind::Int | Kind::Pin | Kind::InputPin | Kind::Serial | Kind::AnalogPin | Kind::PwmPin | Kind::Ticker | Kind::Interrupt | Kind::Register(_) => Ok("int"),
         Kind::Float | Kind::F32 | Kind::Quantity(_) => Ok("float"),
         Kind::Bool => Ok("bool"),
-        _ => Err(cannot("this kind of value that may be `none`", span)),
+        _ => Err(cannot(emit_c::optional_named(inner), span)),
     }
 }
 
@@ -3472,7 +3472,7 @@ impl Emitter<'_> {
     /// `dict_letters`).
     fn dict_kinds(&self, key: &Kind, value: &Kind, span: Span) -> Result<String, Error> {
         if self.collector && self.drops.owns(value) {
-            return Err(cannot("a dict with these keys and values", span));
+            return Err(emit_c::owned_in_shared_dict("`zeno build --llvm`", span));
         }
         dict_kinds(key, value, span)
     }

@@ -262,6 +262,9 @@ line and says what to write instead where there is something.
 | A function that is kept and uses a `var` from outside it | a kept function takes what it uses, and the `var` could be given a new value after it was taken. Declare it with `let` ([`kept-functions.md`](kept-functions.md)) |
 | Replacing a list or an object that a parameter only looks at (`b.items = [7, 8]`, where `b` has no `take`) | only the owner may replace what a field holds: something else may have been lent the old value. Write `take` on the parameter, or return the new value |
 | Taking an item out of a list while a `for` walks it (`xs.pop()` in `for x in xs`) | the loop is still looking at the items, and a taken item would be freed under it (5.15e). Take them after the loop, or walk `range(len(xs))` |
+| Returning or keeping what a parameter only looks at (`return row`, where `row` has no `take`) | its owner still has it, and would free it under the new owner. Write `take` in front of the parameter's type, and the caller gives it away |
+| `filter` on a list of lists or of objects | each item kept would be in two lists, and each has one owner. Use a `for` loop that makes what the new list needs |
+| Keeping an item of a list of lists or of objects that a `for` or a list comprehension walks (`[row for row in rows]`) | the loop only looks at each item, which the list owns. Use it in the loop, make what the new list holds from it (`[len(row) for row in rows]`), or take the items out with `pop()` |
 | A function with a name, written inside a function, that uses variables around it, used as a value or called from a function written where a value goes | the block owns it and frees it as it ends. Write it as `let add = function(...) { ... }`, which has one owner ([`inner-functions.md`](inner-functions.md)) |
 
 Ten things you might expect on this list are not. A plain list or
@@ -292,7 +295,7 @@ objects owns its values, as a list owns its items
 `none` owns a block of the pool for each number
 ([`none-list.md`](none-list.md)).
 
-All seven rows are by design: with no collector nothing is shared,
+All ten rows are by design: with no collector nothing is shared,
 and what a block owns ends with the block. A list of `int or none`
 was a row, a limit of version 0.1 (decisions, 11.2), until 0.8.0.
 
@@ -301,7 +304,11 @@ A program that every build refuses is not on this list; those are in
 `what_a_build_with_no_collector_refuses_says_so` holds both lists to
 what the two compilers do: each row is refused, in the words its page
 shows, and a row that is missing from a page, or a page that lists
-what the compilers take, fails it.
+what the compilers take, fails it. And `tools/refused.py` builds each
+of several hundred small programs, one operation on one type, six
+ways: a refusal that neither page lists, or a program that C and LLVM
+do not treat alike, fails it, and the test reads what it found
+(decision 56.19).
 
 ## What this does not claim
 

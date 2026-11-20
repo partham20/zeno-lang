@@ -17828,7 +17828,10 @@ before is written differently.
 - **`get(key, instead)` and `values()` on a dict that owns its
   values.** Refused, with what to write instead (56.12).
 - **A dict of objects of an `owned class`, with a collector.** Refused
-  by `zeno build` as before; `zeno run` runs it.
+  by `zeno build` as before, in words that say why since 56.19; `zeno
+  run` runs it.
+- **A u64 that may be `none`** (56.19). Refused by both compilers, in
+  every build.
 - **`take` with one owner on the line that writes the place**:
   `self.current = take self.waiting[0]` is refused, as
   `self.current = self.waiting.pop()` was, because the line looks at
@@ -17853,3 +17856,123 @@ before is written differently.
 - **Named arguments to a function held in a variable, and a built-in
   function used as a value** (`xs.map(str)`). Refused by both
   compilers; see [`compiler.md`](compiler.md) for the reasons.
+
+### 56.19 What the review of item 9 found, and a matrix that looks first
+
+**The need.** The review of item 9 tried programs of its own and found
+four that `zeno run` ran and a build refused, which the sweep of 56.17
+had not tried: `in` on a list of numbers or text that may be `none`
+(LLVM took it, C refused it), `3 in range(5)`, `[3] in rows` with no
+collector, and a list made in the default of a parameter that only
+looks, with no collector, which was told to "give it a name with `let`"
+though a default has nowhere to write one. A sweep that runs only what
+the pages name finds only what the pages name. So the review asked for
+a tool that tries every operation on every type in every build, and a
+test that fails when it finds a refusal no table lists.
+
+**The four.**
+
+- `x in xs`, where the items may be `none`: C now makes `x` what the
+  list holds first, as LLVM did.
+- `range(...)` anywhere but after `for` is the list of numbers that
+  `zeno run` makes, new at each call: `zeno_range_list` in the runtime,
+  with each number worked out without a sign so that a step of more
+  than half of what an int holds cannot overflow on the way. So `3 in
+  range(5)`, `let r = range(5)`, `total(range(5))` and `range(3) +
+  range(2)` build, with no collector too, where the statement or the
+  `let` owns the list. A `for` over a range still builds no list. A
+  step of 0 is the ValueError of `zeno run`; a firmware build stops
+  there, as it does for any fault it cannot carry as a value.
+- `[3] in rows` only looks at the items, so the checker compares an item
+  with one owner as the list it is.
+- A list, a dict or an object made in the default of a parameter that
+  only looks is the statement's, as one written in the call is: made at
+  each call that leaves the argument out, and freed when the call's line
+  is over.
+
+**Why a default was ever a problem.** Each compiler worked a default
+out from a copy of it, made when it gathered the parameters of a call,
+and the checker notes what it learns by the address of each node it
+saw: that a list starts out owned, that a value is the statement's,
+that a list is of bytes. A copy has new addresses, so what was noted
+was lost, and a default holding lists, or bytes, was refused in every
+build or with no collector. A default is now held as `Arc<Expr>` in the
+tree, and a copy of the parameters shares it, so the compilers work out
+the node the checker saw. `Function::fresh` still gives a copy of a
+generic its own default, as it must.
+
+**`tools/refused.py`.** Each program is one operation on one type: shown,
+compared, looked for with `in`, given to a parameter that looks or that
+takes, returned, kept in a list, a field or a dict, used as a default,
+walked, captured by a function that is kept, sorted, sliced, added. The
+types are the numbers, text, `bool`, `u8`, `u64`, each kind that may be
+`none`, lists of each, lists of lists, of objects and of bytes, dicts, a
+class, an `owned class`, an enum and a function. 705 programs, of which
+`zeno run` takes 674, built six ways (C and LLVM, each with a
+collector, with `--firmware` and with `--no-collector`) with `CC` and
+`CLANG` set to `true`, so nothing is compiled: 4,044 builds in about ten
+seconds. It fails on a refusal that matches no row of the two tables,
+on a program that C builds and LLVM refuses or the other way round, or
+both refuse in different words, and when `tools/refused.txt` is not what
+it found. That file holds each refusal with its row; the table test
+reads it and fails on a row that is not on its page or has no program
+in the test. A workflow, `refused.yml`, runs both on each push that
+changes the compiler.
+
+**What its first run found.** No disagreement between C and LLVM. Eleven
+different refusals, of which these are built now:
+
+- A default holding lists, or bytes (above).
+- Two functions of one type in a list, `[add, function(n: int) -> int
+  { return n * 2 }]`, was a list of things whose type was not known; it
+  is a list of that function type, as if the type were written.
+- `[["a", none], [none]]`, `[[1, none], []]` and `[none] in grid`: the
+  lists beside `[none]` or `[]`, or the list on the right of `in`, say
+  what it holds, and the compilers are now told.
+
+And these are by design, and are rows now:
+
+- With no collector: returning or keeping what a parameter only looks
+  at; `filter` on a list of lists or of objects; keeping an item that a
+  `for` or a list comprehension walks. Each would give a value a second
+  owner, and each message says what to write instead. Using a value
+  after it was given away was a row already.
+- In every build: a u64 that may be `none`. A value that may be `none`
+  and is not a pointer is a flag and the value, and a build has those
+  pairs for an int, a float and a bool; a fourth for a u64 is left for
+  later. The message said "this kind of value that may be `none`"; it
+  says "a u64 that may be `none`" now.
+- With a collector: a dict of objects of an `owned class` (56.12). Its
+  message said "cannot compile a dict with these keys and values yet",
+  as if it were to come; it says why now, and what to write: "...keeps a
+  dict where anything may share it, as there is a collector, and an
+  object of an `owned class` has one owner. Make it a plain `class`, or
+  build with `--no-collector`, where a dict owns its values". The table
+  test holds that a build with no collector takes this row's program.
+
+The review should run `python3 tools/refused.py` before each later
+review; adding an operation or a type to it is one line.
+
+**`tools/same.py` is always against a binary built from the tag.** The
+comparison that says which programs a step changed is between a `zeno`
+built from tag v0.7.0 (17453fd) and the new one, never an older local
+build, whose own changes would hide among the step's. At the acceptance
+of item 9 (6d22db6): 451 programs, 15 ways, 6,765 builds, 6,523 the same
+and 242 different: 114 from the eight new programs in `tools/targets/`,
+128 from 21 older programs that 0.7.0 refused. None is a program that
+0.7.0 built.
+
+After these follow-ups the runtime has one function more,
+`zeno_range_list`, and every C file and every LLVM runtime holds the
+whole runtime, so every build is written differently by that function
+alone: 3,674 the same against 0.7.0, 3,091 different. To see what else
+changed, the same comparison was made with a `zeno` of this step whose
+runtime lacked that one function: 6,492 the same, 273 different, 31
+more than at item 9. Against item 9 itself (f10c24b) that is 36
+builds: two of the book's samples, 07-control-flow#6 (`print(range(5))`)
+and 09-lists#13 (`let numbers = range(1, 11)`), build now in each of
+their thirteen ways and print what `zeno run` prints, and
+`edge-lists.zeno` and 08-functions#7 are refused at the same line as
+before with two errors fewer after it, in the five ways with one
+owner, since `[1] in [[1], [2]]` builds there now. None of the 36 is a
+program that 0.7.0 or item 9 built.

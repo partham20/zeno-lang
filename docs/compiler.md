@@ -75,7 +75,14 @@ through C and through LLVM alike, each with its reason:
 | A method of an object that no variable holds, or of a copy of a generic class, used as a value | 56.9, 56.18 | put the object in a `let`; call the method in a function written where a value goes |
 | A list whose items are not all one type: `[1, "a"]` | a build gives every item one type of C; `zeno run` checks types as it goes | one type, or an enum with a case for each |
 | A variable that only ever holds `none`, and `print([])` or `[none]` alone | a build needs a type, and nothing gives one | write the type: `x: int or none`, `let items: list[int] = []` |
+| A u64 that may be `none`: `u64 or none` | a value that may be `none` and is not a pointer is a pair of a flag and the value, and a build has these pairs for an int, a float and a bool only (56.19) | an `int or none`, or a u64 with a value set aside to mean nothing |
+| A dict of objects of an `owned class`, in a build with a collector | with a collector a dict is shared, and cannot be the one owner of an object (56.12) | a plain `class`, or `--no-collector`, where a dict owns its values |
 | `program.run` | starting another program is not written for C yet | `zeno run` |
+
+`tools/refused.py` looks for a row that is missing here: it builds
+several hundred small programs, one operation on one type, with both
+compilers, and fails on a refusal that this table and the one of
+[`no-collector.md`](no-collector.md) do not list (decision 56.19).
 
 A build for a board, with no collector, or with `--minimal` refuses a
 few more on purpose, each with its reason in
