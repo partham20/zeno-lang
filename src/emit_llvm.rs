@@ -232,6 +232,7 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_fit", "declare i64 @zeno_fit(i64, i64, i64, ptr, i32 signext, i32 signext)"),
     ("zeno_shr", "declare i64 @zeno_shr(i64, i64, i32 signext, i32 signext)"),
     ("zeno_range_count", "declare i64 @zeno_range_count(i64, i64, i64, i32 signext, i32 signext)"),
+    ("zeno_range_list", "declare ptr @zeno_range_list(i64, i64, i64, i32 signext, i32 signext)"),
     ("zeno_floordiv_float", "declare double @zeno_floordiv_float(double, double, i32 signext, i32 signext)"),
     ("zeno_mod_float", "declare double @zeno_mod_float(double, double, i32 signext, i32 signext)"),
     ("zeno_int", "declare i64 @zeno_int(double, i32 signext, i32 signext)"),
@@ -6561,6 +6562,18 @@ impl Emitter<'_> {
                 self.code.built = !self.collector;
                 let line = Val::new(self.call("ptr", "zeno_input", format!("ptr {question}")), Kind::Optional(Box::new(Kind::Str)));
                 self.came_back(line)
+            }
+            // `range(5)` used as a value: the list of numbers that `zeno
+            // run` makes. A `for` over a range builds none.
+            ("range", [_] | [_, _] | [_, _, _]) if vals.iter().all(|val| val.kind == Kind::Int) => {
+                let (start, stop, step) = match vals.as_slice() {
+                    [stop] => ("0", stop.code.as_str(), "1"),
+                    [start, stop] => (start.code.as_str(), stop.code.as_str(), "1"),
+                    [start, stop, step, ..] => (start.code.as_str(), stop.code.as_str(), step.code.as_str()),
+                    [] => return Err(wrong()),
+                };
+                let args = format!("i64 {start}, i64 {stop}, i64 {step}, {}", at(span));
+                Val::new(self.call("ptr", "zeno_range_list", args), Kind::List(Box::new(Kind::Int))).made()
             }
             ("char", [val]) if val.kind == Kind::Int => {
                 Val::new(self.call("ptr", "zeno_char", format!("i64 {}, {}", val.code, at(span))), Kind::Str)

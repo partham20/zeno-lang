@@ -3581,6 +3581,18 @@ static zeno_list *zeno_list_copy(zeno_list *list) {
     return copy;
 }
 
+/* `range(5)` used as a value: the list of its numbers, as `zeno run`
+ * makes it. (`for i in range(...)` builds no list: it counts.) Each
+ * number is worked out without a sign, so a step past half of what an
+ * int holds cannot overflow on the way to a number that fits. */
+static zeno_list *zeno_range_list(int64_t start, int64_t stop, int64_t step, int line, int col) {
+    int64_t count = zeno_range_count(start, stop, step, line, col);
+    zeno_list *list = zeno_list_new(count);
+    for (int64_t i = 0; i < count; i++) list->items[i].i = (int64_t)((uint64_t)start + (uint64_t)i * (uint64_t)step);
+    list->len = count;
+    return list;
+}
+
 #ifdef ZENO_NO_COLLECTOR
 
 /* A list of text, in a build with no collector. Each item that is not

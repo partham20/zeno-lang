@@ -6555,9 +6555,9 @@ impl Checker {
                         return Ty::CLibrary(library);
                     }
                 }
-                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes")) {
-                    // The list of arguments, and the bytes of a file, are
-                    // new at each call.
+                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes" | "range")) {
+                    // The list of arguments, the bytes of a file, and the
+                    // numbers of a range, are new at each call.
                     self.types.made.insert(expr as *const Expr as usize);
                 }
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {

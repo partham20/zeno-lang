@@ -7476,6 +7476,13 @@ impl Emitter<'_> {
                 let same = self.eq_adapter(item, span)?;
                 format!("zeno_list_contains({}, {}, {same})", right.code, self.looked_for(item, &left.code, span)?)
             }
+            // `none in items` and `2 in items`, where the items may be
+            // `none`, first become what the list holds, as in LLVM.
+            (item, Kind::List(items)) if joined(item, items).as_ref() == Some(&**items) => {
+                let same = self.eq_adapter(items, span)?;
+                let left = self.coerce(left.clone(), items, span)?;
+                format!("zeno_list_contains({}, {}, {same})", right.code, self.looked_for(items, &left.code, span)?)
+            }
             // `"Ada" in ages`: is there such a key?
             (item, Kind::Dict(key, _)) if item == &**key => {
                 format!("(zeno_dict_find({}, {}) >= 0)", right.code, to_slot(item, &left.code, span)?)
@@ -7839,6 +7846,21 @@ impl Emitter<'_> {
                 let call = format!("zeno_input({question})");
                 self.built = !self.collector;
                 return Ok(self.called(call, &vals, Kind::Optional(Box::new(Kind::Str))));
+            }
+            // `range(5)` used as a value, as in `3 in range(5)` or `let r
+            // = range(5)`: the list of numbers that `zeno run` makes. A
+            // `for` over a range builds none (see `open_loop`).
+            "range" if (1..=3).contains(&vals.len()) && vals.iter().all(|val| val.kind == Kind::Int) => {
+                let (start, stop, step) = match vals.as_slice() {
+                    [stop] => ("0", stop.code.as_str(), "1"),
+                    [start, stop] => (start.code.as_str(), stop.code.as_str(), "1"),
+                    [start, stop, step, ..] => (start.code.as_str(), stop.code.as_str(), step.code.as_str()),
+                    [] => return Err(cannot("this `range`", span)),
+                };
+                let code = format!("zeno_range_list({start}, {stop}, {step}, {})", self.at(span));
+                let mut val = Val::from(code, Kind::List(Box::new(Kind::Int)), &parts).failing_if(!self.minimal);
+                val.made = true;
+                val
             }
             // `char(65)`: the runtime writes the bytes of that character.
             "char" if matches!(one(), Ok(val) if val.kind == Kind::Int) => {
@@ -17540,6 +17562,49 @@ try {
             for key in &keys {
                 assert!(rows.iter().any(|row| row.contains(key)), "no row on the page for `{key}`");
             }
+        }
+    }
+
+    #[test]
+    fn in_and_a_range_as_a_value_are_the_same_in_every_build() {
+        // What the sweep of item 9 missed: `in` on a list whose items may
+        // be `none`, which C refused and LLVM took, and `range(...)`
+        // anywhere but after `for`, which both refused.
+        let source = r#"let xs: list[int or none] = [1, none, 3]
+print(3 in xs, none in xs, 2 in xs)
+let ys: list[str or none] = ["a", none]
+print("a" in ys, none in ys, "b" in ys)
+let zs: list[float or none] = [1.5, none]
+print(1.5 in zs, none in zs)
+let bs: list[bool or none] = [true, none]
+print(false in bs, none in bs)
+function total(xs: list[int]) -> int {
+    var sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+function upto(n: int) -> list[int] {
+    return range(n)
+}
+var r = range(3)
+r.append(9)
+print(3 in range(5), 7 in range(5), 4 in range(0, 10, 2), 3 in range(0, 10, 2), -1 in range(5, 0, -1), 9 in r)
+print(len(range(2, 9, 3)), range(10, 0, -4), range(0), range(-9223372036854775807, 9223372036854775807, 9223372036854775807))
+print(r, total(range(5)), upto(4), range(3) + range(2), [x * 2 for x in range(4)])
+print(range(4).map(function(x: int) -> int { return x * x }), range(3) == [0, 1, 2])
+"#;
+        no_collector_as_interpreter("in-and-range", source);
+        crate::emit_llvm::tests::same_as_interpreter("in-and-range", source);
+        // A step of 0 is the ValueError of `zeno run`, in each compiler.
+        let source = "print(range(1, 5, 0))\n";
+        let called = [
+            (compile(source), "zeno_range_list(1, 5, 0, "),
+            (crate::emit_llvm::tests::compile(source), "@zeno_range_list(i64 1, i64 5, i64 0, "),
+        ];
+        for (built, call) in called {
+            assert!(built.as_ref().is_ok_and(|code| code.contains(call)), "no `{call}` in {built:?}");
         }
     }
 
