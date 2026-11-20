@@ -98,12 +98,43 @@ pub const BOARD_PARTS: &[&str] = &["ZENO_INPUT_PINS", "ZENO_SERIAL_PORTS", "ZENO
 /// written before them still builds every program that uses none, and
 /// the C of such a program is what it was before.
 pub fn with_board_parts(runtime: &str, used: &[&str]) -> String {
+    with_marked(runtime, BOARD_PARTS, used)
+}
+
+/// The pieces of the runtime that are written only for a program that
+/// uses them, each marked `#ifdef` its name in runtime.c, and the function
+/// of the runtime by which a program uses it. A program that uses none
+/// is given the runtime that 0.7.0 wrote, to the byte, so `tools/same.py`
+/// against the tag sees every program that uses nothing new as it was,
+/// and a board's flash holds nothing it was not asked for, whatever the C
+/// compiler drops (decision 56.19). Whatever is added to the runtime from
+/// now on goes in a piece: a line here, `#ifdef` and `#endif /* name */`
+/// around it in runtime.c, and `uses_piece` where the C is written. LLVM
+/// finds the pieces by the functions its IR declares (`pieces_in_ir`).
+pub const PIECES: &[(&str, &str)] = &[("ZENO_RANGE_LIST", "zeno_range_list")];
+
+/// `runtime` with each piece of `PIECES` that `used` names, and no other.
+pub fn with_pieces(runtime: &str, used: &[&str]) -> String {
+    let names: Vec<&str> = PIECES.iter().map(|(name, _)| *name).collect();
+    with_marked(runtime, &names, used)
+}
+
+/// The pieces of `PIECES` that a program of LLVM IR uses: those whose
+/// function it declares.
+pub fn pieces_in_ir(ir: &str) -> Vec<&'static str> {
+    PIECES.iter().filter(|(_, function)| ir.contains(&format!("@{function}("))).map(|(name, _)| *name).collect()
+}
+
+/// `runtime` with each part marked `#ifdef` one of `names` ... `#endif /*
+/// name */` kept, without the two lines, when `used` names it, and left
+/// out when it does not.
+fn with_marked(runtime: &str, names: &[&str], used: &[&str]) -> String {
     let mut text = String::with_capacity(runtime.len());
     let mut inside: Option<&str> = None;
     for line in runtime.lines() {
         let trimmed = line.trim();
         let part = |prefix: &str, suffix: &str| {
-            BOARD_PARTS.iter().copied().find(|part| trimmed.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix)) == Some(part))
+            names.iter().copied().find(|part| trimmed.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix)) == Some(part))
         };
         if let Some(part) = part("#ifdef ", "") {
             inside = Some(part);
@@ -332,6 +363,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         minimal: options.minimal,
         board_prints: options.board_prints,
         board_parts: Vec::new(),
+        pieces: Vec::new(),
         in_place: false,
         text_stays: false,
         once: None,
@@ -538,7 +570,8 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         let definitions: Vec<String> = emitter.definitions.iter().map(tidied).collect();
         let program = tidied(&render(&main));
         let source = std::path::Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
-        let mut runtime = with_board_parts(&runtime_of(firmware, collector, options.grows && !collector, true), &emitter.board_parts);
+        let runtime = with_pieces(&runtime_of(firmware, collector, options.grows && !collector, true), &emitter.pieces);
+        let mut runtime = with_board_parts(&runtime, &emitter.board_parts);
         if !options.board_header {
             // With no header of a board there is nobody but the C library
             // to print, read and stop, and only its half is written. With
@@ -566,7 +599,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     if options.spares_checked && !collector {
         runtime = with_spares_checked(&runtime);
     }
-    let mut c = with_board_parts(&runtime, &emitter.board_parts);
+    let mut c = with_board_parts(&with_pieces(&runtime, &emitter.pieces), &emitter.board_parts);
     if options.fast {
         c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
@@ -1307,6 +1340,8 @@ struct Emitter<'a> {
     board_prints: bool,
     /// The parts of `BOARD_PARTS` the program uses, such as
     /// `ZENO_INPUT_PINS` when it makes an input pin (decision 45.4).
+    /// The pieces of the runtime (`PIECES`) the program uses.
+    pieces: Vec<&'static str>,
     board_parts: Vec<&'static str>,
     /// The `for` loop being opened has a body that cannot change its
     /// list, so it needs no copy of it (`ast::walks_in_place`).
@@ -6681,6 +6716,14 @@ impl Emitter<'_> {
         val
     }
 
+    /// Write the piece `piece` of the runtime (see `PIECES`).
+    fn uses_piece(&mut self, piece: &'static str) {
+        debug_assert!(PIECES.iter().any(|(name, _)| *name == piece), "`{piece}` is not in PIECES");
+        if !self.pieces.contains(&piece) {
+            self.pieces.push(piece);
+        }
+    }
+
     /// Turn a call to a function or method into a value.
     /// Keep the part of the runtime marked `#ifdef part`.
     fn uses_board_part(&mut self, part: &'static str) {
@@ -7879,6 +7922,7 @@ impl Emitter<'_> {
                     [start, stop, step, ..] => (start.code.as_str(), stop.code.as_str(), step.code.as_str()),
                     [] => return Err(cannot("this `range`", span)),
                 };
+                self.uses_piece("ZENO_RANGE_LIST");
                 let code = format!("zeno_range_list({start}, {stop}, {step}, {})", self.at(span));
                 let mut val = Val::from(code, Kind::List(Box::new(Kind::Int)), &parts).failing_if(!self.minimal);
                 val.made = true;
@@ -17759,6 +17803,39 @@ print(grid, [none] in grid, [none, none] not in grid, [] in grid, [none] in word
 "#;
         no_collector_as_interpreter("refused-py", source);
         crate::emit_llvm::tests::same_as_interpreter("refused-py", source);
+    }
+
+    #[test]
+    fn a_program_that_uses_no_piece_gets_the_runtime_of_0_7_0() {
+        // Decision 56.19: what is added to the runtime goes in a piece of
+        // `PIECES`, written only for a program that uses it. With none,
+        // the runtime is the one 0.7.0 wrote, to the byte. These are the
+        // length and the FNV-1a hash of the runtime beside the IR that
+        // `zeno build --llvm` of 0.7.0 (17453fd) wrote for `print(1)`,
+        // which is the runtime of C with `static` taken off: with a
+        // collector, `--firmware`, `--no-collector`, and `--owned`. A line
+        // slipped in outside a piece fails here at once.
+        let fnv = |text: &str| text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3));
+        for (build, grows, length, hash) in [
+            (Build::Ordinary, false, 174_624, 0xf115_5511_d95b_2718_u64),
+            (Build::Firmware, false, 172_099, 0x6b81_dc12_3104_db69),
+            (Build::NoCollector, false, 159_740, 0x86f2_432b_57a5_8313),
+            (Build::NoCollector, true, 165_448, 0xb711_e5da_d632_3ad6),
+        ] {
+            let runtime = with_board_parts(&with_pieces(&crate::emit_llvm::runtime_for(build, grows), &[]), &[]);
+            assert_eq!((runtime.len(), fnv(&runtime)), (length, hash), "{build:?}, growing: {grows}");
+        }
+        // And each piece is there for a program that uses it, through C
+        // and through LLVM, and not for one that does not.
+        for (name, function) in PIECES {
+            let all = RUNTIME.lines().filter(|line| line.trim() == format!("#ifdef {name}")).count();
+            assert_eq!(all, 1, "`#ifdef {name}` is in runtime.c once");
+            let with = with_pieces(&runtime_for(false, true, false), &[name]);
+            assert!(with.contains(&format!("{function}(")) && !with.contains(name), "{name}");
+        }
+        let source = "print(3 in range(5))\n";
+        assert!(compile(source).unwrap().contains("static zeno_list *zeno_range_list("));
+        assert!(!compile("print(3 in [0, 1])\n").unwrap().contains("zeno_range_list"));
     }
 
     #[test]

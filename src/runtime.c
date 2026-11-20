@@ -3580,6 +3580,7 @@ static zeno_list *zeno_list_copy(zeno_list *list) {
     copy->len = list->len;
     return copy;
 }
+#ifdef ZENO_RANGE_LIST
 
 /* `range(5)` used as a value: the list of its numbers, as `zeno run`
  * makes it. (`for i in range(...)` builds no list: it counts.) Each
@@ -3592,6 +3593,7 @@ static zeno_list *zeno_range_list(int64_t start, int64_t stop, int64_t step, int
     list->len = count;
     return list;
 }
+#endif /* ZENO_RANGE_LIST */
 
 #ifdef ZENO_NO_COLLECTOR
 

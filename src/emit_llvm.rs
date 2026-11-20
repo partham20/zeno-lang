@@ -8540,7 +8540,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).expect("a temporary folder");
         let (ir_file, runtime_file, binary) = (dir.join("test.ll"), dir.join("test_runtime.c"), dir.join(emit_c::program_file("test")));
         std::fs::write(&ir_file, ir).expect("the IR file is written");
-        let runtime = emit_c::with_board_parts(runtime, &emit_c::board_parts_in_ir(ir));
+        let runtime = emit_c::with_board_parts(&emit_c::with_pieces(runtime, &emit_c::pieces_in_ir(ir)), &emit_c::board_parts_in_ir(ir));
         std::fs::write(&runtime_file, runtime).expect("the runtime is written");
         let built = Command::new("clang")
             .args(["-O2", "-Wno-override-module"])

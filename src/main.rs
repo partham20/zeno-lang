@@ -822,6 +822,7 @@ fn build_llvm(path: &str, memory_report: bool, kind: emit_c::Build, options: emi
         true => emit_llvm::runtime_with_spares_checked(options.grows),
         false => emit_llvm::runtime_for(kind, options.grows),
     };
+    let runtime = emit_c::with_pieces(&runtime, &emit_c::pieces_in_ir(&ir));
     let mut runtime = emit_c::with_board_parts(&runtime, &emit_c::board_parts_in_ir(&ir));
     if options.fast {
         runtime.insert_str(0, "#define ZENO_UNCHECKED 1\n");

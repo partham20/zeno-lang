@@ -17962,20 +17962,36 @@ and 242 different: 114 from the eight new programs in `tools/targets/`,
 128 from 21 older programs that 0.7.0 refused. None is a program that
 0.7.0 built.
 
-After these follow-ups the runtime has one function more,
-`zeno_range_list`, and every C file and every LLVM runtime holds the
-whole runtime, so every build is written differently by that function
-alone: 3,674 the same against 0.7.0, 3,091 different. To see what else
-changed, the same comparison was made with a `zeno` of this step whose
-runtime lacked that one function: 6,492 the same, 273 different, 31
-more than at item 9. Against item 9 itself (f10c24b) that is 36
-builds: two of the book's samples, 07-control-flow#6 (`print(range(5))`)
-and 09-lists#13 (`let numbers = range(1, 11)`), build now in each of
-their thirteen ways and print what `zeno run` prints, and
-`edge-lists.zeno` and 08-functions#7 are refused at the same line as
-before with two errors fewer after it, in the five ways with one
-owner, since `[1] in [[1], [2]]` builds there now. None of the 36 is a
-program that 0.7.0 or item 9 built.
+After these follow-ups: 6,492 the same and 273 different, 31 more
+than at item 9. Against item 9 itself (f10c24b) that is 36 builds: two
+of the book's samples, 07-control-flow#6 (`print(range(5))`) and
+09-lists#13 (`let numbers = range(1, 11)`), build now in each of their
+thirteen ways and print what `zeno run` prints, and `edge-lists.zeno`
+and 08-functions#7 are refused at the same line as before with two
+errors fewer after it, in the five ways with one owner, since `[1] in
+[[1], [2]]` builds there now. None of the 36 is a program that 0.7.0 or
+item 9 built.
+
+**The runtime grows only for a program that asks.** `zeno_range_list`
+was first written into the runtime of every build. A C compiler drops a
+`static` function nobody calls, so no program got bigger; but every C
+file and every runtime beside the IR was written differently, which
+left `same.py` against the tag blind (3,091 builds differed by that
+function alone), and a C compiler that keeps what nobody calls, which
+the plain C of decision 55 allows, would put it in a board's flash
+unasked. The review ruled that the runtime of a program that uses
+nothing new must be, to the byte, the runtime 0.7.0 wrote. So the
+runtime has pieces, as it has the parts of a board (decision 45.4):
+`PIECES` in `emit_c.rs` names each, with the function by which a
+program uses it; runtime.c marks it `#ifdef` its name; C writes it when
+the program calls `uses_piece`, and LLVM when its IR declares the
+function (`pieces_in_ir`). `zeno_range_list` is the first. The test
+`a_program_that_uses_no_piece_gets_the_runtime_of_0_7_0` holds the
+length and a hash of the runtime with no piece, for a build with a
+collector, `--firmware`, `--no-collector` and `--owned`, to what 0.7.0
+wrote for `print(1)`. Whatever is added to the runtime from now on is a
+piece. Making `same.py` skip the runtime was turned down: it would hide
+exactly this.
 
 ## 60. Tools: a message on `assert`, and tests of a compiled program
 
