@@ -1570,11 +1570,14 @@ mod tests {
         {
             use std::os::unix::ffi::OsStrExt;
             let bad = std::path::Path::new(&folder).join(std::ffi::OsStr::from_bytes(b"bad\xff"));
-            std::fs::write(bad, "").unwrap();
-            assert_eq!(
-                error(&format!("import files\nprint(files.list(\"{folder}\"))")),
-                format!("uncaught FileError: the folder `{folder}` holds a name that is not text")
-            );
+            // A disk that keeps only names that are UTF-8, as macOS's
+            // does, refuses to make one, and there is nothing to list.
+            if std::fs::write(bad, "").is_ok() {
+                assert_eq!(
+                    error(&format!("import files\nprint(files.list(\"{folder}\"))")),
+                    format!("uncaught FileError: the folder `{folder}` holds a name that is not text")
+                );
+            }
         }
         std::fs::remove_dir_all(&folder).unwrap();
         // The checker knows them both.
