@@ -2398,3 +2398,47 @@ an error does in `zeno test` and as `return` does in a test build
 (section 12). So it releases what the blocks of that test own, which
 is what lets the next test open the same file. It does not release a
 resource of the top of the file: the tests go on.
+
+### 19. 2026-11-20: the mending of item 10 and 11.4 are accepted
+
+**Item 10's mending** (510336b) is accepted, and item 10 is closed
+but for the `targets` run the builder is to report. The planner's
+program that left eight blocks leaves none, in the three builds with
+no collector, and so do the other two; all three still agree in six
+builds. `a, a = ...` is refused; `_` on the left where a variable
+`_` can be seen is refused, with `let` and without; several values
+given as arguments get the message of rule 3; a list of types
+written elsewhere is shown as it was written.
+
+**11.4** (f5d4e01 to 3c28ca2, decisions 58.20 to 58.23) is
+**accepted, with nothing to mend.**
+
+- *What was checked.* A program of the planner's own with an `owned
+  interface` of two owned classes, one that takes out of a list and
+  one that takes out of a field that may be `none`; defaults in the
+  interface that are a number, text, an enum's case under both
+  spellings, a float below zero and a `bool`; the interface as what a
+  function returns, as a parameter that takes, in an owned list, as a
+  field and as a field that may be `none`; two hundred rounds of
+  making, filling and draining. `zeno run`, the virtual machine, six
+  builds, JavaScript, Python and Go agree; with no collector no block
+  is left; with a collector the C build runs under valgrind with
+  nothing lost. Taking out through an interface is refused for a
+  parameter that only looks, when the class is declared after the
+  call and when it is in another file, and a class that calls
+  through its own interface builds every way. Each mismatch of
+  `owned` and each wrong default is refused with a message that says
+  what to write. `tools/same.py` against the tag: 378 different,
+  which is the 318 of section 18, the fifteen builds of the new
+  program, and forty-five builds of three new samples in the book's
+  chapter on functions; `tools/refused.py` ends with 0.
+- *Where the builder differs from section 14, and is right.* `5 ms`
+  against `5000 us` cannot arise, since the unit is the parameter's
+  type. With no collector a class without `owned` may be an `owned
+  interface`, as a plain class there may hold anything owned.
+- *Left for 11.3.* The set of what takes out is kept by the
+  interface's declaration, so the copies of a generic interface
+  would share one entry. That refuses more than it need and nothing
+  it should take; whoever builds 11.3 looks at it then.
+
+`Resource` (12.1) can now be declared as an `owned interface`.
