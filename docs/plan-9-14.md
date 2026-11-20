@@ -2781,3 +2781,59 @@ it is mended. The release waits for a green run.
 refusals and the builds as they stand are right; the two faults, the
 wasm folder and the documents are mended and sent again, and I read
 the mend with the last check of where the items meet.
+
+### 25. 2026-11-20: the last check of where the items meet, and one crash
+
+With every item in, I wrote programs that use the new things
+together, and ran them every way.
+
+**What holds.**
+
+- One function that holds two resources (one its own, one a
+  `files.Reader`), reads a file with `for`, catches `FileError`, and
+  gives several values of which one is a generic enum
+  (`-> (Result[str, str], int)`); a generic that gives `(Maybe[T],
+  int)`; a function type that says what it raises and is given a
+  reader to look at; a reader and the program's own resource taken
+  through `take Resource`; `_` for a value not wanted; files made in
+  a folder with `files.join`, listed and read back. `zeno run`, the
+  VM, C in three builds, and js, py, php, ruby, go, java, cpp and
+  rust print the same lines; 0 blocks left with no collector. LLVM in
+  three builds agrees once the crash below is stepped around.
+- Tests: a generic with a bound that gives several values, a generic
+  interface as a bound, a failing `assert` with a message beside
+  several values, and one inside a block that holds a resource.
+  `zeno test` and `zeno test --build` print the same bytes in seven
+  builds.
+- A bound of `Resource` (`[R is Resource]`) is refused at the call
+  with the message of rule 7, as section 23 let stand; `take
+  Resource` is the way, and it works.
+
+**The crash: a function that is named, given to a function that
+gives several values, in every LLVM build** (item 10):
+
+    function count(at: str) -> int {
+        return len(at)
+    }
+    function apply(each: function(str) -> int) -> (int, int) {
+        return each("abc"), 2
+    }
+    let n, big = apply(count)
+    print(n, big)
+
+`zeno run` and C print `3 2`. `zeno build --llvm`, with and without
+`--firmware` and `--no-collector`, stops with a segmentation fault,
+or prints text that is not the program's. The IR shows why: the
+function is `@z_apply(ptr %arg.each, ptr %gives.2)`, and the call is
+`call i64 @z_apply(ptr @zeno.value.count)`, without the place for
+the second value. A function literal in the same spot is called
+rightly, and so are a method value and a variable that holds the
+function; a generic (`both(4, double)` with `-> (T, T)`) and a second
+value that is text fail the same way. It is mended in the call, with
+the program above and those two in `edge-several-2.zeno`, which every
+build runs.
+
+**Still open before the release:** this crash (first builder), the
+mend of 12.2 (second builder, section 24), and a green targets run.
+The wasm case of `files.list("")` was mended in fe23d35 while this
+was written.
