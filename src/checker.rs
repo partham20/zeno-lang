@@ -275,8 +275,12 @@ pub struct Types {
     function_copies: HashMap<usize, Vec<Arc<ast::Function>>>,
     /// The same for each generic class: `Stack[int]`, `Stack[str]`.
     class_copies: HashMap<usize, Vec<Arc<ast::Class>>>,
+    /// The same for each generic enum: `Maybe[int]` (decision 58.1).
+    enum_copies: HashMap<usize, Vec<Arc<ast::Enum>>>,
     /// Each call of a generic function or class, with the name of the
-    /// copy that the call reaches.
+    /// copy that the call reaches. Also each case of a generic enum where
+    /// it is used, with the copy of the enum it is a case of there: the
+    /// call in `Just(3)`, and the name in a bare `Nothing`.
     copy_called: HashMap<usize, String>,
     /// What each type written in the program stands for. Inside a copy,
     /// `T` is whatever that copy was made for.
@@ -453,8 +457,14 @@ impl Types {
         self.class_copies.get(&(decl as *const ast::Class as usize)).map_or(&[], Vec::as_slice)
     }
 
+    /// The copies of a generic enum.
+    pub fn enum_copies(&self, decl: &ast::Enum) -> &[Arc<ast::Enum>] {
+        self.enum_copies.get(&(decl as *const ast::Enum as usize)).map_or(&[], Vec::as_slice)
+    }
+
     /// If `call` calls a generic function or builds an object of a generic
-    /// class, the name of the copy it means: `first[int]`.
+    /// class, the name of the copy it means: `first[int]`. If it is a case
+    /// of a generic enum, called or bare, the copy of the enum: `Maybe[int]`.
     pub fn copy_called(&self, call: &ast::Expr) -> Option<&str> {
         self.copy_called.get(&(call as *const ast::Expr as usize)).map(String::as_str)
     }
@@ -853,6 +863,11 @@ enum Ty {
     Enum(Rc<EnumInfo>),
     /// An enum case that still needs its values: `Circle`
     CaseConstructor(Rc<EnumInfo>, usize),
+    /// A case of a generic enum, by its place in it: `Just`, `Nothing` of
+    /// `enum Maybe[T]` (decision 58.1). Which copy of the enum it is a
+    /// case of is worked out where it is used: from the values it is
+    /// given, or from the place it goes.
+    GenericCase(Rc<Generic>, usize),
     ErrorType(Rc<str>),
 
     Module(&'static str),
@@ -910,6 +925,44 @@ struct Generic {
 enum Template {
     Function(Arc<ast::Function>),
     Class(Rc<ast::Class>),
+    Enum(Rc<ast::Enum>),
+}
+
+/// The name written at `expr`, if it is one.
+fn ty_name(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Name(name) => name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Is this a value of a copy of a generic enum, as `Maybe[int]`?
+fn is_enum_copy(ty: &Ty) -> bool {
+    matches!(ty, Ty::EnumValue(info) if info.origin.is_some())
+}
+
+/// Is `expr` a case of a generic enum that carries nothing, as `Nothing`?
+fn bare_generic_case(expr: &Expr, env: &Env) -> bool {
+    match &expr.kind {
+        ExprKind::Name(name) => {
+            matches!(env.get(name), Some(Variable { ty: Ty::GenericCase(..), case: Some(_), .. }))
+        }
+        _ => false,
+    }
+}
+
+/// A bare case of a generic enum given to a generic, whose type waits
+/// until the other arguments have settled the generic's types: the `End`
+/// of `Link(3, End)` (decision 58.1).
+struct Later {
+    /// Its place among the arguments.
+    at: usize,
+    /// The generic enum it is a case of, and its name.
+    generic: Rc<Generic>,
+    name: String,
+    /// Does the parameter keep what it is given? If not, it looks, as an
+    /// argument that is read at once is lent (decision 56.11).
+    keeps: bool,
 }
 
 /// A generic as a call sees it before the types are known: `items:
@@ -924,6 +977,7 @@ struct Outline {
 enum Made {
     Function(Rc<FunctionInfo>),
     Class(Rc<ClassInfo>),
+    Enum(Rc<EnumInfo>),
 }
 
 struct CallableType {
@@ -990,6 +1044,9 @@ struct EnumInfo {
     /// `Ack = 6`: the number of each case, in order, when the enum has
     /// them (decision 35.1).
     numbers: Option<Vec<i64>>,
+    /// For a copy of a generic enum, the generic and the types this copy
+    /// was made for: `Maybe` and `[int]` (decision 58.1).
+    origin: Option<(Rc<Generic>, Vec<Ty>)>,
 }
 
 struct CaseInfo {
@@ -1330,6 +1387,11 @@ impl fmt::Display for Ty {
             Ty::Generic(generic) => match generic.template {
                 Template::Function(_) => write!(f, "the generic function {}", generic.name),
                 Template::Class(_) => write!(f, "the generic class {}", generic.name),
+                Template::Enum(_) => write!(f, "the generic enum {}", generic.name),
+            },
+            Ty::GenericCase(generic, index) => match &generic.template {
+                Template::Enum(decl) => write!(f, "the enum case {}", decl.variants[*index].name),
+                _ => write!(f, "the enum case"),
             },
             Ty::Param(name) => write!(f, "{name}"),
             Ty::Applied(generic, types) => {
@@ -2410,6 +2472,12 @@ struct Checker {
     /// and `Stack[int]`. A generic that cannot tell its types from its
     /// arguments looks here.
     expected: Option<(usize, Ty)>,
+    /// The same for a bare case of a generic enum, `Nothing`, which says
+    /// nothing about its types by itself (decision 58.1).
+    expected_case: Option<(usize, Ty)>,
+    /// The values each case of a generic enum carries, with the type
+    /// parameters left in: by the generic and the place of the case.
+    case_outlines: HashMap<(usize, usize), Rc<Outline>>,
     /// The same for a list that is written out where the place says more
     /// about the items than they say themselves: the list, and what each
     /// item is kept as. `[Circle(1.0), Square(2.0)]` for a `list[Shape]`.
@@ -2487,6 +2555,8 @@ impl Checker {
             early: Vec::new(),
             generics: Vec::new(),
             copies: HashMap::new(),
+            expected_case: None,
+            case_outlines: HashMap::new(),
             used: HashSet::new(),
             pending: Vec::new(),
             expected: None,
@@ -3030,6 +3100,18 @@ impl Checker {
                 Key::Copy(generic.id.clone(), keys)
             }
             Ty::Instance(class) => Key::Class(class.id.clone()),
+            // The same for a copy of a generic enum (decision 58.1).
+            Ty::EnumValue(info) if info.origin.is_some() => {
+                let (generic, types) = info.origin.as_ref()?;
+                let mut keys = Vec::new();
+                for ty in types {
+                    match self.key(ty)? {
+                        Ok(key) => keys.push(key),
+                        Err(()) => return Some(Err(())),
+                    }
+                }
+                Key::Copy(generic.id.clone(), keys)
+            }
             Ty::EnumValue(info) => Key::Enum(info.id.clone()),
             Ty::List(inner) => match self.key(inner)? {
                 Ok(inner) => Key::List(Box::new(inner)),
@@ -3088,10 +3170,11 @@ impl Checker {
             Key::Copy(id, keys) => {
                 let types: Vec<Ty> = keys.iter().map(|key| self.from_key(key)).collect();
                 let generic = self.generics.iter().find(|generic| generic.id == *id).cloned();
-                match generic.and_then(|generic| self.copy_class(&generic, types, None)) {
-                    Some(class) => Ty::Instance(class),
-                    None => Ty::Dynamic,
-                }
+                let copy = generic.and_then(|generic| match &generic.template {
+                    Template::Enum(_) => self.copy_enum(&generic, types, None).map(Ty::EnumValue),
+                    _ => self.copy_class(&generic, types, None).map(Ty::Instance),
+                });
+                copy.unwrap_or(Ty::Dynamic)
             }
             Key::Enum(id) => self.enums.get(id).map_or(Ty::Dynamic, |info| Ty::EnumValue(info.clone())),
             Key::Several(keys) => Ty::Several(keys.iter().map(|key| self.from_key(key)).collect()),
@@ -3536,10 +3619,7 @@ impl Checker {
                         } else if types.iter().any(|ty| matches!(ty, Ty::Invalid)) {
                             Ty::Invalid
                         } else {
-                            match self.copy_class(&generic, types, Some(span)) {
-                                Some(class) => Ty::Instance(class),
-                                None => Ty::Invalid,
-                            }
+                            self.copy_type(&generic, types, span).unwrap_or(Ty::Invalid)
                         }
                     }
                     (_, []) => match env.get(name).map(|variable| variable.ty) {
@@ -3649,6 +3729,36 @@ impl Checker {
         let mut enums = Vec::new();
         for (statement, above) in statements.iter().zip(&above) {
             match &statement.kind {
+                // An enum with type parameters is not an enum yet, as a
+                // generic class is not a class (decision 58.1).
+                StmtKind::Enum(decl) if !decl.type_params.is_empty() => {
+                    self.type_params(&decl.type_params, statement.span);
+                    if let Some(case) = decl.variants.iter().find(|case| case.number.is_some()) {
+                        self.error(
+                            format!(
+                                "`{}` has type parameters, so its cases carry values, and a case that carries values \
+                                 cannot stand for a number. Take `= {}` away",
+                                decl.name,
+                                case.number.map_or(0, |(number, _)| number)
+                            ),
+                            statement.span,
+                        );
+                    }
+                    let generic = Rc::new(Generic {
+                        at: decl as *const ast::Enum as usize,
+                        id: decl_id(statement.span, &decl.name),
+                        name: decl.name.clone(),
+                        params: decl.type_params.clone(),
+                        template: Template::Enum(Rc::new(decl.clone())),
+                        env: env.clone(),
+                        span: statement.span,
+                        above: above.clone(),
+                        outline: RefCell::new(None),
+                    });
+                    self.declare(env, &decl.name, Ty::Generic(generic.clone()), false, statement.span);
+                    self.generics.push(generic.clone());
+                    enums.push((decl, Err(generic), statement.span));
+                }
                 // A class with type parameters is not a class yet: each
                 // set of types it is used with gets a copy that is one.
                 StmtKind::Class(decl) if !decl.type_params.is_empty() => {
@@ -3683,10 +3793,11 @@ impl Checker {
                         carries,
                         owned: carries && self.one_owner,
                         numbers,
+                        origin: None,
                     });
                     self.declare(env, &decl.name, Ty::Enum(info.clone()), false, statement.span);
                     self.enums.insert(info.id.clone(), info.clone());
-                    enums.push((decl, info, statement.span));
+                    enums.push((decl, Ok(info), statement.span));
                 }
                 _ => {}
             }
@@ -3697,6 +3808,25 @@ impl Checker {
             self.fill_class(decl, &info, env, span);
         }
         for (decl, info, span) in enums {
+            // The cases of a generic enum are names in the file as any
+            // case is, and the same rule keeps them apart from every
+            // other case. What they carry is worked out for each copy.
+            let info = match info {
+                Ok(info) => info,
+                Err(generic) => {
+                    for (index, case) in decl.variants.iter().enumerate() {
+                        if self.case_name_free(env, &case.name, &decl.name, span) {
+                            self.declare(env, &case.name, Ty::GenericCase(generic.clone(), index), false, span);
+                            if let (Some(variable), true) =
+                                (env.variables.borrow_mut().get_mut(&case.name), case.fields.is_empty())
+                            {
+                                variable.case = Some(index);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
             let cases: Vec<CaseInfo> = decl
                 .variants
                 .iter()
@@ -3711,20 +3841,7 @@ impl Checker {
                 self.error(format!("a case of the enum `{}` cannot carry an owned value yet", decl.name), span);
             }
             for (index, case) in cases.iter().enumerate() {
-                // A case is written by its name alone, `Dot` and not
-                // `Shape.Dot`, so the name can stand for one case only.
-                let taken = env.variables.borrow().get(&case.name).map(|variable| variable.ty.clone());
-                if let Some(Ty::EnumValue(other) | Ty::CaseConstructor(other, _)) = taken {
-                    let name = &case.name;
-                    let message = match Rc::ptr_eq(&other, &info) {
-                        true => format!("the enum `{}` has two cases called `{name}`. Give one of them another name", info.name),
-                        false => format!(
-                            "`{name}` is already a case of the enum `{}`. A case is written by its name alone, \
-                             so two enums in one file cannot both have a `{name}`. Give one of them another name",
-                            other.name
-                        ),
-                    };
-                    self.error(message, span);
+                if !self.case_name_free(env, &case.name, &info.name, span) {
                     continue;
                 }
                 if case.fields.is_empty() {
@@ -3775,6 +3892,28 @@ impl Checker {
                 self.declare(env, &decl.name, Ty::Function(Rc::new(function)), false, statement.span);
             }
         }
+    }
+
+    /// May a case called `name`, of the enum called `owner`, be declared
+    /// in `env`? A case is written by its name alone, `Dot` and not
+    /// `Shape.Dot`, so the name can stand for one case only. If it is
+    /// taken, this says so and gives false.
+    fn case_name_free(&mut self, env: &Env, name: &str, owner: &str, span: Span) -> bool {
+        let taken = env.variables.borrow().get(name).map(|variable| variable.ty.clone());
+        let other = match &taken {
+            Some(Ty::EnumValue(other) | Ty::CaseConstructor(other, _)) => other.name.clone(),
+            Some(Ty::GenericCase(other, _)) => other.name.clone(),
+            _ => return true,
+        };
+        let message = match other == owner {
+            true => format!("the enum `{owner}` has two cases called `{name}`. Give one of them another name"),
+            false => format!(
+                "`{name}` is already a case of the enum `{other}`. A case is written by its name alone, \
+                 so two enums in one file cannot both have a `{name}`. Give one of them another name"
+            ),
+        };
+        self.error(message, span);
+        false
     }
 
     /// Work out the fields of a class and note its methods. For a class
@@ -5196,8 +5335,19 @@ impl Checker {
             Ty::Optional(inner) => (&**inner, true),
             other => (other, false),
         };
+        // A generic checked on its own, with `T` standing for anything,
+        // matches a value whose type is not known, and every copy of it
+        // is checked for its cases left out (decision 58.1).
+        let of_generic_enum = arms.iter().any(|arm| {
+            let name = match &arm.pattern {
+                Pattern::Name(name) | Pattern::Variant { name, .. } => name,
+                _ => return false,
+            };
+            matches!(env.get(name), Some(Variable { ty: Ty::GenericCase(..), .. }))
+        });
         let complete = match of_enum {
             _ if catch_all => true,
+            Ty::Invalid if of_generic_enum => true,
             Ty::EnumValue(info) => {
                 let mut missing: Vec<String> = info
                     .cases
@@ -5249,6 +5399,11 @@ impl Checker {
             }
             Pattern::Name(name) => {
                 // A bare enum case is compared; any other name takes the value.
+                // A case of a generic enum is one of the copy matched.
+                if let Some(Variable { ty: Ty::GenericCase(generic, index), case: Some(_), .. }) = scope.get(name) {
+                    self.copy_matched(&generic, name, subject, span);
+                    return Covers::Case(index);
+                }
                 if let Some(Variable { ty: Ty::EnumValue(info), case: Some(index), .. }) = scope.get(name) {
                     if !fits(&Ty::EnumValue(info.clone()), subject) {
                         self.error(
@@ -5271,9 +5426,32 @@ impl Checker {
                 Covers::Everything
             }
             Pattern::Variant { name, fields } => {
-                let Some(Variable { ty: Ty::CaseConstructor(info, index), .. }) = scope.get(name) else {
-                    self.error(format!("`{name}` is not an enum case that carries values"), span);
-                    return Covers::Some;
+                let (info, index) = match scope.get(name) {
+                    Some(Variable { ty: Ty::CaseConstructor(info, index), .. }) => (info, index),
+                    Some(Variable { ty: Ty::GenericCase(generic, index), case: None, .. }) => {
+                        match self.copy_matched(&generic, name, subject, span) {
+                            Some(info) => (info, index),
+                            // Matched against something that is not a
+                            // copy, which was said, or is only known
+                            // when the program runs.
+                            None => {
+                                // Only known when the program runs, or a
+                                // mistake that has been reported.
+                                let part = match subject.has_dynamic() {
+                                    true => Ty::Dynamic,
+                                    false => Ty::Invalid,
+                                };
+                                for pattern in fields {
+                                    self.pattern(pattern, &part, false, looks, scope, span);
+                                }
+                                return Covers::Some;
+                            }
+                        }
+                    }
+                    _ => {
+                        self.error(format!("`{name}` is not an enum case that carries values"), span);
+                        return Covers::Some;
+                    }
                 };
                 if !fits(&Ty::EnumValue(info.clone()), subject) {
                     self.error(
@@ -5306,6 +5484,25 @@ impl Checker {
                 } else {
                     Covers::Some
                 }
+            }
+        }
+    }
+
+    /// The copy of the generic enum that a `match` with a case of it is
+    /// on: in `match m { case Just(v) ... }` with `m` a `Maybe[int]`,
+    /// `Maybe[int]` (decision 58.1). `None` if the value is not one, which
+    /// is an error unless it is only known when the program runs.
+    fn copy_matched(&mut self, generic: &Rc<Generic>, name: &str, subject: &Ty, span: Span) -> Option<Rc<EnumInfo>> {
+        let inner = match subject.clone().looked_at() {
+            Ty::Optional(inner) => inner.looked_at(),
+            other => other,
+        };
+        match inner {
+            Ty::EnumValue(info) if info.origin.as_ref().is_some_and(|(origin, _)| Rc::ptr_eq(origin, generic)) => Some(info),
+            ty if ty.is_loose() => None,
+            _ => {
+                self.error(format!("`{name}` is a case of {}, which can never match {subject}", generic.name), span);
+                None
             }
         }
     }
@@ -6034,6 +6231,7 @@ impl Checker {
             Ty::Class(class) => Some(class.fields.borrow().clone()),
             Ty::CaseConstructor(info, index) => Some(info.cases.borrow()[*index].fields.clone()),
             Ty::Generic(generic) => Some(self.outline(generic).slots.clone()),
+            Ty::GenericCase(generic, index) => Some(self.case_outline(generic, *index).slots.clone()),
             // A function held in a variable: its type says what each
             // parameter does with what it is given.
             Ty::Callable(callable) => Some(
@@ -6056,8 +6254,9 @@ impl Checker {
             // for a list written out as the item, where the items of
             // that list are kept another way than they say themselves.
             Ty::BuiltinMethod(receiver, name) if &**name == "append" => match &**receiver {
-                // A float written out goes into a list of f32s as one.
-                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) => {
+                // A float written out goes into a list of f32s as one,
+                // and `Nothing` into a list of `Maybe[int]` as one (58.1).
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) || is_enum_copy(item) => {
                     Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
@@ -6068,14 +6267,14 @@ impl Checker {
                 Ty::List(item) if item.is_owned() => {
                     Some(vec![Slot { name: "item".to_string(), ty: lent(item), has_default: false, id: None }])
                 }
-                Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32 | Ty::U64) => {
+                Ty::List(item) | Ty::Fixed(item, _) if matches!(**item, Ty::F32 | Ty::U64) || is_enum_copy(item) => {
                     Some(vec![Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None }])
                 }
                 _ => None,
             },
             // So does `insert`, after the position.
             Ty::BuiltinMethod(receiver, name) if &**name == "insert" => match &**receiver {
-                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) => Some(vec![
+                Ty::List(item) if item.is_owned() || asks_more(item) || matches!(**item, Ty::F32 | Ty::U64) || is_enum_copy(item) => Some(vec![
                     Slot { name: "position".to_string(), ty: Ty::Int, has_default: false, id: None },
                     Slot { name: "item".to_string(), ty: (**item).clone(), has_default: false, id: None },
                 ]),
@@ -6657,6 +6856,18 @@ impl Checker {
             // were there (see `none_first`).
             self.maybe_fields.insert((expr.span.line, expr.span.col), name.clone());
         }
+        if let Ty::GenericCase(generic, _) = &ty {
+            // The same for `let f = Just`.
+            return self.error(
+                format!(
+                    "`{0}` is a case of the generic enum `{1}`. It can be called, as in `{0}(...)`, \
+                     but it cannot be kept as a value or passed along yet",
+                    ty_name(expr),
+                    generic.name
+                ),
+                expr.span,
+            );
+        }
         if let Ty::Generic(generic) = &ty {
             // `let f = first` would need `f` to be every copy at once.
             return self.error(
@@ -6724,6 +6935,9 @@ impl Checker {
                     }
                     if let Some(mistake) = self.too_early(name, Some(&variable), env, span) {
                         return mistake;
+                    }
+                    if let (Ty::GenericCase(generic, _), Some(_)) = (&variable.ty, variable.case) {
+                        return self.generic_bare_case(generic, name, expr, span);
                     }
                     self.read(name, variable, env, span)
                 }
@@ -6913,10 +7127,26 @@ impl Checker {
                 // Straight inside `u64.wrap( )`, these four cut their
                 // answer to 64 bits, and so do the same four inside them.
                 let wraps = wrap_mode && matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Shl);
-                self.wrap_mode = wraps;
-                let left_type = self.look(left, env);
-                self.wrap_mode = wraps;
-                let right_type = self.look(right, env);
+                // `m == Nothing`, `Nothing in found`: a bare case of a
+                // generic enum is the copy the other side says (58.1).
+                let compares = matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::In | BinaryOp::NotIn);
+                let (left_type, right_type) = if compares && bare_generic_case(left, env) && !bare_generic_case(right, env) {
+                    let right_type = self.look(right, env);
+                    let beside = match (op, right_type.clone().looked_at()) {
+                        (BinaryOp::In | BinaryOp::NotIn, Ty::List(item) | Ty::Fixed(item, _)) => *item,
+                        (_, other) => other,
+                    };
+                    self.expecting(left, &beside);
+                    (self.look(left, env), right_type)
+                } else {
+                    self.wrap_mode = wraps;
+                    let left_type = self.look(left, env);
+                    if compares && matches!(op, BinaryOp::Eq | BinaryOp::NotEq) && bare_generic_case(right, env) {
+                        self.expecting(right, &left_type.clone().looked_at());
+                    }
+                    self.wrap_mode = wraps;
+                    (left_type, self.look(right, env))
+                };
                 self.wrap_mode = false;
                 // `0.5 in readings`: the 0.5 is beside the items.
                 let beside_left = match (op, right_type.clone().widened().looked_at()) {
@@ -7138,6 +7368,8 @@ impl Checker {
                 let slots = self.slots(&callee);
                 let only_looks = matches!(callee, Ty::Builtin(_));
                 let mut arguments = Vec::new();
+                // Bare cases of a generic enum given to a generic, settled last.
+                let mut later = Vec::new();
                 let (mut named_seen, mut misplaced) = (false, false);
                 for (position, arg) in args.iter().enumerate() {
                     if arg.name.is_some() {
@@ -7157,8 +7389,9 @@ impl Checker {
                     // and a parameter written `take T`, take the value, and
                     // a parameter written `T` looks at it (decision 56.11).
                     let generic_keeps = match &callee {
+                        Ty::GenericCase(..) => Some(true),
                         Ty::Generic(generic) => match &generic.template {
-                            Template::Class(_) => Some(true),
+                            Template::Class(_) | Template::Enum(_) => Some(true),
                             Template::Function(decl) => Some(
                                 match &arg.name {
                                     None => decl.params.get(position),
@@ -7169,6 +7402,26 @@ impl Checker {
                         },
                         _ => None,
                     };
+                    // `Link(3, End)`, `or_else(Nothing, 5)`: a bare case of
+                    // a generic enum, given to a generic, says nothing about
+                    // `T` by itself. It is settled once the other arguments
+                    // have settled `T` (decision 58.1).
+                    if let (Some(keeps), ExprKind::Name(name)) = (generic_keeps, &arg.value.kind) {
+                        if let Some(variable) = env.get(name).filter(|variable| variable.case.is_some()) {
+                            if let Ty::GenericCase(of, _) = &variable.ty {
+                                self.used(name, &variable, arg.value.span);
+                                later.push(Later { at: arguments.len(), generic: of.clone(), name: name.clone(), keeps });
+                                arguments.push(Argument {
+                                    name: arg.name.clone(),
+                                    ty: Ty::Invalid,
+                                    span: arg.value.span,
+                                    written: None,
+                                    place: &arg.value as *const Expr as usize,
+                                });
+                                continue;
+                            }
+                        }
+                    }
                     let ty = match slot {
                         // A parameter that takes an owned value keeps it:
                         // the caller's variable gives it up.
@@ -7221,7 +7474,10 @@ impl Checker {
                     return Ty::Invalid;
                 }
                 if let Ty::Generic(generic) = &callee {
-                    return self.call_generic(generic, arguments, expr, wanted, span);
+                    return self.call_generic(generic, arguments, &later, expr, wanted, span);
+                }
+                if let Ty::GenericCase(generic, index) = &callee {
+                    return self.call_generic_case(generic, *index, arguments, &later, expr, wanted, span);
                 }
                 // An argument that looks at the same object would be
                 // looking while the method takes something out of it.
@@ -9385,6 +9641,9 @@ impl Checker {
     /// is a call that needs to know: `let s: Stack[int] = Stack()`.
     fn expecting(&mut self, value: &Expr, wanted: &Ty) {
         let says_something = !matches!(wanted, Ty::Dynamic) && !has_param(wanted);
+        if matches!(value.kind, ExprKind::Name(_)) && says_something {
+            self.expected_case = Some((value as *const Expr as usize, wanted.clone()));
+        }
         if matches!(value.kind, ExprKind::Call { .. }) && says_something {
             // `Invalid` is noted too: a mistake in the written type was
             // reported there, and the call should not complain as well.
@@ -9464,6 +9723,9 @@ impl Checker {
                 let params = generic.params.iter().map(|name| Ty::Param(Rc::from(name.as_str()))).collect();
                 Some(Ty::Applied(generic.clone(), params))
             }
+            // An enum is reached through its cases, each with values of
+            // its own (see `case_outline`), and never called itself.
+            Template::Enum(_) => None,
         };
         let outline = Rc::new(Outline { slots, returns });
         *generic.outline.borrow_mut() = Some(outline.clone());
@@ -9477,10 +9739,26 @@ impl Checker {
         &mut self,
         generic: &Rc<Generic>,
         mut arguments: Vec<Argument>,
+        later: &[Later],
         call: &Expr,
         wanted: Option<Ty>,
         span: Span,
     ) -> Ty {
+        // A value of a generic enum is one of its cases.
+        if let Template::Enum(decl) = &generic.template {
+            let case = decl.variants.iter().find(|case| !case.fields.is_empty()).unwrap_or(&decl.variants[0]);
+            return self.error(
+                format!(
+                    "`{}` is an enum, and a value of it is one of its cases, as in `{}`",
+                    generic.name,
+                    match case.fields.is_empty() {
+                        true => case.name.clone(),
+                        false => format!("{}(...)", case.name),
+                    }
+                ),
+                span,
+            );
+        }
         // `first(buffer)`, where `first` takes a `list[T]`: as for any
         // function, a list of a fixed length goes there if the function
         // never changes how long it is (decision 36.4).
@@ -9502,9 +9780,13 @@ impl Checker {
         }
         // The compilers find the copy by the call. `expr` has seen to it
         // that a generic is only ever called by its own name.
-        let Some(types) = self.infer(generic, &arguments, wanted, span) else {
+        let outline = self.outline(generic);
+        let Some(types) = self.infer_from(generic, &outline, None, &arguments, later, wanted, span) else {
             return Ty::Invalid;
         };
+        if !self.settle_later(generic, &outline, &types, &mut arguments, later) {
+            return Ty::Invalid;
+        }
         let copy = match &generic.template {
             Template::Function(_) => self.copy_function(generic, types, Some(span)).map(|copy| {
                 self.types.copy_called.insert(call as *const Expr as usize, copy.decl.name.clone());
@@ -9514,6 +9796,7 @@ impl Checker {
                 self.types.copy_called.insert(call as *const Expr as usize, copy.name.clone());
                 Ty::Class(copy)
             }),
+            Template::Enum(_) => None,
         };
         match copy {
             // From here on it is an ordinary call of an ordinary function.
@@ -9522,21 +9805,175 @@ impl Checker {
         }
     }
 
-    /// What each type parameter of `generic` is at this call, in the order
-    /// they are declared. `None` if they cannot all be told, which is an
-    /// error unless a later pass may still settle it.
-    fn infer(
+    /// The values one case of a generic enum carries, with the type
+    /// parameters left in, as the outline of a function: `Just(value: T)`
+    /// takes a `T` and gives a `Maybe[T]` (decision 58.1).
+    fn case_outline(&mut self, generic: &Rc<Generic>, index: usize) -> Rc<Outline> {
+        if let Some(outline) = self.case_outlines.get(&(generic.at, index)) {
+            return outline.clone();
+        }
+        let Template::Enum(decl) = &generic.template else {
+            return Rc::new(Outline { slots: Vec::new(), returns: None });
+        };
+        let env = Scope::child(&generic.env);
+        for name in &generic.params {
+            env.declare(name, Ty::Alias(Box::new(Ty::Param(Rc::from(name.as_str())))), false);
+            self.type_params.extend(env.get(name).map(|variable| variable.id));
+        }
+        let span = generic.span;
+        let slots = decl.variants[index]
+            .fields
+            .iter()
+            .map(|field| Slot {
+                name: field.name.clone(),
+                ty: field.ty.as_ref().map_or(Ty::Invalid, |ty| self.resolve(ty, &env, span)),
+                has_default: field.default.is_some(),
+                id: None,
+            })
+            .collect();
+        let params = generic.params.iter().map(|name| Ty::Param(Rc::from(name.as_str()))).collect();
+        let outline = Rc::new(Outline { slots, returns: Some(Ty::Applied(generic.clone(), params)) });
+        self.case_outlines.insert((generic.at, index), outline.clone());
+        outline
+    }
+
+    /// The type that a generic class or enum given these types is: an
+    /// object of the copy `Stack[int]`, or a value of the copy `Maybe[int]`.
+    fn copy_type(&mut self, generic: &Rc<Generic>, types: Vec<Ty>, span: Span) -> Option<Ty> {
+        match &generic.template {
+            Template::Enum(_) => self.copy_enum(generic, types, Some(span)).map(Ty::EnumValue),
+            _ => self.copy_class(generic, types, Some(span)).map(Ty::Instance),
+        }
+    }
+
+    /// A case of a generic enum called with the values it carries:
+    /// `Just(3)`. Which copy of the enum it makes is worked out as for a
+    /// call of a generic function, from the values and then from the
+    /// place the result goes, and the call is then a call of that copy's
+    /// case. The compilers find the copy by the call.
+    fn call_generic_case(
         &mut self,
         generic: &Rc<Generic>,
+        index: usize,
+        mut arguments: Vec<Argument>,
+        later: &[Later],
+        call: &Expr,
+        wanted: Option<Ty>,
+        span: Span,
+    ) -> Ty {
+        let outline = self.case_outline(generic, index);
+        let Some(types) = self.infer_from(generic, &outline, Some(index), &arguments, later, wanted, span) else {
+            return Ty::Invalid;
+        };
+        if !self.settle_later(generic, &outline, &types, &mut arguments, later) {
+            return Ty::Invalid;
+        }
+        match self.copy_enum(generic, types, Some(span)) {
+            Some(copy) => {
+                self.types.copy_called.insert(call as *const Expr as usize, copy.name.clone());
+                self.call(&Ty::CaseConstructor(copy, index), arguments, span)
+            }
+            None => Ty::Invalid,
+        }
+    }
+
+    /// A case of a generic enum that carries nothing, used as a value:
+    /// `Nothing`. It says nothing about `T`, so the place it goes must
+    /// (decision 58.1): the type of the variable, of the parameter, of
+    /// what the function returns, or of the value it is compared with.
+    fn generic_bare_case(&mut self, generic: &Rc<Generic>, name: &str, expr: &Expr, span: Span) -> Ty {
+        let wanted = match self.expected_case.take() {
+            Some((place, wanted)) if place == expr as *const Expr as usize => Some(wanted),
+            _ => None,
+        };
+        self.bare_case_as(generic, name, expr as *const Expr as usize, wanted, span)
+    }
+
+    /// `generic_bare_case`, with the place's type given. `at` is the
+    /// address of the name, by which the compilers find the copy.
+    fn bare_case_as(&mut self, generic: &Rc<Generic>, name: &str, at: usize, wanted: Option<Ty>, span: Span) -> Ty {
+        // `Maybe[int] or none`, and a parameter that only looks.
+        let copy = match wanted.as_ref().map(|wanted| wanted.clone().looked_at()) {
+            Some(Ty::Invalid) => return Ty::Invalid,
+            Some(Ty::Optional(inner)) => match inner.looked_at() {
+                Ty::EnumValue(info) => Some(info),
+                _ => None,
+            },
+            Some(Ty::EnumValue(info)) => Some(info),
+            _ => None,
+        };
+        match copy {
+            Some(copy) if copy.origin.as_ref().is_some_and(|(origin, _)| Rc::ptr_eq(origin, generic)) => {
+                self.types.copy_called.insert(at, copy.name.clone());
+                Ty::EnumValue(copy)
+            }
+            Some(copy) => self.error(format!("`{name}` is a case of `{}`, and a {} is wanted here", generic.name, copy.name), span),
+            None if !self.last_round => Ty::Invalid,
+            None => {
+                let example = vec!["int"; generic.params.len()].join(", ");
+                self.error(
+                    format!(
+                        "`{name}` is a case of the generic enum `{0}`, and nothing here says which `{0}` it is. \
+                         Put it where its type is written, as in `let x: {0}[{example}] = {name}`",
+                        generic.name
+                    ),
+                    span,
+                )
+            }
+        }
+    }
+
+    /// Give each bare case of a generic enum that waited (`later`) the
+    /// type its parameter has now that `types` are known: the `End` of
+    /// `Link(3, End)` is a `Chain[int]`. False if one cannot be told.
+    fn settle_later(&mut self, generic: &Rc<Generic>, outline: &Outline, types: &[Ty], arguments: &mut [Argument], later: &[Later]) -> bool {
+        let found: HashMap<String, Ty> = generic.params.iter().cloned().zip(types.iter().cloned()).collect();
+        for waiting in later {
+            let argument = &arguments[waiting.at];
+            let slot = match &argument.name {
+                None => outline.slots.get(arguments[..waiting.at].iter().filter(|a| a.name.is_none()).count()),
+                Some(name) => outline.slots.iter().find(|slot| slot.name == *name),
+            };
+            let (place, span) = (argument.place, argument.span);
+            let wanted = match slot {
+                Some(slot) => self.filled(&slot.ty, &found, span),
+                None => None,
+            };
+            let ty = match self.bare_case_as(&waiting.generic, &waiting.name, place, wanted, span) {
+                Ty::Invalid => return false,
+                ty if ty.is_owned() && !waiting.keeps => {
+                    self.types.lent.insert(place);
+                    lent(&ty)
+                }
+                ty => ty,
+            };
+            arguments[waiting.at].ty = ty;
+        }
+        true
+    }
+
+    /// What each type parameter of `generic` is at this call, in the order
+    /// they are declared, from the parameters and the result in `outline`:
+    /// those of the generic, or of one case of a generic enum, whose
+    /// place is `case`. The arguments in `later` say nothing yet. `None`
+    /// if they cannot all be told, which is an error unless a later pass
+    /// may still settle it.
+    #[allow(clippy::too_many_arguments)]
+    fn infer_from(
+        &mut self,
+        generic: &Rc<Generic>,
+        outline: &Outline,
+        case: Option<usize>,
         arguments: &[Argument],
+        later: &[Later],
         wanted: Option<Ty>,
         span: Span,
     ) -> Option<Vec<Ty>> {
-        let outline = self.outline(generic);
         // Which parameter each argument is for, as `arguments` works it out.
         let mut pairs: Vec<(&Slot, &Argument)> = Vec::new();
         let mut next = 0;
-        for argument in arguments {
+        let waits = |at: usize| later.iter().any(|waiting| waiting.at == at);
+        for (at, argument) in arguments.iter().enumerate() {
             let slot = match &argument.name {
                 None => {
                     next += 1;
@@ -9544,7 +9981,9 @@ impl Checker {
                 }
                 Some(name) => outline.slots.iter().find(|slot| slot.name == *name),
             };
-            pairs.extend(slot.map(|slot| (slot, argument)));
+            if !waits(at) {
+                pairs.extend(slot.map(|slot| (slot, argument)));
+            }
         }
 
         // First, what the arguments say. A number that is written out,
@@ -9636,7 +10075,7 @@ impl Checker {
 
         let unsettled = !self.last_round
             || matches!(wanted, Some(Ty::Invalid))
-            || arguments.iter().any(|argument| matches!(argument.ty, Ty::Invalid));
+            || arguments.iter().enumerate().any(|(at, argument)| matches!(argument.ty, Ty::Invalid) && !waits(at));
         let loose = arguments.iter().any(|argument| argument.ty.has_dynamic());
         let mut types = Vec::new();
         for name in &generic.params {
@@ -9663,19 +10102,19 @@ impl Checker {
                         );
                         return None;
                     }
-                    let example = match &generic.template {
-                        Template::Class(_) => format!(
-                            "let x: {0}[{1}] = {0}(...)",
-                            generic.name,
-                            vec!["int"; generic.params.len()].join(", ")
-                        ),
-                        Template::Function(_) => format!("let x: list[int] = {}(...)", generic.name),
+                    let types = vec!["int"; generic.params.len()].join(", ");
+                    let (who, example) = match (&generic.template, case) {
+                        (Template::Class(_), _) => (generic.name.clone(), format!("let x: {0}[{types}] = {0}(...)", generic.name)),
+                        (Template::Function(_), _) => (generic.name.clone(), format!("let x: list[int] = {}(...)", generic.name)),
+                        (Template::Enum(decl), index) => {
+                            let case = &decl.variants[index.unwrap_or(0)].name;
+                            (case.clone(), format!("let x: {}[{types}] = {case}(...)", generic.name))
+                        }
                     };
                     self.error(
                         format!(
-                            "`{}` cannot tell what `{name}` is from this call: no argument says. \
-                             Put the result where its type is written, as in `{example}`",
-                            generic.name
+                            "`{who}` cannot tell what `{name}` is from this call: no argument says. \
+                             Put the result where its type is written, as in `{example}`"
                         ),
                         span,
                     );
@@ -9753,9 +10192,18 @@ impl Checker {
             (Ty::Optional(pattern), actual) if !matches!(actual, Ty::None) => self.bind(pattern, actual, found),
             (Ty::Borrowed(pattern), actual) => self.bind(pattern, actual, found),
             (pattern, Ty::Optional(actual)) => self.bind(pattern, actual, found),
-            // `Stack[T]` over `Stack[int]`.
-            (Ty::Applied(generic, patterns), Ty::Instance(class)) => {
-                if let Some((origin, types)) = &class.origin {
+            // A look at a `Stack[int]` or a `Maybe[int]` that somebody
+            // owns, given to a parameter written `Stack[T]`, which looks
+            // (decision 58.2).
+            (Ty::Applied(..), Ty::Borrowed(actual)) => self.bind(pattern, actual, found),
+            // `Stack[T]` over `Stack[int]`, and `Maybe[T]` over `Maybe[int]`.
+            (Ty::Applied(generic, patterns), Ty::Instance(_) | Ty::EnumValue(_)) => {
+                let origin = match actual {
+                    Ty::Instance(class) => &class.origin,
+                    Ty::EnumValue(info) => &info.origin,
+                    _ => &None,
+                };
+                if let Some((origin, types)) = origin {
                     if Rc::ptr_eq(origin, generic) {
                         for (pattern, actual) in patterns.iter().zip(types) {
                             self.bind(pattern, actual, found);
@@ -9822,7 +10270,7 @@ impl Checker {
             }
             Ty::Applied(generic, types) => {
                 let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
-                Ty::Instance(self.copy_class(generic, types?, Some(span))?)
+                self.copy_type(generic, types?, span)?
             }
             Ty::Several(types) => {
                 let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
@@ -9961,6 +10409,67 @@ impl Checker {
         Some(copy)
     }
 
+    /// The copy of a generic enum for these types: an ordinary enum
+    /// called `Maybe[int]`, whose cases carry ints where the generic's
+    /// carry a `T` (decision 58.1).
+    fn copy_enum(&mut self, generic: &Rc<Generic>, types: Vec<Ty>, asked: Option<Span>) -> Option<Rc<EnumInfo>> {
+        let Template::Enum(template) = &generic.template else {
+            return None;
+        };
+        let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
+        if let Some(Made::Enum(copy)) = self.copies.get(&key) {
+            return Some(copy.clone());
+        }
+        let (name, env, note) = self.copy_setting(generic, &types, asked)?;
+        let mut decl = template.fresh();
+        decl.type_params.clear();
+        if !alone {
+            decl.name = name;
+        }
+        let decl = Arc::new(decl);
+        let carries = decl.variants.iter().any(|case| !case.fields.is_empty());
+        let copy = Rc::new(EnumInfo {
+            id: decl_id(generic.span, &decl.name),
+            name: decl.name.clone(),
+            cases: RefCell::new(Vec::new()),
+            carries,
+            owned: carries && self.one_owner,
+            numbers: None,
+            origin: (!alone).then(|| (generic.clone(), types)),
+        });
+        // Noted before its cases are worked out: an enum may mention
+        // itself, as `enum Chain[T] { End; Link(item: T, rest: Chain[T]) }`.
+        self.copies.insert(key, Made::Enum(copy.clone()));
+        self.copy_notes.push((!alone).then_some(note));
+        let span = generic.span;
+        let cases: Vec<CaseInfo> = decl
+            .variants
+            .iter()
+            .map(|case| CaseInfo {
+                name: case.name.clone(),
+                fields: case.fields.iter().map(|field| self.slot(field, &case.name, &env, span)).collect(),
+            })
+            .collect();
+        // As for any enum: a value that is shared cannot hold one that
+        // has one owner (rule 6 of docs/ownership.md).
+        if !copy.owned && cases.iter().any(|case| case.fields.iter().any(|field| field.ty.is_owned())) {
+            self.error(format!("a case of the enum `{}` cannot carry an owned value yet", decl.name), asked.unwrap_or(span));
+        }
+        self.copy_notes.pop();
+        if !alone {
+            self.used.insert(generic.at);
+            self.enums.insert(copy.id.clone(), copy.clone());
+            self.types.enums.insert(
+                Arc::as_ptr(&decl) as usize,
+                cases.iter().map(|case| case.fields.iter().map(|slot| kind(&slot.ty)).collect()).collect(),
+            );
+            self.types.enum_copies.entry(generic.at).or_default().push(decl);
+        }
+        *copy.cases.borrow_mut() = cases;
+        Some(copy)
+    }
+
     /// The end of a pass: check the bodies of the class copies that were
     /// made along the way, and every generic that nothing used.
     fn finish_generics(&mut self) {
@@ -9992,6 +10501,9 @@ impl Checker {
                     }
                     Template::Class(_) => {
                         self.copy_class(&generic, anything, None);
+                    }
+                    Template::Enum(_) => {
+                        self.copy_enum(&generic, anything, None);
                     }
                 }
             }
@@ -10475,7 +10987,7 @@ fn length_changed(decl: &Arc<ast::Function>, env: &Env, param: &str, seen: &mut 
             Some(Ty::Function(info)) if info.self_type.is_none() => (info.decl.clone(), info.env.clone()),
             Some(Ty::Generic(generic)) => match &generic.template {
                 Template::Function(function) => (function.clone(), generic.env.clone()),
-                Template::Class(_) => return lengths::Callee::Unknown,
+                Template::Class(_) | Template::Enum(_) => return lengths::Callee::Unknown,
             },
             _ => return lengths::Callee::Unknown,
         };
@@ -11676,6 +12188,86 @@ mod tests {
         assert_eq!(
             error("class Problem[T] {\n    what: T\n}\nfunction f() {\n    raise Problem(4)\n}"),
             "an object of a generic class cannot be raised yet, and this is a Problem[int]"
+        );
+    }
+
+    const MAYBE: &str = "enum Maybe[T] {\n    Nothing\n    Just(value: T)\n}\n";
+
+    #[test]
+    fn a_generic_enum_takes_its_types_from_where_it_is_used() {
+        // From what a case carries, and for a case that carries nothing
+        // from the place it goes: a variable, a parameter, a result, a
+        // field, a list, a dict, the other side of `==`, an argument of
+        // a generic beside one that says (decision 58.1).
+        ok(&format!(
+            "{MAYBE}let a = Just(3)\nlet b: Maybe[str] = Nothing\nfunction f(m: Maybe[int]) -> Maybe[int] {{\n    return Nothing\n}}\n\
+             f(Nothing)\nclass Holder {{\n    slot: Maybe[int] = Nothing\n}}\nlet xs: list[Maybe[int]] = [Just(1), Nothing]\n\
+             let d: dict[str, Maybe[int]] = [\"a\": Nothing]\nlet same: bool = a == Nothing\nlet c: Maybe[int] or none = Nothing\n\
+             function or_else[T](m: Maybe[T], other: T) -> T {{\n    match m {{\n        case Just(v) {{ return v }}\n        case Nothing {{ return other }}\n    }}\n}}\n\
+             let n: int = or_else(Nothing, 4)\nlet s: str = or_else(Just(\"a\"), \"b\")\n"
+        ));
+        // A copy is a type of its own: a `Maybe[str]` is no `Maybe[int]`.
+        assert_eq!(
+            error(&format!("{MAYBE}let b: Maybe[str] = Nothing\nlet c: Maybe[int] = b")),
+            "`c` should be Maybe[int], but this is Maybe[str]"
+        );
+        // An enum that holds itself.
+        ok("enum Chain[T] {\n    End\n    Link(item: T, rest: Chain[T])\n}\nlet c: Chain[int] = Link(1, Link(2, End))\n");
+    }
+
+    #[test]
+    fn what_a_generic_enum_says_when_it_cannot() {
+        assert_eq!(
+            error(&format!("{MAYBE}let x = Nothing")),
+            "`Nothing` is a case of the generic enum `Maybe`, and nothing here says which `Maybe` it is. \
+             Put it where its type is written, as in `let x: Maybe[int] = Nothing`"
+        );
+        assert_eq!(
+            error("enum Result[T, E] {\n    Ok(value: T)\n    Failed(error: E)\n}\nlet r = Ok(1)"),
+            "`Ok` cannot tell what `E` is from this call: no argument says. \
+             Put the result where its type is written, as in `let x: Result[int, int] = Ok(...)`"
+        );
+        // A case left out is named as for any enum.
+        assert_eq!(
+            error(&format!("{MAYBE}let m: Maybe[int] = Just(3)\nmatch m {{\n    case Just(v) {{ print(v) }}\n}}")),
+            "this `match` does not handle Nothing. Add a `case` for it, or a final `case _`"
+        );
+        assert_eq!(
+            error(&format!("{MAYBE}let m: Maybe[int] = Just(3)\nmatch m {{\n    case Nothing {{ print(0) }}\n}}")),
+            "this `match` does not handle Just. Add a `case` for it, or a final `case _`"
+        );
+        assert_eq!(
+            error(&format!("{MAYBE}let n: int = 3\nmatch n {{\n    case Just(v) {{ print(v) }}\n    case _ {{ }}\n}}")),
+            "`Just` is a case of Maybe, which can never match int"
+        );
+        assert_eq!(error(&format!("{MAYBE}print(Maybe(3))")), "`Maybe` is an enum, and a value of it is one of its cases, as in `Just(...)`");
+        assert_eq!(
+            error(&format!("{MAYBE}let f = Just")),
+            "`Just` is a case of the generic enum `Maybe`. It can be called, as in `Just(...)`, but it cannot be kept as a value or passed along yet"
+        );
+        assert_eq!(
+            error(&format!("{MAYBE}let m: Maybe = Just(3)")),
+            "`Maybe` takes 1 type in `[ ]`, as in `Maybe[int]`, but 0 were written"
+        );
+        // A case is written by its name alone, so it is one enum's only.
+        assert_eq!(
+            error(&format!("{MAYBE}enum Other {{\n    Nothing\n}}")),
+            "`Nothing` is already a case of the enum `Maybe`. A case is written by its name alone, \
+             so two enums in one file cannot both have a `Nothing`. Give one of them another name"
+        );
+        assert_eq!(
+            error(&format!("enum Other {{\n    Nothing\n}}\n{MAYBE}")),
+            "`Nothing` is already a case of the enum `Other`. A case is written by its name alone, \
+             so two enums in one file cannot both have a `Nothing`. Give one of them another name"
+        );
+        assert_eq!(
+            error("enum Code[T] {\n    A = 1\n    B = 2\n}"),
+            "`Code` has type parameters, so its cases carry values, and a case that carries values cannot stand for a number. \
+             Take `= 1` away"
+        );
+        assert_eq!(
+            error("enum Maybe[t] {\n    Nothing\n}"),
+            "a type parameter starts with a capital letter, as in `T` or `Item`, and this is `t`"
         );
     }
 

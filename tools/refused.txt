@@ -1,6 +1,6 @@
 docs/compiler.md | A dict of objects of an `owned class` | `zeno build` keeps a dict where anything may share it, as there is a collector, and an object of an `owned class` has one owner. Make it a plain `class`, or build with `--no-collector`, where a dict owns its values
 docs/compiler.md | A u64 that may be `none` | `zeno build` cannot compile a u64 that may be `none` yet. `zeno run` can still run this program
-docs/no-collector.md | A list, object or enum value used after it was given away | `a` was given away on line 16 and holds nothing now. Use it before it goes, or give it only to what looks: a parameter without `take`
+docs/no-collector.md | A list, object or enum value used after it was given away | `a` was given away on line 20 and holds nothing now. Use it before it goes, or give it only to what looks: a parameter without `take`
 docs/no-collector.md | Keeping an item of a list of lists or of objects that a `for` | `x` is a look at an item of the list that the loop is walking. The list owns the item, so it cannot be kept, returned or given away. Use it here, or pass it to a parameter that looks
 docs/no-collector.md | Returning or keeping what a parameter only looks at | `x` is only looked at here: its owner still has it. So it cannot be kept, returned or given away. If it is a parameter, write `take` in front of its type to take the value over
 docs/no-collector.md | `filter` on a list of lists or of objects | `filter` would put the items it keeps in a second list, and each has one owner. Use a `for` loop that makes what the new list needs

@@ -1232,6 +1232,8 @@ impl<'a> Renamer<'a> {
                 if renamed {
                     decl.name = full(&decl.name);
                 }
+                // `T` of `enum Maybe[T]` is no name of the file (58.1).
+                self.scopes.push(decl.type_params.iter().cloned().collect());
                 for case in &mut decl.variants {
                     if renamed {
                         case.name = full(&case.name);
@@ -1240,6 +1242,7 @@ impl<'a> Renamer<'a> {
                         self.field(field, span);
                     }
                 }
+                self.scopes.pop();
             }
 
             StmtKind::If { condition, then_block, else_block } => {

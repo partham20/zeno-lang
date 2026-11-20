@@ -1250,6 +1250,9 @@ struct Emitter<'a> {
     enums: HashMap<String, EnumEntry>,
     /// Each enum case by name: the enum it belongs to, and its number.
     cases: HashMap<String, (String, usize)>,
+    /// The copies of generic enums, `Maybe[int]`, whose cases are not in
+    /// `cases`: each copy has a case of the same name (decision 58.1).
+    copied_enums: HashSet<String>,
     /// The names brought in by `import`, and the module of each.
     imported: HashMap<String, String>,
     waiting: VecDeque<Waiting>,
@@ -1796,6 +1799,7 @@ fn emit_all(
         numbered: 0,
         enums: HashMap::new(),
         cases: HashMap::new(),
+        copied_enums: HashSet::new(),
         imported: HashMap::new(),
         waiting: VecDeque::new(),
         inner_count: 0,
@@ -1842,6 +1846,13 @@ fn emit_all(
             StmtKind::Class(decl) => {
                 for decl in copies_of_class(types, decl) {
                     emitter.register_class(decl, statement.span)?;
+                }
+            }
+            // The same for a generic enum: `Maybe[int]` (decision 58.1).
+            StmtKind::Enum(decl) if !decl.type_params.is_empty() => {
+                for copy in types.enum_copies(decl) {
+                    emitter.copied_enums.insert(copy.name.clone());
+                    emitter.register_enum(copy, statement.span)?;
                 }
             }
             StmtKind::Enum(decl) => emitter.register_enum(decl, statement.span)?,
@@ -2461,7 +2472,11 @@ impl Emitter<'_> {
         let mut takes = Vec::new();
         for (index, (case, case_kinds)) in decl.variants.iter().zip(&kinds).enumerate() {
             takes.push(case_kinds.iter().map(|kind| matches!(kind, Kind::Owned(_))).collect());
-            self.cases.insert(case.name.clone(), (decl.name.clone(), index));
+            // A case of a copy of a generic enum is found through the
+            // copy the checker noted, since each copy has a `Just`.
+            if !self.copied_enums.contains(&decl.name) {
+                self.cases.insert(case.name.clone(), (decl.name.clone(), index));
+            }
             let fields: Vec<(String, Kind)> =
                 case.fields.iter().map(|field| field.name.clone()).zip(case_kinds.iter().map(shared)).collect();
             if fields.is_empty() {
@@ -4442,10 +4457,9 @@ impl Emitter<'_> {
         let may_be_none = there != val.kind;
         match pattern {
             Pattern::Wildcard => Ok(false),
-            Pattern::Name(name) => match (self.cases.get(name), &there) {
+            Pattern::Name(name) => match (self.case_in(name, &there), &there) {
                 // A bare enum case, such as `Idle`, is compared.
-                (Some((owner, index)), Kind::Enum(subject)) if owner == subject && self.lookup(name).is_none() => {
-                    let index = *index;
+                (Some((owner, index)), Kind::Enum(subject)) if owner == *subject && self.lookup(name).is_none() => {
                     if may_be_none {
                         self.must_be_there(&val.code, fail);
                     }
@@ -4471,8 +4485,8 @@ impl Emitter<'_> {
                 Ok(true)
             }
             Pattern::Variant { name, fields } => {
-                let (owner, index) = match (self.cases.get(name), &there) {
-                    (Some((owner, index)), Kind::Enum(subject)) if owner == subject => (owner.clone(), *index),
+                let (owner, index) = match (self.case_in(name, &there), &there) {
+                    (Some((owner, index)), Kind::Enum(subject)) if owner == *subject => (owner, index),
                     _ => return Err(cannot(format!("the pattern `{name}(...)` here"), span)),
                 };
                 let carried = self.enums[&owner].cases[index].1.clone();
@@ -5341,12 +5355,16 @@ impl Emitter<'_> {
 
             // A call of a generic goes to one of its copies, and the
             // checker noted which: `first([1, 2])` calls `first[int]`.
-            ExprKind::Call { args, .. } if self.types.copy_called(expr).is_some() => {
+            ExprKind::Call { callee, args } if self.types.copy_called(expr).is_some() => {
                 let copy = self.types.copy_called(expr).unwrap_or_default().to_string();
                 if let Some(entry) = self.functions.get(&copy).cloned() {
                     self.call_named(&entry, args, span)?
                 } else if self.classes.contains_key(&copy) {
                     self.construct(&copy, args, span)?
+                } else if self.copied_enums.contains(&copy) {
+                    // `Just(3)`: the case of the copy `Maybe[int]`.
+                    let index = self.copied_case(&copy, callee, span)?;
+                    self.construct_case(&copy, index, args, span)?
                 } else {
                     return Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span));
                 }
@@ -5420,6 +5438,15 @@ impl Emitter<'_> {
     fn name(&mut self, name: &str, expr: &Expr) -> Result<Val, Error> {
         let span = expr.span;
         let Some(variable) = self.lookup(name).cloned() else {
+            // `Nothing` of a generic enum: the case of the copy the
+            // checker found for this place (decision 58.1).
+            if let Some(owner) = self.types.copy_called(expr).map(str::to_string) {
+                let index = self.copied_case(&owner, expr, span)?;
+                if !self.enums[&owner].cases[index].1.is_empty() {
+                    return Err(cannot("an enum case that carries values, used without them", span));
+                }
+                return Ok(Val::new(bare_case(&owner, name), Kind::Enum(owner)));
+            }
             if let Some((owner, index)) = self.cases.get(name).cloned() {
                 if !self.enums[&owner].cases[index].1.is_empty() {
                     return Err(cannot("an enum case that carries values, used without them", span));
@@ -7907,6 +7934,33 @@ impl Emitter<'_> {
     }
 
     /// `Circle(1.0)`: a new value of an enum.
+    /// The enum and the place of the case `name`, in a pattern matched
+    /// against a value of the kind `there`. A case of a copy of a generic
+    /// enum is a case of the copy matched (decision 58.1); any other is
+    /// found by its name alone.
+    fn case_in(&self, name: &str, there: &Kind) -> Option<(String, usize)> {
+        match there {
+            Kind::Enum(subject) if self.copied_enums.contains(subject) => {
+                let index = self.enums[subject].cases.iter().position(|(case, _)| case == name)?;
+                Some((subject.clone(), index))
+            }
+            _ => self.cases.get(name).cloned(),
+        }
+    }
+
+    /// The place of the case named at `expr` (a name, or the callee of a
+    /// call) in the copy `owner` of a generic enum.
+    fn copied_case(&self, owner: &str, expr: &Expr, span: Span) -> Result<usize, Error> {
+        let ExprKind::Name(name) = &expr.kind else {
+            return Err(cannot("a case of a generic enum written this way", span));
+        };
+        self.enums[owner]
+            .cases
+            .iter()
+            .position(|(case, _)| case == name)
+            .ok_or_else(|| cannot(format!("the case `{name}` of `{owner}`"), span))
+    }
+
     fn construct_case(&mut self, owner: &str, index: usize, args: &[Arg], span: Span) -> Result<Val, Error> {
         let (case, fields) = self.enums[owner].cases[index].clone();
         if fields.is_empty() {

@@ -105,6 +105,93 @@ C++ and Rust do the same thing, and call it *templates* and
 *monomorphization*. Java does the opposite: it keeps one function and
 forgets `T` when the program runs. Decision 5.14 says why Zeno copies.
 
+## Generic enums
+
+An enum can have type parameters too (decision 58.1):
+
+```zeno
+enum Maybe[T] {
+    Nothing
+    Just(value: T)
+}
+
+enum Result[T, E] {
+    Ok(value: T)
+    Failed(error: E)
+}
+
+function first_even(numbers: list[int]) -> Maybe[int] {
+    for n in numbers {
+        if n % 2 == 0 { return Just(n) }
+    }
+    return Nothing
+}
+
+match first_even([1, 3, 4]) {
+    case Just(n) { print(f"found {n}") }
+    case Nothing { print("none of them") }
+}
+```
+
+The rules are those of a generic class, and nothing new. `Maybe[int]`
+is a type, a copy of the enum with `T` standing for `int`. Its cases
+are written by their names alone, as the cases of any enum are, and
+the types are worked out where a case is used:
+
+- **A case that carries values says `T` by what it carries.**
+  `Just(3)` is a `Maybe[int]`, `Just("a")` a `Maybe[str]`.
+- **A case that carries nothing says nothing**, so `Nothing` takes its
+  type from the place it goes: the type of the variable, the
+  parameter, the field, the list or dict it goes into, what the
+  function returns, or the other side of `==`. An argument of a
+  generic waits for the others: in `or_else(Nothing, 5)` the `5` says
+  that `T` is `int`, and so `Nothing` is a `Maybe[int]`.
+- **Where nothing says, it is an error** that shows how to write it:
+
+```
+error: `Nothing` is a case of the generic enum `Maybe`, and nothing here says which `Maybe` it is. Put it where its type is written, as in `let x: Maybe[int] = Nothing`
+```
+
+`Result[T, E]` has two parameters, and `Ok(3)` only says one of them,
+so `let r: Result[int, str] = Ok(3)` is how it is written where the
+result has no type of its own yet. A `match` on a `Maybe[int]` must
+handle `Just` and `Nothing`, and says which it left out, as for any
+enum. An enum may hold itself: `enum Chain[T] { End; Link(item: T,
+rest: Chain[T]) }`.
+
+A case name belongs to one enum of a file, generic or not, since it is
+written alone. A generic enum cannot give its cases numbers (`Ack =
+6`), since a case with a number carries nothing, and a generic enum is
+for carrying a `T`.
+
+### How it is built
+
+- **The parser** reads `[T]` after the name of an enum, as after the
+  name of a class, into `Enum::type_params`.
+- **The checker** keeps a generic enum as a `Generic` whose template is
+  the enum, and each case name stands for `Ty::GenericCase`: the
+  generic and the place of the case. A call `Just(3)` is worked out as
+  a call of a generic function is, with the values that case carries
+  as its parameters and `Maybe[T]` as what it returns (`case_outline`,
+  then the same `infer` as every generic). The copy, `Maybe[int]`, is
+  an ordinary enum made by `copy_enum`, with its `origin` kept, as a
+  copy of a class is. A bare `Nothing` looks at the place it goes
+  (`expecting` notes it, `generic_bare_case` reads it). Each case
+  where it is used is noted in `copy_called` with the copy it means:
+  the call for `Just(3)`, the name for `Nothing`. A copy of a generic
+  function has a syntax tree of its own, so `return Just(x)` inside
+  `wrap[T]` is noted once for each copy of `wrap`. In a `match`, a
+  case finds itself in the copy that is matched (`copy_matched`).
+- **The interpreter and the VM** run the generic as it is written:
+  they never needed the types.
+- **The compilers** write one enum for each copy (`z_Maybe_int`, with
+  its own cases, `zeno_new_Maybe_int_Just`), and none for the generic.
+  A case of a copy is found through what the checker noted, and a
+  pattern finds its case in the enum of what is matched (`case_in`).
+  An enum that is not generic goes the way it always went, so what is
+  written for it did not change, to the byte.
+- **The fifteen targets** do not look at types, and run it as it is.
+
 ## Through the stages
 
 ### The parser
@@ -305,8 +392,9 @@ define internal double @"z_Cell[float].get"(ptr %arg.self) {
   works on". The body is checked for each type it is used with, so a
   wrong use is still found before the program runs. But it is reported
   inside the generic, with a note, and not at the call.
-- **An enum cannot be generic.** `enum Maybe[T]` is refused by the
-  parser. `T or none` covers the commonest case.
+- **A case of a generic enum cannot be written after the enum's
+  name**, as `Maybe.Just(3)`, and cannot be kept as a value: `let f =
+  Just` is refused, as `let f = first` is.
 - **A method cannot have type parameters of its own.** The class can.
 - **A generic cannot be kept as a value**: `let f = first` is refused,
   because `f` would have to be every copy at once. Wrap it:
@@ -356,6 +444,15 @@ the same thing. The new ones:
   and `emit_llvm::tests::the_ir_for_a_generic`: three calls make two
   functions, each `Cell` is its own struct, and a generic nothing
   calls leaves nothing behind.
+- `checker::tests::a_generic_enum_takes_its_types_from_where_it_is_used`
+  and `what_a_generic_enum_says_when_it_cannot`: every place `Nothing`
+  takes its type from, and the words of each refusal.
+- `emit_c::tests::a_generic_enum_every_way`:
+  `tools/targets/edge-generic-enum.zeno`, with `Maybe`, `Result` and
+  `Chain` over numbers, text, lists and objects, copies made inside
+  generics, a thousand rounds and every way out of a `match`, built
+  every way (with no collector, nothing is left), and one struct for
+  each copy.
 
 ## Things to try
 
@@ -400,3 +497,14 @@ the same thing. The new ones:
     must refuse `largest([Point(1, 2)])` at the call, before it makes
     the copy. Where in `infer` does that check go? What should the
     message say?
+11. Write `enum Tree[T] { Leaf; Node(left: Tree[T], value: T, right:
+    Tree[T]) }` and a function that counts the values in a
+    `Tree[int]`. Build it with `--no-collector --memory`. How many
+    blocks does a tree of three values take, and how many are left
+    at the end?
+12. Write `let x = Nothing` and read the message. Then give `x` a type.
+    Now try `print(Nothing)`. Why can `print` not say what `T` is,
+    when `let x: Maybe[int] = Nothing` can?
+13. Build `tools/targets/edge-generic-enum.zeno` and search the C for
+    `struct z_Maybe_`. How many copies of `Maybe` are there, and which
+    line of the program asked for each?

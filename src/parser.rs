@@ -994,9 +994,7 @@ impl Parser {
     fn enum_(&mut self) -> Result<StmtKind, Error> {
         self.advance(); // enum
         let name = self.name("a name for the enum")?;
-        if self.check(TokenKind::LBracket) {
-            return self.error("an enum cannot have type parameters yet. A class can: `class Box[T]`");
-        }
+        let type_params = self.type_params()?;
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -1037,7 +1035,7 @@ impl Parser {
             self.end_of_statement()?;
         }
         self.advance(); // the }
-        Ok(StmtKind::Enum(Enum { name, variants }))
+        Ok(StmtKind::Enum(Enum { name, type_params, variants }))
     }
 
     // ---------------------------------------------------------------- Types
@@ -2222,10 +2220,11 @@ mod tests {
 
         assert_eq!(error("function f[](x: int) { }"), "expected a name for a type, such as `T`, found `]`");
         assert_eq!(error("function f[T, 3](x: T) { }"), "expected a name for a type, such as `T`, found a number");
-        assert_eq!(
-            error("enum Maybe[T] {\n    Nothing\n}"),
-            "an enum cannot have type parameters yet. A class can: `class Box[T]`"
-        );
+        // An enum takes them as a class does (decision 58.1).
+        let program = parse_source("enum Maybe[T] {\n    Nothing\n    Just(value: T)\n}").unwrap();
+        let StmtKind::Enum(decl) = &program.statements[0].kind else { panic!("not an enum") };
+        assert_eq!(decl.type_params, ["T"]);
+        assert_eq!(error("enum Maybe[] {\n    Nothing\n}"), "expected a name for a type, such as `T`, found `]`");
         assert_eq!(
             error("let f = function[T](x: T) -> T { return x }"),
             "a function with no name cannot have type parameters. Give it a name"

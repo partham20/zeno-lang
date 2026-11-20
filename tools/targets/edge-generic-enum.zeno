@@ -1,0 +1,267 @@
+# Generic enums (decision 58.1): `Maybe[T]`, `Result[T, E]` and a
+# `Chain[T]` that holds itself, with numbers, text, a list and an
+# object; `Nothing` in each place that says its type; copies made inside
+# generic functions and classes; a list, a dict, a field, a default and
+# a value that may be `none`; a thousand rounds; and every way out of a
+# `match`; and with several values from one function (chapter 57).
+# Every build prints what `zeno run` prints, and a build with no
+# collector leaves nothing.
+
+enum Maybe[T] {
+    Nothing
+    Just(value: T)
+}
+
+enum Result[T, E] {
+    Ok(value: T)
+    Failed(error: E)
+}
+
+enum Chain[T] {
+    End
+    Link(item: T, rest: Chain[T])
+}
+
+class Frame {
+    id: int
+    data: list[int]
+    function label(self) -> str {
+        return f"frame {self.id}"
+    }
+}
+
+class Box[T] {
+    inside: Maybe[T]
+    function get(self, other: T) -> T {
+        match self.inside {
+            case Just(v) { return v }
+            case Nothing { return other }
+        }
+    }
+}
+
+function wrap[T](x: T) -> Maybe[T] {
+    return Just(x)
+}
+
+function none_of[T](x: T) -> Maybe[T] {
+    return Nothing
+}
+
+function or_else[T](m: Maybe[T], other: T) -> T {
+    match m {
+        case Just(v) { return v }
+        case Nothing { return other }
+    }
+}
+
+function parse(text: str) -> Result[int, str] {
+    if text == "" {
+        return Failed("empty")
+    }
+    return Ok(len(text))
+}
+
+function describe(r: Result[int, str]) -> str {
+    match r {
+        case Ok(v) { return f"ok {v}" }
+        case Failed(e) { return f"failed {e}" }
+    }
+}
+
+function total(chain: Chain[int]) -> int {
+    match chain {
+        case End { return 0 }
+        case Link(item, rest) { return item + total(rest) }
+    }
+}
+
+function count[T](chain: Chain[T]) -> int {
+    match chain {
+        case End { return 0 }
+        case Link(_, rest) { return 1 + count(rest) }
+    }
+}
+
+function make(n: int) -> Maybe[Frame] {
+    if n % 3 == 0 {
+        return Nothing
+    }
+    return Just(Frame(n, [n, n + 1]))
+}
+
+function sum_of(m: Maybe[Frame]) -> int {
+    match m {
+        case Just(f) {
+            var t = 0
+            for x in f.data {
+                t += x
+            }
+            return t
+        }
+        case Nothing { return -1 }
+    }
+}
+
+function first_big(limit: int) -> Maybe[Frame] {
+    for i in range(10) {
+        let m = make(i)
+        if sum_of(m) > limit {
+            return m
+        }
+    }
+    return Nothing
+}
+
+function check(m: Maybe[Frame]) -> int raises ValueError {
+    match m {
+        case Just(f) { raise ValueError(f"{f.label()} is here") }
+        case Nothing { return 0 }
+    }
+}
+
+function with_default(m: Maybe[str] = Nothing) -> str {
+    return or_else(m, "default")
+}
+
+class Holder {
+    slot: Maybe[int] = Nothing
+}
+
+function split_first[T](items: list[T]) -> (Maybe[T], int) {
+    if len(items) == 0 {
+        return Nothing, 0
+    }
+    return Just(items[0]), len(items)
+}
+
+function lookup(key: str) -> (Maybe[int], str) {
+    if key == "a" {
+        return Just(1), "found"
+    }
+    return Nothing, "missing"
+}
+
+# Copies made inside generics, one for each type.
+print(or_else(wrap(3), 0))
+print(or_else(wrap("a"), "b"))
+print(or_else(none_of(3), 7))
+print(or_else(none_of("x"), "y"))
+print(or_else(Nothing, 8))
+print(describe(parse("abc")))
+print(describe(parse("")))
+
+# A list, a dict, a field, a default, and a value that may be `none`.
+let items: list[Maybe[int]] = [Just(1), Nothing, Just(3)]
+var sum = 0
+for item in items {
+    sum += or_else(item, 100)
+}
+print(sum)
+let table: dict[str, Maybe[int]] = ["a": Just(1), "b": Nothing]
+print(or_else(table["a"], 5), or_else(table["b"], 5))
+let h = Holder()
+print(or_else(h.slot, 9))
+h.slot = Just(4)
+print(or_else(h.slot, 9))
+print(with_default(), with_default(Just("given")))
+let maybe_none: Maybe[int] or none = Nothing
+match maybe_none {
+    case none { print("none") }
+    case Just(v) { print(v) }
+    case Nothing { print("nothing") }
+}
+
+# An object, a list, and a copy inside a copy.
+let frames: Maybe[Frame] = Just(Frame(7, [1]))
+match frames {
+    case Just(f) { print(f.label()) }
+    case Nothing { print("no frame") }
+}
+let lists: Maybe[list[int]] = Just([1, 2, 3])
+match lists {
+    case Just(xs) { print(len(xs)) }
+    case Nothing { print(0) }
+}
+let nested: Maybe[Maybe[int]] = Just(Just(2))
+match nested {
+    case Just(inner) {
+        match inner {
+            case Just(v) { print(v) }
+            case Nothing { print("inner nothing") }
+        }
+    }
+    case Nothing { print("nothing") }
+}
+
+# An enum that holds itself, and a class that holds an enum.
+let chain: Chain[int] = Link(1, Link(2, Link(3, End)))
+print(total(chain), count(chain))
+let words: Chain[str] = Link("a", Link("b", End))
+print(count(words))
+let b = Box(Just(5))
+print(b.get(0))
+let e: Box[str] = Box(Nothing)
+print(e.get("empty"))
+
+# Compared, and printed.
+let m: Maybe[int] = Just(3)
+print(m == Just(3), m == Nothing, Nothing != m)
+print(Just(3), Just("text"), m)
+let r: Result[int, str] = Ok(2)
+print(r)
+let n: Maybe[int] = Nothing
+print(n)
+
+# A thousand rounds, and every way out of a `match`.
+var all = 0
+for i in range(1000) {
+    let made = make(i)
+    all += sum_of(made)
+    if i == 500 {
+        continue
+    }
+    let one: Maybe[list[int]] = Just([i])
+    match one {
+        case Just(xs) { all += len(xs) }
+        case Nothing { }
+    }
+}
+print(all)
+print(sum_of(first_big(10)))
+var found: list[Maybe[int]] = []
+for j in range(1000) {
+    if j % 2 == 0 {
+        found.append(Just(j))
+    } else {
+        found.append(Nothing)
+    }
+}
+print(len(found))
+try {
+    print(check(make(1)))
+} except ValueError as problem {
+    print(problem)
+}
+while true {
+    let made = make(2)
+    match made {
+        case Just(f) { break }
+        case Nothing { }
+    }
+}
+print("done")
+
+# Several values, one of them a copy of a generic enum.
+let head, size = split_first([4, 5, 6])
+match head {
+    case Just(v) { print(v, size) }
+    case Nothing { print("empty", size) }
+}
+let word, length = split_first(["x"])
+print(word, length)
+let value, why = lookup("b")
+print(value, why)
+for i in range(1000) {
+    let got, said = lookup("a")
+}

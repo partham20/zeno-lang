@@ -18236,10 +18236,168 @@ Item 11 of [`missing.md`](missing.md), as [`plan-9-14.md`](plan-9-14.md)
 plans it. 58.1 to 58.19 are generic enums, bounds, generic interfaces
 and a method with a type parameter of its own (11.1, 11.2, 11.3 and
 11.5). 58.20 onward are the three things 10.10 left out of
-interfaces (11.4). Each is asked for by what a program writes: a
-default in an interface, a class whose function takes out, the word
-`owned` in front of `interface`. A program that writes none of them
-is checked and built as before.
+interfaces (11.4). Each is asked for by what a program writes: `enum
+Name[T]`, `[T is Shape]`, `interface Name[T]`, the name `Ordered` where
+the program has none of its own, a default in an interface, a class
+whose function takes out, the word `owned` in front of `interface`. A
+program that writes none of them is checked, run and built as before: `tools/same.py` finds every C file, IR file, joined program and
+bytecode the same as before each part, for every program but the new
+one of the part.
+
+### 58.1 Generic enums
+
+```zeno
+enum Maybe[T] {
+    Nothing
+    Just(value: T)
+}
+
+function first_even(numbers: list[int]) -> Maybe[int] {
+    for n in numbers {
+        if n % 2 == 0 { return Just(n) }
+    }
+    return Nothing
+}
+```
+
+**The rules** are those of a generic class (3.16 to 3.16c), and
+nothing new: square brackets after the name, a capital for each
+parameter, and the types worked out where the enum is used, never
+written there. `Maybe[int]` written as a type is a copy of the enum
+for `int`. A case is written by its name alone, as any case is.
+
+- `Just(3)` is a `Maybe[int]` by what it carries. It is worked out as
+  a call of a generic function is (3.16b): from the values, then from
+  an argument that is a function, then from the place the result goes.
+  `Ok(3)` of `Result[T, E]` says `T` and not `E`, so it needs a place
+  that says the rest: `let r: Result[int, str] = Ok(3)`.
+- `Nothing` carries nothing, so it takes its type from the place it
+  goes: a variable, a parameter, a field and its default, an item of a
+  list or a value of a dict whose type is said, what the function
+  returns, the other side of `==` or `!=`, and an argument of a
+  generic, once the other arguments have said what `T` is
+  (`or_else(Nothing, 5)`, `Link(3, End)`).
+- Where nothing says, it is an error that shows how to write the type:
+  "`Nothing` is a case of the generic enum `Maybe`, and nothing here
+  says which `Maybe` it is. Put it where its type is written, as in
+  `let x: Maybe[int] = Nothing`". The same for `Ok(3)` with nothing to
+  say `E`.
+- A `match` on a `Maybe[int]` must handle each case, and the message
+  names the case left out as for any enum: "this `match` does not
+  handle Nothing". A case of `Maybe` against a value that is not a
+  `Maybe` "can never match" it.
+- A case name is one enum's alone in a file, generic or not: the rule
+  of 13.9 that two enums cannot both have a `Nothing` stays as it was,
+  with the same message, naming whichever is written first.
+- A generic enum cannot give its cases numbers (`Ack = 6`): a case
+  with a number carries nothing (35.1), and a generic enum is for
+  carrying a `T`. The message says to take the number away.
+- `Maybe(3)`, calling the enum, says that a value of an enum is one of
+  its cases. `let f = Just` is refused as `let f = first` is (3.16e).
+  `Maybe` with no types where a type goes says how many it takes.
+- What a reader sees is `Maybe[int]` in every message, and what
+  `print` shows is the case, `Just(3)` or `Nothing`, as for any enum,
+  in every engine and every build.
+
+**Why the place says the type of `Nothing`, and not a default.** Rust
+and Swift work it out from every later use of the variable as well,
+which is a second kind of inference that no other part of Zeno has:
+a line would mean something that depends on a line below it. Java
+makes `Optional.empty()` a value of any type, which needs erasure,
+the road 5.14 turned down. The rule here is the one 3.16b already
+gives a generic class built with no argument that says (`let s:
+Stack[int] = Stack(items=[])`), and a `Nothing` with nothing to say
+what it is was never meant to be written. `print(Nothing)` is refused
+for that reason: it would print the same for every `T`, but the
+compilers need one copy to print it from, and a rule with an
+exception for `print` is two rules.
+
+**Why not `T or none`.** It exists and is still the short way when
+nothing needs to be said about the absence. A `Maybe[T]` is what a
+program writes when the absence is a case of its own, or when `T` may
+itself be `none`: `Maybe[int or none]` keeps "nothing found" and
+"found a `none`" apart, which `int or none or none` cannot. `Result[T,
+E]` carries a reason, which `none` does not.
+
+**How it is built.** The parser reads `[T]` after the name of an enum
+(`Enum::type_params`); its refusal is gone. In the checker a generic
+enum is a `Generic` whose `Template` is the enum, and a copy is an
+`EnumInfo` with its `origin`, made by `copy_enum` as `copy_class`
+makes a class (5.14). The cases of the generic are declared as
+`Ty::GenericCase`, the generic and the place of the case. A call of
+one is a call of a generic whose parameters are the values that case
+carries and whose result is `Maybe[T]` (`case_outline`), so the one
+`infer` of 3.16b works out its types; it then is a call of the copy's
+case, checked as any. A bare case reads the type of its place from
+`expected_case`, which `expecting` notes for a name as it notes the
+type of a call's place (`generic_bare_case`). In a call of a generic,
+a bare case waits (`Later`) until the other arguments have given the
+types, and then takes the type its parameter has in the copy
+(`settle_later`). In a `match`, a case finds itself in the copy that
+is matched (`copy_matched`). A generic enum that nothing uses is
+checked once with `T` as "anything", as a generic class is, and a
+`match` in it on a value of unknown type is not reported as missing a
+case, since each copy is checked for that.
+
+**Which copy each case means** is noted in `copy_called`, the table a
+call of a generic already used (5.14): the call for `Just(3)`, the
+name for `Nothing`. It is keyed by the node in the syntax tree, and a
+copy of a generic function has a tree of its own (`Function::fresh`,
+5.14c), so `return Just(x)` inside `wrap[T]` is noted once for each
+copy of `wrap`, with the copy of `Maybe` that copy means. Item 9 once
+had notes keyed by line and column, which the copies share; these are
+not. The test calls `wrap` and `none_of` with an int and with text in
+one program, built every way.
+
+**The compilers** write one enum for each copy (`z_Maybe_int`, its
+cases `zeno_new_Maybe_int_Just` and `zeno_case_Maybe_int_Nothing`),
+and nothing for the generic. A copy's cases are left out of the table
+that finds a case by its name alone, since every copy has a `Just`;
+a case of a copy is found by the copy the checker noted, and a pattern
+finds its case in the enum of the value matched (`case_in`). An enum
+that is not generic goes the way it went, and `tools/same.py` shows
+that no program without a generic enum is built differently. With no
+collector a `Maybe[Frame]` owns its frame and a `Maybe[list[int]]` its
+list, as an enum that carries them does (5.16); a name a `case` gives
+to what it carries is a look, by the rules of `match`. The interpreter
+and the VM run the generic as it is written. The targets do not look
+at types.
+
+**Tests.** `checker::tests::a_generic_enum_takes_its_types_from_where_it_is_used`,
+`what_a_generic_enum_says_when_it_cannot`, and
+`emit_c::tests::a_generic_enum_every_way` with
+`tools/targets/edge-generic-enum.zeno`: `Maybe`, `Result` and a
+`Chain[T]` that holds itself, over numbers, text, a list and an
+object; `Nothing` in each place that says its type; copies made
+inside generic functions and a generic class; `Maybe[Maybe[int]]` and
+`Maybe[int] or none`; a thousand rounds; and every way out of a
+`match` (its end, `return`, `break`, `continue`, an error raised
+inside and caught outside); and several values from one function
+(chapter 57), one of them a `Maybe[T]`, from a generic function and a
+plain one. It prints what `zeno run` prints in the
+six builds, and with no collector 0 blocks are left. `tools/refused.py`
+has `Opt[int]`, `Opt[str]`, `Opt[list[int]]` and `Opt[P]` among its
+types; every refusal it finds for them is one a plain enum or a list
+gets in the same place.
+
+### 58.2 A look at a copy, given to a parameter of a generic
+
+```zeno
+function size[T](s: Stack[T]) -> int { return len(s.items) }
+
+let s = Stack([1, 2])
+print(size(s))
+```
+
+With no collector, 0.7.0 refused this: "`s` of `size` should be
+Stack[T], but this is a Stack[int] that is only looked at". The
+argument is a look at a value that `s` owns, and the parameter, which
+has no `take`, looks: it is the right thing to pass. Working out `T`
+did not see through the look. It does now, for a `Stack[T]` and a
+`Maybe[T]` alike. The same program with a generic enum was the first
+to meet it (`count(chain)` of 58.1), and it is mended in the one place
+both go through (`bind`). A program 0.7.0 built is not touched: the
+change is only reached where the refusal was.
 
 ### 58.20 A default on a parameter of an interface's function
 
@@ -18531,6 +18689,7 @@ two results, or be a function of an `owned interface` that does
 both; the end of
 [`tools/targets/edge-interfaces.zeno`](../tools/targets/edge-interfaces.zeno)
 does each, in every build.
+
 
 ## 59. Cleaning up when a block ends, files in pieces, and folders
 
