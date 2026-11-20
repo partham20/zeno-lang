@@ -2498,3 +2498,51 @@ is not UTF-8 raises what `files.read` raises for such a file.
 
 The tests of 12.2 stay as they were written, and one is added: a
 `write` to a place that cannot be written raises at the `write`.
+
+### 21. 11.1 to 11.3, 2026-11-20: accepted
+
+Generic enums (b0a22b2, 58.1 and 58.2), bounds (7357805, 58.3 to
+58.5) and generic interfaces (144f4f6, 58.6) are **accepted, with one
+small thing to add.**
+
+**What was checked.** Two programs of the planner's own. The first:
+`Maybe[T]`, `Result[T, E]` and a `Tree[T]` that holds itself; a
+generic function that wraps a number, text, a float, a `bool` and a
+list, each a copy of its own; `Nothing` given its type by a result,
+a variable and a parameter; `match` that takes an object and a list
+out of a case; a list and a dict of `Maybe`, a `Maybe` that may be
+`none`, a `Maybe` of a `Maybe`; `==` between cases; three hundred
+rounds. The second: `largest[T is Ordered]` over ints, floats, text,
+a quantity and `u8`; a bound that is an interface of the program,
+with a `list[Circle]`; a class with a bound on one of two
+parameters; `Source[T]` with a class that is `Source[int]`, one that
+is `Source[str]` and a generic one that is `Source[T]`; a
+`list[Source[int]]`; a bound that is a copy, `[S is Source[str]]`.
+`zeno run`, the virtual machine, six builds and JavaScript, Python,
+Go, Java, Ruby and PHP agree on both, and with no collector no block
+is left. Twenty-six misuses each get a message that says what to
+write: `Nothing` where nothing says its type, a case left out of a
+`match`, a case name in two enums, a type that is not `Ordered`, a
+class that says it is, a bound that is not an interface, two
+interfaces for one parameter, a function the bound does not have, a
+class that says `Source` with no type, the wrong copy. A program's
+own `Ordered` is the program's. `tools/refused.py` ends with 0.
+`tools/same.py` against the tag: 541 different of 7,035; each is a
+program 0.7.0 refused, or one of two that item 9 accounted for
+(the mend of a crash on a field of a parameter that may be `none`).
+Six commits in Partha's name, with no other name in them.
+
+**Section 19 is set right:** the copies of a generic interface do
+not share an entry in the set of what takes out; each copy has its
+own, and a test holds it.
+
+**The one thing to add.** The builder found that `first([200 ms, 1
+s])`, a list of two units of one kind given to a generic, runs under
+`zeno run` and is refused by every build ("cannot tell what `T`
+is"), in 0.7.0 as now. By the rule of 9.9 a build takes what `zeno
+run` takes or the refusal is a row of the table. It is built, or it
+becomes a row with a message that says to write both in one unit,
+and `tools/refused.py` learns the case.
+
+**The `targets` run on item 10** (0c6e6f8) ended green in every
+language, so item 10 is closed.
