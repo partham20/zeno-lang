@@ -2916,6 +2916,11 @@ mod z {
     /// for UTF-8 is the order of the numbers of their characters.
     pub fn b_files_list(args: Vec<V>, line: usize) -> R {
         let folder = paths("list", &args, 1, line)?.remove(0);
+        // A system may say something else of a path with nothing in it:
+        // under WASI it is the folder the program runs in.
+        if folder.is_empty() {
+            return file_error(format!("there is no folder `{folder}`"), line);
+        }
         let found = match std::fs::read_dir(&folder) {
             Ok(found) => found,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
