@@ -61,8 +61,9 @@ The numbers are the decisions, for anyone who wants the argument.
 \section{The library}
 
 \begin{description}
-\item[Files in pieces.] A file is read whole, or as a list of lines
-  (6.12, 6.20).
+\item[Files in pieces.] A reader cannot go back or say where in the
+  file it is, does not wait for a file to grow, and reads only UTF-8;
+  each \verb|write| goes to the system at once (59.6).
 \item[The methods of text and lists written in Zeno.] A part of the
   library is written in Zeno itself: \verb|math.hypot|, the hyperbolic
   functions, \verb|math.gcd|, \verb|math.clamp| and the module

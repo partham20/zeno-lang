@@ -25,6 +25,8 @@ write bytes to a file & \verb|files.write_bytes(path, bytes)| & nothing \\
 list a folder & \verb|files.list(folder)| & \verb|list[str]| \\
 make a folder & \verb|files.make_folder(path)| & nothing \\
 put a path together & \verb|files.join(first, second)| & \verb|str| \\
+read a file in pieces & \verb|files.read_from(path)| & \verb|files.Reader| \\
+write a file in pieces & \verb|files.write_to(path)|, \verb|files.append_to(path)| & \verb|files.Writer| \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -197,9 +199,10 @@ end, so a file from Windows reads the same.
 Opening and closing is a pair that every program must get right on
 every path, errors included, and a file left open is a classic leak.
 Reading and writing whole files covers what most programs do, with no
-pair to get wrong. Reading a large file in pieces needs an open file
-with an owner, and waits for a program that needs it.
-(Decisions 6.12 and 6.13.)
+pair to get wrong. A large file, read in pieces, needs a file that
+stays open; that is the next section but one, where the pair is kept
+by the end of a block and not by the program. (Decisions 6.12, 6.13
+and 59.6.)
 \end{why}
 
 \subsection{When a file cannot be used}
@@ -375,6 +378,106 @@ has no folders, so there \verb|files.list| and
 can catch; \verb|files.join| works anywhere. There is no way yet to
 remove a folder. (Decisions 59.21 to 59.23.)
 
+\section{A file in pieces}
+
+\verb|files.read| reads a whole file into one text. A log of a
+gigabyte, or a file that grows while the program runs, wants a line
+or a few bytes at a time. \verb|files.read_from| opens a file to be
+read in pieces, and \verb|files.write_to| one to be written so:
+
+\begin{zeno}[file=errors.zeno, dir=pieces]
+import files
+
+files.write("big.log", "boot\nerror: no card\nready\nerror: low battery\n")
+
+let source = files.read_from("big.log")
+let errors = files.write_to("errors.log")
+
+for line in source {
+    if line.starts_with("error") {
+        errors.write(line + "\n")
+    }
+}
+print(files.read("errors.log"))
+\end{zeno}
+
+\verb|errors.log| was read while \verb|errors| was still open, and it
+held both lines already: every \verb|write| hands its text to the
+system before it gives back, so a write that cannot be done is a
+\verb|FileError| at that \verb|write|, where it can be caught. There
+is no \verb|close|. A \verb|files.Reader| and a \verb|files.Writer|
+are resources (\hyperref[ch-ownership]{Ownership}), so the file is
+closed when the \verb|let| that holds it, or the parameter that took
+it, ends: at the end of its block, at \verb|return| or \verb|break|,
+or as an error goes past. Here that is the end of the program.
+
+What a reader and a writer can do:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Write & Does \\
+\midrule
+\verb|reader.read_line()| & the next line without its line end, or \verb|none| after the last \\
+\verb|reader.read_bytes(count)| & up to \verb|count| bytes, as a \verb|list[u8]| \\
+\verb|for line in reader| & each line in turn \\
+\verb|writer.write(text)| & writes the text, and adds no line end \\
+\verb|writer.write_bytes(bytes)| & writes the bytes \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\verb|files.append_to| writes after what the file already holds, and
+makes the file if it is not there. A line ends at \verb|"\n"|, and a
+\verb|"\r"| just before it goes with it, as \verb|lines()| reads it.
+In a \verb|for| the loop holds one line at a time, and after a
+\verb|break| the reader goes on from where it stopped. The reader must
+have a name: \verb|for line in files.read_from(path)| is refused,
+because nothing would own the file to close it.
+
+The end of a file is where it ends at that moment. A read that found
+the end looks again the next time, so a reader follows a file that
+this program, or another, is still writing:
+
+\begin{zeno}[file=grow.zeno, dir=pieces]
+import files
+
+let out = files.write_to("grow.log")
+let source = files.read_from("grow.log")
+print(source.read_line())
+out.write("one\n")
+out.write("two, still being written")
+print(source.read_line())
+print(source.read_line())
+print(source.read_line())
+\end{zeno}
+
+What is there without a line end is given as a line, as the last line
+of any file is. The reader does not wait for more: when nothing new is
+there it gives \verb|none|, and the program decides when to look
+again.
+
+A program cannot make a reader itself, \verb|files.Reader(...)|, nor
+read from a writer or close either by hand; to close one sooner, give
+it to a function that takes it. With no collector a line is built in
+the text room, as \verb|input()| builds one, so a line longer than the
+room stops the program with the room's message; \verb|read_bytes|
+takes its list from the pool instead. A \verb|FileError| that nothing
+catches names a line of \verb|library/files.zeno|, where the reader
+is written in Zeno, and its message names the file.
+
+\begin{why}
+An open file is the pair this chapter kept away from: open and close,
+right on every path. A resource keeps the pair for the program: the
+close is at the end of the block that holds the file, which the reader
+can see, and an error cannot jump over it. Writing each piece through
+to the system at once means an error comes at the \verb|write| that
+caused it, where the program can catch it, and not at a close where it
+would have nowhere to go. The reader and writer are written in Zeno
+over six small built-ins, so a program that never reads a file in
+pieces carries none of it. (Decisions 59.6 and 59.7; new in 0.8.)
+\end{why}
+
 \section{A worked example: a log book}
 
 This program keeps a log of readings in a file. Each run adds the
@@ -486,7 +589,9 @@ which can always be caught. \verb|files.read_bytes| and
 \verb|write_bytes| work on a file as its bytes, in a \verb|list[u8]|.
 \verb|files.list| gives the names in a folder, sorted, and
 \verb|files.make_folder| makes one; \verb|files.join| puts a path
-together. \verb|json.parse| and \verb|json.write| read and write
+together. \verb|files.read_from|, \verb|write_to| and
+\verb|append_to| open a file to be read or written in pieces, and it is
+closed when its owner ends. \verb|json.parse| and \verb|json.write| read and write
 JSON.
 \end{summary}
 
