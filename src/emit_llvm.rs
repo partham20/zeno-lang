@@ -383,6 +383,8 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_files_remove", "declare void @zeno_files_remove(ptr, i32 signext, i32 signext)"),
     ("zeno_files_read_bytes", "declare ptr @zeno_files_read_bytes(ptr, i32 signext, i32 signext)"),
     ("zeno_files_write_bytes", "declare void @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_list", "declare ptr @zeno_files_list(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_make_folder", "declare void @zeno_files_make_folder(ptr, i32 signext, i32 signext)"),
     ("zeno_char_code", "declare i64 @zeno_char_code(ptr, i32 signext, i32 signext)"),
     ("zeno_char", "declare ptr @zeno_char(i64, i32 signext, i32 signext)"),
     ("zeno_list_sum_int", "declare i64 @zeno_list_sum_int(ptr, i32 signext, i32 signext)"),
@@ -1314,6 +1316,8 @@ const DECLARED_FOR_FIRMWARE: &[(&str, &str)] = &[
     ("zeno_files_remove", "declare zeroext i1 @zeno_files_remove(ptr, i32 signext, i32 signext)"),
     ("zeno_files_read_bytes", "declare zeroext i1 @zeno_files_read_bytes(ptr, i32 signext, i32 signext, ptr)"),
     ("zeno_files_write_bytes", "declare zeroext i1 @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_list", "declare zeroext i1 @zeno_files_list(ptr, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_make_folder", "declare zeroext i1 @zeno_files_make_folder(ptr, i32 signext, i32 signext)"),
 ];
 
 /// The error for a list that would outlive the statement that owns it:
@@ -6876,6 +6880,33 @@ impl Emitter<'_> {
                     return self.checked_call(call, &Kind::None, &["FileError".to_string()], span);
                 }
                 self.run("zeno_files_write_bytes", list);
+                Ok(Val::nothing())
+            }
+            // `files.list(folder)`: a new list of text, which is nobody's
+            // yet. `files.make_folder(path)`. The part of the runtime
+            // they are in is written when the IR calls one (59.20, 59.21).
+            ("files", "list", [folder]) if folder.kind == Kind::Str => {
+                let returns = Kind::List(Box::new(Kind::Str));
+                let list = format!("ptr {}, {}", folder.code, at(span));
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses("zeno_files_list");
+                    let call = format!("call zeroext i1 @zeno_files_list({list}");
+                    let names = self.checked_call(call, &returns, &["FileError".to_string()], span)?;
+                    return Ok(names.made());
+                }
+                let names = Val::new(self.call("ptr", "zeno_files_list", list), returns);
+                Ok(self.came_back(names).made())
+            }
+            ("files", "make_folder", [path]) if path.kind == Kind::Str => {
+                let list = format!("ptr {}, {}", path.code, at(span));
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses("zeno_files_make_folder");
+                    let call = format!("call zeroext i1 @zeno_files_make_folder({list}");
+                    return self.checked_call(call, &Kind::None, &["FileError".to_string()], span);
+                }
+                self.run("zeno_files_make_folder", list);
                 Ok(Val::nothing())
             }
             // `program.arguments()`: a new list, which is nobody's yet.

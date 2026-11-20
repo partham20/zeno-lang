@@ -2387,6 +2387,57 @@ object Z {
         fileError("cannot remove `" + path + "`", line)
     }
 
+    // `files.list(folder)`: the names in it, sorted by the numbers of their
+    // characters, as `zeno run` sorts them. Kotlin's own order for text
+    // goes by UTF-16, which puts some characters in another order. An
+    // empty path is the folder the program runs in, to the JVM, and no
+    // folder at all to Zeno.
+    fun byCharacters(a: String, b: String): Int {
+        var i = 0
+        var j = 0
+        while (i < a.length && j < b.length) {
+            val x = a.codePointAt(i)
+            val y = b.codePointAt(j)
+            if (x != y) return x.compareTo(y)
+            i += Character.charCount(x)
+            j += Character.charCount(y)
+        }
+        return (a.length - i).compareTo(b.length - j)
+    }
+
+    fun b_files_list(args: Array<Any?>, line: Int): Any? {
+        val folder = paths("list", args, 1, line)[0]
+        if (folder.isEmpty()) fileError("there is no folder ``", line)
+        val names = ArrayList<String>()
+        try {
+            java.nio.file.Files.list(java.io.File(folder).toPath()).use { found ->
+                found.forEach { entry -> names.add(entry.fileName.toString()) }
+            }
+        } catch (e: java.nio.file.NoSuchFileException) {
+            fileError("there is no folder `" + folder + "`", line)
+        } catch (e: Exception) {
+            fileError("cannot list the folder `" + folder + "`", line)
+        }
+        names.sortWith { a, b -> byCharacters(a, b) }
+        return ArrayList<Any?>(names)
+    }
+
+    // `files.make_folder(path)`: it worked if there is a folder there at the end.
+    fun b_files_make_folder(args: Array<Any?>, line: Int): Any? {
+        val path = paths("make_folder", args, 1, line)[0]
+        var folder = false
+        if (path.isNotEmpty()) {
+            try {
+                java.nio.file.Files.createDirectories(java.io.File(path).toPath())
+            } catch (e: Exception) {
+                // Said below.
+            }
+            folder = java.io.File(path).isDirectory
+        }
+        if (!folder) fileError("cannot make the folder `" + path + "`", line)
+        return null
+    }
+
     var arguments = arrayOf<String>()
 
     // `program.exit(code)`: what was printed goes out, and the program
@@ -2538,6 +2589,8 @@ object Z {
         BUILTINS["files.append"] = ::b_files_append
         BUILTINS["files.exists"] = ::b_files_exists
         BUILTINS["files.remove"] = ::b_files_remove
+        BUILTINS["files.list"] = ::b_files_list
+        BUILTINS["files.make_folder"] = ::b_files_make_folder
         BUILTINS["program.arguments"] = ::b_program_arguments
         BUILTINS["program.exit"] = ::b_program_exit
         BUILTINS["program.environment"] = ::b_program_environment

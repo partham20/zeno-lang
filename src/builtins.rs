@@ -1571,6 +1571,8 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("append", Value::Builtin(Builtin { name: "append", call: files_append })),
                 ("exists", Value::Builtin(Builtin { name: "exists", call: files_exists })),
                 ("remove", Value::Builtin(Builtin { name: "remove", call: files_remove })),
+                ("list", Value::Builtin(Builtin { name: "list", call: files_list })),
+                ("make_folder", Value::Builtin(Builtin { name: "make_folder", call: files_make_folder })),
             ],
         ),
         "program" => (
@@ -1845,6 +1847,47 @@ fn files_remove(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
         At::Nothing => file_error(format!("there is no file `{path}`"), span),
         At::File if std::fs::remove_file(path).is_ok() => Ok(Value::None),
         _ => file_error(format!("cannot remove `{path}`"), span),
+    }
+}
+
+/// `files.list(folder)`: the names in a folder, files and folders alike,
+/// sorted by the numbers of their characters, so that every engine and
+/// every system gives the same list (decision 59.20). `.` and `..` are
+/// not names in it.
+fn files_list(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let folder = paths("list", &args, 1, span)?[0];
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return file_error(format!("there is no folder `{folder}`"), span)
+        }
+        Err(_) => return file_error(format!("cannot list the folder `{folder}`"), span),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return file_error(format!("cannot list the folder `{folder}`"), span);
+        };
+        match entry.file_name().into_string() {
+            Ok(name) => names.push(name),
+            Err(_) => return file_error(format!("the folder `{folder}` holds a name that is not text"), span),
+        }
+    }
+    // Text in Rust is UTF-8, and its bytes sort as its characters do.
+    names.sort();
+    Ok(Value::list(names.into_iter().map(Value::str).collect()))
+}
+
+/// `files.make_folder(path)`: the folder is there afterwards, with every
+/// folder above it. One that is there already is left as it is. It
+/// worked if the path is a folder at the end, whatever was in the way
+/// (decision 59.21).
+fn files_make_folder(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    let path = paths("make_folder", &args, 1, span)?[0];
+    let _ = std::fs::create_dir_all(path);
+    match std::path::Path::new(path).is_dir() {
+        true => Ok(Value::None),
+        false => file_error(format!("cannot make the folder `{path}`"), span),
     }
 }
 

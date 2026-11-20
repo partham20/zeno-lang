@@ -1,0 +1,62 @@
+# Folders at their edges: the names in a folder, sorted the same way by
+# every language, a folder and those above it made, and a path joined.
+import files
+
+function attempt(what: str, action: function() -> str) {
+    try {
+        print(what, "->", action())
+    } except FileError as e {
+        print(what, "-> FileError:", e.message)
+    }
+}
+
+# A folder of the program's own, made with the folders above it. A
+# second time, it is there already, and that is no mistake.
+let top = "zeno-targets-folders"
+let deep = files.join(files.join(top, "made"), "inside/at last")
+files.make_folder(deep)
+files.make_folder(deep)
+files.make_folder(top + "/")
+print(files.list(files.join(top, "made")), files.list(deep))
+
+# Names that sort differently by bytes, by UTF-16 and by a dictionary.
+let names = ["b.txt", "B.txt", "a b", "a.txt", "a", "_", "10", "9", "é", "z", "😀", "ｚ", "~"]
+for name in names {
+    files.write(files.join(top, name), name)
+}
+# An empty folder has no names. (Every folder this program makes is
+# made before anything is listed, so a second run sees what the first
+# saw.)
+files.make_folder(files.join(top, "empty"))
+print(files.list(files.join(top, "empty")), len(files.list(files.join(top, "empty"))))
+let listed = files.list(top)
+print(listed)
+print(len(listed), "made" in listed)
+for name in listed {
+    if files.exists(files.join(top, name)) {
+        print(name, files.read(files.join(top, name)) == name)
+    }
+}
+
+# What cannot be done.
+attempt("list missing", function() -> str { return str(files.list("zeno-targets-no-such-folder")) })
+attempt("list a file", function() -> str { return str(files.list(files.join(top, "a.txt"))) })
+attempt("list empty name", function() -> str { return str(files.list("")) })
+attempt("make on a file", function() -> str {
+    files.make_folder(files.join(top, "a.txt"))
+    return "made"
+})
+attempt("make under a file", function() -> str {
+    files.make_folder(files.join(top, "a.txt/below"))
+    return "made"
+})
+attempt("make empty name", function() -> str {
+    files.make_folder("")
+    return "made"
+})
+
+# `files.join` is arithmetic on text, the same everywhere.
+let parts = [["a", "b"], ["a/", "b"], ["a", "/b"], ["a/", "/b"], ["", "b"], ["a", ""], ["", ""], ["/", "/"], ["a//", "b"], ["é", "😀"]]
+for pair in parts {
+    print(pair, "->", files.join(pair[0], pair[1]))
+}

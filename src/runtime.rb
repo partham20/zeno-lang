@@ -2403,6 +2403,38 @@ module Z
       file_error("cannot remove `" + path + "`", line)
     end
 
+    # `files.list(folder)`: the names in it, sorted by their bytes, which
+    # for UTF-8 is the order of the numbers of their characters.
+    def b_files_list(args, line)
+      folder, = paths("list", args, 1, line)
+      begin
+        found = Dir.children(folder)
+      rescue Errno::ENOENT
+        file_error("there is no folder `" + folder + "`", line)
+      rescue SystemCallError, IOError, ArgumentError
+        file_error("cannot list the folder `" + folder + "`", line)
+      end
+      names = found.map do |name|
+        name = name.dup.force_encoding(UTF8)
+        file_error("the folder `" + folder + "` holds a name that is not text", line) unless name.valid_encoding?
+        name
+      end
+      names.sort
+    end
+
+    # `files.make_folder(path)`: it worked if there is a folder there at the end.
+    def b_files_make_folder(args, line)
+      path, = paths("make_folder", args, 1, line)
+      begin
+        require "fileutils"
+        FileUtils.mkdir_p(path) unless path.empty?
+      rescue SystemCallError, IOError, ArgumentError
+        # Said below.
+      end
+      file_error("cannot make the folder `" + path + "`", line) unless !path.empty? && File.directory?(path)
+      nil
+    end
+
     # `program.exit(code)`: what was printed goes out, and the program
     # ends with `code`. `exit!` is not an exception a `rescue` could stop.
     def b_program_exit(args, line)

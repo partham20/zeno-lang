@@ -75,7 +75,7 @@ TARGETS = {
 
 # A page cannot end, has no environment, and shows a warning where it
 # shows the rest.
-PAGE_CANNOT = re.compile(r"\bsleep\(|\bfiles\.(write|append)\(|\bprogram\.(exit|environment|warn)\(")
+PAGE_CANNOT = re.compile(r"\bsleep\(|\bfiles\.(write|append|make_folder)\(|\bprogram\.(exit|environment|warn)\(")
 SAMPLE_RE = re.compile(r"\\begin\{zeno\}(?:\[(.*?)\])?\n(.*?)\\end\{zeno\}", re.S)
 
 

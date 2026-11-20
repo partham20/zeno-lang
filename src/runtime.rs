@@ -2912,6 +2912,44 @@ mod z {
         }
     }
 
+    /// `files.list(folder)`: the names in it, sorted by their bytes, which
+    /// for UTF-8 is the order of the numbers of their characters.
+    pub fn b_files_list(args: Vec<V>, line: usize) -> R {
+        let folder = paths("list", &args, 1, line)?.remove(0);
+        let found = match std::fs::read_dir(&folder) {
+            Ok(found) => found,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return file_error(format!("there is no folder `{folder}`"), line)
+            }
+            Err(_) => return file_error(format!("cannot list the folder `{folder}`"), line),
+        };
+        let mut names = Vec::new();
+        for entry in found {
+            let Ok(entry) = entry else {
+                return file_error(format!("cannot list the folder `{folder}`"), line);
+            };
+            match entry.file_name().into_string() {
+                Ok(name) => names.push(name),
+                Err(_) => return file_error(format!("the folder `{folder}` holds a name that is not text"), line),
+            }
+        }
+        names.sort();
+        Ok(new_list(names.iter().map(|name| s(name)).collect()))
+    }
+
+    /// `files.make_folder(path)`: it worked if there is a folder there at the end.
+    pub fn b_files_make_folder(args: Vec<V>, line: usize) -> R {
+        let path = paths("make_folder", &args, 1, line)?.remove(0);
+        if !path.is_empty() {
+            let _ = std::fs::create_dir_all(&path);
+        }
+        if !path.is_empty() && std::path::Path::new(&path).is_dir() {
+            Ok(V::None)
+        } else {
+            file_error(format!("cannot make the folder `{path}`"), line)
+        }
+    }
+
     /// `program.exit(code)`: what was printed goes out, and the program
     /// ends with `code`.
     pub fn b_program_exit(args: Vec<V>, line: usize) -> R {
@@ -3069,6 +3107,8 @@ mod z {
             "files.append" => b_files_append,
             "files.exists" => b_files_exists,
             "files.remove" => b_files_remove,
+            "files.list" => b_files_list,
+            "files.make_folder" => b_files_make_folder,
             "program.arguments" => b_program_arguments,
             "program.exit" => b_program_exit,
             "program.environment" => b_program_environment,

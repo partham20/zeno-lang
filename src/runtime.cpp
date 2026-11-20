@@ -34,9 +34,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <functional>
 #include <memory>
 #include <pthread.h>
+#include <sys/stat.h>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -2775,6 +2777,47 @@ V b_files_remove(const Args& args, int line) {
     fileError("cannot remove `" + path + "`", line);
 }
 
+bool isFolder(const string& path) {
+    struct stat info;
+    return !path.empty() && stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+// `files.list(folder)`: the names in it, sorted by their bytes, which for
+// UTF-8 is the order of the numbers of their characters.
+V b_files_list(const Args& args, int line) {
+    string folder = paths("list", args, 1, line)[0];
+    DIR* d = folder.empty() ? nullptr : opendir(folder.c_str());
+    if (!d) {
+        if (folder.empty() || errno == ENOENT) fileError("there is no folder `" + folder + "`", line);
+        fileError("cannot list the folder `" + folder + "`", line);
+    }
+    std::vector<string> names;
+    while (struct dirent* entry = readdir(d)) {
+        string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+        if (!validUtf8(name)) {
+            closedir(d);
+            fileError("the folder `" + folder + "` holds a name that is not text", line);
+        }
+        names.push_back(name);
+    }
+    closedir(d);
+    std::sort(names.begin(), names.end());
+    Args items;
+    for (auto& name : names) items.push_back(S(name));
+    return list(items);
+}
+
+// `files.make_folder(path)`: it worked if there is a folder there at the end.
+V b_files_make_folder(const Args& args, int line) {
+    string path = paths("make_folder", args, 1, line)[0];
+    for (size_t i = 1; i <= path.size(); i++) {
+        if (i == path.size() || path[i] == '/') mkdir(path.substr(0, i).c_str(), 0777);
+    }
+    if (!isFolder(path)) fileError("cannot make the folder `" + path + "`", line);
+    return V();
+}
+
 std::vector<string> arguments;
 
 // `program.exit(code)`: what was printed goes out, and the program ends
@@ -2879,7 +2922,7 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
             {"math.exp", b_math_exp}, {"math.log", b_math_log}, {"math.log2", b_math_log2}, {"math.log10", b_math_log10},
             {"time.sleep", b_time_sleep}, {"time.now", b_time_now},
             {"files.read", b_files_read}, {"files.write", b_files_write}, {"files.read_bytes", b_files_read_bytes}, {"files.write_bytes", b_files_write_bytes}, {"files.append", b_files_append},
-            {"files.exists", b_files_exists}, {"files.remove", b_files_remove},
+            {"files.exists", b_files_exists}, {"files.remove", b_files_remove}, {"files.list", b_files_list}, {"files.make_folder", b_files_make_folder},
             {"program.arguments", b_program_arguments}, {"program.exit", b_program_exit}, {"program.environment", b_program_environment}, {"program.warn", b_program_warn}, {"json.parse", b_json_parse}, {"json.write", b_json_write},
         };
         for (auto& w : WIDTHS) {

@@ -1451,6 +1451,73 @@ mod tests {
         );
     }
 
+    /// `files.list` and `files.make_folder` (decisions 59.20 and 59.21).
+    #[test]
+    fn a_folder_is_made_and_listed() {
+        let folder = scratch("folder");
+        let _ = std::fs::remove_dir_all(&folder);
+        let source = format!(
+            "import files\nlet top = \"{folder}\"\n\
+             files.make_folder(top + \"/deep/er\")\n\
+             files.make_folder(top + \"/deep/er\")\n\
+             files.make_folder(top)\n\
+             print(files.list(top + \"/deep\"), files.list(top + \"/deep/er\"))\n\
+             for name in [\"b\", \"B\", \"a b\", \"10\", \"9\", \"é\", \"ｚ\", \"😀\"] {{\n    files.write(top + \"/\" + name, name)\n}}\n\
+             let names = files.list(top)\n\
+             print(names)\n\
+             names.append(\"x\")\n\
+             print(len(files.list(top)))\n\
+             try {{\n    print(files.list(top + \"/b\"))\n}} except FileError as e {{\n    print(e.message == \"cannot list the folder `\" + top + \"/b`\")\n}}\n\
+             try {{\n    files.make_folder(top + \"/b/c\")\n}} except FileError as e {{\n    print(e.message == \"cannot make the folder `\" + top + \"/b/c`\")\n}}\n"
+        );
+        assert_eq!(
+            output(&source),
+            "[\"er\"] []\n[\"10\", \"9\", \"B\", \"a b\", \"b\", \"deep\", \"é\", \"ｚ\", \"😀\"]\n9\ntrue\ntrue\n"
+        );
+        assert_eq!(
+            error(&format!("import files\nprint(files.list(\"{folder}/none\"))")),
+            format!("uncaught FileError: there is no folder `{folder}/none`")
+        );
+        assert_eq!(error("import files\nprint(files.list(\"\"))"), "uncaught FileError: there is no folder ``");
+        assert_eq!(error("import files\nfiles.make_folder(\"\")"), "uncaught FileError: cannot make the folder ``");
+        assert_eq!(
+            error(&format!("import files\nfiles.make_folder(\"{folder}/b\")")),
+            format!("uncaught FileError: cannot make the folder `{folder}/b`")
+        );
+        // A name that is not UTF-8 is no text, and is said to be so,
+        // rather than changed into some other name.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = std::path::Path::new(&folder).join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+            std::fs::write(bad, "").unwrap();
+            assert_eq!(
+                error(&format!("import files\nprint(files.list(\"{folder}\"))")),
+                format!("uncaught FileError: the folder `{folder}` holds a name that is not text")
+            );
+        }
+        std::fs::remove_dir_all(&folder).unwrap();
+        // The checker knows them both.
+        assert_eq!(check_error("import files\nprint(files.list())"), "`list` takes 1 argument, but 0 were given");
+        assert_eq!(
+            check_error("import files\nfiles.make_folder(3)"),
+            "the path given to `files.make_folder` should be str, but this is int"
+        );
+        assert_eq!(
+            check_error("import files\nfiles.list([\"a\"])"),
+            "the folder given to `files.list` should be str, but this is list[str]"
+        );
+        assert_eq!(check_error("import files\nlet n: int = files.list(\"x\")"), "`n` should be int, but this is list[str]");
+        assert_eq!(
+            check_error("strict\nimport files\nfunction names() -> list[str] {\n    return files.list(\"x\")\n}\nprint(names())\n"),
+            "`names` can raise FileError here but does not say so. Add `raises FileError` to it, or catch the error"
+        );
+        assert_eq!(
+            check_error("strict\nimport files\nfunction make() {\n    files.make_folder(\"x\")\n}\nmake()\n"),
+            "`make` can raise FileError here but does not say so. Add `raises FileError` to it, or catch the error"
+        );
+    }
+
     #[test]
     fn a_file_that_cannot_be_used_is_a_file_error() {
         let path = scratch("missing.txt");

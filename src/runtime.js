@@ -1773,6 +1773,37 @@ const Z = (function () {
       fileError("cannot remove `" + path + "`", line);
     },
 
+    // `files.list(folder)`: the names in it, sorted by their bytes in
+    // UTF-8, which is the order of the numbers of their characters, as
+    // `zeno run` sorts them. JavaScript's own sort goes by UTF-16, which
+    // puts some characters in another order. The names are read as bytes
+    // so that one which is not UTF-8 is seen, and refused.
+    "files.list"(args, line) {
+      const [folder] = paths("list", args, 1, line);
+      if (!inNode) fileError("there is no folder `" + folder + "`", line);
+      let found;
+      try { found = fs.readdirSync(folder, { encoding: "buffer" }); } catch (e) {
+        fileError((e.code === "ENOENT" ? "there is no folder `" : "cannot list the folder `") + folder + "`", line);
+      }
+      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+      const names = [];
+      for (const name of found) {
+        try { names.push(decoder.decode(name)); } catch (e) { fileError("the folder `" + folder + "` holds a name that is not text", line); }
+      }
+      return names.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    },
+    // `files.make_folder(path)`: it worked if there is a folder there at the end.
+    "files.make_folder"(args, line) {
+      const [path] = paths("make_folder", args, 1, line);
+      let folder = false;
+      if (inNode) {
+        try { fs.mkdirSync(path, { recursive: true }); } catch (e) {}
+        try { folder = fs.statSync(path).isDirectory(); } catch (e) {}
+      }
+      if (!folder) fileError("cannot make the folder `" + path + "`", line);
+      return null;
+    },
+
     // `program.exit(code)`: what was printed goes out, and Node ends
     // with `code`. A page cannot end: the run stops, and the page stays.
     "program.exit"(args, line) {

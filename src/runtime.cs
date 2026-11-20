@@ -2603,6 +2603,55 @@ static class Z
         throw fileError("cannot remove `" + path + "`", line);
     }
 
+    // `files.list(folder)`: the names in it, sorted by the numbers of their
+    // characters, as `zeno run` sorts them. .NET's ordinal order goes by
+    // UTF-16, which puts some characters in another order.
+    static int byCharacters(string a, string b)
+    {
+        int i = 0, j = 0;
+        while (i < a.Length && j < b.Length)
+        {
+            int x = char.IsSurrogatePair(a, i) ? char.ConvertToUtf32(a, i) : a[i];
+            int y = char.IsSurrogatePair(b, j) ? char.ConvertToUtf32(b, j) : b[j];
+            if (x != y) return x.CompareTo(y);
+            i += x > 0xFFFF ? 2 : 1;
+            j += y > 0xFFFF ? 2 : 1;
+        }
+        return (a.Length - i).CompareTo(b.Length - j);
+    }
+
+    public static object b_files_list(object[] args, int line)
+    {
+        string folder = paths("list", args, 1, line)[0];
+        var names = new System.Collections.Generic.List<object>();
+        if (folder.Length > 0 && System.IO.Directory.Exists(folder))
+        {
+            try
+            {
+                foreach (string entry in System.IO.Directory.EnumerateFileSystemEntries(folder))
+                    names.Add(System.IO.Path.GetFileName(entry));
+            }
+            catch (System.Exception) { throw fileError("cannot list the folder `" + folder + "`", line); }
+            names.Sort((a, b) => byCharacters((string)a, (string)b));
+            return new ZList(names);
+        }
+        if (at(folder) == "nothing") throw fileError("there is no folder `" + folder + "`", line);
+        throw fileError("cannot list the folder `" + folder + "`", line);
+    }
+
+    // `files.make_folder(path)`: it worked if there is a folder there at the end.
+    public static object b_files_make_folder(object[] args, int line)
+    {
+        string path = paths("make_folder", args, 1, line)[0];
+        if (path.Length > 0)
+        {
+            try { System.IO.Directory.CreateDirectory(path); }
+            catch (System.Exception) { }
+            if (System.IO.Directory.Exists(path)) return null;
+        }
+        throw fileError("cannot make the folder `" + path + "`", line);
+    }
+
     static string[] arguments = new string[0];
 
     // `program.exit(code)`: what was printed goes out, and the program
@@ -2718,7 +2767,7 @@ static class Z
             ["math.exp"] = b_math_exp, ["math.log"] = b_math_log, ["math.log2"] = b_math_log2, ["math.log10"] = b_math_log10,
             ["time.sleep"] = b_time_sleep, ["time.now"] = b_time_now,
             ["files.read"] = b_files_read, ["files.write"] = b_files_write, ["files.read_bytes"] = b_files_read_bytes, ["files.write_bytes"] = b_files_write_bytes, ["files.append"] = b_files_append,
-            ["files.exists"] = b_files_exists, ["files.remove"] = b_files_remove,
+            ["files.exists"] = b_files_exists, ["files.remove"] = b_files_remove, ["files.list"] = b_files_list, ["files.make_folder"] = b_files_make_folder,
             ["program.arguments"] = b_program_arguments, ["program.exit"] = b_program_exit, ["program.environment"] = b_program_environment, ["program.warn"] = b_program_warn, ["json.parse"] = b_json_parse, ["json.write"] = b_json_write,
         };
         foreach (var name in WIDTHS.Keys)

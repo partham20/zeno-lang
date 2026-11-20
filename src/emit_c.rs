@@ -112,7 +112,11 @@ pub fn with_board_parts(runtime: &str, used: &[&str]) -> String {
 /// now on goes in a piece: a line here, `#ifdef` and `#endif /* name */`
 /// around it in runtime.c, and `uses_piece` where the C is written. LLVM
 /// finds the pieces by the functions its IR declares (`pieces_in_ir`).
-pub const PIECES: &[(&str, &str)] = &[("ZENO_RANGE_LIST", "zeno_range_list")];
+pub const PIECES: &[(&str, &str)] = &[
+    ("ZENO_RANGE_LIST", "zeno_range_list"),
+    ("ZENO_FILES_LIST", "zeno_files_list"),
+    ("ZENO_FILES_MAKE_FOLDER", "zeno_files_make_folder"),
+];
 
 /// `runtime` with each piece of `PIECES` that `used` names, and no other.
 pub fn with_pieces(runtime: &str, used: &[&str]) -> String {
@@ -6944,6 +6948,31 @@ impl Emitter<'_> {
                 };
                 bytes.made = true;
                 Ok(bytes)
+            }
+            // `files.list(folder)`: a new list of text, which is nobody's
+            // yet. `files.make_folder(path)`. Each is in a
+            // piece of the runtime (decisions 59.20 and 59.21).
+            ("files", "list", [folder]) if folder.kind == Kind::Str => {
+                self.uses_piece("ZENO_FILES_LIST");
+                let call = format!("zeno_files_list({}, {})", folder.code, self.at(span));
+                let returns = Kind::List(Box::new(Kind::Str));
+                self.built = !self.collector;
+                let mut names = if self.firmware {
+                    self.checked_call(call, returns, &["FileError".to_string()], span)?
+                } else {
+                    self.called(call, &vals, returns)
+                };
+                names.made = true;
+                Ok(names)
+            }
+            ("files", "make_folder", [path]) if path.kind == Kind::Str => {
+                self.uses_piece("ZENO_FILES_MAKE_FOLDER");
+                let call = format!("zeno_files_make_folder({}, {})", path.code, self.at(span));
+                self.built = !self.collector;
+                if self.firmware {
+                    return self.checked_call(call, Kind::None, &["FileError".to_string()], span);
+                }
+                Ok(self.called(call, &vals, Kind::None))
             }
             ("files", "write_bytes", [path, bytes])
                 if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Byte)) =>
@@ -16732,6 +16761,72 @@ try {
                  print(first(\"{path}\"))\n"
             ),
         );
+    }
+
+    /// Folders (decisions 59.20 to 59.22). The program finds the folder as
+    /// it left it, so every engine and every build prints the same.
+    const FOLDERS: &str = r#"import files
+
+function count(folder: str) -> int raises FileError {
+    let names: owned list[str] = files.list(folder)
+    return len(names)
+}
+
+let top = "TOP"
+files.make_folder(files.join(top, "deep/er"))
+files.make_folder(files.join(top, "deep/er/"))
+files.make_folder(top)
+for name in ["b.txt", "B.txt", "a b", "10", "9", "é", "ｚ", "😀"] {
+    files.write(files.join(top, name), name)
+}
+let names: owned list[str] = files.list(top)
+print(names)
+for name in names {
+    if name != "deep" {
+        print(name, files.read(files.join(top, name)) == name)
+    }
+}
+print(count(top), count(files.join(top, "deep")), count(files.join(top, "deep/er")))
+try {
+    print(count(files.join(top, "none")))
+} except FileError as error {
+    print(error.message.ends_with("none`"))
+}
+try {
+    print(count(files.join(top, "b.txt")))
+} except FileError as error {
+    print(error.message.starts_with("cannot list the folder"))
+}
+try {
+    files.make_folder(files.join(top, "b.txt/below"))
+} except FileError as error {
+    print(error.message.starts_with("cannot make the folder"))
+}
+try {
+    files.make_folder("")
+} except FileError as error {
+    print(error.message)
+}
+print(files.join("a", "b"), files.join("a/", "/b"), files.join("", "b"), files.join("a", ""))
+"#;
+
+    #[test]
+    fn folders_are_the_same_in_every_build() {
+        let top = scratch("folders");
+        let _ = std::fs::remove_dir_all(&top);
+        no_collector_as_interpreter("folders", &FOLDERS.replace("TOP", &top));
+        let _ = std::fs::remove_dir_all(&top);
+        // Uncaught, it stops the program as `files.read` does.
+        same_as_interpreter("folders-uncaught", &format!("import files\nprint(files.list(\"{top}\"))\n"));
+    }
+
+    /// A program that lists no folder has no folder code in it.
+    #[test]
+    fn folders_are_only_in_a_program_that_uses_them() {
+        let without = compile("import files\nprint(files.exists(\"x\"))\n").expect("it compiles");
+        assert!(!without.contains("zeno_file_list") && !without.contains("opendir"), "folder code in a program without folders");
+        let with = compile("import files\nprint(files.list(\".\"))\n").expect("it compiles");
+        assert!(with.contains("zeno_file_list") && with.contains("opendir"), "no folder code in a program that lists a folder");
     }
 
     /// `files.read_bytes` and `files.write_bytes` (decision 36.1). Each

@@ -2118,6 +2118,8 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "append") => Ty::Builtin("files.append"),
         ("files", "exists") => Ty::Builtin("files.exists"),
         ("files", "remove") => Ty::Builtin("files.remove"),
+        ("files", "list") => Ty::Builtin("files.list"),
+        ("files", "make_folder") => Ty::Builtin("files.make_folder"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
         ("program", "run") => Ty::Builtin("program.run"),
         ("program", "exit") => Ty::Builtin("program.exit"),
@@ -6996,9 +6998,10 @@ impl Checker {
                         return Ty::CLibrary(library);
                     }
                 }
-                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes" | "range")) {
-                    // The list of arguments, the bytes of a file, and the
-                    // numbers of a range, are new at each call.
+                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes" | "files.list" | "range")) {
+                    // The list of arguments, the bytes of a file, the
+                    // names in a folder and the numbers of a range, are
+                    // new at each call.
                     self.types.made.insert(expr as *const Expr as usize);
                 }
                 if let (Ty::BuiltinMethod(_, name), Ty::List(_)) = (&callee, &ty) {
@@ -8060,6 +8063,18 @@ impl Checker {
                     "exists" => Ty::Bool,
                     _ => Ty::None,
                 }
+            }
+            // `files.list(folder)`: the names in it, sorted, as a new list
+            // of text. `files.make_folder(path)`: the folder and those
+            // above it (decisions 59.20 and 59.21).
+            "files.list" | "files.make_folder" => {
+                let short = &name["files.".len()..];
+                if self.arity(short, arguments, 1, 1, span) {
+                    let what = if short == "list" { "the folder given to `files.list`" } else { "the path given to `files.make_folder`" };
+                    self.expect(&first, &Ty::Str, what, arguments[0].span);
+                }
+                self.can_raise("FileError", span);
+                if short == "list" { Ty::List(Box::new(Ty::Str)) } else { Ty::None }
             }
             // `files.read_bytes(path)` and `files.write_bytes(path, bytes)`:
             // a file as the bytes it holds, one `u8` an item (36.1).

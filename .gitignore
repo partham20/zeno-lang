@@ -20,3 +20,6 @@
 # Pages that `zeno build --web` writes
 *.web.html
 __pycache__/
+
+# What tools/targets/edge-folders.zeno makes, beside it
+/tools/targets/zeno-targets-folders/

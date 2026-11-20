@@ -2551,6 +2551,52 @@ class Z {
 
   static Object? b_files_exists(List<Object?> args, int line) => at(paths("exists", args, 1, line)[0]) == "file";
 
+  // `files.list(folder)`: the names in it, sorted by the numbers of their
+  // characters, as `zeno run` sorts them. Dart's own order for text goes
+  // by UTF-16, which puts some characters in another order.
+  static int byCharacters(String a, String b) {
+    final x = a.runes.iterator, y = b.runes.iterator;
+    while (true) {
+      final more = x.moveNext(), other = y.moveNext();
+      if (!more || !other) return (more ? 1 : 0) - (other ? 1 : 0);
+      if (x.current != y.current) return x.current.compareTo(y.current);
+    }
+  }
+
+  static Object? b_files_list(List<Object?> args, int line) {
+    final folder = paths("list", args, 1, line)[0];
+    if (folder.isNotEmpty && FileSystemEntity.typeSync(folder) == FileSystemEntityType.directory) {
+      final names = <String>[];
+      try {
+        for (final entry in Directory(folder).listSync(followLinks: false)) {
+          final p = entry.path;
+          final cut = math.max(p.lastIndexOf("/"), Platform.isWindows ? p.lastIndexOf("\\") : -1);
+          names.add(p.substring(cut + 1));
+        }
+      } on FileSystemException {
+        fileError("cannot list the folder `" + folder + "`", line);
+      }
+      names.sort(byCharacters);
+      return List<Object?>.of(names);
+    }
+    if (at(folder) == "nothing") fileError("there is no folder `" + folder + "`", line);
+    fileError("cannot list the folder `" + folder + "`", line);
+  }
+
+  // `files.make_folder(path)`: it worked if there is a folder there at the end.
+  static Object? b_files_make_folder(List<Object?> args, int line) {
+    final path = paths("make_folder", args, 1, line)[0];
+    if (path.isNotEmpty) {
+      try {
+        Directory(path).createSync(recursive: true);
+      } on FileSystemException {
+        // Said below.
+      }
+      if (FileSystemEntity.typeSync(path) == FileSystemEntityType.directory) return null;
+    }
+    fileError("cannot make the folder `" + path + "`", line);
+  }
+
   static Object? b_files_remove(List<Object?> args, int line) {
     final path = paths("remove", args, 1, line)[0];
     final where = at(path);
@@ -2710,6 +2756,8 @@ class Z {
     "files.append": b_files_append,
     "files.exists": b_files_exists,
     "files.remove": b_files_remove,
+    "files.list": b_files_list,
+    "files.make_folder": b_files_make_folder,
     "program.arguments": b_program_arguments,
     "program.exit": b_program_exit,
     "program.environment": b_program_environment,

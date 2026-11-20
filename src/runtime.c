@@ -5367,6 +5367,199 @@ static void zeno_program_exit(int64_t code, int line, int col) {
     zeno_stop((int)code);
 }
 
+#ifdef ZENO_FILES_LIST
+/* ------------------------------------------------------------ A folder's names
+ *
+ * `files.list(folder)` (decision 59.20). It has a twin in builtins.rs, and
+ * the two give the same answer and the same message in every case. This
+ * piece is written only into a program that calls it (decision 56.19).
+ *
+ * A folder is read with the functions of the system: `opendir` where
+ * there is POSIX (Linux, macOS), and the wide functions of Microsoft's C
+ * library on Windows, so that a name in Tamil arrives as UTF-8, as the
+ * command line does (above). A board has neither, and answers FileError,
+ * as it does for a file it has no system to keep. */
+#if defined(_WIN32)
+#include <sys/stat.h>
+#include <wchar.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <dirent.h>
+#endif
+
+/* The names in a folder, sorted by their bytes, which for UTF-8 is the
+ * order of the numbers of their characters. NULL when all went well, or
+ * the message of the FileError. */
+static const char *zeno_file_list(const char *folder, zeno_list **result) {
+    zeno_list *names = zeno_list_new(0);
+    bool good = true;
+#if defined(_WIN32)
+    /* `_wfindfirst64` is asked for every name in the folder: the folder,
+     * a `/` and a `*`. */
+    size_t size = strlen(folder);
+    int room = (int)size + 3;
+    char pattern[room];
+    memcpy(pattern, folder, size);
+    memcpy(pattern + size, "/*", 3);
+    __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int page, unsigned long flags, const char *bytes,
+                                                            int byte_length, wchar_t *wide, int room);
+    wchar_t wide[room];
+    if (MultiByteToWideChar(65001, 0, pattern, -1, wide, room) == 0) wide[0] = 0;
+    struct _wfinddata64_t found;
+    intptr_t search = wide[0] == 0 ? -1 : _wfindfirst64(wide, &found);
+    if (search == -1) {
+        /* Something that is there and is not a folder that can be read,
+         * or nothing at all. */
+        wchar_t whole[room];
+        if (MultiByteToWideChar(65001, 0, folder, -1, whole, room) == 0) whole[0] = 0;
+        struct _stat64 seen;
+        bool there = whole[0] != 0 && _wstat64(whole, &seen) == 0;
+        zeno_list_drop(names);
+        return there ? zeno_join(3, "cannot list the folder `", folder, "`") : zeno_join(3, "there is no folder `", folder, "`");
+    }
+    do {
+        if (wcscmp(found.name, L".") == 0 || wcscmp(found.name, L"..") == 0) continue;
+        int need = WideCharToMultiByte(65001, 0, found.name, -1, NULL, 0, NULL, NULL);
+        if (need < 1) {
+            good = false;
+            break;
+        }
+        char name[need];
+        WideCharToMultiByte(65001, 0, found.name, -1, name, need, NULL, NULL);
+        zeno_list_append(names, (zeno_slot){.s = zeno_piece(name, strlen(name))});
+    } while (_wfindnext64(search, &found) == 0);
+    _findclose(search);
+#elif defined(__unix__) || defined(__APPLE__)
+    DIR *open = opendir(folder);
+    if (open == NULL) {
+        bool missing = errno == ENOENT;
+        zeno_list_drop(names);
+        return missing ? zeno_join(3, "there is no folder `", folder, "`") : zeno_join(3, "cannot list the folder `", folder, "`");
+    }
+    struct dirent *entry;
+    while ((entry = readdir(open)) != NULL) {
+        const char *name = entry->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        size_t length = strlen(name);
+        if (!zeno_is_text((const unsigned char *)name, length)) {
+            good = false;
+            break;
+        }
+        zeno_list_append(names, (zeno_slot){.s = zeno_piece(name, length)});
+    }
+    (void)closedir(open);
+#else
+    good = false;
+#endif
+    if (!good) {
+#ifdef ZENO_NO_COLLECTOR
+        zeno_list_drop_text(names);
+#endif /* ZENO_NO_COLLECTOR */
+#if defined(_WIN32) || defined(__unix__) || defined(__APPLE__)
+        return zeno_join(3, "the folder `", folder, "` holds a name that is not text");
+#else
+        return zeno_join(3, "cannot list the folder `", folder, "`");
+#endif
+    }
+    zeno_list_sort(names, 2);
+    *result = names;
+    return NULL;
+}
+
+#ifndef ZENO_FIRMWARE
+
+static zeno_list *zeno_files_list(const char *folder, int line, int col) {
+    zeno_list *names = NULL;
+    zeno_file_done(zeno_file_list(folder, &names), line, col);
+    return names != NULL ? names : zeno_list_new(0);
+}
+
+#else /* ZENO_FIRMWARE */
+
+static bool zeno_files_list(const char *folder, int line, int col, zeno_list **result) {
+    return zeno_file_done(zeno_file_list(folder, result), line, col);
+}
+
+#endif /* ZENO_FIRMWARE */
+
+#endif /* ZENO_FILES_LIST */
+#ifdef ZENO_FILES_MAKE_FOLDER
+/* ------------------------------------------------------------- Making a folder
+ *
+ * `files.make_folder(path)` (decision 59.21), with its twin in
+ * builtins.rs. This piece is written only into a program that calls it
+ * (decision 56.19). */
+#if defined(_WIN32)
+#include <direct.h>
+#include <sys/stat.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <sys/stat.h>
+#endif
+
+#ifdef _WIN32
+/* UTF-8 to the two bytes or four a character of Windows (UTF-16), in
+ * memory of the caller's own, which holds `room` of them. */
+static void zeno_wide(const char *text, wchar_t *wide, int room) {
+    __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int page, unsigned long flags, const char *bytes,
+                                                            int byte_length, wchar_t *wide, int room);
+    wide[0] = 0;
+    if (MultiByteToWideChar(65001, 0, text, -1, wide, room) == 0) wide[0] = 0;
+}
+#endif
+
+/* Is there a folder at `path`? */
+static bool zeno_is_folder(const char *path) {
+#if defined(_WIN32)
+    int room = (int)strlen(path) + 1;
+    wchar_t wide[room];
+    zeno_wide(path, wide, room);
+    struct _stat64 seen;
+    return wide[0] != 0 && _wstat64(wide, &seen) == 0 && (seen.st_mode & _S_IFDIR) != 0;
+#elif defined(__unix__) || defined(__APPLE__)
+    struct stat seen;
+    return stat(path, &seen) == 0 && S_ISDIR(seen.st_mode);
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+/* The folder, and every folder above it that is not there yet. It worked
+ * if there is a folder at `path` at the end, whatever stood in the way. */
+static const char *zeno_file_make_folder(const char *path) {
+#if defined(_WIN32) || defined(__unix__) || defined(__APPLE__)
+    size_t size = strlen(path);
+    char part[size + 1];
+    for (size_t i = 1; i <= size; i++) {
+        if (i < size && path[i] != '/' && path[i] != '\\') continue;
+        memcpy(part, path, i);
+        part[i] = '\0';
+#if defined(_WIN32)
+        wchar_t wide[i + 1];
+        zeno_wide(part, wide, (int)i + 1);
+        if (wide[0] != 0) (void)_wmkdir(wide);
+#else
+        (void)mkdir(part, 0777);
+#endif
+    }
+#endif
+    return zeno_is_folder(path) ? NULL : zeno_join(3, "cannot make the folder `", path, "`");
+}
+
+#ifndef ZENO_FIRMWARE
+
+static void zeno_files_make_folder(const char *path, int line, int col) {
+    zeno_file_done(zeno_file_make_folder(path), line, col);
+}
+
+#else /* ZENO_FIRMWARE */
+
+static bool zeno_files_make_folder(const char *path, int line, int col) {
+    return zeno_file_done(zeno_file_make_folder(path), line, col);
+}
+
+#endif /* ZENO_FIRMWARE */
+
+#endif /* ZENO_FILES_MAKE_FOLDER */
 /* `program.environment(name)`: a copy of what the environment says,
  * or NULL, which is `none`. The copy is the program's to keep: the
  * environment's own text can change under it. */

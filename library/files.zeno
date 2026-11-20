@@ -1,0 +1,33 @@
+# The part of `files` that is written in Zeno.
+#
+# `files.read`, `files.list` and the rest ask the machine, so they are
+# built into Zeno, once for every way it runs a program. What is in
+# this file is arithmetic on text, written once, here. A program
+# reaches both the same way: `import files`, and then
+# `files.join("logs", "today.txt")`.
+#
+# Only the functions a program uses are put into it.
+strict
+
+import files
+
+# Two parts of a path, joined with one `/` between them:
+# `join("logs", "today.txt")` is `"logs/today.txt"`, and so is
+# `join("logs/", "/today.txt")`. Every system Zeno runs on takes `/`
+# between the parts of a path, Windows too, so the path is the same
+# text everywhere. A first part that is empty is no folder at all, and
+# gives the second part as it is (decision 59.22).
+function join(first: str, second: str) -> str {
+    if first == "" {
+        return second
+    }
+    let ends = first.ends_with("/")
+    let begins = second.starts_with("/")
+    if ends and begins {
+        return first + second.slice(1)
+    }
+    if ends or begins {
+        return first + second
+    }
+    return first + "/" + second
+}

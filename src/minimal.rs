@@ -332,7 +332,12 @@ const HEADERS: &[(&str, &[&str])] = &[
     ("time.h", &["nanosleep", "clock_gettime", "timespec", "time_t", "CLOCK_MONOTONIC"]),
     ("malloc.h", &["_aligned_malloc", "_aligned_free"]),
     ("fcntl.h", &["_O_BINARY"]),
-    ("io.h", &["_setmode", "_fileno"]),
+    ("io.h", &["_setmode", "_fileno", "_wfindfirst64", "_wfindnext64", "_findclose", "_wfinddata64_t"]),
+    // The part of the runtime for folders (decisions 59.20 and 59.21).
+    ("dirent.h", &["DIR", "opendir", "readdir", "closedir", "dirent"]),
+    ("sys/stat.h", &["stat", "S_ISDIR", "mkdir", "_stat64", "_wstat64", "_S_IFDIR"]),
+    ("direct.h", &["_wmkdir"]),
+    ("wchar.h", &["wcscmp"]),
 ];
 
 /// What `<stdio.h>` brings. A program that uses any of it reads or

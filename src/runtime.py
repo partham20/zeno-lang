@@ -2390,6 +2390,38 @@ def _b_files_remove(args, line):
     _file_error("cannot remove `" + path + "`", line)
 
 
+# `files.list(folder)`: the names in it, sorted by the numbers of their
+# characters, as `zeno run` sorts them. The folder is read as bytes, so
+# that a name which is not UTF-8 is seen, and refused, as it is there.
+def _b_files_list(args, line):
+    (folder,) = _paths("list", args, 1, line)
+    try:
+        found = _os.listdir(folder.encode("utf-8"))
+    except FileNotFoundError:
+        _file_error("there is no folder `" + folder + "`", line)
+    except (OSError, ValueError):
+        _file_error("cannot list the folder `" + folder + "`", line)
+    names = []
+    for name in found:
+        try:
+            names.append(name.decode("utf-8"))
+        except UnicodeDecodeError:
+            _file_error("the folder `" + folder + "` holds a name that is not text", line)
+    return sorted(names)
+
+
+# `files.make_folder(path)`: it worked if there is a folder there at the end.
+def _b_files_make_folder(args, line):
+    (path,) = _paths("make_folder", args, 1, line)
+    try:
+        _os.makedirs(path, exist_ok=True)
+    except (OSError, ValueError):
+        pass
+    if not _os.path.isdir(path):
+        _file_error("cannot make the folder `" + path + "`", line)
+    return None
+
+
 def _b_json_parse(args, line):
     _arity("parse", args, 1, 1, line)
     s = _text("parse", args[0], line)
@@ -2445,6 +2477,8 @@ BUILTINS = {
     "files.append": lambda args, line: _put("append", args, True, line),
     "files.exists": lambda args, line: _at(_paths("exists", args, 1, line)[0]) == "file",
     "files.remove": _b_files_remove,
+    "files.list": _b_files_list,
+    "files.make_folder": _b_files_make_folder,
     "program.exit": _b_program_exit,
     "program.environment": _b_program_environment,
     "program.warn": _b_program_warn,

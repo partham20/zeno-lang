@@ -1968,6 +1968,38 @@ final class Z {
         self::fileError("cannot remove `" . $path . "`", $line);
     }
 
+    // `files.list(folder)`: the names in it, sorted by their bytes, which
+    // for UTF-8 is the order of the numbers of their characters.
+    static function b_files_list(array $args, int $line) {
+        [$folder] = self::paths("list", $args, 1, $line);
+        try {
+            $found = @scandir($folder);
+        } catch (ValueError $e) {
+            $found = false;
+        }
+        if ($found === false) {
+            self::fileError(($folder !== "" && file_exists($folder) ? "cannot list the folder `" : "there is no folder `") . $folder . "`", $line);
+        }
+        $names = [];
+        foreach ($found as $name) {
+            if ($name === "." || $name === "..") continue;
+            if (preg_match('//u', $name) !== 1) self::fileError("the folder `" . $folder . "` holds a name that is not text", $line);
+            $names[] = $name;
+        }
+        sort($names, SORT_STRING);
+        return new ZList($names);
+    }
+    // `files.make_folder(path)`: it worked if there is a folder there at the end.
+    static function b_files_make_folder(array $args, int $line) {
+        [$path] = self::paths("make_folder", $args, 1, $line);
+        try {
+            if (!is_dir($path)) @mkdir($path, 0777, true);
+        } catch (ValueError $e) {
+        }
+        if ($path === "" || !is_dir($path)) self::fileError("cannot make the folder `" . $path . "`", $line);
+        return null;
+    }
+
     // `program.exit(code)`: what was printed goes out, and the program
     // ends with `code`.
     static function b_program_exit(array $args, int $line) {

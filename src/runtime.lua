@@ -2348,6 +2348,82 @@ function Z.b_files_remove(args, line)
   file_error("cannot remove `" .. path .. "`", line)
 end
 
+-- Lua itself cannot see into a folder. Where LuaFileSystem is installed,
+-- it is used. Where it is not, on a system with a POSIX shell, `find` and
+-- `mkdir -p` are.
+local has_lfs, lfs = pcall(require, "lfs")
+local posix = package.config:sub(1, 1) == "/"
+local function shell_quoted(path)
+  if path:sub(1, 1) == "-" then path = "./" .. path end
+  return "'" .. path:gsub("'", "'\\''") .. "'"
+end
+local function is_folder(path)
+  if path == "" or path:find("\0", 1, true) then return false end
+  if has_lfs then return lfs.attributes(path, "mode") == "directory" end
+  if not posix then return false end
+  local file = io.open(path .. "/.", "rb")
+  if file then file:close() end
+  return file ~= nil
+end
+-- Sorted by their bytes, which for UTF-8 is the order of the numbers of
+-- their characters, whatever the locale says.
+local function by_bytes(a, b)
+  for i = 1, math.min(#a, #b) do
+    local x, y = a:byte(i), b:byte(i)
+    if x ~= y then return x < y end
+  end
+  return #a < #b
+end
+
+-- `files.list(folder)`: the names in it, sorted.
+function Z.b_files_list(args, line)
+  local folder = paths("list", args, 1, line)
+  if not is_folder(folder) then
+    if at_path(folder) == "nothing" then file_error("there is no folder `" .. folder .. "`", line) end
+    file_error("cannot list the folder `" .. folder .. "`", line)
+  end
+  local names = {}
+  local ok = false
+  if has_lfs then
+    ok = pcall(function()
+      for name in lfs.dir(folder) do
+        if name ~= "." and name ~= ".." then names[#names + 1] = name end
+      end
+    end)
+  elseif posix then
+    local out = io.popen("find " .. shell_quoted(folder) .. " -mindepth 1 -maxdepth 1 -print0 2>/dev/null", "r")
+    if out then
+      local found = out:read("a") or ""
+      ok = out:close()
+      for entry in found:gmatch("([^%z]+)%z") do
+        names[#names + 1] = entry:match("([^/]+)$")
+      end
+    end
+  end
+  if not ok then file_error("cannot list the folder `" .. folder .. "`", line) end
+  for i = 1, #names do
+    if not utf8.len(names[i]) then file_error("the folder `" .. folder .. "` holds a name that is not text", line) end
+  end
+  table.sort(names, by_bytes)
+  return list(names)
+end
+
+-- `files.make_folder(path)`: it worked if there is a folder there at the end.
+function Z.b_files_make_folder(args, line)
+  local path = paths("make_folder", args, 1, line)
+  if path ~= "" and not path:find("\0", 1, true) and not is_folder(path) then
+    if has_lfs then
+      for i = 1, #path do
+        if i == #path or path:sub(i + 1, i + 1) == "/" then lfs.mkdir(path:sub(1, i)) end
+      end
+    elseif posix then
+      os.execute("mkdir -p -- " .. shell_quoted(path) .. " 2>/dev/null")
+    end
+  end
+  if not is_folder(path) then file_error("cannot make the folder `" .. path .. "`", line) end
+  return NONE
+end
+
 -- `program.exit(code)`: what was printed goes out, and the program ends
 -- with `code`.
 function Z.b_program_exit(args, line)

@@ -46,6 +46,13 @@ pub const PARTS: &[Part] = &[
         built_in_too: true,
     },
     Part {
+        module: "files",
+        path: "library/files.zeno",
+        source: include_str!("../library/files.zeno"),
+        names: &["join"],
+        built_in_too: true,
+    },
+    Part {
         module: "random",
         path: "library/random.zeno",
         source: include_str!("../library/random.zeno"),

@@ -2348,6 +2348,57 @@ final class Z {
         throw fileError("cannot remove `" + path + "`", line);
     }
 
+    // `files.list(folder)`: the names in it, sorted by the numbers of their
+    // characters, as `zeno run` sorts them. Java's own order for text goes
+    // by UTF-16, which puts some characters in another order. An empty
+    // path is the folder the program runs in, to Java, and no folder at
+    // all to Zeno.
+    static int byCharacters(String a, String b) {
+        int i = 0, j = 0;
+        while (i < a.length() && j < b.length()) {
+            int x = a.codePointAt(i), y = b.codePointAt(j);
+            if (x != y) return Integer.compare(x, y);
+            i += Character.charCount(x);
+            j += Character.charCount(y);
+        }
+        return Integer.compare(a.length() - i, b.length() - j);
+    }
+
+    static Object b_files_list(Object[] args, int line) {
+        String folder = paths("list", args, 1, line)[0];
+        if (folder.isEmpty()) throw fileError("there is no folder ``", line);
+        var names = new java.util.ArrayList<Object>();
+        try (var found = java.nio.file.Files.list(java.nio.file.Path.of(folder))) {
+            found.forEach(entry -> names.add(entry.getFileName().toString()));
+        } catch (java.nio.file.NoSuchFileException e) {
+            throw fileError("there is no folder `" + folder + "`", line);
+        } catch (java.io.IOException | RuntimeException e) {
+            throw fileError("cannot list the folder `" + folder + "`", line);
+        }
+        names.sort((a, b) -> byCharacters((String) a, (String) b));
+        return new ZList(names);
+    }
+
+    // `files.make_folder(path)`: it worked if there is a folder there at the end.
+    static Object b_files_make_folder(Object[] args, int line) {
+        String path = paths("make_folder", args, 1, line)[0];
+        boolean folder = false;
+        if (!path.isEmpty()) {
+            try {
+                java.nio.file.Files.createDirectories(java.nio.file.Path.of(path));
+            } catch (java.io.IOException | RuntimeException e) {
+                // Said below.
+            }
+            try {
+                folder = java.nio.file.Files.isDirectory(java.nio.file.Path.of(path));
+            } catch (RuntimeException e) {
+                folder = false;
+            }
+        }
+        if (!folder) throw fileError("cannot make the folder `" + path + "`", line);
+        return null;
+    }
+
     static String[] arguments = new String[0];
 
     // `program.exit(code)`: what was printed goes out, and the program
@@ -2484,6 +2535,8 @@ final class Z {
         BUILTINS.put("files.append", Z::b_files_append);
         BUILTINS.put("files.exists", Z::b_files_exists);
         BUILTINS.put("files.remove", Z::b_files_remove);
+        BUILTINS.put("files.list", Z::b_files_list);
+        BUILTINS.put("files.make_folder", Z::b_files_make_folder);
         BUILTINS.put("program.arguments", Z::b_program_arguments);
         BUILTINS.put("program.exit", Z::b_program_exit);
         BUILTINS.put("program.environment", Z::b_program_environment);

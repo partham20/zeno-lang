@@ -3404,6 +3404,41 @@ func Zb_files_remove(args []ZV, line int) ZV {
 	return nil
 }
 
+// `files.list(folder)`: the names in it, sorted by their bytes, which for
+// UTF-8 is the order of the numbers of their characters. `os.ReadDir`
+// gives them in that order already.
+func Zb_files_list(args []ZV, line int) ZV {
+	folder := zPaths("list", args, 1, line)[0]
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		if os.IsNotExist(err) {
+			zFileError("there is no folder `"+folder+"`", line)
+		}
+		zFileError("cannot list the folder `"+folder+"`", line)
+	}
+	out := make([]ZV, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if !utf8.ValidString(name) {
+			zFileError("the folder `"+folder+"` holds a name that is not text", line)
+		}
+		out = append(out, name)
+	}
+	return &ZList{out}
+}
+
+// `files.make_folder(path)`: it worked if there is a folder there at the end.
+func Zb_files_make_folder(args []ZV, line int) ZV {
+	path := zPaths("make_folder", args, 1, line)[0]
+	if path != "" {
+		_ = os.MkdirAll(path, 0o777)
+	}
+	if info, err := os.Stat(path); path == "" || err != nil || !info.IsDir() {
+		zFileError("cannot make the folder `"+path+"`", line)
+	}
+	return nil
+}
+
 // `program.exit(code)`: what was printed goes out, and the program ends
 // with `code`.
 func Zb_program_exit(args []ZV, line int) ZV {
@@ -3536,7 +3571,7 @@ func init() {
 		"math.log": Zb_math_log, "math.log2": Zb_math_log2, "math.log10": Zb_math_log10,
 		"time.sleep": Zb_time_sleep, "time.now": Zb_time_now,
 		"files.read": Zb_files_read, "files.write": Zb_files_write, "files.read_bytes": Zb_files_read_bytes, "files.write_bytes": Zb_files_write_bytes, "files.append": Zb_files_append,
-		"files.exists": Zb_files_exists, "files.remove": Zb_files_remove,
+		"files.exists": Zb_files_exists, "files.remove": Zb_files_remove, "files.list": Zb_files_list, "files.make_folder": Zb_files_make_folder,
 		"program.arguments": Zb_program_arguments, "program.exit": Zb_program_exit, "program.environment": Zb_program_environment, "program.warn": Zb_program_warn, "json.parse": Zb_json_parse, "json.write": Zb_json_write,
 		"u8": Zb_u8, "u8.wrap": Zb_u8_wrap, "u16": Zb_u16, "u16.wrap": Zb_u16_wrap,
 		"u32": Zb_u32, "u32.wrap": Zb_u32_wrap, "i8": Zb_i8, "i8.wrap": Zb_i8_wrap,
