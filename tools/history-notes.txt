@@ -620,3 +620,6 @@ ab9fdc7 A resource written out among several values is refused as one a call giv
 0d12e31 A file in pieces: `files.read_from` gives a Reader with `read_line`, `read_bytes` and `for line in reader`, `files.write_to` and `files.append_to` give a Writer, closed when the owner ends, written in Zeno over six built-ins, in every engine, build and target (decisions 59.6 and 59.7).
 9645274 Decisions 59.6 and 59.7 and docs/files-in-pieces.md: a file read and written in pieces, and what a program cannot touch.
 6c93f7a A named function given to a function that gives several values is called with the places for the later ones in every LLVM build (the last check of where the items meet).
+fe23d35 `files.list("")` raises in the WebAssembly target too, where WASI took an empty path for the current folder.
+53c24be A reader reads on when the file has grown since it met the end, in every engine, build and target, and `zeno test --build --llvm` takes the pieces of the runtime a test uses.
+c1b5897 Decision 59.6 and docs/files-in-pieces.md: a file that grows, a long line with no collector, and the line an uncaught error names.
