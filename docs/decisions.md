@@ -19332,6 +19332,26 @@ number). The check is written once, in Zeno, in `read_bytes`.
 **On a board** these are the C library's, and a board with no file
 system answers `FileError`, as `files.read` does there (6.20).
 
+**The end is where the file ends at that moment** (plan, Changes 24). A
+read that found the end looks again the next time: what was written to
+the file since, by this program or another, is read. What is there
+without a line end is given as a line, as the last line of any file is;
+a `"\n"` written after it then ends an empty line. The reader does not
+wait for more. Each engine had a rule of its own before: `zeno run`, the
+VM and most targets read on, and the C library's `getc` remembers the
+end, so every build gave `none` for ever. `clearerr` (C, C++), a seek to
+where the stream is (PHP), and no "ended" mark kept beside a buffer (JS,
+TS, Dart) make them one. C# opens both kinds shared both ways, so that a
+file can be read while a Writer has it, as on every other system.
+
+**With no collector** a line is built in the text room, as `input()`'s
+is, so a line longer than the room stops the program with the room's own
+message; the bytes of `read_bytes` are a list from the pool.
+
+**An error that nothing catches names `library/files.zeno`**, the line
+in the library that called the built-in, and not the program's line
+(33.2: an error names where it was raised). It is in `missing.md`.
+
 ### 59.7 `for line in reader`
 
 A loop over a dict is given its keys (6.38), and a loop over a reader is

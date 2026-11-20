@@ -135,6 +135,7 @@ C.
 | ~~`program.exit(code)` and the environment~~ (6.19) | **Done** (chapter 34): `program.exit` and `program.environment`, in every engine and target |
 | ~~Writing to the error stream~~ | **Done**: `program.warn(text)` (34.3) |
 | ~~**A file read in pieces**~~ (6.12, 6.20) | **Done** in 0.8.0 (59.6): `files.read_from`, `files.write_to`, `files.append_to`, closed when the owner ends ([`files-in-pieces.md`](files-in-pieces.md)) |
+| **An uncaught error of a library function written in Zeno names the library's line** (59.6, 33.2) | Leave for now. `files.read_from` of a missing file, uncaught, points at `library/files.zeno:86`, not the program's line. Naming the caller's line too wants a line for each call a library makes, in every engine |
 | ~~**Folders**: what is in one, making one, joining the parts of a path~~ | **Done** in 0.8.0 (59.20 to 59.22, [`folders.md`](folders.md)). Removing one is left |
 | **The date and the time of day** | Build: `time` has only a stopwatch today |
 | **The network** outside a page: a socket, an HTTP request | After tasks, for a server. `web.fetch` in a page is there |
