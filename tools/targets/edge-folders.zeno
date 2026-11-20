@@ -20,7 +20,7 @@ files.make_folder(top + "/")
 print(files.list(files.join(top, "made")), files.list(deep))
 
 # Names that sort differently by bytes, by UTF-16 and by a dictionary.
-let names = ["b.txt", "B.txt", "a b", "a.txt", "a", "_", "10", "9", "é", "z", "😀", "ｚ", "~"]
+let names = ["b.txt", "C.txt", "a b", "a.txt", "a", "_", "10", "9", "é", "z", "😀", "ｚ", "~"]
 for name in names {
     files.write(files.join(top, name), name)
 }

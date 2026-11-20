@@ -45,7 +45,7 @@ capitals before small letters, and a name with a character from
 beyond the first 65,536 comes after one without:
 
 ```
-["10", "9", "B.txt", "_", "a", "a b", "a.txt", "b.txt", "z", "~", "é", "ｚ", "😀"]
+["10", "9", "C.txt", "_", "a", "a b", "a.txt", "b.txt", "z", "~", "é", "ｚ", "😀"]
 ```
 
 The system gives the names in an order of its own, which is not the
@@ -144,6 +144,18 @@ as before, to the byte.
   reads `é` in a name as `?`, so the Java and Kotlin targets list a
   name that `files.read` cannot open. Set `LC_ALL=C.UTF-8`, or any
   UTF-8 setting, and they list it as every other engine does.
+- **Tell apart two names that differ only in case, on a disk that does
+  not.** Zeno lists what the disk holds. On Windows and macOS, as they
+  are set up out of the box, `files.write("b.txt", ...)` and
+  `files.write("B.txt", ...)` write one file, and the folder holds one
+  name.
+- **A name that is not ASCII, in a C or LLVM build on Windows, made by
+  another program.** A build reads and writes a file through the C
+  library's `fopen`, which takes a name through the machine's code
+  page, and `files.list` and `files.make_folder` take names the same
+  way, so what the program writes it lists and reads back by the same
+  name. A name the code page cannot hold, made by `zeno run` or another
+  program, is listed with question marks, and does not open.
 - **Lua without LuaFileSystem on Windows.** Lua itself cannot see into
   a folder; the Lua target uses LuaFileSystem where it is installed,
   and `find` and `mkdir -p` where there is a POSIX shell.

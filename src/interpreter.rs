@@ -1542,7 +1542,7 @@ mod tests {
              files.make_folder(top + \"/deep/er\")\n\
              files.make_folder(top)\n\
              print(files.list(top + \"/deep\"), files.list(top + \"/deep/er\"))\n\
-             for name in [\"b\", \"B\", \"a b\", \"10\", \"9\", \"é\", \"ｚ\", \"😀\"] {{\n    files.write(top + \"/\" + name, name)\n}}\n\
+             for name in [\"b\", \"C\", \"a b\", \"10\", \"9\", \"é\", \"ｚ\", \"😀\"] {{\n    files.write(top + \"/\" + name, name)\n}}\n\
              let names = files.list(top)\n\
              print(names)\n\
              names.append(\"x\")\n\
@@ -1552,7 +1552,7 @@ mod tests {
         );
         assert_eq!(
             output(&source),
-            "[\"er\"] []\n[\"10\", \"9\", \"B\", \"a b\", \"b\", \"deep\", \"é\", \"ｚ\", \"😀\"]\n9\ntrue\ntrue\n"
+            "[\"er\"] []\n[\"10\", \"9\", \"C\", \"a b\", \"b\", \"deep\", \"é\", \"ｚ\", \"😀\"]\n9\ntrue\ntrue\n"
         );
         assert_eq!(
             error(&format!("import files\nprint(files.list(\"{folder}/none\"))")),

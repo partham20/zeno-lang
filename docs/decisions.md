@@ -19453,6 +19453,21 @@ Node do not. Zeno takes the second: ``there is no folder
 `` ``, in every engine. `"."` is the folder the program runs in, on
 every system.
 
+**What the disk holds, and as `files.read` opens it** (plan, Changes 28).
+Zeno lists the names the disk holds. On a disk that does not tell
+capitals from small letters, as on Windows and macOS out of the box,
+`b` and `B` are one file and one name; the tests use names that differ
+by more than case. And a name that `files.list` gives opens its file
+when it is handed to `files.read`, on every system. A C or LLVM build
+on Windows reads and writes through `fopen`, which takes a name through
+the machine's code page; 0.7.0's `files.read` and `files.write` do, and
+by 56.19 they stay as they were. So the pieces of `files.list` and
+`files.make_folder` take names the same way, with the C library's
+`_findfirst64`, `_stat64` and `_mkdir`, and not its wide functions,
+which turned a name `files.write` had made into a second, other name:
+`é` came back as `Ã©`. A name the code page cannot hold, made by
+another program, is listed with question marks; `folders.md` says so.
+
 ### 59.21 `files.make_folder(path)`: it worked if there is a folder at the end
 
 `files.make_folder("logs/2026/november")` makes the folder and every
