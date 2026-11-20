@@ -17443,7 +17443,7 @@ let top = "TOP"
 files.make_folder(files.join(top, "deep/er"))
 files.make_folder(files.join(top, "deep/er/"))
 files.make_folder(top)
-for name in ["b.txt", "B.txt", "a b", "10", "9", "é", "ｚ", "😀"] {
+for name in ["b.txt", "C.txt", "a b", "10", "9", "é", "ｚ", "😀"] {
     files.write(files.join(top, name), name)
 }
 let names: owned list[str] = files.list(top)
@@ -17452,6 +17452,16 @@ for name in names {
     if name != "deep" {
         print(name, files.read(files.join(top, name)) == name)
     }
+}
+# A folder and a file whose names are not ASCII, made, listed, and the
+# listed name opened in pieces: on Windows too, by the name it was given.
+let inside = files.join(top, "deep/é")
+files.make_folder(inside)
+files.write(files.join(inside, "ü.txt"), "ü\nsecond\n")
+let inner: owned list[str] = files.list(inside)
+for name in inner {
+    let source = files.read_from(files.join(inside, name))
+    print(name, source.read_line())
 }
 print(count(top), count(files.join(top, "deep")), count(files.join(top, "deep/er")))
 try {

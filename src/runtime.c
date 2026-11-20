@@ -5375,13 +5375,17 @@ static void zeno_program_exit(int64_t code, int line, int col) {
  * piece is written only into a program that calls it (decision 56.19).
  *
  * A folder is read with the functions of the system: `opendir` where
- * there is POSIX (Linux, macOS), and the wide functions of Microsoft's C
- * library on Windows, so that a name in Tamil arrives as UTF-8, as the
- * command line does (above). A board has neither, and answers FileError,
+ * there is POSIX (Linux, macOS), and on Windows the functions of
+ * Microsoft's C library that take a name as bytes. Those turn a name into
+ * bytes through the machine's code page, as `fopen` does, so a name that
+ * `files.list` gives is one that `files.read` opens, and a file that
+ * `files.write` made is listed by the name it was given (59.20). A name
+ * that the code page cannot hold, made by another program, comes back
+ * with question marks in it. A board has neither, and answers FileError,
  * as it does for a file it has no system to keep. */
 #if defined(_WIN32)
+#include <io.h>
 #include <sys/stat.h>
-#include <wchar.h>
 #elif defined(__unix__) || defined(__APPLE__)
 #include <dirent.h>
 #endif
@@ -5393,40 +5397,36 @@ static const char *zeno_file_list(const char *folder, zeno_list **result) {
     zeno_list *names = zeno_list_new(0);
     bool good = true;
 #if defined(_WIN32)
-    /* `_wfindfirst64` is asked for every name in the folder: the folder,
-     * a `/` and a `*`. */
+    /* `_findfirst64` is asked for every name in the folder: the folder,
+     * a `/` and a `*`. With no folder at all, it would be `/*`, the
+     * names at the top of the disk. */
+    if (folder[0] == '\0') {
+        zeno_list_drop(names);
+        return zeno_join(3, "there is no folder `", folder, "`");
+    }
     size_t size = strlen(folder);
-    int room = (int)size + 3;
-    char pattern[room];
+    char pattern[size + 3];
     memcpy(pattern, folder, size);
     memcpy(pattern + size, "/*", 3);
-    __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int page, unsigned long flags, const char *bytes,
-                                                            int byte_length, wchar_t *wide, int room);
-    wchar_t wide[room];
-    if (MultiByteToWideChar(65001, 0, pattern, -1, wide, room) == 0) wide[0] = 0;
-    struct _wfinddata64_t found;
-    intptr_t search = wide[0] == 0 ? -1 : _wfindfirst64(wide, &found);
+    struct __finddata64_t found;
+    intptr_t search = _findfirst64(pattern, &found);
     if (search == -1) {
         /* Something that is there and is not a folder that can be read,
          * or nothing at all. */
-        wchar_t whole[room];
-        if (MultiByteToWideChar(65001, 0, folder, -1, whole, room) == 0) whole[0] = 0;
         struct _stat64 seen;
-        bool there = whole[0] != 0 && _wstat64(whole, &seen) == 0;
+        bool there = _stat64(folder, &seen) == 0;
         zeno_list_drop(names);
         return there ? zeno_join(3, "cannot list the folder `", folder, "`") : zeno_join(3, "there is no folder `", folder, "`");
     }
     do {
-        if (wcscmp(found.name, L".") == 0 || wcscmp(found.name, L"..") == 0) continue;
-        int need = WideCharToMultiByte(65001, 0, found.name, -1, NULL, 0, NULL, NULL);
-        if (need < 1) {
+        if (strcmp(found.name, ".") == 0 || strcmp(found.name, "..") == 0) continue;
+        size_t length = strlen(found.name);
+        if (!zeno_is_text((const unsigned char *)found.name, length)) {
             good = false;
             break;
         }
-        char name[need];
-        WideCharToMultiByte(65001, 0, found.name, -1, name, need, NULL, NULL);
-        zeno_list_append(names, (zeno_slot){.s = zeno_piece(name, strlen(name))});
-    } while (_wfindnext64(search, &found) == 0);
+        zeno_list_append(names, (zeno_slot){.s = zeno_piece(found.name, length)});
+    } while (_findnext64(search, &found) == 0);
     _findclose(search);
 #elif defined(__unix__) || defined(__APPLE__)
     DIR *open = opendir(folder);
@@ -5495,25 +5495,12 @@ static bool zeno_files_list(const char *folder, int line, int col, zeno_list **r
 #include <sys/stat.h>
 #endif
 
-#ifdef _WIN32
-/* UTF-8 to the two bytes or four a character of Windows (UTF-16), in
- * memory of the caller's own, which holds `room` of them. */
-static void zeno_wide(const char *text, wchar_t *wide, int room) {
-    __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int page, unsigned long flags, const char *bytes,
-                                                            int byte_length, wchar_t *wide, int room);
-    wide[0] = 0;
-    if (MultiByteToWideChar(65001, 0, text, -1, wide, room) == 0) wide[0] = 0;
-}
-#endif
-
-/* Is there a folder at `path`? */
+/* Is there a folder at `path`? On Windows the path goes through the
+ * code page, as it does for `fopen` and `files.list` (59.20). */
 static bool zeno_is_folder(const char *path) {
 #if defined(_WIN32)
-    int room = (int)strlen(path) + 1;
-    wchar_t wide[room];
-    zeno_wide(path, wide, room);
     struct _stat64 seen;
-    return wide[0] != 0 && _wstat64(wide, &seen) == 0 && (seen.st_mode & _S_IFDIR) != 0;
+    return path[0] != '\0' && _stat64(path, &seen) == 0 && (seen.st_mode & _S_IFDIR) != 0;
 #elif defined(__unix__) || defined(__APPLE__)
     struct stat seen;
     return stat(path, &seen) == 0 && S_ISDIR(seen.st_mode);
@@ -5534,9 +5521,7 @@ static const char *zeno_file_make_folder(const char *path) {
         memcpy(part, path, i);
         part[i] = '\0';
 #if defined(_WIN32)
-        wchar_t wide[i + 1];
-        zeno_wide(part, wide, (int)i + 1);
-        if (wide[0] != 0) (void)_wmkdir(wide);
+        (void)_mkdir(part);
 #else
         (void)mkdir(part, 0777);
 #endif
