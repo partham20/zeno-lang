@@ -43,8 +43,8 @@ The numbers are the decisions, for anyone who wants the argument.
 \begin{description}
 \item[Unions.] Only \verb|or none| can follow a type: \verb|int or str|
   is refused (1.13). An enum that carries data does the same work.
-\item[One bound for a type.] A type parameter asks for one interface,
-  \verb|[T is Ordered]| or \verb|[S is Shape]|, not two at once, and a
+\item[One bound for a type.] A type parameter asks for at most one
+  interface, such as \verb|[T is Ordered]|, not two at once, and a
   class cannot be \verb|Ordered| until it can say what \verb|<| means
   for its objects (58.3).
 \item[A generic as a value.] A generic function, or a case of a
