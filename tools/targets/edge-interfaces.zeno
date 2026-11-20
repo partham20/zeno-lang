@@ -5,8 +5,9 @@
 # standing for one of an interface, called through it by the owner,
 # and by a class through its own interface. An `owned interface`, in
 # an owned list, as a parameter that looks and one that takes, and as
-# a field. Every build prints what `zeno run` prints, and a build with
-# no collector leaves nothing.
+# a field. Each of the three with two results (decision 57). Every
+# build prints what `zeno run` prints, and a build with no collector
+# leaves nothing.
 
 enum Mode {
     Slow
@@ -279,3 +280,72 @@ for i in range(1000) {
     let gone = shapes.pop(0)
 }
 print(len(shapes), total(shapes))
+
+# Where 11.4 meets several values (decision 57): a default, a function
+# that takes out, and an `owned interface`, each with two results.
+interface Divider {
+    function split(self, n: int, by: int = 3) -> (int, int)
+}
+
+class Floor is Divider {
+    function split(self, n: int, by: int = 3) -> (int, int) {
+        return n // by, n % by
+    }
+}
+
+interface Bag {
+    function take_two(self) -> (Task, int)
+}
+
+class Sack is Bag {
+    tasks: list[Task]
+
+    function take_two(self) -> (Task, int) {
+        let task = self.tasks.pop()
+        return task, len(self.tasks)
+    }
+}
+
+owned interface Seat {
+    function at(self, scale: int = 1) -> (int, int)
+    function move_to(self, p: take Point)
+}
+
+owned class Pin is Seat {
+    where: Point
+
+    function at(self, scale: int = 1) -> (int, int) {
+        return self.where.x * scale, self.where.y * scale
+    }
+
+    function move_to(self, p: take Point) {
+        self.where = p
+    }
+}
+
+function halves(d: Divider) {
+    let q, r = d.split(10)
+    let a, b = d.split(10, by=4)
+    print(q, r, a, b)
+}
+
+function empty(bag: take Bag) {
+    while true {
+        let task, left = bag.take_two()
+        print(task.name, left)
+        if left == 0 {
+            break
+        }
+    }
+}
+
+function seat(s: take Seat) {
+    s.move_to(Point(2, 3))
+    let x, y = s.at()
+    let x2, y2 = s.at(scale=10)
+    print(x, y, x2, y2)
+}
+
+halves(Floor())
+empty(Sack(make(3)))
+seat(Pin(Point(0, 0)))

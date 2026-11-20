@@ -18525,6 +18525,13 @@ under valgrind with nothing wrong.
 Generic interfaces and functions with type parameters of their own
 are 58.1 to 58.19.
 
+**Where 58.20 to 58.22 meet several values (57).** A function of an
+interface may give two results and have a default, take out and give
+two results, or be a function of an `owned interface` that does
+both; the end of
+[`tools/targets/edge-interfaces.zeno`](../tools/targets/edge-interfaces.zeno)
+does each, in every build.
+
 ## 59. Cleaning up when a block ends, files in pieces, and folders
 
 Item 12 of [`plan-9-14.md`](plan-9-14.md) has three parts: a value
