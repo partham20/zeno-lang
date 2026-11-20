@@ -2290,3 +2290,43 @@ the kind is named "2 values" in each, which says it.
 **Not seen by the planner:** Lua, Dart, Kotlin, C#, C++, Rust,
 TypeScript and WebAssembly, which the `targets` workflow checks. The
 builder reads that run and says how it ended.
+
+### 17. 13.1 and 13.2, 2026-11-20: accepted
+
+13.1 (56d31ac) and 13.2 (3a7b737, with e2c9d2c where it meets item
+10) are **accepted, with nothing to mend.** Chapter 60.
+
+**What was checked.** A file of the planner's own with twelve tests
+that pass and fail each way a test can: a message that is worked out,
+an error that leaves, an `assert` that fails while its test holds two
+objects and is inside a loop, an enum on both sides, `assert raises`
+that raises nothing, several values, floats, an `assert` inside a
+`try`, a bare `bool`. `zeno test --build` prints what `zeno test`
+prints, to the byte, built through C and LLVM, each ordinary, for
+firmware and with no collector, and with `--release`; with no
+collector no block is left. A folder of three files, one of which
+fails inside a file it imports, gives the same totals and the same
+report, and `--only` chooses the same tests. A fault in the third of
+four tests in a firmware build: the report of the first is printed
+before the program ends, the command names the test it stopped in and
+says one was not run. `program.exit(0)` in a test is said the same
+way. Sixty failures with long messages: twenty-four are shown and one
+line says thirty-six did not fit. An `assert` in a function written
+in a test, and a test that shares a list with no collector, are
+refused before anything is built, by a message that says what to
+write. `tools/same.py` against the tag gives the 303 of section 16,
+so nothing that 0.7.0 built changed; `tools/refused.py` ends with 0;
+`src/runtime.c` is not touched. Five commits in Partha's name, with
+no other name in them.
+
+**One place the builder differs from section 12, and is right.** The
+refusal of an `assert` in a function inside a test is not a row of
+the table of what a build refuses: the test of that table holds each
+row to a program that `zeno build` refuses, and `zeno build` leaves
+tests out. It is a sentence under the table that points to
+`docs/testing.md`, which has the refusal and the table of what
+differs from `zeno test`.
+
+**Not seen by the planner:** a board. The builder ran a test build
+for `boards/qemu-cortex-m3` under QEMU and reports the same lines and
+an end with 1.
