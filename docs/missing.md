@@ -183,7 +183,8 @@ is the table in [`compiler.md`](compiler.md).
 | ~~A list or an object as what a type parameter stands for, with no collector (5.16i, 5.19f)~~ | **Done** in 0.8.0: `Stack[Frame]`, and `take T` ([`generic-owned.md`](generic-owned.md)) |
 | ~~A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d)~~ | **Done**, or kept by design: a function that is kept takes what it uses (5.17d, [`kept-functions.md`](kept-functions.md)); `take slot.task` moves out of a field (5.8i, [`take.md`](take.md)); `raise e` builds. Taking an item out of a list while a `for` walks it stays refused by design (5.15e): the loop is still looking at the items |
 | ~~The pool's size on the compiler's line (5.9j); spare blocks not filled with a pattern (5.9k)~~ | **Done** in 0.8.0: `zeno build --pool 4096`, and with `--memory` a block given back is checked ([`pool-size.md`](pool-size.md)) |
-| A function of an interface with a default or of its own type; an owned class as an interface (10.5, 10.10) | With generic interfaces |
+| ~~A function of an interface with a default; an owned class as an interface (10.5, 10.10)~~ | **Done** in 0.8.0: a plain value that each class writes the same, a function that takes out standing for one of an interface, and `owned interface` ([`interfaces.md`](interfaces.md), 58.20 to 58.22) |
+| A function of an interface with a type of its own (10.5) | With generic interfaces |
 
 ## How Zeno compares, feature by feature
 

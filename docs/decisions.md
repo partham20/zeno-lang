@@ -6357,7 +6357,8 @@ is all a caller has, so all of it is written.
 Also refused, each with a message that says so *(was provisional: 11.5)*: a
 default for a parameter, type parameters on an interface or on one of
 its functions, an interface that is another interface, and a private
-function (an interface lists what other code may ask).
+function (an interface lists what other code may ask). *(A default for
+a parameter is in the language since 58.20.)*
 
 ### 10.6 The class writes each function as the interface does
 
@@ -6528,7 +6529,9 @@ Each is refused with a message that says so.
 - **An interface that is another interface.** A class names both.
 
 A dict whose values are of an interface was on this list, and is in
-the language since 10.11.
+the language since 10.11. *The first two are in the language since
+58.21 and 58.22: a call through the interface is held to the guards
+of taking out, and an `owned class` is an `owned interface`.*
 
 ### 10.11 A value of a dict is anything a list can hold, except `none`
 
@@ -18226,6 +18229,301 @@ of the plan's changes).
   looked at gets. A `swap(i, j)` method on a list would be the way in.
 - Several values in a `for`: `for q, r in pairs()`.
 - A default for one of several results.
+
+## 58. Generics, and what interfaces left out
+
+Item 11 of [`missing.md`](missing.md), as [`plan-9-14.md`](plan-9-14.md)
+plans it. 58.1 to 58.19 are generic enums, bounds, generic interfaces
+and a method with a type parameter of its own (11.1, 11.2, 11.3 and
+11.5). 58.20 onward are the three things 10.10 left out of
+interfaces (11.4). Each is asked for by what a program writes: a
+default in an interface, a class whose function takes out, the word
+`owned` in front of `interface`. A program that writes none of them
+is checked and built as before.
+
+### 58.20 A default on a parameter of an interface's function
+
+```zeno
+enum Mode {
+    Slow
+    Fast
+}
+
+interface Motor {
+    function spin(self, speed: int = 1_000, wait: ms = 5 ms, mode: Mode = Fast)
+}
+
+class Fan is Motor {
+    function spin(self, speed: int = 1000, wait: ms = 5 ms, mode: Mode = Mode.Fast) { ... }
+}
+
+function drive(motor: Motor) {
+    motor.spin()             # 1000, 5 ms, Fast
+    motor.spin(wait = 20 ms)
+}
+```
+
+**The rule.** A parameter of a function of an interface may have a
+default. It is a plain value: a number, with a minus in front of it
+or not; text (not an f-string); `true`, `false`, `none`; a quantity
+such as `5 ms`; or a case of an enum that carries nothing, bare or
+with the enum's name. Anything else is refused where it is written,
+with what is allowed. The class writes the same default, and "the
+same" is the same value: `1_000` and `1000` are, `Fast` and
+`Mode.Fast` are. A default that differs, or none where the interface
+has one, is refused at the class, with both defaults and both lines.
+Had `Fan` above written `speed: int = 2000`:
+
+```
+error: `spin` of `Fan` gives `speed` the default `2000`, on line 11,
+and `Motor` gives it `1000`, on line 7. Write the same default in
+both, so that a call through a `Motor` and a call on a `Fan` mean the
+same
+```
+
+**Where the interface writes none, the class may have its own.** It
+could in 0.7.0 (10.6 compared names and types, and said nothing of
+defaults), and such a program must go on being taken. A call through
+the interface then gives every argument, and one that leaves it out
+is refused at the call ("`spin` needs a value for `speed`"), so the
+two calls still cannot differ without the reader being told.
+
+**Why the same, and not "the class's own wins".** `motor.spin()` is
+one line that runs a different class each time. If each class could
+fill in its own default, the line would mean a different speed for
+each motor, and nothing on the line or in the interface would say
+so. With one value written twice, the interface tells the whole
+truth, and the class says nothing that contradicts it. It is 10.6
+again: the same first line twice needs no working out.
+
+**Why only a plain value.** "The same" then has one meaning, which
+the checker and the reader both see at a glance. `2 * 3` and `6`, or
+`len(names)` and a number, would need the checker to work values out
+(and `len(names)` is not the same at every call), and a rule that
+says "the same when worked out" is a rule nobody can check by eye.
+A quantity is allowed because a timeout with a unit is the default
+firmware writes most. A case of an enum that carries values is not
+plain: it is a function that makes one.
+
+**`5 ms` and `5000 us`.** The planner's rule counts them the same
+value, and the comparison does. In practice it does not arise: the
+unit is part of the parameter's type (`wait: ms`), so a default in
+another unit is refused as the wrong type before the two are
+compared.
+
+**How a call fills it in.** Nothing new: every engine already fills
+a left-out argument from the default of the function it calls, and
+a call through an interface calls the interface's function. Since
+the class's default is the same value, a call on the object gives
+what a call through the interface gives. The checker checks the
+interface's default as it checks any default (its type, and what a
+quantity in it needs), so the compilers find it noted.
+
+**Tests.** The checker: every kind of plain value, equal in another
+spelling; a call through the interface that leaves it out; the
+class's own default where the interface has none, and a call through
+the interface that leaves that out; each kind unequal, and none
+where there is one; a default in the interface that is a sum, a
+call, a list, an f-string and a case that carries values; one of the
+wrong type. Every build:
+[`tools/targets/edge-interfaces.zeno`](../tools/targets/edge-interfaces.zeno)
+prints what `zeno run` prints, through C and LLVM, with a collector,
+in firmware, and with none (0 blocks left), and in each target
+language.
+
+### 58.21 A function that takes out what its object owns, standing for one of an interface
+
+```zeno
+interface Pile {
+    function take_last(self) -> Task
+    function size(self) -> int
+}
+
+class Stack is Pile {
+    tasks: list[Task]
+
+    function take_last(self) -> Task {
+        return self.tasks.pop()
+    }
+    ...
+}
+
+function drain(pile: take Pile) {          # the owner: allowed
+    while pile.size() > 0 {
+        print(pile.take_last().name)
+    }
+}
+
+function peek(pile: Pile) -> str {         # only looks: refused
+    return pile.take_last().name
+}
+```
+
+```
+error: only the owner can call `take_last`, which takes out or
+replaces something the object owns (`Stack` is a `Pile`, and its
+`take_last` does): somebody else may have been lent it. Here `pile`
+only looks at it
+```
+
+**The rule.** A function that takes out or replaces what its object
+owns (5.19k) may stand for one of an interface. A call through the
+interface is then held to the guards of 5.15e, as a call on the
+object is: only the owner may make it, not inside a loop or a
+`match` that is looking at what it would take, and not on a line
+that has already looked at the object. The interface's function says
+nothing about it, and nothing is written: it takes out if the
+function of any class that is the interface does, and the whole
+program is known (7.11).
+
+**How the checker knows.** It keeps the set of functions of
+interfaces that some class's function takes out for, with the name
+of one such class for the message. A class adds to it where 0.7.0
+refused it. A call through the interface whose function is in the
+set is held to the guards. The checker already reads the program
+several times over, until a reading learns nothing new (for the
+types of parameters with none written); the set is carried from each
+reading to the next in the same way, and **what is reported comes
+from a reading in which the set did not grow**. So a call read
+before the class that takes out (later in the file, in another file,
+or in a copy of a generic class made later) is held to the same
+guards as a call read after it. The set only grows, and it is never
+larger than the number of functions of interfaces, so the readings
+end.
+
+**Why not work it out at the first call** (as the plan first said).
+Two things break it. A class whose function calls through its own
+interface (a tree whose `count` adds up the `count` of its children)
+is still being checked at that call, and the checker answers "takes
+out" for a method still being checked, since that can only refuse;
+such programs were taken by 0.7.0 and would be refused. And a copy
+of a generic class that is the interface may be made after the first
+call. The set, carried over the readings, has neither fault.
+
+**Why not a word on the function** (`function take_last(self) takes`).
+5.19k turned it down for a method: a word that must be kept in step
+with the body is a second place to be wrong. An interface's function
+has no body, so the word would have something to say there; but
+then a class whose function stopped taking out would be told to
+keep a word that is no longer true of it, or every interface with
+it would change. The program is all there, and the checker can read
+it.
+
+**What it costs.** A class that takes out makes every call of that
+function through the interface owner-only, even for the classes that
+do not take out. That is the price of a call that runs one of
+several functions: the caller cannot know which. A program that
+needs the looser call writes two functions.
+
+**A program of 0.7.0** has an empty set (each class that took out
+was refused), so every call through an interface is checked as it
+was.
+
+**Tests.** The checker: `drain` and `peek` above, with no collector;
+`peek` written before `Stack`, with `Stack` in a second file, and
+with a copy of a generic class `Box[T] is Pile` made after `peek`;
+the loop's message (`for one in piles` around `piles[0].take_last()`)
+and the line's (`print(pile.size(), pile.take_last().name)`); an
+interface whose classes take nothing out, as before; a class that
+calls through its own interface, where `count` (which takes nothing
+out) is called on a loop's item, `strip` (which does) is called on
+an item it popped, and `strip` called on a loop's item is refused.
+Every build: [`tools/targets/edge-interfaces.zeno`](../tools/targets/edge-interfaces.zeno)
+drains a `Stack` and a `Queue` through a `Pile`, takes out of a
+`list[Pile]` by index, a thousand rounds, and the tree.
+
+### 58.22 `owned interface`
+
+```zeno
+owned interface Shape {
+    function area(self) -> float
+}
+
+owned class Circle is Shape { ... }
+owned class Square is Shape { ... }
+
+let shapes: owned list[Shape] = [Circle(1.0), Square(2.0)]
+```
+
+**The rule.** `owned` may stand in front of `interface`, as it stands
+in front of `class` (5.8b). Each object that is an `owned interface`
+has one owner, which frees it, with a collector as without one: it
+moves when it is given away, a list of them is an `owned list`, a
+parameter looks at one unless it says `take`, and a field holding
+one is in an `owned class`. Only an `owned class` can be an `owned
+interface`, and an `owned class` can only be an `owned interface`.
+Each mismatch is refused at the class, and says which word to write:
+
+```
+error: `Dot` is an owned class, and `Shape` is not an `owned
+interface`: an object with one owner cannot be where a shared one is
+wanted. Write `owned interface Shape`, or take `owned` off `Dot`
+
+error: `Dot` is not an owned class, and `Shape` is an `owned
+interface`, whose objects each have one owner. Write `owned class
+Dot`, or take `owned` off `Shape`
+```
+
+**Why taking out was not the whole question.** 10.10 said the two
+refusals were one question, about a function that takes out called
+through an interface. 58.21 answers that. But with a collector a
+value of an interface is shared, and an object of an `owned class`
+put where a `Shape` is wanted would be an owned thing inside a
+shared one, which 5.8 forbids: the shared `Shape` could be copied
+anywhere, and the owner would free the object under it.
+
+| | How | Verdict |
+|---|---|---|
+| A | `owned interface Shape`: its objects have one owner, only an `owned class` can be one, and an `owned class` can only be one | **Chosen.** It is the sentence `owned class` already is, with the word already reserved, on the first line of the interface where its reader looks |
+| B | An object of an interface is owned when what was put into it is | The same type would be shared at one line and owned at the next, and nothing on the page would say which. 5.8b turned down the same thing for classes |
+| C | An interface is owned when its classes are, worked out | Nothing written says it, against the rule that a feature is asked for by a word; and one more class could change every use of the interface |
+| D | Leave the refusal | 10.10 left it open, and a `Resource` (12.1) needs it |
+
+**With no collector, and in a file that says `memory owned`, nothing
+changes.** Every object has one owner there already, the interface's
+too: the word is allowed and says nothing new, and a class without
+`owned` may be an interface with it, as it may hold anything owned.
+
+**How it is built.** The parser reads `owned` before `interface`
+(the word was reserved by 5.19c, so no program had it as a name) and
+marks the interface owned, as it does a class. To the checker an
+interface is a class (10.9), so an owned one is an owned class: its
+objects are owned, the functions of it look at their object, and
+every rule of 5.8 applies with nothing added. The rule above replaces
+the old refusal. The compilers already free an object through its
+interface (the `switch` of 10.9 has a case for each class), which a
+build with no collector has done since 10.10; a build with a
+collector now does it for an `owned interface`.
+
+**Tests.** The checker: both mismatches; both words, and neither;
+with no collector both mismatches are taken; a `memory owned` file
+with a plain interface and class. With a collector: an `owned
+interface` in an owned list, as a parameter that looks and one that
+takes, as a field and one that may be `none`; given away and used
+after; a list that is not owned; a function that replaces what its
+object owns, called through the interface by a parameter that only
+looks (refused, by 58.21). Every build:
+[`tools/targets/edge-interfaces.zeno`](../tools/targets/edge-interfaces.zeno)
+has `Shape` with a `Circle` that replaces its centre, a `Frame` that
+holds one and may hold a spare, and a thousand rounds; with no
+collector 0 blocks are left, and with a collector the C build runs
+under valgrind with nothing wrong.
+
+### 58.23 What interfaces still leave out
+
+- **A default body** for a function of an interface. A class writes
+  each function (10.5).
+- **An interface that is another interface.** A class names both.
+- **A way back** from an interface to the class (10.8).
+- **A default that is not a plain value** (58.20), and a class whose
+  default differs from the interface's.
+- **A call through an interface that takes out, made by somebody who
+  only looks**, even when the class behind it does not take out
+  (58.21). It is the guard, and not a gap: the caller cannot know
+  which class it is.
+
+Generic interfaces and functions with type parameters of their own
+are 58.1 to 58.19.
 
 ## 59. Cleaning up when a block ends, files in pieces, and folders
 

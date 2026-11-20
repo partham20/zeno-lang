@@ -12,7 +12,9 @@ cargo run -- build examples/ports.zeno && ./ports
 cargo run -- build --no-collector --memory examples/ports.zeno && ./ports
 ```
 
-The decisions are 10.4 to 10.10 in [`decisions.md`](decisions.md).
+The decisions are 10.4 to 10.10 in [`decisions.md`](decisions.md),
+and 58.20 to 58.23 for defaults, functions that take out, and
+`owned interface`.
 
 ## What it looks like
 
@@ -91,6 +93,19 @@ them.
    the class (10.8).
 8. **A class has no parent class.** What two classes share is an
    interface that both are.
+9. **A parameter of an interface's function may have a default**,
+   if it is a plain value: a number, text, `true`, `false`, `none`,
+   a quantity such as `5 ms`, or a case of an enum that carries
+   nothing. Each class writes the same value. Where the interface
+   writes none, a class may have its own, and a call through the
+   interface gives every argument (58.20).
+10. **A class's function may take out what its object owns** (5.19k)
+    and still stand for one of the interface. Then a call through the
+    interface is for the owner only, as a call on the object is
+    (58.21).
+11. **`owned interface Shape`**: each object that is one has one
+    owner, with a collector too. Only an `owned class` can be one,
+    and an `owned class` can only be one (58.22).
 
 An object seen through an interface prints as the class it is. Two
 of them are equal when they are the same class and that class says
@@ -126,6 +141,19 @@ for it
 `A` is a class, not an interface, so `B` cannot be one. A class has
 no parent class in Zeno. Declare what the two share as an
 `interface`, and let both be it
+
+`spin` of `Fan` gives `speed` the default `2000`, on line 11, and
+`Motor` gives it `1000`, on line 7. Write the same default in both,
+so that a call through a `Motor` and a call on a `Fan` mean the same
+
+only the owner can call `take_last`, which takes out or replaces
+something the object owns (`Stack` is a `Pile`, and its `take_last`
+does): somebody else may have been lent it. Here `pile` only looks
+at it
+
+`Dot` is an owned class, and `Shape` is not an `owned interface`: an
+object with one owner cannot be where a shared one is wanted. Write
+`owned interface Shape`, or take `owned` off `Dot`
 ```
 
 ## How it works
@@ -362,16 +390,19 @@ line for line.
 
 ## What is left out
 
-Each is refused with a message. Decision 10.10 has the reasons.
+Each is refused with a message. Decisions 10.10 and 58.23 have the
+reasons.
 
 - A default body for a function of an interface, and a default for a
-  parameter.
+  parameter that is not a plain value (58.20).
 - Type parameters: `interface Stack[T]`.
 - An interface that is another interface.
-- An `owned class` that is an interface.
 - A way back from an interface to the class (10.8).
-- A dict whose values are of an interface. That comes with the next
-  item on the roadmap.
+
+A default for a parameter, a function that takes out what its object
+owns, and an `owned class` as an interface were on this list, and
+are in the language since 0.8.0 (58.20 to 58.22). A dict whose values
+are of an interface is in it since 10.11.
 
 ## Things to try
 
