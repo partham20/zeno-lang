@@ -1934,3 +1934,63 @@ is made by the first builder, with no comparison of speed, after the
 last acceptance; the second builder writes its own part of the
 release notes and tells the first what the book and the website need
 for items 12 and 13.
+
+### 10. 2026-11-20: the follow-up of item 9, and a runtime that grows only for a program that asks
+
+The follow-up of section 8 is on `main` (0ddcb6a, 5d8b280, chapter
+56.19) and is **accepted, with one thing to mend.**
+
+**What was checked.** A program of the planner's own with every case
+of section 8 (`in` on lists of numbers, text, floats and bools that
+may be `none`; `in range(...)` with one, two and three numbers and a
+step below zero; `range` as a value, printed, measured, indexed, empty
+and summed; `[3] in rows`; a list and a dict made in a default):
+`zeno run`, `zeno run --vm` and six builds agree, and no block is left
+with no collector. `tools/refused.py`: 705 programs, 4,044 builds,
+138 refused in six ways, each a row of a table, and C and LLVM refuse
+the same programs. Three commits, in Partha's name, with no other
+name in them.
+
+**The one thing.** `range(...)` as a value added a function,
+`zeno_range_list`, to the runtime, and every build holds the whole
+runtime. So every C file and every IR file is now written differently
+from 0.7.0: `tools/same.py` against the tag says 3,091 of 6,765
+differ. The builder said so, and showed with a second `zeno`, built
+without the function, that nothing else changed. That is honest and
+it is not enough, for two reasons.
+
+- The test is the proof of Partha's rule that a program which asks
+  for nothing is built as before (section 6). A test that must be run
+  against a `zeno` made by hand for the purpose will not be run that
+  way every time, and with two builders adding to the runtime it
+  would soon say "everything differs" and nothing more.
+- A compiler that does not drop a function nobody calls (the plain C
+  of item 8 is for such compilers) would put the function into the
+  flash of a board whose program never asked for it.
+
+**The rule, for both builders, from now on.** The runtime of a
+program that uses nothing new is, to the byte, the runtime 0.7.0
+wrote. Whatever a part adds to the runtime is a piece with a name,
+and a piece is written into a program's runtime only if the program
+uses what the piece is for, in C and in LLVM alike. It is the way
+`with_spares_checked` already writes the checking of spare blocks
+only into a build that asks (56.15), made general: one table of
+pieces, one set of the pieces a program used, filled while the
+program is compiled. The first builder builds it now, with
+`zeno_range_list` as its first piece, before item 10 goes further
+into the runtime; the second builder uses it for whatever 12 and 13
+add. A test holds that the runtime with no piece is the text of
+0.7.0's runtime, so a line slipped in outside a piece fails at once.
+
+After it, `tools/same.py` against the tag must again say that no
+program 0.7.0 built is built differently, with the `zeno` everyone
+uses and no other.
+
+**Turned down:** teaching `tools/same.py` to leave the runtime out of
+what it compares. It would make the test pass and leave the second
+reason standing, and the runtime is half of what a program is.
+
+**The `targets` workflow.** The run for 9.9 (e9a4346) is green. The
+run for 9.8 (fae3563) has stood "in progress" since 00:12Z; its
+commit is under 9.9's, which passed every program in every language,
+so it is taken as a runner that hangs and not as a fault of 9.8.
