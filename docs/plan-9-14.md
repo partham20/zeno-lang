@@ -2651,3 +2651,133 @@ test for each.
 
 **12.1 is accepted.** The fault and the two messages are mended
 before 12.2 is sent, and seen with the last check before the release.
+
+### 24. 12.2, 2026-11-20: read, and sent back with two faults
+
+Read: 0d12e31 (the code), 9645274 (decisions 59.6 and 59.7,
+`docs/files-in-pieces.md`), and ab9fdc7, the mend of 12.1 that
+section 23 asked for.
+
+**The mend of 12.1 is accepted.** A resource written out among
+several values is refused in a `let` and in the plain form, on either
+side of the comma, and so is one that is moved (`let c, d = h, 2`); a
+default cannot make a resource and says so; the refusal of several
+values no longer points at an `owned class`.
+
+**What holds in 12.2, tried with programs of my own.**
+
+- A thousand lines with both line ends by `for` and by `read_line`;
+  `break` and `continue` in the `for` and the reader going on after
+  it; lines and bytes mixed; a reader looked at by one function, taken
+  by another, given back by a third and held as `Resource`; two
+  readers of one file; an error going past a writer, after which the
+  file is removed and made again; every shape of line end; `append_to`
+  making a file; a line that is not text, and the reader going on
+  after it; `/dev/full`, caught at the `write`, for text and bytes.
+  `zeno run`, the VM, the six builds and the targets js, py, php,
+  ruby, go, java, cpp and rust print the same lines.
+- With no collector: 0 blocks left, the pool the same for ten lines
+  and for a thousand, a file opened five thousand times in a row
+  (more than a program may hold open), a line longer than the text
+  room stopping with the room's message, a small file asked for a
+  million bytes taking only its own size. The C build is clean under
+  valgrind and leaves no file open.
+- A file of three million bytes in one line, and copied 8,192 bytes
+  at a time: the copy is the same file.
+- The four conditions of section 20. A program cannot make a Reader
+  or a Writer, read or set its number, or name any of the six
+  built-ins, by `import` or by `from`; each is refused in the words a
+  program would have got before they were there. A `write` hands its
+  text over before it gives back. The file is opened as bytes. The
+  six are one piece of the runtime, and a program that reads whole
+  files only is, in C and in LLVM IR, byte for byte what 0.7.0 made.
+- Each misuse is refused with a message: `for` over a reader nobody
+  keeps, `for` over a Writer, writing to a Reader, reading from a
+  Writer, `release` by hand, and each place rule 7 forbids.
+- A program's own `Reader`, `Writer`, `read_from`, `write_to` and
+  `handle_open` win, and its C is 0.7.0's. Its own `Reader` beside
+  `files.Reader` is two types.
+- Tests of a file that holds a reader at its top: `zeno test` and
+  `zeno test --build` print the same bytes through C in four builds.
+- `tools/same.py` against a zeno built from tag v0.7.0: 691 of 7,185
+  different, none a program 0.7.0 built (646 before; the 45 are
+  `edge-files.zeno`, which now uses a Reader, and two new programs of
+  the book's chapter on ownership). `tools/refused.py` ends with 0.
+
+**Fault 1: a file that grows after its end was reached.** The engines
+disagree, which no gate allows:
+
+    let out = files.write_to(path)
+    let source = files.read_from(path)
+    print(source.read_line())        # none: the file is empty
+    out.write("one\n")
+    print(source.read_line())        # zeno run: one. A build: none
+
+`zeno run`, the VM and the targets py, ruby, go, java and rust read
+what was added. The six builds, js, php and cpp give `none` for ever
+(in C the end of a file is remembered by `getc`; `read_bytes` there
+reads on, because its `fseek` forgets it). Lua, dart, kotlin, cs, ts
+and wasm were not tried here.
+
+**The rule, which 59.6 gains:** the end of a file is where it ends at
+that moment. `read_line` gives `none` and `read_bytes` gives no bytes
+there, and a later read looks again. It is what the first paragraph
+of `docs/files-in-pieces.md` promises ("a file that grows while the
+program runs"), what the interpreter does, and the only rule under
+which a program can follow a log. The other rule, a reader that has
+said `none` says it for ever, would be as easy to make equal and
+would forbid that use. What is at the end without a line end is given
+as a line, as the last line of any file is; a reader does not wait
+for a line to be finished, and "What it does not do" says so.
+
+Every engine and target is made to agree, and
+`tools/targets/edge-files.zeno` and the test of the builds gain the
+case: a line, bytes and a `for`, each after more was written.
+
+**Fault 2: `zeno test --build --llvm` does not link a file that uses
+a piece of the runtime.** Where 13.2 meets the pieces of section 10:
+the LLVM road of the tests (`build_and_run_tests` in `main.rs`, and
+the one in `test_build.rs`) takes the runtime without
+`with_pieces(.., pieces_in_ir(..))`, so every piece is left out and
+the link fails with `undefined reference to zeno_files_handle_open`.
+It is older than 12.2: a test that calls `files.list` fails the same
+way, and `files.make_folder` and a list made of a `range` must. Both
+places are mended, with a test that builds one file per piece of
+`PIECES` through `--llvm`, so that a piece added later is tried by
+itself.
+
+**The targets run is red.** At 12.1's commit (run 56): Lua, mended
+since by 615a32b, and wasm, where `files.list("")` in
+`edge-folders.zeno` lists the folder the program runs in and every
+other engine raises ``there is no folder `` ``. That is 12.3's, and
+it is mended. The release waits for a green run.
+
+**Three things in the documents.**
+
+1. "How it is tested" says `edge-files.zeno` is built every way.
+   `zeno build` refuses that program (its function literals raise
+   without saying so), as it did in 0.7.0; the builds are held by
+   `a_file_in_pieces_is_the_same_in_every_build` and its neighbours
+   in `emit_c.rs`. The list names those.
+2. With no collector: a line longer than the text room stops the
+   program with the room's message, and `read_bytes(count)` takes its
+   bytes from the pool. Both are tested and neither is in the
+   document.
+3. An error nobody catches is reported at its line in
+   `library/files.zeno`, where `files.read` names the line of the
+   program:
+
+       error: uncaught FileError: there is no file `nope.txt`
+         --> library/files.zeno:86:19
+
+   This is 33.2 (a part of the library is named like any file), in
+   every engine, and it stays for 0.8.0: naming the program's line as
+   well needs the line of the call carried into every engine and
+   target, which is a piece of work of its own. The document says it,
+   with `zeno join` as the way to read that file, and
+   `docs/missing.md` lists it as something to do.
+
+**12.2 is not accepted yet.** The design, the four conditions, the
+refusals and the builds as they stand are right; the two faults, the
+wasm folder and the documents are mended and sent again, and I read
+the mend with the last check of where the items meet.
