@@ -627,3 +627,5 @@ dc369eb In a C or LLVM build on Windows, `files.list` and `files.make_folder` ta
 132e3a1 A comment in the runtime's folder piece no longer holds a slash and a star.
 728f562 The folder test makes a name that is not UTF-8 only where the disk allows one.
 f65f31e The folder test in every build takes away the files each engine made.
+2e6e036 The book: a file read and written in pieces, in the chapter on reading and writing; the limits and the design chapter say what is left of it.
+ffab0c6 The book for Zeno 0.8: rebuilt as a PDF and HTML, 323 pages, with its 378 programs and 103 commands run by this version.
