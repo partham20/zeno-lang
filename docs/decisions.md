@@ -18210,6 +18210,156 @@ of the plan's changes).
 - Several values in a `for`: `for q, r in pairs()`.
 - A default for one of several results.
 
+## 59. Cleaning up when a block ends, files in pieces, and folders
+
+Item 12 of [`plan-9-14.md`](plan-9-14.md) has three parts: a value
+that is cleaned up when its block ends (12.1), a file read and written
+in pieces (12.2), and folders (12.3). The third is cut loose from the
+other two and lands first. Its sections begin at 59.20, so that the
+first two parts keep the numbers before it.
+
+### 59.20 `files.list(folder)`: the names, sorted by their characters
+
+`files.list("logs")` gives the names of everything in the folder, as a
+`list[str]`: files and folders alike, with no `.` and no `..`, and each
+name without the folder in front of it. It raises `FileError`, and
+every kind of build can catch it, as `files.read` can.
+
+**Sorted, by the numbers of the characters.** A system gives a
+folder's names in an order of its own: Linux in the order of a hash on
+some disks and of making on others, Windows by name in a way that
+ignores case, a board's card in the order the names were written. A
+program that prints a listing would print it differently from one
+machine to the next, and a test of it could not be written once. So
+the list is sorted, and by the one order every engine already has for
+text: the order of `<`, which is the order of the numbers of the
+characters, and for UTF-8 the order of the bytes. That makes `"10"`
+come before `"9"`, `"B"` before `"a"`, and `"😀"` after `"ｚ"`.
+
+**Turned down: the order a person would sort in**, `"9"` before `"10"`
+and case put aside. It is not one order: what it does with `"é"`, `"ß"`
+or Tamil depends on a language, and the program would print what the
+machine's settings say. A program that wants it sorts the list itself.
+
+**Turned down: the system's own order.** It is the reason for the rule.
+
+**Where the languages differ.** Java, Kotlin, C#, Dart and JavaScript
+compare text by UTF-16, which puts a character from beyond the first
+65,536 (two halves in UTF-16, `0xD800` and up) before one from
+`0xE000` to `0xFFFF`, such as `"ｚ"`. Each of those targets sorts with
+a comparison of its own that walks characters or bytes, not halves; the others
+(Rust, C, C++, Go, Python, Ruby, PHP, Lua) sort bytes or characters,
+which is the same order. `tools/targets/edge-folders.zeno` has a name
+on each side of that line.
+
+**A name that is not UTF-8 is a `FileError`**: ``the folder `logs`
+holds a name that is not text``. Linux lets a name be any bytes but
+`/` and zero. Turning such bytes into `�`, as Rust's lossy conversion
+does, would give a name that `files.read` cannot open; dropping it
+would give a list that is not what is there. Every name in Zeno is
+text, so a folder that holds one that is not cannot be listed. The JVM,
+.NET and Dart turn the name into text of their own before a program
+sees it, so on those four targets it arrives changed. That is said in
+`folders.md`, and not mended: there is no way to see the bytes.
+
+**The messages.** Nothing at the path is ``there is no folder `logs` ``;
+anything else that stops it, a file at the path or a folder that may
+not be read, is ``cannot list the folder `logs` ``. They follow
+`files.read`'s two, with "folder" where it says "file".
+
+**An empty path is no folder.** Java takes `""` for the folder the
+program runs in, and C's `opendir`, Rust's `read_dir`, Python, Go and
+Node do not. Zeno takes the second: ``there is no folder
+`` ``, in every engine. `"."` is the folder the program runs in, on
+every system.
+
+### 59.21 `files.make_folder(path)`: it worked if there is a folder at the end
+
+`files.make_folder("logs/2026/november")` makes the folder and every
+folder above it that is not there, as `mkdir -p`, Python's
+`os.makedirs(exist_ok=True)` and Rust's `create_dir_all` do. It gives
+nothing, and raises ``cannot make the folder `...` `` as its
+`FileError`.
+
+**What counts is the end.** It makes what it can, and then asks
+whether there is a folder at the path. A folder that was there already
+is no error, so a program can make its folders every time it starts
+without asking first. A file in the way, at the path or above it, is
+one; so is a folder that may not be written. Asking at the end, not
+reading the error of each `mkdir`, gives one answer from every system,
+including two programs that make the same folder at once.
+
+**Turned down: an error for a folder that is there**, as plain `mkdir`
+gives. Every program would have to ask `exists` first, or catch an
+error that means nothing went wrong.
+
+**An empty path fails.** No folder can be made at `""`.
+
+**On a board** there are no folders, and both functions raise their
+`FileError` (``cannot list the folder `...` `` and ``cannot make the
+folder `...` ``), which a program catches as it catches one from
+`files.read`.
+
+### 59.22 `files.join(first, second)`, written in Zeno
+
+`files.join("logs", "today.txt")` is `"logs/today.txt"`. One `/` goes
+between the two parts, whatever their ends hold: `join("logs/",
+"/today.txt")` is the same. A first part that is empty is no folder,
+and the second comes back as it is. Nothing else is changed: `"a//"`
+keeps its two, and `..` stays.
+
+**`/` everywhere.** Every system Zeno runs on takes `/` between the
+parts of a path, Windows too, so the same path is the same text on
+every machine, and a program that prints one prints the same thing.
+**Turned down: `\` on Windows**, as Python's `os.path.join` writes. The
+output of a program would then depend on the machine it ran on.
+
+**Written in Zeno**, in `library/files.zeno`, as chapter 33 put
+`math.hypot` and `random.pick`. It is arithmetic on text, so it is
+written once, and every engine, build and target gets it from there.
+The file is the first part of a module whose other functions are
+built in; it imports `files` to say so, and a program that does not
+spell `join` gets none of it.
+
+**Turned down: a `join` of any number of parts.** Zeno has no function
+of a count of arguments that is not known; `join(join(a, b), c)` says
+it in the words there are.
+
+### 59.23 What is in the runtime, and what was left
+
+**Two pieces of the runtime.** The C of `list` and of `make_folder` is
+written into runtime.c as two pieces of decision 56.19,
+`ZENO_FILES_LIST` and `ZENO_FILES_MAKE_FOLDER`, each found by its one
+function. A program that calls neither is given the runtime it was
+given before, to the byte, through C and LLVM alike. Each piece holds
+both systems: `opendir` and `mkdir` where there is POSIX, and the wide
+functions of Microsoft's C library on Windows, so that a name in Tamil
+arrives as UTF-8, as the command line does. A list of
+names made in a build with no collector is a list with an owner, as
+`files.read_bytes` gives, and its text is freed with it: the test runs
+it with 0 blocks left at the end.
+
+`tools/same.py` against the `zeno` of 0.7.0: 6,492 of 6,780 builds the
+same and 288 different, which are the 273 that `main` before this part
+gave and the 15 builds of the new `edge-folders.zeno`. No program that
+was built before is built differently.
+
+**The targets.** Each runtime has both, in its own language's words:
+`fs.readdirSync` in JavaScript, `os.listdir` in Python, `Dir.children`
+in Ruby, `scandir` in PHP, `os.ReadDir` in Go, `Files.list` on the JVM,
+`Directory.EnumerateFileSystemEntries` in C#, `Directory.listSync` in
+Dart, `opendir` in C++, `std::fs::read_dir` in Rust and WebAssembly.
+Lua itself cannot see into a folder: its runtime uses LuaFileSystem
+where it is installed, and `find` and `mkdir -p` where there is a
+POSIX shell, and on Windows without LuaFileSystem it raises the
+`FileError`. A page has no folders, and leaves out a program that
+makes one, as it leaves out one that writes a file.
+
+**Left for later**, as the plan says: removing a folder, and saying
+whether a name is a folder (`files.exists` is false for one, which is
+enough to tell them apart for now). The Windows half of the C is
+built by the trial workflow on Windows, not by the tests on Linux.
+
 ## 60. Tools: a message on `assert`, and tests of a compiled program
 
 Item 13 of [`missing.md`](missing.md) is six small tools. Two are

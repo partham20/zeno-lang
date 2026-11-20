@@ -28,6 +28,7 @@ The decisions are chapter 33 of [`decisions.md`](decisions.md).
 |---|---|
 | `library/math.zeno` | `hypot`, `sinh`, `cosh`, `tanh`, `gcd`, `clamp` |
 | `library/random.zeno` | `seed`, `number`, `between`, `pick` |
+| `library/files.zeno` | `join` (decision 59.22) |
 | `src/library.rs` | The list of those files, and their text, kept inside `zeno` |
 | `src/modules.rs` | Reads a part when a program asks, and joins in what the program reaches |
 | `tools/targets/library.zeno` | A program that tries all of both, run by every engine, build and target |

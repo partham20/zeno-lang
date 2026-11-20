@@ -392,6 +392,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md),
   [`docs/library.md`](docs/library.md),
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
+  [`docs/folders.md`](docs/folders.md),
   [`docs/running-programs.md`](docs/running-programs.md),
   [`docs/python.md`](docs/python.md), [`docs/node.md`](docs/node.md),
   [`docs/java.md`](docs/java.md), [`docs/ruby.md`](docs/ruby.md),

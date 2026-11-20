@@ -39,6 +39,9 @@ decisions behind each part are 6.11 to 6.20 in
 | Remove a file | `files.remove(path)` | nothing | `FileError` |
 | Read a file as bytes | `files.read_bytes(path)` | `list[u8]` | `FileError` |
 | Write bytes to a file | `files.write_bytes(path, bytes)` | nothing | `FileError` |
+| The names in a folder | `files.list(folder)` | `list[str]`, sorted | `FileError` |
+| Make a folder | `files.make_folder(path)` | nothing | `FileError` |
+| Two parts of a path | `files.join(first, second)` | `str` | never |
 | The lines of a text | `text.lines()` | `list[str]` | never |
 | A line from the keyboard | `input()`, `input("Name: ")` | `str or none` | never |
 | The command line | `program.arguments()` | `list[str]` | never |
@@ -443,7 +446,8 @@ can catch. The simulated board (`board.md`) is not involved.
 
 - **Large files.** A file is read whole. Reading in pieces needs an
   open file with an owner, and is left until a program needs it (6.12).
-- **Folders.** No listing, making or removing of folders.
+- **Remove a folder.** Listing and making one are in
+  [`folders.md`](folders.md); removing one is left for later.
 - **Typed text that is not UTF-8.** `zeno run` replaces the bad bytes
   with `�`. A compiled program passes them on as they came.
 
