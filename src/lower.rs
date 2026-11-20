@@ -694,6 +694,12 @@ impl Lowerer {
                     let id = self.new_var(name, VarKind::Value, Known::Nothing);
                     later.push((name.clone(), id));
                 }
+                StmtKind::Receive { places, .. } => {
+                    for name in places.iter().filter_map(ast::Place::declared) {
+                        let id = self.new_var(name, VarKind::Value, Known::Nothing);
+                        later.push((name.clone(), id));
+                    }
+                }
                 StmtKind::Import { module, names } if module_members(&module.join(".")).is_some() => {
                     let path = module.join(".");
                     if names.is_empty() {
@@ -781,6 +787,7 @@ impl Lowerer {
                 out.push(self.set(id, value));
             }
             StmtKind::Assign { target, op, value } => self.assign(target, *op, value, at, out)?,
+            StmtKind::Receive { places, value, .. } => self.receive(places, value, at, out)?,
             StmtKind::Expr(expr) => {
                 let expr = self.expr(expr, out)?;
                 out.push(Stmt::Expr(expr));
@@ -1007,8 +1014,9 @@ impl Lowerer {
                     None => self.expr(value, out)?,
                 };
                 out.push(self.set(id, new));
+                Ok(())
             }
-            ExprKind::Field { object, name, .. } => {
+            ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let new = match op {
                     // What is there is read, then the value is worked
                     // out. The object is worked out again to store into,
@@ -1021,6 +1029,66 @@ impl Lowerer {
                     }
                     None => self.expr(value, out)?,
                 };
+                self.store(target, new, at, out)
+            }
+            _ => {
+                out.push(Stmt::Fatal { message: "this cannot be assigned to".to_string(), line: at });
+                Ok(())
+            }
+        }
+    }
+
+    /// `let a, b = f()`, `a, b = b, a` (decision 57). All of the right is
+    /// worked out and kept first. Values written out are each kept in a
+    /// temporary; what a call gives is kept in one, and each place reads
+    /// its own value from it with the runtime's `received`, which also
+    /// says when a program with no types gave something else.
+    fn receive(&mut self, places: &[ast::Place], value: &ast::Expr, at: usize, out: &mut Vec<Stmt>) -> Result<()> {
+        let count = places.len();
+        let values: Vec<Expr> = match &value.kind {
+            ExprKind::Several(items) => {
+                let items: Vec<&ast::Expr> = items.iter().collect();
+                let values = self.ordered(&items, out, |values| values)?;
+                values.into_iter().map(|value| self.hold(value, out)).collect()
+            }
+            _ => {
+                let given = self.expr(value, out)?;
+                let given = self.hold(given, out);
+                (0..count)
+                    .map(|place| Expr::Rt {
+                        name: "received",
+                        args: vec![given.clone(), Expr::Count(count), Expr::Count(place)],
+                        line: at,
+                    })
+                    .collect()
+            }
+        };
+        for (place, value) in places.iter().zip(values) {
+            match place {
+                ast::Place::Name { name, .. } => {
+                    let id = self.declare_later(name);
+                    out.push(self.set(id, value));
+                }
+                // Read all the same, so that a wrong count is told.
+                ast::Place::Drop => {
+                    if matches!(value, Expr::Rt { .. }) {
+                        out.push(Stmt::Expr(value));
+                    }
+                }
+                ast::Place::Target(target) => self.store(target, value, at, out)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Put `new`, worked out already, in the place `target`.
+    fn store(&mut self, target: &ast::Expr, new: Expr, at: usize, out: &mut Vec<Stmt>) -> Result<()> {
+        match &target.kind {
+            ExprKind::Name(name) => match self.lookup(name) {
+                Some(id) => out.push(self.set(id, new)),
+                None => out.push(Stmt::Fatal { message: format!("`{name}` is not declared. Create it with `let` or `var` first"), line: at }),
+            },
+            ExprKind::Field { object, name, .. } => {
                 // The value is worked out before the object it goes into.
                 let mut pre = Vec::new();
                 let object = self.expr(object, &mut pre)?;
@@ -1029,15 +1097,6 @@ impl Lowerer {
                 out.push(Stmt::SetField { object, name: name.clone(), value: new, line: at });
             }
             ExprKind::Index { object, index } => {
-                let new = match op {
-                    Some(op) => {
-                        let old = self.expr(target, out)?;
-                        let old = self.spill(old, out);
-                        let value = self.expr(value, out)?;
-                        Expr::Rt { name: operator(op), args: vec![old, value], line: at }
-                    }
-                    None => self.expr(value, out)?,
-                };
                 // The value is worked out before the list and the place in it.
                 let mut pre = Vec::new();
                 let parts = self.ordered(&[object, index], &mut pre, |args| args)?;
@@ -1258,6 +1317,11 @@ impl Lowerer {
             ExprKind::List(items) => {
                 let items: Vec<&ast::Expr> = items.iter().collect();
                 self.ordered(&items, out, |items| Expr::Rt { name: "list", args: vec![Expr::Array(items)], line: at })?
+            }
+            // `return a, b` (decision 57): the runtime packs them.
+            ExprKind::Several(items) => {
+                let items: Vec<&ast::Expr> = items.iter().collect();
+                self.ordered(&items, out, |items| Expr::Rt { name: "several", args: vec![Expr::Array(items)], line: at })?
             }
             ExprKind::Dict(entries) => {
                 let flat: Vec<&ast::Expr> = entries.iter().flat_map(|(key, value)| [key, value]).collect();
@@ -1605,6 +1669,8 @@ pub const STEPS: &[(&str, bool)] = &[
     ("shl", true),
     ("shr", true),
     ("case_field", false), // (value, count): the nth value an enum case carries
+    ("several", false),    // (array): what `return a, b` gives (decision 57)
+    ("received", true),    // (value, count, count): place n of so many on the left of `=`
     ("undefined", true),   // (text): a name that is not defined, met while running
 ];
 

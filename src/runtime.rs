@@ -54,6 +54,9 @@ mod z {
         Method(Rc<(V, String)>),
         /// A method of a class, read from an object.
         Bound(Rc<(V, Rc<Func>)>),
+        /// Several values from one function, as `return a, b` gives them, until
+        /// `let a, b = ...` takes them apart (decision 57).
+        Several(Rc<Vec<V>>),
     }
 
     pub type Cell = Rc<RefCell<V>>;
@@ -478,6 +481,7 @@ mod z {
             V::ErrType(_) => "an error type".into(),
             V::Error(e) => format!("a {}", e.kind),
             V::Module(_) => "a module".into(),
+            V::Several(values) => format!("{} values", values.len()),
         }
     }
 
@@ -596,6 +600,10 @@ mod z {
             V::Ctor(e, i) => format!("<case {}>", e.cases[*i]),
             V::ErrType(k) => format!("<error {k}>"),
             V::Module(m) => format!("<module {m}>"),
+            V::Several(values) => {
+                let parts: Vec<String> = values.iter().map(show).collect();
+                format!("<{} values: {}>", parts.len(), parts.join(", "))
+            }
             V::Func(f) if f.name.is_empty() => "<function>".into(),
             V::Func(f) => format!("<function {}>", f.name),
         }
@@ -780,6 +788,8 @@ mod z {
             (V::Str(x), V::Str(y)) => x == y,
             (V::Bool(x), V::Bool(y)) => x == y,
             (V::None, V::None) | (V::Missing, V::Missing) => true,
+            // Several values are equal only to themselves (decision 57).
+            (V::Several(x), V::Several(y)) => Rc::ptr_eq(x, y),
             (V::Quantity(x, u), V::Quantity(y, w)) => match common(u, w) {
                 Some(c) => in_unit(*x, u, &c) == in_unit(*y, w, &c),
                 None => false,
@@ -1412,6 +1422,21 @@ mod z {
             V::Case(c) => Ok(c.fields[i].clone()),
             _ => Ok(V::None),
         }
+    }
+
+    pub fn several(values: Vec<V>) -> R {
+        Ok(V::Several(Rc::new(values)))
+    }
+
+    /// What place `at` of the `count` on the left of `=` is given.
+    pub fn received(value: V, count: usize, at: usize, line: usize) -> R {
+        let V::Several(values) = &value else {
+            return fatal(format!("there are {count} places on the left of `=`, and the right gives one value, {}", type_name(&value)), line);
+        };
+        if values.len() != count {
+            return fatal(format!("this gives {} values, and there are {count} places on the left of `=`", values.len()), line);
+        }
+        Ok(values[at].clone())
     }
 
     const WIDTHS: [(&str, i64, i64, u32, bool); 6] = [

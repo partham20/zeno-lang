@@ -143,6 +143,11 @@ OPERATIONS = [
     ("text", "eq", 'print(f"{a}", str(b))\n'),
     ("call", "call", "print(a(3), A(4))\n"),
     ("pass-function", None, "function apply(f: function(T) -> int, x: T) -> int {\n    return f(x)\n}\nprint(apply(function(x: T) -> int { return 1 }, A))\n"),
+    # Several values from one function (decision 57): first, later,
+    # dropped, and a swap.
+    ("several-first", None, "function two(x: take T) -> (T, int) {\n    return x, 1\n}\nlet c, n = two(A)\nshow(c)\nprint(n)\n"),
+    ("several-later", None, "function two(x: take T) -> (int, T) {\n    return 1, x\n}\nlet n, c = two(A)\nshow(c)\nlet m, _ = two(B)\nprint(n + m)\n"),
+    ("swap", None, "var v: T = A\nvar w: T = B\nv, w = w, v\nshow(v)\nshow(w)\n"),
 ]
 
 

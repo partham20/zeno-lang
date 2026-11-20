@@ -130,6 +130,13 @@ class ZBound {
   ZBound(this.object, this.fn);
 }
 
+// Several values from one function, as `return a, b` gives them, until
+// `let a, b = ...` takes them apart (decision 57).
+class ZSeveral {
+  final List<Object?> values;
+  ZSeveral(this.values);
+}
+
 // What a call gives a parameter it leaves out.
 class ZMissing {
   const ZMissing();
@@ -507,6 +514,7 @@ class Z {
     if (v is ZErrorType) return "an error type";
     if (v is ZError) return "a " + v.kind;
     if (v is ZModule) return "a module";
+    if (v is ZSeveral) return v.values.length.toString() + " values";
     return "a value";
   }
 
@@ -729,6 +737,7 @@ class Z {
     if (v is ZErrorType) return "<error " + v.kind + ">";
     if (v is ZModule) return "<module " + v.name + ">";
     if (v is ZFunc) return v.name.isEmpty ? "<function>" : "<function " + v.name + ">";
+    if (v is ZSeveral) return "<" + v.values.length.toString() + " values: " + v.values.map(show).join(", ") + ">";
     return "?";
   }
 
@@ -1284,6 +1293,17 @@ class Z {
   }
 
   static Object? case_field(Object? value, int i) => (value as ZCase).fields[i];
+
+  static Object? several(List<Object?> values) => ZSeveral(values);
+
+  // What place `at` of the `count` on the left of `=` is given.
+  static Object? received(Object? value, int count, int at, int line) {
+    if (value is! ZSeveral) fatal("there are " + count.toString() + " places on the left of `=`, and the right gives one value, " + typeName(value), line);
+    if (value.values.length != count) {
+      fatal("this gives " + value.values.length.toString() + " values, and there are " + count.toString() + " places on the left of `=`", line);
+    }
+    return value.values[at];
+  }
 
   static Object? field(Object? obj, String name, int line) {
     if (obj is ZInstance) {

@@ -1,0 +1,98 @@
+# Several values from one function, every type written (decision 57),
+# for every build as well as every target: numbers, texts built inside
+# the function, lists and objects, swapped, from a function that raises
+# (caught where it is called and a level above), from a generic and a
+# function value, and a thousand times over. With no collector nothing
+# is left.
+
+function divide(a: int, b: int) -> (int, int) {
+    return a // b, a % b
+}
+class Point {
+    x: int
+    y: int
+}
+function names(n: int) -> (str, str) {
+    let first = "Ada" + str(n)
+    return first + " L", "x" + str(n * 3)
+}
+function checked(a: int, b: int) -> (int, str) raises ValueError {
+    if b == 0 {
+        raise ValueError("no zero")
+    }
+    return a // b, "ok " + str(a % b)
+}
+function swap[A, B](a: A, b: B) -> (B, A) {
+    return b, a
+}
+function lists(n: int) -> (list[int], Point) {
+    return [n, n + 1], Point(n, n * 2)
+}
+let q, r = divide(7, 2)
+print(q, r)
+var p1 = Point(1, 2)
+var p2 = Point(3, 4)
+p1, p2 = p2, p1
+print(p1.x, p2.x)
+var xs = [1, 2]
+var ys = [3]
+xs, ys = ys, xs
+print(xs, ys)
+var t1 = "one " + str(1)
+var t2 = "two " + str(2)
+t1, t2 = t2, t1
+print(t1, t2)
+let a1, a2 = names(4)
+print(a1, a2)
+let k, msg = checked(9, 4)
+print(k, msg)
+try {
+    let k2, msg2 = checked(1, 0)
+    print(k2, msg2)
+} except ValueError as e {
+    print("caught", e.message)
+}
+let s1, s2 = swap(1, "one")
+print(s1, s2)
+let l, pt = lists(5)
+print(l, pt.x, pt.y)
+let fv = divide
+let g1, g2 = fv(11, 4)
+print(g1, g2)
+var total = 0
+var words = ""
+for i in range(1000) {
+    let whole, part = divide(i, 7)
+    let label, _ = names(i)
+    let ns, pnt = lists(i)
+    total += whole + part + len(ns) + pnt.y
+    if i % 250 == 0 {
+        words += label
+    }
+}
+print(total, words)
+function passes_on(b: int) -> (int, str) raises ValueError {
+    let k, m = checked(7, b)
+    return k + 1, m + "!"
+}
+try {
+    let k3, m3 = passes_on(2)
+    print(k3, m3)
+    let k4, m4 = passes_on(0)
+    print(k4, m4)
+} except ValueError as e {
+    print("caught above", e.message)
+}
+
+# A function written among the arguments has a `return` of its own,
+# which must not take the places the outer call gives to.
+function with_step(step: take function(int) -> int) -> (function(int) -> int, int) {
+    let once = step(1)
+    return step, once
+}
+function stepped() -> (function(int) -> int, int) {
+    return with_step(function(n: int) -> int { return n * 10 })
+}
+let step, first = with_step(function(n: int) -> int { return n + 1 })
+let step2, first2 = stepped()
+print(step(3), first, step2(3), first2)

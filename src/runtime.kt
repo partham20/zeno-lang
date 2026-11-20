@@ -60,6 +60,10 @@ class ZMethod(val receiver: Any?, val name: String)
 // A method of a class, read from an object.
 class ZBound(val obj: Any?, val fn: ZFunc)
 
+// Several values from one function, as `return a, b` gives them, until
+// `let a, b = ...` takes them apart (decision 57).
+class ZSeveral(val values: Array<Any?>)
+
 // An error the program may catch, on its way to a `try`.
 class ZRaise(val value: ZError, val line: Int) : RuntimeException(null, null, false, false)
 
@@ -383,6 +387,7 @@ object Z {
         if (v is ZErrorType) return "an error type"
         if (v is ZError) return "a " + v.kind
         if (v is ZModule) return "a module"
+        if (v is ZSeveral) return v.values.size.toString() + " values"
         return "a value"
     }
 
@@ -576,6 +581,7 @@ object Z {
         if (v is ZErrorType) return "<error " + v.kind + ">"
         if (v is ZModule) return "<module " + v.name + ">"
         if (v is ZFunc) return if (v.name.isEmpty()) "<function>" else "<function " + v.name + ">"
+        if (v is ZSeveral) return "<" + v.values.size + " values: " + v.values.joinToString(", ") { show(it) } + ">"
         return "?"
     }
 
@@ -1142,6 +1148,17 @@ object Z {
     }
 
     fun case_field(value: Any?, i: Int): Any? = (value as ZCase).fields[i]
+
+    fun several(values: Array<Any?>): Any? = ZSeveral(values)
+
+    // What place `at` of the `count` on the left of `=` is given.
+    fun received(value: Any?, count: Int, at: Int, line: Int): Any? {
+        if (value !is ZSeveral) fatal("there are " + count + " places on the left of `=`, and the right gives one value, " + typeName(value), line)
+        if (value.values.size != count) {
+            fatal("this gives " + value.values.size + " values, and there are " + count + " places on the left of `=`", line)
+        }
+        return value.values[at]
+    }
 
     fun field(obj: Any?, name: String, line: Int): Any? {
         if (obj is ZInstance) {

@@ -130,6 +130,9 @@ pub enum Kind {
     CPointer(String),
     /// Anything else, described in words for an error message.
     Other(String),
+    /// What a function gives that gives two values or more: `-> (int,
+    /// str)` (decision 57). Only ever what a function returns.
+    Several(Vec<Kind>),
 }
 
 /// What a `pointer[T]` points at: numbers of one size, side by side.
@@ -393,6 +396,18 @@ impl Types {
         self.owners.contains(&(statement as *const ast::Stmt as usize))
     }
 
+    /// Does the variable a `let a, b = ...` declares at `place` own its
+    /// value (decision 57)?
+    pub fn owner_at(&self, place: &ast::Place) -> bool {
+        self.owners.contains(&(place as *const ast::Place as usize))
+    }
+
+    /// Is the value a `_` of a `let a, b = ...` receives an owned value,
+    /// which is freed there (decision 57)?
+    pub fn discarded_at(&self, place: &ast::Place) -> bool {
+        self.discarded.contains(&(place as *const ast::Place as usize))
+    }
+
     /// Is `expr`, written as a statement, an owned value nobody keeps?
     pub fn discarded(&self, expr: &ast::Expr) -> bool {
         self.discarded.contains(&(expr as *const ast::Expr as usize))
@@ -513,6 +528,7 @@ fn kind_within(ty: &Ty, depth: usize) -> Kind {
             inner => inner,
         },
         Ty::Error(_) => Kind::Error,
+        Ty::Several(types) => Kind::Several(types.iter().map(|ty| kind_within(ty, depth)).collect()),
         Ty::Callable(callable) if depth < 4 => {
             let kind = function(callable.params.iter().collect(), &callable.returns, callable.raises.iter().cloned().collect());
             match callable.owned {
@@ -847,6 +863,10 @@ enum Ty {
     /// The name of a type parameter, inside a copy: there `T` is another
     /// name for the type the copy was made for.
     Alias(Box<Ty>),
+    /// What a function gives that gives two values or more: `-> (int,
+    /// str)` (decision 57). It is never the type of a value: only of a
+    /// call, received by as many places, or given by a `return`.
+    Several(Vec<Ty>),
 }
 
 /// A function or a class with type parameters: `function first[T](...)`,
@@ -1006,6 +1026,8 @@ enum Key {
     Copy(DeclId, Vec<Key>),
     Enum(DeclId),
     Error(String),
+    /// What a function gives that gives several values (decision 57).
+    Several(Vec<Key>),
 }
 
 /// What has been learned so far about a parameter or field with no type.
@@ -1297,6 +1319,10 @@ impl fmt::Display for Ty {
                 write!(f, "{}[{}]", generic.name, types.join(", "))
             }
             Ty::Alias(inner) => write!(f, "the type {inner}"),
+            Ty::Several(types) => {
+                let types: Vec<String> = types.iter().map(Ty::to_string).collect();
+                write!(f, "({})", types.join(", "))
+            }
         }
     }
 }
@@ -1325,7 +1351,7 @@ fn mentions(ty: &Ty, name: Option<&str>) -> bool {
         Ty::Param(param) => name.is_none_or(|name| name == param.as_ref()),
         Ty::List(inner) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) => mentions(inner, name),
         Ty::Dict(key, value) => mentions(key, name) || mentions(value, name),
-        Ty::Applied(_, types) => types.iter().any(|ty| mentions(ty, name)),
+        Ty::Applied(_, types) | Ty::Several(types) => types.iter().any(|ty| mentions(ty, name)),
         Ty::Callable(callable) => {
             callable.params.iter().any(|ty| mentions(ty, name)) || mentions(&callable.returns, name)
         }
@@ -1403,6 +1429,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         (Ty::EnumValue(a), Ty::EnumValue(b)) => Rc::ptr_eq(a, b),
         (Ty::Error(a), Ty::Error(b)) => a == b,
         (Ty::Callable(a), Ty::Callable(b)) => a.raises == b.raises && same_shape(a, b),
+        (Ty::Several(a), Ty::Several(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b)),
         _ => false,
     }
 }
@@ -1500,6 +1527,9 @@ fn fits(from: &Ty, to: &Ty) -> bool {
         (Ty::Owned(from), Ty::Callable(_)) => matches!(**from, Ty::Function(_)),
         // `class Circle is Shape`: a Circle goes where a Shape is wanted.
         (Ty::Instance(from), Ty::Instance(to)) => from.is.borrow().iter().any(|interface| Rc::ptr_eq(interface, to)),
+        // Several values go where as many are wanted, each where its own
+        // is (decision 57).
+        (Ty::Several(from), Ty::Several(to)) => from.len() == to.len() && from.iter().zip(to).all(|(from, to)| fits(from, to)),
         _ => false,
     }
 }
@@ -1738,6 +1768,43 @@ fn widens_f32(from: &Ty, to: &Ty) -> bool {
 
 /// The first call in the place an assignment names, if it has one:
 /// `next()` in `xs[next()]`, `pick()` in `pick().count`.
+/// `first`, `second`: which of several values, for a message.
+fn ordinal(at: usize) -> String {
+    match at {
+        0 => "first".to_string(),
+        1 => "second".to_string(),
+        2 => "third".to_string(),
+        3 => "fourth".to_string(),
+        _ => format!("number {}", at + 1),
+    }
+}
+
+/// `a, b, c`: as many names as there are values, for a message.
+fn letters(count: usize) -> String {
+    (0..count).map(|at| ((b'a' + (at % 26) as u8) as char).to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// The message for a call of several values used as one (decision 57,
+/// rule 3): "`divide` gives 2 values. Receive each: ...".
+fn several_not_one(call: &Expr, count: usize) -> String {
+    let name = match &call.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Name(name) => Some(name.clone()),
+            ExprKind::Field { name, .. } => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let (who, called) = match &name {
+        Some(name) => (format!("`{name}`"), name.as_str()),
+        None => ("this call".to_string(), "f"),
+    };
+    format!(
+        "{who} gives {count} values. Receive each: `let {} = {called}(...)`. To keep them together, declare a class",
+        letters(count)
+    )
+}
+
 fn call_in(place: &Expr) -> Option<&Expr> {
     match &place.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Name(_) => None,
@@ -1748,7 +1815,7 @@ fn call_in(place: &Expr) -> Option<&Expr> {
             call_in(left).or_else(|| call_in(right))
         }
         ExprKind::Compare { first, rest } => call_in(first).or_else(|| rest.iter().find_map(|(_, operand)| call_in(operand))),
-        ExprKind::List(items) => items.iter().find_map(call_in),
+        ExprKind::List(items) | ExprKind::Several(items) => items.iter().find_map(call_in),
         ExprKind::FormatStr(parts) => parts.iter().find_map(|part| match part {
             FormatPart::Value { value, .. } => call_in(value),
             FormatPart::Text(_) => None,
@@ -1792,6 +1859,9 @@ fn join(a: &Ty, b: &Ty) -> Ty {
         }
         (Ty::List(a), Ty::List(b)) => Ty::list(join(a, b)),
         (Ty::Owned(a), Ty::Owned(b)) => Ty::Owned(Box::new(join(a, b))),
+        (Ty::Several(a), Ty::Several(b)) if a.len() == b.len() => {
+            Ty::Several(a.iter().zip(b).map(|(a, b)| join(a, b)).collect())
+        }
         // A u8 beside an int, or beside an i16: what covers both is an int.
         (Ty::Sized(_), Ty::Int | Ty::Sized(_)) | (Ty::Int, Ty::Sized(_)) => Ty::Int,
         // An f32 beside a float: every f32 is a float.
@@ -1821,7 +1891,7 @@ fn names_in(expr: &Expr, names: &mut Vec<String>) {
             }
         }
         ExprKind::Unit { value, .. } => names_in(value, names),
-        ExprKind::List(items) => items.iter().for_each(|item| names_in(item, names)),
+        ExprKind::List(items) | ExprKind::Several(items) => items.iter().for_each(|item| names_in(item, names)),
         ExprKind::Dict(entries) => {
             for (key, value) in entries {
                 names_in(key, names);
@@ -2152,6 +2222,10 @@ struct Argument {
 }
 
 struct Checker {
+    /// Set just before the right of a `let a, b = ...` or what a
+    /// `return` gives is looked at: the one expression that may give
+    /// several values (decision 57). The next `expr` takes it down.
+    several: bool,
     /// Set while the argument of `u64.wrap( )` is about to be looked
     /// at, and kept down through `+`, `-`, `*` and `<<`: those sums cut
     /// their answer to 64 bits (decision 42.6).
@@ -2305,6 +2379,7 @@ impl Checker {
     fn new(strict: bool, last_round: bool, known: HashMap<SlotId, Key>, open: HashSet<SlotId>) -> Checker {
         Checker {
             wrap_mode: false,
+            several: false,
             big_numbers: Vec::new(),
             strict,
             strict_files: Vec::new(),
@@ -2360,6 +2435,11 @@ impl Checker {
         for statement in &program.statements {
             if let StmtKind::Let { name, .. } | StmtKind::Const { name, .. } = &statement.kind {
                 self.later.entry(name.clone()).or_insert(statement.span.line);
+            }
+            if let StmtKind::Receive { places, .. } = &statement.kind {
+                for name in places.iter().filter_map(Place::declared) {
+                    self.later.entry(name.clone()).or_insert(statement.span.line);
+                }
             }
         }
         self.statements(&program.statements, &env);
@@ -2883,6 +2963,16 @@ impl Checker {
                 Ok(inner) => Key::Optional(Box::new(inner)),
                 Err(()) => return Some(Err(())),
             },
+            Ty::Several(types) => {
+                let mut keys = Vec::new();
+                for ty in types {
+                    match self.key(ty)? {
+                        Ok(key) => keys.push(key),
+                        Err(()) => return Some(Err(())),
+                    }
+                }
+                Key::Several(keys)
+            }
             _ => return Some(Err(())),
         }))
     }
@@ -2924,6 +3014,7 @@ impl Checker {
                 }
             }
             Key::Enum(id) => self.enums.get(id).map_or(Ty::Dynamic, |info| Ty::EnumValue(info.clone())),
+            Key::Several(keys) => Ty::Several(keys.iter().map(|key| self.from_key(key)).collect()),
         }
     }
 
@@ -3062,6 +3153,15 @@ impl Checker {
         self.resolve_for(ty, env, span, false)
     }
 
+    /// `resolve`, for what a function gives: after `->` alone, `(int,
+    /// str)` says it gives two values (decision 57).
+    fn resolve_returns(&mut self, ty: &ast::Type, env: &Env, span: Span) -> Ty {
+        match ty {
+            ast::Type::Several(types) => Ty::Several(types.iter().map(|ty| self.resolve(ty, env, span)).collect()),
+            ty => self.resolve(ty, env, span),
+        }
+    }
+
     /// `resolve`, knowing whether the type is a parameter's. `owned` and
     /// `take` are words about the whole value, so they are only looked
     /// for here, at the front, and `take` only on a parameter.
@@ -3162,6 +3262,13 @@ impl Checker {
                     span,
                 )
             }
+            ast::Type::Several(_) => {
+                return self.error(
+                    "`(int, str)` is written only after `->`, for a function that gives two values or more. \
+                     A value that holds several things is an object: declare a class",
+                    span,
+                )
+            }
             ast::Type::Length(length) => {
                 return self.error(
                     format!("{length} is a number, and a type is wanted here. Only a list takes a length: `list[u8, {length}]`"),
@@ -3190,7 +3297,7 @@ impl Checker {
             ast::Type::Function { params, returns, raises } => {
                 let params = params.iter().map(|param| self.resolve_for(param, env, span, true)).collect();
                 let returns = match returns {
-                    Some(returns) => self.resolve_for(returns, env, span, false),
+                    Some(returns) => self.resolve_returns(returns, env, span),
                     None => Ty::None,
                 };
                 let raises = raises.as_ref().map(|kind| self.kind_in_type(kind, env, span));
@@ -3450,6 +3557,7 @@ impl Checker {
             above.push(Rc::from(lets.as_slice()));
             match &statement.kind {
                 StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => lets.push(name.clone()),
+                StmtKind::Receive { places, .. } => lets.extend(places.iter().filter_map(Place::declared).cloned()),
                 StmtKind::Import { module, names } if names.is_empty() => lets.extend(module.last().cloned()),
                 StmtKind::Import { names, .. } => lets.extend(names.iter().cloned()),
                 _ => {}
@@ -3766,7 +3874,7 @@ impl Checker {
                     false => Some(value),
                 }
             }
-            ExprKind::ListComp { .. } | ExprKind::Function(_) => Some(value),
+            ExprKind::ListComp { .. } | ExprKind::Function(_) | ExprKind::Several(_) => Some(value),
         }
     }
 
@@ -3780,6 +3888,10 @@ impl Checker {
         match &statement.kind {
             StmtKind::Let { name, ty, value, mutable } => {
                 self.declaration(name, ty, value, *mutable, env, statement);
+                false
+            }
+            StmtKind::Receive { declare, places, value } => {
+                self.receive(*declare, places, value, env, span);
                 false
             }
             StmtKind::Const { name, ty, value } => {
@@ -4035,21 +4147,80 @@ impl Checker {
             StmtKind::Return(value) => {
                 let declared = self.frame().declared_return.clone();
                 let ty = match value {
+                    // `return a // b, a % b`: each is checked against its
+                    // own place in what the function gives (decision 57).
+                    Some(Expr { kind: ExprKind::Several(values), .. }) => {
+                        let wanted = match &declared {
+                            Some(Ty::Several(types)) if types.len() == values.len() => types.clone(),
+                            Some(Ty::Several(types)) => {
+                                self.error(
+                                    format!(
+                                        "this function gives {} values, and this `return` gives {}",
+                                        types.len(),
+                                        values.len()
+                                    ),
+                                    span,
+                                );
+                                vec![Ty::Invalid; values.len()]
+                            }
+                            Some(declared) if !declared.is_loose() => {
+                                self.error(
+                                    format!(
+                                        "this function gives one value, {declared}, and this `return` gives {}. \
+                                         A function that gives {} says so in its first line, as in `-> ({})`",
+                                        values.len(),
+                                        values.len(),
+                                        vec!["int"; values.len()].join(", ")
+                                    ),
+                                    span,
+                                );
+                                vec![Ty::Invalid; values.len()]
+                            }
+                            _ => vec![Ty::Invalid; values.len()],
+                        };
+                        let mut types = Vec::new();
+                        for (at, (value, wanted)) in values.iter().zip(&wanted).enumerate() {
+                            let given = self.kept(value, wanted, env);
+                            let given = self.adapted(written(value), value as *const Expr as usize, given, wanted, value.span);
+                            self.expect(&given, wanted, &format!("the {} value returned", ordinal(at)), value.span);
+                            types.push(given);
+                        }
+                        Ty::Several(types)
+                    }
                     // The caller keeps what is returned.
                     Some(value) => {
                         let wanted = declared.as_ref().unwrap_or(&Ty::Invalid);
+                        // `return divide(a, b)` passes on both values, in a
+                        // function that gives as many, or says nothing.
+                        self.several = matches!(declared, None | Some(Ty::Several(_)));
                         let given = self.kept(value, wanted, env);
-                        self.adapted(written(value), value as *const Expr as usize, given, wanted, value.span)
+                        self.several = false;
+                        let given = self.adapted(written(value), value as *const Expr as usize, given, wanted, value.span);
+                        match (wanted, &given) {
+                            (Ty::Several(types), given) if !matches!(given, Ty::Several(_)) && !given.is_loose() => self.error(
+                                format!(
+                                    "this function gives {} values, and this is one. Give each, as in `return {}`",
+                                    types.len(),
+                                    letters(types.len())
+                                ),
+                                value.span,
+                            ),
+                            _ => {
+                                self.expect(&given, wanted, "the returned value", value.span);
+                                given
+                            }
+                        }
                     }
-                    None => Ty::None,
+                    None => {
+                        if let Some(declared) = &declared {
+                            self.expect(&Ty::None, declared, "the returned value", span);
+                        }
+                        Ty::None
+                    }
                 };
                 if self.frames.len() == 1 {
                     self.error("`return` outside a function", span);
                     return true;
-                }
-                if let Some(declared) = self.frame().declared_return.clone() {
-                    let at = value.as_ref().map_or(span, |value| value.span);
-                    self.expect(&ty, &declared, "the returned value", at);
                 }
                 self.frame().returns.push(ty);
                 true
@@ -4261,6 +4432,141 @@ impl Checker {
             self.types.owners.insert(statement as *const Stmt as usize);
         }
         self.declare(env, name, ty, mutable, span);
+    }
+
+    /// `let q, r = divide(7, 2)`, `var a, b = 1, 2`, `low, high = high,
+    /// low` (decision 57). The places that exist are looked at first, for
+    /// what each may hold; then all of the right, left to right; then the
+    /// places are filled, left to right.
+    fn receive(&mut self, declare: Option<bool>, places: &[Place], value: &Expr, env: &Env, span: Span) {
+        let mut wanted = Vec::new();
+        let mut fields = Vec::new();
+        for place in places {
+            let (ty, field) = match place {
+                Place::Name { ty: Some(ty), .. } => (Some(self.resolve(ty, env, span)), None),
+                Place::Name { ty: None, .. } | Place::Drop => (None, None),
+                Place::Target(target) => {
+                    let (ty, _, field) = self.assignment_target(target, env);
+                    (Some(ty), field)
+                }
+            };
+            wanted.push(ty);
+            fields.push(field);
+        }
+        let count = places.len();
+        let given: Vec<Ty> = match &value.kind {
+            ExprKind::Several(values) => {
+                if values.len() != count {
+                    self.error(
+                        format!(
+                            "there are {} on the left of `=` and {} on the right. Each place receives one",
+                            counted(count, "place"),
+                            counted(values.len(), "value")
+                        ),
+                        span,
+                    );
+                }
+                let mut given = Vec::new();
+                for (at, value) in values.iter().enumerate() {
+                    let ty = match wanted.get(at).cloned().flatten() {
+                        Some(wanted) => {
+                            let ty = self.kept(value, &wanted, env);
+                            self.adapted(written(value), value as *const Expr as usize, ty, &wanted, value.span)
+                        }
+                        None => self.take(value, env),
+                    };
+                    given.push(ty);
+                }
+                given.resize(count, Ty::Invalid);
+                given
+            }
+            _ => {
+                self.several = true;
+                let ty = self.take(value, env);
+                self.several = false;
+                match ty {
+                    Ty::Several(types) if types.len() == count => types,
+                    Ty::Several(types) => {
+                        let who = match &value.kind {
+                            ExprKind::Call { callee, .. } => match &callee.kind {
+                                ExprKind::Name(name) | ExprKind::Field { name, .. } => format!("`{name}`"),
+                                _ => "this call".to_string(),
+                            },
+                            _ => "this".to_string(),
+                        };
+                        self.error(
+                            format!(
+                                "{who} gives {} values, and there are {} on the left of `=`. \
+                                 Receive each, and write `_` for one that is not wanted",
+                                types.len(),
+                                counted(count, "place")
+                            ),
+                            span,
+                        );
+                        vec![Ty::Invalid; count]
+                    }
+                    ty if ty.is_loose() => vec![ty; count],
+                    ty => {
+                        self.error(
+                            format!(
+                                "there are {} on the left of `=`, and the right gives one value, {ty}. \
+                                 Give {count}, as in `{} = {}`, or call a function that gives {count}",
+                                counted(count, "place"),
+                                letters(count),
+                                (1..=count).map(|n| n.to_string()).collect::<Vec<_>>().join(", ")
+                            ),
+                            value.span,
+                        );
+                        vec![Ty::Invalid; count]
+                    }
+                }
+            }
+        };
+        for (((place, wanted), field), given) in places.iter().zip(wanted).zip(fields).zip(given) {
+            match place {
+                Place::Drop => {
+                    if given.is_owned() {
+                        self.types.discarded.insert(place as *const Place as usize);
+                    }
+                }
+                Place::Name { name, .. } => {
+                    let ty = match wanted {
+                        Some(wanted) => {
+                            self.expect(&given, &wanted, &format!("`{name}`"), span);
+                            wanted
+                        }
+                        None if self.strict_at(span) && given.has_dynamic() => self.error(
+                            format!("strict mode: the type of `{name}` cannot be worked out. Give it one, as in `{name}: int`"),
+                            span,
+                        ),
+                        None => given,
+                    };
+                    if ty.is_owned() {
+                        self.types.owners.insert(place as *const Place as usize);
+                    }
+                    self.declare(env, name, ty, declare == Some(true), span);
+                }
+                Place::Target(target) => {
+                    let wanted = wanted.unwrap_or(Ty::Invalid);
+                    if let Some(field) = field {
+                        self.sees(&field, &given, target.span);
+                    }
+                    self.expect(&given, &wanted, "the new value", target.span);
+                    if let (ExprKind::Name(name), Ty::Optional(inner)) = (&target.kind, &wanted) {
+                        if !given.is_loose() && fits(&given, inner) {
+                            env.narrow(name, (**inner).clone());
+                        } else {
+                            env.widen(name);
+                        }
+                    }
+                    if let (ExprKind::Name(name), true) = (&target.kind, wanted.is_owned()) {
+                        if let Some(variable) = env.get(name) {
+                            self.owned.moved.remove(&variable.id);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The type that may be assigned to `target`, after checking that it can
@@ -5811,7 +6117,7 @@ impl Checker {
                 self.error(crate::parser::ONE_KIND, span);
             }
         }
-        let declared_return = decl.return_type.as_ref().map(|ty| self.resolve(ty, &function.env, span));
+        let declared_return = decl.return_type.as_ref().map(|ty| self.resolve_returns(ty, &function.env, span));
         for kind in &decl.raises {
             let known = function.env.get(kind).map(|variable| variable.ty);
             if !matches!(known, Some(Ty::ErrorType(_) | Ty::Class(_))) {
@@ -5958,6 +6264,28 @@ impl Checker {
             // `none` if the end of the body can be reached.
             None => {
                 let mut types = frame.returns;
+                // `return a, b`: every `return` gives as many, and the end
+                // of the body is not reached (decision 57).
+                let counts: Vec<usize> = types
+                    .iter()
+                    .filter(|ty| !ty.is_loose())
+                    .map(|ty| match ty {
+                        Ty::Several(types) => types.len(),
+                        _ => 1,
+                    })
+                    .collect();
+                let most = counts.iter().copied().max().unwrap_or(1);
+                if most > 1 && counts.iter().any(|&count| count != most) {
+                    let fewest = counts.iter().copied().min().unwrap_or(1);
+                    types = vec![self.error(
+                        format!(
+                            "`{name}` gives {most} values in one `return` and {fewest} in another. Every `return` gives as many"
+                        ),
+                        span,
+                    )];
+                } else if most > 1 && !exits {
+                    types.push(self.error(format!("`{name}` can reach its end without giving its {most} values"), span));
+                }
                 if !exits {
                     types.push(Ty::None);
                 }
@@ -6065,7 +6393,12 @@ impl Checker {
 
     /// The type of an expression.
     fn expr(&mut self, expr: &Expr, env: &Env) -> Ty {
+        let several = std::mem::take(&mut self.several);
         let ty = self.expr_inner(expr, env);
+        // Several values are not a value (decision 57, rule 3).
+        if let (Ty::Several(types), false) = (&ty, several) {
+            return self.error(several_not_one(expr, types.len()), expr.span);
+        }
         match &expr.kind {
             ExprKind::List(items) => {
                 self.counted.insert(expr as *const Expr as usize, items.len() as i128);
@@ -6112,6 +6445,16 @@ impl Checker {
         let wrap_mode = std::mem::take(&mut self.wrap_mode);
 
         match &expr.kind {
+            // Read by `return` and `Receive` themselves, never as one value.
+            ExprKind::Several(values) => self.error(
+                format!(
+                    "{} values written with commas are given by `return`, or received with `let {} = ...`. \
+                     A value that holds several things is an object: declare a class",
+                    values.len(),
+                    letters(values.len())
+                ),
+                span,
+            ),
             ExprKind::Int(n) => {
                 if *n > i64::MAX as u64 {
                     self.big_numbers.push((span, *n));
@@ -8281,7 +8624,19 @@ impl Checker {
                 .into_iter()
                 .map(|ty| Argument { name: None, ty, span: function.span, written: None, place: 0 })
                 .collect();
-            checker.call(&function.ty.clone().looked_at(), arguments, function.span)
+            // Several values are not a value (decision 57): `map` would
+            // have nothing to put in its list.
+            match checker.call(&function.ty.clone().looked_at(), arguments, function.span) {
+                Ty::Several(values) => checker.error(
+                    format!(
+                        "the function given to `{name}` gives {} values, and `{name}` needs one value from each call. \
+                         To keep them together, declare a class and return one object",
+                        values.len()
+                    ),
+                    function.span,
+                ),
+                result => result,
+            }
         };
         // What `map` and `reduce` hand the function for each item. An
         // item that has one owner stays in its list, and is lent.
@@ -8828,7 +9183,7 @@ impl Checker {
                     };
                     slots.push(Slot { name: param.name.clone(), ty, has_default: param.default.is_some(), id: None });
                 }
-                decl.return_type.as_ref().map(|ty| self.resolve(ty, &env, span))
+                decl.return_type.as_ref().map(|ty| self.resolve_returns(ty, &env, span))
             }
             Template::Class(decl) => {
                 for field in &decl.fields {
@@ -9147,6 +9502,11 @@ impl Checker {
                 }
                 self.bind(&pattern.returns, &actual.returns, found);
             }
+            (Ty::Several(patterns), Ty::Several(actuals)) => {
+                for (pattern, actual) in patterns.iter().zip(actuals) {
+                    self.bind(pattern, actual, found);
+                }
+            }
             (Ty::Callable(pattern), Ty::Function(_) | Ty::BoundMethod(_)) => {
                 if let Some((slots, returns)) = self.callable(actual) {
                     for (pattern, slot) in pattern.params.iter().zip(&slots) {
@@ -9196,6 +9556,10 @@ impl Checker {
             Ty::Applied(generic, types) => {
                 let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
                 Ty::Instance(self.copy_class(generic, types?, Some(span))?)
+            }
+            Ty::Several(types) => {
+                let types: Option<Vec<Ty>> = types.iter().map(|ty| self.filled(ty, found, span)).collect();
+                Ty::Several(types?)
             }
             other => other.clone(),
         })
@@ -9960,6 +10324,7 @@ fn forget_assigned(body: &[Stmt], scope: &Env) {
     for statement in body {
         match &statement.kind {
             StmtKind::Assign { target: Expr { kind: ExprKind::Name(name), .. }, .. } => scope.forget(name),
+            StmtKind::Receive { places, .. } => places.iter().filter_map(Place::assigned).for_each(|name| scope.forget(name)),
             StmtKind::If { then_block, else_block, .. } => {
                 forget_assigned(then_block, scope);
                 forget_assigned(else_block.as_deref().unwrap_or_default(), scope);
@@ -14059,5 +14424,69 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ] {
             assert_eq!(error(source), message, "\n{source}");
         }
+    }
+
+    #[test]
+    fn several_values_are_received_one_to_each_place() {
+        // Decision 57: the count and the type on both sides, `_`, a field
+        // and an item as places, a generic, an interface and a function
+        // type that give two.
+        let divide = "function divide(a: int, b: int) -> (int, int) {\n    return a // b, a % b\n}\n";
+        let with = |rest: &str| format!("{divide}{rest}");
+        ok(&with("let q, r = divide(7, 2)\nvar low, high = 1, 2\nlow, high = high, low\nlet _, _ = divide(1, 2)\nprint(q + r, low, high)"));
+        ok(&with("class B {\n    a: int = 0\n}\nvar xs = [0]\nlet bx = B()\nbx.a, xs[0] = divide(5, 2)\nprint(bx.a, xs)"));
+        ok(&with("function passes() -> (int, int) {\n    return divide(1, 2)\n}\nlet a, b = passes()\nprint(a + b)"));
+        ok("function swap[A, B](a: A, b: B) -> (B, A) {\n    return b, a\n}\nlet s, n = swap(1, \"x\")\nlet k: int = n\nprint(s + \"\", k)");
+        ok("interface Reader {\n    function read(self) -> (int, bool)\n}\nclass Port is Reader {\n    function read(self) -> (int, bool) { return 1, true }\n}\n\
+            function use(r: Reader) -> int {\n    let v, ok = r.read()\n    return v\n}\nprint(use(Port()))");
+        ok(&with("let f: function(int, int) -> (int, int) = divide\nlet a, b = f(1, 2)\nprint(a, b)"));
+
+        assert_eq!(
+            error(&with("let a, b, c = divide(1, 2)")),
+            "`divide` gives 2 values, and there are 3 places on the left of `=`. Receive each, and write `_` for one that is not wanted"
+        );
+        assert_eq!(error(&with("let a: str, b = divide(1, 2)")), "`a` should be str, but this is int");
+        assert_eq!(
+            error("let a, b = 1"),
+            "there are 2 places on the left of `=`, and the right gives one value, int. Give 2, as in `a, b = 1, 2`, or call a function that gives 2"
+        );
+        assert_eq!(error("let a, b = 1, 2, 3"), "there are 2 places on the left of `=` and 3 values on the right. Each place receives one");
+        assert_eq!(
+            error("function h() -> (int, str) {\n    return 1\n}"),
+            "this function gives 2 values, and this is one. Give each, as in `return a, b`"
+        );
+        assert_eq!(error("function h() -> (int, str) {\n    return 1, 2\n}"), "the second value returned should be str, but this is int");
+        assert_eq!(
+            error("function h() -> int {\n    return 1, 2\n}"),
+            "this function gives one value, int, and this `return` gives 2. A function that gives 2 says so in its first line, as in `-> (int, int)`"
+        );
+        assert_eq!(
+            error(&with("let f: function(int, int) -> int = divide")),
+            "`f` should be function(int, int) -> int, but this function returns (int, int)"
+        );
+        assert_eq!(
+            error("interface Reader {\n    function read(self) -> (int, bool)\n}\nclass Bad is Reader {\n    function read(self) -> int { return 1 }\n}"),
+            "`read` of `Bad` is `function read(self) -> int`, and `Reader` asks for `function read(self) -> (int, bool)`. Write the two the same"
+        );
+        assert_eq!(error("var a = 1\nlet b = 2\na, b = 3, 4"), "`b` cannot be changed. Declare it with `var` to allow that");
+
+        // Rule 3: several values are not a value, wherever one is wanted.
+        let not_one = "`divide` gives 2 values. Receive each: `let a, b = divide(...)`. To keep them together, declare a class";
+        for place in [
+            "let a = divide(1, 2)",
+            "let xs = [divide(1, 2)]",
+            "print(divide(1, 2))",
+            "divide(1, 2)",
+            "let a = divide(1, 2) + 1",
+            "class B {\n    a: int = 0\n}\nlet b = B()\nb.a = divide(1, 2)",
+            "function g(n: int) -> int { return n }\nprint(g(divide(1, 2)))",
+        ] {
+            assert_eq!(error(&with(place)), not_one, "{place}");
+        }
+        // A function given to `map` and the others gives one value a call.
+        assert_eq!(
+            error("function two(n: int) -> (int, int) {\n    return n, n\n}\nprint([1].map(two))"),
+            "the function given to `map` gives 2 values, and `map` needs one value from each call. To keep them together, declare a class and return one object"
+        );
     }
 }

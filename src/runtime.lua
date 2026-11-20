@@ -40,6 +40,9 @@ local List, Dict, Quantity, Fn, Class, Instance, Enum, Case, Constructor = {}, {
 local F32 = {}
 local U64 = {}
 local ErrorType, Error, Module, Method, Bound = {}, {}, {}, {}, {}
+-- Several values from one function, as `return a, b` gives them, until
+-- `let a, b = ...` takes them apart (decision 57).
+local Several = {}
 -- An error the program may catch, on its way to a `try`, and a mistake
 -- in the program, which nothing catches.
 local Raise, Fatal = {}, {}
@@ -158,6 +161,7 @@ local function type_name(v)
   if mt == ErrorType then return "an error type" end
   if mt == Error then return "a " .. v.kind end
   if mt == Module then return "a module" end
+  if mt == Several then return #v.values .. " values" end
   return "a value"
 end
 
@@ -372,6 +376,11 @@ function show(v)
   if mt == ErrorType then return "<error " .. v.kind .. ">" end
   if mt == Error then return v.message end
   if mt == Module then return "<module " .. v.name .. ">" end
+  if mt == Several then
+    local parts = {}
+    for i = 1, #v.values do parts[i] = show(v.values[i]) end
+    return "<" .. #v.values .. " values: " .. concat(parts, ", ") .. ">"
+  end
   return "<value>"
 end
 
@@ -1028,6 +1037,13 @@ function Z.is_case(value, ctor, count, line)
   return true
 end
 function Z.case_field(value, i) return value.fields[i + 1] end
+function Z.several(values) return setmt({values = values}, Several) end
+-- What place `at` of the `count` on the left of `=` is given.
+function Z.received(value, count, at, line)
+  if not is(value, Several) then fatal("there are " .. count .. " places on the left of `=`, and the right gives one value, " .. type_name(value), line) end
+  if #value.values ~= count then fatal("this gives " .. #value.values .. " values, and there are " .. count .. " places on the left of `=`", line) end
+  return value.values[at + 1]
+end
 
 local function place_of(names, name)
   for i, other in ipairs(names) do

@@ -215,7 +215,8 @@ impl Compiler {
             Op::Binary(_) | Op::And(_) | Op::Or(_) | Op::Chain(..) => -1,
             Op::Append(_) | Op::GetIndex | Op::TakeIndex | Op::JumpIfFalse(_) => -1,
             Op::Return | Op::Raise | Op::Reraise => -1,
-            Op::List(n) | Op::Text(n) | Op::Object(n) => 1 - n as i64,
+            Op::List(n) | Op::Text(n) | Op::Object(n) | Op::Several(n) => 1 - n as i64,
+            Op::Unpack(n) => n as i64 - 1,
             Op::Dict(n) => 1 - 2 * n as i64,
             Op::Call(n) | Op::CallNamed(n, _) => -(n as i64),
             Op::SetField(_) => -2,
@@ -354,6 +355,32 @@ impl Compiler {
         true
     }
 
+    /// `declare`, for the value in `slot`, which need not be on top: one
+    /// of several values received at once (decision 57). One that a
+    /// function written inside uses is copied into its cell.
+    fn declare_at(&mut self, name: &str, mutable: bool, slot: u32, span: Span) {
+        if self.block().variables.iter().any(|variable| variable.name == name) {
+            self.mistake(format!("`{name}` is already declared in this block"), span);
+            return;
+        }
+        let place = if self.f().shared.contains(name) {
+            self.emit(Op::GetLocal(slot), span);
+            let cell = match self.block().waiting.remove(name) {
+                Some(cell) => cell,
+                None => {
+                    let cell = self.new_cell(name);
+                    self.emit(Op::NewCell(cell), span);
+                    cell
+                }
+            };
+            self.emit(Op::DefineCell(cell), span);
+            Place::Cell(cell)
+        } else {
+            Place::Slot(slot)
+        };
+        self.block().variables.push(Variable { name: name.to_string(), place, mutable, case: false });
+    }
+
     /// Find the variable a name means at this point of the program: the
     /// nearest one declared above, in this function or one around it.
     fn resolve(&mut self, name: &str) -> Option<(Place, bool, bool)> {
@@ -444,6 +471,9 @@ impl Compiler {
         for statement in statements {
             let names: Vec<&str> = match &statement.kind {
                 StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => vec![name],
+                StmtKind::Receive { places, .. } => {
+                    places.iter().filter_map(crate::ast::Place::declared).map(String::as_str).collect()
+                }
                 StmtKind::Function(decl) => vec![&decl.name],
                 StmtKind::Class(class) => vec![&class.name],
                 StmtKind::Enum(decl) => std::iter::once(&decl.name)
@@ -537,6 +567,33 @@ impl Compiler {
             StmtKind::Const { name, value, .. } => {
                 self.expr(value);
                 self.declare(name, false, false, span);
+            }
+            // All of the right, then each place left to right (decision 57).
+            // The values lie on the stack, the first deepest. A new name
+            // takes its value's slot as its own, as a `let` does; a place
+            // that exists is given a copy, and the values are dropped after.
+            StmtKind::Receive { declare, places, value } => {
+                self.expr(value);
+                let count = places.len() as u32;
+                self.emit(Op::Unpack(count), span);
+                let first = self.f().height - count;
+                for (at, place) in places.iter().enumerate() {
+                    let slot = first + at as u32;
+                    match place {
+                        crate::ast::Place::Name { name, .. } => {
+                            self.declare_at(name, *declare == Some(true), slot, span);
+                        }
+                        // Left where it is, with no name, until the block ends.
+                        crate::ast::Place::Drop => {}
+                        crate::ast::Place::Target(target) => {
+                            self.emit(Op::GetLocal(slot), span);
+                            self.assign(target);
+                        }
+                    }
+                }
+                if declare.is_none() {
+                    self.emit(Op::Pop(count), span);
+                }
             }
             StmtKind::Assign { target, op, value } => {
                 match op {
@@ -1105,6 +1162,12 @@ impl Compiler {
                 }
                 self.emit(Op::List(items.len() as u32), span);
             }
+            ExprKind::Several(items) => {
+                for item in items {
+                    self.expr(item);
+                }
+                self.emit(Op::Several(items.len() as u32), span);
+            }
             ExprKind::Dict(entries) => {
                 for (key, value) in entries {
                     self.expr(key);
@@ -1302,6 +1365,14 @@ impl Names {
                 self.expr(target);
                 self.expr(value);
             }
+            StmtKind::Receive { places, value, .. } => {
+                for place in places {
+                    if let crate::ast::Place::Target(target) = place {
+                        self.expr(target);
+                    }
+                }
+                self.expr(value);
+            }
             StmtKind::Expr(expr) | StmtKind::Raise(expr) => self.expr(expr),
             StmtKind::Function(decl) => self.function(decl),
             StmtKind::Class(class) => {
@@ -1383,7 +1454,7 @@ impl Names {
                 }
             }
             ExprKind::Unit { value, .. } => self.expr(value),
-            ExprKind::List(items) => {
+            ExprKind::List(items) | ExprKind::Several(items) => {
                 for item in items {
                     self.expr(item);
                 }

@@ -309,6 +309,15 @@ mod tests {
     }
 
     #[test]
+    fn several_values_are_laid_out_with_a_comma_and_a_space() {
+        // Decision 57.
+        assert_eq!(
+            formatted("function  d(a:int,b:int)->(int,int){\n  return a//b,a%b\n}\nlet q,r=d(7,2)\nq , r = r,q\nlet _ ,s=d(1,2)\n"),
+            "function d(a: int, b: int) -> (int, int) {\n    return a // b, a % b\n}\nlet q, r = d(7, 2)\nq, r = r, q\nlet _, s = d(1, 2)\n"
+        );
+    }
+
+    #[test]
     fn a_minus_is_a_sign_or_a_subtraction() {
         assert_eq!(formatted("let a = - 1\n"), "let a = -1\n");
         assert_eq!(formatted("let b = a-1\n"), "let b = a - 1\n");

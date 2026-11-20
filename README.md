@@ -896,6 +896,13 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     build through C and LLVM, with or without a collector. See
     [`docs/inner-functions.md`](docs/inner-functions.md) and 56.16 of
     [`docs/decisions.md`](docs/decisions.md))
+62. Several values from one function (on `main`, for 0.8.0: `function
+    divide(a: int, b: int) -> (int, int)`, `return a // b, a % b`,
+    `let q, r = divide(7, 2)`, and `low, high = high, low`, in every
+    engine, every build and every target; several values are never
+    one value, and a class keeps them together. See
+    [`docs/several-values.md`](docs/several-values.md) and chapter 57
+    of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

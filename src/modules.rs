@@ -805,6 +805,9 @@ fn declarations(program: &Program) -> Vec<(String, Span, bool)> {
         let span = statement.span;
         match &statement.kind {
             StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => names.push((name.clone(), span, false)),
+            StmtKind::Receive { places, .. } => {
+                names.extend(places.iter().filter_map(Place::declared).map(|name| (name.clone(), span, false)))
+            }
             StmtKind::Function(function) => names.push((function.name.clone(), span, false)),
             StmtKind::Class(class) => names.push((class.name.clone(), span, false)),
             StmtKind::Enum(decl) => {
@@ -1150,6 +1153,40 @@ impl<'a> Renamer<'a> {
                     self.declare(name);
                 }
             }
+            StmtKind::Receive { places, value, .. } => {
+                // All of the right is worked out before any place is given
+                // its value, so it reads the names outside.
+                self.expr(value);
+                for place in places.iter_mut() {
+                    match place {
+                        Place::Name { name, ty } => {
+                            if let Some(ty) = ty {
+                                self.ty(ty, span);
+                            }
+                            if renamed {
+                                *name = full(name);
+                            } else if !at_top {
+                                self.declare(name);
+                            }
+                        }
+                        Place::Drop => {}
+                        Place::Target(target) => {
+                            self.expr(target);
+                            if let ExprKind::Name(name) = &target.kind {
+                                if let Some((owner, _)) = name.rsplit_once('.').filter(|(owner, _)| *owner != module) {
+                                    self.error(
+                                        format!(
+                                            "`{name}` is a variable of the module `{owner}`, and only the file of `{owner}` \
+                                             gives it a new value. Give `{owner}` a function that changes it, and call that"
+                                        ),
+                                        span,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             StmtKind::Assign { target, value, .. } => {
                 self.expr(target);
                 self.expr(value);
@@ -1382,6 +1419,7 @@ impl<'a> Renamer<'a> {
             }
             Type::Optional(inner) | Type::Owned(inner) | Type::Take(inner) => self.ty(inner, span),
             Type::Length(_) => {}
+            Type::Several(types) => types.iter_mut().for_each(|ty| self.ty(ty, span)),
             Type::Function { params, returns, raises } => {
                 for param in params {
                     self.ty(param, span);
@@ -1497,7 +1535,7 @@ impl<'a> Renamer<'a> {
                 }
             }
             ExprKind::Unit { value, .. } => self.expr(value),
-            ExprKind::List(items) => items.iter_mut().for_each(|item| self.expr(item)),
+            ExprKind::List(items) | ExprKind::Several(items) => items.iter_mut().for_each(|item| self.expr(item)),
             ExprKind::Dict(entries) => {
                 for (key, value) in entries {
                     self.expr(key);

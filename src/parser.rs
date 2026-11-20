@@ -33,6 +33,14 @@ pub fn ends_in_raises(ty: &Type) -> bool {
     }
 }
 
+/// A name after `let` or `var` in a `Receive`: `_` drops its value.
+fn declared_place(name: String, ty: Option<Type>) -> Place {
+    match (name.as_str(), &ty) {
+        ("_", None) => Place::Drop,
+        _ => Place::Name { name, ty },
+    }
+}
+
 /// Turn the tokens of a whole file into a syntax tree.
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Error> {
     let mut parser = Parser { tokens, pos: 0, depth: 0, private: Vec::new(), in_test: false, tests: Vec::new() };
@@ -315,7 +323,7 @@ impl Parser {
                     self.peek(),
                     TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof
                 );
-                StmtKind::Return(if at_end { None } else { Some(self.expression()?) })
+                StmtKind::Return(if at_end { None } else { Some(self.values()?) })
             }
             TokenKind::Raise => {
                 self.advance();
@@ -350,6 +358,22 @@ impl Parser {
         let name = self.name("a name for the variable")?;
         let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
         self.one_kind(&ty)?;
+        // `let q, r = divide(7, 2)`: several names (decision 57).
+        if self.check(TokenKind::Comma) {
+            if keyword == TokenKind::Const {
+                return self.error("a `const` names one value. Write a `const` for each");
+            }
+            let mut places = vec![declared_place(name, ty)];
+            while self.eat(TokenKind::Comma) {
+                let name = self.name("a name for the variable, or `_`")?;
+                let ty = if self.eat(TokenKind::Colon) { Some(self.type_()?) } else { None };
+                self.one_kind(&ty)?;
+                places.push(declared_place(name, ty));
+            }
+            self.expect(TokenKind::Assign)?;
+            let value = self.values()?;
+            return Ok(StmtKind::Receive { declare: Some(keyword == TokenKind::Var), places, value });
+        }
         self.expect(TokenKind::Assign)?;
         let value = self.expression()?;
 
@@ -365,6 +389,42 @@ impl Parser {
     /// what follows.
     fn assignment_or_expression(&mut self) -> Result<StmtKind, Error> {
         let target = self.expression()?;
+        // `low, high = high, low`: several places that exist (decision 57).
+        if self.check(TokenKind::Comma) {
+            let mut targets = vec![target];
+            while self.eat(TokenKind::Comma) {
+                targets.push(self.expression()?);
+            }
+            let mut places = Vec::new();
+            for target in targets {
+                places.push(match &target.kind {
+                    ExprKind::Name(name) if name == "_" => Place::Drop,
+                    ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => Place::Target(target),
+                    _ => return Err(Error::new("this cannot be given a value", target.span)),
+                });
+            }
+            if !self.check(TokenKind::Assign) {
+                let message = match self.peek() {
+                    TokenKind::PlusAssign
+                    | TokenKind::MinusAssign
+                    | TokenKind::StarAssign
+                    | TokenKind::SlashAssign
+                    | TokenKind::SlashSlashAssign
+                    | TokenKind::PercentAssign
+                    | TokenKind::StarStarAssign
+                    | TokenKind::AmpAssign
+                    | TokenKind::PipeAssign
+                    | TokenKind::CaretAssign
+                    | TokenKind::ShlAssign
+                    | TokenKind::ShrAssign => "`+=` and the others change one place each. Write a line for each place",
+                    _ => "several places are given values with one `=`, as in `low, high = high, low`",
+                };
+                return self.error(message);
+            }
+            self.advance(); // =
+            let value = self.values()?;
+            return Ok(StmtKind::Receive { declare: None, places, value });
+        }
 
         let op = match self.peek() {
             TokenKind::Assign => None,
@@ -395,6 +455,21 @@ impl Parser {
         self.advance(); // the = or += ...
         let value = self.expression()?;
         Ok(StmtKind::Assign { target, op, value })
+    }
+
+    /// One expression, or several with commas between them: what `return`
+    /// gives, and the right of a `Receive` (decision 57).
+    fn values(&mut self) -> Result<Expr, Error> {
+        let first = self.expression()?;
+        if !self.check(TokenKind::Comma) {
+            return Ok(first);
+        }
+        let span = first.span;
+        let mut values = vec![first];
+        while self.eat(TokenKind::Comma) {
+            values.push(self.expression()?);
+        }
+        Ok(Expr { kind: ExprKind::Several(values), span })
     }
 
     /// `{ statements }`
@@ -978,6 +1053,32 @@ impl Parser {
     /// raises (decision 56.2). A returned function type that raises
     /// itself is written in brackets.
     fn result_type(&mut self) -> Result<Type, Error> {
+        // `-> (int, str)`: a function that gives several values (decision
+        // 57). One type in brackets is a function type, as before.
+        if self.check(TokenKind::LParen) {
+            let start = self.pos;
+            self.advance(); // (
+            let is_function = self.check(TokenKind::Function);
+            let first = self.type_in(true)?;
+            if self.eat(TokenKind::Comma) {
+                let mut types = vec![first];
+                loop {
+                    types.push(self.type_in(true)?);
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                if self.check(TokenKind::Or) {
+                    return self.error("several values cannot be `none` together. One of them can: `(int, str or none)`");
+                }
+                return Ok(Type::Several(types));
+            }
+            if !is_function {
+                return self.error("one value is written without brackets: `-> int`. Brackets hold two or more: `-> (int, str)`");
+            }
+            self.pos = start;
+        }
         self.type_in(false)
     }
 
@@ -999,6 +1100,14 @@ impl Parser {
         if self.check(TokenKind::LParen) {
             self.advance();
             if !self.check(TokenKind::Function) {
+                // `(int, str)` is what a function gives, after `->` alone
+                // (decision 57).
+                if self.type_().is_ok() && self.check(TokenKind::Comma) {
+                    return self.error(
+                        "`(int, str)` is written only after `->`, for a function that gives two values or more. \
+                         A value that holds several things is an object: declare a class",
+                    );
+                }
                 return self.error(
                     "brackets in a type go only around a function type, as in \
                      `(function(int) -> int raises ValueError)`. One type is written without brackets",
@@ -2469,6 +2578,55 @@ mod tests {
         let message = "brackets in a type go only around a function type, as in \
                        `(function(int) -> int raises ValueError)`. One type is written without brackets";
         assert_eq!(error("let x: (int) = 3"), message);
-        assert_eq!(error("function f() -> (int) { }"), message);
+        assert_eq!(
+            error("function f() -> (int) { }"),
+            "one value is written without brackets: `-> int`. Brackets hold two or more: `-> (int, str)`"
+        );
+    }
+
+    #[test]
+    fn several_values_are_given_and_received_with_commas() {
+        // Each form of decision 57: the first line, `return`, `let`, `var`,
+        // places that exist, `_`, and values written out.
+        let source = "function divide(a: int, b: int) -> (int, int) {\n    return a // b, a % b\n}\n\
+                      let q, r = divide(7, 2)\nvar low: int, _ = 1, 2\nlow, xs[0], box.a = 1, 2, 3\n\
+                      let f: function(int) -> (int, str) = g\n";
+        let printed = tree(source);
+        for part in ["-> (int, int)", "q, r", "low", "xs[0]", "box.a"] {
+            assert!(printed.contains(part), "{part} missing in:\n{printed}");
+        }
+        let program = parse_source(source).unwrap();
+        assert!(matches!(&program.statements[1].kind, StmtKind::Receive { declare: Some(false), places, .. } if places.len() == 2));
+        assert!(
+            matches!(&program.statements[2].kind, StmtKind::Receive { declare: Some(true), places, .. } if matches!(places[1], Place::Drop))
+        );
+        assert!(matches!(&program.statements[3].kind, StmtKind::Receive { declare: None, places, value } if places.len() == 3 && matches!(value.kind, ExprKind::Several(ref v) if v.len() == 3)));
+        let named = |name: &str| Type::Named { name: name.into(), args: Vec::new() };
+        assert_eq!(
+            type_of("let f: function(int) -> (int, str) = g"),
+            Type::Function {
+                params: vec![named("int")],
+                returns: Some(Box::new(Type::Several(vec![named("int"), named("str")]))),
+                raises: None
+            }
+        );
+    }
+
+    #[test]
+    fn several_values_are_refused_where_they_do_not_belong() {
+        assert_eq!(
+            error("function f() -> (int) { }"),
+            "one value is written without brackets: `-> int`. Brackets hold two or more: `-> (int, str)`"
+        );
+        assert_eq!(
+            error("function f() -> (int, str) or none { }"),
+            "several values cannot be `none` together. One of them can: `(int, str or none)`"
+        );
+        assert!(error("let x: (int, str) = 3").starts_with("`(int, str)` is written only after `->`"));
+        assert!(error("function f(a: (int, str)) { }").starts_with("`(int, str)` is written only after `->`"));
+        assert_eq!(error("const a, b = 1, 2"), "a `const` names one value. Write a `const` for each");
+        assert_eq!(error("a, b += 1, 2"), "`+=` and the others change one place each. Write a line for each place");
+        assert_eq!(error("a, b"), "several places are given values with one `=`, as in `low, high = high, low`");
+        assert_eq!(error("a, f() = 1, 2"), "this cannot be given a value");
     }
 }

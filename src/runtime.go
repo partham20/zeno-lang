@@ -117,6 +117,10 @@ type ZBound struct {
 	fn     *ZFunc
 }
 
+// Several values from one function, as `return a, b` gives them, until
+// `let a, b = ...` takes them apart (decision 57).
+type ZSeveral struct{ values []ZV }
+
 type zMissing struct{ _ byte }
 
 // What a call gives a parameter it leaves out.
@@ -437,6 +441,8 @@ func ZtypeName(v ZV) string {
 		return "a " + x.kind
 	case *ZModule:
 		return "a module"
+	case *ZSeveral:
+		return strconv.Itoa(len(x.values)) + " values"
 	}
 	return "a value"
 }
@@ -656,6 +662,12 @@ func Zshow(v ZV) string {
 		return "<error " + x.kind + ">"
 	case *ZModule:
 		return "<module " + x.name + ">"
+	case *ZSeveral:
+		parts := make([]string, len(x.values))
+		for i, item := range x.values {
+			parts[i] = Zshow(item)
+		}
+		return "<" + strconv.Itoa(len(x.values)) + " values: " + strings.Join(parts, ", ") + ">"
 	case *ZFunc:
 		if x.name != "" {
 			return "<function " + x.name + ">"
@@ -1614,6 +1626,20 @@ func Zis_case(value, ctor ZV, count int, line int) bool {
 }
 
 func Zcase_field(value ZV, i int) ZV { return value.(*ZCase).fields[i] }
+
+func Zseveral(values []ZV) ZV { return &ZSeveral{values} }
+
+// What place `at` of the `count` on the left of `=` is given.
+func Zreceived(value ZV, count, at int, line int) ZV {
+	s, ok := value.(*ZSeveral)
+	if !ok {
+		Zfatal("there are "+strconv.Itoa(count)+" places on the left of `=`, and the right gives one value, "+ZtypeName(value), line)
+	}
+	if len(s.values) != count {
+		Zfatal("this gives "+strconv.Itoa(len(s.values))+" values, and there are "+strconv.Itoa(count)+" places on the left of `=`", line)
+	}
+	return s.values[at]
+}
 
 func zIndexOf(names []string, name string) int {
 	for i, n := range names {

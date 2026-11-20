@@ -161,6 +161,16 @@ class ZBound
   end
 end
 
+# Several values from one function, as `return a, b` gives them, until
+# `let a, b = ...` takes them apart (decision 57).
+class ZSeveral
+  attr_reader :values
+
+  def initialize(values)
+    @values = values
+  end
+end
+
 # An error the program may catch, on its way to a `try`. Ruby would note
 # every call it passes on its way; it is told there is nothing to note.
 class ZRaise < Exception
@@ -378,6 +388,7 @@ module Z
       when ZErrorType then "an error type"
       when ZError then "a " + v.kind
       when ZModule then "a module"
+      when ZSeveral then v.values.length.to_s + " values"
       else "a value"
       end
     end
@@ -489,6 +500,7 @@ module Z
       when ZErrorType then "<error " + v.kind + ">"
       when ZError then v.message
       when ZModule then "<module " + v.name + ">"
+      when ZSeveral then "<" + v.values.length.to_s + " values: " + v.values.map { |item| show(item) }.join(", ") + ">"
       else "<value>"
       end
     end
@@ -1049,6 +1061,19 @@ module Z
 
     def case_field(value, i)
       value.fields[i]
+    end
+
+    def several(values)
+      ZSeveral.new(values)
+    end
+
+    # What place `at` of the `count` on the left of `=` is given.
+    def received(value, count, at, line)
+      fatal("there are " + count.to_s + " places on the left of `=`, and the right gives one value, " + type_name(value), line) unless value.is_a?(ZSeveral)
+      if value.values.length != count
+        fatal("this gives " + value.values.length.to_s + " values, and there are " + count.to_s + " places on the left of `=`", line)
+      end
+      value.values[at]
     end
 
     STR_METHODS = %w[upper lower strip split lines replace starts_with ends_with find slice code].freeze

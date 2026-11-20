@@ -632,6 +632,25 @@ mod tests {
     }
 
     #[test]
+    fn a_function_that_gives_several_values_says_so() {
+        // Decision 57: the first line shows what it gives, and each name
+        // that receives one shows its own type.
+        let mut server = Server::default();
+        open(
+            &mut server,
+            "main.zeno",
+            "function divide(a: int, b: int) -> (int, str) {\n    return a // b, str(a % b)\n}\nlet quot, rest = divide(7, 2)\nprint(quot, rest)\n",
+        );
+        let hover = |server: &mut Server, line: usize, word: &str| {
+            ask(server, "textDocument/hover", "main.zeno", line, word).at(&["contents", "value"]).and_then(Json::as_str).map(str::to_string)
+        };
+        assert_eq!(hover(&mut server, 3, "divide").as_deref(), Some("divide: function(a: int, b: int) -> (int, str)"));
+        assert_eq!(hover(&mut server, 4, "quot").as_deref(), Some("quot: int"));
+        assert_eq!(hover(&mut server, 4, "rest").as_deref(), Some("rest: str"));
+        assert_eq!(points_to(&ask(&mut server, "textDocument/definition", "main.zeno", 4, "rest")).1, 3);
+    }
+
+    #[test]
     fn a_name_says_what_it_is_and_where_it_was_declared() {
         let mut server = Server::default();
         open(&mut server, "shapes.zeno", "class Point {\n    x: int\n}\n\nfunction area(side: int) -> int {\n    return side * side\n}\n");

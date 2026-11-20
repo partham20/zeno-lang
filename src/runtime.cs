@@ -159,6 +159,14 @@ static class Z
         public Bound(object obj, Func fn) { this.obj = obj; this.fn = fn; }
     }
 
+    // Several values from one function, as `return a, b` gives them, until
+    // `let a, b = ...` takes them apart (decision 57).
+    public sealed class Several
+    {
+        public readonly object[] values;
+        public Several(object[] values) { this.values = values; }
+    }
+
     // What a call gives a parameter it leaves out.
     public static readonly object MISSING = new object();
 
@@ -407,6 +415,7 @@ static class Z
             case ErrorType: return "an error type";
             case ZError e: return "a " + e.kind;
             case Module: return "a module";
+            case Several s: return s.values.Length + " values";
         }
         return "a value";
     }
@@ -604,6 +613,12 @@ static class Z
             case Constructor c: return "<case " + c.def.cases[c.index] + ">";
             case ErrorType e: return "<error " + e.kind + ">";
             case Module m: return "<module " + m.name + ">";
+            case Several s:
+                {
+                    var parts = new System.Collections.Generic.List<string>();
+                    foreach (var item in s.values) parts.Add(show(item));
+                    return "<" + s.values.Length + " values: " + string.Join(", ", parts) + ">";
+                }
             case Func f: return f.name.Length == 0 ? "<function>" : "<function " + f.name + ">";
         }
         return "?";
@@ -1199,6 +1214,16 @@ static class Z
     }
 
     public static object case_field(object value, int i) => ((Case)value).fields[i];
+
+    public static object several(object[] values) => new Several(values);
+
+    // What place `at` of the `count` on the left of `=` is given.
+    public static object received(object value, int count, int at, int line)
+    {
+        if (!(value is Several s)) throw fatal("there are " + count + " places on the left of `=`, and the right gives one value, " + typeName(value), line);
+        if (s.values.Length != count) throw fatal("this gives " + s.values.Length + " values, and there are " + count + " places on the left of `=`", line);
+        return s.values[at];
+    }
 
     static int indexOf(string[] names, string name) => System.Array.IndexOf(names, name);
 

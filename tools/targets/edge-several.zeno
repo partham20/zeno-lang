@@ -1,0 +1,114 @@
+# Several values from one function (decision 57): written out, given
+# by a call, passed on by `return f()`, dropped with `_`, put in fields,
+# items and `var`s, swapped, from a function value and a generic, from a
+# function with no types, and many times over in a loop. Every target
+# prints what `zeno run` prints, and a build with no collector leaves
+# nothing.
+
+function divide(a: int, b: int) -> (int, int) {
+    return a // b, a % b
+}
+
+let quotient, remainder = divide(7, 2)
+print(quotient, remainder)
+
+var low = 3
+var high = 1
+low, high = high, low
+print(low, high)
+
+function pair(n) {
+    return n, str(n) + "!"
+}
+let x, y = pair(5)
+print(x, y)
+
+let _, r = divide(9, 4)
+print(r)
+
+function passes(a: int) -> (int, int) {
+    return divide(a, 3)
+}
+var p: int = 0
+var q: int = 0
+p, q = passes(10)
+print(p, q)
+
+class Box {
+    a: int = 0
+    b: int = 0
+}
+let bx = Box()
+var items = [0, 0]
+bx.a, items[1] = divide(20, 6)
+print(bx.a, items)
+
+let m, n = 1, "two"
+print(m, n)
+
+function names() -> (str, str) {
+    let first = "Ada" + ""
+    return first + " L", "x" + str(3)
+}
+let f1, f2 = names()
+print(f1, f2)
+
+let fv = divide
+let g1, g2 = fv(11, 4)
+print(g1, g2)
+
+function swap[A, B](a: A, b: B) -> (B, A) {
+    return b, a
+}
+let s1, s2 = swap(1, "one")
+print(s1, s2)
+
+# A function with no types, given a function that gives two values: the
+# two pass through untouched.
+function twice(make, n) {
+    return make(n)
+}
+let t1, t2 = twice(pair, 7)
+print(t1, t2)
+
+# Many times over: what each call gives is taken apart and freed.
+var total = 0
+var words = ""
+for i in range(1000) {
+    let whole, part = divide(i, 7)
+    let label, _ = names()
+    total += whole + part
+    if i % 250 == 0 {
+        words += label
+    }
+}
+print(total, words)
+
+# Text and lists through a swap.
+var left = "left"
+var right = "right " + str(1)
+left, right = right, left
+print(left, right)
+var xs = [1, 2]
+var ys = [3]
+xs, ys = ys, xs
+print(xs, ys)
+
+# Carried through names with no type, several values are still not a
+# value: shown, they say what they are, alone, in a list and as text.
+let shown = twice(pair, 3)
+print(shown, [shown], str(shown), len([shown]))
+let again = twice(pair, 3)
+print(shown == shown, shown == again, shown != again)
+
+# Rule 3 in a program with no types: nothing tells the checker how many
+# values `call(two)` gives, so the line that receives them stops the
+# program, with the same message in every target.
+function two() {
+    return 1, 2
+}
+function call(f) {
+    return f()
+}
+let a, b, c = call(two)
+print("not reached", a, b, c)

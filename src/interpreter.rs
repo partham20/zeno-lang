@@ -600,6 +600,12 @@ impl Interpreter {
                     above += 1;
                     lets.push(name.clone());
                 }
+                StmtKind::Receive { places, .. } => {
+                    for name in places.iter().filter_map(Place::declared) {
+                        above += 1;
+                        lets.push(name.clone());
+                    }
+                }
                 StmtKind::Import { module, names } => {
                     // `import a.b` declares one name, the module's.
                     above += names.len().max(1);
@@ -625,6 +631,28 @@ impl Interpreter {
             StmtKind::Const { name, value, .. } => {
                 let value = self.eval(value, env)?;
                 self.declare(env, name, value, false, span)
+            }
+            // All of the right first, then each place, left to right
+            // (decision 57).
+            StmtKind::Receive { declare, places, value } => {
+                let values = match &value.kind {
+                    ExprKind::Several(values) => {
+                        let mut given = Vec::with_capacity(values.len());
+                        for value in values {
+                            given.push(self.eval(value, env)?);
+                        }
+                        given
+                    }
+                    _ => crate::value::received(self.eval(value, env)?, places.len(), span)?,
+                };
+                for (place, value) in places.iter().zip(values) {
+                    match place {
+                        Place::Drop => {}
+                        Place::Name { name, .. } => self.declare(env, name, value, *declare == Some(true), span)?,
+                        Place::Target(target) => self.assign(target, value, env)?,
+                    }
+                }
+                Ok(())
             }
             StmtKind::Assign { target, op, value } => {
                 let new = match op {
@@ -925,6 +953,14 @@ impl Interpreter {
                     values.push(self.eval(item, env)?);
                 }
                 Ok(Value::list(values))
+            }
+            // `return a, b` (decision 57).
+            ExprKind::Several(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.eval(item, env)?);
+                }
+                Ok(Value::Several(values.into()))
             }
             // A key written twice keeps its first place and its last value.
             ExprKind::Dict(entries) => {

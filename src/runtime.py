@@ -261,6 +261,14 @@ class Bound:
         self.object, self.fn = obj, fn
 
 
+class Several:
+    """Several values from one function, as `return a, b` gives them, until
+    `let a, b = ...` takes them apart (decision 57)."""
+
+    def __init__(self, values):
+        self.values = values
+
+
 class _Missing:
     def __repr__(self):
         return "MISSING"
@@ -365,6 +373,8 @@ def type_name(v):
         return "a " + v.kind
     if t is Module:
         return "a module"
+    if t is Several:
+        return str(len(v.values)) + " values"
     return "a value"
 
 
@@ -508,6 +518,8 @@ def show(v):
         return "<error " + v.kind + ">"
     if t is Module:
         return "<module " + v.name + ">"
+    if t is Several:
+        return "<" + str(len(v.values)) + " values: " + ", ".join(show(value) for value in v.values) + ">"
     if callable(v):
         name = getattr(v, "zname", "")
         return "<function " + name + ">" if name else "<function>"
@@ -1130,6 +1142,19 @@ def is_case(value, ctor, count, line):
 
 def case_field(value, i):
     return value.fields[i]
+
+
+def several(values):
+    return Several(values)
+
+
+def received(value, count, at, line):
+    """What place `at` of the `count` on the left of `=` is given."""
+    if type(value) is not Several:
+        fatal("there are " + str(count) + " places on the left of `=`, and the right gives one value, " + type_name(value), line)
+    if len(value.values) != count:
+        fatal("this gives " + str(len(value.values)) + " values, and there are " + str(count) + " places on the left of `=`", line)
+    return value.values[at]
 
 
 def field(obj, name, line):

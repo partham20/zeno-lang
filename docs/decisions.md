@@ -17993,6 +17993,223 @@ wrote for `print(1)`. Whatever is added to the runtime from now on is a
 piece. Making `same.py` skip the runtime was turned down: it would hide
 exactly this.
 
+## 57. Several values from one function
+
+```zeno
+function divide(a: int, b: int) -> (int, int) {
+    return a // b, a % b
+}
+
+let quotient, remainder = divide(7, 2)
+
+var low = 3
+var high = 1
+low, high = high, low
+```
+
+Item 10 of [`missing.md`](missing.md): a function that gives back two
+things at once, as a driver's `read` gives a value and a status. It is
+10.1 to 10.4 of [`plan-9-14.md`](plan-9-14.md). Like everything added
+after 0.7.0 it is asked for by what is written (brackets after `->`,
+commas after `return` and before `=`); a program that writes none of
+it means what it meant, builds to the same C, and runs the same
+bytecode.
+
+### 57.1 The rules
+
+1. **A function may give two or more values.** Its first line says
+   `-> (int, str)`, and each `return` gives that many, with commas.
+2. **They are received by that many names**: `let q, r = divide(7,
+   2)`, `var q, r = ...`, or `q, r = ...` for places that exist (a
+   variable, a field, an item). Every value is received. `_` in the
+   place of a name receives one and drops it.
+3. **Several values are not a value.** They cannot be put in one
+   variable, in a list, in a field, passed as one argument, used with
+   an operator, or printed. Each is refused with one message:
+   "`divide` gives 2 values. Receive each: `let a, b = divide(...)`.
+   To keep them together, declare a class".
+4. **The right of `=` is one call that gives that many values, or
+   that many values written out.** All of the right is worked out,
+   left to right, before anything on the left is given a value; then
+   the left is filled left to right. That is what makes `low, high =
+   high, low` a swap.
+5. `(int, str)` is written only after `->`, in a function's first
+   line or in a function type. Nowhere else is it a type.
+
+**Why every value must be received.** A function that gives a value
+and a status is written so that the status is looked at. `let value,
+_ = port.read()` says in the line that it was dropped on purpose, and
+a call written as a statement, `divide(7, 2)`, is refused as rule 3
+refuses any other use of the values as one.
+
+**Why `let a, b = 1, 2` is taken.** Rule 4 needs values written out
+for the swap; refusing them after `let` would be an exception to it.
+
+**The messages**, each with what to write:
+
+- "`divide` gives 2 values, and there are 3 places on the left of
+  `=`. Receive each, and write `_` for one that is not wanted"
+- "there are 2 places on the left of `=`, and the right gives one
+  value, int. Give 2, as in `a, b = 1, 2`, or call a function that
+  gives 2"
+- "this function gives 2 values, and this is one. Give each, as in
+  `return a, b`", and its other side: "this function gives one value,
+  int, and this `return` gives 2. A function that gives 2 says so in
+  its first line, as in `-> (int, int)`"
+- "the function given to `map` gives 2 values, and `map` needs one
+  value from each call. To keep them together, declare a class and
+  return one object" (and `filter`, `reduce`, `sort`)
+- In the parser: "one value is written without brackets: `-> int`.
+  Brackets hold two or more: `-> (int, str)`"; "several values cannot
+  be `none` together. One of them can: `(int, str or none)`"; "a
+  `const` names one value. Write a `const` for each"; "`+=` and the
+  others change one place each. Write a line for each place"; and
+  "`(int, str)` is written only after `->`, ... declare a class" for
+  the type anywhere else.
+
+### 57.2 How it is written: the ways weighed
+
+| | Written | Verdict |
+|---|---|---|
+| A | `-> (int, str)`, `return a, b`, `let a, b = f()` | **Chosen.** Go's shape: brackets in the first line, bare commas where values are given and received, and no tuple as a value. `for key, value in ages` already receives two names with a bare comma |
+| B | `-> int, str` | In a function type among parameters the comma reads two ways: `function(int) -> int, str`. The brackets are the fence |
+| C | `return (a, b)`, `let (a, b) = f()` | `(a, b)` on the value side looks like a value that could be kept, and rule 3 says it cannot |
+| D | `-> int and str` | The type would say one thing and `return a, b` another, and `int or none and str` reads against `or` and `and` everywhere else |
+| E | Named results, `-> (quotient: int, remainder: int)` | That is a class. A class is how Zeno names the parts of a thing |
+
+**Why not a tuple as a value**, as Python and Rust have. It would be a
+second way to write a class with fields nobody named, and `reading[1]`
+says less than `reading.status`. What is asked for is to give back two
+things at once, and that needs no new kind of value in a program that
+says its types.
+
+### 57.3 With no types written
+
+A program with no types can carry several values through names the
+checker knows nothing about:
+
+```zeno
+function pair(n) {
+    return n, str(n) + "!"
+}
+function twice(make, n) {
+    return make(n)
+}
+let shown = twice(pair, 3)      # the checker cannot see two values here
+print(shown)                    # <2 values: 3, 3!>
+let a, b, c = twice(pair, 3)    # stops: this gives 2 values, and there are 3 places
+```
+
+What the checker can see, it refuses before the run, with or without
+types: `let x = pair(3)` names `pair`, whose `return n, ...` says it
+gives two. What it cannot see is held in three ways, the same in
+`zeno run`, `zeno run --vm` and all thirteen targets:
+
+1. **Where the values are received**, the count is checked: "this
+   gives 2 values, and there are 3 places on the left of `=`", and
+   "there are 2 places on the left of `=`, and the right gives one
+   value, an int".
+2. **Shown, they never read as values**: `<2 values: 3, 3!>`, as a
+   function shows as `<function pair>`. Without the brackets `[shown]`
+   would print `[3, 3!]`, a list of two, where there is a list of one
+   thing that is no value.
+3. **An operator, an index, a field or `len`** on them gets the
+   message any wrong kind of value gets, with the kind named "2
+   values": "`+` does not work between 2 values and an int". `==` is
+   true only of the same values, as for a function or an event.
+
+**Why not refused at every use.** Rule 3 at run time would be a test
+in every call, every store and every argument of every program,
+including the ones that never write `return a, b`, and bytecode that
+is no longer 0.7.0's. A program with no types already gives up the
+checks types bring; this is one of them, and the place it is caught,
+the line that receives, is the line that is wrong. The review of item
+10 asked for rule 3's own words after the wrong-kind message as well.
+That is not done: the message comes from some thirty places in each
+of fourteen engines (every operator, index and call of a built-in),
+and a hint added to each is more code that can disagree than the
+words are worth. The type name "2 values" says what is there, and
+this section says why.
+
+### 57.4 How it is built
+
+- **The tree**: `Type::Several`, only after `->`; `ExprKind::Several`,
+  only after `return` and on the right of the new statement;
+  `StmtKind::Receive { declare, places, value }`, where a place is a
+  new name with an optional type, `_`, or a place that exists. Three
+  new kinds and no change to an old one, so every stage that was not
+  told of them failed to build until it was.
+- **The checker**: a function's `returns` may be several. A call that
+  gives several is accepted only as the right of a `Receive` with as
+  many places, or after `return` in a function that gives the same.
+  Each place gets its type, and with one owner each value is given to
+  its place. A function type and an interface's function compare
+  their results as any type does, and a generic's parameters are
+  worked out from each value.
+- **The interpreter and the VM**: one new variant of `Value`,
+  `Several(Rc<[Value]>)`, the last, made only by `return a, b` and
+  taken apart only by a `Receive`; one new instruction for each. A
+  value, an instruction, a statement, an expression and a type are
+  each the size they were in 0.7.0, and a test holds them there
+  (`a_value_an_instruction_and_the_tree_are_no_bigger_than_in_0_7_0`).
+- **Both compilers**: the first value comes back as a function's
+  answer does. Each further one goes out through a pointer the caller
+  passes after the arguments:
+
+  ```c
+  static int64_t z_divide(int64_t z_a, int64_t z_b, int64_t *zeno_gives_2);
+  ```
+
+  In a firmware build a function that can raise gives back `true` or
+  `false` (5.5l), and its answer goes out through `zeno_result`, after
+  the pointers for the further values. **Why pointers and not a
+  struct**: it is what a firmware build already does with an answer
+  that can fail, a struct for each shape of result is one more type
+  for each, and C compilers for small chips return a struct through
+  memory in any case. One rule, the same in every build.
+- **Text with no collector**: the first text comes back in the text
+  room, as one text does (5.9n). Each further text is kept by copy
+  (5.9l) by the function and owned by whoever receives it; a `_`
+  gives it back at once. Two faults the tests of every build found
+  here are mended and tested (a third is in 57.5): an object received
+  as a further value kept the type "owned" inside the list of values
+  and could not be read, and the text room was not given back after a
+  `Receive`, so a loop of them ran out of room.
+- **The targets**: `lower.rs` makes `return a, b` a call of
+  `several(...)`, and a `Receive` a temporary and one call of
+  `received(value, count, at, line)` for each place, which checks the
+  count (57.3). Two functions and a wrapper type in each runtime.
+- `printer.rs`, `modules.rs`, and the language server, whose hover
+  shows `divide: function(a: int, b: int) -> (int, str)` and each
+  name that received a value with its own type.
+
+### 57.5 What it costs a program that does not use it
+
+Nothing that could be found. `runtime.c` is unchanged, so the runtime
+test of 56.19 holds. `tools/same.py` against the zeno built from the
+tag v0.7.0: 6,795 builds, 6,492 the same and 303 different, which are
+the 273 of item 9 and the two new programs about several values
+(`edge-several` and `edge-several-2`, which 0.7.0 refused); no program
+0.7.0 built is built differently. `tools/refused.py` has three more
+operations (a value received first, received later, and swapped) on
+every type, and found one more fault, mended: a function written among
+the arguments of a call that gives several values took, with its own
+`return`, the places the call was to give them to. The bytecode of the
+84 programs in `examples/` and `tools/targets/` that are not about
+several values: identical to 0.7.0's for every program 0.7.0 could
+parse (five programs that use item 9's `take` differ, because 0.7.0
+refused them). The sizes are in 57.4. Speed was not timed (section 6
+of the plan's changes).
+
+### 57.6 Left for later
+
+- Swapping two items that have one owner: `xs[i], xs[j] = xs[j],
+  xs[i]` reads each item as a look, and with no collector a list of
+  objects or lists refuses it with the message any item that is only
+  looked at gets. A `swap(i, j)` method on a list would be the way in.
+- Several values in a `for`: `for q, r in pairs()`.
+- A default for one of several results.
+
 ## 60. Tools: a message on `assert`, and tests of a compiled program
 
 Item 13 of [`missing.md`](missing.md) is six small tools. Two are

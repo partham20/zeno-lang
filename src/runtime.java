@@ -145,6 +145,13 @@ final class Z {
         Bound(Object object, Func fn) { this.object = object; this.fn = fn; }
     }
 
+    // Several values from one function, as `return a, b` gives them, until
+    // `let a, b = ...` takes them apart (decision 57).
+    static final class Several {
+        final Object[] values;
+        Several(Object[] values) { this.values = values; }
+    }
+
     // What a call gives a parameter it leaves out.
     static final Object MISSING = new Object();
 
@@ -359,6 +366,7 @@ final class Z {
         if (v instanceof ErrorType) return "an error type";
         if (v instanceof ZError e) return "a " + e.kind;
         if (v instanceof Module) return "a module";
+        if (v instanceof Several s) return s.values.length + " values";
         return "a value";
     }
 
@@ -524,6 +532,14 @@ final class Z {
         if (v instanceof Constructor c) return "<case " + c.def.cases[c.index] + ">";
         if (v instanceof ErrorType e) return "<error " + e.kind + ">";
         if (v instanceof Module m) return "<module " + m.name + ">";
+        if (v instanceof Several s) {
+            StringBuilder b = new StringBuilder("<" + s.values.length + " values: ");
+            for (int i = 0; i < s.values.length; i++) {
+                if (i > 0) b.append(", ");
+                b.append(show(s.values[i]));
+            }
+            return b.append(">").toString();
+        }
         if (v instanceof Func f) return f.name.isEmpty() ? "<function>" : "<function " + f.name + ">";
         return "?";
     }
@@ -1050,6 +1066,15 @@ final class Z {
     }
 
     static Object case_field(Object value, int i) { return ((Case) value).fields[i]; }
+
+    static Object several(Object[] values) { return new Several(values); }
+
+    // What place `at` of the `count` on the left of `=` is given.
+    static Object received(Object value, int count, int at, int line) {
+        if (!(value instanceof Several s)) throw fatal("there are " + count + " places on the left of `=`, and the right gives one value, " + typeName(value), line);
+        if (s.values.length != count) throw fatal("this gives " + s.values.length + " values, and there are " + count + " places on the left of `=`", line);
+        return s.values[at];
+    }
 
     static int indexOf(String[] names, String name) {
         for (int i = 0; i < names.length; i++) if (names[i].equals(name)) return i;

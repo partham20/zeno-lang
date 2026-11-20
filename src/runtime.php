@@ -64,6 +64,9 @@ final class ZModule { public $name; function __construct(string $name) { $this->
 final class ZMethod { public $receiver; public $name; function __construct($receiver, string $name) { $this->receiver = $receiver; $this->name = $name; } }
 // A method of a class, read from an object: p.distance_to
 final class ZBound { public $object; public $fn; function __construct(ZInstance $object, ZFn $fn) { $this->object = $object; $this->fn = $fn; } }
+// Several values from one function, as `return a, b` gives them, until
+// `let a, b = ...` takes them apart (decision 57).
+final class ZSeveral { public $values; function __construct(array $values) { $this->values = $values; } }
 // What a call gives a parameter it leaves out.
 final class ZMissing {}
 
@@ -293,6 +296,7 @@ final class Z {
         if ($v instanceof ZErrorType) return "an error type";
         if ($v instanceof ZError) return "a " . $v->kind;
         if ($v instanceof ZModule) return "a module";
+        if ($v instanceof ZSeveral) return count($v->values) . " values";
         return "a value";
     }
 
@@ -478,6 +482,7 @@ final class Z {
         if ($v instanceof ZErrorType) return "<error " . $v->kind . ">";
         if ($v instanceof ZError) return $v->message;
         if ($v instanceof ZModule) return "<module " . $v->name . ">";
+        if ($v instanceof ZSeveral) return "<" . count($v->values) . " values: " . implode(", ", array_map(fn($item) => self::show($item), $v->values)) . ">";
         return "<value>";
     }
 
@@ -953,6 +958,13 @@ final class Z {
         return true;
     }
     static function caseField(ZCase $value, int $i) { return $value->fields[$i]; }
+    static function several(array $values) { return new ZSeveral($values); }
+    // What place `at` of the `count` on the left of `=` is given.
+    static function received($value, int $count, int $at, int $line) {
+        if (!($value instanceof ZSeveral)) self::fatal("there are " . $count . " places on the left of `=`, and the right gives one value, " . self::typeName($value), $line);
+        if (count($value->values) !== $count) self::fatal("this gives " . count($value->values) . " values, and there are " . $count . " places on the left of `=`", $line);
+        return $value->values[$at];
+    }
 
     static function field($object, string $name, int $line) {
         if ($object instanceof ZInstance) {

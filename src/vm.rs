@@ -492,6 +492,15 @@ impl Vm {
                     self.take_out(Some(&name), span)?
                 }
                 Op::TakeIndex => self.take_out(None, span)?,
+                Op::Several(n) => {
+                    let first = self.stack.len() - n as usize;
+                    let values = self.stack.split_off(first);
+                    self.stack.push(Value::Several(values.into()));
+                }
+                Op::Unpack(n) => {
+                    let values = crate::value::received(pop!(), n as usize, span)?;
+                    self.stack.extend(values);
+                }
 
                 // ----------------------------------------------------- Jumps
                 Op::Jump(to) => frame.ip = to as usize,
@@ -1010,6 +1019,20 @@ mod tests {
     // at the places where a VM can go wrong and a tree-walker cannot: a
     // stack left taller or shorter than it was found, a variable shared
     // between functions, and an error that has to unwind several frames.
+
+    #[test]
+    fn a_value_an_instruction_and_the_tree_are_no_bigger_than_in_0_7_0() {
+        // Several values (decision 57) added a variant to `Value`, an
+        // instruction and three kinds to the tree. Each is boxed or kept
+        // small, so that a program that does not use them is not slowed
+        // by values that grew: these are the sizes of 0.7.0.
+        use std::mem::size_of;
+        assert_eq!(size_of::<crate::value::Value>(), 48);
+        assert_eq!(size_of::<crate::bytecode::Op>(), 12);
+        assert_eq!(size_of::<crate::ast::Stmt>(), 176);
+        assert_eq!(size_of::<crate::ast::Expr>(), 72);
+        assert_eq!(size_of::<crate::ast::Type>(), 48);
+    }
 
     /// Run a program on both engines, which must agree. Returns what it
     /// printed and, if it stopped with an error, the message.

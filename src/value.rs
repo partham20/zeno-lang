@@ -93,6 +93,11 @@ pub enum Value {
     Error(Rc<ErrorValue>),
 
     Module(Rc<Module>),
+
+    /// What `return a, b` gives (decision 57): two values or more, which
+    /// only a `let a, b = ...` takes apart. They are never a value of
+    /// their own. Last, and behind one pointer, so no value grows.
+    Several(Rc<[Value]>),
 }
 
 /// An event of the page: what kind it was, the element it happened to,
@@ -672,6 +677,32 @@ pub fn fatal<T>(message: impl Into<String>, span: Span) -> Result<T, Control> {
     Err(Control::Fatal(Error::new(message, span)))
 }
 
+/// What a `let a, b = ...` receives: as many values as it has places.
+/// A program with no types written can get that wrong, and then it is
+/// told so here, as the checker tells a program that has them
+/// (decision 57).
+pub fn received(value: Value, places: usize, span: Span) -> Result<Vec<Value>, Control> {
+    match value {
+        Value::Several(values) if values.len() == places => Ok(values.to_vec()),
+        Value::Several(values) => fatal(
+            format!(
+                "this gives {} values, and there are {} on the left of `=`",
+                values.len(),
+                crate::error::counted(places, "place")
+            ),
+            span,
+        ),
+        other => fatal(
+            format!(
+                "there are {} on the left of `=`, and the right gives one value, {}",
+                crate::error::counted(places, "place"),
+                other.type_name()
+            ),
+            span,
+        ),
+    }
+}
+
 /// Raise a built-in error that the program may catch.
 pub fn raise<T>(kind: &str, message: impl Into<String>, span: Span) -> Result<T, Control> {
     let error = ErrorValue { kind: kind.to_string(), message: message.into(), object: None };
@@ -751,6 +782,7 @@ impl Value {
             Value::ErrorType(_) => "an error type".to_string(),
             Value::Error(error) => format!("a {}", error.kind),
             Value::Module(_) => "a module".to_string(),
+            Value::Several(values) => format!("{} values", values.len()),
         }
     }
 
@@ -903,6 +935,9 @@ fn equal_other(a: &Value, b: &Value) -> bool {
         (Element(a, _), Element(b, _)) => a == b,
         // An event is equal only to itself.
         (Event(a), Event(b)) => Rc::ptr_eq(a, b),
+        // So are several values that names with no type carried here
+        // (decision 57), as in every target.
+        (Several(a), Several(b)) => Rc::ptr_eq(a, b),
         // Two timers are equal when they are one call that waits.
         (Timer(a), Timer(b)) => a == b,
         // A value that stays in Python is compared there, by Python's `==`.
@@ -1025,6 +1060,10 @@ impl fmt::Display for Value {
             Value::ErrorType(kind) => write!(f, "<error {kind}>"),
             Value::Error(error) => write!(f, "{}", error.message),
             Value::Module(module) => write!(f, "<module {}>", module.name),
+            Value::Several(values) => {
+                let shown: Vec<String> = values.iter().map(Value::to_string).collect();
+                write!(f, "<{} values: {}>", shown.len(), shown.join(", "))
+            }
         }
     }
 }

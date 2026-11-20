@@ -67,7 +67,7 @@ const int LINES_A_FILE = 1000000;
 
 // -------------------------------------------------------------- Values
 
-enum class K { STR, LIST, DICT, QUANTITY, FUNC, CLASS, INSTANCE, ENUM, CASE, CTOR, ERRTYPE, ERROR, MODULE, METHOD, BOUND };
+enum class K { STR, LIST, DICT, QUANTITY, FUNC, CLASS, INSTANCE, ENUM, CASE, CTOR, ERRTYPE, ERROR, MODULE, METHOD, BOUND, SEVERAL };
 
 struct Obj {
     K k;
@@ -233,6 +233,13 @@ struct Bound : Obj {
     Bound(V obj, std::shared_ptr<Func> fn) : Obj(K::BOUND), obj(std::move(obj)), fn(std::move(fn)) {}
 };
 
+// Several values from one function, as `return a, b` gives them, until
+// `let a, b = ...` takes them apart (decision 57).
+struct Several : Obj {
+    Args values;
+    explicit Several(Args values) : Obj(K::SEVERAL), values(std::move(values)) {}
+};
+
 template <class T>
 inline T& as(const V& v) { return *static_cast<T*>(v.p.get()); }
 
@@ -344,6 +351,7 @@ string typeName(const V& v) {
     case K::ERRTYPE: return "an error type";
     case K::ERROR: return "a " + as<Error>(v).kind;
     case K::MODULE: return "a module";
+    case K::SEVERAL: return num(as<Several>(v).values.size()) + " values";
     }
     return "a value";
 }
@@ -588,6 +596,11 @@ string show(const V& v) {
     case K::CTOR: return "<case " + as<Ctor>(v).def->cases[as<Ctor>(v).index] + ">";
     case K::ERRTYPE: return "<error " + as<ErrorType>(v).kind + ">";
     case K::MODULE: return "<module " + as<Module>(v).name + ">";
+    case K::SEVERAL: {
+        std::vector<string> parts;
+        for (auto& item : as<Several>(v).values) parts.push_back(show(item));
+        return "<" + num(parts.size()) + " values: " + join(parts, ", ") + ">";
+    }
     case K::FUNC: {
         Func& f = as<Func>(v);
         return f.name.empty() ? "<function>" : "<function " + f.name + ">";
@@ -1279,6 +1292,16 @@ bool is_case(const V& value, const V& ctor, int count, int line) {
 }
 
 V case_field(const V& value, int i) { return as<Case>(value).fields[i]; }
+
+V several(const Args& values) { return O(std::make_shared<Several>(values)); }
+
+// What place `at` of the `count` on the left of `=` is given.
+V received(const V& value, int count, int at, int line) {
+    if (!value.is(K::SEVERAL)) fatal("there are " + num(count) + " places on the left of `=`, and the right gives one value, " + typeName(value), line);
+    Several& s = as<Several>(value);
+    if ((int)s.values.size() != count) fatal("this gives " + num(s.values.size()) + " values, and there are " + num(count) + " places on the left of `=`", line);
+    return s.values[at];
+}
 
 int indexOf(const Names& names, const string& name) {
     for (size_t i = 0; i < names.size(); i++)

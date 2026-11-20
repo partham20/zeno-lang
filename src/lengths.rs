@@ -12,7 +12,7 @@
 //! to a function it cannot see) counts as a change, and the message
 //! says which line it was.
 
-use crate::ast::{Arg, Expr, ExprKind, FormatPart, Stmt, StmtKind};
+use crate::ast::{Arg, Expr, ExprKind, FormatPart, Place, Stmt, StmtKind};
 use crate::token::Span;
 
 /// The methods that change how many items a list has.
@@ -90,6 +90,24 @@ impl Reader<'_> {
                     _ => self.expr(target),
                 }
                 self.kept(value, "keeps");
+            }
+            // `a, data = data, a`: each value is kept by its place.
+            StmtKind::Receive { places, value, .. } => {
+                for place in places {
+                    if let Place::Target(target) = place {
+                        match &target.kind {
+                            ExprKind::Index { object, index } if self.is_param(object) => self.expr(index),
+                            _ if self.is_param(target) => {
+                                self.report(format!("it gives a new value to `{}`", self.param), target.span)
+                            }
+                            _ => self.expr(target),
+                        }
+                    }
+                }
+                match &value.kind {
+                    ExprKind::Several(values) => values.iter().for_each(|value| self.kept(value, "keeps")),
+                    _ => self.kept(value, "keeps"),
+                }
             }
             StmtKind::Expr(expr) => {
                 if !self.is_param(expr) {
@@ -219,6 +237,11 @@ impl Reader<'_> {
             ExprKind::List(items) => {
                 for item in items {
                     self.kept(item, "puts in a list");
+                }
+            }
+            ExprKind::Several(items) => {
+                for item in items {
+                    self.kept(item, "returns");
                 }
             }
             ExprKind::Dict(entries) => {

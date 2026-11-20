@@ -58,6 +58,19 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             let op = op.map(BinaryOp::text).unwrap_or("");
             line(&format!("{} {op}= {}", expr(target), expr(value)), depth, out);
         }
+        StmtKind::Receive { declare, places, value } => {
+            let keyword = match declare {
+                Some(true) => "var ",
+                Some(false) => "let ",
+                None => "",
+            };
+            let places = join(places, |place| match place {
+                Place::Name { name, ty } => format!("{name}{}", annotation(ty)),
+                Place::Drop => "_".to_string(),
+                Place::Target(target) => expr(target),
+            });
+            line(&format!("{keyword}{places} = {}", expr(value)), depth, out);
+        }
         StmtKind::Expr(e) => line(&expr(e), depth, out),
 
         StmtKind::Function(f) => function(f, depth, out),
@@ -250,6 +263,7 @@ pub fn type_(ty: &Type) -> String {
         Type::Owned(inner) => format!("owned {}", type_(inner)),
         Type::Take(inner) => format!("take {}", type_(inner)),
         Type::Length(n) => n.to_string(),
+        Type::Several(types) => format!("({})", join(types, type_)),
         Type::Function { params, returns, raises } => {
             let mut text = format!("function({})", join(params, type_));
             if let Some(returns) = returns {
@@ -338,6 +352,7 @@ pub fn expr(e: &Expr) -> String {
         ExprKind::Field { object, name, .. } => format!("{}.{name}", expr(object)),
         ExprKind::Index { object, index } => format!("{}[{}]", expr(object), expr(index)),
         ExprKind::Take(place) => format!("(take {})", expr(place)),
+        ExprKind::Several(values) => join(values, expr),
     }
 }
 

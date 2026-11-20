@@ -42,6 +42,9 @@ const Z = (function () {
   class Method { declare receiver: any; declare name: any; constructor(receiver: any, name: any) { this.receiver = receiver; this.name = name; } }
   // A method of a class, read from an object: p.distance_to
   class Bound { declare object: any; declare fn: any; constructor(object: any, fn: any) { this.object = object; this.fn = fn; } }
+  // Several values from one function, as `return a, b` gives them, until
+  // `let a, b = ...` takes them apart (decision 57).
+  class Several { declare values: any; constructor(values: any) { this.values = values; } }
   // What a call gives a parameter it leaves out.
   const MISSING = { missing: true };
 
@@ -177,6 +180,7 @@ const Z = (function () {
     if (v instanceof ErrorType) return "an error type";
     if (v instanceof ZError) return "a " + v.kind;
     if (v instanceof Module) return "a module";
+    if (v instanceof Several) return v.values.length + " values";
     return "a value";
   }
 
@@ -293,6 +297,7 @@ const Z = (function () {
     if (v instanceof ErrorType) return "<error " + v.kind + ">";
     if (v instanceof ZError) return v.message;
     if (v instanceof Module) return "<module " + v.name + ">";
+    if (v instanceof Several) return "<" + v.values.length + " values: " + v.values.map(show).join(", ") + ">";
     return String(v);
   }
 
@@ -761,6 +766,13 @@ const Z = (function () {
     return true;
   }
   const caseField = (value: any, i: any) => value.fields[i];
+  const several = (values: any) => new Several(values);
+  // What place `at` of the `count` on the left of `=` is given.
+  function received(value: any, count: any, at: any, line: any) {
+    if (!(value instanceof Several)) fatal("there are " + count + " places on the left of `=`, and the right gives one value, " + typeName(value), line);
+    if (value.values.length !== count) fatal("this gives " + value.values.length + " values, and there are " + count + " places on the left of `=`", line);
+    return value.values[at];
+  }
 
   function field(object: any, name: any, line: any) {
     if (object instanceof Instance) {
@@ -1914,7 +1926,7 @@ const Z = (function () {
     add, sub, mul, div, floordiv, mod, pow, bitand, bitor, bitxor, shl, shr, neg, bitnot,
     eq: equal, ne: (a: any, b: any) => !equal(a, b), lt, le, gt, ge, in: isIn, not_in: notIn, truth,
     // Items, fields, loops
-    index, setIndex, field, setField, items, pairs, isCase, caseField,
+    index, setIndex, field, setField, items, pairs, isCase, caseField, several, received,
     // Calls
     direct, call, callNamed, callMethod, callMethodNamed, callBuiltin, builtin, module,
     // Errors

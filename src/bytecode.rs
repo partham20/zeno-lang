@@ -237,6 +237,12 @@ pub enum Op {
     /// `take object[index]`: pop an index and an object, push the item,
     /// and leave `none` in its place.
     TakeIndex,
+    /// `return a, b`: pop n values and push them as the several values a
+    /// function gives (decision 57).
+    Several(u32),
+    /// `let a, b = ...`: pop several values, which must be n, and push
+    /// each, the first deepest. Each becomes a slot of its own.
+    Unpack(u32),
 }
 
 /// The code the VM runs: `code` with superinstructions put over the

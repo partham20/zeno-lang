@@ -337,6 +337,12 @@ pub struct Stmt {
 pub enum StmtKind {
     /// `let x = 1` (mutable: false) or `var x = 1` (mutable: true)
     Let { mutable: bool, name: String, ty: Option<Type>, value: Expr },
+    /// `let q, r = divide(7, 2)`, `var q, r = ...`, or `low, high = high,
+    /// low` for places that exist (decision 57). `declare` is `Some(false)`
+    /// for `let`, `Some(true)` for `var`, and `None` for neither. The
+    /// right is one call that gives as many values as there are places,
+    /// or that many values written out (`ExprKind::Several`).
+    Receive { declare: Option<bool>, places: Vec<Place>, value: Expr },
     /// `const PI = 3.14`
     Const { name: String, ty: Option<Type>, value: Expr },
     /// `x = 2`, or with an operator: `x += 2` has `op: Some(Add)`
@@ -379,6 +385,36 @@ pub enum StmtKind {
 
     /// `import a.b` has no names. `from a.b import x, y` has names x and y.
     Import { module: Vec<String>, names: Vec<String> },
+}
+
+/// One place of a `Receive`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    /// A new name, after `let` or `var`, with the type written beside it
+    /// if there is one.
+    Name { name: String, ty: Option<Type> },
+    /// `_`: the value is received and dropped.
+    Drop,
+    /// A place that exists: a variable, a field or an item.
+    Target(Expr),
+}
+
+impl Place {
+    /// The name a `let a, b = ...` declares here, if it declares one.
+    pub fn declared(&self) -> Option<&String> {
+        match self {
+            Place::Name { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The variable a `a, b = ...` gives a new value here, if it is one.
+    pub fn assigned(&self) -> Option<&String> {
+        match self {
+            Place::Target(Expr { kind: ExprKind::Name(name), .. }) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -491,6 +527,14 @@ fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {
                 fresh_expr(target, visit);
                 fresh_expr(value, visit);
             }
+            StmtKind::Receive { places, value, .. } => {
+                for place in places {
+                    if let Place::Target(target) = place {
+                        fresh_expr(target, visit);
+                    }
+                }
+                fresh_expr(value, visit);
+            }
             StmtKind::Expr(expr) | StmtKind::Raise(expr) => fresh_expr(expr, visit),
             StmtKind::Return(value) => value.iter_mut().for_each(|value| fresh_expr(value, visit)),
             StmtKind::Function(function) => *function = Arc::new(function.fresh_with(visit)),
@@ -543,7 +587,7 @@ fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(Node)) {
             }
         }
         ExprKind::Unit { value, .. } => fresh_expr(value, visit),
-        ExprKind::List(items) => items.iter_mut().for_each(|value| fresh_expr(value, visit)),
+        ExprKind::List(items) | ExprKind::Several(items) => items.iter_mut().for_each(|value| fresh_expr(value, visit)),
         ExprKind::Dict(entries) => {
             for (key, value) in entries {
                 fresh_expr(key, visit);
@@ -662,6 +706,9 @@ pub enum Type {
     /// A number written among the types in `[ ]`: the 64 of
     /// `list[u8, 64]`, a list of a fixed length (decision 36.4).
     Length(u64),
+    /// `(int, str)` after `->`: a function that gives two values or more
+    /// (decision 57). Nowhere else is it a type.
+    Several(Vec<Type>),
 }
 
 // --------------------------------------------------------------- Expressions
@@ -715,6 +762,10 @@ pub enum ExprKind {
     /// `take slot.task`, `take tasks[i]`: what the place holds, which is
     /// left holding `none` (decision 56.10).
     Take(Box<Expr>),
+    /// `a // b, a % b`: several values written out, after `return` in a
+    /// function that gives that many, or on the right of a `Receive`
+    /// (decision 57). They are never a value of their own.
+    Several(Vec<Expr>),
 }
 
 /// One piece of an f-string.
