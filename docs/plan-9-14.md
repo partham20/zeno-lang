@@ -2181,3 +2181,41 @@ spelling, and unequal; a plain class that says it is an `owned
 interface`, and an `owned class` that says it is a plain one; an
 `owned interface` in a list, as a parameter with and without `take`,
 as a field; built every way, no block left.
+
+### 15. 2026-11-20: the runtime in pieces is in, and several values where no type is written
+
+**The mend of section 10 is accepted** (43c17bf). `tools/same.py`
+against the `zeno` built from the tag of 0.7.0, run by the planner
+with the ordinary `zeno` and no other: 6,492 of 6,765 the same and
+273 different, which is the 242 of section 8 and 31 more. The 31 are
+two samples of the book that 0.7.0 refused and that are built now
+(`print(range(5))` and `let numbers = range(1, 11)`, thirteen ways
+each) and one that is refused in fewer words (five ways). No program
+that 0.7.0 built is built differently.
+
+**Item 10, rule 3, in a program with no types.** The builder asked.
+Where a type is written, or the function called is known by its
+name, a call that gives several values in a place for one is refused
+before the program runs; `return a, b` in a function's body says that
+it gives several, with no type needed. What is left is a call
+through a function value of no known type, as in `function apply(f)
+{ return f(7, 2) }`. There:
+
+- **It is held where the values are received**: the count, and one
+  against several, when the program runs. This is the builder's
+  ruling and it is taken. To hold it at every use would put a test
+  into every call and every store of every program, and the bytecode
+  of a program that uses nothing new would no longer be what 0.7.0
+  wrote.
+- **Shown, it never reads as values.** The builder had it print as
+  `1, 2`. Inside a list that reads `[1, 2]`, a list of two, where
+  there is a list of one thing that is no value at all. It prints as
+  `<2 values: 1, 2>`, in every engine and every target, as a function
+  prints as `<function one>`: a thing that can be shown and is plainly
+  not data. It costs no test anywhere, since it is only what the one
+  place that already writes it out writes.
+- **An operator, an index or a field on it** gets the message such a
+  thing gets on a wrong kind of value, and the kind is named "2
+  values", with the line of rule 3 after it: receive each.
+- Chapter 57 says that carrying several values through names with no
+  type is not caught until they are received or looked at, and why.
