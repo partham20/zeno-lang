@@ -2546,3 +2546,34 @@ and `tools/refused.py` learns the case.
 
 **The `targets` run on item 10** (0c6e6f8) ended green in every
 language, so item 10 is closed.
+
+### 22. 11.5, 2026-11-20: it stays refused, and item 11 is accepted
+
+**11.5, a method with a type parameter of its own, stays refused**
+(ba41819, decision 58.7), as section 11.5 allowed if it was not a
+small step. The builder's count is taken: a method read with a dot
+is one function to the checker, so it would need a generic that is
+bound to its object as a value, copies made for each copy of the
+class and found as methods by both compilers, and the rules of one
+owner for `self` in each copy; a dozen places in four files, none
+shared with 58.1 to 58.6, and no program has asked. What a reader
+gets instead is the way to write it today: the message shows the
+function of the file that takes the object first, with the class's
+own type parameters in front, `function convert[T, U](box: Box[T],
+...)`. The planner wrote that function for a `Box[T]` and changed
+its type three times over; it agrees in six builds and leaves no
+block.
+
+**The list of two units** (section 21) stays refused by a build, for
+a reason that holds: a build gives a list one type, and a list of
+`ms` would print `1000 ms` where `zeno run` prints `1 s`. The message
+now says why `T` cannot be told and what to write (58.8), for two
+units and for an int beside a float; it is a row of the table, and
+`tools/refused.py` tries both.
+
+**One small thing, older than 0.8.0:** the refusal of such a method
+points at the first line of the class, and the method is lines
+below. It should point at the method.
+
+**Item 11 is accepted**: 11.1, 11.2, 11.3 (section 21), 11.4
+(section 19), and 11.5 refused with its reason.
