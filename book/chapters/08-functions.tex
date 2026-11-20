@@ -99,6 +99,57 @@ which then fails somewhere else. Here it is an error at the function.
 (Decision 3.13.)
 \end{why}
 
+\section{Several values from one function}
+
+A function can give back two things at once: a quotient and a
+remainder, a reading and whether it can be trusted. The heading names
+their types in brackets after \verb|->|, \verb|return| gives them with
+commas, and the caller receives each with a name of its own:
+
+\begin{zeno}
+function divide(a: int, b: int) -> (int, int) {
+    return a // b, a % b
+}
+
+let quotient, remainder = divide(17, 5)
+print(quotient, remainder)
+
+let _, left_over = divide(9, 4)
+print(left_over)
+\end{zeno}
+
+Every value is received; \verb|_| receives one and drops it, so a
+reader sees that it was dropped on purpose. Places that already exist
+can receive too, and everything on the right is worked out before
+anything on the left changes, which makes a swap one line:
+
+\begin{zeno}
+var low = 9
+var high = 2
+low, high = high, low
+print(low, high)
+\end{zeno}
+
+Several values are not one value. They cannot be kept in one
+variable, put in a list or printed together:
+
+\begin{zeno}[fails=yes]
+function divide(a: int, b: int) -> (int, int) {
+    return a // b, a % b
+}
+
+let both = divide(17, 5)
+\end{zeno}
+
+\begin{why}
+Python and Rust give back a tuple, a value that can then be kept and
+passed around, read as \verb|reading[1]|. That is a second way to write
+a class whose parts have no names, and \verb|reading.status| says more
+than \verb|reading[1]|. What is wanted is to hand back two things at
+once, which needs no new kind of value: this is Go's way. To keep the
+values together, declare a class. (Chapter 57 of the decisions.)
+\end{why}
+
 \section{Default values}
 
 A parameter can have a default, used when the call leaves it out:
@@ -277,7 +328,9 @@ after the outer one has returned. That is the subject of
 A function has a heading, \verb|function name(parameters) -> type|,
 and a body. Types can be written or left out. A function that
 promises a value must return one on every path, and one that promises
-nothing returns \verb|none|. Defaults are worked out on every call,
+nothing returns \verb|none|. A function can give several values,
+\verb|-> (int, int)|, received by as many names. Defaults are worked
+out on every call,
 arguments can be named, parameters never change, and functions can be
 called from above where they are written, call themselves, and live
 inside other functions.
