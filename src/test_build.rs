@@ -617,6 +617,57 @@ mod tests {
     }
 
     #[test]
+    fn several_values_in_a_test() {
+        // Where item 10 meets 13: several values received, swapped and
+        // raised past in a test, with a list among them (decision 57).
+        same_every_way(
+            "several",
+            r#"function divide(a: int, b: int) -> (int, int) raises ValueError {
+    if b == 0 {
+        raise ValueError("no number divides by 0")
+    }
+    return a // b, a % b
+}
+
+function names() -> (str, list[int]) {
+    return "seven", [7, 2]
+}
+
+test "seven by two" {
+    let q, r = divide(7, 2)
+    assert q == 3, f"seven by two gave {q} and {r}"
+    assert r == 1
+}
+
+test "a name and a list" {
+    let name, xs = names()
+    assert name == "seven" and len(xs) == 2, f"{name} {xs}"
+}
+
+test "by zero" {
+    assert raises ValueError {
+        let q, r = divide(7, 0)
+        print(q, r)
+    }
+}
+
+test "fails with a message" {
+    var low, high = divide(9, 4)
+    low, high = high, low
+    assert low == 2, f"after the swap low is {low} and high is {high}"
+}
+
+test "raises the wrong kind" {
+    assert raises KeyError {
+        let q, r = divide(1, 0)
+    }
+}
+"#,
+            EVERY_BUILD,
+        );
+    }
+
+    #[test]
     fn a_report_that_does_not_fit_is_left_out_and_counted() {
         let mut source = format!("let long = \"{}\"\n", "x".repeat(300));
         for n in 0..40 {
