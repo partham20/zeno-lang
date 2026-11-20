@@ -1768,3 +1768,73 @@ page for it says so, and says that a list of an enum, or a number
 that stands for "nothing", is the cheap way on a small board. With a
 collector nothing changes. A stays under "Left for later", for a day
 when the runtime's list may change.
+
+### 8. Item 9 as a whole, 2026-11-20: accepted, and what the sweep missed
+
+Item 9 was reviewed as a whole at 6d22db6 (parts 9.1 to 9.9, chapter
+56 of the decisions).
+
+**What was checked.**
+
+- Every commit of the item is written by the owner of the language,
+  and nothing in it names anybody else.
+- The reviewer's own programs for each part, sixteen of them, were
+  run again on the last commit: `zeno run` against the six builds (C
+  and LLVM, each ordinary, `--firmware` and `--no-collector`), and
+  the count of blocks left with no collector. They cover raising
+  types, kept functions, methods as values, `take`, a value with one
+  owner under a type parameter, a dict that owns its values, a list
+  of numbers that may be `none`, the pool's size, functions inside
+  functions and defaults worked out at the call. All agree, and none
+  leaves a block.
+- `tools/same.py` against a `zeno` built from the tag of 0.7.0: 451
+  programs, fifteen ways, 6,765 builds, **6,523 the same and 242
+  different.** Of the 242, 120 are the eight new programs of this
+  item. The other 122 are builds of 21 older programs that 0.7.0
+  refused: five builds of each of two, and thirteen of a third, are
+  built now, and the rest are refused in other words. **No program
+  that 0.7.0 built is built differently**, which is what section 6
+  asks.
+- The `trial` workflow on Windows and on macOS is green on the last
+  commit; `board`, `minimal` and `plain` are green on the commit of
+  9.9; `targets` is green through 9.7 and was still running for 9.8
+  and 9.9 when this was written.
+
+**Accepted**, with the follow-up below.
+
+**What the sweep of 9.9 missed.** 9.9 says that eleven refusals of a
+build can be reached by a program, and lists them. A quarter of an
+hour of trying found four more, so the list is not yet whole:
+
+- `x in xs`, where `xs` is a list of numbers or text that may be
+  `none`, is refused by every C build ("cannot compile `in` between
+  these two types yet") and built by every LLVM build. 0.7.0 does the
+  same. The two compilers are held to the same programs, so C builds
+  it.
+- `3 in range(5)` is refused by both compilers ("cannot compile
+  `range` used this way yet").
+- With no collector, `[3] in xs` for a list of lists is refused with
+  "`in` does not work between list[int] and list[owned list[int]]",
+  which shows the reader a difference that is not theirs. `in` only
+  looks.
+- With no collector, a default that makes a list, for a parameter
+  that looks, is refused with the message that says to give the list
+  a name with `let`, which cannot be done in a default.
+
+Each is built, or gets a row and a message that says what to write.
+
+**How the list is made whole.** Not by reading the compilers again.
+A script, `tools/refused.py`, writes small programs from a table of
+things to do (`in`, `==`, `<`, `print`, `str`, an f-string, `sort`,
+`min`, `sum`, an index, a slice, a `for`, a comprehension, a key and
+a value of a dict, a field, a parameter, a result, a default, `map`,
+`filter`, `reduce`) and a table of types (each number type, text,
+`bool`, a quantity, an enum, an object, a list, a fixed list, a dict,
+a function, and each of them where it may be `none`), and for each
+program that `zeno run` takes it asks each build, with no C compiler
+run, whether it refuses. It prints every program that `zeno run`
+takes and a build refuses, and every one that C takes and LLVM
+refuses or the other way round. Each line it prints is mended or is
+a row of a table, and the test of the tables reads the script's
+answer. It is run before each later item is sent for review, since
+each adds types.
