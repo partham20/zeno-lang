@@ -7244,12 +7244,12 @@ it. (5.13, [`sized-ints.md`](sized-ints.md).)
 | 5.7 | Three things about the collector | Changed, twice, and settled once | A build with no heap at all exists: `--no-collector` (5.9). It takes its memory from one fixed pool (5.9h). Counting references was not needed: a program that cannot pause is built with no collector, and one that can keeps the collector as it is |
 | 5.8a, 5.19a | No mark at the call for a value that is taken (`send(take p)`) | Settled | The function's own header says `take` (5.19b), and a use after it is an error that names the line of the call. One way to write a call was worth more than a second reminder |
 | 5.8c, 5.15b | Whether a plain parameter takes or looks | Changed in 5.19a: a plain parameter looks, and `take` takes | The count asked for in 5.15b was made in the audit: most parameters only look |
-| 5.8i | What an owned value cannot do: sit in an `or none`, an enum case or a function type, be moved out of a field, be replaced through a borrow, be matched, be raised | A limit of 0.1 | Each is an error that says what to do instead, and allowing any of them later breaks no program |
-| 5.9d | `raise e`, to pass a caught error on, is refused with no collector | A limit of 0.1 | The `except` that caught it frees it. Raise a new error, or lend the caught one to a function |
-| 5.9g, 5.15j, 5.16i, 5.17g | What a build with no collector refuses | A limit of 0.1. The list is the one in 5.17g, with 5.16h and 10.14 | Two of them are the design and not a gap: a function that shares a `var` with the function around it, and keeping a function that only looks. The rest each need a rule for one more kind of owner |
+| 5.8i | What an owned value cannot do: sit in an `or none`, an enum case or a function type, be moved out of a field, be replaced through a borrow, be matched, be raised | A limit of 0.1. Changed since: each of these builds, the last, moving out of a field, in 56.10 (`take`), except replacing through a look, which stays refused by design with no collector: only the owner replaces what a field holds ([`no-collector.md`](no-collector.md)) | Each is an error that says what to do instead, and allowing any of them later breaks no program |
+| 5.9d | `raise e`, to pass a caught error on, is refused with no collector | A limit of 0.1. Changed: an error is a value with one owner, kept or raised again ([`functions-and-errors.md`](functions-and-errors.md)) | The `except` that caught it frees it. Raise a new error, or lend the caught one to a function |
+| 5.9g, 5.15j, 5.16i, 5.17g | What a build with no collector refuses | A limit of 0.1. Changed in chapter 56: what is left is by design, and is the table in [`no-collector.md`](no-collector.md), held by a test (56.17) | Two of them are the design and not a gap: a function that shares a `var` with the function around it, and keeping a function that only looks. The rest each need a rule for one more kind of owner |
 | 5.9h | The pool does not join spare blocks back together | Settled | Sizes double, so a spare block is used again by the next thing of its size. Joining is three times the code, and no example is short of memory for the lack of it |
-| 5.9j | The pool's size is one number in the C, and not an option of `zeno build` | A limit of 0.1 | `--memory` prints the number to change it to. `--pool N` is an exercise in [`pool.md`](pool.md) |
-| 5.9k | Spare blocks are not poisoned in a checking build | A limit of 0.1 | A block given back twice is caught already. The rest is an exercise in the same page |
+| 5.9j | The pool's size is one number in the C, and not an option of `zeno build` | A limit of 0.1. Changed in 56.15: `--pool` and `--text-room` | `--memory` prints the number to change it to. `--pool N` is an exercise in [`pool.md`](pool.md) |
+| 5.9k | Spare blocks are not poisoned in a checking build | A limit of 0.1. Changed in 56.15: with `--memory` they are filled and checked | A block given back twice is caught already. The rest is an exercise in the same page |
 | 5.9l | With no collector text is kept by copying it, not by counting who holds it | Settled | A count would keep text alive by a route no line of the program shows, which is what this build exists to rule out |
 | 5.9o | Text read from a place a function can change is copied even when nothing is called | Settled | "Read from a place, it is copied" is one rule. Whether a copy is made should not depend on what else is on the line |
 | 5.9p | The copy a `for` loop takes of a list of text is deep | Settled | The body may replace an item while the loop still holds it |
@@ -17503,7 +17503,7 @@ both compilers read and write an item. It does:
 B needs neither. The free and the copy that keeps a box of its own
 exist already for text (5.9x), and a box is freed with the same
 `zeno_free` as any block of the pool. So B is built, with no collector
-alone, and A stays on the list (56.17).
+alone, and A stays on the list (56.18).
 
 **The rule.** With no collector, a list owns the box of each number
 that may be `none`, as it owns its copy of each text. Each way into a
@@ -17748,7 +17748,64 @@ returned as a value. It checks where each kind goes in the C and the
 IR, and every refusal word for word through both. The page is
 [`inner-functions.md`](inner-functions.md).
 
-### 56.17 Left for later
+### 56.17 The sweep: what a build still refuses, and why
+
+**The need.** Each page that names what a build refuses was written at
+the step that built it, and later steps took rows away without always
+striking them. The plan (9.9) asks for every refusal named in
+`no-collector.md`, `firmware.md`, `functions-and-errors.md`,
+`one-owner.md`, chapter 11 and part 7 of `missing.md` to be run again,
+and for each page to list what is refused by design, with the reason,
+and nothing else.
+
+**What was found.** Run again on the compiler of 9.8:
+
+- Built now, and struck: keeping a function that looks (9.2, a kept
+  function takes), a list or an object for `T` (9.5), a list of numbers
+  that may be `none` (9.6), `raise e` (5.9d), moving out of a field
+  (5.8i, 56.10), the pool's size and checked spare blocks (5.9j, 5.9k,
+  56.15).
+- Refused by design with no collector, and missing from the table of
+  `no-collector.md`, so added: replacing what a field holds through a
+  parameter that only looks; taking an item out of a list a `for` walks
+  (5.15e); keeping an item that `[ ]` only looks at; a kept function
+  that uses a `var` from outside it; and the function inside a function
+  of 56.16, used as a value. The table has seven rows now, each the
+  rule of one owner or of a block that owns what it made.
+- What every build refuses is the table of `compiler.md` (56.16).
+
+**One test holds both.** `what_a_build_with_no_collector_refuses_says_so`
+has a program for each row of both tables and the words of its
+refusal. A row of `no-collector.md` must be taken by `zeno run` and by
+a build with a collector, through C and LLVM, and refused with no
+collector in its words by both. A row of `compiler.md` must be taken by
+`zeno run` and refused in its words by both compilers, and refused with
+no collector too. It reads the two tables from the pages: a row on a
+page with no program, or a program with no row, fails it. The older
+test of that name, which holds the one-owner refusals one by one and a
+program of the lines beside them that build, is
+`what_one_owner_turns_down_says_so` now.
+
+**Words that were changed.** Four messages said less than they could,
+and the sweep put them right. `print([])` and `[none]` alone said "a
+list of these"; they say that a build needs to know what the list holds
+now, and how to say it. A variable that only holds `none` had "yet" at
+the end of its advice. A method that comes with Zeno, used as a value,
+said "`.append` on this" in C and "on a list" in LLVM; both say what it
+is now. LLVM said "a function or a block" where C said "a function or
+block"; one wording now. Each of these programs was refused before and
+is refused now.
+
+**`tools/same.py`** against 9.7 (c7b5d39): 451 programs, 15 ways, 6765
+builds, 6704 the same and 61 different, all programs refused before.
+`edge-inner-functions.zeno` and the book's sample 08-functions#14 build
+now (56.16). `edge-order.zeno` is refused at a later line, a built-in
+used as a value, where it was refused at a default. The book's samples
+09-lists#0 and 08-functions#1, and `edge-enum-numbers.zeno` through
+LLVM, are refused in the new words above. Not one program that built
+before is written differently.
+
+### 56.18 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after

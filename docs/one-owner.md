@@ -344,6 +344,9 @@ report, line for line.
 | ~~A list or object as the `T` of a generic~~ | it builds now, and the copy is checked as if written by hand: [`generic-owned.md`](generic-owned.md) | done in 0.8.0 |
 | ~~A dict of lists or objects~~ | it builds now, and the dict owns its values as a list owns its items: [`dict-owned.md`](dict-owned.md) | done in 0.8.0 |
 
+What a build with no collector still refuses, all by design, is the
+table in [`no-collector.md`](no-collector.md).
+
 The row about the top of the file was the one a firmware program met
 first: a table of numbers at the top of the file that several functions
 read. The audit made it work. A `let` at the top of the file holds its
@@ -369,7 +372,7 @@ while a function is looking at the old one.
 - **Over time**: a loop that fills and empties a list of objects 50 times
   and 5000 times needs the same pool
   (`with_no_collector_lists_of_objects_do_not_fill_the_pool_over_time`).
-- **The table of refusals** (`what_a_build_with_no_collector_refuses_says_so`)
+- **The table of refusals** (`what_one_owner_turns_down_says_so`)
   lost the rows that build now, and its program of accepted lines grew
   by as many lines.
 - By hand: every program was also run with each freed block overwritten,

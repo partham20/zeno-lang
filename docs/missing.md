@@ -47,7 +47,7 @@ release ([`release.md`](release.md)).
 | 6 | Units made of units: `V * A` is `W`. **Done** ([`units-made.md`](units-made.md), chapter 43) | medium | Units are what Zeno has that C does not. Power, resistance and frequency are the firmware's daily sums |
 | 7 | Inputs on a board (**done**, [`inputs.md`](inputs.md), chapter 45), a serial port (**done**, [`serial.md`](serial.md), chapter 46), an ADC (**done**, [`analog.md`](analog.md), chapter 47), PWM (**done**, [`pwm.md`](pwm.md), chapter 48), a timer (**done** as a ticker, [`ticker.md`](ticker.md), chapter 49), interrupts (**done** as edges the board counts, [`interrupts.md`](interrupts.md), chapter 50). No done part has been tried on a real board | large, wants a board | The one thing that keeps Zeno off real hardware |
 | 8 | One step from a `.zeno` file to a board: the board's compiler run by `zeno build --board` (**done**, [`board-build.md`](board-build.md), chapter 51), a runtime with no `printf` and no `exit` (**done** for a board that brings four functions, chapter 52), a float made into text and read with no `snprintf` and no `strtod` (**done**, chapter 53), checks without GCC built-ins (**done**, [`plain-c.md`](plain-c.md), chapter 55). No part has been tried on a real board, or with a compiler that is neither GCC nor Clang but tcc | large | The same |
-| 9 | What a build with no collector still refuses, and `raises` in a function type. Parts 9.1 to 9.8 **done** (chapter 56): `raises` in a function type ([`raises-in-types.md`](raises-in-types.md)), a function that is kept ([`kept-functions.md`](kept-functions.md)), a method as a value ([`method-values.md`](method-values.md)), `take` in front of a place ([`take.md`](take.md)), a value with one owner in a generic ([`generic-owned.md`](generic-owned.md)), a dict that owns its values ([`dict-owned.md`](dict-owned.md)), a list of numbers that may be `none` ([`none-list.md`](none-list.md)), the size of the pool on the command line ([`pool-size.md`](pool-size.md)), a function inside a function and a default that is worked out, in every build ([`inner-functions.md`](inner-functions.md)). Part 9.9 is being built | medium | Firmware builds should take every program `zeno run` takes |
+| 9 | What a build with no collector still refuses, and `raises` in a function type. Parts 9.1 to 9.9 **done** (chapter 56): `raises` in a function type ([`raises-in-types.md`](raises-in-types.md)), a function that is kept ([`kept-functions.md`](kept-functions.md)), a method as a value ([`method-values.md`](method-values.md)), `take` in front of a place ([`take.md`](take.md)), a value with one owner in a generic ([`generic-owned.md`](generic-owned.md)), a dict that owns its values ([`dict-owned.md`](dict-owned.md)), a list of numbers that may be `none` ([`none-list.md`](none-list.md)), the size of the pool on the command line ([`pool-size.md`](pool-size.md)), a function inside a function and a default that is worked out, in every build ([`inner-functions.md`](inner-functions.md)), and what a build still refuses, in one table for a build with no collector ([`no-collector.md`](no-collector.md)) and one for every build ([`compiler.md`](compiler.md)), all held by a test. Left: what those tables list, each with its reason, and 56.18 | medium | Firmware builds should take every program `zeno run` takes |
 | 10 | Several values from one function | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
 | 11 | Generic enums, generic interfaces, and bounds | large | A `Maybe[T]` and a `sort` that asks for an order |
 | 12 | Cleaning up when a block ends, and files read in pieces | medium | An open file, a lock and an interrupt mask all need "and put it back" |
@@ -117,7 +117,7 @@ C.
 | **A set** | Python, Java, Rust, C++, JavaScript | A dict of `true` does the work. Write it in Zeno once item 1 is done |
 | **A key of a dict that is not a str or an int**: an enum case, a float | All | Enum cases, once they can be numbers. Floats: leave |
 | **A second name for a type** (`type Volts = float`) | C, C++, Rust, Go | Leave. Units do this job better |
-| ~~**A named function inside a function, in a build**; a method as a value; a default that is not written out~~ | | **Done** in 0.8.0: [`inner-functions.md`](inner-functions.md), [`method-values.md`](method-values.md). Two functions inside that call each other and use variables around them are left (56.17) |
+| ~~**A named function inside a function, in a build**; a method as a value; a default that is not written out~~ | | **Done** in 0.8.0: [`inner-functions.md`](inner-functions.md), [`method-values.md`](method-values.md). Two functions inside that call each other and use variables around them are left (56.18) |
 | **More than one thing at a time**: threads, tasks, `async` and `await`, channels | All seven, each its own way | Last and largest. Choose one model, and choose the one a board can run: tasks that take turns, with a queue between them. The README's `async` row waits for this |
 | **Something that gives its values one at a time** (`yield`) | Python, JavaScript, Rust, Go | Leave until a program asks |
 | **Code that writes code**: macros, reflection, running at build time | C, C++, Rust | Leave. It is the hardest thing to keep unambiguous |
@@ -170,16 +170,19 @@ C.
 ## 7. Firmware builds and builds with no collector
 
 Each of these runs under `zeno run` and is refused by one kind of
-build. They are item 9 in the order.
+build. They are item 9 in the order. What a build with no collector
+still refuses, all by design, is the table in
+[`no-collector.md`](no-collector.md); what every build still refuses
+is the table in [`compiler.md`](compiler.md).
 
 | Refused | Recommendation |
 |---|---|
 | ~~A function that says `raises`, used as a value in a firmware build (5.5l)~~ | **Done** in 0.8.0: `function(str) -> int raises ValueError` ([`raises-in-types.md`](raises-in-types.md), chapter 56) |
-| ~~`list[int or none]` with no collector (5.16h)~~ | **Done** in 0.8.0: the list owns a block of the pool for each number, as it owns its copy of each text ([`none-list.md`](none-list.md)). The number and a flag side by side, with no block, is left for later (56.17) |
+| ~~`list[int or none]` with no collector (5.16h)~~ | **Done** in 0.8.0: the list owns a block of the pool for each number, as it owns its copy of each text ([`none-list.md`](none-list.md)). The number and a flag side by side, with no block, is left for later (56.18) |
 | ~~A dict of lists or objects with no collector (10.14)~~ | **Done** in 0.8.0: the dict owns its values, as a list owns its items ([`dict-owned.md`](dict-owned.md)) |
 | ~~A list or an object as what a type parameter stands for, with no collector (5.16i, 5.19f)~~ | **Done** in 0.8.0: `Stack[Frame]`, and `take T` ([`generic-owned.md`](generic-owned.md)) |
-| A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d) | One rule each, written in the sections named. **5.17d done** in 0.8.0: a function that is kept takes what it uses ([`kept-functions.md`](kept-functions.md)). **Moving out of a field (5.8i) done** in 0.8.0: `take slot.task` leaves `none` there ([`take.md`](take.md)) |
-| The pool's size on the compiler's line (5.9j); spare blocks not filled with a pattern (5.9k) | `zeno build --pool 4096`. Both are exercises in [`pool.md`](pool.md) already |
+| ~~A few moves of an owned value (5.8i, 5.15e, 5.17d), and `raise e` (5.9d)~~ | **Done**, or kept by design: a function that is kept takes what it uses (5.17d, [`kept-functions.md`](kept-functions.md)); `take slot.task` moves out of a field (5.8i, [`take.md`](take.md)); `raise e` builds. Taking an item out of a list while a `for` walks it stays refused by design (5.15e): the loop is still looking at the items |
+| ~~The pool's size on the compiler's line (5.9j); spare blocks not filled with a pattern (5.9k)~~ | **Done** in 0.8.0: `zeno build --pool 4096`, and with `--memory` a block given back is checked ([`pool-size.md`](pool-size.md)) |
 | A function of an interface with a default or of its own type; an owned class as an interface (10.5, 10.10) | With generic interfaces |
 
 ## How Zeno compares, feature by feature

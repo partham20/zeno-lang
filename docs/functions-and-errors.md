@@ -464,10 +464,11 @@ With a collector the value is `{ ptr, ptr }`, as it was.
 | Refused | Why | When |
 |---|---|---|
 | A function that uses a `var` of the function around it | the two would share it | by design. Use `let`, an object, or a class |
-| Keeping a function that looks at a list or an object | it must be gone before the owner is | by design. Give it a parameter |
+| ~~Keeping a function that looks at a list or an object~~ | builds since 0.8.0: a function that is kept takes what it uses ([`kept-functions.md`](kept-functions.md)) | done in 9.2 |
 | ~~A function that uses another function value and is then returned (`compose`)~~ | builds since 0.8.0: a function that is kept takes what it uses ([`kept-functions.md`](kept-functions.md)) | done in 9.2 |
-| A list or an object as what a type parameter stands for: `same[T](x: T)` | the copy for `T` would have to know it moves | noted |
-| A list of numbers that may be `none` | see [`enums-and-none.md`](enums-and-none.md) | noted |
+| ~~A list or an object as what a type parameter stands for: `same[T](x: T)`~~ | builds since 0.8.0 ([`generic-owned.md`](generic-owned.md)) | done in 9.5 |
+| ~~A list of numbers that may be `none`~~ | builds since 0.8.0 ([`none-list.md`](none-list.md)) | done in 9.6 |
+| A function with a name, inside a function, that uses variables around it, used as a value | the block owns it ([`inner-functions.md`](inner-functions.md)) | by design. Write it as `let add = function(...) { ... }` |
 | ~~A function that can raise, used as a value~~ | builds since 0.8.0: a function type says what it raises ([`raises-in-types.md`](raises-in-types.md)) | done in 9.1 |
 | ~~A method used as a value: `let m = counter.bump`~~ | builds since 0.8.0: it is a function that calls the method ([`method-values.md`](method-values.md)) | done in 9.2 |
 
@@ -500,7 +501,7 @@ This page shows the language as it is now.
 - **The generated code**: `the_c_for_a_function_value_that_has_one_owner`
   and `the_ir_for_a_function_value_that_has_one_owner` compare the
   compiler's output with what this page shows.
-- **What is refused**: `what_a_build_with_no_collector_refuses_says_so`
+- **What is refused**: `what_one_owner_turns_down_says_so`
   has a row for each refusal, and checks that LLVM refuses in the same
   words.
 - By hand: every program was also run with each freed block

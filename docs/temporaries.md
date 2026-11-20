@@ -464,7 +464,7 @@ Three costs that are worth knowing:
   `the_ir_for_what_a_statement_owns` pin down the code on this page.
 - `an_owned_value_that_is_only_looked_at_is_freed_in_every_build`: with
   a collector, the collector has nothing to do.
-- The table in `what_a_build_with_no_collector_refuses_says_so` lost six
+- The table in `what_one_owner_turns_down_says_so` lost six
   rows and gained seven: every way a made list can be kept by something
   that is not an owner.
 - By hand: each trial program was also built with freed pool blocks

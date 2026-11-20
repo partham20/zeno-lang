@@ -1555,6 +1555,14 @@ pub(crate) fn untyped_list(build: &str, span: Span) -> Error {
     )
 }
 
+/// A variable that only ever holds `none`: a build needs a type for it.
+pub(crate) fn only_none(build: &str, span: Span) -> Error {
+    Error::new(
+        format!("{build} needs a type for a variable that only ever holds `none`. Give it one, as in `x: int or none`"),
+        span,
+    )
+}
+
 /// The same, for the build `build` names (`zeno build --llvm` uses the
 /// parts of this file that both compilers share).
 pub(crate) fn cannot_in(build: &str, what: &str, span: Span) -> Error {
@@ -1615,7 +1623,7 @@ fn c_type(kind: &Kind, span: Span) -> Result<String, Error> {
             _ => return Err(cannot("this kind of value that may be `none`", span)),
         },
         Kind::None => {
-            return Err(cannot("a variable that only ever holds `none`. Give it a type, as in `x: int or none`", span))
+            return Err(only_none("`zeno build`", span))
         }
         Kind::Other(name) => return Err(cannot(format!("a value of type {name}"), span)),
         // In C an owned value is the same pointer a shared one would be.
@@ -1830,8 +1838,9 @@ fn to_slot(kind: &Kind, code: &str, span: Span) -> Result<String, Error> {
         Kind::Optional(inner) if is_pointer(inner) => return to_slot(inner, code, span),
         // A number and its flag do not fit in a slot; see `zeno_box_int`.
         Kind::Optional(inner) => return Ok(format!("(zeno_slot){{.p = zeno_box_{}({code})}}", scalar(inner, span)?)),
-        Kind::None => return Err(untyped_list("`zeno build`", span)),
-        Kind::Other(_) | Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
+        // `[]` or `[none]` where nothing says what it holds.
+        Kind::None | Kind::Other(_) => return Err(untyped_list("`zeno build`", span)),
+        Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
     };
     Ok(format!("(zeno_slot){{.{member} = {code}}}"))
 }
@@ -1883,8 +1892,9 @@ fn from_slot(kind: &Kind, slot: &str, span: Span) -> Result<String, Error> {
         }
         Kind::Optional(inner) if is_pointer(inner) => return from_slot(inner, slot, span),
         Kind::Optional(inner) => format!("zeno_unbox_{}({slot}.p)", scalar(inner, span)?),
-        Kind::None => return Err(untyped_list("`zeno build`", span)),
-        Kind::Other(_) | Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
+        // `[]` or `[none]` where nothing says what it holds.
+        Kind::None | Kind::Other(_) => return Err(untyped_list("`zeno build`", span)),
+        Kind::Owned(_) | Kind::CLibrary(_) => return Err(cannot("a list of these", span)),
     })
 }
 
@@ -7447,6 +7457,11 @@ impl Emitter<'_> {
                 Ok(Val::from("zeno_analog_max()".to_string(), Kind::Int, &[&val]))
             }
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
+            // The checker took it, so it is a method of a list, a text or
+            // a dict, which is written in place where it is called.
+            Kind::List(_) | Kind::Str | Kind::Dict(..) => {
+                Err(cannot(format!("a method that comes with Zeno used as a value, `.{name}`,"), span))
+            }
             _ => Err(cannot(format!("`.{name}` on this"), span)),
         }
     }
@@ -10426,7 +10441,7 @@ function push(x: int, into: list[int] = []) -> list[int] {
 print(push(1), push(2), push(3, [0]))
 "##);
         let message = compile("print([])").err().unwrap_or_else(|| "it compiled".to_string());
-        assert!(message.contains("cannot compile a list of these yet"), "{message}");
+        assert!(message.starts_with("`zeno build` needs to know what a list holds, and nothing says it here"), "{message}");
     }
 
     #[test]
@@ -13280,7 +13295,7 @@ print(work(400))
     }
 
     #[test]
-    fn what_a_build_with_no_collector_refuses_says_so() {
+    fn what_one_owner_turns_down_says_so() {
         const SETTING: &str = r#"owned class Packet {
     id: int
     name: str
@@ -17334,6 +17349,198 @@ try {
         let c = compile_no_collector("var total = 0\nfor i in range(10) {\n    total += i\n}\nlet done = total > 40").unwrap();
         let program = c.split("static void zeno_program(void) {\n").nth(1).expect("the program");
         assert!(!program.contains("zeno_text_top") && !program.contains("drop"), "{program}");
+    }
+
+    #[test]
+    fn what_a_build_with_no_collector_refuses_says_so() {
+        // The sweep of 9.9. What a build with no collector refuses and
+        // the others take is the table of docs/no-collector.md, all by
+        // design; what every build refuses is the table of
+        // docs/compiler.md. Each row here is a row of one of them, with
+        // a program and the words of its refusal through C and through
+        // LLVM. A row of either page with nothing here, or a row here
+        // with no row on its page, fails, and so does a refusal in other
+        // words or a program that builds.
+        let tail = ". `zeno build --no-collector` leaves the collector out, so nothing would free it. \
+                    docs/no-collector.md lists what such a build accepts";
+        let inner_value = format!(
+            "`add` is a function inside a function that uses variables of the function around it. With no collector \
+             it can be called, and not used as a value: the block owns it. Write it as `let add = function(...) {{ ... }}`, \
+             which has one owner{tail}"
+        );
+        let inner_kept = format!(
+            "`add` is a function inside a function that uses variables of the function around it, and a function \
+             written where a value goes may outlive the block that owns it. Give it what it needs as parameters, or \
+             call `add` outside it{tail}"
+        );
+        // (the words of the row on its page, the program, the refusal)
+        let no_collector: [(&str, &str, &str); 8] = [
+            (
+                "Keeping an item of a list of lists or of objects",
+                "let grid = [[1], [2]]\nlet row = grid[0]\nprint(row)\n",
+                "this item is an owned list[int], which has one owner: the list. `[ ]` only looks at it. Use it where it \
+                 is, pass it to a parameter that looks, or take it out with `pop()`",
+            ),
+            (
+                "A function that is kept and uses a `var`",
+                "var xs = [1, 2]\nlet f = function(n: int) -> int { return n + len(xs) }\nprint(f(1))\n",
+                "this function is kept, so it takes `xs`, but `xs` is a `var`: the function around it could give it a \
+                 new value after this one took it. Declare it with `let`",
+            ),
+            (
+                "used after it was given away",
+                "var a = [1]\nlet b = a\nprint(a, b)\n",
+                "`a` was given away on line 2 and holds nothing now. Use it before it goes, or give it only to what \
+                 looks: a parameter without `take`",
+            ),
+            (
+                "uses a `var` of the function around it",
+                "function f() -> int {\n    var n = 1\n    let g = function() -> int { return n }\n    return g()\n}\nprint(f())\n",
+                "`n` is a `var` of the function around this one, so the two functions would share it, and with no \
+                 collector nothing is shared. If it does not change, declare it with `let`. If it does, keep it in an \
+                 object, which a function written here can look at and change",
+            ),
+            (
+                "Replacing a list or an object that a parameter only looks at",
+                "class Box {\n    items: list[int]\n}\nfunction refill(b: Box) {\n    b.items = [7, 8]\n}\nlet b = Box([1])\nrefill(b)\nprint(b.items)\n",
+                "only the owner can replace what `items` holds: somebody else may have been lent it. Here `b` only looks at it",
+            ),
+            (
+                "Taking an item out of a list while a `for` walks it",
+                "var xs = [[1], [2]]\nfor x in xs {\n    print(xs.pop())\n}\n",
+                "the `for` on line 2 is walking a list that `xs` owns, and is still looking at its items. Nothing can \
+                 take an item out of this list until the loop is over",
+            ),
+            (
+                "used as a value or called from",
+                "function maker(step: int) -> function(int) -> int {\n    function add(x: int) -> int {\n        return x + step\n    }\n    return add\n}\nprint(maker(1)(2))\n",
+                &inner_value,
+            ),
+            (
+                "used as a value or called from",
+                "function g(step: int) -> int {\n    function add(x: int) -> int {\n        return x + step\n    }\n\
+                 let h = function(y: int) -> int { return add(y) }\n    return h(1)\n}\nprint(g(1))\n",
+                &inner_kept,
+            ),
+        ];
+        let yet = " yet. `zeno run` can still run this program";
+        let every_build: Vec<(&str, &str, String)> = vec![
+            (
+                "A class or an enum inside a function",
+                "function f() -> int {\n    class P {\n        x: int\n    }\n    return P(1).x\n}\nprint(f())\n",
+                format!("`zeno build` cannot compile a class inside a function or block{yet}"),
+            ),
+            (
+                "A class or an enum inside a function",
+                "function f() -> int {\n    enum E {\n        A\n        B\n    }\n    let e = E.A\n    return 1\n}\nprint(f())\n",
+                format!("`zeno build` cannot compile an enum inside a function or block{yet}"),
+            ),
+            (
+                "A generic function inside a function",
+                "function outer() -> int {\n    function id[T](x: T) -> T {\n        return x\n    }\n    return id(4)\n}\nprint(outer())\n",
+                format!("`zeno build` cannot compile a generic function inside a function or block{yet}"),
+            ),
+            (
+                "Two functions inside a function that call each other",
+                "function m(n: int, stop: int) -> bool {\n    function even(k: int) -> bool {\n        if k == stop {\n            return true\n        }\n        return odd(k - 1)\n    }\n\
+                 function odd(k: int) -> bool {\n        if k == stop {\n            return false\n        }\n        return even(k - 1)\n    }\n    return even(n)\n}\nprint(m(4, 0))\n",
+                "`zeno build` cannot compile two functions inside a function that call each other and use variables of \
+                 the function around them, such as `even`, yet. Give one of them to the other as a parameter. `zeno run` \
+                 can still run this program"
+                    .to_string(),
+            ),
+            (
+                "A default that is more than a literal, on a function inside a function",
+                "function g(n: int) -> int {\n    function add(x: int, y: int = x + 1) -> int {\n        return x + y + n\n    }\n    return add(1)\n}\nprint(g(1))\n",
+                format!("`zeno build` cannot compile a default that is not a plain literal, for a function inside a function that uses variables around it,{yet}"),
+            ),
+            (
+                "Named arguments to a function held in a variable",
+                "let f = function(a: int) -> int { return a }\nprint(f(a = 1))\n",
+                format!("`zeno build` cannot compile named arguments to a function held in a variable{yet}"),
+            ),
+            (
+                "A built-in function used as a value",
+                "print([1, 2].map(str))\n",
+                format!("`zeno build` cannot compile `str` used this way{yet}"),
+            ),
+            (
+                "A method that comes with Zeno used as a value",
+                "var xs = [1]\nlet f = xs.append\nf(2)\nprint(xs)\n",
+                format!("`zeno build` cannot compile a method that comes with Zeno used as a value, `.append`,{yet}"),
+            ),
+            (
+                "A method of an object that no variable holds",
+                "class Box {\n    function size(self) -> int { return 1 }\n}\nlet f = Box().size\nprint(f())\n",
+                "`zeno build` cannot compile a method used as a value of an object that no variable holds, `.size`, yet. \
+                 Put the object in a `let` first and use `.size` of that: then it builds. `zeno run` can still run this program"
+                    .to_string(),
+            ),
+            (
+                "A list whose items are not all one type",
+                "print([1, \"a\"])\n",
+                format!("`zeno build` cannot compile a list whose items are not all one type{yet}"),
+            ),
+            (
+                "A variable that only ever holds `none`",
+                "var x = none\nprint(x)\n",
+                "`zeno build` needs a type for a variable that only ever holds `none`. Give it one, as in `x: int or none`".to_string(),
+            ),
+            (
+                "A variable that only ever holds `none`",
+                "print([])\n",
+                "`zeno build` needs to know what a list holds, and nothing says it here: `[]` and `[none]` alone could \
+                 hold anything. Give it a type first, as in `let items: list[int] = []`"
+                    .to_string(),
+            ),
+            (
+                "`program.run`",
+                "import program\nif false {\n    print(program.run(\"true\", []))\n}\n",
+                format!("`zeno build` cannot compile `program.run`{yet}"),
+            ),
+        ];
+        let through_llvm = |message: &str| message.replacen("`zeno build`", "`zeno build --llvm`", 1);
+        for (_, source, message) in &no_collector {
+            // `zeno run` and a build with a collector take it.
+            let program = crate::modules::testing::program(source);
+            assert!(crate::vm::run_both(&program, source).1.is_ok(), "`zeno run` refused\n{source}");
+            assert!(compile(source).is_ok() && crate::emit_llvm::tests::compile(source).is_ok(), "a build with a collector refused\n{source}");
+            assert_eq!(compile_no_collector(source).unwrap_err(), *message, "\n{source}");
+            assert_eq!(crate::emit_llvm::tests::compile_no_collector(source).unwrap_err(), *message, "\n{source}");
+        }
+        for (_, source, message) in &every_build {
+            let program = crate::modules::testing::program(source);
+            assert!(crate::vm::run_both(&program, source).1.is_ok(), "`zeno run` refused\n{source}");
+            assert_eq!(compile(source).unwrap_err(), *message, "\n{source}");
+            assert_eq!(crate::emit_llvm::tests::compile(source).unwrap_err(), through_llvm(message), "\n{source}");
+            assert!(compile_no_collector(source).is_err(), "a build with no collector took it\n{source}");
+            assert!(crate::emit_llvm::tests::compile_no_collector(source).is_err(), "a build with no collector took it\n{source}");
+        }
+        // Each page's table and these rows, one to one.
+        let rows = |page: &str, after: &str| -> Vec<String> {
+            let table = page.split(after).nth(1).expect("the section").split("\n\n").find(|part| part.starts_with('|')).expect("a table");
+            table.lines().skip(2).map(str::to_string).collect()
+        };
+        for (page, after, keys) in [
+            (
+                include_str!("../docs/no-collector.md"),
+                "## What is refused\n",
+                no_collector.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
+            ),
+            (
+                include_str!("../docs/compiler.md"),
+                "## What it compiles so far\n",
+                every_build.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
+            ),
+        ] {
+            let rows = rows(page, after);
+            for row in &rows {
+                assert!(keys.iter().any(|key| row.contains(key)), "a row with no program to hold it to: {row}");
+            }
+            for key in &keys {
+                assert!(rows.iter().any(|row| row.contains(key)), "no row on the page for `{key}`");
+            }
+        }
     }
 
     #[test]

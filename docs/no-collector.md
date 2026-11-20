@@ -250,13 +250,19 @@ They are now fixed in every build.
 
 ## What is refused
 
-Each of these makes memory that no line gives back. Each error names the
+Each of these would give a value two owners, or free one while something
+still looks at it. Each error names the
 line and says what to write instead where there is something.
 
 | Refused | Why |
 |---|---|
 | A list, object or enum value used after it was given away (`let b = a`, then `a`) | it has one owner ([`one-owner.md`](one-owner.md)) |
 | A function that uses a `var` of the function around it | the two would share the variable, and nothing is shared. Use `let`, or an object |
+| Keeping an item of a list of lists or of objects, which `[ ]` only looks at (`let row = grid[0]`) | the list owns its items. Use it where it is, pass it to a parameter that looks, or take it out with `pop()` ([`one-owner.md`](one-owner.md)) |
+| A function that is kept and uses a `var` from outside it | a kept function takes what it uses, and the `var` could be given a new value after it was taken. Declare it with `let` ([`kept-functions.md`](kept-functions.md)) |
+| Replacing a list or an object that a parameter only looks at (`b.items = [7, 8]`, where `b` has no `take`) | only the owner may replace what a field holds: something else may have been lent the old value. Write `take` on the parameter, or return the new value |
+| Taking an item out of a list while a `for` walks it (`xs.pop()` in `for x in xs`) | the loop is still looking at the items, and a taken item would be freed under it (5.15e). Take them after the loop, or walk `range(len(xs))` |
+| A function with a name, written inside a function, that uses variables around it, used as a value or called from a function written where a value goes | the block owns it and frees it as it ends. Write it as `let add = function(...) { ... }`, which has one owner ([`inner-functions.md`](inner-functions.md)) |
 
 Ten things you might expect on this list are not. A plain list or
 object is fine: whoever receives it owns it. A list of objects or of
@@ -286,9 +292,16 @@ objects owns its values, as a list owns its items
 `none` owns a block of the pool for each number
 ([`none-list.md`](none-list.md)).
 
-Both rows are by design: with no collector nothing is shared. A list
-of `int or none` was a third row, a limit of version 0.1 (decisions,
-11.2), until 0.8.0.
+All seven rows are by design: with no collector nothing is shared,
+and what a block owns ends with the block. A list of `int or none`
+was a row, a limit of version 0.1 (decisions, 11.2), until 0.8.0.
+
+A program that every build refuses is not on this list; those are in
+[`compiler.md`](compiler.md), each with its reason. The test
+`what_a_build_with_no_collector_refuses_says_so` holds both lists to
+what the two compilers do: each row is refused, in the words its page
+shows, and a row that is missing from a page, or a page that lists
+what the compilers take, fails it.
 
 ## What this does not claim
 

@@ -1555,7 +1555,7 @@ fn ir_type(kind: &Kind, span: Span) -> Result<&'static str, Error> {
         },
         Kind::Owned(inner) => ir_type(inner, span)?,
         Kind::None => {
-            return Err(cannot("a variable that only ever holds `none`. Give it a type, as in `x: int or none`", span))
+            return Err(emit_c::only_none("`zeno build --llvm`", span))
         }
         // `import c` is built through C, not LLVM, so far (decision 44.10).
         Kind::Other(_) | Kind::CPointer(_) | Kind::CLibrary(_) => return Err(cannot(described(kind), span)),
@@ -2726,7 +2726,7 @@ impl Emitter<'_> {
             }
             StmtKind::Class(decl) => {
                 if !self.at_the_top() {
-                    return Err(cannot("a class inside a function or a block", span));
+                    return Err(cannot("a class inside a function or block", span));
                 }
                 // Its methods are functions, and wait like functions.
                 for decl in copies_of_class(self.types, decl) {
@@ -2744,7 +2744,7 @@ impl Emitter<'_> {
                 Ok(())
             }
             StmtKind::Enum(_) if self.at_the_top() => Ok(()),
-            StmtKind::Enum(_) => Err(cannot("an enum inside a function or a block", span)),
+            StmtKind::Enum(_) => Err(cannot("an enum inside a function or block", span)),
 
             StmtKind::If { condition, then_block, else_block } => {
                 let test = self.condition(condition)?;
@@ -5578,6 +5578,11 @@ impl Emitter<'_> {
                 Ok(Val::new(period, Kind::Quantity("ms".to_string())))
             }
             Kind::Register(_) if name == "address" => Ok(Val { kind: Kind::Int, ..val }),
+            // The checker took it, so it is a method of a list, a text or
+            // a dict, which is written in place where it is called.
+            Kind::List(_) | Kind::Str | Kind::Dict(..) => {
+                Err(cannot(format!("a method that comes with Zeno used as a value, `.{name}`,"), span))
+            }
             _ => Err(cannot(format!("`.{name}` on {}", described(&val.kind)), span)),
         }
     }
@@ -5607,7 +5612,8 @@ impl Emitter<'_> {
                 let boxed = self.call("ptr", name, format!("{} {}", ir_type(&val.kind, span)?, val.code));
                 self.set(format!("ptrtoint ptr {boxed} to i64"))
             }
-            Kind::None => return Err(emit_c::untyped_list("`zeno build --llvm`", span)),
+            // `[]` or `[none]` where nothing says what it holds.
+            Kind::None | Kind::Other(_) => return Err(emit_c::untyped_list("`zeno build --llvm`", span)),
             _ => return Err(cannot("a list of these", span)),
         })
     }
@@ -5631,6 +5637,7 @@ impl Emitter<'_> {
                 let boxed = self.set(format!("inttoptr i64 {slot} to ptr"));
                 self.call(ir_type(kind, span)?, name, format!("ptr {boxed}"))
             }
+            Kind::None | Kind::Other(_) => return Err(emit_c::untyped_list("`zeno build --llvm`", span)),
             _ => return Err(cannot("a list of these", span)),
         };
         Ok(Val::new(code, kind.clone()))

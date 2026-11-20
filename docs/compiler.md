@@ -72,7 +72,7 @@ through C and through LLVM alike, each with its reason:
 | Named arguments to a function held in a variable: `f(a = 1)` | the type of a function value has no names for its parameters; `zeno run` reads them off the function it holds at the call | pass the arguments in order |
 | A built-in function used as a value: `xs.map(str)` | a built-in is written in place for the types it is given, and is no function that a value can point at | `xs.map(function(n) { return str(n) })` |
 | A method that comes with Zeno used as a value: `xs.append` | the same | a function written where a value goes |
-| A method of an object that no variable holds, or of a copy of a generic class, used as a value | 56.9, 56.17 | put the object in a `let`; call the method in a function written where a value goes |
+| A method of an object that no variable holds, or of a copy of a generic class, used as a value | 56.9, 56.18 | put the object in a `let`; call the method in a function written where a value goes |
 | A list whose items are not all one type: `[1, "a"]` | a build gives every item one type of C; `zeno run` checks types as it goes | one type, or an enum with a case for each |
 | A variable that only ever holds `none`, and `print([])` or `[none]` alone | a build needs a type, and nothing gives one | write the type: `x: int or none`, `let items: list[int] = []` |
 | `program.run` | starting another program is not written for C yet | `zeno run` |
