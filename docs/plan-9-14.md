@@ -2442,3 +2442,59 @@ written elsewhere is shown as it was written.
   it should take; whoever builds 11.3 looks at it then.
 
 `Resource` (12.1) can now be declared as an `owned interface`.
+
+### 20. 12.2, 2026-11-20: a `Reader` and a `Writer` are written in Zeno
+
+This page said the two types are known to the checker "as it knows a
+`Serial`": built in, and written for each engine. The second builder
+proposed another way, before building, and it is taken.
+
+**A. The two types are classes of `library/files.zeno`.** Each is an
+`owned class` that is a `Resource` (12.1) and holds the number of an
+open file; `read_line`, `read_bytes`, `write` and `write_bytes` are
+its functions, and its `release` closes the file. What asks the
+machine is five small built-in functions beside `files.read`: open,
+the next line, up to so many bytes, write, close. The reason: the
+release, its order, every way out of a block and every target then
+come from 12.1 with nothing new, where a built-in type would have
+been a second thing that is released, written again in four engines
+and fifteen runtimes. It is also how `math.hypot` came to be written
+once (chapter 33).
+
+Four things are asked of it.
+
+1. **A program cannot make one, or touch its number.** Only
+   `files.read_from`, `files.write_to` and `files.append_to` make a
+   `Reader` or a `Writer`. `files.Reader(3)` in a program is refused,
+   and so is reading or changing the number it holds. In C the number
+   is the address of the open file, so a number a program made up
+   would be a wild address. The five built-ins are reached only from
+   `library/files.zeno`; anywhere else they are not defined, so there
+   is still no `close` for a program to forget.
+2. **A `write` hands its text to the system before it returns.** Zeno
+   holds nothing back to be written when the file is closed. A
+   `release` raises nothing (12.1, rule 3), so whatever was still
+   waiting at the close and could not be written would be lost
+   without a word. This way the `write` that met the full disk raises
+   the `FileError`, on its own line. A writer that gathers its pieces
+   is left for later.
+3. **A file is opened as bytes on every system**, so that a line end
+   is what Zeno says it is (6.17) and not what Windows makes of it.
+4. **The five built-ins are pieces of the runtime** (section 10), and
+   the two classes are in a library that gives a program only what it
+   uses, so a program that opens no file is built as before.
+
+**B. `for line in reader` is rewritten by the checker** into the loop
+a program would write with `read_line`, with a name of its own that
+no program can write, so `break` and `continue` mean what they mean
+in any `for` and no engine learns a new loop. A `for` over any other
+class stays refused. `for line in files.read_from(path)`, with no
+`let`, is refused by rule 7 of 12.1, and the message says to give the
+reader a name first.
+
+**Also to settle in chapter 59, by the builder:** what `read_bytes`
+does with a count below zero, with its message; and that a line that
+is not UTF-8 raises what `files.read` raises for such a file.
+
+The tests of 12.2 stay as they were written, and one is added: a
+`write` to a place that cannot be written raises at the `write`.
