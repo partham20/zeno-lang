@@ -1789,8 +1789,8 @@ Item 9 was reviewed as a whole at 6d22db6 (parts 9.1 to 9.9, chapter
   leaves a block.
 - `tools/same.py` against a `zeno` built from the tag of 0.7.0: 451
   programs, fifteen ways, 6,765 builds, **6,523 the same and 242
-  different.** Of the 242, 120 are the eight new programs of this
-  item. The other 122 are builds of 21 older programs that 0.7.0
+  different.** Of the 242, 114 are the eight new programs of this
+  item. The other 128 are builds of 21 older programs that 0.7.0
   refused: five builds of each of two, and thirteen of a third, are
   built now, and the rest are refused in other words. **No program
   that 0.7.0 built is built differently**, which is what section 6
