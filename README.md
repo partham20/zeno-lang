@@ -392,7 +392,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/unsafe.md`](docs/unsafe.md), [`docs/audit.md`](docs/audit.md),
   [`docs/library.md`](docs/library.md),
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
-  [`docs/folders.md`](docs/folders.md),
+  [`docs/folders.md`](docs/folders.md), [`docs/resource.md`](docs/resource.md),
   [`docs/running-programs.md`](docs/running-programs.md),
   [`docs/python.md`](docs/python.md), [`docs/node.md`](docs/node.md),
   [`docs/java.md`](docs/java.md), [`docs/ruby.md`](docs/ruby.md),
@@ -908,6 +908,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     one value, and a class keeps them together. See
     [`docs/several-values.md`](docs/several-values.md) and chapter 57
     of [`docs/decisions.md`](docs/decisions.md))
+63. Cleaning up when a block ends (on `main`, for 0.8.0: `owned class
+    Selected is Resource` with a `function release(self)`, which runs
+    when the owner of the object ends, on every way out of its block,
+    in every engine, every build and every target. See
+    [`docs/resource.md`](docs/resource.md) and 59.1 to 59.5 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

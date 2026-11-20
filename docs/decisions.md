@@ -19003,6 +19003,245 @@ in pieces (12.2), and folders (12.3). The third is cut loose from the
 other two and lands first. Its sections begin at 59.20, so that the
 first two parts keep the numbers before it.
 
+### 59.1 `is Resource`: something that is put back when its owner ends
+
+```zeno
+owned class Selected is Resource {
+    line: Pin
+
+    function release(self) {
+        self.line.on()              # chip select is high again
+    }
+}
+
+function read_id(bus: Bus, line: Pin) -> u8 {
+    line.off()
+    let chosen = Selected(line)
+    return bus.transfer(0x9F)
+}                                   # chosen.release() runs here, however the block is left
+```
+
+An open file, a chip-select line and a lock each have a second half
+that must happen on every way out of a block. Until now it was
+written before each `return`, and forgotten before one of them. Now
+the class says it once: an `owned class` that is `Resource` has its
+`release` called when the owner of the object ends. The choice of
+this over `defer`, `finally` and a block of Python's `with` is 12.1
+of the plan; here is what was built.
+
+**`Resource` comes with Zeno**, as `owned interface Resource {
+function release(self) }` (58.22). It is written into a program only
+when the program names it and has no `Resource` of its own, so a
+program that never says the word is the program it was: the same C,
+IR and bytecode, which `tools/same.py` holds. A program with its own
+`Resource` means its own, and nothing is released: it is an
+interface like any other. It is not a reserved word.
+
+**The rules.**
+
+1. Only an `owned class` can be one: a shared object has no owner
+   whose end could be the moment. ``class Plain is Resource`` is
+   refused, and says ``Declare it `owned class Plain is Resource` ``.
+2. `release` takes `self` alone and gives nothing, as the interface
+   says. It may not say `raises`: it runs at the end of a block,
+   where an error has nowhere to go, and the message says to catch
+   the error inside it.
+3. `release` cannot be called by hand. It runs once, and the message
+   says how to end a resource sooner: give it to a function that
+   takes it, `function done(held: take Held) { }`.
+4. **It runs when the owner ends**: when the block of the `let` that
+   holds it is left by reaching its end, by `return`, `break` or
+   `continue`, or by an error passing through. Of two in one block,
+   the one made last is released first. After `return x + y` the
+   value is worked out first and the release runs second, so the
+   value may use the resource. A loop's body is a block, so one made
+   in each turn is released at the end of each turn.
+5. A resource has one owner, like every owned value. `return` gives
+   it to the caller, a parameter that says `take` takes it, `let b =
+   a` moves it. Whoever has it at the end releases it; one that was
+   given away is not released by the one who gave it, on any path:
+   given away in one branch of an `if`, it is released at the end of
+   the block only when the other branch ran.
+6. **It does not run when the program is stopped**: by
+   `program.exit`, or by a fault of a firmware build (5.5l). Stopping
+   ends no block. A failed `assert` is not a stop: it stands only in
+   a test, and leaves its test as an error would, so what the blocks
+   of the test own is released, and the next test can open the same
+   file (plan, Changes 18).
+7. **Where a resource can be, in this version: in a `let`, or in a
+   parameter.** The rest is 59.2.
+
+**An error passes through as it was.** The release runs, and then the
+error goes on with its kind, its message and its line unchanged, to
+the `except` that catches it or out of the program. An error that
+nothing catches releases on its way out, top of the file included,
+and is reported after the lines each `release` printed, exactly as it
+is reported in a program with no resource. (`raise e` names the line
+of the `raise`, so the engines do not pass it on that way.)
+
+### 59.2 Where a resource can be: a `let`, or a parameter
+
+The compilers free an owned value on every road it can take, and for
+them a `release` in front of the free would be all there is to do.
+But the interpreter, the VM and the fifteen targets free nothing:
+their values are shared, and collected by the language they are
+written in. For them "the owner ends" has to be made into something
+that runs, and for a `let` in a block that is one thing: code at each
+way out of the block. For a field or an item of a list it would be
+chapters 5.15 to 5.17 again, in every engine. A `let` covers the
+guard of a block, which is what the needs above are. The rest is
+refused, each with a message that says what to write, so letting it
+in later changes no program (11.6). With a collector and with none
+the checker says the same words.
+
+| Where | What is said |
+|---|---|
+| `var h = Held("a")` | `h` holds a resource, which is released when its owner ends, so the variable cannot be given another value. Declare it with `let` |
+| a list or a dict of them, `Held or none`, a field of any class, a case of an enum, a type parameter, what a function gives when it is one of those | *what* would hold a resource. A resource is released when its owner ends, and its owner is a `let` or a parameter, never a list, a dict, a field, a case of an enum, `or none` or a type parameter. Keep it in a `let` of its own |
+| `print(Held("a").name)`, or a call standing alone | this call gives a resource, and nothing keeps it, so it would be released at once. Keep it in a `let`, which releases it when its block ends: `let held = ...` |
+| one of several values (item 10): `return Held("a"), 1` | a resource cannot be one of several values: each is released by one owner, a `let` of its own. Give the resource back alone, or put the values together in an `owned class` |
+| a function that is kept, using a resource of the block around it | this function is kept, so it would take `h`, a resource, and nothing would release it when its block ends. Pass `h` to the function as a parameter instead |
+| a parameter whose type is not written | the type of `x` of `show` is not written, so a resource cannot go to it. Write its type: `x: Held` |
+| the top of a file that imports `web` | a page stays open after the program's last line, so the top of its file never ends, and `h` would never be released. Make it inside the function that uses it |
+
+A call that gives a resource may be received by a `let`, by `return`,
+or by a parameter that takes it, `done(Held("passed"))`: in each the
+value has an owner the moment it is made. A resource may be held as
+the interface, `let r: Resource = h`, and a parameter may look at one
+as `Resource`; the release is then found through the interface, as
+any function of it is (10.9).
+
+**Where it meets chapter 58.** A type parameter never holds a
+resource, so `function named[T is Resource](x: T)` may be written, and
+a call that gives it a `Held` is refused with the message of the
+second row, naming `` `T` of `named` ``; so is `Box[Held]` for a
+generic class, `Just(Held("a"))` for a generic enum, and `class Maker
+is Source[Held]` for a generic interface. A bound that
+could be met by nothing is not refused where it is written: it is
+refused the first time it is asked, at the call, as every bound is
+checked (58.3).
+
+The last row is the page's: a program that imports `web` goes on
+after its last line, answering the page, so the top of its file never
+ends. A function of the page may make one, as any function may.
+
+### 59.3 The top of a file, its tests, and how a program stops
+
+**The top of a file is a block.** A resource made there is released
+after the last line, when the program ends as it should, last made
+first, and before an error that nothing caught is reported.
+
+**When a file is run for its tests, the top ends after its last
+test** (plan, Changes 18). `zeno test` runs the file, then its tests,
+and the tests see the file's variables, as `testing.md` has always
+said. A resource of the top would be released before the tests if
+the top ended at its last line, and a test that reached it through a
+function would use something given back. So in `zeno test` and in
+`zeno test --build` a resource of the top is released after the last
+test, and in `zeno run` and `zeno build` after the last line. A list
+that the top owns in a build with no collector already went this
+way, given back after the tests; a resource goes the same road, its
+`release` in front of that giving back.
+
+Refusing a test that uses a resource of the top was weighed and not
+taken: a test can reach it through a function it calls, or a function
+held as a value, and no check could see every road.
+
+**`program.exit` and a firmware fault release nothing**, at the top or
+in any block (rule 6).
+
+### 59.4 How it is built
+
+The checker is the only part that knows which `let` holds a resource,
+and the engines learn it from the program it gives back. After the
+rules pass, `checked` rewrites the program, as it does for sized
+numbers (10.27): the statements after a resource's `let`, to the end
+of its block, go into a new statement, `StmtKind::Scoped { name, body
+}`, the second inside the first; a body whose parameter takes a
+resource is wrapped the same way; and each use that gives the
+resource away (to a `take` parameter, by `return`, by `let b = a`)
+becomes `ExprKind::Give(name)`. Both are made only by the checker,
+and no program can write them. A `Scoped` opens no scope of its own:
+the names made in its body belong to the block it stands in, so the
+hoisting of functions and the free of other owned values see the block
+whole (`ast::flat`). A program with no resource is not rewritten, and
+the test `a_program_with_no_resource_is_not_rewritten` holds it.
+
+**The meaning of `Scoped`, for every engine:** run the body; however
+it is left, if the name still holds its object, call its `release`;
+then go on leaving the same way. `Give(name)` reads the name and
+leaves it empty.
+
+- **The interpreter**: one arm, which runs the body, looks at how it
+  ended, and calls `release` unless the name was emptied. `Give` reads
+  the variable and leaves `none` in it. The top of a file under `zeno
+  test` runs the file's tests at the end of its innermost `Scoped`.
+- **The VM**: the body runs in a `try` of its own; at its end the `try`
+  is closed and the resource released, and an error that comes to its
+  handler releases and is raised again as it was (`Reraise`). `return`,
+  `break` and `continue` release, last made first, the resources they
+  leave, after the value of a `return` is worked out; each `try` begun
+  inside is closed before the release, so an error in a `release`
+  cannot be caught by a `try` already left. One new instruction,
+  `Release`, calls `release` unless the variable holds `none`, and
+  keeps the place of the error passing through. The variable is found
+  where its `let` is, so an inner block that uses the name again does
+  not hide it. `Op` is still 12 bytes.
+- **C and LLVM**: every way out of a block already frees what the
+  block owns (5.8h), and the release goes in front of that, block by
+  block, innermost first. The release takes the object out of the
+  variable first (`NULL` after), so that it runs once whatever happens
+  inside it. In an ordinary build an error jumps over the blocks
+  between a `raise` and its `except` (5.5i), so there the body is a
+  frame of the kind a `try` has, which keeps the error aside,
+  releases, and raises it again unchanged; it costs what a `try`
+  costs, and only in a block that owns a resource. A firmware build
+  passes errors as values, and needs no frame. Under `zeno test
+  --build` the tests run before the last resource of the top is
+  released. Nothing in `runtime.c` changed.
+- **The fifteen targets** (`lower.rs`): `Scoped` becomes a lowered
+  `try` that catches what the program raises, releases, and raises it
+  again as it was, with the release also written at the end and at
+  each `return`, `break` and `continue` that leaves it. A mistake of
+  the program and `program.exit` go past every target's `try`. No new
+  lowered statement and no runtime changed: the ones that were there
+  are enough.
+
+**Tests.** The checker: each refusal of 59.2, with a collector and
+with none, and what is taken; a `Resource` of the program's own; a
+program with none is not rewritten; the shape of the rewrite. Both
+engines: an error that ends the program releases on its way out and
+is reported unchanged; `program.exit` releases nothing; under `zeno
+test` the top ends after its last test, and a failed `assert`
+releases what its test held. The six builds, against the interpreter
+and the VM, with no block left with no collector: `return` from inside
+a `try`, `break` and `continue` from inner blocks and a `match`, a
+resource held as `Resource`, a name used again in an inner block, an
+inner function written after the `let` and called above it, a
+`release` that catches its own error, an uncaught error reported
+unchanged after the releases; and in `zeno test --build` a failed
+`assert`, one inside a `try`, an error raised by a test, and the top
+of the file released after the last test. Every engine and build:
+[`tools/targets/edge-resource.zeno`](../tools/targets/edge-resource.zeno)
+prints a line from each `release` on every way out: the end, `return`
+with a value that uses the resource, `break`, `continue`, a loop that
+makes one each turn, an error through two blocks that each own one,
+an error caught inside, two in one block, one given away, handed back,
+taken by a parameter, moved by `let`, given away on one path of an
+`if` and of a `match`, a name used again inside, and one at the top
+of the file.
+
+### 59.5 What a resource still leaves out
+
+- **A resource in a field, a list, a dict, `or none`, a case of an
+  enum, or as a type parameter** (59.2). An `owned class` that holds a
+  resource would release it when the class is freed, which the
+  compilers could do and the other engines could not.
+- **Several values that hold one** (item 10).
+- **A `var`.** Giving it a new value would release the old one, at a
+  line where nothing is written.
+- **A release that raises.**
+
 ### 59.20 `files.list(folder)`: the names, sorted by their characters
 
 `files.list("logs")` gives the names of everything in the folder, as a
