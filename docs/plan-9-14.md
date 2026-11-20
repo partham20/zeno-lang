@@ -2894,3 +2894,29 @@ was red (Lua and wasm, both mended since); the run on 6b81910 holds
 both mends and the grown `edge-files.zeno` on dart, kotlin and cs,
 which no builder could run by hand. If it is red, its target is
 mended by the builder whose item it is, before the tag.
+
+### 28. 2026-11-20: folders on Windows and macOS, found by the trial
+
+The trial on the other systems (`trial.yml`, run for the release) is
+red in 12.3, which section 18 accepted on Linux alone. That was my
+miss: `docs/folders.md` says "on Linux, macOS and Windows", and I
+took it without a run there. Two things, both the second builder's.
+
+1. **`b` and `B`.** A test makes both and expects two names. On a
+   disk that takes them for one name (macOS and Windows as they come)
+   there is one file, and that is the disk's rule, not Zeno's. The
+   tests use names that differ by more than their case, keeping one
+   capital among them so the order by character number is still
+   tried; and "What it does not do" says that Zeno lists what the
+   disk holds, so two names that differ only by case may be one file.
+2. **`é` through the C build on Windows.** A name that `files.list`
+   gives must open its file when handed to `files.read`, and must be
+   the text `zeno run` lists, on every system. In the C build on
+   Windows it comes back encoded twice. It is mended inside the
+   pieces `ZENO_FILES_LIST` and `ZENO_FILES_MAKE_FOLDER`: by the
+   runtime rule (section 10) the runtime of a program that lists no
+   folder stays 0.7.0's, byte for byte, so the way `files.read` opens
+   a path is not changed to fit.
+
+**The tag waits for both:** the trial green on Windows and macOS, and
+the targets run green, on the commit that is tagged.
