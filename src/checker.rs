@@ -1952,8 +1952,8 @@ fn letters(count: usize) -> String {
 }
 
 /// The refusal of a resource among several values (59.1).
-const RESOURCE_SEVERAL: &str = "a resource cannot be one of several values: each is released by one owner, a `let` of \
-     its own. Give the resource back alone, or put the values together in an `owned class`";
+const RESOURCE_SEVERAL: &str = "a resource cannot be one of several values: its owner, which releases it, is a `let` \
+     of its own. Give it back alone, and receive it alone: `let held = ...`";
 
 /// The message for a call of several values used as one (decision 57,
 /// rule 3): "`divide` gives 2 values. Receive each: ...".
@@ -5012,6 +5012,11 @@ impl Checker {
                         }
                         None => self.take(value, env),
                     };
+                    // `let a, b = hold("x"), 1`: the resource would have
+                    // no `let` of its own to release it (59.2).
+                    if self.holds_resource(&ty) {
+                        self.error(RESOURCE_SEVERAL, value.span);
+                    }
                     given.push(ty);
                 }
                 given.resize(count, Ty::Invalid);
@@ -6980,6 +6985,19 @@ impl Checker {
         });
         for (param, slot) in decl.params.iter().zip(&params) {
             if let Some(default) = &param.default {
+                // A resource made by a default would be made at each call
+                // that leaves it out, where no `let` owns it (59.2).
+                if self.is_resource(&slot.ty.clone().looked_at()) && matches!(default.kind, ExprKind::Call { .. }) {
+                    self.error(
+                        format!(
+                            "a default cannot make a resource: `{}` would be made at each call that leaves it \
+                             out, where no `let` owns it. Pass one at the call instead",
+                            param.name
+                        ),
+                        default.span,
+                    );
+                    self.receiving.insert(Arc::as_ptr(default) as usize);
+                }
                 let given = match slot.ty.is_look() {
                     // `xs: list[int] = [1, 2]`, where the parameter only
                     // looks: as for an argument, the list is made at each
@@ -16457,6 +16475,10 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             ("let h = Held(\"a\")\nh.release()", "`release` runs by itself, once, when the owner of this `Held` ends, so it cannot be called. To end it sooner, give it to a function that takes it: `function done(held: take Held) { }`".to_string()),
             ("function outer() {\n    let h = Held(\"a\")\n    let f = function() -> str { return h.name }\n    print(f())\n}", "this function is kept, so it would take `h`, a resource, and nothing would release it when its block ends. Pass `h` to the function as a parameter instead".to_string()),
             ("function two() -> (Held, int) {\n    return Held(\"a\"), 1\n}", super::RESOURCE_SEVERAL.to_string()),
+            ("let a, b = Held(\"received\"), 1", super::RESOURCE_SEVERAL.to_string()),
+            ("let n, h = 1, Held(\"second\")", super::RESOURCE_SEVERAL.to_string()),
+            ("function f(h: Held = Held(\"d\")) {\n}", "a default cannot make a resource: `h` would be made at each call that leaves it out, where no `let` owns it. Pass one at the call instead".to_string()),
+            ("function f(h: take Held = Held(\"d\")) {\n}", "a default cannot make a resource: `h` would be made at each call that leaves it out, where no `let` owns it. Pass one at the call instead".to_string()),
             ("function show(x) {\n    print(x)\n}\nlet h = Held(\"a\")\nshow(h)", "the type of `x` of `show` is not written, so a resource cannot go to it. Write its type: `x: Held`".to_string()),
             ("class Plain is Resource {\n    function release(self) {\n    }\n}", "`Plain` is a `Resource`, so each of its objects has one owner, whose end releases it. Declare it `owned class Plain is Resource`".to_string()),
             ("owned class Bad is Resource {\n    function release(self) raises ValueError {\n        raise ValueError(\"no\")\n    }\n}", "`release` runs when the owner of its object ends, where an error has nowhere to go, so it cannot raise. Catch the error inside `release`".to_string()),
@@ -16464,6 +16486,11 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ];
         for (source, message) in refused {
             assert_eq!(resource_errors(source), vec![message], "\n{source}");
+        }
+        // The plain form has no place that can hold a resource, so it is
+        // refused for that too; the resource on either side is refused.
+        for source in ["var a: int = 0\nvar b: int = 0\na, b = Held(\"x\"), 1", "var a: int = 0\nvar b: int = 0\na, b = 1, Held(\"x\")"] {
+            assert!(resource_errors(source).contains(&super::RESOURCE_SEVERAL.to_string()), "\n{source}");
         }
         // What is taken: a `let`, a parameter that takes or looks, given
         // back, given away, through the interface, and inside a function

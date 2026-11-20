@@ -129,7 +129,8 @@ message that says what to write:
 | a list, a dict, `Selected or none` | an item has no block whose end could release it |
 | a field of a class, a case of an enum, a type parameter | the same |
 | `print(Selected("a").name)` | nothing keeps it, so it would be released at once |
-| one of several values, `return Selected("a"), 1` | each value would need an owner of its own |
+| one of several values: `return Selected("a"), 1`, `let s, n = Selected("a"), 1` | the resource would have no `let` of its own to release it |
+| a default that makes one, `function f(s: Selected = Selected("d"))` | it would be made at each call that leaves it out, where no `let` owns it; pass one at the call |
 | a function that is kept, using one from its block | nothing would release it when the block ends |
 | a parameter with no type written | the checker could not see that a resource goes there |
 | the top of a file that imports `web` | a page never reaches the end of its top |
@@ -178,8 +179,8 @@ A release takes the object out of its variable before it calls
 - **A resource in a field, a list, a dict, `or none`, an enum or a
   type parameter.** Left for later; letting it in will change no
   program that builds today.
-- **Several values that hold a resource.** Give it back alone, or put
-  the values in an `owned class`.
+- **Several values that hold a resource.** Give it back alone, and
+  receive it alone.
 - **A `release` that raises.**
 
 ## How it is tested
