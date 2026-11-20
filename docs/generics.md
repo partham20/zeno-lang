@@ -474,7 +474,9 @@ define internal double @"z_Cell[float].get"(ptr %arg.self) {
 - **A case of a generic enum cannot be written after the enum's
   name**, as `Maybe.Just(3)`, and cannot be kept as a value: `let f =
   Just` is refused, as `let f = first` is.
-- **A method cannot have type parameters of its own.** The class can.
+- **A method cannot have type parameters of its own** (58.7). A
+  function of the file that takes the object first does the same:
+  `function convert[T, U](box: Box[T], change: function(T) -> U) -> Box[U]`.
 - **A generic cannot be kept as a value**: `let f = first` is refused,
   because `f` would have to be every copy at once. Wrap it:
   `function(xs: list[int]) -> int { return first(xs) }`.

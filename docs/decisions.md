@@ -18623,6 +18623,86 @@ six builds, with 0 blocks left with no collector, and in each target
 whose tools are installed. A program in two files with `class Count is
 sources.Source[int]` was tried by hand in three builds.
 
+### 58.7 A method with a type parameter of its own stays refused
+
+```zeno
+class Box[T] {
+    item: T
+    function convert[U](self, change: function(T) -> U) -> Box[U] { ... }
+}
+```
+
+The plan builds this only if 58.1 to 58.6 make it a small step. They
+do not, and it stays refused. A copy of a generic is made where it is
+called, and today what is called with a dot is one function: a method
+read from an object is a `BoundMethod` that holds one `FunctionInfo`.
+A method with its own `U` would need, each its own work and none
+shared with what 58.1 to 58.6 built:
+
+- a bound generic as the type of `box.convert`, and the call of a
+  method going through `call_generic` with the object as a first
+  argument that says nothing about `U`;
+- its copies made inside each copy of the class, `Box[int]` having
+  `convert[str]` and `convert[float]`, and checked with `self` of that
+  copy;
+- in both compilers, those copies registered as methods of the class
+  copy and compiled with it, and each call reading which copy the
+  checker chose, where a method call today finds its function by name;
+- with no collector, the rules of `self` (a look, or `take` where the
+  method takes out, 5.19k and 58.21) held for each copy, and a method
+  value of one (56.9) refused.
+
+That is about a dozen places in four files for the item that the plan
+calls the least needed, and no program in the repository, the book or
+a review has asked for it. **The same work is done today** by a
+function of the file that takes the object first, which every build
+takes:
+
+```zeno
+function convert[T, U](box: Box[T], change: function(T) -> U) -> Box[U] {
+    return Box(change(box.item))
+}
+```
+
+So the message says that, with the names filled in: "the method
+`convert` cannot have type parameters of its own yet. Write it as a
+function of the file that takes the object first: `function
+convert[T, U](box: Box[T], ...)`". It was "The class can have them:
+`class Box[T]`", which in a generic class named a class that already
+has them. A method of an interface stays refused by the parser, as
+the plan says: it would be a copy for each `U` in each class behind
+each `switch`.
+
+**Tests.** `checker::tests::what_a_generic_cannot_do_yet`, for a
+plain class and a generic one.
+
+### 58.8 A generic given a list whose items are not all one type
+
+`first([200 ms, 1 s])` runs with `zeno run`, which keeps each item as
+it is and prints `200 ms`, and every build refused it, in 0.7.0 too,
+with "`first` cannot tell what `T` is from this call: no argument
+says", which pointed at the wrong thing. The list does say something:
+that its items are two types. A build gives a list one type (the row
+of [`compiler.md`](compiler.md) on such lists), and making the list
+one of ms would change what it prints, `1000 ms` where `zeno run`
+prints `1 s`. So it stays refused, by that row, and the message now
+says why and what to write: "`first` cannot tell what `T` is from
+this list: its items are not all one type, but a quantity in ms and a
+quantity in s, and a build gives a list one type. Write them all in
+one unit, such as `ms`". For an int beside a float it says to write
+each as a float; for anything else, to make them one type or an enum
+with a case for each, as the row does.
+
+The checker notes each list written out whose items it could not join
+into one type, with the types they are (`mixed`), and the one place
+where a generic cannot tell a type reads it. Nothing else changes: a
+list that is one type is never noted, and `zeno run` takes what it
+took. The row names the case, and `tools/refused.py` has two programs
+beyond its matrix, `first` given a list of two units and of an int
+and a float, so a later change to either message is seen.
+
+**Tests.** `checker::tests::a_generic_given_a_list_of_two_types_says_why_in_a_build`.
+
 ### 58.20 A default on a parameter of an interface's function
 
 ```zeno

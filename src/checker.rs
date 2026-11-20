@@ -2437,6 +2437,10 @@ struct Checker {
     /// The types already reported as not having what a type parameter
     /// asks, by generic and line, so that one line says it once.
     unmet: HashSet<(usize, String, usize)>,
+    /// Each list written out whose items are not all one type, with the
+    /// types they are, as `[200 ms, 1 s]`: a generic called with one is
+    /// told why it cannot tell what `T` is (58.8).
+    mixed: HashMap<usize, Vec<Ty>>,
     /// What earlier passes worked out for untyped parameters and fields.
     known: HashMap<SlotId, Key>,
     /// The untyped parameters and fields that cannot be worked out.
@@ -2566,6 +2570,7 @@ impl Checker {
             firmware: false,
             last_round,
             unmet: HashSet::new(),
+            mixed: HashMap::new(),
             known,
             open,
             seen: HashMap::new(),
@@ -3999,11 +4004,34 @@ impl Checker {
             *info.fields.borrow_mut() = fields;
             for method in &decl.methods {
                 if !method.type_params.is_empty() {
+                    // 58.7: it stays refused, and a function of the file
+                    // that takes the object first does the same work.
+                    // A copy of a generic class, or the generic checked on
+                    // its own, is named after the generic, with its `[T]`.
+                    let generic = match &info.origin {
+                        Some((generic, _)) => Some(generic.clone()),
+                        None => match env.get(&decl.name).map(|variable| variable.ty) {
+                            Some(Ty::Generic(generic)) => Some(generic),
+                            _ => None,
+                        },
+                    };
+                    let (class_name, class_params) = match &generic {
+                        Some(generic) => (generic.name.clone(), generic.params.clone()),
+                        None => (decl.name.clone(), Vec::new()),
+                    };
+                    let mut all = class_params.clone();
+                    all.extend(ast::param_names(&method.type_params));
+                    let object = match class_params.is_empty() {
+                        true => class_name.clone(),
+                        false => format!("{class_name}[{}]", class_params.join(", ")),
+                    };
                     self.error(
                         format!(
-                            "the method `{}` cannot have type parameters of its own yet. \
-                             The class can have them: `class {}[T]`",
-                            method.name, decl.name
+                            "the method `{0}` cannot have type parameters of its own yet. Write it as a function \
+                             of the file that takes the object first: `function {0}[{1}]({2}: {object}, ...)`",
+                            method.name,
+                            all.join(", "),
+                            class_name.to_lowercase()
                         ),
                         span,
                     );
@@ -7146,6 +7174,18 @@ impl Checker {
                     } else {
                         // An empty list holds nothing yet, so its item type is open.
                         let mut joined = self.join_all(&types).unwrap_or(Ty::Dynamic);
+                        if matches!(joined, Ty::Dynamic) && !types.iter().any(Ty::has_dynamic) {
+                            let mut kinds: Vec<Ty> = Vec::new();
+                            for ty in &types {
+                                if !kinds.iter().any(|kind| same(kind, ty)) {
+                                    kinds.push(ty.clone());
+                                }
+                            }
+                            // `[]` says nothing, and is not of two types.
+                            if kinds.len() > 1 {
+                                self.mixed.insert(expr as *const Expr as usize, kinds);
+                            }
+                        }
                         // `[[1, none], []]`: an empty list beside other
                         // lists holds what they hold.
                         let empty = |item: &Expr| matches!(&item.kind, ExprKind::List(inner) if inner.is_empty());
@@ -10229,6 +10269,39 @@ impl Checker {
                         );
                         return None;
                     }
+                    // `first([200 ms, 1 s])`: the list says nothing, since
+                    // its items are not all one type, and a build gives a
+                    // list one type (58.8).
+                    let mixed = arguments.iter().find_map(|argument| self.mixed.get(&argument.place).map(|kinds| (kinds, argument.span)));
+                    if let Some((kinds, at)) = mixed {
+                        let mut shown: Vec<String> = kinds.iter().map(|kind| kind.to_string()).collect();
+                        let last = shown.pop().unwrap_or_default();
+                        let shown = match shown.is_empty() {
+                            true => last,
+                            false => format!("{} and {last}", shown.join(", ")),
+                        };
+                        let units: Vec<&str> = kinds.iter().filter_map(|kind| match kind { Ty::Quantity(unit) => Some(&**unit), _ => None }).collect();
+                        let numbers = kinds.iter().all(|kind| matches!(kind, Ty::Int | Ty::Float));
+                        let hint = if units.len() == kinds.len() {
+                            let finest = units[1..].iter().fold(units[0].to_string(), |finest, unit| {
+                                units::common(&finest, unit).map_or(finest.clone(), |(common, _, _)| common.to_string())
+                            });
+                            format!("Write them all in one unit, such as `{finest}`")
+                        } else if numbers {
+                            "Write each as a float, as `1.0` for `1`".to_string()
+                        } else {
+                            "Make them one type, or an enum with a case for each".to_string()
+                        };
+                        self.error(
+                            format!(
+                                "`{}` cannot tell what `{name}` is from this list: its items are not all one type, \
+                                 but {}, and a build gives a list one type. {hint}",
+                                generic.name, shown
+                            ),
+                            at,
+                        );
+                        return None;
+                    }
                     let types = vec!["int"; generic.params.len()].join(", ");
                     let (who, example) = match (&generic.template, case) {
                         (Template::Class(_), _) => (generic.name.clone(), format!("let x: {0}[{types}] = {0}(...)", generic.name)),
@@ -12460,7 +12533,17 @@ mod tests {
         );
         assert_eq!(
             error("class Box {\n    n: int\n    function get[T](self, x: T) -> T {\n        return x\n    }\n}"),
-            "the method `get` cannot have type parameters of its own yet. The class can have them: `class Box[T]`"
+            "the method `get` cannot have type parameters of its own yet. Write it as a function of the file that \
+             takes the object first: `function get[T](box: Box, ...)`"
+        );
+        // In a generic class the class's own come first (58.7).
+        assert_eq!(
+            error(
+                "class Box[T] {\n    item: T\n    function convert[U](self, change: function(T) -> U) -> Box[U] {\n        \
+                 return Box(change(self.item))\n    }\n}"
+            ),
+            "the method `convert` cannot have type parameters of its own yet. Write it as a function of the file that \
+             takes the object first: `function convert[T, U](box: Box[T], ...)`"
         );
         assert_eq!(
             error("class Problem[T] {\n    what: T\n}\nfunction f() {\n    raise Problem(4)\n}"),
@@ -12606,6 +12689,30 @@ mod tests {
             "`perimeter` is not a function of the interface `Shape`, which has `area`. What else this object has depends on \
              its class, and that is only known when the program runs. Give `Shape` a function for it"
         );
+    }
+
+    #[test]
+    fn a_generic_given_a_list_of_two_types_says_why_in_a_build() {
+        // `zeno run` takes it, and keeps each item as it is; a build gives
+        // a list one type, so the list says nothing about `T` (58.8).
+        let first = "function first[T](xs: list[T]) -> T {\n    return xs[0]\n}\n";
+        ok(&format!("{first}print(first([200 ms, 1 s]))"));
+        assert_eq!(
+            strict_error(&format!("{first}print(first([200 ms, 1 s]))")),
+            "`first` cannot tell what `T` is from this list: its items are not all one type, but a quantity in ms and \
+             a quantity in s, and a build gives a list one type. Write them all in one unit, such as `ms`"
+        );
+        assert_eq!(
+            strict_error(&format!("{first}print(first([1, 2.5]))")),
+            "`first` cannot tell what `T` is from this list: its items are not all one type, but int and float, and \
+             a build gives a list one type. Write each as a float, as `1.0` for `1`"
+        );
+        assert_eq!(
+            strict_error(&format!("{first}print(first([1, \"a\", 2]))")),
+            "`first` cannot tell what `T` is from this list: its items are not all one type, but int and str, and \
+             a build gives a list one type. Make them one type, or an enum with a case for each"
+        );
+        strict_ok(&format!("{first}print(first([200 ms, 1000 ms]))"));
     }
 
     #[test]

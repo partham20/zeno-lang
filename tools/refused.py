@@ -184,6 +184,17 @@ def programs():
             text = body.replace("T", ty).replace("A", a).replace("B", b)
             source = PRELUDE + show_for(ty) + f"let a: {ty} = {a}\nlet b: {ty} = {b}\n" + text
             yield f"{name} of {ty}", source
+    yield from EXTRA
+
+
+# Programs that are not one operation on one type, each a case that a
+# review found: a generic given a list written out of two units of one
+# kind, or of an int and a float (58.8).
+GENERIC_FIRST = "function first[X](xs: list[X]) -> X {\n    return xs[0]\n}\n"
+EXTRA = [
+    ("a generic given a list of two units", GENERIC_FIRST + "print(first([200 ms, 1 s]))\n"),
+    ("a generic given a list of an int and a float", GENERIC_FIRST + "print(first([1, 2.5]))\n"),
+]
 
 
 def run(zeno, words, source):
@@ -233,7 +244,7 @@ KNOWN = [
     (EVERY_BUILD, "A built-in function used as a value", r"cannot compile `[a-z_.]+` used this way"),
     (EVERY_BUILD, "A method that comes with Zeno used as a value", r"cannot compile a method that comes with Zeno used as a value"),
     (EVERY_BUILD, "A method of an object that no variable holds", r"cannot compile a method used as a value of (an object that no variable holds|a copy of a generic class)"),
-    (EVERY_BUILD, "A list whose items are not all one type", r"cannot compile a list whose items are not all one type"),
+    (EVERY_BUILD, "A list whose items are not all one type", r"cannot compile a list whose items are not all one type|cannot tell what `\w+` is from this list: its items are not all one type"),
     (EVERY_BUILD, "A variable that only ever holds `none`", r"needs to know what a list holds|needs a type for a variable that only ever holds `none`"),
     (EVERY_BUILD, "A u64 that may be `none`", r"cannot compile a u64 that may be `none`"),
     (EVERY_BUILD, "A dict of objects of an `owned class`", r"keeps a dict where anything may share it"),

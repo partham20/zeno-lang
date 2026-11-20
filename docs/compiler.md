@@ -73,7 +73,7 @@ through C and through LLVM alike, each with its reason:
 | A built-in function used as a value: `xs.map(str)` | a built-in is written in place for the types it is given, and is no function that a value can point at | `xs.map(function(n) { return str(n) })` |
 | A method that comes with Zeno used as a value: `xs.append` | the same | a function written where a value goes |
 | A method of an object that no variable holds, or of a copy of a generic class, used as a value | 56.9, 56.18 | put the object in a `let`; call the method in a function written where a value goes |
-| A list whose items are not all one type: `[1, "a"]` | a build gives every item one type of C; `zeno run` checks types as it goes | one type, or an enum with a case for each |
+| A list whose items are not all one type: `[1, "a"]`, `[200 ms, 1 s]`, also given to a generic, `first([1, 2.5])` | a build gives every item one type of C; `zeno run` checks types as it goes, and keeps each quantity in its own unit (58.8) | one type, one unit (`[200 ms, 1000 ms]`), or an enum with a case for each |
 | A variable that only ever holds `none`, and `print([])` or `[none]` alone | a build needs a type, and nothing gives one | write the type: `x: int or none`, `let items: list[int] = []` |
 | A u64 that may be `none`: `u64 or none` | a value that may be `none` and is not a pointer is a pair of a flag and the value, and a build has these pairs for an int, a float and a bool only (56.19) | an `int or none`, or a u64 with a value set aside to mean nothing |
 | A dict of objects of an `owned class`, in a build with a collector | with a collector a dict is shared, and cannot be the one owner of an object (56.12) | a plain `class`, or `--no-collector`, where a dict owns its values |

@@ -108,7 +108,7 @@ C.
 | ~~**Generic enums**~~ (3.16e) | Rust, Java, C++ | **Done** (58.1): `enum Maybe[T]`, `Result[T, E]` |
 | ~~**Bounds**~~ (3.16d) | Rust traits, Java, Go, C++ concepts | **Done** (58.3): `function largest[T is Ordered]` moves the error from inside the generic to the call. `Ordered` comes with Zeno |
 | ~~**Generic interfaces**~~ (10.10) | Rust traits, Java, Go | **Done** (58.6): `interface Source[T]`, `class Countdown is Source[int]` |
-| **A method with a type parameter of its own**, type arguments written at a call | Rust, Java, C++, Go | With bounds |
+| **A method with a type parameter of its own**, type arguments written at a call | Rust, Java, C++, Go | Left for later after item 11 (58.7): a function of the file that takes the object first does the same work, and the message says so. Types at a call stay unwritten (3.16b) |
 | **Something that runs when a block ends** | C++ destructors, Rust `Drop`, Go `defer`, Python `with`, Java `try` with resources | Build it for owned values: a function of the class that the owner's end calls. It is what an open file needs (6.12) |
 | **`finally`** | Python, Java, JavaScript | Leave. The item above does its work, and one way is the rule |
 | **A value chosen by a condition** in one line (`x if c else y`) | All but Go | Decide once. There is one way to write an `if` today, and it is a statement |
