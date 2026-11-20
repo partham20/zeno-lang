@@ -2920,3 +2920,31 @@ took it without a run there. Two things, both the second builder's.
 
 **The tag waits for both:** the trial green on Windows and macOS, and
 the targets run green, on the commit that is tagged.
+
+### 29. 2026-11-20: folders on Windows and macOS are mended
+
+Read: dc369eb, 132e3a1, 728f562, f65f31e. The trial is green on
+Windows (run 46) and macOS (run 47).
+
+- **Names that differ only by case** are gone from the tests, and
+  `docs/folders.md` says that Zeno lists what the disk holds.
+- **A name through the C build on Windows.** The pieces of
+  `files.list` and `files.make_folder` now take a name as bytes
+  through the code page, as `fopen` does, so a file the program wrote
+  is listed by the name it was given and a listed name opens, by
+  `files.read` and by `files.read_from` (tested). The change is inside
+  the two pieces, as section 28 asked: `tools/same.py` against the tag
+  shows no program of 0.7.0 built differently (721 of 7,215 different;
+  the 30 since section 27 are two new programs of the book's chapter
+  on reading and writing, which use a Reader).
+- **What is left, and said in 59.20 and `docs/folders.md`:** in a C or
+  LLVM build on Windows a file name goes through the code page, as it
+  did for `files.read` and `files.write` in 0.7.0. A name the code
+  page cannot hold, made by another program, is listed with question
+  marks and does not open. To take names as UTF-8 there changes how
+  every file function opens a path, in the runtime of every program,
+  so it is a decision for a later version; `docs/missing.md` gains a
+  row for it.
+
+**Accepted.** The tag waits for a green targets run on the commit
+that is tagged, and for nothing else of mine.
