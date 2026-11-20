@@ -2948,3 +2948,26 @@ Windows (run 46) and macOS (run 47).
 
 **Accepted.** The tag waits for a green targets run on the commit
 that is tagged, and for nothing else of mine.
+
+### 30. 2026-11-20: the targets run is green, and what the tag may hold
+
+Targets run 60, on 6b81910, is green on all fifteen targets. That
+commit holds every item, the mend of the crash through LLVM (section
+26) and the mend of a file in pieces (section 27).
+
+After it came the mend of folders for Windows and macOS (section 29):
+the Windows half of two runtime pieces, tests, and one name in
+`tools/targets/edge-folders.zeno` (`B.txt` became `C.txt`). Run 61,
+on 14ad637, tries that; the second builder ran the three programs of
+item 12 on all fifteen targets by hand on that code, and they agree.
+
+**The rule for the tag.** It goes on a commit that differs from the
+last commit with a green targets run only in documents, the book,
+the history and the text of the version. So: run 61 green, and then
+nothing but such things before the tag. A change to `src/`,
+`library/` or `tools/targets/` after it wants a run of its own.
+
+With that, nothing of the plan is open. What was put off stays in
+`docs/missing.md`: 13.3 to 13.6 and item 14 (section 5), a line for
+an error raised inside the library (section 24), and UTF-8 file
+names in a build on Windows (section 29).
