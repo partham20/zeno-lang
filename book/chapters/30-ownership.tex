@@ -215,6 +215,104 @@ the type says \verb|or none|, and the next reader of the field must
 test it. (Decision 56.10; new in 0.8.)
 \end{why}
 
+\section{Cleaning up when a block ends}
+
+Some things have a second half that must happen on every way out of a
+block: a chip-select line goes high again, a lock is let go, a file is
+closed. An owned class can say so once, by saying it is a
+\verb|Resource| and writing what putting it back does in
+\verb|release|:
+
+\begin{zeno}[file=select.zeno, dir=resource]
+owned class Selected is Resource {
+    name: str
+
+    function release(self) {
+        print("deselect", self.name)
+    }
+}
+
+function read_id(name: str, fail: bool) -> int raises ValueError {
+    let chosen = Selected(name)
+    print("select", chosen.name)
+    if fail {
+        raise ValueError("no answer")
+    }
+    return 0x9F
+}
+
+print(read_id("flash", false))
+try {
+    print(read_id("sensor", true))
+} except ValueError as e {
+    print("caught:", e)
+}
+\end{zeno}
+
+\verb|release| ran on both roads out of \verb|read_id|: after the
+\verb|return|, and as the error went past. Nothing was written at
+either. It runs when the owner of the object ends, which is when its
+block is left in any way: by reaching the end, by \verb|return| (once
+the value returned is worked out), \verb|break| or \verb|continue|, or
+by an error passing through, which then goes on unchanged. Of two in
+one block, the one made last is put back first, and one made in the
+body of a loop is put back at the end of each turn.
+
+A resource has one owner, as every owned value does, and the owner
+that has it last puts it back. \verb|return| gives it to the caller, a
+parameter that says \verb|take| takes it, and \verb|let b = a| moves
+it; none of these runs \verb|release|. So to end one sooner, give it
+to a function that takes it. \verb|release| itself cannot be called by
+hand: it runs once, by itself.
+
+The top of a file is a block too. What it holds is put back after the
+last line, and before an error that nothing caught is reported. Under
+\verb|zeno test| the top of the file ends after its last test, so the
+tests can use what the top made. \verb|program.exit|, and a fault that
+stops a firmware program, end no block and put nothing back.
+
+A resource may live in a \verb|let| of one name, or in a parameter,
+and nowhere else, since only those have a block whose end is the
+moment. Everything else is refused with a message that says what to
+write: a \verb|var|, a field, a list or a dict, \verb|or none|, a case
+of an enum, a type parameter, one of several values, a default, a
+function that is kept, and a call whose result nobody keeps. A
+\verb|var| is the one people try first:
+
+\begin{zeno}[fails=yes]
+owned class Selected is Resource {
+    name: str
+
+    function release(self) {
+        print("deselect", self.name)
+    }
+}
+
+var chosen = Selected("flash")
+\end{zeno}
+
+The class must be an \verb|owned class|, and \verb|release| takes
+\verb|self| alone, gives nothing, and may not say \verb|raises|: at the
+end of a block an error has nowhere to go, so it is caught inside. A
+resource may be held as the interface, \verb|let r: Resource = chosen|,
+and its own \verb|release| runs. \verb|Resource| comes with Zeno, as
+\verb|owned interface Resource { function release(self) }|, and is not
+a reserved word: a program with a \verb|Resource| of its own means its
+own, and a program that never writes \verb|is Resource| is built
+exactly as before.
+
+\begin{why}
+C has nothing for this, and a missed deselect on one error path is a
+classic firmware fault. C++ and Rust run a destructor when a value's
+owner ends, and Python and Java have \verb|with| and
+try-with-resources, which mark the block by hand. Zeno already knows
+where each owned value ends, so it can run the second half there with
+nothing more written at the place. Keeping a resource to a \verb|let|
+or a parameter means the moment is always the end of a block a reader
+can see; in a list or a field it would be wherever the list happened
+to be freed. (Decisions 59.1 to 59.5; new in 0.8.)
+\end{why}
+
 \section{What owned values cannot do}
 
 An owned value cannot be replaced through a look, or taken out of a
@@ -227,7 +325,10 @@ instead.
 freed where the owner's block ends. Storing gives a value away; looking
 is free. A parameter looks unless it says \verb|take|. Owned may hold
 shared, never the other way. The checker follows branches, loops and
-\verb|try|, and says where a value went when it is used after.
+\verb|try|, and says where a value went when it is used after. An
+\verb|owned class| that \verb|is Resource| has its \verb|release| run
+on every way out of its owner's block; it lives only in a \verb|let|
+or a parameter.
 \end{summary}
 
 \begin{tryit}
@@ -240,5 +341,8 @@ shared, never the other way. The checker follows branches, loops and
   changes in the report?
 \item Give an owned value away inside a loop and then \verb|break| on
   the next line. Why does the checker accept that?
+\item Make two \verb|Selected| in one function, and \verb|return| from
+  the middle of it. In which order are they put back? Then give one to
+  a function that takes it, and run it again.
 \end{enumerate}
 \end{tryit}
