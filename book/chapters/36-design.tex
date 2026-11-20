@@ -115,16 +115,16 @@ Every limit is refused today with a message, so each can be added later
 without changing what any program written now means. The main ones:
 
 \begin{itemize}
-\item \textbf{On a board:} reading a pin, an analogue converter or a
-  serial port, interrupts and timers. These must be designed against
-  real hardware.
+\item \textbf{On a board:} trying what Zeno has for pins, converters,
+  serial ports, interrupts and timers on real hardware, and a function
+  of the program run inside an interrupt.
 \item \textbf{Numbers:} units a program names itself.
-\item \textbf{Types:} unions other than \verb|or none|, interfaces with
-  type parameters, and bounds on generics.
+\item \textbf{Types:} unions other than \verb|or none|, and more than
+  one bound on a type parameter.
 \item \textbf{The library:} reading a file
-  in pieces, folders, the time of day.
-\item \textbf{Builds:} compiling for another processor in one step,
-  and a few corners such as a named function inside a function.
+  in pieces, the time of day.
+\item \textbf{Builds:} loading a program onto a board, and compilers
+  other than GCC and Clang tried on real projects.
 \item \textbf{The web:} images on a canvas, touch, and a page small
   and fast enough for a game.
 \end{itemize}

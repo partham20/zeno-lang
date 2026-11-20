@@ -182,13 +182,260 @@ print(largest([Point(1), Point(2)]))
 \end{zeno}
 
 \begin{why}
-A bound, such as "\verb|T| must be something with \verb|>|", needs a
-name for "something with \verb|>|". Checking each use instead is what
-C++ did for thirty years, and it still finds every mistake before the
-program runs, which is the promise that matters. The note under the
-error is there so that the message points back to the call.
+Checking each use is what C++ did for thirty years, and it finds every
+mistake before the program runs, which is the promise that matters.
+The note under the error is there so that the message points back to
+the call. A generic may still say what it asks of \verb|T|, which
+puts the message at the call instead: that is the next section.
 (Decision 3.16d.)
 \end{why}
+
+\section{Saying what a type must be}
+
+A type parameter may say what it asks of its type, with \verb|is| and
+an interface, as a class says what it is. This is called a
+\emph{bound}:
+
+\begin{zeno}[file=largest.zeno, dir=bounds]
+function largest[T is Ordered](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+print(largest([3, 9, 2]), largest(["pear", "apple"]), largest([3 V, 12 V]))
+\end{zeno}
+
+\verb|Ordered| comes with Zeno. A type is \verb|Ordered| when
+\verb|<| works on two of it: every kind of number, a quantity, and
+text. Now a list of points is refused at the call, which names the
+type and what was asked of it, and the body is not even looked at:
+
+\begin{zeno}[fails=yes]
+class Point {
+    x: int
+}
+
+function largest[T is Ordered](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+print(largest([Point(1), Point(2)]))
+\end{zeno}
+
+A bound can also be an interface of the program's own
+(\hyperref[ch-interfaces]{Interfaces}). Then \verb|T| is any class
+that says it is that interface:
+
+\begin{zeno}[file=shapes.zeno, dir=bounds]
+interface Shape {
+    function area(self) -> float
+}
+
+class Circle is Shape {
+    radius: float
+    function area(self) -> float {
+        return 3.14159 * self.radius * self.radius
+    }
+}
+
+class Square is Shape {
+    side: float
+    function area(self) -> float {
+        return self.side * self.side
+    }
+}
+
+function total[S is Shape](shapes: list[S]) -> float {
+    var sum = 0.0
+    for s in shapes {
+        sum += s.area()
+    }
+    return sum
+}
+
+let circles = [Circle(1.0), Circle(2.0)]
+print(f"{total(circles):.2f}")
+print(total([Square(2.0), Square(3.0)]))
+\end{zeno}
+
+\verb|total| takes a \verb|list[Circle]| as it is. A function that
+asked for \verb|shapes: list[Shape]| would not: a list of circles is
+not a list of shapes, since a square could then be put in it. The
+bound says ``a list of one kind of shape'', and each kind gets its own
+copy of \verb|total|.
+
+A class and an enum take bounds too, as in
+\verb|class Range[T is Ordered]|. Each type parameter has at most one
+bound, and a comma always begins the next parameter, so
+\verb|[T is Ordered, Shape]| would make \verb|Shape| a second type
+parameter; it is refused with a message that says so. A bound is a
+promise checked at the call, not all that the body may do: the body is
+still checked for each copy, and a generic with no bound that uses
+\verb|>| is still taken, as before. A generic that nothing calls is
+checked with each bounded parameter standing for its interface, so a
+call of a function the interface does not list is found even then. A
+bound makes no code: the C of a program with bounds is the C of the
+same program without them.
+
+\begin{why}
+Checking each copy finds every mistake, but it finds it inside the
+generic, in words about \verb|>| that the caller did not write. A bound
+moves the message to the call and puts the rule in the heading, where
+a reader looks first. It is written with \verb|is| because a class
+already says what it is that way, and an interface already names a set
+of functions, so nothing new had to be learnt. A class cannot be
+\verb|Ordered| yet: that waits for a class to say what \verb|<| means
+for its objects. (Decisions 58.3 to 58.5.)
+\end{why}
+
+\section{A generic enum}
+
+An enum can leave a type open too. The two most used are a value that
+may be missing and a result that may be an error:
+
+\begin{zeno}[file=maybe.zeno, dir=enums]
+enum Maybe[T] {
+    Nothing
+    Just(value: T)
+}
+
+enum Result[T, E] {
+    Ok(value: T)
+    Failed(error: E)
+}
+
+function first_even(numbers: list[int]) -> Maybe[int] {
+    for n in numbers {
+        if n % 2 == 0 {
+            return Just(n)
+        }
+    }
+    return Nothing
+}
+
+function parse_volts(text: str) -> Result[float, str] {
+    if text.ends_with("V") {
+        return Ok(float(text.slice(0, len(text) - 1)))
+    }
+    return Failed(f"no unit in {text}")
+}
+
+for numbers in [[1, 3, 4], [5, 7]] {
+    match first_even(numbers) {
+        case Just(n) { print(f"found {n}") }
+        case Nothing { print("none of them") }
+    }
+}
+for text in ["3.3V", "12"] {
+    match parse_volts(text) {
+        case Ok(volts) { print(volts * 2.0) }
+        case Failed(error) { print("error:", error) }
+    }
+}
+\end{zeno}
+
+The rules are those of a generic class. \verb|Maybe[int]| is a type,
+a copy of the enum with \verb|T| standing for \verb|int|, and a
+compiled program has one enum for each copy. Its cases are written by
+their names alone, as the cases of any enum are, and their types are
+worked out where they are used. A case that carries a value says what
+\verb|T| is by what it carries: \verb|Just(3)| is a
+\verb|Maybe[int]|. A case that carries nothing says nothing, so
+\verb|Nothing| takes its type from the place it goes: the type of a
+variable, a parameter, a field or a list, what the function returns,
+or the other side of \verb|==|. Where nothing says, it is an error
+that shows what to write:
+
+\begin{zeno}[fails=yes]
+enum Maybe[T] {
+    Nothing
+    Just(value: T)
+}
+
+let missing = Nothing
+\end{zeno}
+
+\verb|Ok(3)| says what \verb|T| is but not \verb|E|, so where the
+result has no type of its own yet it is written
+\verb|let r: Result[int, str] = Ok(3)|. A \verb|match| must handle
+every case, as for any enum. A generic enum cannot give its cases
+numbers, since a case with a number carries nothing.
+
+\begin{why}
+\verb|T or none| already says ``a \verb|T| or nothing'', and stays the
+short way to say it. A generic enum is for the rest: a reason with the
+nothing, two kinds of answer, or an enum that holds itself, such as
+\verb|enum Chain[T] { End; Link(item: T, rest: Chain[T]) }|. It
+needed no new rule, only the rules of a generic class applied to an
+enum. Writing \verb|Nothing| alone and taking its type from where it
+goes is what lets a case be written as any other enum's case is.
+(Decisions 58.1 and 58.2.)
+\end{why}
+
+\section{A generic interface}
+
+An interface can have type parameters, and a class says which copy of
+it the class is:
+
+\begin{zeno}[file=sources.zeno, dir=interfaces]
+interface Source[T] {
+    function next(self) -> T or none
+}
+
+class Countdown is Source[int] {
+    left: int
+    function next(self) -> int or none {
+        if self.left == 0 {
+            return none
+        }
+        self.left -= 1
+        return self.left + 1
+    }
+}
+
+class Repeat[T] is Source[T] {
+    value: T
+    times: int
+    function next(self) -> T or none {
+        if self.times == 0 {
+            return none
+        }
+        self.times -= 1
+        return self.value
+    }
+}
+
+function drain(source: Source[int]) -> int {
+    var sum = 0
+    var item = source.next()
+    while item is not none {
+        sum += item
+        item = source.next()
+    }
+    return sum
+}
+
+print(drain(Countdown(4)), drain(Repeat(5, 3)))
+\end{zeno}
+
+\verb|Source[int]| is a copy of the interface, as \verb|Stack[int]| is
+a copy of a class, and every rule of an interface holds for it.
+\verb|Countdown| is a \verb|Source[int]|; \verb|Repeat[int]| is one
+too, and \verb|Repeat[str]| is a \verb|Source[str]|. The two copies
+are two interfaces, so a \verb|Source[str]| does not go where a
+\verb|Source[int]| is wanted. A copy can be a bound,
+\verb|[S is Source[str]]|, and an \verb|owned interface Holder[T]|
+has owned copies. A compiled program has one \verb|switch| for each
+copy it uses, over the classes that are that copy. (Decision 58.6.)
 
 \section{What a compiled program does}
 
@@ -202,10 +449,11 @@ generic by itself: a program asks for copies by writing \verb|[T]|.
 
 \section{What generics leave out}
 
-In version 0.1, these are refused, each with a message that says so:
-an enum with type parameters, a method with type parameters of its
-own, a generic function kept as a value or passed along, and raising
-an object of a generic class.
+These are refused, each with a message that says so: a method with
+type parameters of its own (the class can have them), a generic
+function or a case of a generic enum kept as a value or passed along,
+the types written at the call (there is no \verb|first[int](xs)|), and
+raising an object of a generic class.
 
 \begin{zeno}[fails=yes]
 function first[T](items: list[T]) -> T {
@@ -214,8 +462,10 @@ function first[T](items: list[T]) -> T {
 let pick = first
 \end{zeno}
 
-The commonest generic enum, "a \verb|T| or nothing", is already
-there: \verb|T or none|. (Decision 3.16e.)
+\verb|pick| would have to be every copy of \verb|first| at once. A
+function written where a value goes can stand for one copy:
+\verb|function(xs: list[int]) -> int { return first(xs) }|.
+(Decisions 3.16e and 58.1.)
 
 \begin{summary}
 \verb|function name[T](...)| and \verb|class Name[T]| leave a type
@@ -223,6 +473,11 @@ open. Type parameters start with a capital, and are worked out at each
 call from the arguments, from a function argument, or from where the
 result goes, never written at the call. The body is checked for every
 type it is used with, and a compiled program has a copy for each.
+\verb|[T is Ordered]| or \verb|[S is Shape]| says what a type must be,
+and is checked at the call. \verb|enum Maybe[T]| and
+\verb|interface Source[T]| leave a type open as a class does; a case
+that carries nothing takes its type from where it goes, and a class
+says which copy of an interface it is.
 \end{summary}
 
 \begin{tryit}
@@ -236,5 +491,13 @@ type it is used with, and a compiled program has a copy for each.
   \verb|items: list[T]| and \verb|test: function(T) -> bool|, and
   gives how many items pass the test.
 \item Give \verb|largest| a list of \verb|bool| and read the message.
+  Then take \verb|is Ordered| off its heading and read the message
+  again. Where does each one point?
+\item Write \verb|function or_else[T](m: Maybe[T], fallback: T) -> T|
+  and call it as \verb|or_else(Nothing, 5)|. What tells \verb|Nothing|
+  which \verb|Maybe| it is?
+\item Write a class \verb|Letters is Source[str]| that gives the
+  letters of a text one by one, and pass it to \verb|drain|. Read the
+  message, then write a \verb|drain_text| for it.
 \end{enumerate}
 \end{tryit}

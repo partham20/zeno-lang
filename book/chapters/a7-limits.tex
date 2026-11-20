@@ -43,11 +43,14 @@ The numbers are the decisions, for anyone who wants the argument.
 \begin{description}
 \item[Unions.] Only \verb|or none| can follow a type: \verb|int or str|
   is refused (1.13). An enum that carries data does the same work.
-\item[Generic interfaces and bounds.] An interface cannot take a type
-  parameter, so a generic function cannot ask that its \verb|T| has a
-  method (3.16d).
-\item[Generic enums.] An enum cannot take a type parameter, and a
-  generic function cannot be kept as a value (3.16e).
+\item[One bound for a type.] A type parameter asks for one interface,
+  \verb|[T is Ordered]| or \verb|[S is Shape]|, not two at once, and a
+  class cannot be \verb|Ordered| until it can say what \verb|<| means
+  for its objects (58.3).
+\item[A generic as a value.] A generic function, or a case of a
+  generic enum, cannot be kept as a value, a method cannot have type
+  parameters of its own, and the types cannot be written at a call
+  (3.16e, 58.1).
 \item[Several values in a \texttt{for}] (\verb|for q, r in pairs()|),
   and a default for one of several results (57.6).
 \end{description}
@@ -133,8 +136,7 @@ The numbers are the decisions, for anyone who wants the argument.
 \item[Functions of an interface] have no type parameters and cannot
   be private (10.5), and a default for one of their parameters is a
   plain value (58.20).
-\item[An interface with type parameters of its own,] and an interface
-  that is another interface (10.10, 58.23).
+\item[An interface that is another interface] (10.10, 58.23).
 \end{description}
 
 \section{The web}
