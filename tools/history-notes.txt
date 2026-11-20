@@ -598,3 +598,8 @@ e2c9d2c Several values received, swapped and raised past in a test of a compiled
 b57c0f8 Folders in the docs: docs/folders.md, decisions 59.20 to 59.23, and the notes of 0.8.0.
 510336b Several values: with no collector, values written out free what an earlier one made when a later one raises; the same name twice on the left, and `_` where it is a variable, are refused (decision 57).
 e2d317b The book: several values from one function, in the chapter on functions.
+f5d4e01 A parameter of an interface's function may have a default: a plain value (a number, text, `true`, `false`, `none`, a quantity, or a case that carries nothing) that each class writes the same, and a call through the interface may leave it out (decision 58.20).
+a038f09 A function that takes out what its object owns can stand for one of an interface: a call through the interface is held to the guards of taking out, found over the checker's rounds, so a call read before the class is held as one read after it (decision 58.21).
+ec5cd10 `owned interface`: each object that is one has one owner, with a collector too; only an `owned class` can be one, and an `owned class` can only be one (decision 58.22).
+0a50a71 What interfaces left out, in the decisions (58.20 to 58.23), docs/interfaces.md, what Zeno lacks, and the notes of 0.8.0.
+3c28ca2 A default, a function that takes out and an `owned interface`, each with two results, in every build: where 11.4 meets several values.
