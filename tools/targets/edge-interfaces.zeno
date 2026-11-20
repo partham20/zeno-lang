@@ -1,8 +1,10 @@
 # What interfaces left out until 0.8 (decisions 58.20 to 58.22).
 # Defaults on the functions of an interface, of every kind a default
 # there can be, and a call through the interface and on the object
-# that mean the same. Every build prints what `zeno run` prints, and a
-# build with no collector leaves nothing.
+# that mean the same. A function that takes out what its object owns,
+# standing for one of an interface, called through it by the owner,
+# and by a class through its own interface. Every build prints what
+# `zeno run` prints, and a build with no collector leaves nothing.
 
 enum Mode {
     Slow
@@ -74,3 +76,113 @@ fan.spin(label = "direct")
 fan.stop()
 let pump = Pump(4)
 print(pump.prime(), pump.prime(3), pump.name("x"))
+
+# Taking out, through an interface (58.21).
+class Task {
+    name: str
+    steps: list[int]
+}
+
+interface Pile {
+    function take_last(self) -> Task
+    function size(self) -> int
+}
+
+class Stack is Pile {
+    tasks: list[Task]
+
+    function take_last(self) -> Task {
+        return self.tasks.pop()
+    }
+
+    function size(self) -> int {
+        return len(self.tasks)
+    }
+}
+
+class Queue is Pile {
+    tasks: list[Task]
+
+    function take_last(self) -> Task {
+        return self.tasks.pop(0)
+    }
+
+    function size(self) -> int {
+        return len(self.tasks)
+    }
+}
+
+function drain(pile: take Pile) -> int {
+    var steps = 0
+    while pile.size() > 0 {
+        let task = pile.take_last()
+        steps += len(task.steps)
+        print(task.name)
+    }
+    return steps
+}
+
+function make(n: int) -> list[Task] {
+    var tasks: list[Task] = []
+    for i in range(n) {
+        tasks.append(Task(f"task {i}", [i, i * 2]))
+    }
+    return tasks
+}
+
+print(drain(Stack(make(3))), drain(Queue(make(2))))
+var piles: list[Pile] = [Stack(make(2)), Queue(make(2))]
+print(piles[1].take_last().name)
+print(piles[0].take_last().name)
+print(piles[0].size())
+var rounds = 0
+for round in range(1000) {
+    var pile: Pile = Stack(make(3))
+    if round % 2 == 0 {
+        pile = Queue(make(3))
+    }
+    rounds += len(pile.take_last().steps)
+}
+print(rounds)
+
+# A class that calls through its own interface.
+interface Tree {
+    function count(self) -> int
+    function strip(self) -> int
+}
+
+class Node is Tree {
+    kids: list[Tree]
+
+    function count(self) -> int {
+        var n = 1
+        for kid in self.kids {
+            n += kid.count()
+        }
+        return n
+    }
+
+    function strip(self) -> int {
+        var gone = 0
+        while len(self.kids) > 0 {
+            var kid = self.kids.pop()
+            gone += kid.strip() + 1
+        }
+        return gone
+    }
+}
+
+class Leaf is Tree {
+    function count(self) -> int {
+        return 1
+    }
+
+    function strip(self) -> int {
+        return 0
+    }
+}
+
+let tree = Node([Node([Leaf(), Leaf()]), Leaf(), Node([Node([Leaf()])])])
+print(tree.count())
+print(tree.strip())
+print(tree.count())

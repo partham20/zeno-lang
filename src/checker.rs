@@ -661,14 +661,21 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     let mut known: HashMap<SlotId, Key> = HashMap::new();
     let mut open: HashSet<SlotId> = HashSet::new();
     let mut origins: HashMap<SlotId, usize> = HashMap::new();
+    // The functions of interfaces that some class's function takes out
+    // for. A round can find more than the round before knew, so they are
+    // carried to the next round, as what is worked out is (58.21).
+    let mut taken: HashMap<(DeclId, String), String> = HashMap::new();
     let mut settled = false;
     for _ in 0..MAX_ROUNDS {
         let mut checker = Checker::new(strict, false, known.clone(), open.clone());
         checker.strict_files = strict_files.clone();
         checker.one_owner = one_owner;
         checker.firmware = rules.firmware;
+        checker.taken = taken.clone();
         checker.run(program);
         origins = std::mem::take(&mut checker.origins);
+        let grew = checker.taking.keys().any(|key| !taken.contains_key(key));
+        taken.extend(std::mem::take(&mut checker.taking));
 
         let mut next_known = HashMap::new();
         let mut next_open = open.clone(); // once open, always open
@@ -685,7 +692,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
         }
         next_known.retain(|id, _| !next_open.contains(id));
 
-        settled = next_known == known && next_open == open;
+        settled = next_known == known && next_open == open && !grew;
         known = next_known;
         open = next_open;
         if settled {
@@ -699,13 +706,24 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
         open.extend(known.drain().map(|(id, _)| id));
     }
 
-    let mut checker = Checker::new(strict, true, known, open);
-    checker.strict_files = strict_files;
-    checker.one_owner = one_owner;
-    checker.firmware = rules.firmware;
-    checker.types.one_owner = one_owner;
-    checker.known_origins = origins;
-    checker.run(program);
+    // What is reported comes from a round in which no function of an
+    // interface was found to take out that the round did not know of
+    // before it began. So a call read before the class that takes out is
+    // held to the same guards as one read after it.
+    let checker = loop {
+        let mut checker = Checker::new(strict, true, known.clone(), open.clone());
+        checker.strict_files = strict_files.clone();
+        checker.one_owner = one_owner;
+        checker.firmware = rules.firmware;
+        checker.types.one_owner = one_owner;
+        checker.known_origins = origins.clone();
+        checker.taken = taken.clone();
+        checker.run(program);
+        if checker.taking.keys().all(|key| taken.contains_key(key)) {
+            break checker;
+        }
+        taken.extend(std::mem::take(&mut checker.taking));
+    };
     let mut errors = checker.errors;
     // A number past the largest int, written where no u64 is wanted.
     for (span, n) in &checker.big_numbers {
@@ -2303,6 +2321,13 @@ struct Checker {
     /// The `d[key]` that look at a value a dict owns, for the message
     /// when one is kept (decision 56.12).
     dict_values: HashSet<usize>,
+    /// The functions of interfaces that the function of some class that
+    /// is the interface takes out for, with the name of such a class: what
+    /// the rounds before this one found. A call through the interface is
+    /// held to the guards of 5.15e when its function is here (58.21).
+    taken: HashMap<(DeclId, String), String>,
+    /// The same, as this round finds them. It only grows.
+    taking: HashMap<(DeclId, String), String>,
     /// The declarations of the named functions whose bodies are being
     /// checked, the innermost last. See `Spot`.
     within: Vec<usize>,
@@ -2472,6 +2497,8 @@ impl Checker {
             keeping: None,
             type_params: HashSet::new(),
             dict_values: HashSet::new(),
+            taken: HashMap::new(),
+            taking: HashMap::new(),
             within: Vec::new(),
         }
     }
@@ -4939,15 +4966,10 @@ impl Checker {
                         );
                     }
                 }
+                // A call through the interface is held to the guards of
+                // taking out from here on (58.21).
                 if got.takes_out {
-                    self.error(
-                        format!(
-                            "`{name}` of `{}` takes out or replaces something its object owns. A function that \
-                             stands for one of an interface cannot do that yet",
-                            class.name
-                        ),
-                        span,
-                    );
+                    self.taking.entry((interface.id.clone(), name.clone())).or_insert_with(|| class.name.clone());
                 }
             }
         }
@@ -4998,6 +5020,20 @@ impl Checker {
             };
             self.error(message, span);
         }
+    }
+
+    /// For a function of an interface that some class that is the
+    /// interface takes out for: that class, and the interface (58.21).
+    fn taken_through(&self, function: &FunctionInfo) -> Option<(String, String)> {
+        let Some(Ty::Instance(interface)) = function.self_type.clone().map(Ty::looked_at) else {
+            return None;
+        };
+        if !interface.interface {
+            return None;
+        }
+        let key = (interface.id.clone(), function.decl.name.clone());
+        let class = self.taken.get(&key).or_else(|| self.taking.get(&key))?;
+        Some((class.clone(), interface.name.clone()))
     }
 
     /// The plain value a default of an interface's function is, if it is
@@ -7041,9 +7077,22 @@ impl Checker {
                         // A method that takes out what its object owns:
                         // calling it is taking out, for whoever calls.
                         if let Ty::BoundMethod(function) = &method {
-                            if object.is_tied() && self.signature(function).takes_out {
-                                let does = format!("call `{name}`, which takes out or replaces something the object owns");
-                                taker = self.takes_out(receiver, looked, &does, env, span).map(|owner| (owner, self.owned.looking.len()));
+                            if object.is_tied() {
+                                let does = match self.taken_through(function) {
+                                    // Through an interface: some class that
+                                    // is it takes out (58.21).
+                                    Some((class, interface)) => Some(format!(
+                                        "call `{name}`, which takes out or replaces something the object owns \
+                                         (`{class}` is a `{interface}`, and its `{name}` does)"
+                                    )),
+                                    None if self.signature(function).takes_out => {
+                                        Some(format!("call `{name}`, which takes out or replaces something the object owns"))
+                                    }
+                                    None => None,
+                                };
+                                if let Some(does) = does {
+                                    taker = self.takes_out(receiver, looked, &does, env, span).map(|owner| (owner, self.owned.looking.len()));
+                                }
                             }
                         }
                         match method {
@@ -13847,6 +13896,80 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         // Numbers and text are copied, so any list of them can be sliced.
         one_owner_ok("function tail(xs: list[int]) -> list[int] {\n return xs.slice(1)\n}\nprint(tail([1, 2, 3]))");
+    }
+
+    #[test]
+    fn a_function_that_takes_out_can_stand_for_one_of_an_interface() {
+        // 0.7.0 refused `Stack` here. Now a call through a `Pile` is held
+        // to the guards of taking out, as a call on a `Stack` is (58.21).
+        let pile = "class Task {\n name: str\n}\ninterface Pile {\n function take_last(self) -> Task\n function size(self) -> int\n}\n";
+        let stack = "class Stack is Pile {\n tasks: list[Task]\n function take_last(self) -> Task {\n  return self.tasks.pop()\n }\n \
+                     function size(self) -> int {\n  return len(self.tasks)\n }\n}\n";
+        let only_the_owner = "only the owner can call `take_last`, which takes out or replaces something the object owns \
+                              (`Stack` is a `Pile`, and its `take_last` does): somebody else may have been lent it. \
+                              Here `pile` only looks at it";
+        let drain = "function drain(pile: take Pile) {\n while pile.size() > 0 {\n  print(pile.take_last().name)\n }\n}\n\
+                     drain(Stack([Task(\"a\"), Task(\"b\")]))\n";
+        one_owner_ok(&format!("{pile}{stack}{drain}"));
+        let look = "function look(pile: Pile) -> str {\n return pile.take_last().name\n}\n";
+        assert_eq!(one_owner_error(&format!("{pile}{stack}{look}")), only_the_owner);
+        // A call read before the class that takes out is held to the
+        // same guards as one read after it.
+        assert_eq!(one_owner_error(&format!("{pile}{look}{stack}")), only_the_owner);
+        // A function that only looks, through the same interface, is
+        // for anybody, as before.
+        one_owner_ok(&format!("{pile}{stack}function count(pile: Pile) -> int {{\n return pile.size()\n}}\n"));
+        // Not in a loop that walks the list the object is in, and not on
+        // a line that has already looked at the same object.
+        assert_eq!(
+            one_owner_error(&format!(
+                "{pile}function all(piles: take list[Pile]) {{\n for one in piles {{\n  print(piles[0].take_last().name)\n }}\n}}\n{stack}"
+            )),
+            "the `for` on line 9 is walking a list that `piles` owns, and is still looking at its items. Nothing can \
+             call `take_last`, which takes out or replaces something the object owns (`Stack` is a `Pile`, and its \
+             `take_last` does) until the loop is over"
+        );
+        assert_eq!(
+            one_owner_error(&format!(
+                "{pile}{stack}function twice(pile: take Pile) {{\n \
+                 print(pile.size(), pile.take_last().name)\n}}\n"
+            )),
+            "this line has already looked at `pile`, and the look might still be in use. Do the other thing on a line of its own first"
+        );
+        // An interface whose classes take nothing out is as it was.
+        let quiet = "class Quiet is Pile {\n function take_last(self) -> Task {\n  return Task(\"q\")\n }\n \
+                     function size(self) -> int {\n  return 0\n }\n}\n";
+        one_owner_ok(&format!("{pile}{quiet}{look}"));
+        // The class in a second file.
+        let loaded = crate::modules::testing::load(&format!(
+            "import piles\nfunction look(pile: piles.Pile) -> str {{\n return pile.take_last().name\n}}\n==> piles.zeno\n{pile}{stack}"
+        ));
+        let rules = super::Rules { strict: true, one_owner: true, firmware: true };
+        let found: Vec<String> = super::check_by(&loaded.program.unwrap(), rules).0.into_iter().map(|error| error.message).collect();
+        assert_eq!(found, vec![only_the_owner.replace("`Stack` is a `Pile`", "`piles.Stack` is a `piles.Pile`")]);
+        // A copy of a generic class, made after the call.
+        let boxed = "class Box[T] is Pile {\n tasks: list[Task]\n extra: T\n function take_last(self) -> Task {\n  return self.tasks.pop()\n }\n \
+                     function size(self) -> int {\n  return 0\n }\n}\nlet b: Pile = Box([Task(\"a\")], 1)\n";
+        assert_eq!(one_owner_error(&format!("{pile}{look}{boxed}")), only_the_owner.replace("`Stack`", "`Box[int]`"));
+        // A class that calls through its own interface: `count` takes
+        // nothing out, and a call of it on a loop's item is for anybody;
+        // `strip` does, and one on a loop's item is not.
+        let tree = |strip: &str| {
+            format!(
+                "interface Tree {{\n function count(self) -> int\n function strip(self)\n}}\n\
+                 class Node is Tree {{\n kids: list[Tree]\n function count(self) -> int {{\n  var n = 1\n  for kid in self.kids {{\n   \
+                 n += kid.count()\n  }}\n  return n\n }}\n function strip(self) {{\n{strip} }}\n}}\n\
+                 class Leaf is Tree {{\n function count(self) -> int {{\n  return 1\n }}\n function strip(self) {{\n }}\n}}\n\
+                 let t = Node([Node([Leaf()]), Leaf()])\nt.strip()\nprint(t.count())\n"
+            )
+        };
+        one_owner_ok(&tree("  while len(self.kids) > 0 {\n   var kid = self.kids.pop()\n   kid.strip()\n  }\n"));
+        one_owner_ok(&tree("  for kid in self.kids {\n   kid.strip()\n  }\n"));
+        assert_eq!(
+            one_owner_error(&tree("  for kid in self.kids {\n   kid.strip()\n  }\n  self.kids.clear()\n")),
+            "only the owner can call `strip`, which takes out or replaces something the object owns (`Node` is a \
+             `Tree`, and its `strip` does): somebody else may have been lent it. Here `kid` only looks at it"
+        );
     }
 
     /// The messages of a firmware build's check, which is strict.
