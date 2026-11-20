@@ -2837,3 +2837,24 @@ build runs.
 mend of 12.2 (second builder, section 24), and a green targets run.
 The wasm case of `files.list("")` was mended in fe23d35 while this
 was written.
+
+### 26. 2026-11-20: the crash of section 25 is mended
+
+Read: 6c93f7a. The small function that makes a named function a
+value set the places for several values for its own inner call and
+did not put back what was there, so the call around it found an
+empty list. It now keeps its own apart and restores the outer ones;
+the two other places in `emit_llvm.rs` that set them already did.
+
+Tried: the programs of section 25, and a wider one (a named function
+given at the top of the file and inside a function, one that gives
+several values given to one that gives several, a method value that
+gives several, one call inside another, a thousand rounds), through
+`zeno run`, the VM, C with and without a collector, and LLVM in three
+builds, each under valgrind: the same lines, no fault, 0 blocks left.
+The program that uses everything together now agrees in every LLVM
+build as it stands. `tools/same.py` against the tag is unchanged:
+691 of 7,185, none a program 0.7.0 built.
+
+**Accepted.** Left before the release: the mend of 12.2 (section 24)
+and a green targets run.
