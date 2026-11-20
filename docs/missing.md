@@ -51,7 +51,7 @@ release ([`release.md`](release.md)).
 | 10 | Several values from one function. **Done** ([`several-values.md`](several-values.md), chapter 57): `-> (int, str)`, `let q, r = f()`, `a, b = b, a`, in every engine, build and target. Left: swapping two items a list owns with no collector, several names in a `for`, a default for one of several results | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
 | 11 | Generic enums, generic interfaces, and bounds | large | A `Maybe[T]` and a `sort` that asks for an order |
 | 12 | Cleaning up when a block ends, and files read in pieces | medium | An open file, a lock and an interrupt mask all need "and put it back" |
-| 13 | Tools: tests of a compiled program and a message on `assert` (planned now); step through a `.zeno` file in gdb, completion and rename in the editor, a REPL (**put off**, 2026-11-19) | medium, in pieces | Each is small by itself |
+| 13 | Tools: tests of a compiled program (**done**, `zeno test --build`, [`testing.md`](testing.md), decision 60.2) and a message on `assert` (**done**, decision 60.1); step through a `.zeno` file in gdb, completion and rename in the editor, a REPL (**put off**, 2026-11-19) | medium, in pieces | Each is small by itself |
 | 14 | More than one thing at a time: tasks, threads, `async` (**put off**, 2026-11-19; designed in the plan) | very large | Last, because it touches memory, errors and every engine |
 
 Items 1 to 8 are built, and went out in 0.7.0. How items 9 to 14 are

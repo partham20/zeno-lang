@@ -40,6 +40,7 @@ use crate::ast::*;
 use crate::checker::{spot, FunctionKind, Kind, Pointee, Types};
 use crate::error::Error;
 use crate::ints::{self, Width};
+use crate::test_build::TestBuild;
 use crate::token::Span;
 use crate::units;
 
@@ -355,6 +356,18 @@ pub struct Options {
 
 /// `emit`, with the options of `Options`.
 pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, options: Options) -> Result<String, Error> {
+    emit_all(program, types, file, build, options, None)
+}
+
+/// `emit_with`, for `zeno test --build`: the program, with each of its
+/// tests run after it and reported as `zeno test` reports it (decision
+/// 60.2). The tests are functions of the program by now (see
+/// `test_build::with_tests`).
+pub fn emit_tests(program: &Program, types: &Types, file: &str, build: Build, options: Options, tests: &TestBuild) -> Result<String, Error> {
+    emit_all(program, types, file, build, options, Some(tests))
+}
+
+fn emit_all(program: &Program, types: &Types, file: &str, build: Build, options: Options, tests: Option<&TestBuild>) -> Result<String, Error> {
     let firmware = build != Build::Ordinary;
     let collector = build != Build::NoCollector;
     let mut emitter = Emitter {
@@ -422,6 +435,7 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
         callee: None,
         outs: None,
         top_functions: HashMap::new(),
+        tests: tests.cloned(),
     };
 
     // The names of the types first of all: the C of one class may have to
@@ -491,6 +505,10 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     emitter.has_try = has_try(&program.statements);
     for statement in &program.statements {
         emitter.stmt(statement)?;
+    }
+    // The tests run after the program, and see what it made.
+    if let Some(tests) = tests {
+        emitter.run_tests(tests)?;
     }
     // The end of the file is the end of the outermost block.
     emitter.free_owned(0);
@@ -604,6 +622,9 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     if options.fast {
         c.insert_str(0, "#define ZENO_UNCHECKED 1\n");
     }
+    if let Some(tests) = tests {
+        c += &tests.runtime(collector);
+    }
     for section in [&emitter.typedefs, &emitter.structs, &emitter.globals, &emitter.prototypes, &emitter.definitions] {
         if !section.is_empty() {
             c.push('\n');
@@ -653,6 +674,10 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     if emitter.arguments {
         c += "    zeno_program_start(argc, argv);\n";
     }
+    // `zeno test` names the file before it runs it.
+    if tests.is_some() {
+        c += &format!("    zeno_test_out({});\n", c_string(&format!("{file}\n")));
+    }
     if collector {
         c += "#ifndef ZENO_PLAIN_C\n";
         c += "    zeno_program();\n";
@@ -663,7 +688,10 @@ pub fn emit_with(program: &Program, types: &Types, file: &str, build: Build, opt
     } else {
         c += "    zeno_program();\n";
     }
-    c += "    return 0;\n}\n";
+    c += match tests {
+        Some(_) => "    return zeno_tests_end();\n}\n",
+        None => "    return 0;\n}\n",
+    };
     Ok(c)
 }
 
@@ -1255,7 +1283,8 @@ pub fn is_written(expr: &Expr) -> bool {
 /// Is there a `try` anywhere in these statements?
 pub fn has_try(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match &statement.kind {
-        StmtKind::Try { .. } => true,
+        // `assert raises` is a `try`, in a program built for its tests.
+        StmtKind::Try { .. } | StmtKind::AssertRaises { .. } => true,
         StmtKind::If { then_block, else_block, .. } => {
             has_try(then_block) || else_block.as_deref().is_some_and(has_try)
         }
@@ -1455,6 +1484,9 @@ struct Emitter<'a> {
     outs: Option<Vec<String>>,
     /// The functions of the top of the file, as a default reads them.
     top_functions: HashMap<String, FunctionEntry>,
+    /// Built by `zeno test --build`: the tests to run after the program,
+    /// and an `assert` is compiled (decision 60.2).
+    tests: Option<TestBuild>,
 
     // For a build with no collector (`zeno build --no-collector`).
     /// False in a build with no collector.
@@ -3395,6 +3427,12 @@ impl Emitter<'_> {
             // The checker has seen to what is written inside. In C it is
             // a block like any other: C is unsafe all the way through.
             // A build leaves the tests of a program out (decision 10.20).
+            // Built for its tests, each test is a function by now, and
+            // its asserts are compiled (decision 60.2).
+            StmtKind::Assert(condition, message) if self.tests.is_some() => {
+                self.test_assert(condition, message.as_ref(), span)?
+            }
+            StmtKind::AssertRaises { error, body } if self.tests.is_some() => self.test_assert_raises(error, body, span)?,
             StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => {}
             StmtKind::Unsafe(body) => {
                 self.line("{");
@@ -3757,6 +3795,245 @@ impl Emitter<'_> {
         }
         self.line("}");
         Ok(())
+    }
+
+    // ------------------------------------------------- Tests (decision 60.2)
+    //
+    // Only in a program built by `zeno test --build`. Each test is a
+    // function by now, that may raise any error (`test_build::with_tests`).
+
+    /// After the program's own statements: each test in turn, with what
+    /// it raises caught and reported, and a line for each as it ends.
+    fn run_tests(&mut self, tests: &TestBuild) -> Result<(), Error> {
+        self.line("zeno_tests_begin();");
+        for (function, name) in &tests.tests {
+            let c_name = self.functions[function].c_name.clone();
+            self.line(format!("zeno_test_begin({});", c_string(name)));
+            if self.firmware {
+                self.line(format!("if (!{c_name}()) zeno_test_uncaught();"));
+            } else {
+                let place = self.new_temp();
+                self.line("{");
+                self.indent += 1;
+                self.line(format!("zeno_try {place};"));
+                self.line(format!("{place}.outer = zeno_trying;"));
+                self.line(format!("zeno_trying = &{place};"));
+                self.line(format!("if (zeno_setjmp({place}.place) == 0) {{"));
+                self.line(format!("    {c_name}();"));
+                self.line(format!("    zeno_trying = {place}.outer;"));
+                self.line("} else {");
+                self.line("    zeno_test_uncaught();");
+                self.line("}");
+                self.indent -= 1;
+                self.line("}");
+            }
+            self.line("zeno_test_end();");
+        }
+        Ok(())
+    }
+
+    /// `assert`, in a test. The condition is worked out once. If it is
+    /// false, the runtime is given the report: the text after the comma,
+    /// worked out only now, and for a comparison what was on each side.
+    /// Then the test is left as `return` leaves it: through every `try`,
+    /// which does not catch it, and freeing what the test owns.
+    fn test_assert(&mut self, condition: &Expr, message: Option<&Expr>, span: Span) -> Result<(), Error> {
+        let failed = self.new_temp();
+        self.line(format!("bool {failed} = false;"));
+        let begin = self.text_begin();
+        let own = self.own_begin();
+        let at = self.at(condition.span);
+        match &condition.kind {
+            ExprKind::Binary { op, left, right }
+                if matches!(
+                    op,
+                    BinaryOp::Eq
+                        | BinaryOp::NotEq
+                        | BinaryOp::Lt
+                        | BinaryOp::LtEq
+                        | BinaryOp::Gt
+                        | BinaryOp::GtEq
+                        | BinaryOp::Is
+                        | BinaryOp::IsNot
+                        | BinaryOp::In
+                        | BinaryOp::NotIn
+                ) =>
+            {
+                let (left, right, holds) = if matches!(op, BinaryOp::Is | BinaryOp::IsNot) {
+                    // `x is none`: the right is `none`, as written.
+                    let left = self.expr(left)?;
+                    let left = self.twice(left, span)?;
+                    let right = self.expr(right)?;
+                    let is = *op == BinaryOp::Is;
+                    let holds = match &left.kind {
+                        Kind::Optional(inner) if is_pointer(inner) => {
+                            format!("({} {} NULL)", left.code, if is { "==" } else { "!=" })
+                        }
+                        Kind::Optional(_) if is => format!("(!{}.present)", left.code),
+                        Kind::Optional(_) => format!("({}.present)", left.code),
+                        other => ((*other == Kind::None) == is).to_string(),
+                    };
+                    (left, right, holds)
+                } else {
+                    let mut vals = self.sequence(&[left, right])?;
+                    let right = vals.pop().expect("two values");
+                    let left = vals.pop().expect("two values");
+                    let left = self.twice(left, span)?;
+                    let right = self.twice(right, span)?;
+                    let holds = match op {
+                        BinaryOp::In | BinaryOp::NotIn => self.contains(*op, left.clone(), right.clone(), span)?.code,
+                        _ => self.compare(*op, &left, &right, span)?,
+                    };
+                    (left, right, holds)
+                };
+                self.line(format!("if (!({})) {{", bare(&holds)));
+                self.indent += 1;
+                let text = self.assert_text(message)?;
+                let (left, right) = (self.shown(&left, span)?, self.shown(&right, span)?);
+                self.line(format!("zeno_test_false({text}, {}, {left}, {right}, {at});", c_string(op.text())));
+            }
+            _ => {
+                let holds = self.expr(condition)?;
+                self.line(format!("if (!({})) {{", bare(&holds.code)));
+                self.indent += 1;
+                let text = self.assert_text(message)?;
+                self.line(format!("zeno_test_false({text}, NULL, NULL, NULL, {at});"));
+            }
+        }
+        self.line(format!("{failed} = true;"));
+        self.indent -= 1;
+        self.line("}");
+        let release = self.text_end(begin);
+        self.own_end(own, true);
+        if let Some(release) = release {
+            self.line(release);
+        }
+        self.leave_test(&failed, span)
+    }
+
+    /// A value that a failed `assert` shows as well as compares: in a
+    /// variable of its own, so that it is worked out once.
+    fn twice(&mut self, val: Val, span: Span) -> Result<Val, Error> {
+        let named = val.code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if named || c_type(&val.kind, span).is_err() {
+            return Ok(val);
+        }
+        self.temp(val, span)
+    }
+
+    /// One side of a comparison, as a failed `assert` shows it: as `print`
+    /// shows it inside a list, so that text has its quotes.
+    fn shown(&mut self, val: &Val, span: Span) -> Result<String, Error> {
+        match val.kind {
+            Kind::None => Ok(c_string("none")),
+            _ => self.repr(val, span),
+        }
+    }
+
+    /// The text after the comma of an `assert`, as C, or `NULL`.
+    fn assert_text(&mut self, message: Option<&Expr>) -> Result<String, Error> {
+        match message {
+            Some(message) => Ok(self.expr(message)?.code),
+            None => Ok("NULL".to_string()),
+        }
+    }
+
+    /// After a failed `assert`: leave the test as `return` would.
+    fn leave_test(&mut self, failed: &str, span: Span) -> Result<(), Error> {
+        self.line(format!("if ({failed}) {{"));
+        self.indent += 1;
+        self.stmt(&Stmt { kind: StmtKind::Return(None), span })?;
+        self.indent -= 1;
+        self.line("}");
+        Ok(())
+    }
+
+    /// `assert raises Kind { ... }`, in a test: a `try` whose body must
+    /// raise that kind. Raising nothing, or another kind, is reported as
+    /// `zeno test` reports it, and leaves the test.
+    fn test_assert_raises(&mut self, kind: &str, body: &[Stmt], span: Span) -> Result<(), Error> {
+        // `except Error` takes every kind.
+        let wanted = match kind {
+            "Error" => None,
+            class if self.classes.contains_key(class) => Some(class),
+            kind if ERROR_KINDS.contains(&kind) => Some(kind),
+            other => return Err(cannot(format!("`assert raises {other}`"), span)),
+        };
+        let (failed, at, shown) = (self.new_temp(), self.at(span), c_string(kind));
+        if !self.firmware {
+            let place = self.new_temp();
+            self.line(format!("volatile bool {failed} = false;"));
+            self.line(format!("zeno_try {place};"));
+            self.line(format!("{place}.outer = zeno_trying;"));
+            self.line(format!("zeno_trying = &{place};"));
+            self.line(format!("if (zeno_setjmp({place}.place) == 0) {{"));
+            self.tries.push(place.clone());
+            self.try_scopes.push(self.scopes.len());
+            let result = self.block(body);
+            self.try_scopes.pop();
+            self.tries.pop();
+            result?;
+            self.indent += 1;
+            self.line(format!("zeno_trying = {place}.outer;"));
+            self.line(format!("zeno_test_raised_nothing({shown}, {at});"));
+            self.line(format!("{failed} = true;"));
+            self.indent -= 1;
+            if let Some(wanted) = wanted {
+                self.line(format!("}} else if (!zeno_caught({})) {{", c_string(wanted)));
+                self.line(format!("    zeno_test_raised_other({shown}, zeno_raised, {at});"));
+                self.line(format!("    {failed} = true;"));
+            }
+            self.line("}");
+            return self.leave_test(&failed, span);
+        }
+
+        // A firmware build: the error travels as a value, and a failure in
+        // the body comes forward to the label (see `try_with_values`).
+        self.labels += 1;
+        let (label, caught) = (format!("zeno_except_{}", self.labels), format!("zeno_caught_{}", self.labels));
+        self.line(format!("bool {failed} = false;"));
+        self.tries.push(label.clone());
+        self.try_scopes.push(self.scopes.len());
+        self.arriving.push(BTreeSet::new());
+        let text_top = (!self.collector).then(|| {
+            self.marks += 1;
+            format!("m{}", self.marks)
+        });
+        if let Some(mark) = &text_top {
+            self.line(format!("size_t {mark} = zeno_text_top;"));
+        }
+        self.line("{");
+        let result = self.block(body);
+        self.line("}");
+        self.try_scopes.pop();
+        self.tries.pop();
+        self.arriving.pop();
+        result?;
+        self.jumped.insert(label.clone());
+        self.line(format!("zeno_test_raised_nothing({shown}, {at});"));
+        self.line(format!("{failed} = true;"));
+        self.line(format!("{label}: ;"));
+        if let Some(mark) = &text_top {
+            self.line(format!("zeno_text_top = {mark};"));
+        }
+        self.line("if (zeno_raised != NULL) {");
+        self.indent += 1;
+        self.line(format!("zeno_error *{caught} = zeno_raised;"));
+        self.line("zeno_raised = NULL;");
+        if let Some(wanted) = wanted {
+            self.line(format!("if (!zeno_is({caught}, {})) {{", c_string(wanted)));
+            self.line(format!("    zeno_test_raised_other({shown}, {caught}, {at});"));
+            self.line(format!("    {failed} = true;"));
+            self.line("}");
+        }
+        if !self.collector {
+            self.line(format!("zeno_error_drop({caught});"));
+        } else {
+            self.line(format!("(void){caught};"));
+        }
+        self.indent -= 1;
+        self.line("}");
+        self.leave_test(&failed, span)
     }
 
     // ------------------------------------------- Errors as values (firmware)
@@ -8515,6 +8792,7 @@ fn changed_in_try(statement: &Stmt, inside: bool, names: &mut HashSet<String>) {
             each(body, true);
             handlers.iter().for_each(|handler| each(&handler.body, inside));
         }
+        StmtKind::AssertRaises { body, .. } => each(body, true),
         _ => {}
     }
 }

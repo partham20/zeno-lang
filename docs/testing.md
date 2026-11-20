@@ -155,7 +155,60 @@ test "double" {
 ```
 
 With `--no-collector` the program itself could not share that list.
-The test may, because it never runs on the board.
+The test may, because `zeno test` never runs it on the board. To hold
+the tests to the build, run them in it: that is the next section.
+
+## Tests of a compiled program: `zeno test --build`
+
+```sh
+zeno test --build ring.zeno                       # in the program C makes of it
+zeno test --build --firmware --no-collector ring.zeno
+zeno test --build --llvm examples/ring
+zeno test --build --board boards/qemu-cortex-m3 ring.zeno
+```
+
+`--build` compiles each file with its tests in it, as `zeno build`
+would compile it, runs the program, and prints what `zeno test`
+prints, line for line: the same names, the same reports with the line
+and the caret, and the same totals (decision 60.2). It takes
+`--firmware`, `--no-collector`, `--llvm`, `--release`, `--pool`,
+`--text-room`, `--memory` and `--board`. So the test of `double` above
+is refused with `--no-collector`, as the program would be, and a test
+that passes in `zeno test` and fails here says where the interpreter
+and the build part.
+
+- **Each test becomes a function** at the end of its file, with no
+  parameters, that may raise any error. It sees what the file
+  declares, and is checked with the rules of the build.
+- **A failed `assert` leaves its test as `return` would**, freeing
+  what the test owns. No `except` catches it, as in `zeno test`.
+- **The reports wait until the last test**, in a room of 8 KB that
+  only a test build has. One that does not fit is left out whole, and
+  a line says how many were and that `zeno test` shows them all.
+- **On a board** the program is written as `ring-tests.c` and built
+  as `ring-tests.elf` beside the file, and the command says how to run
+  it. The board prints the lines and the totals itself, and the
+  program ends with 1 if a test failed.
+
+One thing it refuses that `zeno test` runs: an `assert` in a function
+written inside a test.
+
+```
+error: under `zeno test --build` an `assert` stands in the test itself, and not in a function written inside it. Let the function give back what it found, and `assert` that in the test
+```
+
+A failed `assert` leaves the test as `return` would, and from inside
+another function that `return` would leave the wrong one. A firmware
+build has no other way out of a function that raises nothing.
+
+Where it differs from `zeno test`, on purpose:
+
+| | `zeno test` | `zeno test --build` |
+|---|---|---|
+| A fault of a firmware build: an index out of range, an overflow | the test fails, and the next runs | the program stops, as any firmware program does; the command names the test it was in and how many were not run |
+| `program.exit` in a test | the test fails | the program ends; the command says so as for a fault |
+| An error before the tests | the snippet of the line | the compiled program's own message for an error nothing caught |
+| A `try` that nothing in it can raise into, in a firmware build | runs | refused, as in any firmware program |
 
 ## How it is built
 
@@ -238,6 +291,13 @@ StmtKind::Test { .. } => Ok(()),
 the LLVM backend each have one line that says a test is nothing, for
 the programs that reach them another way.
 
+Under `zeno test --build`, `with_tests` in `src/test_build.rs` makes
+each test of the file a function instead, and the C and LLVM
+backends compile `assert` and `assert raises` in such a function: the
+condition, and if it is false a report handed to the runtime of the
+test build and a `return`. `src/test_build.rs` also holds that
+runtime: the room for the reports, and the marks the command counts.
+
 ### The command
 
 `test` in `src/main.rs` parses the file alone first, to see whether
@@ -252,7 +312,8 @@ with the imports it has in the real program.
 - `assert` in a function outside a test.
 - Lines to run before and after each test.
 - Running tests side by side.
-- Running tests in a compiled program or on a board.
+- An `assert` in a function written in a test, under `--build`.
+- Reading the totals back from a board: the board prints them.
 
 ## Things to try
 
@@ -298,3 +359,18 @@ with the imports it has in the real program.
     `xs[99]` inside the text of an `assert` that passes. Why does
     nothing go wrong, and what happens when it fails? Find the lines
     in `Interpreter::assert` that decide it.
+
+11. Run `zeno test --build examples/ring`, then with `--firmware
+    --no-collector`. Is anything printed differently? Then add the
+    test of `double` from this page to a file and run both again.
+    Which refuses it, and why does `zeno test` not?
+
+12. Write a test with `xs[9]` in it, for a list of two, and run it
+    with `zeno test` and with `zeno test --build --firmware`. What
+    does each print, and what does the second say about the tests
+    after it? Find where `test_built` in `src/main.rs` reads the
+    marks.
+
+13. Write sixty tests that each fail, with a few lines of a script.
+    How many reports does `zeno test --build` print, and what does
+    the last line say? Find `ZENO_TEST_ROOM` in `src/test_build.rs`.

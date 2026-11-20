@@ -515,6 +515,15 @@ pub enum Node<'a> {
     Expr(&'a mut Expr),
 }
 
+/// Show `visit` each block, statement and expression of these
+/// statements, those of the functions written inside them included. The
+/// statements are given functions of their own on the way (`fresh_block`),
+/// so this is for statements that are a copy, or that are about to be
+/// changed anyway.
+pub fn visit(block: &mut Block, visit: &mut dyn FnMut(Node)) {
+    fresh_block(block, visit)
+}
+
 /// Give every function written inside these statements a copy of its own,
 /// and show `visit` each block, statement and expression on the way.
 fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {

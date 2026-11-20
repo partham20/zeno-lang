@@ -55,6 +55,7 @@ mod page;
 mod parser;
 mod printer;
 mod registry;
+mod test_build;
 mod token;
 mod units;
 mod value;
@@ -143,6 +144,10 @@ fn usage() {
     println!("                           The program does the same, faster");
     println!("  --only <text>            with test: run only the tests that have this");
     println!("                           text in their name");
+    println!("  --build                  with test: compile the file with its tests, as");
+    println!("                           build compiles it, and run the tests in the");
+    println!("                           program. Takes --firmware, --no-collector,");
+    println!("                           --llvm, --release and --board (docs/testing.md)");
     println!("  --check                  with format: change nothing, and say which");
     println!("                           files are not laid out that way");
     println!("  --package                with new: make a package, a folder of modules");
@@ -438,6 +443,257 @@ fn test(path: &str, strict: bool, asked: bool, only: Option<&str>) -> Option<Tal
         }
     }
     Some(Tally { tests: tested.len(), failed: tested.iter().filter(|test| test.failure.is_some()).count() })
+}
+
+/// How `zeno test --build` builds each file: what the command line said
+/// beside `--build` (decision 60.2).
+struct TestsBuilt {
+    llvm: bool,
+    board: Option<String>,
+    memory_report: bool,
+    defines: Vec<String>,
+}
+
+/// `zeno test --build <file>`: compile the file as `zeno build` would,
+/// with its tests in it, run the program, and count its tests by the
+/// marks it writes as each one ends (decision 60.2). What the program
+/// prints is what `zeno test` prints, and goes straight to the terminal;
+/// nothing it prints is read. `None` if the tests could not be run.
+fn test_built(path: &str, asked: bool, only: Option<&str>, how: &TestsBuilt, built: (emit_c::Build, emit_c::Options)) -> Option<Tally> {
+    let (kind, options) = built;
+    let source = read(path)?;
+    let tokens = lex(path, &source)?;
+    let has_tests = match parser::parse(tokens) {
+        Ok(program) => program.statements.iter().any(|statement| matches!(statement.kind, ast::StmtKind::Test { .. })),
+        Err(error) => {
+            report(&alone(path, &source), &error);
+            return None;
+        }
+    };
+    if !has_tests {
+        if asked {
+            value::print_line(&format!("{path} has no tests. A test is written `test \"what it checks\" {{ ... }}`"));
+        }
+        return Some(Tally { tests: 0, failed: 0 });
+    }
+    let loaded = modules::load_in(&program_folder(path), path, source, &|path| fs::read_to_string(path).ok());
+    let files = loaded.files;
+    let program = match loaded.program {
+        Ok(program) => program,
+        Err(errors) => {
+            errors.iter().for_each(|error| report(&files, error));
+            return None;
+        }
+    };
+    let (program, tests) = match test_build::with_tests(program, only) {
+        Ok(made) => made,
+        Err(error) => {
+            report(&files, &error);
+            eprintln!("1 error found. No test of {path} was run.");
+            return None;
+        }
+    };
+    // A test is held to the rules of the build, as the program is.
+    let (program, errors, types) = checker::checked(program, kind.rules());
+    if !errors.is_empty() {
+        errors.iter().for_each(|error| report(&files, error));
+        let s = if errors.len() == 1 { "" } else { "s" };
+        eprintln!("{} error{s} found. No test of {path} was run.", errors.len());
+        return None;
+    }
+    let board = match &how.board {
+        Some(folder) => Some((folder.as_str(), read_board(folder)?)),
+        None => None,
+    };
+    let built = test_build::TestBuild {
+        tests: tests.clone(),
+        sources: files.iter().map(|file| file.source.clone()).collect(),
+        board: board.is_some(),
+    };
+    let options = emit_c::Options {
+        board_prints: board.is_some(),
+        board_header: board.as_ref().is_some_and(|(_, board)| board.header.is_some()),
+        ..options
+    };
+    let name = format!("{}-tests", Path::new(path).file_stem().and_then(|stem| stem.to_str()).unwrap_or("program"));
+    let home = Path::new(path).parent().map(Path::to_path_buf).filter(|home| !home.as_os_str().is_empty());
+    let declared = match bridge_c::build_args(&types.c_libraries, &home.unwrap_or_else(|| PathBuf::from("."))) {
+        Ok(args) => args,
+        Err(why) => {
+            eprintln!("error: {why}");
+            return None;
+        }
+    };
+
+    // For a board the program is written beside the others a build for
+    // a board writes, and run there, by whoever has the board (51.5).
+    if let Some((folder, board)) = &board {
+        let c = match emit_c::emit_tests(&program, &types, path, kind, options, &built) {
+            Ok(c) => c,
+            Err(error) => {
+                report(&files, &error);
+                eprintln!("1 error found. No test of {path} was run.");
+                return None;
+            }
+        };
+        let c_file = format!("{name}.c");
+        if let Err(err) = fs::write(&c_file, c) {
+            eprintln!("zeno: cannot write `{c_file}`: {err}");
+            return None;
+        }
+        let mut before: Vec<String> = optimise(options).iter().map(|flag| flag.to_string()).collect();
+        if how.memory_report {
+            before.push("-DZENO_MEMORY_REPORT".to_string());
+        }
+        before.extend(how.defines.iter().cloned());
+        let libraries = declared.iter().filter(|word| !word.starts_with("-Wl,-rpath,")).cloned();
+        let after: Vec<String> = libraries.chain(emit_c::LIBRARIES.iter().map(|library| library.to_string())).collect();
+        build_for_board(folder, board, &name, &c_file, &before, &after)?;
+        return Some(Tally { tests: 0, failed: 0 });
+    }
+
+    // On this computer the program is built in a folder of its own, run,
+    // and thrown away with the folder.
+    let folder = env::temp_dir().join(format!("zeno-test-build-{}-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&folder);
+    if let Err(err) = fs::create_dir_all(&folder) {
+        eprintln!("zeno: cannot make the folder `{}` to build the tests in: {err}", folder.display());
+        return None;
+    }
+    let ran = build_and_run_tests(path, &folder, &name, &files, &program, &types, kind, options, &built, how, &declared);
+    let _ = fs::remove_dir_all(&folder);
+    let marks = ran?;
+
+    // `s` as the tests begin, `p` or `f` as each ends, `e` when all are over.
+    let Some(marks) = marks.strip_prefix('s') else {
+        eprintln!("{path} stopped with this error before its tests. None of them was run.");
+        return None;
+    };
+    let ended = marks.ends_with('e');
+    let marks = marks.trim_end_matches('e');
+    let (run, failed) = (marks.len(), marks.chars().filter(|mark| *mark == 'f').count());
+    if ended {
+        return Some(Tally { tests: run, failed });
+    }
+    // Stopped half way: the test it was in failed, and those after it
+    // were not run.
+    match tests.get(run) {
+        Some((_, stopped_in)) => {
+            let after = tests.len() - run - 1;
+            match after {
+                0 => eprintln!("{path} stopped in the test \"{stopped_in}\", its last."),
+                _ => eprintln!(
+                    "{path} stopped in the test \"{stopped_in}\". {} after it {} not run.",
+                    error::counted(after, "test"),
+                    if after == 1 { "was" } else { "were" }
+                ),
+            }
+            Some(Tally { tests: run + 1, failed: failed + 1 })
+        }
+        None => {
+            eprintln!("{path} stopped after its last test.");
+            Some(Tally { tests: run, failed: failed + 1 })
+        }
+    }
+}
+
+/// The C (or the IR) of a test build, compiled in `folder` and run there
+/// with a file of marks to write. Gives what the program wrote in it.
+#[allow(clippy::too_many_arguments)]
+fn build_and_run_tests(
+    path: &str,
+    folder: &Path,
+    name: &str,
+    files: &[modules::File],
+    program: &ast::Program,
+    types: &checker::Types,
+    kind: emit_c::Build,
+    options: emit_c::Options,
+    built: &test_build::TestBuild,
+    how: &TestsBuilt,
+    declared: &[String],
+) -> Option<String> {
+    let program_file = folder.join(emit_c::program_file(name));
+    let mut flags: Vec<String> = optimise(options).iter().map(|flag| flag.to_string()).collect();
+    if how.memory_report {
+        flags.push("-DZENO_MEMORY_REPORT".to_string());
+    }
+    flags.extend(how.defines.iter().cloned());
+    flags.extend(["-o".to_string(), program_file.to_string_lossy().into_owned()]);
+    let compilers = match how.llvm {
+        true => {
+            let ir = match emit_llvm::emit_tests(program, types, path, kind, how.memory_report, options, built) {
+                Ok(ir) => ir,
+                Err(error) => {
+                    report(files, &error);
+                    eprintln!("1 error found. No test of {path} was run.");
+                    return None;
+                }
+            };
+            let runtime = emit_llvm::runtime_for(kind, options.grows);
+            let mut runtime = emit_c::with_board_parts(&runtime, &emit_c::board_parts_in_ir(&ir));
+            runtime += &emit_llvm::tests_runtime(built, kind);
+            let (ir_file, runtime_file) = (folder.join(format!("{name}.ll")), folder.join(format!("{name}_runtime.c")));
+            for (file, text) in [(&ir_file, ir), (&runtime_file, runtime)] {
+                if let Err(err) = fs::write(file, text) {
+                    eprintln!("zeno: cannot write `{}`: {err}", file.display());
+                    return None;
+                }
+            }
+            flags.push("-Wno-override-module".to_string());
+            flags.push(ir_file.to_string_lossy().into_owned());
+            flags.push(runtime_file.to_string_lossy().into_owned());
+            vec![env::var("CLANG").unwrap_or_else(|_| "clang".to_string())]
+        }
+        false => {
+            let c = match emit_c::emit_tests(program, types, path, kind, options, built) {
+                Ok(c) => c,
+                Err(error) => {
+                    report(files, &error);
+                    eprintln!("1 error found. No test of {path} was run.");
+                    return None;
+                }
+            };
+            let c_file = folder.join(format!("{name}.c"));
+            if let Err(err) = fs::write(&c_file, c) {
+                eprintln!("zeno: cannot write `{}`: {err}", c_file.display());
+                return None;
+            }
+            flags.push(c_file.to_string_lossy().into_owned());
+            flags.extend(declared.iter().cloned());
+            match env::var("CC") {
+                Ok(named) => vec![named],
+                Err(_) => vec!["cc".to_string(), "gcc".to_string(), "clang".to_string()],
+            }
+        }
+    };
+    flags.extend(emit_c::LIBRARIES.iter().map(|library| library.to_string()));
+    let mut compiled = false;
+    for compiler in &compilers {
+        match Command::new(compiler).args(&flags).status() {
+            Ok(status) if status.success() => {
+                compiled = true;
+                break;
+            }
+            Ok(_) => {
+                eprintln!("zeno: `{compiler}` could not compile the tests of `{path}`. What it said is above");
+                return None;
+            }
+            Err(_) => {}
+        }
+    }
+    if !compiled {
+        eprintln!("zeno: no compiler found (tried {}), so the tests of `{path}` were not built", modules::listed(&compilers));
+        return None;
+    }
+    let marks = folder.join("marks");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    if let Err(err) = Command::new(&program_file).env("ZENO_TEST_MARKS", &marks).status() {
+        eprintln!("zeno: cannot run the tests of `{path}`: {err}");
+        return None;
+    }
+    Some(fs::read_to_string(&marks).unwrap_or_default())
 }
 
 /// `zeno check <file>`: run the type checker, printing every error it finds.
@@ -1422,8 +1678,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // `zeno test --build` builds, and takes what a build takes.
+    let builds = |args: &[String]| match args.first().map(String::as_str) {
+        Some("build") => true,
+        Some("test") => args.iter().any(|arg| arg == "--build"),
+        _ => false,
+    };
     if let Some(option) = sizes.named() {
-        if args.first().is_some_and(|command| command != "build") {
+        if !builds(&args) {
             eprintln!("zeno: `{option}` is an option of `zeno build`: it sets a size of the memory of a program built");
             eprintln!("      with no collector, and no other command builds one");
             return ExitCode::FAILURE;
@@ -1439,7 +1701,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if let Some(folder) = &board {
-        if args.first().is_some_and(|command| command != "build") {
+        if !builds(&args) {
             eprintln!("zeno: `--board` is an option of `zeno build`: it says which board a program is built for");
             return ExitCode::FAILURE;
         }
@@ -1553,6 +1815,22 @@ fn main() -> ExitCode {
                 only = Some(named.remove(at + 1));
                 named.remove(at);
             }
+            // `zeno test --build`: each file is compiled with its tests,
+            // as `zeno build` would compile it, and the program run
+            // (decision 60.2).
+            let build_tests = match named.iter().position(|arg| arg == "--build") {
+                Some(at) => {
+                    named.remove(at);
+                    if fast || minimal || web || target.is_some() {
+                        eprintln!("zeno: `zeno test --build` tests the program as `zeno build` builds it, and takes `--firmware`,");
+                        eprintln!("      `--no-collector`, `--llvm`, `--release` and `--board`. `--fast` and `--minimal` leave out");
+                        eprintln!("      the checks a test may be written to meet, and `--web` and `--target` build no program");
+                        return ExitCode::FAILURE;
+                    }
+                    Some(TestsBuilt { llvm, board: board.clone(), memory_report, defines: sizes.defines() })
+                }
+                None => None,
+            };
             if named.is_empty() {
                 named.push(".".to_string());
             }
@@ -1571,7 +1849,11 @@ fn main() -> ExitCode {
             // Every file is tried, so that one run says everything.
             let (mut tests, mut failed, mut stopped) = (0, 0, 0);
             for path in &files {
-                match test(path, strict, asked(path), only.as_deref()) {
+                let tally = match &build_tests {
+                    Some(how) => test_built(path, asked(path), only.as_deref(), how, built(path)),
+                    None => test(path, strict, asked(path), only.as_deref()),
+                };
+                match tally {
                     Some(tally) => {
                         tests += tally.tests;
                         failed += tally.failed;
@@ -1579,12 +1861,17 @@ fn main() -> ExitCode {
                     None => stopped += 1,
                 }
             }
-            value::print_line("");
-            value::print_line(&match (tests, &only) {
-                (0, Some(text)) => format!("No tests were run: none has `{text}` in its name."),
-                (0, None) => "No tests were run.".to_string(),
-                _ => format!("{}: {} passed, {} failed.", error::counted(tests, "test"), tests - failed, failed),
-            });
+            // For a board the tests run on the board, which prints the
+            // totals of each file itself: here none has been run yet.
+            let on_board = build_tests.as_ref().is_some_and(|how| how.board.is_some());
+            if !on_board {
+                value::print_line("");
+                value::print_line(&match (tests, &only) {
+                    (0, Some(text)) => format!("No tests were run: none has `{text}` in its name."),
+                    (0, None) => "No tests were run.".to_string(),
+                    _ => format!("{}: {} passed, {} failed.", error::counted(tests, "test"), tests - failed, failed),
+                });
+            }
             if stopped > 0 {
                 value::print_line(&format!("{} could not be run.", error::counted(stopped, "file")));
             }

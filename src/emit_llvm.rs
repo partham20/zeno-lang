@@ -67,6 +67,7 @@ use crate::checker::{spot, FunctionKind, Kind, Pointee, Types};
 use crate::emit_c::{self, is_boxed, is_text, is_written, Build};
 use crate::error::Error;
 use crate::ints::{self, Width};
+use crate::test_build::TestBuild;
 use crate::token::Span;
 use crate::units;
 
@@ -422,6 +423,16 @@ const DECLARED: &[(&str, &str)] = &[
     ("_setjmp", if cfg!(windows) { "declare i32 @_setjmp(ptr, ptr) returns_twice" } else { "declare i32 @_setjmp(ptr) returns_twice" }),
     ("zeno_show_function", "declare ptr @zeno_show_function(ptr)"),
     ("zeno_mark_words", "declare void @zeno_mark_words(ptr, i64)"),
+    // Only in a program built by `zeno test --build` (decision 60.2).
+    ("zeno_test_out", "declare void @zeno_test_out(ptr)"),
+    ("zeno_tests_begin", "declare void @zeno_tests_begin()"),
+    ("zeno_test_begin", "declare void @zeno_test_begin(ptr)"),
+    ("zeno_test_end", "declare void @zeno_test_end()"),
+    ("zeno_tests_end", "declare i32 @zeno_tests_end()"),
+    ("zeno_test_uncaught", "declare void @zeno_test_uncaught()"),
+    ("zeno_test_false", "declare void @zeno_test_false(ptr, ptr, ptr, ptr, i32, i32)"),
+    ("zeno_test_raised_nothing", "declare void @zeno_test_raised_nothing(ptr, i32, i32)"),
+    ("zeno_test_raised_other", "declare void @zeno_test_raised_other(ptr, ptr, i32, i32)"),
 ];
 
 /// A few functions of the runtime, written again in IR.
@@ -1286,6 +1297,9 @@ struct Emitter<'a> {
     program: String,
     /// The names from `DECLARED` and `WRITTEN` that are called.
     used: BTreeSet<&'static str>,
+    /// Built by `zeno test --build`: the tests to run after the program,
+    /// and an `assert` is compiled (decision 60.2).
+    tests: Option<TestBuild>,
 }
 
 /// The runtime functions that are called differently in a firmware
@@ -1714,6 +1728,29 @@ pub fn emit(program: &Program, types: &Types, file: &str, build: Build, memory: 
     emit_with(program, types, file, build, memory, emit_c::Options::default())
 }
 
+/// `emit_with`, for `zeno test --build`: the program, with each of its
+/// tests run after it and reported as `zeno test` reports it (decision
+/// 60.2). The tests are functions of the program by now (see
+/// `test_build::with_tests`).
+pub fn emit_tests(
+    program: &Program,
+    types: &Types,
+    file: &str,
+    build: Build,
+    memory: bool,
+    options: emit_c::Options,
+    tests: &TestBuild,
+) -> Result<String, Error> {
+    emit_all(program, types, file, build, memory, options, Some(tests))
+}
+
+/// The part of the runtime that a test build adds, as the file beside
+/// the IR has it: with its functions visible to the IR (see `beside_ir`).
+pub fn tests_runtime(tests: &TestBuild, build: Build) -> String {
+    let text = tests.runtime(build != Build::NoCollector);
+    text.lines().map(|line| line.strip_prefix("static ").unwrap_or(line).to_string() + "\n").collect()
+}
+
 /// `emit`, with the options of `emit_c::Options`.
 pub fn emit_with(
     program: &Program,
@@ -1722,6 +1759,18 @@ pub fn emit_with(
     build: Build,
     memory: bool,
     options: emit_c::Options,
+) -> Result<String, Error> {
+    emit_all(program, types, file, build, memory, options, None)
+}
+
+fn emit_all(
+    program: &Program,
+    types: &Types,
+    file: &str,
+    build: Build,
+    memory: bool,
+    options: emit_c::Options,
+    tests: Option<&TestBuild>,
 ) -> Result<String, Error> {
     let (firmware, collector) = (build != Build::Ordinary, build != Build::NoCollector);
     let mut emitter = Emitter {
@@ -1764,6 +1813,7 @@ pub fn emit_with(
         definitions: Vec::new(),
         program: String::new(),
         used: BTreeSet::new(),
+        tests: tests.cloned(),
     };
 
     // A function can be called above the line it is written on, and a
@@ -1802,6 +1852,12 @@ pub fn emit_with(
     for statement in &program.statements {
         emitter.statement(statement)?;
     }
+    // The tests run after the program, and see what it made.
+    if let Some(tests) = tests {
+        if !emitter.code.ended {
+            emitter.run_tests(tests)?;
+        }
+    }
     // The end of the file is the end of the outermost block.
     if !emitter.code.ended {
         emitter.free_owned(0)?;
@@ -1820,6 +1876,12 @@ impl Emitter<'_> {
     /// Put the finished parts together.
     fn file(mut self, file: &str, modules: &[ModuleFile]) -> String {
         let name = self.string(file);
+        // `zeno test` names the file before it runs it.
+        let named = self.tests.is_some().then(|| self.string(&format!("{file}\n")));
+        if named.is_some() {
+            self.used.insert("zeno_test_out");
+            self.used.insert("zeno_tests_end");
+        }
         // The files the program imports, for an error that stops the
         // program in one of them.
         let modules: Vec<String> = modules.iter().map(|module| format!("ptr {}", self.string(&module.path))).collect();
@@ -1936,8 +1998,14 @@ impl Emitter<'_> {
         if arguments {
             out += "  call void @zeno_program_start(i32 signext %argc, ptr %argv)\n";
         }
+        if let Some(named) = &named {
+            out += &format!("  call void @zeno_test_out(ptr {named})\n");
+        }
         out += "  call void @zeno_program()\n";
-        out += "  ret i32 0\n}\n";
+        out += match named {
+            Some(_) => "  %failed = call i32 @zeno_tests_end()\n  ret i32 %failed\n}\n",
+            None => "  ret i32 0\n}\n",
+        };
         out
     }
 
@@ -2792,6 +2860,12 @@ impl Emitter<'_> {
             // The checker has seen to what is written inside. In IR it
             // is a block like any other.
             // A build leaves the tests of a program out (decision 10.20).
+            // Built for its tests, each test is a function by now, and
+            // its asserts are compiled (decision 60.2).
+            StmtKind::Assert(condition, message) if self.tests.is_some() => {
+                self.test_assert(condition, message.as_ref(), span)
+            }
+            StmtKind::AssertRaises { error, body } if self.tests.is_some() => self.test_assert_raises(error, body, span),
             StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => Ok(()),
             StmtKind::Unsafe(body) => {
                 let n = self.number();
@@ -4533,6 +4607,256 @@ impl Emitter<'_> {
         }
         self.place(&end);
         Ok(())
+    }
+
+    // ------------------------------------------------- Tests (decision 60.2)
+    //
+    // Only in a program built by `zeno test --build`, as in `emit_c`. Each
+    // test is a function by now, that may raise any error.
+
+    /// After the program's own statements: each test in turn, with what
+    /// it raises caught and reported, and a line for each as it ends.
+    fn run_tests(&mut self, tests: &TestBuild) -> Result<(), Error> {
+        self.run("zeno_tests_begin", "");
+        for (function, name) in &tests.tests {
+            let ir_name = self.functions[function].name.clone();
+            let shown = self.string(name);
+            self.run("zeno_test_begin", format!("ptr {shown}"));
+            let n = self.number();
+            let (inside, caught, end) = (format!("test{n}"), format!("test.caught{n}"), format!("test.end{n}"));
+            if self.firmware {
+                let worked = self.set(format!("call i1 {ir_name}()"));
+                self.jump_if(&worked, &end, &caught);
+            } else {
+                let place = format!("%try.{n}");
+                self.uses("zeno_try_size");
+                self.code.slots.push(format!("  %try.size.{n} = call i64 @zeno_try_size()"));
+                self.code.slots.push(format!("  {place} = alloca i8, i64 %try.size.{n}, align 16"));
+                self.run("zeno_try_open", format!("ptr {place}"));
+                self.uses("_setjmp");
+                let came = self.set(format!("call i32 @_setjmp(ptr {place}{SETJMP_TAKES}) returns_twice"));
+                let first = self.set(format!("icmp eq i32 {came}, 0"));
+                self.jump_if(&first, &inside, &caught);
+                self.place(&inside);
+                self.ins(format!("call void {ir_name}()"));
+                self.run("zeno_try_close", format!("ptr {place}"));
+                self.jump(&end);
+            }
+            self.place(&caught);
+            self.run("zeno_test_uncaught", "");
+            self.jump(&end);
+            self.place(&end);
+            self.run("zeno_test_end", "");
+        }
+        Ok(())
+    }
+
+    /// `assert`, in a test. The condition is worked out once. If it is
+    /// false, the runtime is given the report: the text after the comma,
+    /// worked out only now, and for a comparison what was on each side.
+    /// Then the test is left as `return` leaves it: through every `try`,
+    /// which does not catch it, and freeing what the test owns.
+    fn test_assert(&mut self, condition: &Expr, message: Option<&Expr>, span: Span) -> Result<(), Error> {
+        let n = self.number();
+        let failed = self.slot(format!("%assert.{n}"), "i1");
+        self.store("i1", "false", &failed);
+        let begin = self.text_begin();
+        let own = self.own_begin();
+        let (fails, holds_label) = (format!("assert.false{n}"), format!("assert.true{n}"));
+        let place = at(condition.span);
+        match &condition.kind {
+            ExprKind::Binary { op, left, right }
+                if matches!(
+                    op,
+                    BinaryOp::Eq
+                        | BinaryOp::NotEq
+                        | BinaryOp::Lt
+                        | BinaryOp::LtEq
+                        | BinaryOp::Gt
+                        | BinaryOp::GtEq
+                        | BinaryOp::Is
+                        | BinaryOp::IsNot
+                        | BinaryOp::In
+                        | BinaryOp::NotIn
+                ) =>
+            {
+                let (left, right, holds) = if matches!(op, BinaryOp::Is | BinaryOp::IsNot) {
+                    // `x is none`: the right is `none`, as written.
+                    let left = self.expr(left)?;
+                    let right = self.expr(right)?;
+                    let is = *op == BinaryOp::Is;
+                    let holds = match &left.kind {
+                        Kind::Optional(_) => {
+                            let there = self.is_there(&left, span)?;
+                            if is {
+                                self.set(format!("xor i1 {there}, true"))
+                            } else {
+                                there
+                            }
+                        }
+                        other => ((*other == Kind::None) == is).to_string(),
+                    };
+                    (left, right, holds)
+                } else {
+                    let left = self.expr(left)?;
+                    let right = self.expr(right)?;
+                    let holds = match op {
+                        BinaryOp::In | BinaryOp::NotIn => self.contains(*op, left.clone(), right.clone(), span)?.code,
+                        _ => self.compare(*op, &left, &right, span)?,
+                    };
+                    (left, right, holds)
+                };
+                self.jump_if(&holds, &holds_label, &fails);
+                self.place(&fails);
+                let text = self.assert_text(message)?;
+                let (left, right) = (self.assert_shown(&left, span)?, self.assert_shown(&right, span)?);
+                let op = self.string(op.text());
+                self.run("zeno_test_false", format!("ptr {text}, ptr {op}, ptr {left}, ptr {right}, {place}"));
+            }
+            _ => {
+                let holds = self.expr(condition)?;
+                self.jump_if(&holds.code, &holds_label, &fails);
+                self.place(&fails);
+                let text = self.assert_text(message)?;
+                self.run("zeno_test_false", format!("ptr {text}, ptr null, ptr null, ptr null, {place}"));
+            }
+        }
+        self.store("i1", "true", &failed);
+        self.jump(&holds_label);
+        self.place(&holds_label);
+        self.own_end(own, true)?;
+        if let Some(mark) = self.text_end(begin) {
+            self.text_back(&mark);
+        }
+        self.leave_test(&failed, span)
+    }
+
+    /// One side of a comparison, as a failed `assert` shows it: as `print`
+    /// shows it inside a list, so that text has its quotes.
+    fn assert_shown(&mut self, val: &Val, span: Span) -> Result<String, Error> {
+        match val.kind {
+            Kind::None => Ok(self.string("none")),
+            _ => self.repr(val, span),
+        }
+    }
+
+    /// The text after the comma of an `assert`, or `null`.
+    fn assert_text(&mut self, message: Option<&Expr>) -> Result<String, Error> {
+        match message {
+            Some(message) => Ok(self.expr(message)?.code),
+            None => Ok("null".to_string()),
+        }
+    }
+
+    /// After a failed `assert`: leave the test as `return` would.
+    fn leave_test(&mut self, failed: &str, span: Span) -> Result<(), Error> {
+        let n = self.number();
+        let (leave, go_on) = (format!("assert.leave{n}"), format!("assert.on{n}"));
+        let failed = self.set(format!("load i1, ptr {failed}"));
+        self.jump_if(&failed, &leave, &go_on);
+        self.place(&leave);
+        self.statement(&Stmt { kind: StmtKind::Return(None), span })?;
+        self.place(&go_on);
+        Ok(())
+    }
+
+    /// `assert raises Kind { ... }`, in a test: a `try` whose body must
+    /// raise that kind. Raising nothing, or another kind, is reported as
+    /// `zeno test` reports it, and leaves the test.
+    fn test_assert_raises(&mut self, kind: &str, body: &[Stmt], span: Span) -> Result<(), Error> {
+        let wanted = match kind {
+            "Error" => None,
+            class if self.classes.contains_key(class) => Some(class),
+            kind if emit_c::ERROR_KINDS.contains(&kind) => Some(kind),
+            other => return Err(cannot(format!("`assert raises {other}`"), span)),
+        };
+        let n = self.number();
+        let failed = self.slot(format!("%raises.{n}"), "i1");
+        self.store("i1", "false", &failed);
+        let shown = self.string(kind);
+        let place_of = at(span);
+        let (inside, caught, end) = (format!("raises.try{n}"), format!("raises.caught{n}"), format!("raises.end{n}"));
+        let other = format!("raises.other{n}");
+        if !self.firmware {
+            let place = format!("%try.{n}");
+            self.uses("zeno_try_size");
+            self.code.slots.push(format!("  %try.size.{n} = call i64 @zeno_try_size()"));
+            self.code.slots.push(format!("  {place} = alloca i8, i64 %try.size.{n}, align 16"));
+            self.run("zeno_try_open", format!("ptr {place}"));
+            self.uses("_setjmp");
+            let came = self.set(format!("call i32 @_setjmp(ptr {place}{SETJMP_TAKES}) returns_twice"));
+            let first = self.set(format!("icmp eq i32 {came}, 0"));
+            self.jump_if(&first, &inside, &caught);
+            self.place(&inside);
+            self.code.tries.push(place.clone());
+            self.code.try_scopes.push(self.scopes.len());
+            let result = self.block(body);
+            self.code.try_scopes.pop();
+            self.code.tries.pop();
+            result?;
+            if !self.code.ended {
+                self.run("zeno_try_close", format!("ptr {place}"));
+                self.run("zeno_test_raised_nothing", format!("ptr {shown}, {place_of}"));
+                self.store("i1", "true", &failed);
+                self.jump(&end);
+            }
+            self.place(&caught);
+            if let Some(wanted) = wanted {
+                let wanted = self.string(wanted);
+                let ours = self.call("i1", "zeno_caught", format!("ptr {wanted}"));
+                self.jump_if(&ours, &end, &other);
+                self.place(&other);
+                let raised = self.set("load ptr, ptr @zeno_raised");
+                self.run("zeno_test_raised_other", format!("ptr {shown}, ptr {raised}, {place_of}"));
+                self.store("i1", "true", &failed);
+            }
+            self.jump(&end);
+            self.place(&end);
+            return self.leave_test(&failed, span);
+        }
+
+        // A firmware build: the error travels as a value, and a failure in
+        // the body comes forward to the label (see `try_with_values`).
+        let except = format!("raises.except{n}");
+        self.code.tries.push(except.clone());
+        self.code.arriving.push(BTreeSet::new());
+        self.code.try_scopes.push(self.scopes.len());
+        let text_top = (!self.collector).then(|| self.set("load i64, ptr @zeno_text_top"));
+        let result = self.block(body);
+        self.code.try_scopes.pop();
+        self.code.tries.pop();
+        self.code.arriving.pop();
+        result?;
+        if !self.code.ended {
+            self.run("zeno_test_raised_nothing", format!("ptr {shown}, {place_of}"));
+            self.store("i1", "true", &failed);
+        }
+        self.place(&except);
+        if let Some(mark) = &text_top {
+            self.text_back(mark);
+        }
+        let raised = self.set("load ptr, ptr @zeno_raised");
+        let came = self.set(format!("icmp ne ptr {raised}, null"));
+        self.jump_if(&came, &caught, &end);
+        self.place(&caught);
+        self.ins("store ptr null, ptr @zeno_raised");
+        if let Some(wanted) = wanted {
+            let wanted = self.string(wanted);
+            let ours = self.call("i1", "zeno_is", format!("ptr {raised}, ptr {wanted}"));
+            let after = format!("raises.after{n}");
+            self.jump_if(&ours, &after, &other);
+            self.place(&other);
+            self.run("zeno_test_raised_other", format!("ptr {shown}, ptr {raised}, {place_of}"));
+            self.store("i1", "true", &failed);
+            self.jump(&after);
+            self.place(&after);
+        }
+        if !self.collector {
+            self.run("zeno_error_drop", format!("ptr {raised}"));
+        }
+        self.jump(&end);
+        self.place(&end);
+        self.leave_test(&failed, span)
     }
 
     /// Before a `return`, `break` or `continue` jumps out of `try`
@@ -10061,8 +10385,13 @@ for n in [1, 5] {
             assert!(!runtime.lines().any(|line| line.starts_with("static ")));
         }
         // Everything the IR may call is there to be found.
+        // The functions of a test build are in its own part of the
+        // runtime, and in no other program's (decision 60.2).
+        let tests = tests_runtime(&crate::test_build::TestBuild::default(), Build::Ordinary);
         for (name, _) in DECLARED {
-            if name.starts_with("zeno_") {
+            if name.starts_with("zeno_test") {
+                assert!(has(&tests, name) && !has(&ordinary, name) && !has(&firmware, name) && !has(&bare, name), "{name}");
+            } else if name.starts_with("zeno_") {
                 assert_eq!(has(&ordinary, name), !values.contains(name) && !without_collector.contains(name), "{name}");
                 assert_eq!(has(&firmware, name), !jumps.contains(name) && !without_collector.contains(name), "{name}");
                 assert_eq!(has(&bare, name), !jumps.contains(name) && !with_collector.contains(name), "{name}");

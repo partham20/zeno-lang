@@ -89,6 +89,9 @@ few more on purpose, each with its reason in
 [`no-collector.md`](no-collector.md), [`firmware.md`](firmware.md) and
 [`minimal.md`](minimal.md). A function of a library of C has limits of
 its own ([`c.md`](c.md)).
+`zeno test --build`, which builds a program with its tests in it,
+refuses one thing more: an `assert` in a function written inside a
+test ([`testing.md`](testing.md), decision 60.2).
 
 ## Where the types come from
 

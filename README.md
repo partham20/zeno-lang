@@ -322,6 +322,7 @@ cargo run -- run examples/ports.zeno            # an interface: `class Uart is P
 cargo run -- run examples/channels.zeno         # a dict of lists and of objects, and `for key, value in ...`
 cargo run -- fetch examples/thermostat          # get the packages a program needs from git (this one needs none fetched)
 cargo run -- test examples/ring                 # run the tests written in the files of a folder: `test "name" { assert ... }`
+cargo run -- test --build --firmware examples/ring  # the same tests, in the program a firmware build makes
 cargo run -- new /tmp/blinker                   # make a new program: a `main.zeno`, a module with a test and a `zeno.package`
 cargo run -- new --package /tmp/filters         # make a new package: a folder of modules for other programs to need
 cargo run -- format --check examples            # is every example laid out the way `zeno format` lays programs out?
@@ -565,6 +566,9 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
       inside. A failed `assert` shows what was on each side. `zeno
       test` runs the tests of a file or of every file in a folder,
       `zeno run` goes past them, and a build leaves them out.
+      `assert total == 6, "the total"` prints the text when it
+      fails, and `zeno test --build` runs the same tests in the
+      program a build makes, on a board too.
       See [`docs/testing.md`](docs/testing.md))
     - `zeno new`: a new program or package in one command (done:
       `zeno new blinker` makes a folder with a `main.zeno`, a module

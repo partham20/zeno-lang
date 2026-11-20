@@ -18291,3 +18291,155 @@ and an optional text. `parser.rs` reads the comma, `checker.rs` checks
 that the text is `str`, `printer.rs` writes it back, and
 `Interpreter::assert` works it out after the condition is found false
 and puts it above the line it always printed.
+
+### 60.2 Tests of a compiled program: `zeno test --build`
+
+```
+$ zeno test --build --firmware board.zeno
+board.zeno
+  ok      three numbers add up
+  FAILED  an empty list adds up to nothing
+
+FAILED: an empty list adds up to nothing
+error: an empty list should add up to 0
+this is false. The left of `==` is 0, and the right is 1
+  --> board.zeno:14:12
+   |
+14 |     assert total([]) == 1, "an empty list should add up to 0"
+   |            ^
+
+
+2 tests: 1 passed, 1 failed.
+```
+
+**The rule.** `zeno test --build` compiles each file with its tests in
+it, as `zeno build` would compile it, runs the program, and prints
+what `zeno test` prints, line for line. It takes what a build takes
+that still makes a program that checks itself: `--firmware`,
+`--no-collector`, `--llvm`, `--release`, `--pool`, `--text-room`,
+`--memory` and `--board`. `--fast` and `--minimal` leave out checks a
+test may be written to meet, and `--web` and `--target` make no program
+that this computer runs, so each is refused with that reason. With no
+`--build`, `zeno test` is what it was, and so is every build: a
+program that is not built for its tests has not one line of C more.
+
+**Why.** `zeno test` runs the tests in the interpreter. The program
+that goes onto a board is the one C or LLVM makes of it, with no
+collector, errors as values, numbers of a fixed width and the
+runtime's own text and floats (chapter 53). 0.7.0 checks that the two
+agree by running each example both ways (the rule of chapter 5), but a
+test the user writes was never run in the build it is for. A test
+that shares a list is now refused with no collector, as the program
+would be, and a test that passes in the interpreter and fails in the
+build says where the two part.
+
+**Each test becomes a function at the end of its file.** Before the
+checker, each test of the first file becomes a function with no
+parameters that may raise any error, written after the file's last
+statement (`with_tests` in `src/test_build.rs`). At the end it sees
+every variable of the file, as a test does, and is checked by the
+checker with the rules of the build, and compiled by each compiler as
+any other function: nothing in the compilers learns what a test is
+but `assert`. Its name, `test 1`, has a space in it, so no program can
+write it or call it. The tests of an imported file are left out, as
+`zeno test` leaves them out. `--only` takes its tests out before the
+checker, so a test that is not run is not built.
+
+**A failed `assert` leaves the test as `return` does.** It writes its
+report, and then takes the road each build already has out of a
+`try` and past what must be freed. There is no new road, no block is
+left, and no `except` catches it, as none catches it in `zeno test`
+(10.17). An error that leaves a test, raised or not caught, is caught
+where `main` calls the test: in an ordinary build by the `try` of
+setjmp that `try` uses, in a firmware build by the `false` the test
+gives back (5.5).
+
+**An `assert` in a function written inside a test is refused.** The
+parser takes it, and `zeno test` runs it, as 0.7.0 did. But the
+`return` of a failed `assert` would leave that function and not the
+test, and a firmware build has no other way out of a function whose
+type says it raises nothing; making one for this would be a second
+kind of error. So `zeno test --build` refuses it with "under `zeno
+test --build` an `assert` stands in the test itself, and not in a
+function written inside it. Let the function give back what it found,
+and `assert` that in the test". It is a refusal of this command, not
+of `zeno build`, which leaves tests out (10.20); it is written in
+`docs/testing.md` beside the table of what every build refuses.
+
+**The reports wait in a room of 8 KB.** `zeno test` prints the line of
+each test as it runs, and the reports of the failures under them. So
+does the program: a failure writes its report into a static array of
+8 KB, and the reports are printed after the last test. The room
+exists only in a test build, and asks nothing of the pool, so it
+works with no collector and on a board, where there is no `malloc`. A
+report that does not fit is left out whole, never cut, and counted;
+one line says how many were left out and that `zeno test` shows them
+all. 8 KB is some forty reports of the usual five lines; a board with
+less RAM than that is not one a test program is run on.
+
+**The command counts by marks, not by the number the program ends
+with.** A program that an error or a fault stops already ends with 1,
+and `program.exit` can end it with any number, so "ended with 1"
+could mean one failed test, a fault, or neither. Instead the command
+gives the program the name of a file in `ZENO_TEST_MARKS`, and the
+program writes a mark there when its tests begin, one as each test
+ends, passed or failed, and one when they are all over, each written
+through at once. The command adds them up. With no mark of beginning
+the program stopped before its tests, and the command says "board.zeno
+stopped with this error before its tests. None of them was run.", as
+`zeno test` does. With no mark of the end it stopped in a test, which
+is counted as failed and named, and the command says how many after it
+were not run. Nothing the program prints is read for its meaning, so
+no line a program prints can be taken for a result. The program still
+ends with 1 if a test failed and 0 if none did, for a script that
+runs it.
+
+**Run by itself, it says its own totals.** On a board, or run by hand,
+nothing gives the program a file of marks, and it prints the line of
+totals for its file itself. A program stopped before its last test,
+by a fault or by `program.exit`, prints the reports it holds before
+it ends, where the platform has a moment for that (`atexit` on a
+computer), so a fault in the fifth test does not cost the reports of
+the first four.
+
+**A report shows the line, in whatever file.** An error that leaves a
+test is shown at the line that raised it, which may be in an imported
+file. A test build holds the text of every file of the program, as
+strings of C, and looks the line up; the report is the one `zeno test`
+prints, with the caret under the place and the note. On a board that
+text costs flash, in a test build only: the fifteen lines of
+`board.zeno` above are 286 bytes of it.
+
+**A board.** `zeno test --build --board boards/qemu-cortex-m3
+board.zeno` writes `board-tests.c` and builds `board-tests.elf` beside
+it, as `zeno build --board` does (51.5), and says the command that
+runs it. The tests run there, by whoever has the board, and the
+program prints the same lines through the board's `zeno_board_print`
+(chapter 52). Built and run so on QEMU's Cortex-M3, the program above
+prints what `zeno test` prints and ends with 1.
+
+**Where it differs from `zeno test`, on purpose.**
+
+| | `zeno test` | `zeno test --build` |
+|---|---|---|
+| A fault of a firmware build: an index out of range, an overflow | the test fails, and the next runs | the program stops, as any firmware program does (5.5l); the command names the test it was in and how many were not run |
+| `program.exit` in a test | the test fails | the program ends; the command says so as for a fault |
+| An error before the tests | the snippet of the line | the compiled program's own message for an error nothing caught |
+| A `try` that nothing in it can raise into, in a firmware build | runs | refused, as in any firmware program (5.5) |
+| An `assert` in a function written in a test | runs | refused (above) |
+
+**How it is built.** `src/test_build.rs` makes the tests functions,
+refuses an `assert` in a function, and holds the part of the runtime
+that only a test build has. It is text of the test build, and not a
+piece of `src/runtime.c` (56.19), so nothing of it can reach another
+program. `emit_c.rs` and `emit_llvm.rs` each compile `assert` and
+`assert raises` in a test function (an `assert` that is not in one is
+nothing, as before), call each test after the program's statements,
+and end `main` with what `zeno_tests_end` gives back. `main.rs` reads
+`--build`, builds the program in a folder of its own, runs it with
+`ZENO_TEST_MARKS` set, and reads the marks.
+
+**Left for later.** An `assert` in a function written in a test; a
+fault that fails its test and goes on, which needs a way back from a
+fault that a firmware build does not have; and reading the totals back
+from a board, which needs the board's serial port read by the command.
