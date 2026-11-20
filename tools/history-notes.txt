@@ -608,3 +608,4 @@ a1be903 The book: what items 9 and 10 change, in the chapters on functions as va
 b0a22b2 Generic enums: `enum Maybe[T]` and `Result[T, E]`, a copy for each set of types, `Nothing` typed by the place it goes, in every engine and build; with no collector a look at a copy of a generic goes to a parameter of a generic that looks (decisions 58.1 and 58.2).
 7357805 Bounds: `function largest[T is Ordered]` and `[S is Shape]` on a function, a class and an enum, refused at the call when a type lacks them; `Ordered` comes with Zeno unless the program has its own, and a bound makes no code (decisions 58.3 to 58.5).
 144f4f6 Generic interfaces: `interface Source[T]`, and a class that says which copy it is, `is Source[int]` or `is Source[T]`; each copy is an interface of its own, in every build (decision 58.6).
+d7ca291 The book: bounds, generic enums and generic interfaces in the chapter on generics; the limits and the design chapter say what is left.
