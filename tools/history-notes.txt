@@ -594,3 +594,5 @@ e9a4346 What a build still refuses is one table for a build with no collector, a
 0c6e6f8 Several values from one function: `-> (int, str)`, `return a, b`, `let q, r = f()` and `a, b = b, a`, in every engine, every build and every target; several values are never one value, and are shown as `<2 values: ...>` where no type is written (decision 57).
 3a7b737 Tests of a compiled program: `zeno test --build` compiles each file with its tests as `zeno build` would, in C or LLVM, with or without a collector, for a computer or a board, and the program prints what `zeno test` prints, line for line (decision 60.2).
 e2c9d2c Several values received, swapped and raised past in a test of a compiled program, in every build: where items 10 and 13 meet.
+4390fa8 Folders: `files.list` gives a folder's names sorted by the numbers of their characters, the same in every engine, build and target; `files.make_folder` makes a folder and those above it; `files.join` is written in Zeno (decisions 59.20 to 59.23).
+b57c0f8 Folders in the docs: docs/folders.md, decisions 59.20 to 59.23, and the notes of 0.8.0.
