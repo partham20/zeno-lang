@@ -610,3 +610,4 @@ b0a22b2 Generic enums: `enum Maybe[T]` and `Result[T, E]`, a copy for each set o
 144f4f6 Generic interfaces: `interface Source[T]`, and a class that says which copy it is, `is Source[int]` or `is Source[T]`; each copy is an interface of its own, in every build (decision 58.6).
 d7ca291 The book: bounds, generic enums and generic interfaces in the chapter on generics; the limits and the design chapter say what is left.
 ba41819 A method with a type parameter of its own stays refused, with a message that shows the function of the file to write instead (decision 58.7); a generic given a list of two types, as `first([200 ms, 1 s])`, says in a build why and what to write (58.8).
+5ec9077 The book: in what generics leave out, a function of the file in place of a method with a type of its own (58.7), and a list of two units given to a generic (58.8).
