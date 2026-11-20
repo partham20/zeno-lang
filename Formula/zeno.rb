@@ -6,28 +6,28 @@
 class Zeno < Formula
   desc "Small, readable, statically typed language for firmware"
   homepage "https://zeno-lang.org"
-  version "0.7.0"
+  version "0.8.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-macos-arm64.tar.gz"
-      sha256 "0fdbab63165c502492a036971bc799204aa25d8f190d10f442076a1039cd3573"
+      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.8.0/zeno-0.8.0-macos-arm64.tar.gz"
+      sha256 "4dac6bc12db09e251dba2fe473c1a3a76282db66e1dd17f7498c1b81e6c07b17"
     end
     on_intel do
-      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-macos-x86_64.tar.gz"
-      sha256 "603a6f4a3df397f1cea9f8a6020fae8394921198e872294bb7425ba6ad4479cb"
+      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.8.0/zeno-0.8.0-macos-x86_64.tar.gz"
+      sha256 "fe924d82c2704a9e1e1c94738ccfd42bc2eea9befe743393eed703de7c565991"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-linux-arm64.tar.gz"
-      sha256 "c6a82933ff41b622aaba12b2716e797b76ca72090ff0abd0dcf4a9a92889da70"
+      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.8.0/zeno-0.8.0-linux-arm64.tar.gz"
+      sha256 "34eb14e1461a525ce452f4e0fddbb778c605c49c3cb8164c14ab38e07a013a72"
     end
     on_intel do
-      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.7.0/zeno-0.7.0-linux-x86_64.tar.gz"
-      sha256 "2717dde867e2c049edca569f79d4a6fd6ff62d81467337180e1935e6f755b4fe"
+      url "https://github.com/zeno-src/zeno-lang/releases/download/v0.8.0/zeno-0.8.0-linux-x86_64.tar.gz"
+      sha256 "5ca168e629e436c174bfe60cbaa08ae8bc24c093cfba13992aaa83ec1ff4f1f6"
     end
   end
 
