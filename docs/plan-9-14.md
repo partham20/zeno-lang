@@ -2113,3 +2113,71 @@ report of each failure; and after the last file one line of totals.
   in `wrap[T]` means another `Maybe` in each copy of `wrap`. Item 9
   had this fault once. And what a reader sees is `Maybe[int]`, in
   every message and in what `print` shows, in every build.
+
+### 14. 11.4, 2026-11-20: a fourth builder, and three things the code asked
+
+11.4 has a builder of its own, with 58.20 onward (section 13). It
+read 11.4 against the code and found three things.
+
+**58.20. A default in an interface.** This page said the class
+writes the same default as the interface, always. But 0.7.0 takes a
+class with a default where its interface writes none, and such a
+program must go on being taken. So:
+
+- Where the interface writes a default, the class writes the same
+  one, or it is refused with both shown.
+- Where the interface writes none, the class may have its own, as in
+  0.7.0. A call through the interface then gives every argument, and
+  a call that leaves one out is refused there, so the two calls still
+  cannot differ without the reader being told.
+- A default in an interface is a plain value: a number (a minus in
+  front of it allowed), text with no `{ }` in it, `true`, `false`,
+  `none`, a quantity such as `5 ms`, and a case of an enum that
+  carries nothing. A timeout with a unit is the default firmware
+  writes most, so it is not left out. "The same" is the same value:
+  `1_000` and `1000` are, `5 ms` and `5000 us` are, `Fast` and `Fast`
+  are. Anything else as a default in an interface is refused.
+
+**58.21. What takes out, through an interface.** This page said the
+checker works it out the first time the function is called through
+the interface. That breaks where a class calls through its own
+interface while it is still being checked, and where a copy of a
+generic is made later (11.3). Instead the checker keeps the set of
+functions of interfaces that some class's function takes out for; a
+class adds to it where it was refused before; a call through the
+interface is held to the guards of 5.15e when its function is in the
+set. The set only grows, so the rounds the checker already makes end.
+One thing is asked: **what is reported comes from a round in which
+the set did not grow**, so that a call read before a class that comes
+later in the file, in another file, or in a copy made later, is held
+to the same guards as one read after. A program of 0.7.0 has an empty
+set and is checked as before.
+
+**58.22. `owned interface`.** Taking out is not the whole of why an
+`owned class` could not be an interface. With a collector a value of
+an interface is shared, and an owned object put where a shared one is
+wanted would be an owned thing inside a shared one, which 5.8
+forbids.
+
+| | How | Verdict |
+|---|---|---|
+| A | `owned interface Shape`: its values have one owner, only an `owned class` can be it, and an `owned class` can only be an `owned interface` | **Chosen.** It is the sentence `owned class` already is, with the word already reserved, on the first line of the interface where its reader looks. Each mismatch is refused and says which word to write |
+| B | A value of an interface is owned when what was put into it is | The same type would be shared at one line and owned at the next, and nothing on the page would say which |
+| C | Leave the refusal | 10.10 left it open, and a `Resource` (12.1) needs it |
+
+With no collector, and in a file that says `memory owned`, nothing
+changes: an interface is owned there already.
+
+**Where this meets 12.1.** Only an `owned class` can be a `Resource`
+(12.1, rule 2). So `Resource` is an `owned interface`, and 12.1's
+rule 2 is this rule and not one of its own, once 58.22 is on `main`.
+**Where it meets 11.3:** `owned interface Source[T]`. Whoever pushes
+second tests the pair.
+
+**Tests asked for beyond those of 11.4:** a class that calls through
+its own interface; the class that takes out declared after the call,
+and in a second file; each kind of default, equal in another
+spelling, and unequal; a plain class that says it is an `owned
+interface`, and an `owned class` that says it is a plain one; an
+`owned interface` in a list, as a parameter with and without `take`,
+as a field; built every way, no block left.
