@@ -61,6 +61,10 @@ The numbers are the decisions, for anyone who wants the argument.
 \section{The library}
 
 \begin{description}
+\item[A file's name on Windows.] In a program built through C or LLVM
+  on Windows, a file's name goes through the system's code page, as
+  \verb|fopen| takes it, so a name with letters that page lacks cannot
+  be opened there; \verb|zeno run| takes any name (59.20).
 \item[Files in pieces.] A reader cannot go back or say where in the
   file it is, does not wait for a file to grow, and reads only UTF-8;
   each \verb|write| goes to the system at once (59.6).

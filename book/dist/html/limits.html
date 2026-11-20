@@ -234,6 +234,13 @@ type parameter, and a <code>release</code> cannot raise (59.2).</p>
 <h3 class="unnumbered" id="the-library"><span class="number">G.4</span>
 The library</h3>
 <dl>
+<dt>A file’s name on Windows.</dt>
+<dd>
+<p>In a program built through C or LLVM on Windows, a file’s name goes
+through the system’s code page, as <code>fopen</code> takes it, so a
+name with letters that page lacks cannot be opened there;
+<code>zeno run</code> takes any name (59.20).</p>
+</dd>
 <dt>Files in pieces.</dt>
 <dd>
 <p>A reader cannot go back or say where in the file it is, does not wait
