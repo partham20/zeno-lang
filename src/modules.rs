@@ -553,7 +553,9 @@ impl Loader<'_> {
                 memory: unit.as_ref().and_then(|unit| unit.program.memory),
             })
             .collect();
-        Ok(Program { strict, statements, private, modules, memory })
+        // The `Resource` that comes with Zeno, for a program that uses it
+        // (decision 59.1).
+        Ok(Program { strict, statements, private, modules, memory }.with_resource())
     }
 }
 
@@ -1283,6 +1285,8 @@ impl<'a> Renamer<'a> {
             }
             StmtKind::Unsafe(body) => self.block(body),
             StmtKind::Test { body, .. } => self.block(body),
+            // Made by the checker, which comes after this.
+            StmtKind::Scoped { body, .. } => self.block(body),
             StmtKind::Assert(condition, message) => {
                 self.expr(condition);
                 if let Some(message) = message {
@@ -1530,7 +1534,7 @@ impl<'a> Renamer<'a> {
 
         match &mut expr.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
-            ExprKind::Name(name) => self.plain(name, span),
+            ExprKind::Name(name) | ExprKind::Give(name) => self.plain(name, span),
             ExprKind::FormatStr(parts) => {
                 for part in parts {
                     if let FormatPart::Value { value, .. } = part {

@@ -115,6 +115,12 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             line("unsafe", depth, out);
             block(body, depth + 1, out);
         }
+        // Made by the checker, after which nothing is printed back as
+        // Zeno: shown, for `zeno parse` of a checked tree, as what it is.
+        StmtKind::Scoped { name, body } => {
+            line(&format!("released at the end: {name}"), depth, out);
+            block(body, depth + 1, out);
+        }
         StmtKind::Test { name, body } => {
             line(&format!("test {name:?}"), depth, out);
             block(body, depth + 1, out);
@@ -316,7 +322,7 @@ pub fn expr(e: &Expr) -> String {
         }
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::None => "none".to_string(),
-        ExprKind::Name(name) => name.clone(),
+        ExprKind::Name(name) | ExprKind::Give(name) => name.clone(),
         ExprKind::Unit { value, unit } => format!("{} {unit}", expr(value)),
         ExprKind::List(items) => format!("[{}]", join(items, expr)),
         ExprKind::Dict(entries) if entries.is_empty() => "[:]".to_string(),

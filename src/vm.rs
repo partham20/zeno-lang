@@ -781,6 +781,18 @@ impl Vm {
                 }
                 Op::Raise => return Err(ops::raised(pop!(), span)),
                 Op::Reraise => return Err(Control::Raise(pop!(), self.raised_at)),
+                Op::Release => {
+                    if let Value::Instance(instance) = pop!() {
+                        let Some(release) = instance.class.methods.get("release").cloned() else {
+                            return fatal(format!("`{}` has no `release`", instance.class.name), span);
+                        };
+                        // `release` may catch an error of its own, which
+                        // would move `raised_at` from the one passing by.
+                        let raised_at = self.raised_at;
+                        Machine::call(self, Value::BoundMethod(instance, release), Vec::new(), Vec::new(), span)?;
+                        self.raised_at = raised_at;
+                    }
+                }
                 Op::Fatal(message) => return fatal(text(&frame.proto, message), span),
             }
         }
@@ -1527,5 +1539,123 @@ print(1 < 2 < 3, 1 < 2 < 2, 3 < 2 < yes("never"), 1 <= 1 == 1)
             // `run_both` insists that the two engines agree, which is the test.
             let _ = super::run_both(&program, &source);
         }
+    }
+
+    /// Run a program as `zeno run` does, checked first: the checker is
+    /// what finds the resources and puts in their `Scoped` and `Give`
+    /// (decision 59.1). Both engines must agree about all of it, the
+    /// number the program ends with included.
+    fn ending_checked(path: &str, source: &str) -> crate::value::Ran {
+        let read = |path: &str| std::fs::read_to_string(path).ok();
+        let loaded = crate::modules::load(path, source.to_string(), &read);
+        let program = loaded.program.unwrap_or_else(|errors| panic!("{path}: {}", errors[0].message));
+        let (program, errors, _) = crate::checker::checked(program, crate::checker::Rules::default());
+        assert!(errors.is_empty(), "{path}: {}", errors[0].message);
+        super::run_both_ending(&program, source)
+    }
+
+    #[test]
+    fn a_resource_is_released_at_its_edges_as_the_interpreter_releases_it() {
+        // The program that walks every way out of a resource's block.
+        let path = "tools/targets/edge-resource.zeno";
+        let source = std::fs::read_to_string(path).expect("the edge program can be read");
+        let ran = ending_checked(path, &source);
+        assert!(ran.result.is_ok(), "{:?}", ran.result);
+        assert!(ran.output.contains("released"));
+    }
+
+    #[test]
+    fn a_resource_is_released_on_the_way_out_and_the_way_out_goes_on() {
+        // `continue` and `break` from blocks inside the loops, a closure
+        // sharing a variable with the loop, `return` inside a `try`, a
+        // `release` that catches an error of its own, and an error no
+        // one catches: it is reported as it was raised, after the
+        // releases it passed.
+        let source = r#"
+owned class Held is Resource {
+    name: str
+
+    function release(self) {
+        try {
+            raise KeyError("inside release")
+        } except KeyError {
+            print("  release caught its own")
+        }
+        print("  released", self.name)
+    }
+}
+
+function inner(n: int) -> int {
+    let h = Held(f"inner {n}")
+    try {
+        let t = Held("in try")
+        if n > 0 {
+            return n
+        }
+    } except ValueError {
+        print("never")
+    }
+    return -1
+}
+
+let first = Held("first")
+var total = 0
+for i in range(3) {
+    let a = Held(f"a {i}")
+    for j in range(3) {
+        let b = Held(f"b {i} {j}")
+        if j == 1 {
+            if true {
+                let c = Held("c")
+                continue
+            }
+        }
+        if j == 2 and i == 1 {
+            break
+        }
+        total += 1
+    }
+    let shared = Held(f"shared {i}")
+    let count = function() -> int { return total + i }
+    print("count", count())
+}
+print(inner(3), inner(0))
+let x = [1, 2]
+print(x[5])
+"#;
+        let ran = ending_checked("test.zeno", source);
+        let error = ran.result.expect_err("the program should have failed");
+        assert!(error.message.contains("index"), "{}", error.message);
+        // The last made is released first, and the error after it all.
+        assert!(ran.output.contains("  released c\n  release caught its own\n  released b 0 1\n"), "{}", ran.output);
+        assert!(ran.output.ends_with("  released first\n"), "{}", ran.output);
+    }
+
+    #[test]
+    fn program_exit_does_not_release() {
+        let source = r#"
+import program
+
+owned class Held is Resource {
+    name: str
+
+    function release(self) {
+        print("  released", self.name)
+    }
+}
+
+function stop() {
+    let s = Held("in stop")
+    program.exit(3)
+}
+
+let top = Held("top")
+if true {
+    let inner = Held("inner")
+    stop()
+}
+"#;
+        let ran = ending_checked("test.zeno", source);
+        assert_eq!((ran.output.as_str(), ran.status), ("", 3));
     }
 }

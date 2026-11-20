@@ -250,6 +250,13 @@ pub struct Types {
     /// Each place a variable is read in order to give its owned value
     /// away. The variable holds nothing afterwards.
     moves: HashSet<usize>,
+    /// Resources (decision 59.1), by where they are written: each `let`
+    /// that holds one, each parameter that takes one (the function's
+    /// place and the parameter's name), and each name read to give one
+    /// away. `checked` makes the program what they mean.
+    resource_lets: HashSet<(usize, usize)>,
+    resource_params: HashSet<(usize, usize, String)>,
+    gives: HashSet<(usize, usize)>,
     /// Each `let`, `var` or `const` whose variable owns its value, and so
     /// frees it when its block ends.
     owners: HashSet<usize>,
@@ -652,16 +659,20 @@ pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
             && types.widened.is_empty()
             && types.u64s.is_empty()
             && types.wrapping.is_empty()
-            && types.limits.is_empty())
+            && types.limits.is_empty()
+            && types.resource_lets.is_empty()
+            && types.resource_params.is_empty())
     {
         return (program, errors, types);
     }
-    let Types { fits, numbered, numbered_enums, f32s, widened, u64s, wrapping, limits, .. } = types;
+    let Types { fits, numbered, numbered_enums, f32s, widened, u64s, wrapping, limits, resource_lets, resource_params, gives, .. } =
+        types;
     let program = program
         .with_u64s(u64s, wrapping, limits)
         .with_fits(&fits)
         .with_numbers(numbered, &numbered_enums)
-        .with_f32s(f32s, widened);
+        .with_f32s(f32s, widened)
+        .with_resources(resource_lets, resource_params, gives);
     let (errors, types) = check_by(&program, rules);
     (program, errors, types)
 }
@@ -1940,6 +1951,10 @@ fn letters(count: usize) -> String {
     (0..count).map(|at| ((b'a' + (at % 26) as u8) as char).to_string()).collect::<Vec<_>>().join(", ")
 }
 
+/// The refusal of a resource among several values (59.1).
+const RESOURCE_SEVERAL: &str = "a resource cannot be one of several values: each is released by one owner, a `let` of \
+     its own. Give the resource back alone, or put the values together in an `owned class`";
+
 /// The message for a call of several values used as one (decision 57,
 /// rule 3): "`divide` gives 2 values. Receive each: ...".
 fn several_not_one(call: &Expr, count: usize) -> String {
@@ -1963,7 +1978,13 @@ fn several_not_one(call: &Expr, count: usize) -> String {
 
 fn call_in(place: &Expr) -> Option<&Expr> {
     match &place.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Name(_) => None,
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None
+        | ExprKind::Name(_)
+        | ExprKind::Give(_) => None,
         ExprKind::Field { object, .. } | ExprKind::Unit { value: object, .. } | ExprKind::Unary { operand: object, .. } => {
             call_in(object)
         }
@@ -2038,7 +2059,7 @@ fn names_in(expr: &Expr, names: &mut Vec<String>) {
     match &expr.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
         ExprKind::Function(_) => {}
-        ExprKind::Name(name) => names.push(name.clone()),
+        ExprKind::Name(name) | ExprKind::Give(name) => names.push(name.clone()),
         ExprKind::FormatStr(parts) => {
             for part in parts {
                 if let FormatPart::Value { value, .. } = part {
@@ -2406,6 +2427,14 @@ struct Checker {
     /// The function written where a value goes that `take` is about to
     /// check: it is kept, and takes what it uses (decision 56.8).
     keeping: Option<usize>,
+    /// The expressions `take` checks: a resource that a call gives may be
+    /// kept there, and nowhere else (decision 59.1).
+    receiving: HashSet<usize>,
+    /// The interface `Resource` that comes with Zeno, if the program
+    /// uses it (decision 59.1).
+    resource: Option<Rc<ClassInfo>>,
+    /// Is the program a page, which stays open after its last line?
+    page: bool,
     /// The type parameters of generics, by variable id: the `T` of
     /// `Stack[T]` in its outline and in each copy. `take T` is read by
     /// them (decision 56.11).
@@ -2604,6 +2633,9 @@ impl Checker {
             functions_used: Vec::new(),
             captured: Vec::new(),
             keeping: None,
+            receiving: HashSet::new(),
+            resource: None,
+            page: false,
             type_params: HashSet::new(),
             dict_values: HashSet::new(),
             taken: HashMap::new(),
@@ -2621,7 +2653,11 @@ impl Checker {
 
     fn run(&mut self, program: &Program) {
         let env = Scope::program(&globals());
-        for statement in &program.statements {
+        for statement in ast::flat(&program.statements) {
+            // A page stays open after the program's last line (59.1).
+            if matches!(&statement.kind, StmtKind::Import { module, .. } if module.len() == 1 && module[0] == "web") {
+                self.page = true;
+            }
             if let StmtKind::Let { name, .. } | StmtKind::Const { name, .. } = &statement.kind {
                 self.later.entry(name.clone()).or_insert(statement.span.line);
             }
@@ -3431,6 +3467,9 @@ impl Checker {
                 list if list.is_collection() && self.one_owner => Ty::Owned(Box::new(list)),
                 // A list is the owner of items that have one owner each,
                 // so somebody has to be the owner of the list.
+                // A list of resources is refused where it is used, in the
+                // words of 59.1, with a collector or without.
+                list if self.holds_resource(&list) => list,
                 Ty::Optional(list) if owns_items(&list) => self.error(
                     "each item of this list has one owner: the list. So the list needs an owner too. \
                      Write `owned list[...] or none`",
@@ -3756,11 +3795,12 @@ impl Checker {
     /// Declare the block's functions, classes and enums before checking any
     /// of it, exactly as the interpreter does before running it.
     fn hoist(&mut self, statements: &[Stmt], env: &Env) {
+        let statements = ast::flat(statements);
         // What each statement has above it in the block: the variables
         // that a function or class written there is allowed to use.
         let mut lets: Vec<String> = Vec::new();
         let mut above: Vec<Rc<[String]>> = Vec::new();
-        for statement in statements {
+        for statement in &statements {
             above.push(Rc::from(lets.as_slice()));
             match &statement.kind {
                 StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => lets.push(name.clone()),
@@ -3830,6 +3870,11 @@ impl Checker {
                 }
                 StmtKind::Class(decl) => {
                     let info = class_info(decl, self.one_owner, env, above, statement.span, None, None);
+                    // The `Resource` that comes with Zeno is written at no
+                    // line of any file (`Program::with_resource`).
+                    if statement.span.line == 0 && decl.interface && decl.name == "Resource" {
+                        self.resource = Some(info.clone());
+                    }
                     self.declare(env, &decl.name, Ty::Class(info.clone()), false, statement.span);
                     self.classes.insert(info.id.clone(), info.clone());
                     classes.push((decl, info, statement.span));
@@ -3886,9 +3931,12 @@ impl Checker {
                     fields: case.fields.iter().map(|f| self.slot(f, &case.name, env, span)).collect(),
                 })
                 .collect();
-            // A value that is shared cannot hold one that has one owner
+            // A case that carries a resource (rule 7 of 59.1), and a value
+            // that is shared, which cannot hold one that has one owner
             // (rule 6 of docs/ownership.md).
-            if !info.owned && cases.iter().any(|case| case.fields.iter().any(|field| field.ty.is_owned())) {
+            if let Some(case) = cases.iter().find(|case| case.fields.iter().any(|field| self.holds_resource(&field.ty))) {
+                self.resource_inside(&format!("the case `{}` of the enum `{}`", case.name, decl.name), span);
+            } else if !info.owned && cases.iter().any(|case| case.fields.iter().any(|field| field.ty.is_owned())) {
                 self.error(format!("a case of the enum `{}` cannot carry an owned value yet", decl.name), span);
             }
             for (index, case) in cases.iter().enumerate() {
@@ -3976,7 +4024,9 @@ impl Checker {
         {
             let fields: Vec<Slot> =
                 decl.fields.iter().map(|field| self.slot(field, &decl.name, env, span)).collect();
-            if let Some(field) = fields.iter().find(|field| field.ty.is_owned() && !info.owned) {
+            // A field that holds a resource is refused in the words of 59.1
+            // (`resource_class`).
+            if let Some(field) = fields.iter().find(|field| field.ty.is_owned() && !info.owned && !self.holds_resource(&field.ty)) {
                 // Objects of an ordinary class are shared. Each holder would
                 // believe the owned value inside was still there.
                 self.error(
@@ -4129,7 +4179,7 @@ impl Checker {
                             ),
                             span,
                         );
-                    } else if !info.owned && interface.owned {
+                    } else if !info.owned && interface.owned && !self.resource.as_ref().is_some_and(|resource| Rc::ptr_eq(resource, &interface)) {
                         self.error(
                             format!(
                                 "`{0}` is not an owned class, and `{name}` is an `owned interface`, whose objects each \
@@ -4139,6 +4189,9 @@ impl Checker {
                             span,
                         );
                     } else if !info.is.borrow().iter().any(|known| Rc::ptr_eq(known, &interface)) {
+                        // A class that is the `Resource` that comes with
+                        // Zeno and is not owned is told so by
+                        // `resource_class`, in the words of 59.1.
                         info.is.borrow_mut().push(interface);
                     }
                 }
@@ -4175,6 +4228,70 @@ impl Checker {
                 }
             }
         }
+        self.resource_class(decl, info, span);
+    }
+
+    /// A parameter that takes a resource releases it when the function
+    /// ends (59.1). One that only looks leaves it to its owner. Nothing
+    /// else in the first line of a function may hold one.
+    fn resource_signature(&mut self, decl: &ast::Function, params: &[Slot], returns: Option<&Ty>, span: Span) {
+        for slot in params {
+            if self.is_resource(&slot.ty) {
+                self.types.resource_params.insert((decl.span.line, decl.span.col, slot.name.clone()));
+            } else if self.holds_resource(&slot.ty) && !self.is_resource(&slot.ty.clone().looked_at()) {
+                self.resource_inside(&format!("the parameter `{}`", slot.name), span);
+            }
+        }
+        match returns {
+            Some(Ty::Several(types)) if types.iter().any(|ty| self.holds_resource(ty)) => drop(self.error(RESOURCE_SEVERAL, span)),
+            Some(ty) if self.holds_resource(ty) && !self.is_resource(ty) => {
+                let name = if decl.name.is_empty() { "this function".to_string() } else { format!("`{}`", decl.name) };
+                self.resource_inside(&format!("what {name} gives"), span);
+            }
+            _ => {}
+        }
+    }
+
+    /// Where a value that holds a resource may stand (59.1): the
+    /// refusal, if this is not such a place.
+    fn resource_here(&mut self, expr: &Expr, ty: &Ty) -> Option<Ty> {
+        if let Ty::Several(types) = ty {
+            return types.iter().any(|ty| self.holds_resource(ty)).then(|| self.error(RESOURCE_SEVERAL, expr.span));
+        }
+        if self.holds_resource(ty) && !self.is_resource(&ty.clone().looked_at()) {
+            return Some(self.resource_inside("this", expr.span));
+        }
+        let kept = self.receiving.contains(&(expr as *const Expr as usize));
+        if self.is_resource(ty) && matches!(expr.kind, ExprKind::Call { .. }) && !kept {
+            return Some(self.error(
+                "this call gives a resource, and nothing keeps it, so it would be released at once. Keep it in a \
+                 `let`, which releases it when its block ends: `let held = ...`",
+                expr.span,
+            ));
+        }
+        None
+    }
+
+    /// What 59.1 asks of a class that is `Resource`: one owner, and no
+    /// field that holds one. (That its `release` raises nothing is asked
+    /// where a class is held to its interfaces, `stands_for`.)
+    fn resource_class(&mut self, decl: &ast::Class, info: &Rc<ClassInfo>, span: Span) {
+        if let Some(field) = info.fields.borrow().iter().find(|field| self.holds_resource(&field.ty)).map(|field| field.name.clone()) {
+            self.resource_inside(&format!("the field `{field}` of `{}`", decl.name), span);
+        }
+        if decl.interface || !self.is_resource(&Ty::Instance(info.clone())) {
+            return;
+        }
+        if !decl.owned {
+            self.error(
+                format!(
+                    "`{0}` is a `Resource`, so each of its objects has one owner, whose end releases it. \
+                     Declare it `owned class {0} is Resource`",
+                    decl.name
+                ),
+                span,
+            );
+        }
     }
 
     fn slot(&mut self, field: &ast::Field, owner: &str, env: &Env, span: Span) -> Slot {
@@ -4208,6 +4325,7 @@ impl Checker {
                 Some(variable) if self.consts.contains(&variable.id) || variable.case.is_some() => None,
                 _ => Some(value),
             },
+            ExprKind::Give(_) => Some(value),
             ExprKind::Unit { value: inner, .. } | ExprKind::Unary { operand: inner, .. } => self.not_constant(inner, env),
             ExprKind::Binary { left, right, .. } | ExprKind::Index { object: left, index: right } => {
                 all(&mut [&**left, &**right].into_iter())
@@ -4420,6 +4538,15 @@ impl Checker {
                     }
                 }
                 then_exits && else_exits
+            }
+            // The rest of a block, after the `let` of a resource: more of
+            // the same block, whose declarations its `hoist` has made.
+            StmtKind::Scoped { body, .. } => {
+                let mut exits = false;
+                for statement in body {
+                    exits |= self.stmt(statement, env);
+                }
+                exits
             }
             StmtKind::Unsafe(body) => {
                 self.frame().unsafe_blocks += 1;
@@ -4796,6 +4923,28 @@ impl Checker {
         };
         if ty.is_owned() {
             self.types.owners.insert(statement as *const Stmt as usize);
+        }
+        // The `let` of a resource releases it when its block ends (59.1).
+        if self.is_resource(&ty) {
+            match mutable {
+                true => drop(self.error(
+                    format!(
+                        "`{name}` holds a resource, which is released when its owner ends, so the variable cannot \
+                         be given another value. Declare it with `let`"
+                    ),
+                    span,
+                )),
+                false if self.page && env.top => drop(self.error(
+                    format!(
+                        "a page stays open after the program's last line, so the top of its file never ends, and \
+                         `{name}` would never be released. Make it inside the function that uses it"
+                    ),
+                    span,
+                )),
+                false => drop(self.types.resource_lets.insert((span.line, span.col))),
+            }
+        } else if self.holds_resource(&ty) && !ty.is_look() {
+            self.resource_inside(&format!("`{name}`"), span);
         }
         self.declare(env, name, ty, mutable, span);
     }
@@ -5239,6 +5388,15 @@ impl Checker {
                     continue;
                 }
                 self.same_defaults(class, &interface, &method, &asked);
+                // A `release` has nowhere to send an error (59.1).
+                if !got.raises.is_empty() && self.resource.as_ref().is_some_and(|resource| Rc::ptr_eq(resource, &interface)) {
+                    self.error(
+                        "`release` runs when the owner of its object ends, where an error has nowhere to go, so it \
+                         cannot raise. Catch the error inside `release`",
+                        span,
+                    );
+                    continue;
+                }
                 for kind in &got.raises {
                     if !want.raises.iter().any(|said| said == kind || said == "Error") {
                         self.error(
@@ -5698,6 +5856,53 @@ impl Checker {
         all_exit
     }
 
+    // ------------------------------------------------------------- Resources
+    //
+    // An object of an `owned class` that is `Resource` (decision 59.1) is
+    // released when its owner ends. In this version its owner is a `let`
+    // or a parameter, and nothing else: each other place it could go is
+    // refused here, so that every engine has only "the end of a block" to
+    // make into something that runs.
+
+    /// Is a value of this type a resource? A look at one is not: it is
+    /// the owner's to release.
+    fn is_resource(&self, ty: &Ty) -> bool {
+        let Some(resource) = &self.resource else { return false };
+        match ty {
+            Ty::Instance(class) => Rc::ptr_eq(class, resource) || class.is.borrow().iter().any(|is| Rc::ptr_eq(is, resource)),
+            _ => false,
+        }
+    }
+
+    /// Does this type hold a resource anywhere inside, a look at one
+    /// included?
+    fn holds_resource(&self, ty: &Ty) -> bool {
+        if self.resource.is_none() {
+            return false;
+        }
+        match ty {
+            Ty::List(inner) | Ty::Fixed(inner, _) | Ty::Optional(inner) | Ty::Owned(inner) | Ty::Borrowed(inner) | Ty::Alias(inner) => {
+                self.holds_resource(inner)
+            }
+            Ty::Dict(key, value) => self.holds_resource(key) || self.holds_resource(value),
+            Ty::Several(types) | Ty::Applied(_, types) => types.iter().any(|ty| self.holds_resource(ty)),
+            other => self.is_resource(other),
+        }
+    }
+
+    /// The refusal of rule 7 of 59.1, for a place that would hold a
+    /// resource inside something else.
+    fn resource_inside(&mut self, what: &str, span: Span) -> Ty {
+        self.error(
+            format!(
+                "{what} would hold a resource. A resource is released when its owner ends, and its owner is a \
+                 `let` or a parameter, never a list, a dict, a field, a case of an enum, `or none` or a type \
+                 parameter. Keep it in a `let` of its own"
+            ),
+            span,
+        )
+    }
+
     // ----------------------------------------------------------- Owned values
     //
     // Most values in Zeno are shared: `let b = a` makes a second name for
@@ -5981,14 +6186,21 @@ impl Checker {
             body.insert(variable.id, record.clone());
         }
         self.owned.moved.insert(variable.id, record);
+        // The `Scoped` the resource's `let` began does not release what
+        // was given away (59.1).
+        if self.is_resource(&variable.ty) {
+            self.types.gives.insert((span.line, span.col));
+        }
         true
     }
 
     /// The type of an expression whose value is about to be kept. An owner
     /// named here gives its value away.
     fn take(&mut self, expr: &Expr, env: &Env) -> Ty {
+        // A resource that a call gives is kept here (59.1).
+        self.receiving.insert(expr as *const Expr as usize);
         let owner = match &expr.kind {
-            ExprKind::Name(name) => {
+            ExprKind::Name(name) | ExprKind::Give(name) => {
                 // A function written inside another one only looks at
                 // what the outer one owns.
                 env.get(name)
@@ -6582,6 +6794,11 @@ impl Checker {
                     "this function is kept, so it takes `{name}`, but `{name}` is a `var`: the function around it \
                      could give it a new value after this one took it. Declare it with `let`"
                 ))
+            } else if self.is_resource(&variable.ty) {
+                Some(format!(
+                    "this function is kept, so it would take `{name}`, a resource, and nothing would release it \
+                     when its block ends. Pass `{name}` to the function as a parameter instead"
+                ))
             } else if name == "self" {
                 Some(
                     "this function is kept, so it takes `self`, but `self` is the object the method was called on, \
@@ -6662,6 +6879,7 @@ impl Checker {
             }
         }
         let declared_return = decl.return_type.as_ref().map(|ty| self.resolve_returns(ty, &function.env, span));
+        self.resource_signature(decl, &params, declared_return.as_ref(), span);
         for kind in &decl.raises {
             let known = function.env.get(kind).map(|variable| variable.ty);
             if !matches!(known, Some(Ty::ErrorType(_) | Ty::Class(_))) {
@@ -6966,6 +7184,11 @@ impl Checker {
             self.not_one.insert(expr as *const Expr as usize);
             return self.error(several_not_one(expr, types.len()), expr.span);
         }
+        if self.resource.is_some() {
+            if let Some(refused) = self.resource_here(expr, &ty) {
+                return refused;
+            }
+        }
         match &expr.kind {
             ExprKind::List(items) => {
                 self.counted.insert(expr as *const Expr as usize, items.len() as i128);
@@ -7065,6 +7288,12 @@ impl Checker {
                 Ty::Str
             }
 
+            // A resource given away, which the checker wrote in place of
+            // its name (59.1): read as the name is, by `take`.
+            ExprKind::Give(name) => match env.get(name) {
+                Some(variable) => self.read(name, variable, env, span),
+                None => self.error(format!("`{name}` is not declared"), span),
+            },
             ExprKind::Name(name) => match env.get(name) {
                 Some(variable) => {
                     self.used(name, &variable, span);
@@ -7854,6 +8083,18 @@ impl Checker {
                 if let Some(field) = class.fields.borrow().iter().find(|f| f.name == name) {
                     return field.ty.clone();
                 }
+                // It runs once, by itself, when the owner ends (59.1).
+                if name == "release" && self.is_resource(object) {
+                    return self.error(
+                        format!(
+                            "`release` runs by itself, once, when the owner of this `{0}` ends, so it cannot be \
+                             called. To end it sooner, give it to a function that takes it: `function done(held: \
+                             take {0}) {{ }}`",
+                            class.name
+                        ),
+                        span,
+                    );
+                }
                 if let Some(method) = class.methods.borrow().get(name) {
                     return Ty::BoundMethod(method.clone());
                 }
@@ -8440,6 +8681,22 @@ impl Checker {
                 continue;
             }
             filled[index] = true;
+            // Where the type is not known, a resource may not go: no
+            // engine should have to find out as the program runs whether
+            // a value is one (59.1).
+            if self.holds_resource(&argument.ty) && slots[index].ty.has_dynamic() {
+                self.error(
+                    format!(
+                        "the type of `{}` of `{what}` is not written, so a resource cannot go to it. Write its type: \
+                         `{}: {}`",
+                        slots[index].name,
+                        slots[index].name,
+                        argument.ty.clone().looked_at()
+                    ),
+                    argument.span,
+                );
+                continue;
+            }
             self.sees(&slots[index], &argument.ty, argument.span);
             let label = format!("`{}` of `{what}`", slots[index].name);
             let given =
@@ -10650,6 +10907,11 @@ impl Checker {
             );
             return None;
         }
+        // A type parameter is no owner of a resource (rule 7 of 59.1).
+        if let Some((param, _)) = generic.params.iter().zip(types).find(|(_, ty)| self.holds_resource(ty)) {
+            self.resource_inside(&format!("`{param}` of `{}`", generic.name), asked.unwrap_or(generic.span));
+            return None;
+        }
         let env = Scope::child(&generic.env);
         let mut means = Vec::new();
         // Checked on its own, a generic whose parameter says `is Shape`
@@ -11375,7 +11637,7 @@ fn args_callee(call: &Expr) -> &Box<Expr> {
 /// and for `a.rows[2].cells`.
 fn root(expr: &Expr) -> Option<&String> {
     match &expr.kind {
-        ExprKind::Name(name) => Some(name),
+        ExprKind::Name(name) | ExprKind::Give(name) => Some(name),
         ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => root(object),
         _ => None,
     }
@@ -11459,7 +11721,7 @@ fn forget_assigned(body: &[Stmt], scope: &Env) {
                 forget_assigned(then_block, scope);
                 forget_assigned(else_block.as_deref().unwrap_or_default(), scope);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Unsafe(body) => {
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Unsafe(body) | StmtKind::Scoped { body, .. } => {
                 forget_assigned(body, scope)
             }
             StmtKind::Match { arms, .. } => arms.iter().for_each(|arm| forget_assigned(&arm.body, scope)),
@@ -11497,7 +11759,7 @@ fn has_break(statements: &[Stmt]) -> bool {
             has_break(then_block) || else_block.as_deref().is_some_and(has_break)
         }
         StmtKind::Match { arms, .. } => arms.iter().any(|arm| has_break(&arm.body)),
-        StmtKind::Unsafe(body) => has_break(body),
+        StmtKind::Unsafe(body) | StmtKind::Scoped { body, .. } => has_break(body),
         StmtKind::Try { body, handlers } => {
             has_break(body) || handlers.iter().any(|handler| has_break(&handler.body))
         }
@@ -16135,5 +16397,126 @@ function total(xs: owned list[int]) -> int { return len(xs) }
             error("function two(n: int) -> (int, int) {\n    return n, n\n}\nprint([1].map(two))"),
             "the function given to `map` gives 2 values, and `map` needs one value from each call. To keep them together, declare a class and return one object"
         );
+    }
+
+    /// The messages for a program that uses the `Resource` that comes
+    /// with Zeno: joined in as `modules.rs` joins it, and checked as `zeno
+    /// run` checks it. A build with no collector must say the same, but
+    /// for the strict mode of a build, which asks first for a type that
+    /// is not written.
+    fn resource_errors(source: &str) -> Vec<String> {
+        let source = format!("{HELD}{source}");
+        let mut found = Vec::new();
+        for one_owner in [false, true] {
+            let program = parser::parse(lexer::lex(&source).expect("lexing failed")).expect("parsing failed").with_resource();
+            // As `zeno run` checks it, and as a build with no collector.
+            let rules = super::Rules { strict: one_owner, one_owner, firmware: false };
+            let (_, errors, _) = super::checked(program, rules);
+            let messages: Vec<String> = errors.into_iter().map(|error| error.message).collect();
+            match one_owner {
+                false => found = messages,
+                true if found.iter().any(|message| message.contains("is not written")) => {}
+                true => assert_eq!(messages, found, "with no collector\n{source}"),
+            }
+        }
+        found
+    }
+
+    const HELD: &str = "owned class Held is Resource {\n    name: str\n\n    function release(self) {\n        print(\"released\", self.name)\n    }\n}\n";
+
+    #[test]
+    fn a_resource_goes_only_where_it_is_released() {
+        // Rule 7 of 59.1: a `let` or a parameter, and nothing else, each
+        // refused in words that say what to write.
+        let inside = |what: &str| {
+            format!(
+                "{what} would hold a resource. A resource is released when its owner ends, and its owner is a `let` or \
+                 a parameter, never a list, a dict, a field, a case of an enum, `or none` or a type parameter. Keep it \
+                 in a `let` of its own"
+            )
+        };
+        let kept = "this call gives a resource, and nothing keeps it, so it would be released at once. Keep it in a \
+                    `let`, which releases it when its block ends: `let held = ...`";
+        let refused: Vec<(&str, String)> = vec![
+            ("var h = Held(\"a\")", "`h` holds a resource, which is released when its owner ends, so the variable cannot be given another value. Declare it with `let`".to_string()),
+            ("let hs = [Held(\"a\")]", inside("this")),
+            ("let h: Held or none = none", inside("`h`")),
+            ("class Box {\n    h: Held\n}", inside("the field `h` of `Box`")),
+            ("owned class Box {\n    h: Held\n}", inside("the field `h` of `Box`")),
+            ("enum Some {\n    One(h: Held)\n}", inside("the case `One` of the enum `Some`")),
+            ("function make() -> list[Held] {\n    return []\n}", inside("what `make` gives")),
+            ("function holder[T](x: take T) -> int {\n    return 1\n}\nlet h = Held(\"a\")\nprint(holder(h))", inside("`T` of `holder`")),
+            // Where items 11 and 12 meet: a bound, a generic class and a
+            // generic enum are each a type parameter.
+            ("function named[T is Resource](x: T) -> int {\n    return 1\n}\nlet h = Held(\"a\")\nprint(named(h))", inside("`T` of `named`")),
+            ("class Box[T is Resource] {\n    count: int\n}\nlet b: Box[Held] = Box(1)", inside("`T` of `Box`")),
+            ("enum Maybe[T] {\n    Just(value: T)\n    Nothing\n}\nlet m = Just(Held(\"a\"))", inside("`T` of `Maybe`")),
+            ("interface Source[T] {\n    function next(self) -> T\n}\nclass Maker is Source[Held] {\n    function next(self) -> Held {\n        return Held(\"made\")\n    }\n}", inside("`T` of `Source`")),
+            ("print(Held(\"a\").name)", kept.to_string()),
+            ("Held(\"a\")", kept.to_string()),
+            ("let h = Held(\"a\")\nh.release()", "`release` runs by itself, once, when the owner of this `Held` ends, so it cannot be called. To end it sooner, give it to a function that takes it: `function done(held: take Held) { }`".to_string()),
+            ("function outer() {\n    let h = Held(\"a\")\n    let f = function() -> str { return h.name }\n    print(f())\n}", "this function is kept, so it would take `h`, a resource, and nothing would release it when its block ends. Pass `h` to the function as a parameter instead".to_string()),
+            ("function two() -> (Held, int) {\n    return Held(\"a\"), 1\n}", super::RESOURCE_SEVERAL.to_string()),
+            ("function show(x) {\n    print(x)\n}\nlet h = Held(\"a\")\nshow(h)", "the type of `x` of `show` is not written, so a resource cannot go to it. Write its type: `x: Held`".to_string()),
+            ("class Plain is Resource {\n    function release(self) {\n    }\n}", "`Plain` is a `Resource`, so each of its objects has one owner, whose end releases it. Declare it `owned class Plain is Resource`".to_string()),
+            ("owned class Bad is Resource {\n    function release(self) raises ValueError {\n        raise ValueError(\"no\")\n    }\n}", "`release` runs when the owner of its object ends, where an error has nowhere to go, so it cannot raise. Catch the error inside `release`".to_string()),
+            ("import web\nlet h = Held(\"a\")", "a page stays open after the program's last line, so the top of its file never ends, and `h` would never be released. Make it inside the function that uses it".to_string()),
+        ];
+        for (source, message) in refused {
+            assert_eq!(resource_errors(source), vec![message], "\n{source}");
+        }
+        // What is taken: a `let`, a parameter that takes or looks, given
+        // back, given away, through the interface, and inside a function
+        // of a page.
+        let taken = [
+            "let h = Held(\"a\")\nprint(h.name)",
+            "function done(held: take Held) {\n    print(held.name)\n}\nlet h = Held(\"a\")\ndone(h)",
+            "function look(held: Held) -> str {\n    return held.name\n}\nlet h = Held(\"a\")\nprint(look(h))",
+            "function make() -> Held {\n    return Held(\"made\")\n}\nlet h = make()\nlet g = h",
+            "function done(held: take Held) {\n}\ndone(Held(\"passed\"))",
+            "let h = Held(\"a\")\nlet r: Resource = h",
+            "import web\nfunction pressed() {\n    let h = Held(\"a\")\n}",
+        ];
+        for source in taken {
+            assert_eq!(resource_errors(source), Vec::<String>::new(), "\n{source}");
+        }
+    }
+
+    #[test]
+    fn a_resource_of_the_program_s_own_is_the_program_s() {
+        // With a `Resource` of its own, the program means that, and
+        // nothing is released: it is an interface like any other.
+        let source = "interface Resource {\n    function release(self)\n}\nclass Lock is Resource {\n    function release(self) {\n    }\n}\nvar locks = [Lock(), Lock()]\nlocks[0].release()\n";
+        let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed").with_resource();
+        let (checked, errors, _) = super::checked(program, super::Rules { strict: true, one_owner: false, firmware: false });
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(checked.statements.len(), 4, "a `Resource` was joined in, or something was rewritten");
+        assert!(!format!("{:?}", checked.statements).contains("Scoped"));
+    }
+
+    #[test]
+    fn a_program_with_no_resource_is_not_rewritten() {
+        let source = "class Box {\n    n: int\n}\nlet b = Box(1)\nprint(b.n)\n";
+        let program = parser::parse(lexer::lex(source).expect("lexing failed")).expect("parsing failed");
+        let joined = program.clone().with_resource();
+        assert_eq!(joined, program);
+    }
+
+    #[test]
+    fn the_rest_of_a_block_after_a_resource_is_scoped() {
+        // The statements after the `let`, to the end of the block, go in a
+        // `Scoped`, the second inside the first; a taken parameter wraps
+        // the body; a name given away is a `Give`.
+        let source = format!("{HELD}function done(held: take Held) {{\n    print(held.name)\n}}\nlet a = Held(\"a\")\nlet b = Held(\"b\")\ndone(a)\n");
+        let program = parser::parse(lexer::lex(&source).expect("lexing failed")).expect("parsing failed").with_resource();
+        let (checked, errors, _) = super::checked(program, super::Rules { strict: true, one_owner: false, firmware: false });
+        assert!(errors.is_empty(), "{errors:?}");
+        let shown = crate::printer::print(&checked);
+        assert!(shown.contains("let a = Held(\"a\")\nreleased at the end: a\n    let b = Held(\"b\")\n    released at the end: b\n        done(a)"), "{shown}");
+        assert!(shown.contains("function done(held: take Held)\n    released at the end: held\n"), "{shown}");
+        let crate::ast::StmtKind::Scoped { body, .. } = &checked.statements.last().expect("statements").kind else { panic!("{shown}") };
+        let crate::ast::StmtKind::Scoped { body, .. } = &body.last().expect("statements").kind else { panic!("{shown}") };
+        let crate::ast::StmtKind::Expr(crate::ast::Expr { kind: crate::ast::ExprKind::Call { args, .. }, .. }) = &body[0].kind else { panic!("{shown}") };
+        assert_eq!(args[0].value.kind, crate::ast::ExprKind::Give("a".to_string()));
     }
 }

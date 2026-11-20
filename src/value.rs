@@ -601,6 +601,12 @@ pub fn exited() -> Option<u8> {
     EXITED.with(|exited| exited.take())
 }
 
+/// Is the program on this thread being ended by `program.exit`? Then
+/// no resource is released on the way out (decision 59.1, rule 6).
+pub fn exiting() -> bool {
+    EXITED.with(|exited| exited.get().is_some())
+}
+
 /// How a run of a whole program went: what it printed, what it wrote on
 /// the error stream (both kept only when the run is captured, for the
 /// tests), the error that stopped it if one did, and the number it ended

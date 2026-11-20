@@ -1,0 +1,166 @@
+# A resource at its edges (decision 59.1): an object of an `owned
+# class` that is `Resource` is released when its owner ends, on every
+# way out of a block, last made first, and not when it was given away.
+
+owned class Held is Resource {
+    name: str
+
+    function release(self) {
+        print("  released", self.name)
+    }
+}
+
+function make(name: str) -> Held {
+    return Held(name)
+}
+
+# A parameter that takes one releases it when the function ends.
+function done(held: take Held) {
+    print("  done with", held.name)
+}
+
+# A parameter that looks leaves it to its owner.
+function look(held: Held) -> str {
+    return held.name
+}
+
+# Given back to the caller, it is the caller's to release.
+function handed(name: str) -> Held {
+    let fresh = Held(name)
+    print("  handing", look(fresh))
+    return fresh
+}
+
+# `return` with a value that uses the resource: the value first.
+function measured(name: str) -> int {
+    let held = Held(name)
+    return len(held.name) + 1
+}
+
+# Two in one block, left at its end and by `return`.
+function two(leave: bool) -> str {
+    let first = Held("first")
+    let second = Held("second")
+    if leave {
+        return "left early"
+    }
+    return "left at the end"
+}
+
+# An error passing through two blocks that each own one.
+function inner() raises ValueError {
+    let deep = Held("deep")
+    raise ValueError("from inner")
+}
+
+function outer() raises ValueError {
+    let shallow = Held("shallow")
+    inner()
+    print("never")
+}
+
+# Given away on one path of an `if` only.
+function maybe(give: bool) {
+    let held = Held(f"maybe {give}")
+    if give {
+        done(held)
+    }
+    print("  after the if")
+}
+
+print("the end of a block:")
+if true {
+    let a = Held("a")
+    print("  in the block")
+}
+
+print("a loop, each round:")
+for i in range(4) {
+    let each = Held(f"round {i}")
+    if i == 1 {
+        continue
+    }
+    if i == 3 {
+        break
+    }
+    print("  round", i)
+}
+
+print("a while, left by break:")
+var n = 0
+while true {
+    let turn = Held(f"turn {n}")
+    n += 1
+    if n == 2 {
+        break
+    }
+}
+
+print("return with a value:", measured("measured"))
+print("two:", two(true))
+print("two:", two(false))
+
+print("an error through two blocks:")
+try {
+    outer()
+} except ValueError as e {
+    print("  caught:", e.message)
+}
+
+print("an error caught inside:")
+if true {
+    let guard = Held("guard")
+    try {
+        let inside = Held("inside")
+        raise ValueError("caught inside")
+    } except ValueError as e {
+        print("  caught:", e.message)
+    }
+    print("  still guarded")
+}
+
+print("given away:")
+let given = make("given")
+done(given)
+let passed = handed("passed")
+print("  have", look(passed))
+let moved = passed
+print("  moved to", look(moved))
+
+print("given away on one path:")
+maybe(true)
+maybe(false)
+
+print("a match:")
+for k in range(2) {
+    match k {
+        case 0 {
+            let zero = Held("in case 0")
+            print("  case 0")
+        }
+        case _ {
+            let other = Held("in case _")
+            print("  case _")
+        }
+    }
+}
+
+# A block inside may use the name again; leaving from there releases
+# the resource, not what the inner name holds.
+function shadow(early: bool) -> int {
+    let held = Held("shadowed")
+    if true {
+        let held = 5
+        if early {
+            return held
+        }
+    }
+    return 0
+}
+
+print("a name used again inside:")
+print("  gave", shadow(true))
+print("  gave", shadow(false))
+
+let top = Held("top")
+print("the last line of the file")

@@ -170,6 +170,109 @@ impl Program {
         self
     }
 
+    /// The `Resource` that comes with Zeno (decision 59.1), joined in
+    /// ahead of everything when a class of the program says it is one and
+    /// the program has no `Resource` of its own. It is written at line 0,
+    /// which no file has, and that is how the checker knows it. A program
+    /// that does not say `is Resource` is left as it was.
+    pub fn with_resource(mut self) -> Program {
+        let mut says = false;
+        let mut has_own = false;
+        for statement in &self.statements {
+            match &statement.kind {
+                StmtKind::Class(class) => {
+                    says |= class.is.iter().any(|is| matches!(is, Type::Named { name, args } if name == "Resource" && args.is_empty()));
+                    has_own |= class.name == "Resource";
+                }
+                StmtKind::Function(function) => has_own |= function.name == "Resource",
+                StmtKind::Enum(decl) => has_own |= decl.name == "Resource",
+                StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => has_own |= name == "Resource",
+                _ => {}
+            }
+        }
+        if !says || has_own {
+            return self;
+        }
+        let span = Span { line: 0, col: 0 };
+        let release = Function {
+            span,
+            name: "release".to_string(),
+            type_params: Vec::new(),
+            params: vec![Param { name: "self".to_string(), ty: None, default: None }],
+            return_type: None,
+            raises: Vec::new(),
+            body: Vec::new(),
+        };
+        let resource = Class {
+            name: "Resource".to_string(),
+            type_params: Vec::new(),
+            owned: true,
+            fields: Vec::new(),
+            methods: vec![Arc::new(release)],
+            private: Vec::new(),
+            is: Vec::new(),
+            interface: true,
+        };
+        self.statements.insert(0, Stmt { kind: StmtKind::Class(resource), span });
+        self
+    }
+
+    /// What the checker found of resources (decision 59.1), made into
+    /// what it means. After the `let` of a resource, the rest of its block
+    /// goes inside a `Scoped` that releases it; so does the body of a
+    /// function that takes one as a parameter, the first such parameter
+    /// outermost; and each name read to give one away becomes a `Give`.
+    /// Places are told by where they are written.
+    pub fn with_resources(
+        mut self,
+        lets: HashSet<(usize, usize)>,
+        params: HashSet<(usize, usize, String)>,
+        gives: HashSet<(usize, usize)>,
+    ) -> Program {
+        let taken = |function: &mut Arc<Function>| {
+            let names: Vec<String> = function
+                .params
+                .iter()
+                .filter(|param| params.contains(&(function.span.line, function.span.col, param.name.clone())))
+                .map(|param| param.name.clone())
+                .collect();
+            if names.is_empty() {
+                return;
+            }
+            let function = Arc::make_mut(function);
+            for name in names.into_iter().rev() {
+                let body = std::mem::take(&mut function.body);
+                function.body = vec![Stmt { kind: StmtKind::Scoped { name, body }, span: function.span }];
+            }
+        };
+        let mut visit = |node: Node| match node {
+            Node::Block(block) => {
+                let at = block.iter().position(|statement| {
+                    matches!(statement.kind, StmtKind::Let { .. }) && lets.contains(&(statement.span.line, statement.span.col))
+                });
+                if let Some(at) = at {
+                    let StmtKind::Let { name, .. } = &block[at].kind else { return };
+                    let (name, span) = (name.clone(), block[at].span);
+                    let body = block.split_off(at + 1);
+                    block.push(Stmt { kind: StmtKind::Scoped { name, body }, span });
+                }
+            }
+            Node::Stmt(Stmt { kind: StmtKind::Function(function), .. }) => taken(function),
+            Node::Stmt(Stmt { kind: StmtKind::Class(class), .. }) => class.methods.iter_mut().for_each(|method| taken(method)),
+            Node::Expr(Expr { kind: ExprKind::Function(function), .. }) => taken(function),
+            Node::Expr(expr) => {
+                if let ExprKind::Name(name) = &expr.kind {
+                    if gives.contains(&(expr.span.line, expr.span.col)) {
+                        expr.kind = ExprKind::Give(name.clone());
+                    }
+                }
+            }
+            Node::Stmt(_) => {}
+        };
+        fresh_block(&mut self.statements, &mut visit);
+        self
+    }
+
     /// `int(Ack)` and `Reply(6)`, for an enum whose cases have numbers
     /// (decision 35.2). The checker says where each such call is, and
     /// which enums they use. Each of those enums gets two functions,
@@ -385,6 +488,14 @@ pub enum StmtKind {
 
     /// `import a.b` has no names. `from a.b import x, y` has names x and y.
     Import { module: Vec<String>, names: Vec<String> },
+
+    /// What follows the `let` of a resource, to the end of its block:
+    /// `body` runs, and however it is left, if `name` still holds its
+    /// value, that value's `release` runs, and then the leaving goes on
+    /// as it was (decision 59.1). Only the checker makes it, and no
+    /// program can write it. It opens no scope of its own: a name its
+    /// body declares belongs to the block around it.
+    Scoped { name: String, body: Block },
 }
 
 /// One place of a `Receive`.
@@ -549,6 +660,27 @@ pub enum Node<'a> {
     Expr(&'a mut Expr),
 }
 
+/// The statements of a block, with the body of a `Scoped` at its end
+/// read as more statements of the same block, as many deep as there
+/// are. A `Scoped` opens no scope (decision 59.1), so whatever lists
+/// what a block declares lists these.
+pub fn flat(statements: &[Stmt]) -> Vec<&Stmt> {
+    let mut out = Vec::with_capacity(statements.len());
+    let mut statements = statements;
+    loop {
+        match statements.split_last() {
+            Some((Stmt { kind: StmtKind::Scoped { body, .. }, .. }, before)) => {
+                out.extend(before);
+                statements = body;
+            }
+            _ => {
+                out.extend(statements);
+                return out;
+            }
+        }
+    }
+}
+
 /// Show `visit` each block, statement and expression of these
 /// statements, those of the functions written inside them included. The
 /// statements are given functions of their own on the way (`fresh_block`),
@@ -607,7 +739,7 @@ fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {
                 fresh_block(body, visit);
                 handlers.iter_mut().for_each(|handler| fresh_block(&mut handler.body, visit));
             }
-            StmtKind::Unsafe(body) => fresh_block(body, visit),
+            StmtKind::Unsafe(body) | StmtKind::Scoped { body, .. } => fresh_block(body, visit),
             StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => fresh_block(body, visit),
             StmtKind::Assert(condition, message) => {
                 fresh_expr(condition, visit);
@@ -666,7 +798,8 @@ fn fresh_expr(expr: &mut Expr, visit: &mut dyn FnMut(Node)) {
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
         | ExprKind::None
-        | ExprKind::Name(_) => {}
+        | ExprKind::Name(_)
+        | ExprKind::Give(_) => {}
     }
 }
 
@@ -777,6 +910,10 @@ pub enum ExprKind {
     None,
     /// A variable, function or type, used by name.
     Name(String),
+    /// A resource read from the variable `name` and given away: the
+    /// variable holds nothing after it, so the `Scoped` it ends does not
+    /// release it (decision 59.1). Only the checker makes it.
+    Give(String),
     /// A number with a unit: `500 ms`
     Unit { value: Box<Expr>, unit: String },
     /// `[1, 2, 3]`

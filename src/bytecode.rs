@@ -198,6 +198,10 @@ pub enum Op {
     /// No `except` matched. Pop the error and raise it again, from the
     /// line that raised it first.
     Reraise,
+    /// Pop a resource and call its `release`, unless it is `none`, which
+    /// is what is left where it was given away (decision 59.1). Where an
+    /// error passing through was raised is kept, for the `Reraise` after.
+    Release,
     /// A mistake the compiler found, such as a name that does not exist.
     /// Stop with the message in constant n. It is an instruction, and not
     /// an error when compiling, so that the program runs up to the mistake

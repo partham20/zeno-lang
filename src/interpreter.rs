@@ -71,7 +71,7 @@ pub fn run_ending(program: &Program, capture: bool, outside: Outside) -> Ran {
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0, top: None };
                 // Built-ins live in the outermost scope; the program gets its own inside it.
                 let env = Scope::child(&builtins::globals());
                 let finished = interpreter.run_statements(&program.statements, &env);
@@ -106,32 +106,29 @@ pub fn run_tests(program: &Program, capture: bool, outside: Outside, only: Optio
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
                 let mut interpreter =
-                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0 };
+                    Interpreter { output: capture.then(String::new), warned: String::new(), depth: 0, board: Box::new(Board::new()), page: Page::simulated(outside.page.as_deref()), outside, ticks: 0, turn_began: 0.0, top: None };
                 let env = Scope::child(&builtins::globals());
-                let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
-                let mut tested = Vec::new();
-                if started.is_ok() {
-                    for statement in &program.statements {
-                        let StmtKind::Test { name, body } = &statement.kind else {
-                            continue;
-                        };
-                        if statement.span.file() != 0 {
-                            continue;
-                        }
-                        // `zeno test --only "empty"`: the tests with
-                        // that in their name, and no others.
-                        if only.is_some_and(|text| !name.contains(text)) {
-                            continue;
-                        }
-                        // A test that stopped half way may have left
-                        // calls open.
-                        interpreter.depth = 0;
-                        let failure = interpreter.exec_block(body, &env).map_err(ops::escaped).err();
-                        let word = if failure.is_some() { "FAILED" } else { "ok    " };
-                        interpreter.write_line(&format!("  {word}  {name}"));
-                        tested.push(Tested { name: name.clone(), failure });
+                // The tests of the first file. They are run where the top
+                // of the file ends: after its last line, and inside each
+                // resource it holds, which is released after them (59.1).
+                let mut tests = Vec::new();
+                for statement in crate::ast::flat(&program.statements) {
+                    let StmtKind::Test { name, body } = &statement.kind else {
+                        continue;
+                    };
+                    // `zeno test --only "empty"`: the tests with that in
+                    // their name, and no others.
+                    if statement.span.file() == 0 && !only.is_some_and(|text| !name.contains(text)) {
+                        tests.push((name.clone(), body.clone()));
                     }
                 }
+                interpreter.top = Some(Box::new(Top { env: env.clone(), tests, tested: None }));
+                let started = interpreter.run_statements(&program.statements, &env).map_err(ops::escaped);
+                // With nothing at the top to release, the top ends here.
+                if started.is_ok() && interpreter.top.as_ref().is_some_and(|top| top.tested.is_none()) {
+                    interpreter.run_tests_here();
+                }
+                let tested = interpreter.top.take().and_then(|top| top.tested).unwrap_or_default();
                 crate::bridge::close();
                 (interpreter.output.unwrap_or_default(), started.map(|()| tested))
             })
@@ -173,6 +170,7 @@ impl Session {
             outside: Outside::default(),
             ticks: 0,
             turn_began: 0.0,
+            top: None,
         };
         let env = Scope::child(&builtins::globals());
         let mut session = Session { interpreter, env, program };
@@ -339,6 +337,14 @@ impl Scope {
         Some(self.find(name)?.value.borrow().clone())
     }
 
+    /// The value of `name`, which is given away: the variable holds
+    /// `none` after it, which a resource never is (decision 59.1).
+    fn give(&self, name: &str) -> Option<Value> {
+        let variable = self.find(name)?;
+        let value = std::mem::replace(&mut *variable.value.borrow_mut(), Value::None);
+        Some(value)
+    }
+
     fn assign(&self, name: &str, value: Value) -> Result<(), AssignError> {
         let variable = self.find(name).ok_or(AssignError::NotDeclared)?;
         if !variable.mutable {
@@ -372,6 +378,18 @@ pub struct Interpreter {
     ticks: u32,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     turn_began: f64,
+    /// For `zeno test`: the tests, which run where the top of the file
+    /// ends, after its last line and before what the top holds is
+    /// released (decision 59.1).
+    top: Option<Box<Top>>,
+}
+
+/// The top of the file being tested: its scope, its tests, and what
+/// they came to once they have run.
+struct Top {
+    env: Env,
+    tests: Vec<(String, Vec<Stmt>)>,
+    tested: Option<Vec<Tested>>,
 }
 
 /// What the built-ins ask of the interpreter (see `Machine` in value.rs).
@@ -549,6 +567,9 @@ impl Interpreter {
     /// is worked out is how many there will be (`above`) and what they are
     /// called (`lets`).
     fn hoist(&mut self, statements: &[Stmt], env: &Env) -> Result<(), Control> {
+        // What follows the `let` of a resource is more of this block
+        // (decision 59.1).
+        let statements = crate::ast::flat(statements);
         let hoisted: usize = statements
             .iter()
             .map(|statement| match &statement.kind {
@@ -687,6 +708,32 @@ impl Interpreter {
             // The checker has seen to what may be written inside. To
             // run, it is a block like any other.
             StmtKind::Unsafe(body) => self.exec_block(body, env),
+            // The rest of the block after the `let` of a resource: however
+            // it is left, the resource is released if it is still there,
+            // and the leaving goes on as it was (decision 59.1).
+            StmtKind::Scoped { name, body } => {
+                let mut left = Ok(());
+                for statement in body {
+                    left = self.exec(statement, env);
+                    if left.is_err() {
+                        break;
+                    }
+                }
+                // `program.exit` ends no block (rule 6).
+                if matches!(left, Err(Control::Fatal(_))) && crate::value::exiting() {
+                    return left;
+                }
+                // Under `zeno test`, the top of the file ends after its
+                // tests: they run here, in the innermost `Scoped` of the
+                // top, before anything it holds is released.
+                let innermost = !matches!(body.last(), Some(Stmt { kind: StmtKind::Scoped { .. }, .. }));
+                let at_top = self.top.as_ref().is_some_and(|top| top.tested.is_none() && Rc::ptr_eq(&top.env, env));
+                if left.is_ok() && innermost && at_top {
+                    self.run_tests_here();
+                }
+                self.release(name, env, span)?;
+                left
+            }
             StmtKind::While { condition, body } => {
                 while self.condition(condition, env)? {
                     self.tick(span)?;
@@ -941,6 +988,10 @@ impl Interpreter {
                 Some(value) => Ok(value),
                 None => fatal(format!("`{name}` is not defined"), span),
             },
+            ExprKind::Give(name) => match env.give(name) {
+                Some(value) => Ok(value),
+                None => fatal(format!("`{name}` is not defined"), span),
+            },
 
             ExprKind::Unit { value, unit } => {
                 let value = self.eval(value, env)?;
@@ -1097,6 +1148,35 @@ impl Interpreter {
         ops::logic_operand(op, value, operand.span)
     }
 
+
+    /// Run the tests of the file being tested, at the end of its top.
+    fn run_tests_here(&mut self) {
+        let Some(top) = self.top.as_mut() else { return };
+        let (env, tests) = (top.env.clone(), std::mem::take(&mut top.tests));
+        let mut tested = Vec::new();
+        for (name, body) in tests {
+            // A test that stopped half way may have left calls open.
+            self.depth = 0;
+            let failure = self.exec_block(&body, &env).map_err(ops::escaped).err();
+            let word = if failure.is_some() { "FAILED" } else { "ok    " };
+            self.write_line(&format!("  {word}  {name}"));
+            tested.push(Tested { name, failure });
+        }
+        if let Some(top) = self.top.as_mut() {
+            top.tested = Some(tested);
+        }
+    }
+
+    /// Call `release` on what the resource `name` holds, unless it was
+    /// given away (decision 59.1).
+    fn release(&mut self, name: &str, env: &Env, span: Span) -> Result<(), Control> {
+        let Some(Value::Instance(instance)) = env.give(name) else { return Ok(()) };
+        let Some(release) = instance.class.methods.get("release").cloned() else {
+            return fatal(format!("`{}` has no `release`", instance.class.name), span);
+        };
+        self.call_function(&release, vec![Value::Instance(instance)], Vec::new(), span)?;
+        Ok(())
+    }
 
     // ----------------------------------------------------------------- Calls
 
@@ -4316,5 +4396,51 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
              register 0x40004400 = 0x00000000\n\
              Register(0x40004400) Register(0x4000440c) <pointer[u8]>\n"
         );
+    }
+
+    // ----- Resources (decision 59.1) -----
+
+    const HELD: &str = "owned class Held is Resource {\n    name: str\n\n    function release(self) {\n        print(\"released\", self.name)\n    }\n}\n";
+
+    /// How a program with resources ends, on both engines. The checker
+    /// is the one that says where each resource's owner ends.
+    fn resourced(source: &str) -> crate::value::Ran {
+        let source = format!("{HELD}{source}");
+        let program = parser::parse(lexer::lex(&source).unwrap()).unwrap().with_resource();
+        let (program, complaints, _) = crate::checker::checked(program, crate::checker::Rules::default());
+        assert!(complaints.is_empty(), "the checker rejected a working program: {complaints:?}\n{source}");
+        crate::vm::run_both_ending(&program, &source)
+    }
+
+    #[test]
+    fn an_error_that_ends_the_program_releases_on_its_way_out() {
+        // The top of the file ends too, so its resources are released
+        // before the error is reported; the report is as it always was.
+        let ran = resourced(
+            "function fail() {\n    let inner = Held(\"inner\")\n    raise ValueError(\"bad\")\n}\n\
+             let a = Held(\"a\")\nprint(\"before\")\nfail()\nprint(\"after\")\n",
+        );
+        assert_eq!(ran.output, "before\nreleased inner\nreleased a\n");
+        assert_eq!(ran.result.map_err(|error| error.message), Err("uncaught ValueError: bad".to_string()));
+    }
+
+    #[test]
+    fn under_test_the_top_of_a_file_ends_after_its_last_test() {
+        // The tests use what the top made, so it is released after them;
+        // a test that fails releases what its own blocks held.
+        let source = format!(
+            "{HELD}let top = Held(\"top\")\n\
+             test \"one\" {{\n    let inner = Held(\"inner\")\n    assert 1 == 2\n    print(\"not here\")\n}}\n\
+             test \"two\" {{\n    print(\"using\", top.name)\n}}\nprint(\"program\")\n"
+        );
+        let program = parser::parse(lexer::lex(&source).unwrap()).unwrap().with_resource();
+        let (program, complaints, _) = crate::checker::checked(program, crate::checker::Rules::default());
+        assert!(complaints.is_empty(), "{complaints:?}");
+        let (output, tested) = super::run_tests(&program, true, crate::value::testing::outside(), None);
+        assert_eq!(output, "program\nreleased inner\n  FAILED  one\nusing top\n  ok      two\nreleased top\n");
+        let tested = tested.expect("the program ran");
+        assert_eq!(tested.iter().map(|test| test.failure.is_some()).collect::<Vec<_>>(), [true, false]);
+        // `zeno run` runs no test, and the top is released at its end.
+        assert_eq!(resourced("let top = Held(\"top\")\ntest \"one\" {\n    print(\"no\")\n}\nprint(\"program\")\n").output, "program\nreleased top\n");
     }
 }

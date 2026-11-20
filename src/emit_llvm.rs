@@ -1164,6 +1164,11 @@ struct Code {
     /// with one of these names is shared with such a function, so it
     /// cannot live on this function's stack. See `declare`.
     shared: HashSet<String>,
+    /// The resources whose blocks are open here, first made first
+    /// (decision 59.1): the block each one's variable is in, and its
+    /// name. Each way out of a block releases them, last made first,
+    /// before it frees (`free_owned`).
+    resources: Vec<(usize, String)>,
 }
 
 impl Code {
@@ -1191,6 +1196,7 @@ impl Code {
             on_stack: HashSet::new(),
             careful: false,
             shared: HashSet::new(),
+            resources: Vec::new(),
         }
     }
 
@@ -1305,6 +1311,10 @@ struct Emitter<'a> {
     /// Built by `zeno test --build`: the tests to run after the program,
     /// and an `assert` is compiled (decision 60.2).
     tests: Option<TestBuild>,
+    /// The tests have been run already: at the end of the innermost
+    /// resource at the top of the file, before it is released (rulings
+    /// of decision 59.1).
+    tests_run: bool,
 }
 
 /// The runtime functions that are called differently in a firmware
@@ -1822,12 +1832,14 @@ fn emit_all(
         program: String::new(),
         used: BTreeSet::new(),
         tests: tests.cloned(),
+        tests_run: false,
     };
 
     // A function can be called above the line it is written on, and a
     // class used above its own, so all of them are made known before
-    // anything is compiled.
-    for statement in &program.statements {
+    // anything is compiled. What follows the `let` of a resource at the
+    // top of the file is more of the top of the file (decision 59.1).
+    for statement in crate::ast::flat(&program.statements) {
         match &statement.kind {
             // A generic function is not compiled. Its copies are, one
             // for each set of types the program calls it with. The
@@ -1867,9 +1879,10 @@ fn emit_all(
     for statement in &program.statements {
         emitter.statement(statement)?;
     }
-    // The tests run after the program, and see what it made.
+    // The tests run after the program, and see what it made. (With a
+    // resource at the top of the file, they ran before it was released.)
     if let Some(tests) = tests {
-        if !emitter.code.ended {
+        if !emitter.code.ended && !emitter.tests_run {
             emitter.run_tests(tests)?;
         }
     }
@@ -1944,6 +1957,12 @@ impl Emitter<'_> {
             out += &format!("@zeno.modules = private constant [{} x ptr] [{}]\n", modules.len(), modules.join(", "));
         }
         out += "@zeno_raised = external global ptr\n";
+        if self.used.contains("zeno_raised_line") {
+            // Where the error on its way was raised: kept aside while a
+            // resource is released (decision 59.1).
+            out += "@zeno_raised_line = external global i32\n";
+            out += "@zeno_raised_col = external global i32\n";
+        }
         if self.collector {
             out += "@zeno_stack_base = external global ptr\n";
             self.used.insert("zeno_mark_words");
@@ -2674,23 +2693,12 @@ impl Emitter<'_> {
         if self.at_the_top() {
             return statements.iter().try_for_each(|statement| self.statement(statement));
         }
-        let made = self.inner_functions(statements)?;
-        let done = (|| {
-            for (index, statement) in statements.iter().enumerate() {
-                for (at, decl, span) in &made {
-                    if *at == index {
-                        self.inner_closure(decl, *span)?;
-                    }
-                }
-                self.statement(statement)?;
-            }
-            for (at, decl, span) in &made {
-                if *at == statements.len() && !self.code.ended {
-                    self.inner_closure(decl, *span)?;
-                }
-            }
-            Ok(())
-        })();
+        // What follows the `let` of a resource is more of the same block
+        // (decision 59.1): its functions are looked for there too, and
+        // the places they are made at are counted through it.
+        let flat = crate::ast::flat(statements);
+        let made = self.inner_functions(&flat)?;
+        let done = self.statements_from(statements, &made, 0, flat.len());
         let frame = self.inner_frames.pop().unwrap_or_default();
         for (name, before) in frame.into_iter().rev() {
             match before {
@@ -2701,12 +2709,211 @@ impl Emitter<'_> {
         done
     }
 
+    /// The statements of `statements`, the first of them at `first` in
+    /// the block read flat, and the rest of a resource's block inside
+    /// what releases it. `total` is how many the block has, read flat.
+    fn statements_from(
+        &mut self,
+        statements: &[Stmt],
+        made: &[(usize, Arc<Function>, Span)],
+        first: usize,
+        total: usize,
+    ) -> Result<(), Error> {
+        for (offset, statement) in statements.iter().enumerate() {
+            let index = first + offset;
+            if let StmtKind::Scoped { name, body } = &statement.kind {
+                // Its first statement is the one at `index`, read flat.
+                self.open();
+                return self.scoped(name, body, statement.span, &mut |this| this.statements_from(body, made, index, total));
+            }
+            for (at, decl, span) in made {
+                if *at == index {
+                    self.inner_closure(decl, *span)?;
+                }
+            }
+            self.statement(statement)?;
+        }
+        for (at, decl, span) in made {
+            if *at == total && !self.code.ended {
+                self.inner_closure(decl, *span)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The rest of a block after the `let` of a resource, or the body of
+    /// a function that takes one (decision 59.1), as `emit_c::Emitter::
+    /// scoped` writes it. However it is left, the resource is released if
+    /// its variable still holds it, and the leaving goes on as it was. It
+    /// opens no block: what is declared in it is the block's. The end of
+    /// it, `return`, `break`, `continue` and an error as a value release
+    /// it through `free_owned`. In an ordinary build the rest is a `try`
+    /// too, for an error that jumps:
+    ///
+    /// ```text
+    ///   call void @zeno_try_open(ptr %try.1)
+    ///   %t2 = call i32 @_setjmp(ptr %try.1) returns_twice
+    ///   %t3 = icmp eq i32 %t2, 0
+    ///   br i1 %t3, label %held1, label %passing1
+    /// passing1:                                  ; an error on its way
+    ///   ...release...
+    ///   call void @zeno_raise_again()
+    ///   unreachable
+    /// held1:
+    ///   ...the rest of the block...
+    ///   call void @zeno_try_close(ptr %try.1)
+    ///   ...release...
+    /// ```
+    fn scoped(
+        &mut self,
+        name: &str,
+        body: &[Stmt],
+        span: Span,
+        compile: &mut dyn FnMut(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let top = self.at_the_top();
+        let Some(depth) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) else {
+            return Err(cannot(format!("the resource `{name}`"), span));
+        };
+        let mut place = None;
+        if !self.firmware {
+            let n = self.number();
+            let at = format!("%try.{n}");
+            self.uses("zeno_try_size");
+            self.code.slots.push(format!("  %try.size.{n} = call i64 @zeno_try_size()"));
+            self.code.slots.push(format!("  {at} = alloca i8, i64 %try.size.{n}, align 16"));
+            self.run("zeno_try_open", format!("ptr {at}"));
+            self.uses("_setjmp");
+            let came = self.set(format!("call i32 @_setjmp(ptr {at}{SETJMP_TAKES}) returns_twice"));
+            let first = self.set(format!("icmp eq i32 {came}, 0"));
+            let (held, passing) = (format!("held{n}"), format!("passing{n}"));
+            self.jump_if(&first, &held, &passing);
+            // The runtime has taken this `try` off its list by now.
+            self.place(&passing);
+            let kept = self.keep_raised();
+            self.release(depth, name, span)?;
+            self.put_back_raised(kept);
+            self.run("zeno_raise_again", "");
+            self.end("unreachable");
+            self.place(&held);
+            self.code.tries.push(at.clone());
+            // A `raise` inside frees nothing of the resource's block:
+            // the release above still needs what it holds.
+            self.code.try_scopes.push(self.scopes.len());
+            place = Some(at);
+        }
+        self.code.resources.push((depth, name.to_string()));
+        let result = compile(self);
+        self.code.resources.pop();
+        if place.is_some() {
+            self.code.try_scopes.pop();
+            self.code.tries.pop();
+        }
+        result?;
+        // Left by its last line, which released on its way out.
+        if self.code.ended {
+            return Ok(());
+        }
+        if let Some(at) = &place {
+            self.run("zeno_try_close", format!("ptr {at}"));
+        }
+        // Under `zeno test --build` the top of the file ends after its
+        // last test, so the tests run before its last resource is
+        // released (rulings of decision 59.1).
+        let innermost = !matches!(body.last().map(|statement| &statement.kind), Some(StmtKind::Scoped { .. }));
+        if top && innermost && !self.tests_run {
+            if let Some(tests) = self.tests.clone() {
+                self.tests_run = true;
+                self.run_tests(&tests)?;
+            }
+        }
+        self.release(depth, name, span)
+    }
+
+    /// Release the resource `name` if its variable still holds it: the
+    /// variable is left holding nothing first, so that nothing releases
+    /// it twice, then `release` is called, and the object is freed after,
+    /// unless `release` took it.
+    ///
+    /// ```text
+    ///   %t1 = load ptr, ptr %var.held
+    ///   %t2 = icmp eq ptr %t1, null
+    ///   br i1 %t2, label %released1, label %release1
+    /// release1:
+    ///   store ptr null, ptr %var.held
+    ///   call void @z_Held.release(ptr %t1)
+    ///   call void @zeno.drop.Held(ptr %t1)
+    ///   br label %released1
+    /// released1:
+    /// ```
+    /// `depth` is the block the variable is in: a block inside may have
+    /// a variable of the same name.
+    fn release(&mut self, depth: usize, name: &str, span: Span) -> Result<(), Error> {
+        let Some(variable) = self.scopes.get(depth).and_then(|scope| scope.get(name)).cloned() else {
+            return Err(cannot(format!("the resource `{name}`"), span));
+        };
+        let Place::Slot(slot) = &variable.place else {
+            return Err(cannot(format!("the resource `{name}`, held where it cannot be given away"), span));
+        };
+        let entry = match &variable.kind {
+            Kind::Class(class) => self.classes.get(class).and_then(|entry| entry.methods.get("release")).cloned(),
+            _ => None,
+        };
+        let Some(entry) = entry else {
+            return Err(cannot(format!("the resource `{name}`, with no `release`"), span));
+        };
+        let held = self.load("ptr", slot);
+        let gone = self.set(format!("icmp eq ptr {held}, null"));
+        let n = self.number();
+        let (release, released) = (format!("release{n}"), format!("released{n}"));
+        self.jump_if(&gone, &released, &release);
+        self.place(&release);
+        self.store("ptr", "null", slot);
+        self.ins(format!("call void {}(ptr {held})", entry.name));
+        if entry.owned.first() != Some(&true) {
+            self.free(&variable.kind, &held, span)?;
+        }
+        self.place(&released);
+        Ok(())
+    }
+
+    /// Before a resource is released while an error is on its way: keep
+    /// the error aside, for a `release` may catch one of its own inside,
+    /// which is noted in the same place.
+    fn keep_raised(&mut self) -> (String, String, String) {
+        // Variables of the runtime, not functions: see `file`.
+        self.used.insert("zeno_raised_line");
+        let error = self.set("load ptr, ptr @zeno_raised");
+        let line = self.set("load i32, ptr @zeno_raised_line");
+        let col = self.set("load i32, ptr @zeno_raised_col");
+        (error, line, col)
+    }
+
+    /// And after: the error on its way is the one it was.
+    fn put_back_raised(&mut self, (error, line, col): (String, String, String)) {
+        self.ins(format!("store ptr {error}, ptr @zeno_raised"));
+        self.ins(format!("store i32 {line}, ptr @zeno_raised_line"));
+        self.ins(format!("store i32 {col}, ptr @zeno_raised_col"));
+    }
+
+    /// `free_owned`, for an error on its way: with the error kept aside
+    /// while a resource that it releases is released.
+    fn free_owned_raised(&mut self, from: usize) -> Result<(), Error> {
+        if !self.code.resources.iter().any(|(at, _)| *at >= from) {
+            return self.free_owned(from);
+        }
+        let kept = self.keep_raised();
+        self.free_owned(from)?;
+        self.put_back_raised(kept);
+        Ok(())
+    }
+
     /// The functions with names that a block declares, sorted as
     /// `emit_c::Emitter::inner_functions` sorts them: one that uses
     /// nothing of the function around it waits to be written as a
     /// function of the file, and is in sight from here; one that does is
     /// given back with the statement it is made before.
-    fn inner_functions(&mut self, statements: &[Stmt]) -> Result<Vec<(usize, Arc<Function>, Span)>, Error> {
+    fn inner_functions(&mut self, statements: &[&Stmt]) -> Result<Vec<(usize, Arc<Function>, Span)>, Error> {
         let around: HashSet<String> = self.scopes[1..].iter().flat_map(|scope| scope.keys().cloned()).collect();
         let plan = emit_c::inner_plan(statements, &around, "`zeno build --llvm`")?;
         self.inner_frames.push(Vec::new());
@@ -2782,6 +2989,12 @@ impl Emitter<'_> {
         let span = statement.span;
         self.open();
         match &statement.kind {
+            // At the top of the file, where each statement is written by
+            // itself, or in a block of statements that `statements` did
+            // not read.
+            StmtKind::Scoped { name, body } => {
+                self.scoped(name, body, span, &mut |this| body.iter().try_for_each(|statement| this.statement(statement)))
+            }
             StmtKind::Let { name, ty, value, .. } | StmtKind::Const { name, ty, value } => {
                 let mutable = matches!(statement.kind, StmtKind::Let { mutable: true, .. });
                 // A type written beside the name settles what `none` and
@@ -3815,7 +4028,21 @@ impl Emitter<'_> {
     ///   %t9 = load ptr, ptr %var.frame
     ///   call void @zeno.drop.Frame(ptr %t9)
     /// ```
+    ///
+    /// The resources of a block are released, last made first, before
+    /// its owners are freed (decision 59.1).
     fn free_owned(&mut self, from: usize) -> Result<(), Error> {
+        if self.code.resources.iter().any(|(at, _)| *at >= from) {
+            for depth in (from..self.scopes.len()).rev() {
+                let releases: Vec<String> =
+                    self.code.resources.iter().rev().filter(|(at, _)| *at == depth).map(|(_, name)| name.clone()).collect();
+                for name in releases {
+                    self.release(depth, &name, Span { line: 0, col: 0 })?;
+                }
+                self.free_block(depth)?;
+            }
+            return Ok(());
+        }
         let mut owners = Vec::new();
         for scope in self.scopes.iter().skip(from).rev() {
             let mut here: Vec<(String, bool, Kind)> = scope
@@ -3830,6 +4057,24 @@ impl Emitter<'_> {
             here.sort_by(|a, b| a.0.cmp(&b.0));
             owners.extend(here);
         }
+        for (place, is_slot, kind) in owners {
+            let value = if is_slot { self.load("ptr", &place) } else { place };
+            self.free(&kind, &value, Span { line: 0, col: 0 })?;
+        }
+        Ok(())
+    }
+
+    /// Free what the owners of the one block `scopes[depth]` still hold.
+    fn free_block(&mut self, depth: usize) -> Result<(), Error> {
+        let mut owners: Vec<(String, bool, Kind)> = self.scopes[depth]
+            .values()
+            .filter(|variable| variable.owner)
+            .map(|variable| match &variable.place {
+                Place::Slot(slot) => (slot.clone(), true, variable.kind.clone()),
+                Place::Value(code) => (code.clone(), false, variable.kind.clone()),
+            })
+            .collect();
+        owners.sort_by(|a, b| a.0.cmp(&b.0));
         for (place, is_slot, kind) in owners {
             let value = if is_slot { self.load("ptr", &place) } else { place };
             self.free(&kind, &value, Span { line: 0, col: 0 })?;
@@ -4997,12 +5242,23 @@ impl Emitter<'_> {
         // what their owners hold is freed on the way out.
         if let Some(label) = self.code.tries.last().cloned() {
             let inside = self.code.try_scopes.last().copied().unwrap_or(self.scopes.len());
-            self.free_owned(inside)?;
+            self.free_owned_raised(inside)?;
             self.jump(&label);
         } else if self.code.fallible {
-            self.free_owned(self.base())?;
+            self.free_owned_raised(self.base())?;
             self.end("ret i1 false");
         } else if !self.code.in_function {
+            // Nobody catches it. The resources of the top of the file are
+            // released on its way out, as `zeno run` releases them; the
+            // rest is left as it is (decision 59.1).
+            if !self.code.resources.is_empty() {
+                let kept = self.keep_raised();
+                let held: Vec<(usize, String)> = self.code.resources.iter().rev().cloned().collect();
+                for (depth, name) in held {
+                    self.release(depth, &name, span)?;
+                }
+                self.put_back_raised(kept);
+            }
             self.run("zeno_uncaught", "");
             self.end("unreachable");
         } else {
@@ -5274,6 +5530,17 @@ impl Emitter<'_> {
     fn value(&mut self, expr: &Expr) -> Result<Val, Error> {
         let span = expr.span;
         Ok(match &expr.kind {
+            // A resource given away (decision 59.1): as an owner gives its
+            // value away (see `name`).
+            ExprKind::Give(name) => match self.lookup(name).cloned() {
+                Some(Variable { place: Place::Slot(slot), kind, .. }) => {
+                    let ty = ir_type(&kind, span)?;
+                    let taken = self.load(ty, &slot);
+                    self.store(ty, "null", &slot);
+                    Val::new(taken, kind)
+                }
+                _ => return Err(cannot(format!("`{name}` given away here"), span)),
+            },
             // Read by `return` and `receive` themselves (decision 57).
             ExprKind::Several(_) => return Err(cannot("several values written anywhere but after `return` or `=`", span)),
             // The lexer lets one number through that is one too big for an

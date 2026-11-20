@@ -99,6 +99,9 @@ struct Function {
     loops: Vec<Loop>,
     /// How many `try` bodies the compiler is inside.
     tries: usize,
+    /// The resources whose `Scoped` the compiler is inside, outermost
+    /// first: each way out of one releases it (decision 59.1).
+    scopeds: Vec<Scoped>,
     /// The names that functions written inside this one use. A variable
     /// with one of these names goes in a cell.
     shared: HashSet<String>,
@@ -135,6 +138,7 @@ impl Function {
             blocks: Vec::new(),
             loops: Vec::new(),
             tries: 0,
+            scopeds: Vec::new(),
             shared,
             numbered: HashMap::new(),
         }
@@ -172,6 +176,21 @@ enum Place {
     Cell(u32),
     /// A cell of a function around this one, which this one captured.
     Captured(u32),
+}
+
+/// The rest of a block after the `let` of a resource (decision 59.1).
+struct Scoped {
+    /// The variable that holds the resource.
+    name: String,
+    /// Where it is, found at its `let`: an inner block may declare the
+    /// same name, and a `return` from there releases this one.
+    place: Option<Place>,
+    /// How many `try` bodies the compiler was inside before this one's
+    /// own, which catches an error passing through.
+    tries: usize,
+    /// How many loops it was inside: a `break` or `continue` of a loop
+    /// begun before it leaves it.
+    loops: usize,
 }
 
 struct Loop {
@@ -214,7 +233,7 @@ impl Compiler {
             Op::SetLocal(_) | Op::DefineCell(_) | Op::SetCell(_) | Op::SetCaptured(_) => -1,
             Op::Binary(_) | Op::And(_) | Op::Or(_) | Op::Chain(..) => -1,
             Op::Append(_) | Op::GetIndex | Op::TakeIndex | Op::JumpIfFalse(_) => -1,
-            Op::Return | Op::Raise | Op::Reraise => -1,
+            Op::Return | Op::Raise | Op::Reraise | Op::Release => -1,
             Op::List(n) | Op::Text(n) | Op::Object(n) | Op::Several(n) => 1 - n as i64,
             Op::Unpack(n) => n as i64 - 1,
             Op::Dict(n) => 1 - 2 * n as i64,
@@ -468,7 +487,9 @@ impl Compiler {
     /// that moment, but its cell has to exist, so that the function and
     /// the block are looking at the same one.
     fn prepare(&mut self, statements: &[Stmt]) {
-        for statement in statements {
+        // What follows the `let` of a resource is more of this block
+        // (decision 59.1).
+        for statement in crate::ast::flat(statements) {
             let names: Vec<&str> = match &statement.kind {
                 StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => vec![name],
                 StmtKind::Receive { places, .. } => {
@@ -505,7 +526,7 @@ impl Compiler {
     /// that it sees the variables declared above it and no others. Until
     /// then the function has a number and no code.
     fn hoist(&mut self, statements: &[Stmt]) {
-        for statement in statements {
+        for statement in crate::ast::flat(statements) {
             let span = statement.span;
             match &statement.kind {
                 StmtKind::Function(decl) => {
@@ -560,6 +581,37 @@ impl Compiler {
         let span = statement.span;
 
         match &statement.kind {
+            // The rest of the block after the `let` of a resource. Its body
+            // runs in a `try` of its own: an error passing through releases
+            // the resource and goes on as it was. Each other way out is
+            // written below, and `return`, `break` and `continue` release
+            // it on their way (`release_from`). Its body is more of the
+            // same block, which `prepare` and `hoist` have already seen.
+            StmtKind::Scoped { name, body } => {
+                let height = self.f().height;
+                let (tries, loops) = (self.f().tries, self.f().loops.len());
+                let place = self.resolve(name).map(|(place, ..)| place);
+                self.f().scopeds.push(Scoped { name: name.clone(), place, tries, loops });
+                let to_handler = self.emit(Op::Try(0), span);
+                self.f().tries += 1;
+                for statement in body {
+                    self.statement(statement);
+                }
+                self.f().tries -= 1;
+                self.f().scopeds.pop();
+                self.emit(Op::EndTry, span);
+                self.release(name, span);
+                let after = self.f().height;
+                let to_end = self.emit(Op::Jump(0), span);
+
+                // An error comes here, with the stack as it was at `Try`.
+                self.patch(to_handler);
+                self.f().height = height + 1;
+                self.release(name, span);
+                self.emit(Op::Reraise, span);
+                self.patch(to_end);
+                self.f().height = after;
+            }
             StmtKind::Let { mutable, name, value, .. } => {
                 self.expr(value);
                 self.declare(name, *mutable, false, span);
@@ -797,6 +849,9 @@ impl Compiler {
                     self.mistake("`return` outside a function", span);
                     self.emit(Op::Pop(1), span);
                 } else {
+                    // The value first, and then the function's resources
+                    // are released (decision 59.1).
+                    self.release_from(0, span);
                     self.emit(Op::Return, span);
                 }
             }
@@ -855,8 +910,12 @@ impl Compiler {
             return self.mistake(format!("`{word}` outside a loop"), span);
         };
         let (height, start, tries) = (inside.height, inside.start, inside.tries);
+        // A resource whose `let` is inside the loop is released.
+        let loops = self.f().loops.len();
+        let first = self.f().scopeds.iter().position(|scoped| scoped.loops >= loops).unwrap_or(self.f().scopeds.len());
+        let open = self.release_from(first, span);
         // Any `try` begun inside the loop is being left as well.
-        for _ in tries..self.f().tries {
+        for _ in tries..open {
             self.emit(Op::EndTry, span);
         }
         self.emit(Op::PopTo(height), span);
@@ -866,6 +925,37 @@ impl Compiler {
         } else {
             self.emit(Op::Jump(start as u32), span);
         }
+    }
+
+    /// Release the resource in the variable `name`, if it still holds it
+    /// (decision 59.1).
+    fn release(&mut self, name: &str, span: Span) {
+        self.load(name, span);
+        self.emit(Op::Release, span);
+    }
+
+    /// Leave the `Scoped`s from number `first` on, innermost first: each
+    /// `try` begun inside one is ended, its own included, so that its
+    /// `release` is not caught by it, and then it is released. Returns
+    /// how many `try` bodies are still open after them.
+    fn release_from(&mut self, first: usize, span: Span) -> usize {
+        let mut open = self.f().tries;
+        let leaving: Vec<(String, Option<Place>, usize)> =
+            self.f().scopeds[first..].iter().rev().map(|scoped| (scoped.name.clone(), scoped.place, scoped.tries)).collect();
+        for (name, place, tries) in leaving {
+            for _ in tries..open {
+                self.emit(Op::EndTry, span);
+            }
+            open = tries;
+            match place {
+                Some(Place::Slot(slot)) => drop(self.emit_noted(Op::GetLocal(slot), span, &name)),
+                Some(Place::Cell(cell)) => drop(self.emit(Op::GetCell(cell), span)),
+                Some(Place::Captured(index)) => drop(self.emit(Op::GetCaptured(index), span)),
+                None => self.constant(Value::None, span),
+            }
+            self.emit(Op::Release, span);
+        }
+        open
     }
 
     /// Store the value on top of the stack in `target`.
@@ -1111,6 +1201,19 @@ impl Compiler {
         let span = expr.span;
 
         match &expr.kind {
+            // A resource given away: its value, and `none` left in the
+            // variable, so that its `Scoped` does not release it
+            // (decision 59.1).
+            ExprKind::Give(name) => {
+                self.load(name, span);
+                self.constant(Value::None, span);
+                match self.resolve(name) {
+                    Some((Place::Slot(slot), ..)) => drop(self.emit_noted(Op::SetLocal(slot), span, name)),
+                    Some((Place::Cell(cell), ..)) => drop(self.emit(Op::SetCell(cell), span)),
+                    Some((Place::Captured(index), ..)) => drop(self.emit(Op::SetCaptured(index), span)),
+                    None => drop(self.emit(Op::Pop(1), span)),
+                }
+            }
             ExprKind::Int(n) => match i64::try_from(*n) {
                 Ok(n) => self.constant(Value::Int(n), span),
                 Err(_) => {
@@ -1360,6 +1463,11 @@ impl Names {
 
     fn statement(&mut self, statement: &Stmt) {
         match &statement.kind {
+            // Its release reads the resource by name.
+            StmtKind::Scoped { name, body } => {
+                self.add(name);
+                self.block(body);
+            }
             StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => self.expr(value),
             StmtKind::Assign { target, value, .. } => {
                 self.expr(target);
@@ -1445,7 +1553,7 @@ impl Names {
     fn expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
-            ExprKind::Name(name) => self.add(name),
+            ExprKind::Name(name) | ExprKind::Give(name) => self.add(name),
             ExprKind::FormatStr(parts) => {
                 for part in parts {
                     if let FormatPart::Value { value, .. } = part {

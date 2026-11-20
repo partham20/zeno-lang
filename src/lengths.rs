@@ -145,7 +145,10 @@ impl Reader<'_> {
                     self.block(&handler.body);
                 }
             }
-            StmtKind::Unsafe(body) | StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => self.block(body),
+            StmtKind::Unsafe(body)
+            | StmtKind::Test { body, .. }
+            | StmtKind::AssertRaises { body, .. }
+            | StmtKind::Scoped { body, .. } => self.block(body),
             StmtKind::Assert(condition, message) => {
                 self.look(condition);
                 if let Some(message) = message {
@@ -174,8 +177,8 @@ impl Reader<'_> {
         }
         match &expr.kind {
             // Named anywhere not listed below, it could be kept.
-            ExprKind::Name(name) if name == self.param => self.report(format!("it keeps `{name}`"), expr.span),
-            ExprKind::Name(_) => {}
+            ExprKind::Name(name) | ExprKind::Give(name) if name == self.param => self.report(format!("it keeps `{name}`"), expr.span),
+            ExprKind::Name(_) | ExprKind::Give(_) => {}
             ExprKind::Index { object, index } => {
                 self.look(object);
                 self.expr(index);

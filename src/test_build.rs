@@ -475,7 +475,7 @@ mod tests {
     /// prints it, with the line of totals that a program built for its
     /// tests prints when it runs by itself.
     fn interpreted(source: &str) -> String {
-        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses");
+        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses").with_resource();
         let (program, errors, _) = checker::checked(program, checker::Rules::default());
         assert!(errors.is_empty(), "the checker refused the program: {:?}", errors[0].message);
         let (output, tested) = interpreter::run_tests(&program, true, value::testing::outside(), None);
@@ -499,7 +499,7 @@ mod tests {
     /// what it printed, what it wrote as errors, and the number it ended
     /// with. `None` if this machine has no compiler for it.
     fn compiled(name: &str, source: &str, build: Build, llvm: bool) -> Option<(String, String, i32)> {
-        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses");
+        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses").with_resource();
         let (program, tests) = with_tests(program, None).expect("the tests are made functions");
         let (program, errors, types) = checker::checked(program, build.rules());
         assert!(errors.is_empty(), "the build's checker refused the program: {:?}", errors[0].message);
@@ -584,6 +584,42 @@ mod tests {
              test \"compared\" {\n    assert [1, 2] != [1, 2]\n}\n",
             EVERY_BUILD,
         );
+    }
+
+    const HELD: &str = "owned class Held is Resource {\n    name: str\n\n    function release(self) {\n        \
+                        print(\"released\", self.name)\n    }\n}\n";
+
+    #[test]
+    fn a_failed_assert_releases_what_the_test_owns() {
+        // A failed `assert` leaves the test as `return` would: through
+        // every `try`, releasing what the test owns, innermost first
+        // (decision 59.1). So does an error the test raises.
+        let source = format!(
+            "{HELD}{}",
+            "print(\"the top of the file\")\n\
+             test \"failed\" {\n    let mine = Held(\"the test's\")\n    if true {\n        let deeper = Held(\"deeper\")\n        \
+             assert 1 + 1 == 3, \"arithmetic\"\n    }\n    print(\"never\")\n}\n\
+             test \"passing\" {\n    let mine = Held(\"passing\")\n    assert len(mine.name) > 0\n}\n\
+             test \"in a try\" {\n    let outer = Held(\"outer\")\n    try {\n        let inner = Held(\"inner\")\n        \
+             if len(inner.name) == 0 {\n            raise ValueError(\"never raised\")\n        }\n        \
+             assert false, \"in the try\"\n    } except Error as e {\n        print(\"not caught\")\n    }\n}\n\
+             test \"raised\" {\n    let mine = Held(\"raised through\")\n    raise ValueError(\"from the test\")\n}\n"
+        );
+        same_every_way("resources", &source, EVERY_BUILD);
+    }
+
+    #[test]
+    fn the_top_of_the_file_ends_after_its_last_test() {
+        // A resource at the top of the file is released after the last
+        // test, last made first (rulings of decision 59.1): the tests see
+        // it, and nothing is left.
+        let source = format!(
+            "{HELD}{}",
+            "let first = Held(\"first\")\nprint(\"the top of the file\")\nlet last = Held(\"last\")\n\
+             test \"sees it\" {\n    assert len(last.name) == 4\n    print(\"in the test\")\n}\n\
+             test \"fails\" {\n    let mine = Held(\"the test's\")\n    assert len(first.name) == 0\n}\n"
+        );
+        same_every_way("top-resource", &source, EVERY_BUILD);
     }
 
     #[test]

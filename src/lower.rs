@@ -398,6 +398,13 @@ struct Scope {
 struct FunctionContext {
     nonlocals: Vec<VarId>,
     captures: Vec<VarId>,
+    /// How many loops of this function the statement being lowered is in.
+    loops: usize,
+    /// The resources (decision 59.1) whose `Scoped` the statement being
+    /// lowered is in, outermost first, each with how many loops it was in.
+    /// A `return` releases them all, and a `break` or a `continue` the
+    /// ones inside the loop it leaves.
+    scoped: Vec<(VarId, usize)>,
 }
 
 /// What a variable is known to hold for as long as it exists, so that a
@@ -655,9 +662,12 @@ impl Lowerer {
     /// first, then the rest in order.
     fn statements(&mut self, statements: &[ast::Stmt]) -> Result<Vec<Stmt>> {
         let mut out = Vec::new();
+        // What follows the `let` of a resource is more of this block
+        // (decision 59.1): its names are the block's, and declared here.
+        let every = ast::flat(statements);
         // Every name first, so that each function can see the others.
         let mut hoisted = Vec::new();
-        for statement in statements {
+        for &statement in &every {
             match &statement.kind {
                 StmtKind::Function(decl) => {
                     let params = decl.params.iter().map(|p| (p.name.clone(), p.default.is_some())).collect();
@@ -678,7 +688,7 @@ impl Lowerer {
         // the block sees them (it may be called once they have a value),
         // and the statements of the block see each from its own line on.
         let mut later: Vec<(String, VarId)> = Vec::new();
-        for statement in statements {
+        for &statement in &every {
             match &statement.kind {
                 StmtKind::Let { name, mutable, value, .. } => {
                     let known = match (&value.kind, mutable) {
@@ -775,6 +785,7 @@ impl Lowerer {
     fn statement(&mut self, statement: &ast::Stmt, out: &mut Vec<Stmt>) -> Result<()> {
         let at = line(statement.span);
         match &statement.kind {
+            StmtKind::Scoped { name, body } => self.scoped(name, body, at, out)?,
             StmtKind::Let { mutable, name, value, .. } => {
                 let _ = mutable;
                 let value = self.expr(value, out)?;
@@ -815,7 +826,7 @@ impl Lowerer {
                         let stop = Block { decls: Vec::new(), stmts: vec![Stmt::Break] };
                         stmts.push(Stmt::If { condition: Cond::Not(Box::new(test)), then: stop, otherwise: None });
                     }
-                    let rest = this.statements(body)?;
+                    let rest = this.in_loop(|this| this.statements(body))?;
                     stmts.extend(rest);
                     Ok(())
                 })?;
@@ -829,7 +840,7 @@ impl Lowerer {
                 let body = self.in_block(|this, stmts| {
                     vars.0 = this.declare_apart(variable);
                     vars.1 = second.as_ref().map(|second| this.declare_apart(second));
-                    let rest = this.statements(body)?;
+                    let rest = this.in_loop(|this| this.statements(body))?;
                     stmts.extend(rest);
                     Ok(())
                 })?;
@@ -941,14 +952,27 @@ impl Lowerer {
                     Some(value) => self.expr(value, out)?,
                     None => Expr::None,
                 };
+                // The value is worked out first, and then each resource
+                // of the function is released, last made first (59.1).
+                let leaving = self.leaving(None);
+                let value = if leaving.is_empty() { value } else { self.hold(value, out) };
+                for id in leaving {
+                    self.release(id, at, out);
+                }
                 out.push(Stmt::Return(value));
             }
             StmtKind::Raise(value) => {
                 let value = self.expr(value, out)?;
                 out.push(Stmt::Raise { value, line: at });
             }
-            StmtKind::Break => out.push(Stmt::Break),
-            StmtKind::Continue => out.push(Stmt::Continue),
+            StmtKind::Break | StmtKind::Continue => {
+                // The resources made inside the loop being left (59.1).
+                let loops = self.functions.last().map_or(0, |context| context.loops);
+                for id in self.leaving(Some(loops)) {
+                    self.release(id, at, out);
+                }
+                out.push(if matches!(statement.kind, StmtKind::Break) { Stmt::Break } else { Stmt::Continue });
+            }
             StmtKind::Import { module, names } => {
                 let path = module.join(".");
                 if module_members(&path).is_none() {
@@ -985,6 +1009,77 @@ impl Lowerer {
             }
         }
         Ok(())
+    }
+
+    /// The rest of a block after the `let` of the resource `name`
+    /// (decision 59.1). Its statements are lowered in the block they are
+    /// in, which declared their names already. They run in a `try` that
+    /// catches whatever the program raises, releases the resource and
+    /// raises it again as it was; a `return`, `break` or `continue` that
+    /// leaves them releases it on its way (`leaving`); and the end of
+    /// them releases it. A mistake of the program, and `program.exit`, go
+    /// past the `try` of every target and release nothing (rule 6).
+    fn scoped(&mut self, name: &str, body: &[ast::Stmt], at: usize, out: &mut Vec<Stmt>) -> Result<()> {
+        let Some(id) = self.lookup(name) else {
+            return Err(Error::new(format!("`{name}` is not declared"), Span { line: at, col: 1 }));
+        };
+        let loops = self.functions.last().map_or(0, |context| context.loops);
+        self.functions.last_mut().expect("there is always a function").scoped.push((id, loops));
+        let mut stmts = Vec::new();
+        let mut done = Ok(());
+        for statement in body {
+            done = self.statement(statement, &mut stmts);
+            if done.is_err() {
+                break;
+            }
+        }
+        self.functions.last_mut().expect("there is always a function").scoped.pop();
+        done?;
+        let error = self.temp(VarKind::Error);
+        let mut handler = Vec::new();
+        self.release(id, at, &mut handler);
+        self.uses(error, false);
+        handler.push(Stmt::Reraise(error));
+        out.push(Stmt::Try {
+            body: Block { decls: Vec::new(), stmts },
+            error,
+            handler: Block { decls: Vec::new(), stmts: handler },
+        });
+        self.release(id, at, out);
+        Ok(())
+    }
+
+    /// The resources a `return` leaves (`None`), or a `break` or a
+    /// `continue` of the loop that is this many loops deep: the last made
+    /// first.
+    fn leaving(&self, loop_at: Option<usize>) -> Vec<VarId> {
+        let Some(context) = self.functions.last() else { return Vec::new() };
+        context.scoped.iter().rev().filter(|(_, loops)| loop_at.is_none_or(|at| *loops == at)).map(|(id, _)| *id).collect()
+    }
+
+    /// Release the resource in `id` unless it was given away: it is taken
+    /// out of the variable first, as `Interpreter::release` does, so that
+    /// whatever happens in `release` it is released once.
+    fn release(&mut self, id: VarId, at: usize, out: &mut Vec<Stmt>) {
+        let held = self.read(id);
+        let condition = Cond::Test { name: "ne", args: vec![held, Expr::None], line: at };
+        let t = self.temp(VarKind::Value);
+        let mut then = Vec::new();
+        let value = self.read(id);
+        then.push(self.set(t, value));
+        then.push(self.set(id, Expr::None));
+        let object = Box::new(self.read(t));
+        let call = Expr::CallMethod { object, name: "release".to_string(), args: Vec::new(), names: Vec::new(), named: Vec::new(), line: at };
+        then.push(Stmt::Expr(call));
+        out.push(Stmt::If { condition, then: Block { decls: Vec::new(), stmts: then }, otherwise: None });
+    }
+
+    /// Lower what is inside a loop, one loop deeper.
+    fn in_loop<T>(&mut self, inside: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        self.functions.last_mut().expect("there is always a function").loops += 1;
+        let done = inside(self);
+        self.functions.last_mut().expect("there is always a function").loops -= 1;
+        done
     }
 
     /// `target = value`, or `target op= value`.
@@ -1276,6 +1371,19 @@ impl Lowerer {
     fn expr(&mut self, expr: &ast::Expr, out: &mut Vec<Stmt>) -> Result<Expr> {
         let at = line(expr.span);
         Ok(match &expr.kind {
+            // A resource given away (59.1): its value, after which the
+            // variable holds `none`, so that its `Scoped` does not
+            // release it.
+            ExprKind::Give(name) => {
+                let Some(id) = self.lookup(name) else {
+                    return Err(Error::new(format!("`{name}` is not declared"), expr.span));
+                };
+                let t = self.temp(VarKind::Value);
+                let value = self.read(id);
+                out.push(self.set(t, value));
+                out.push(self.set(id, Expr::None));
+                self.read(t)
+            }
             ExprKind::Int(n) => match i64::try_from(*n) {
                 Ok(n) => Expr::Int(n),
                 Err(_) => {
