@@ -1,0 +1,76 @@
+# What interfaces left out until 0.8 (decisions 58.20 to 58.22).
+# Defaults on the functions of an interface, of every kind a default
+# there can be, and a call through the interface and on the object
+# that mean the same. Every build prints what `zeno run` prints, and a
+# build with no collector leaves nothing.
+
+enum Mode {
+    Slow
+    Fast
+}
+
+interface Motor {
+    function spin(self, speed: int = 1_000, wait: ms = 5 ms, mode: Mode = Fast, label: str = "m", back: bool = false, trim: float = -0.5, turns: int = -3)
+    function name(self, prefix: str or none = none) -> str
+    function stop(self, after: ms)
+}
+
+class Fan is Motor {
+    id: int
+
+    function spin(self, speed: int = 1000, wait: ms = 5 ms, mode: Mode = Mode.Fast, label: str = "m", back: bool = false, trim: float = -0.5, turns: int = -3) {
+        print(f"{self.name()} {speed} {wait} {mode} {label} {back} {trim} {turns}")
+    }
+
+    function name(self, prefix: str or none = none) -> str {
+        if prefix is none {
+            return f"fan {self.id}"
+        }
+        return f"{prefix} fan {self.id}"
+    }
+
+    # A default of its own where the interface writes none is the
+    # class's business: through a `Motor` every argument is given.
+    function stop(self, after: ms = 10 ms) {
+        print(f"{self.name()} stops after {after}")
+    }
+}
+
+class Pump is Motor {
+    flow: int
+
+    function spin(self, speed: int = 1000, wait: ms = 5 ms, mode: Mode = Fast, label: str = "m", back: bool = false, trim: float = -0.5, turns: int = -3) {
+        print(f"{self.name()} {speed} {wait} {mode} {label} {back} {trim} {turns}")
+    }
+
+    function name(self, prefix: str or none = none) -> str {
+        return f"pump {self.flow}"
+    }
+
+    function stop(self, after: ms) {
+        print(f"{self.name()} stops after {after}")
+    }
+
+    function prime(self, times: int = 2) -> int {
+        return self.flow * times
+    }
+}
+
+function drive(motor: Motor) {
+    motor.spin()
+    motor.spin(7)
+    motor.spin(wait = 2000 ms, back = true, mode = Slow)
+    print(motor.name(), motor.name("big"))
+    motor.stop(1 ms)
+}
+
+let motors: list[Motor] = [Fan(1), Pump(3)]
+for motor in motors {
+    drive(motor)
+}
+let fan = Fan(2)
+fan.spin()
+fan.spin(label = "direct")
+fan.stop()
+let pump = Pump(4)
+print(pump.prime(), pump.prime(3), pump.name("x"))

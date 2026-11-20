@@ -16050,6 +16050,19 @@ print(maybe)
     }
 
     #[test]
+    fn what_interfaces_left_out_is_the_same_in_every_build() {
+        // Defaults on the functions of an interface, of every kind, called
+        // through the interface and on the object (decisions 58.20 to
+        // 58.22). Every build prints what `zeno run` prints, and with no
+        // collector every block is given back.
+        let source = include_str!("../tools/targets/edge-interfaces.zeno");
+        same_as_interpreter("interfaces-left-out", source);
+        firmware_as_interpreter("interfaces-left-out-firmware", source);
+        no_collector_as_interpreter("interfaces-left-out-owned", source);
+        crate::emit_llvm::tests::same_as_interpreter("interfaces-left-out", source);
+    }
+
+    #[test]
     fn an_interface_is_a_number_in_the_object_and_a_switch() {
         let c = compile(
             "interface Shape {\n    function area(self) -> float\n}\n\

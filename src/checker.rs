@@ -1627,6 +1627,52 @@ enum Written {
     Repeat { list: Box<Written>, times: Option<i128>, place: usize },
 }
 
+/// A default as a message shows it: `-0.5` and `-5 ms`, and `2 * 3`
+/// with no brackets around the whole.
+fn shown(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => format!("-{}", shown(operand)),
+        ExprKind::Unit { value, unit } => format!("{} {unit}", shown(value)),
+        ExprKind::Unary { .. } | ExprKind::Binary { .. } | ExprKind::Compare { .. } => {
+            let text = crate::printer::expr(expr);
+            match text.strip_prefix('(').and_then(|text| text.strip_suffix(')')) {
+                Some(inner) => inner.to_string(),
+                None => text,
+            }
+        }
+        _ => crate::printer::expr(expr),
+    }
+}
+
+/// A default of a function of an interface. It is a plain value, so
+/// that "the class writes the same one" has one meaning: the same value,
+/// however it is spelled (decision 58.20).
+#[derive(Debug, Clone, PartialEq)]
+enum Plain {
+    Number(i128),
+    Real(f64),
+    Text(String),
+    Truth(bool),
+    None,
+    /// `5 ms`: the number and its unit.
+    Quantity(f64, String),
+    /// A case of an enum that carries nothing, by its name.
+    Case(String),
+}
+
+impl Plain {
+    /// `1_000` and `1000` are the same value, and so are `5 ms` and
+    /// `5000 us`.
+    fn same(&self, other: &Plain) -> bool {
+        match (self, other) {
+            (Plain::Quantity(x, from), Plain::Quantity(y, to)) => {
+                (from == to && x == y) || crate::units::common(from, to).is_some_and(|(_, a, b)| a.apply(*x) == b.apply(*y))
+            }
+            _ => self == other,
+        }
+    }
+}
+
 fn written(expr: &Expr) -> Option<Written> {
     match &expr.kind {
         ExprKind::Int(n) => Some(Written::Number(*n as i128, expr.span)),
@@ -4879,6 +4925,7 @@ impl Checker {
                     );
                     continue;
                 }
+                self.same_defaults(class, &interface, &method, &asked);
                 for kind in &got.raises {
                     if !want.raises.iter().any(|said| said == kind || said == "Error") {
                         self.error(
@@ -4904,6 +4951,92 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Where the function of the interface writes a default, the class
+    /// writes the same value (decision 58.20). Where it writes none, the
+    /// class may have its own, as before: a call through the interface
+    /// then gives every argument.
+    fn same_defaults(&mut self, class: &ClassInfo, interface: &ClassInfo, method: &FunctionInfo, asked: &FunctionInfo) {
+        let span = Span { line: class.id.0, col: class.id.1 };
+        let name = &asked.decl.name;
+        let line = |at: Span| match at.file() == span.file() {
+            true => format!("line {}", at.line_in_file()),
+            false => format!("line {} of the file that declares `{}`", at.line_in_file(), interface.name),
+        };
+        for (got, want) in method.decl.params.iter().zip(&asked.decl.params).skip(1) {
+            let Some(wanted) = &want.default else { continue };
+            // One that is not a plain value was refused where it is written.
+            let Some(value) = self.plain(wanted, &asked.env) else { continue };
+            let message = match &got.default {
+                None => format!(
+                    "`{}` gives `{}` of `{name}` the default `{}`, on {}, and `{name}` of `{}` gives it none. \
+                     Write the same default in `{}`, so that a call through a `{}` and a call on a `{}` mean the same",
+                    interface.name,
+                    want.name,
+                    shown(wanted),
+                    line(wanted.span),
+                    class.name,
+                    class.name,
+                    interface.name,
+                    class.name
+                ),
+                Some(given) if self.plain(given, &method.env).is_some_and(|given| given.same(&value)) => continue,
+                Some(given) => format!(
+                    "`{name}` of `{}` gives `{}` the default `{}`, on line {}, and `{}` gives it `{}`, on {}. \
+                     Write the same default in both, so that a call through a `{}` and a call on a `{}` mean the same",
+                    class.name,
+                    want.name,
+                    shown(given),
+                    given.span.line_in_file(),
+                    interface.name,
+                    shown(wanted),
+                    line(wanted.span),
+                    interface.name,
+                    class.name
+                ),
+            };
+            self.error(message, span);
+        }
+    }
+
+    /// The plain value a default of an interface's function is, if it is
+    /// one (decision 58.20).
+    fn plain(&self, value: &Expr, env: &Env) -> Option<Plain> {
+        Some(match &value.kind {
+            ExprKind::Int(n) => Plain::Number(*n as i128),
+            ExprKind::Float(x) => Plain::Real(*x),
+            ExprKind::Unary { op: UnaryOp::Neg, operand } => match self.plain(operand, env)? {
+                Plain::Number(n) => Plain::Number(-n),
+                Plain::Real(x) => Plain::Real(-x),
+                Plain::Quantity(x, unit) => Plain::Quantity(-x, unit),
+                _ => return None,
+            },
+            ExprKind::Str(text) => Plain::Text(text.clone()),
+            ExprKind::Bool(truth) => Plain::Truth(*truth),
+            ExprKind::None => Plain::None,
+            ExprKind::Unit { value, unit } => match self.plain(value, env)? {
+                Plain::Number(n) => Plain::Quantity(n as f64, unit.clone()),
+                Plain::Real(x) => Plain::Quantity(x, unit.clone()),
+                _ => return None,
+            },
+            // `Idle`, a case that carries nothing.
+            ExprKind::Name(name) => match env.get(name)? {
+                Variable { case: Some(_), ty: Ty::EnumValue(_), .. } => Plain::Case(name.clone()),
+                _ => return None,
+            },
+            // `Mode.Idle`.
+            ExprKind::Field { object, name, .. } => match &object.kind {
+                ExprKind::Name(of) => match env.get(of)?.ty {
+                    Ty::Enum(info) if info.cases.borrow().iter().any(|case| case.name == *name && case.fields.is_empty()) => {
+                        Plain::Case(name.clone())
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            },
+            _ => return None,
+        })
     }
 
     fn match_statement(&mut self, subject: &Expr, arms: &[Arm], env: &Env, span: Span) -> bool {
@@ -6159,6 +6292,28 @@ impl Checker {
         let of_interface =
             matches!(function.self_type.clone().map(Ty::looked_at), Some(Ty::Instance(class)) if class.interface);
         if of_interface {
+            // A default is a plain value, of the parameter's type
+            // (decision 58.20). What a class writes is compared with it
+            // in `stands_for`.
+            for (param, slot) in decl.params.iter().zip(&params) {
+                let Some(default) = &param.default else { continue };
+                if self.plain(default, &function.env).is_none() {
+                    self.error(
+                        format!(
+                            "the default of `{}` in `{name}` is `{}`. A default in an interface is a plain value: a number, \
+                             text, `true`, `false`, `none`, a quantity such as `5 ms`, or a case of an enum that carries \
+                             nothing. Each class that is the interface writes the same one",
+                            param.name,
+                            shown(default)
+                        ),
+                        default.span,
+                    );
+                    continue;
+                }
+                let given = self.expr(default, &function.env);
+                let given = self.adapted(written(default), Arc::as_ptr(default) as usize, given, &slot.ty, default.span);
+                self.expect(&given, &slot.ty, &format!("`{}`", param.name), default.span);
+            }
             let returns = declared_return.unwrap_or(Ty::None);
             self.types.functions.insert(
                 Arc::as_ptr(&function.decl) as usize,
@@ -10585,6 +10740,81 @@ mod tests {
             error(&format!("{shape}let s = Shape()")),
             "`Shape` is an interface, so there is nothing to build. Build an object of a class that is a `Shape`"
         );
+    }
+
+    #[test]
+    fn a_default_in_an_interface_is_a_plain_value_that_each_class_writes() {
+        // Every kind of plain value, written the same in another
+        // spelling: `1_000` and `1000`, `Fast` and `Mode.Fast` (58.20).
+        let motor = |defaults: &str, written: &str| {
+            format!(
+                "enum Mode {{\n    Slow\n    Fast\n}}\nenum Command {{\n    Stop\n    Go(speed: int)\n}}\n\
+                 interface Motor {{\n    function spin(self{defaults})\n}}\n\
+                 class Fan is Motor {{\n    function spin(self{written}) {{\n    }}\n}}\n"
+            )
+        };
+        strict_ok(&motor(
+            ", speed: int = 1_000, wait: ms = 5 ms, mode: Mode = Fast, label: str = \"m\", back: bool = false, \
+             trim: float = -0.5, low: ms = -2 ms, name: str or none = none, how: Command = Stop",
+            ", speed: int = 1000, wait: ms = 5 ms, mode: Mode = Mode.Fast, label: str = \"m\", back: bool = false, \
+             trim: float = -0.5, low: ms = -2 ms, name: str or none = none, how: Command = Command.Stop",
+        ));
+        // A call through the interface may leave out what has a
+        // default there, and is filled in as a call on the object is.
+        strict_ok(&format!("{}function go(m: Motor) {{\n    m.spin()\n    m.spin(2)\n}}\ngo(Fan())\nFan().spin()", motor(", speed: int = 1", ", speed: int = 1")));
+        // Where the interface writes none, the class may write its own,
+        // as before. A call through the interface gives every argument.
+        let own = motor(", speed: int", ", speed: int = 4");
+        strict_ok(&format!("{own}Fan().spin()\nfunction go(m: Motor) {{\n    m.spin(2)\n}}\ngo(Fan())"));
+        assert_eq!(error(&format!("{own}function go(m: Motor) {{\n    m.spin()\n}}")), "`spin` needs a value for `speed`");
+        // A default that is not the same value, or none where the
+        // interface has one, shows both.
+        assert_eq!(
+            error(&motor(", speed: int = 1", ", speed: int = 2")),
+            "`spin` of `Fan` gives `speed` the default `2`, on line 13, and `Motor` gives it `1`, on line 10. \
+             Write the same default in both, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        assert_eq!(
+            error(&motor(", mode: Mode = Fast", ", mode: Mode = Slow")),
+            "`spin` of `Fan` gives `mode` the default `Slow`, on line 13, and `Motor` gives it `Fast`, on line 10. \
+             Write the same default in both, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        assert_eq!(
+            error(&motor(", wait: ms = 5 ms", ", wait: ms = 6 ms")),
+            "`spin` of `Fan` gives `wait` the default `6 ms`, on line 13, and `Motor` gives it `5 ms`, on line 10. \
+             Write the same default in both, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        assert_eq!(
+            error(&motor(", trim: float = -0.5", ", trim: float = 0.5")),
+            "`spin` of `Fan` gives `trim` the default `0.5`, on line 13, and `Motor` gives it `-0.5`, on line 10. \
+             Write the same default in both, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        // What the class writes is a plain value too, to be the same.
+        assert_eq!(
+            error(&motor(", speed: int = 6", ", speed: int = 2 * 3")),
+            "`spin` of `Fan` gives `speed` the default `2 * 3`, on line 13, and `Motor` gives it `6`, on line 10. \
+             Write the same default in both, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        assert_eq!(
+            error(&motor(", label: str = \"m\"", ", label: str")),
+            "`Motor` gives `label` of `spin` the default `\"m\"`, on line 10, and `spin` of `Fan` gives it none. \
+             Write the same default in `Fan`, so that a call through a `Motor` and a call on a `Fan` mean the same"
+        );
+        // In the interface it is a plain value, of the parameter's type.
+        let plain = |shown: &str| {
+            format!(
+                "the default of `speed` in `spin` is `{shown}`. A default in an interface is a plain value: a number, \
+                 text, `true`, `false`, `none`, a quantity such as `5 ms`, or a case of an enum that carries nothing. \
+                 Each class that is the interface writes the same one"
+            )
+        };
+        assert_eq!(error(&motor(", speed: int = 2 * 3", ", speed: int = 6")), plain("2 * 3"));
+        assert_eq!(error(&motor(", speed: int = len(\"ab\")", ", speed: int = 2")), plain("len(\"ab\")"));
+        assert_eq!(error(&motor(", speed: list[int] = [1]", ", speed: list[int] = [1]")), plain("[1]"));
+        assert_eq!(error(&motor(", speed: str = f\"{1}\"", ", speed: str = \"1\"")), plain("f\"{1}\""));
+        assert_eq!(error(&motor(", speed: Command = Go", ", speed: Command = Stop")), plain("Go"));
+        let wrong = "`speed` should be int, but this is str";
+        assert_eq!(errors(&motor(", speed: int = \"1\"", ", speed: int = \"1\"")), vec![wrong, wrong]);
     }
 
     #[test]

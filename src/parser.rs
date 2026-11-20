@@ -910,12 +910,8 @@ impl Parser {
                         param.name, function.name, param.name
                     ));
                 }
-                if param.default.is_some() {
-                    return needs(format!(
-                        "the parameter `{}` of `{}` cannot have a default in an interface yet",
-                        param.name, function.name
-                    ));
-                }
+                // A default is allowed, and the checker holds it to a plain
+                // value that each class writes the same (decision 58.20).
             }
             methods.push(Arc::new(function));
             self.end_of_statement()?;
@@ -2181,10 +2177,6 @@ mod tests {
              to work the type out from"
         );
         // What is left out for now says so.
-        assert_eq!(
-            inside("function scale(self, by: float = 2.0)"),
-            "the parameter `by` of `scale` cannot have a default in an interface yet"
-        );
         assert_eq!(inside("function scale[T](self, by: T)"), "a function of an interface cannot have type parameters yet");
         assert_eq!(
             error("interface Shape[T] {\n}"),
