@@ -1838,3 +1838,99 @@ refuses or the other way round. Each line it prints is mended or is
 a row of a table, and the test of the tables reads the script's
 answer. It is run before each later item is sent for review, since
 each adds types.
+
+### 9. 2026-11-20: two builders at once, and a review that holds nobody up
+
+Partha asked for the work to go faster, with the code no worse for
+it. From here two builders work at the same time, and this section is
+how they stay out of each other's way.
+
+**Who builds what.**
+
+| Builder | Builds | Chapters of the decisions |
+|---|---|---|
+| The first | The follow-up of item 9 (section 8), item 10, item 11, and the release of 0.8.0 | 57 (item 10), 58 (item 11) |
+| The second | 13.1, 13.2, then 12.3, 12.1, 12.2 | 59 (item 12), 60 (13.1 and 13.2) |
+
+A number of a chapter belongs to its item whoever comes first, so
+chapter 60 may stand in the file before chapter 59 is written, and
+each is put in its place by number, not at the end. The second
+builder's order is its own proposal, and it is taken: 13.1 is small
+and every later test can use it, 12.3 touches only the library and
+the built-ins, and 12.2 stands on 12.1.
+
+**A review holds nobody up.** Until now the next item waited until
+the one before was accepted. That wait is given up, and nothing else
+of the review is. A builder sends an item when it is whole and goes
+straight on to its next one. What a review finds is mended before
+that builder sends anything further for review. **The release is the
+gate:** 0.8.0 is not released until every item of both builders is
+accepted and every finding is mended. The reason: the wait bought
+nothing a later mend does not also buy, since nothing reaches a user
+before the release, and it cost the builder the whole time of each
+review.
+
+**One history, in one line.** Both push to `main`. Before each push:
+fetch, put one's own commits on top of `main` as it is (a rebase,
+never a merge commit, never a forced push), run `cargo test` again if
+the other builder's commits touched the compiler, then push. Small
+commits pushed often keep what must be put together small.
+
+**Where the two meet in a file, both are kept.**
+
+- `docs/decisions.md`: chapters in the order of their numbers.
+- `docs/releases/0.8.0.md`: each feature under its own heading, in
+  the order of the items; "Fixed" stays last.
+- `tools/history-notes.txt`: in the order of the commits on `main`.
+- `docs/missing.md`: each builder writes only the rows of its items.
+- The tables of what a build refuses, and `tools/refused.py`: the
+  first builder writes the script. The second adds its kinds of
+  value to it once it is on `main`, and runs it before its item 12 is
+  sent.
+- Operations of the virtual machine: a new one goes after the last
+  one on `main` at the time of the push. Whoever pushes second moves
+  its own. The bytecode of a program that uses no new feature stays
+  what 0.7.0 wrote, which `tools/same.py` shows.
+- The interfaces that come with Zeno. `Ordered` (11.2) and `Resource`
+  (12.1) are not one mechanism. `Ordered` is a question the checker
+  answers about a type (does `<` work on two of it), and no class can
+  say it yet. `Resource` is an ordinary interface with one function,
+  declared before the program is read. Each builder builds its own.
+  Both follow one rule, which is already in both designs: a name the
+  program declares itself is the program's. If both come to the same
+  place in the checker where such a name is looked up, the second to
+  push keeps the first's code and adds to it.
+- Each builder names its test programs after its own item, so no two
+  have one name.
+
+**Neither builder mends the other's code.** A builder that finds a
+fault in the other's work, or a workflow made red by the other's
+commit, tells the other and the planner, with the program that shows
+it. It mends only what its own item cannot go on without, and says so
+in the commit.
+
+**Where two items meet in a program, whoever pushes second tests the
+pair.** The pairs that are known now:
+
+- Several values from one function (10) where one of them is a
+  `Resource` (12.1): when is it released, if the values are taken
+  apart at the call, and if the result is not used at all.
+- A `Resource` as what a type parameter stands for, and in a case of
+  a generic enum (11.1): it is released once, when the enum's owner
+  ends.
+- `[T is Resource]` as a bound (11.2): built like any interface of a
+  program, or refused with a message. Not left to chance.
+- A message on `assert` (13.1), and `zeno test --build` (13.2), in a
+  test that takes several values from one function (10).
+
+The planner tries each pair again in the last review before the
+release, whoever wrote the test.
+
+**What stays as it was.** No benchmarks. Every feature is asked for
+by a word or a flag. `tools/same.py` against a `zeno` built from the
+tag of 0.7.0. Six builds that agree with `zeno run`, and no block
+left with no collector. Commits in Partha's name alone. The release
+is made by the first builder, with no comparison of speed, after the
+last acceptance; the second builder writes its own part of the
+release notes and tells the first what the book and the website need
+for items 12 and 13.
