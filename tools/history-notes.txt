@@ -590,3 +590,4 @@ e9a4346 What a build still refuses is one table for a build with no collector, a
 0ddcb6a `in` on a list of values that may be `none` builds through C as through LLVM, and `range(...)` used as a value is the list `zeno run` makes, in every build (decision 56.19).
 5d8b280 tools/refused.py tries one operation on each type six ways and fails on a refusal no table lists; what it and the review of item 9 found builds now or is a row with its reason, and a default is shared so the compilers see what the checker saw (decision 56.19).
 56d31ac A message on `assert`: `assert c, "text"` prints the text on a line of its own above what was false, and the text is worked out only when the `assert` fails (decision 60.1).
+43c17bf The runtime grows only for a program that uses what is added: each new part of runtime.c is a piece, written in only when the program uses it, so a program that uses nothing new gets 0.7.0's runtime to the byte in every build (decision 56.19).
