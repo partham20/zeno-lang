@@ -17453,9 +17453,9 @@ for name in names {
         print(name, files.read(files.join(top, name)) == name)
     }
 }
-# A folder and a file whose names are not ASCII, made, listed, and the
-# listed name opened in pieces: on Windows too, by the name it was given.
-let inside = files.join(top, "deep/é")
+# A file whose name is not ASCII, made, listed, and the listed name
+# opened in pieces: on Windows too, by the name it was given.
+let inside = files.join(top, "deep/in")
 files.make_folder(inside)
 files.write(files.join(inside, "ü.txt"), "ü\nsecond\n")
 let inner: owned list[str] = files.list(inside)
@@ -17485,6 +17485,15 @@ try {
     print(error.message)
 }
 print(files.join("a", "b"), files.join("a/", "/b"), files.join("", "b"), files.join("a", ""))
+# Each engine and build runs in the same folder, one after another, and
+# on Windows a C build names a file through the code page where `zeno
+# run` does not (59.20): so each takes away the files it made.
+for name in names {
+    if name != "deep" {
+        files.remove(files.join(top, name))
+    }
+}
+files.remove(files.join(inside, "ü.txt"))
 "#;
 
     #[test]
