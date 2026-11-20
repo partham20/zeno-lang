@@ -2971,3 +2971,35 @@ With that, nothing of the plan is open. What was put off stays in
 `docs/missing.md`: 13.3 to 13.6 and item 14 (section 5), a line for
 an error raised inside the library (section 24), and UTF-8 file
 names in a build on Windows (section 29).
+
+### 31. 2026-11-20: Zeno 0.8.0 is out, and this plan is closed
+
+Released 2026-11-20 12:26 UTC: tag `v0.8.0` at bc9f25b, 23 files.
+
+- Targets run 61, on 14ad637, is green on all fifteen targets, and
+  the tag differs from that commit in documents, the book, the notes
+  and one workflow of the stores only: nothing under `src/`,
+  `library/` or `tools/targets/` (the rule of section 30).
+- The trial is green on Windows and macOS (section 29).
+- From `v0.7.0` to `v0.8.0`: 137 commits, each written and committed
+  as Partha, and no other name in any message or any line.
+- No speed comparison was made, as section 6 says, and the notes say
+  so.
+
+**What 0.8.0 holds of this plan:** item 9 (what a build with no
+collector used to refuse, and `raises` in a function's type), item 10
+(several values from a function), item 11 (generic enums, bounds,
+generic interfaces, defaults in an interface, `owned interface`),
+item 12 (`is Resource`, a file read and written in pieces, folders),
+and of item 13 the message on `assert` and `zeno test --build`.
+
+**What it does not, and where each is written down:** 11.5, a method
+with a type parameter of its own (refused, 58.7); 13.3 to 13.6 and
+all of item 14 (section 5; their designs stay above); an error raised
+inside the library naming the program's line too (section 24); UTF-8
+file names in a build on Windows (section 29); removing a folder
+(`docs/folders.md`). `docs/missing.md` lists them.
+
+Every feature is asked for by a word or a flag, and `tools/same.py`
+against a zeno built from `v0.7.0` showed, at the last review, no
+program that 0.7.0 built being built differently.
