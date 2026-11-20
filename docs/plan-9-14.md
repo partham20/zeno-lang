@@ -2858,3 +2858,39 @@ build as it stands. `tools/same.py` against the tag is unchanged:
 
 **Accepted.** Left before the release: the mend of 12.2 (section 24)
 and a green targets run.
+
+### 27. 2026-11-20: 12.2 is accepted, and with it every item
+
+Read: fe23d35 (wasm, `files.list("")`), 53c24be (the code), c1b5897
+(decision 59.6 and the documents).
+
+- **A file that grows.** The program of section 24 (a line, a line
+  with no end yet, bytes, a `for`, each after more was written, a
+  write after a failed write, a writer whose file was removed) prints
+  the same lines in `zeno run`, the VM, the six builds and js, py,
+  php, ruby, go, java, cpp and rust. 59.6 has the rule, and the
+  document has "A file that grows" and says the reader does not wait.
+- **Tests built through LLVM.** A test file that holds a reader at
+  its top, and one that lists a folder, give under `zeno test --build
+  --llvm` (three builds) the bytes `zeno test` gives. The new test
+  builds one file for each piece of the runtime, and fails on a piece
+  nobody wrote a file for.
+- **The documents** say how the builds are tested, what a line longer
+  than the text room does with no collector, and where an error nobody
+  catches is reported; `docs/missing.md` lists the last.
+- `tools/same.py` against the tag: 691 of 7,185 different, as before
+  the mend, none a program 0.7.0 built. `tools/refused.py` ends with
+  0. No name but Partha's in any commit.
+
+**12.2 is accepted, and item 12 with it.** Items 9, 10, 11 (11.5
+refused with its reason), 12 and 13.1, 13.2 are all accepted, every
+finding of every review is mended, and the last check of where the
+items meet is done (sections 25, 26).
+
+**The release.** The first builder releases 0.8.0, with no speed
+comparison (section 6). One thing stands between this and the tag:
+the targets run on the commit that is tagged must be green. Run 56
+was red (Lua and wasm, both mended since); the run on 6b81910 holds
+both mends and the grown `edge-files.zeno` on dart, kotlin and cs,
+which no builder could run by hand. If it is red, its target is
+mended by the builder whose item it is, before the tag.
