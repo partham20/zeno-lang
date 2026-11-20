@@ -2330,3 +2330,71 @@ differs from `zeno test`.
 **Not seen by the planner:** a board. The builder ran a test build
 for `boards/qemu-cortex-m3` under QEMU and reports the same lines and
 an end with 1.
+
+### 18. 2026-11-20: 12.3 is accepted, and three things 12.1 asked
+
+**12.3, folders** (4390fa8, b57c0f8, decisions 59.20 to 59.23) is
+**accepted.** A program of the planner's own makes folders (one
+there already, one with a file in the way, one with an empty path),
+writes names that sort differently by every language's own order,
+and lists them, a file, a missing folder, `""` and `"."`, fifty
+times over in a loop: `zeno run`, the virtual machine, six builds and
+JavaScript, Python, Ruby, PHP, Go and Java print the same, and with
+no collector no block is left. `tools/same.py` against the tag: 318
+different, the 303 of section 17 and the fifteen builds of the new
+program, so the two pieces of the runtime are written only into a
+program that lists or makes a folder. Three small things for the
+page, none of them in the code:
+
+- `files.join("a//", "b")` gives `a//b`. The page says "one `/`
+  between the two parts, whatever they had at their ends". It should
+  say what is done: where both have one, one is dropped.
+- `files.join("a", "")` gives `a/`. The page says what an empty first
+  part does and not what an empty second does.
+- Java, run where the system's locale is not UTF-8, lists `é` as `?`
+  (seen here with no `LANG`; with `LC_ALL=C.UTF-8` it agrees). It
+  belongs in "What it does not do", beside the other limits of the
+  JVM.
+
+**12.1, three things the code asked.**
+
+1. **A `Resource` among several values (item 10).** `let file, count
+   = open_both()` is refused in this version, under rule 7, and the
+   message says to give back the resource alone or to put the two in
+   an `owned class`. Rule 7 keeps a resource to a `let` of one name
+   because the rewrite works for one name; letting several in later
+   changes no program. So the pair of section 9 is tested as a
+   refusal.
+2. **A resource at the top of a file, and the file's tests.** The
+   builder proposed to refuse a test that uses one, since `zeno test`
+   runs the tests after the file's last line, when it would have been
+   released. That is not taken, because it cannot be made whole: a
+   test can reach the resource through a function it calls, or
+   through a function held as a value, and with no collector a miss
+   is a block used after it was given back. Instead: **when a file is
+   run for its tests, the top of the file ends after its last test.**
+   A test sees the file's variables, as `docs/testing.md` has always
+   said, and a list that the top of a file owns is already alive in a
+   test of a build with no collector, where it is given back after
+   the tests. A resource is a value with one owner and goes the same
+   road: its `release` stands in front of that giving back. So in
+   `zeno test` and in `zeno test --build` a resource of the top of
+   the file is released after the last test, last made first, and in
+   `zeno run` and `zeno build` after the last line, as before. If
+   that is more than a small step in some engine, the builder says
+   which before building anything else in its place.
+3. **Where the release of a resource at the top runs.** After the
+   last statement of the top, when the program ends as it should. An
+   error that nothing catches releases on its way out and is then
+   reported as it was: the lines a `release` prints come before the
+   report, in every engine, and a test holds that order.
+   `program.exit` and a fault of a firmware build do not release
+   (rule 6).
+
+**Rule 6 is set right on one point.** It named a failed `assert`
+among the things that stop a program and release nothing. An
+`assert` stands only in a test, and a failed one leaves its test, as
+an error does in `zeno test` and as `return` does in a test build
+(section 12). So it releases what the blocks of that test own, which
+is what lets the next test open the same file. It does not release a
+resource of the top of the file: the tests go on.
