@@ -121,7 +121,7 @@ piece of the compiler:
 
 ## Install
 
-**Windows.** Download `zeno-0.7.0-windows-setup.exe` from the
+**Windows.** Download `zeno-0.8.0-windows-setup.exe` from the
 [releases page](https://github.com/zeno-src/zeno-lang/releases) and
 run it. It installs Zeno for you, puts it on the PATH, and offers to
 install a C compiler and Git if the machine has none. Windows warns
@@ -143,10 +143,10 @@ what both do, line by line, and how to take Zeno off again.
 pacman, snap and flatpak, installed from the file:
 
 ```sh
-sudo apt install ./zeno_0.7.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
-sudo pacman -U zeno-lang-bin-0.7.0-1-x86_64.pkg.tar.zst         # Arch
-sudo snap install --classic --dangerous zeno_0.7.0_amd64.snap
-flatpak install --user zeno-0.7.0-x86_64.flatpak
+sudo apt install ./zeno_0.8.0_amd64.deb                         # Debian, Ubuntu, Raspberry Pi OS
+sudo pacman -U zeno-lang-bin-0.8.0-1-x86_64.pkg.tar.zst         # Arch
+sudo snap install --classic --dangerous zeno_0.8.0_amd64.snap
+flatpak install --user zeno-0.8.0-x86_64.flatpak
 ```
 
 The `.deb` is also there for `arm64`, `armhf` (every Raspberry Pi with
@@ -176,25 +176,25 @@ an archive, for ten kinds of machine:
 
 | Machine | File |
 |---|---|
-| Linux, x86-64: most PCs and servers | `zeno-0.7.0-linux-x86_64.tar.gz` |
-| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.7.0-linux-arm64.tar.gz` |
-| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.7.0-linux-armv7.tar.gz` |
-| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.7.0-linux-armv6.tar.gz` |
-| Linux, 32-bit x86 | `zeno-0.7.0-linux-x86.tar.gz` |
-| macOS, Apple silicon | `zeno-0.7.0-macos-arm64.tar.gz` |
-| macOS, Intel | `zeno-0.7.0-macos-x86_64.tar.gz` |
-| Windows, x86-64 | `zeno-0.7.0-windows-x86_64.zip` |
-| Windows, 32-bit x86 | `zeno-0.7.0-windows-x86.zip` |
-| Windows, ARM64 | `zeno-0.7.0-windows-arm64.zip` |
+| Linux, x86-64: most PCs and servers | `zeno-0.8.0-linux-x86_64.tar.gz` |
+| Linux, ARM64: a Raspberry Pi 3, 4 or 5 with a 64-bit system, ARM servers | `zeno-0.8.0-linux-arm64.tar.gz` |
+| Linux, 32-bit ARMv7: a Raspberry Pi 2 or later with a 32-bit system | `zeno-0.8.0-linux-armv7.tar.gz` |
+| Linux, 32-bit ARMv6: a Raspberry Pi 1 or Zero | `zeno-0.8.0-linux-armv6.tar.gz` |
+| Linux, 32-bit x86 | `zeno-0.8.0-linux-x86.tar.gz` |
+| macOS, Apple silicon | `zeno-0.8.0-macos-arm64.tar.gz` |
+| macOS, Intel | `zeno-0.8.0-macos-x86_64.tar.gz` |
+| Windows, x86-64 | `zeno-0.8.0-windows-x86_64.zip` |
+| Windows, 32-bit x86 | `zeno-0.8.0-windows-x86.zip` |
+| Windows, ARM64 | `zeno-0.8.0-windows-arm64.zip` |
 
 Unpack it and put `zeno` (`zeno.exe` on Windows) somewhere on your
 `PATH`. It is one file and needs nothing else installed. To build web
 pages, put `zeno.wasm` from the same folder beside it.
 
 ```sh
-tar -xzf zeno-0.7.0-linux-x86_64.tar.gz
-cd zeno-0.7.0-linux-x86_64
-./zeno --version                 # zeno 0.7.0
+tar -xzf zeno-0.8.0-linux-x86_64.tar.gz
+cd zeno-0.8.0-linux-x86_64
+./zeno --version                 # zeno 0.8.0
 ./zeno run examples/hello.zeno   # Hello, Zeno!
 ```
 
@@ -848,7 +848,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     has been built by IAR's, Keil's or a chip maker's compiler yet.
     See [`docs/plain-c.md`](docs/plain-c.md) and chapter 55 of
     [`docs/decisions.md`](docs/decisions.md))
-53. `raises` in a function type (on `main`, for 0.8.0:
+53. `raises` in a function type (done, in 0.8.0:
     `function(str) -> int raises ValueError` is a function that may
     raise `ValueError`, and a call through it is checked as a call of
     one by its name. A firmware build and a build with no collector now
@@ -856,70 +856,93 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     A function that returns a raising function writes it in brackets.
     See [`docs/raises-in-types.md`](docs/raises-in-types.md) and
     chapter 56 of [`docs/decisions.md`](docs/decisions.md))
-54. A function that is kept takes what it uses (on `main`, for 0.8.0:
+54. A function that is kept takes what it uses (done, in 0.8.0:
     a function written where a value goes, and returned, kept or given
     to a parameter that says `take`, takes each value with one owner
     that it uses and frees it when it is freed. So `compose(f, g)`
     builds with no collector. See
     [`docs/kept-functions.md`](docs/kept-functions.md) and 56.8 of
     [`docs/decisions.md`](docs/decisions.md))
-55. A method used as a value (on `main`, for 0.8.0: `let m =
+55. A method used as a value (done, in 0.8.0: `let m =
     counter.bump` builds every way, as the function that calls the
     method. Passed along it looks at `counter`, and kept it takes it.
     See [`docs/method-values.md`](docs/method-values.md) and 56.9 of
     [`docs/decisions.md`](docs/decisions.md))
-56. `take` in front of a place (on `main`, for 0.8.0: `let task = take
+56. `take` in front of a place (done, in 0.8.0: `let task = take
     slot.task` gives what a field or an item holds and leaves `none`
     there, in every build, so a state machine with no collector can
     hand on what it holds. See [`docs/take.md`](docs/take.md) and 56.10
     of [`docs/decisions.md`](docs/decisions.md))
-57. A value with one owner in a generic (on `main`, for 0.8.0:
+57. A value with one owner in a generic (done, in 0.8.0:
     `Stack[Frame]`, `Box([1, 2])` and `same(frame)` build with no
     collector, and `function same[T](x: take T) -> T` is right for a
     number and for a list. See
     [`docs/generic-owned.md`](docs/generic-owned.md) and 56.11 of
     [`docs/decisions.md`](docs/decisions.md))
-58. A dict that owns its values (on `main`, for 0.8.0: with no
+58. A dict that owns its values (done, in 0.8.0: with no
     collector `dict[str, Channel]` and `dict[str, list[int]]` build,
     and the dict owns its values as a list owns its items: `d[key]`
     looks, a store frees the old value, `pop` hands it over. See
     [`docs/dict-owned.md`](docs/dict-owned.md) and 56.12 of
     [`docs/decisions.md`](docs/decisions.md))
-59. A list of numbers that may be `none` with no collector (on
-    `main`, for 0.8.0: `list[float or none]` builds with
+59. A list of numbers that may be `none` with no collector (done,
+    in 0.8.0: `list[float or none]` builds with
     `--no-collector`, and the list owns a small block of the pool for
     each number, as it owns its copy of each text; `none` takes none.
     See [`docs/none-list.md`](docs/none-list.md) and 56.14 of
     [`docs/decisions.md`](docs/decisions.md))
-60. The size of the pool on the command line (on `main`, for 0.8.0:
+60. The size of the pool on the command line (done, in 0.8.0:
     `zeno build --no-collector --pool 4096` and `--text-room 2048`, and
     with `--memory` a write to a block after it was given back stops
     the program. See [`docs/pool-size.md`](docs/pool-size.md) and
     56.15 of [`docs/decisions.md`](docs/decisions.md))
 61. A function inside a function, and a default that is worked out,
-    in every build (on `main`, for 0.8.0: a function with a name
+    in every build (done, in 0.8.0: a function with a name
     written inside a function and `function f(a: int, b: int = a * 2)`
     build through C and LLVM, with or without a collector. See
     [`docs/inner-functions.md`](docs/inner-functions.md) and 56.16 of
     [`docs/decisions.md`](docs/decisions.md))
-62. Several values from one function (on `main`, for 0.8.0: `function
+62. Several values from one function (done, in 0.8.0: `function
     divide(a: int, b: int) -> (int, int)`, `return a // b, a % b`,
     `let q, r = divide(7, 2)`, and `low, high = high, low`, in every
     engine, every build and every target; several values are never
     one value, and a class keeps them together. See
     [`docs/several-values.md`](docs/several-values.md) and chapter 57
     of [`docs/decisions.md`](docs/decisions.md))
-63. Cleaning up when a block ends (on `main`, for 0.8.0: `owned class
+63. Cleaning up when a block ends (done, in 0.8.0: `owned class
     Selected is Resource` with a `function release(self)`, which runs
     when the owner of the object ends, on every way out of its block,
     in every engine, every build and every target. See
     [`docs/resource.md`](docs/resource.md) and 59.1 to 59.5 of
     [`docs/decisions.md`](docs/decisions.md))
-64. A file in pieces (on `main`, for 0.8.0: `files.read_from(path)`
+64. A file in pieces (done, in 0.8.0: `files.read_from(path)`
     and `for line in reader`, `read_bytes(count)`, `files.write_to` and
     `files.append_to` with `write(text)`; the file closes when its
     owner ends. See [`docs/files-in-pieces.md`](docs/files-in-pieces.md)
     and 59.6 and 59.7 of [`docs/decisions.md`](docs/decisions.md))
+65. Generic enums, bounds and generic interfaces (done, in 0.8.0:
+    `enum Maybe[T]` and `Result[T, E]`, `function largest[T is
+    Ordered]` and `[S is Shape]`, and `interface Source[T]` with `class
+    Countdown is Source[int]`, a copy for each set of types, in every
+    engine, every build and every target. A method with types of its
+    own stays refused, and the message says what to write. See
+    [`docs/generics.md`](docs/generics.md) and 58.1 to 58.8 of
+    [`docs/decisions.md`](docs/decisions.md))
+66. What interfaces left out (done, in 0.8.0: a default on a parameter
+    of an interface's function, a function that takes out what its
+    object owns standing for one of an interface, and `owned interface
+    Shape`. See [`docs/interfaces.md`](docs/interfaces.md) and 58.20 to
+    58.23 of [`docs/decisions.md`](docs/decisions.md))
+67. Folders (done, in 0.8.0: `files.list(folder)`, sorted,
+    `files.make_folder(path)` and `files.join(first, second)`. See
+    [`docs/folders.md`](docs/folders.md) and 59.20 to 59.23 of
+    [`docs/decisions.md`](docs/decisions.md))
+68. A message on `assert`, and tests of a compiled program (done, in
+    0.8.0: `assert c, "text"` prints the text above what was false, and
+    `zeno test --build` runs the tests in the program C or LLVM makes,
+    with `--firmware`, `--no-collector` or `--board`. See
+    [`docs/testing.md`](docs/testing.md) and chapter 60 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
