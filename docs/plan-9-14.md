@@ -2219,3 +2219,74 @@ through a function value of no known type, as in `function apply(f)
   values", with the line of rule 3 after it: receive each.
 - Chapter 57 says that carrying several values through names with no
   type is not caught until they are received or looked at, and why.
+
+### 16. Item 10 as a whole, 2026-11-20: accepted, with one fault and four small things to mend
+
+Item 10 is on `main` in one commit (0c6e6f8, chapter 57) and is
+**accepted, with the mending below before the release.**
+
+**What was checked.** Three programs of the planner's own, in `zeno
+run`, the virtual machine, six builds, and JavaScript, Python, Ruby,
+PHP, Go and Java: two numbers, two texts, an object with an enum, two
+lists with a number, a function that raises and gives two, values
+that may be `none`, a result passed on, a generic swap, a function
+that calls itself, swaps of numbers, lists, objects, fields and
+items, a method, a function of an interface, a function inside a
+function, a kept function, a method used as a value, `_`, and the
+order in which the right is worked out and the left is filled. All
+agree. Each misuse that rule 3 names is refused with its message, and
+with no types written the values show as `<2 values: 3, 1>` and a
+wrong count is caught where they are received. The formatter leaves
+all three as they are. `tools/same.py` against the tag: 6,795 builds,
+303 different, which is the 273 of section 15 and the thirty builds
+of the two new programs. `tools/refused.py` ends with 0. One commit
+and its note, in Partha's name, with no other name in them.
+
+**The fault.** With no collector, when several values are written
+out, in a `return` or on the right of `=`, and a later one raises
+after an earlier one made something that has one owner, the earlier
+one is never given back:
+
+```zeno
+function both(n: int) -> (list[int], str) raises ValueError {
+    return make(n), fail(n)        # fail raises: the list of make stays
+}
+```
+
+Four blocks are left by a loop that runs this four times, in the C
+build, the LLVM build and the firmware build alike, and the same
+with `let xs, s = make(n), fail(n)` and with `xs, s = make(n),
+fail(n)`. The same two calls as the arguments of one call, or as the
+fields of a new object, leave nothing, so the road exists; several
+values written out do not take it. It is mended, and the three forms
+become a test that counts blocks.
+
+**Four small things.**
+
+1. **A name twice on the left.** `a, a = divide(7, 2)` is taken and
+   leaves 1 in `a`. `let a, a` is refused already. The same plain
+   name twice on the left of `=` is refused too: one of the two
+   values would be thrown away by a line that says it is kept. (Two
+   items, `xs[i], xs[j]`, stay as they are: which item is not known
+   until the line runs, and the order of rule 4 says what happens.)
+2. **`_` where the program has a `_`.** `_` is a name a program of
+   0.7.0 may give a variable. In `var _ = 9` followed by `_, b =
+   divide(7, 2)` the `_` is left at 9 with nothing said. Where a
+   name `_` can be seen, `_` as a place on the left is refused, and
+   the message says to give the variable another name. No program of
+   0.7.0 has such a line.
+3. **Several values given as arguments.** `divide(divide(9, 2))` says
+   that `divide` needs a value for `b`. It should say what rule 3
+   says, which is the mistake that was made.
+4. **The message for `(int, int)` written as a type elsewhere** shows
+   `(int, str)` in quotes whatever was written. It shows what was
+   written.
+
+**Taken as the builder ruled:** the line of rule 3 is not added after
+each message for a wrong kind of value where no type is written.
+There are some thirty such places in each of fourteen engines, and
+the kind is named "2 values" in each, which says it.
+
+**Not seen by the planner:** Lua, Dart, Kotlin, C#, C++, Rust,
+TypeScript and WebAssembly, which the `targets` workflow checks. The
+builder reads that run and says how it ended.
