@@ -47,17 +47,41 @@ indexing, `append`, `pop`, `+`, `in`, comprehensions, `map`, `filter`,
 Every program in `examples/` builds. `blink.zeno` and `signal.zeno` run on
 a simulated board ([`docs/board.md`](board.md)).
 
+Since 0.8.0 that includes a function with a name written inside a
+function, and a default that is more than a literal
+([`inner-functions.md`](inner-functions.md)).
+
 A few things are left. `zeno build` names each one and points at the line:
 
 ```
-error: `zeno build` cannot compile a function inside a function or block yet. `zeno run` can still run this program
+error: `zeno build` cannot compile named arguments to a function held in a variable yet. `zeno run` can still run this program
 ```
 
-- A **named** function, class or enum declared inside a function. (Write
-  `let helper = function(n) { ... }` instead: that one compiles.)
-- A default value that is not a plain literal or `[]`:
-  `function f(at = now())`.
-- A method taken off an object without calling it: `let f = point.length`.
+Each of the two compilers has a little over a hundred places that
+refuse. Nearly all of them are guards: the checker refuses such a
+program first, with a message of its own, so the compiler's is never
+seen. These are the ones a program that `zeno run` runs can reach,
+through C and through LLVM alike, each with its reason:
+
+| Refused | Why | Instead |
+|---|---|---|
+| A class or an enum inside a function or a block | a type of C or of the IR is written once, at the top of the file, and these would need a name of their own and the variables around them | write it at the top of the file |
+| A generic function inside a function | a copy is made of a generic for each type it is used with, at the top of the file | write it at the top of the file |
+| Two functions inside a function that call each other and use variables around them | each is a closure that must be made before the other (56.16) | give one to the other as a parameter |
+| A default that is more than a literal, on a function inside a function that uses variables around it | the call goes through a function value, which carries no defaults (56.16) | give the argument at the call |
+| Named arguments to a function held in a variable: `f(a = 1)` | the type of a function value has no names for its parameters; `zeno run` reads them off the function it holds at the call | pass the arguments in order |
+| A built-in function used as a value: `xs.map(str)` | a built-in is written in place for the types it is given, and is no function that a value can point at | `xs.map(function(n) { return str(n) })` |
+| A method that comes with Zeno used as a value: `xs.append` | the same | a function written where a value goes |
+| A method of an object that no variable holds, or of a copy of a generic class, used as a value | 56.9, 56.17 | put the object in a `let`; call the method in a function written where a value goes |
+| A list whose items are not all one type: `[1, "a"]` | a build gives every item one type of C; `zeno run` checks types as it goes | one type, or an enum with a case for each |
+| A variable that only ever holds `none`, and `print([])` or `[none]` alone | a build needs a type, and nothing gives one | write the type: `x: int or none`, `let items: list[int] = []` |
+| `program.run` | starting another program is not written for C yet | `zeno run` |
+
+A build for a board, with no collector, or with `--minimal` refuses a
+few more on purpose, each with its reason in
+[`no-collector.md`](no-collector.md), [`firmware.md`](firmware.md) and
+[`minimal.md`](minimal.md). A function of a library of C has limits of
+its own ([`c.md`](c.md)).
 
 ## Where the types come from
 
@@ -538,5 +562,5 @@ without data do not allocate at all, and the collector never runs.
    variable in `read_all` became `volatile`, and why that one?
 7. In the same file, find the struct that `in_range` packs `low` and `high`
    into. Then find the box that `counter` keeps `count` in.
-8. Make a named function inside a function compile. Start with the easy
-   half: one that is only used below the line it is written on.
+8. Make two functions inside a function that call each other and use a
+   variable around them compile (56.16). What has to be made first?

@@ -984,6 +984,10 @@ struct Variable {
     /// ends. An owner that is a variable always has a slot, and the slot
     /// holds null once the value has been given away. See "Owned values".
     owner: bool,
+    /// It holds a function with a name, written inside a function, that
+    /// uses variables of the function around it (as in `emit_c`, decision
+    /// 56.16): the declaration, and whether it may be used here.
+    inner: Option<(Arc<Function>, bool)>,
 }
 
 /// One of the program's functions or methods, as a call needs to know it.
@@ -998,6 +1002,11 @@ struct Entry {
     /// For each parameter: is it without `take`? Then the function only
     /// looks, and may be lent a value that is gone when the statement is.
     lends: Vec<bool>,
+    /// Where its defaults are read: the named function it is written in
+    /// (0 for the top of the file), and the functions with names written
+    /// inside functions that it sees (as in `emit_c`, decision 56.16).
+    within: usize,
+    sight: Vec<(String, Entry)>,
 }
 
 /// What a call can be given: the name, kind and default of each place.
@@ -1048,6 +1057,9 @@ struct Waiting {
     entry: Entry,
     span: Span,
     sees: HashMap<String, Variable>,
+    /// For a function with a name written inside a function: the others
+    /// of its kind that it sees (decision 56.16).
+    sight: Vec<(String, Entry)>,
 }
 
 /// A loop that is being written: where `continue` and `break` jump to.
@@ -1227,6 +1239,17 @@ struct Emitter<'a> {
     /// The names brought in by `import`, and the module of each.
     imported: HashMap<String, String>,
     waiting: VecDeque<Waiting>,
+    /// Functions with names written inside functions (decision 56.16), as
+    /// in `emit_c`: how many there have been, for their names; for each
+    /// block, the ones it declares with what each name meant before; the
+    /// ones in sight of such a function being written now; the function
+    /// whose arguments are being bound, with the object of a method; and
+    /// the functions of the top of the file, as a default reads them.
+    inner_count: usize,
+    inner_frames: Vec<Vec<(String, Option<Entry>)>>,
+    inner_seen: Vec<(String, Entry)>,
+    callee: Option<(usize, Vec<(String, Entry)>, Option<Val>)>,
+    top_functions: HashMap<String, Entry>,
     /// The variables in view, innermost block last. The first entry is
     /// the top of the file.
     scopes: Vec<HashMap<String, Variable>>,
@@ -1706,6 +1729,11 @@ pub fn emit_with(
         cases: HashMap::new(),
         imported: HashMap::new(),
         waiting: VecDeque::new(),
+        inner_count: 0,
+        inner_frames: Vec::new(),
+        inner_seen: Vec::new(),
+        callee: None,
+        top_functions: HashMap::new(),
         scopes: vec![HashMap::new()],
         code: Code::of(&program.statements, Kind::None, false, !firmware),
         closures: 0,
@@ -1749,6 +1777,8 @@ pub fn emit_with(
             _ => {}
         }
     }
+
+    emitter.top_functions = emitter.functions.clone();
 
     // The top of the file becomes one function, `zeno_program`. Each
     // function it passes on the way is put aside, and written afterwards.
@@ -2169,7 +2199,7 @@ impl Emitter<'_> {
         }
         return_type(&kind.returns, span)?;
         let lends = self.types.looks(decl);
-        Ok(Entry { decl: decl.clone(), kind, name, owned, lends })
+        Ok(Entry { decl: decl.clone(), kind, name, owned, lends, within: self.within, sight: Vec::new() })
     }
 
     /// A class becomes a struct type: its fields, in the order they are
@@ -2375,17 +2405,29 @@ impl Emitter<'_> {
         for (param, kind) in decl.params.iter().zip(&kind.params) {
             let arrives = named('%', "arg.", &param.name);
             list.push(format!("{} {arrives}", ir_type(kind, span)?));
-            params.insert(param.name.clone(), Variable { place: Place::Value(arrives), kind: kind.clone(), open: false, owner: false });
+            params.insert(param.name.clone(), Variable { place: Place::Value(arrives), kind: kind.clone(), open: false, owner: false, inner: None });
         }
         Ok((params, list))
     }
 
     /// Write out one function or method.
     fn function(&mut self, waiting: Waiting) -> Result<(), Error> {
-        let Waiting { entry, span, sees } = waiting;
+        let Waiting { entry, span, sees, sight } = waiting;
+        let mut before = Vec::new();
+        for (name, seen) in &sight {
+            before.push((name.clone(), self.functions.insert(name.clone(), seen.clone())));
+        }
+        let seen = std::mem::replace(&mut self.inner_seen, sight);
         let within = std::mem::replace(&mut self.within, Arc::as_ptr(&entry.decl) as usize);
         let done = self.function_in(entry, span, sees);
         self.within = within;
+        self.inner_seen = seen;
+        for (name, was) in before.into_iter().rev() {
+            match was {
+                Some(entry) => self.functions.insert(name, entry),
+                None => self.functions.remove(&name),
+            };
+        }
         done
     }
 
@@ -2407,7 +2449,7 @@ impl Emitter<'_> {
                 let ty = ir_type(&kind, span)?;
                 let slot = self.stack_slot(&param.name, ty);
                 self.store(ty, &named('%', "arg.", &param.name), &slot);
-                params.insert(param.name.clone(), Variable { place: Place::Slot(slot), kind, open: false, owner: true });
+                params.insert(param.name.clone(), Variable { place: Place::Slot(slot), kind, open: false, owner: true, inner: None });
             }
         }
         let outer = std::mem::replace(&mut self.scopes, vec![sees, params]);
@@ -2505,7 +2547,7 @@ impl Emitter<'_> {
 
     fn block(&mut self, statements: &[Stmt]) -> Result<(), Error> {
         self.scopes.push(HashMap::new());
-        let mut done = statements.iter().try_for_each(|statement| self.statement(statement));
+        let mut done = self.statements(statements);
         // The block has reached its end. Unless its last statement left
         // it (and freed on its way out), free what its owners hold.
         if done.is_ok() && !self.code.ended {
@@ -2513,6 +2555,84 @@ impl Emitter<'_> {
         }
         self.scopes.pop();
         done
+    }
+
+    /// The statements of a block, in order, with the functions with names
+    /// that it declares, as `emit_c` places them (decision 56.16).
+    fn statements(&mut self, statements: &[Stmt]) -> Result<(), Error> {
+        if self.at_the_top() {
+            return statements.iter().try_for_each(|statement| self.statement(statement));
+        }
+        let made = self.inner_functions(statements)?;
+        let done = (|| {
+            for (index, statement) in statements.iter().enumerate() {
+                for (at, decl, span) in &made {
+                    if *at == index {
+                        self.inner_closure(decl, *span)?;
+                    }
+                }
+                self.statement(statement)?;
+            }
+            for (at, decl, span) in &made {
+                if *at == statements.len() && !self.code.ended {
+                    self.inner_closure(decl, *span)?;
+                }
+            }
+            Ok(())
+        })();
+        let frame = self.inner_frames.pop().unwrap_or_default();
+        for (name, before) in frame.into_iter().rev() {
+            match before {
+                Some(entry) => self.functions.insert(name, entry),
+                None => self.functions.remove(&name),
+            };
+        }
+        done
+    }
+
+    /// The functions with names that a block declares, sorted as
+    /// `emit_c::Emitter::inner_functions` sorts them: one that uses
+    /// nothing of the function around it waits to be written as a
+    /// function of the file, and is in sight from here; one that does is
+    /// given back with the statement it is made before.
+    fn inner_functions(&mut self, statements: &[Stmt]) -> Result<Vec<(usize, Arc<Function>, Span)>, Error> {
+        let around: HashSet<String> = self.scopes[1..].iter().flat_map(|scope| scope.keys().cloned()).collect();
+        let plan = emit_c::inner_plan(statements, &around, "`zeno build --llvm`")?;
+        self.inner_frames.push(Vec::new());
+        let mut jobs = Vec::new();
+        for (decl, span) in &plan.plain {
+            self.inner_count += 1;
+            let entry = self.entry(decl, named('@', &format!("zeno.inner.{}.", self.inner_count), &decl.name), *span)?;
+            let before = self.functions.insert(decl.name.clone(), entry);
+            self.inner_frames.last_mut().expect("pushed above").push((decl.name.clone(), before));
+            jobs.push((decl.name.clone(), *span));
+        }
+        let mut seen = self.inner_seen.clone();
+        for frame in &self.inner_frames {
+            for (name, _) in frame {
+                seen.retain(|(other, _)| other != name);
+                seen.push((name.clone(), self.functions[name].clone()));
+            }
+        }
+        for (name, span) in jobs {
+            let mut entry = self.functions[&name].clone();
+            entry.sight = seen.clone();
+            self.functions.insert(name, entry.clone());
+            self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone(), sight: seen.clone() });
+        }
+        Ok(plan.closures)
+    }
+
+    /// A function with a name written inside a function that uses
+    /// variables of the function around it: a closure, held under its
+    /// name, which the block owns (decision 56.16).
+    fn inner_closure(&mut self, decl: &Arc<Function>, span: Span) -> Result<(), Error> {
+        let val = self.closure_made(decl, &decl.name, Some(decl), span)?;
+        self.declare(&decl.name, val, false, !self.collector, span)?;
+        if let Some(variable) = self.scopes.last_mut().and_then(|scope| scope.get_mut(&decl.name)) {
+            variable.inner = Some((decl.clone(), true));
+        }
+        Ok(())
     }
 
     /// Is this the top of the file, outside every function and block?
@@ -2591,15 +2711,16 @@ impl Emitter<'_> {
             }
 
             StmtKind::Function(decl) => {
+                // One inside a function is made by `statements`.
                 if !self.at_the_top() {
-                    return Err(cannot("a function with a name inside a function or a block", span));
+                    return Ok(());
                 }
                 // It is written out later. It may use the variables
                 // declared so far and no others, so a copy of them goes
                 // with it. A generic is written out once for each copy.
                 for decl in copies_of_function(self.types, decl) {
                     let entry = self.functions[&decl.name].clone();
-                    self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                    self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone(), sight: Vec::new() });
                 }
                 Ok(())
             }
@@ -2617,7 +2738,7 @@ impl Emitter<'_> {
                     }
                     for method in &decl.methods {
                         let entry = self.classes[&decl.name].methods[&method.name].clone();
-                        self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone() });
+                        self.waiting.push_back(Waiting { entry, span, sees: self.scopes[0].clone(), sight: Vec::new() });
                     }
                 }
                 Ok(())
@@ -2824,7 +2945,7 @@ impl Emitter<'_> {
             // A `let` never changes: the value itself is the variable.
             (Place::Value(val.code), false)
         };
-        let variable = Variable { place, kind: val.kind, open, owner };
+        let variable = Variable { place, kind: val.kind, open, owner, inner: None };
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), variable);
         Ok(())
     }
@@ -3154,7 +3275,7 @@ impl Emitter<'_> {
         // Held in its slot, as an owner is: leaving early frees it.
         self.code.holds += 1;
         let key = format!("held {}", self.code.holds);
-        let variable = Variable { place: Place::Slot(slot.clone()), kind: val.kind.clone(), open: false, owner: true };
+        let variable = Variable { place: Place::Slot(slot.clone()), kind: val.kind.clone(), open: false, owner: true, inner: None };
         self.scopes.last_mut().expect("a scope").insert(key.clone(), variable);
         self.code.passing.push(Passing { key, slot, kind: val.kind.clone() });
         val.made = false;
@@ -3455,7 +3576,7 @@ impl Emitter<'_> {
         self.code.holds += 1;
         // No Zeno name has a space in it, so this cannot hide a variable.
         let key = format!("held {}", self.code.holds);
-        let variable = Variable { place: Place::Value(value.to_string()), kind, open: false, owner: true };
+        let variable = Variable { place: Place::Value(value.to_string()), kind, open: false, owner: true, inner: None };
         self.scopes.last_mut().expect("a scope").insert(key.clone(), variable);
         key
     }
@@ -3917,7 +4038,7 @@ impl Emitter<'_> {
             (None, first) => (value, first),
         };
         // What the body sees is a value, which it cannot change.
-        let seen = |val: Val| Variable { place: Place::Value(val.code), kind: val.kind, open: false, owner: false };
+        let seen = |val: Val| Variable { place: Place::Value(val.code), kind: val.kind, open: false, owner: false, inner: None };
         let mut scope = HashMap::new();
         match (second, first) {
             (Some(second), Some(first)) => {
@@ -3932,7 +4053,7 @@ impl Emitter<'_> {
         // the loop early frees it.
         if let Some(held) = &count.held {
             self.code.holds += 1;
-            let variable = Variable { place: Place::Slot(held.clone()), kind: Kind::Str, open: false, owner: true };
+            let variable = Variable { place: Place::Slot(held.clone()), kind: Kind::Str, open: false, owner: true, inner: None };
             scope.insert(format!("held {}", self.code.holds), variable);
         }
         self.scopes.push(scope);
@@ -4079,7 +4200,7 @@ impl Emitter<'_> {
                 }
                 // Any other name is a new variable holding the value.
                 _ => {
-                    let variable = Variable { place: Place::Value(val.code.clone()), kind: val.kind.clone(), open: false, owner: false };
+                    let variable = Variable { place: Place::Value(val.code.clone()), kind: val.kind.clone(), open: false, owner: false, inner: None };
                     self.scopes.last_mut().expect("a scope").insert(name.clone(), variable);
                     Ok(false)
                 }
@@ -4237,7 +4358,7 @@ impl Emitter<'_> {
                     }
                     _ => error,
                 };
-                let variable = Variable { place: Place::Value(value), kind: holds, open: false, owner: false };
+                let variable = Variable { place: Place::Value(value), kind: holds, open: false, owner: false, inner: None };
                 self.scopes.last_mut().expect("a scope").insert(name.clone(), variable);
             }
             let result = self.block(&handler.body);
@@ -4530,13 +4651,13 @@ impl Emitter<'_> {
                     _ => raised.clone(),
                 };
                 let variable = match self.collector {
-                    true => Variable { place: Place::Value(value), kind: holds, open: false, owner: false },
+                    true => Variable { place: Place::Value(value), kind: holds, open: false, owner: false, inner: None },
                     // The name is an owner, so it is a slot: giving the
                     // error on leaves null behind.
                     false => {
                         let slot = self.slot(format!("%caught.{n}.{}", index + 1), "ptr");
                         self.store("ptr", &value, &slot);
-                        Variable { place: Place::Slot(slot), kind: holds, open: false, owner: true }
+                        Variable { place: Place::Slot(slot), kind: holds, open: false, owner: true, inner: None }
                     }
                 };
                 self.scopes.last_mut().expect("a scope").insert(name.clone(), variable);
@@ -4815,6 +4936,9 @@ impl Emitter<'_> {
             }
             return Err(cannot(format!("`{name}` used this way"), span));
         };
+        if let (Some((decl, _)), false) = (&variable.inner, self.collector) {
+            return Err(emit_c::inner_as_value(&decl.name, span));
+        }
         let val = match &variable.place {
             Place::Value(code) => Val::new(code.clone(), variable.kind.clone()),
             // The owner gives its value away here. Take the address out
@@ -5483,6 +5607,7 @@ impl Emitter<'_> {
                 let boxed = self.call("ptr", name, format!("{} {}", ir_type(&val.kind, span)?, val.code));
                 self.set(format!("ptrtoint ptr {boxed} to i64"))
             }
+            Kind::None => return Err(emit_c::untyped_list("`zeno build --llvm`", span)),
             _ => return Err(cannot("a list of these", span)),
         })
     }
@@ -5857,6 +5982,7 @@ impl Emitter<'_> {
             .zip(&entry.kind.params)
             .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
             .collect();
+        self.callee = Some((entry.within, entry.sight.clone(), None));
         let list = self.bind(&slots, &entry.owned, &entry.lends, args, span)?;
         self.call_entry(entry, list, span)
     }
@@ -5913,6 +6039,25 @@ impl Emitter<'_> {
                 }
                 self.method(object, name, args, span)
             }
+            // A function with a name written inside a function, held as a
+            // closure (decision 56.16): called with names and defaults as
+            // any function with a name is.
+            ExprKind::Name(name) if self.lookup(name).is_some_and(|variable| variable.inner.is_some()) => {
+                let variable = self.lookup(name).cloned().expect("looked up above");
+                let (decl, usable) = variable.inner.clone().expect("looked up above");
+                if !usable {
+                    return Err(emit_c::inner_outlives(name, span));
+                }
+                let function = match &variable.place {
+                    Place::Value(code) => Val::new(code.clone(), variable.kind.clone()),
+                    Place::Slot(slot) => {
+                        let ty = ir_type(&variable.kind, span)?;
+                        Val::new(self.load(ty, slot), variable.kind.clone())
+                    }
+                };
+                let args = emit_c::in_order(&decl, args, span, "`zeno build --llvm`")?;
+                self.call_value(function.fixed(), &args, span)
+            }
             // Anything else that is called must be a function value.
             _ => {
                 let function = self.expr(callee)?;
@@ -5931,6 +6076,9 @@ impl Emitter<'_> {
     /// `owned` says which places take over an owned value, and `lends`
     /// which only look (no `take`).
     fn bind(&mut self, slots: &Slots, owned: &[bool], lends: &[bool], args: &[Arg], span: Span) -> Result<Vec<String>, Error> {
+        // Where the function was written, for its defaults: taken now, so
+        // that a call among the arguments does not see it.
+        let callee = self.callee.take();
         let mut given: Vec<Option<Val>> = vec![None; slots.len()];
         let mut held = Vec::new();
         for (index, arg) in args.iter().enumerate() {
@@ -5964,23 +6112,91 @@ impl Emitter<'_> {
         for key in &held {
             self.let_go(key);
         }
+        // Each argument is worked out already, so a default that is more
+        // than a literal, worked out here in the order of the parameters,
+        // can read the ones before it (decision 56.16).
+        let mut fitted: Vec<Option<Val>> = Vec::new();
+        for (val, (_, kind, _)) in given.into_iter().zip(slots) {
+            fitted.push(match val {
+                Some(val) => Some(self.fit(val, kind, span)?),
+                None => None,
+            });
+        }
         let mut list = Vec::new();
-        for (place, (val, (_, kind, default))) in given.into_iter().zip(slots).enumerate() {
+        for place in 0..slots.len() {
+            let (_, kind, default) = &slots[place];
             // An argument that was left out takes the default. A place
             // that keeps what it is given owns the list made for it
             // here; any other only looks, and the statement frees the
             // list after the call (as in `emit_c`).
             let keeps = !lends.get(place).copied().unwrap_or(false);
-            let val = match (val, default) {
+            let val = match (fitted[place].clone(), default) {
                 (Some(val), _) => val,
-                (None, Some(default)) if emit_c::is_literal(default) && keeps => self.value(default)?,
-                (None, Some(default)) if emit_c::is_literal(default) => self.expr(default)?,
-                (None, _) => return Err(cannot("a default value that is not a plain literal", span)),
+                (None, Some(default)) if emit_c::is_literal(default) => {
+                    let val = if keeps { self.value(default)? } else { self.expr(default)? };
+                    self.fit(val, kind, span)?
+                }
+                (None, Some(default)) => {
+                    let before: Vec<(String, Kind, String)> = slots[..place]
+                        .iter()
+                        .zip(&fitted)
+                        .filter_map(|((name, kind, _), val)| val.as_ref().map(|val| (name.clone(), kind.clone(), val.code.clone())))
+                        .collect();
+                    let val = self.default_value(callee.as_ref(), default, keeps, &before)?;
+                    let val = self.fit(val, kind, span)?;
+                    fitted[place] = Some(val.clone());
+                    val
+                }
+                (None, None) => return Err(cannot("this many arguments", span)),
             };
-            let val = self.fit(val, kind, span)?;
             list.push(format!("{} {}", ir_type(kind, span)?, val.code));
         }
         Ok(list)
+    }
+
+    /// A default that is not a literal, worked out at a call that leaves
+    /// its argument out (decision 56.16, as in `emit_c`). It reads what it
+    /// would read where the function is written: the file's variables and
+    /// functions, and the parameters before it, which `before` holds, with
+    /// `self` for a method. Nothing of the function that calls.
+    fn default_value(
+        &mut self,
+        callee: Option<&(usize, Vec<(String, Entry)>, Option<Val>)>,
+        default: &Expr,
+        keeps: bool,
+        before: &[(String, Kind, String)],
+    ) -> Result<Val, Error> {
+        let (within, sight, receiver) = callee.cloned().unwrap_or_default();
+        let given = |code: &str, kind: &Kind| Variable {
+            place: Place::Value(code.to_string()),
+            kind: kind.clone(),
+            open: false,
+            owner: false,
+            inner: None,
+        };
+        let mut params = HashMap::new();
+        if let Some(object) = &receiver {
+            params.insert("self".to_string(), given(&object.code, &object.kind));
+        }
+        for (name, kind, code) in before {
+            params.insert(name.clone(), given(code, kind));
+        }
+        let mut outside = std::mem::take(&mut self.scopes);
+        self.scopes = vec![outside.remove(0), params];
+        let mut functions = std::mem::replace(&mut self.functions, self.top_functions.clone());
+        for (name, entry) in sight {
+            self.functions.insert(name, entry);
+        }
+        let within = std::mem::replace(&mut self.within, within);
+        let once = self.once.take();
+        let val = if keeps { self.value(default) } else { self.expr(default) };
+        self.once = once;
+        self.within = within;
+        std::mem::swap(&mut self.functions, &mut functions);
+        let mut inside = std::mem::take(&mut self.scopes);
+        outside.insert(0, inside.remove(0));
+        self.scopes = outside;
+        val
     }
 
     /// Write the call to one of the program's functions or methods.
@@ -6526,6 +6742,7 @@ impl Emitter<'_> {
                     .map(|(param, kind)| (param.name.clone(), kind.clone(), param.default.clone()))
                     .collect();
                 let mut list = vec![format!("ptr {}", receiver.code)];
+                self.callee = Some((entry.within, Vec::new(), Some(receiver.clone())));
                 list.extend(self.bind(&slots, &entry.owned[1..], &entry.lends[1..], args, span)?);
                 self.call_entry(&entry, list, span)
             }
@@ -7283,6 +7500,13 @@ impl Emitter<'_> {
             _ => false,
         };
         let raising = self.raising(&kind);
+        // A function written inside a function has a number of its own
+        // (decision 56.16), which its wrappers carry too.
+        let key = match entry.name.strip_prefix("@zeno.inner.").or_else(|| entry.name.strip_prefix("@\"zeno.inner.")) {
+            Some(rest) => format!("inner.{}.{name}", rest.split('.').next().unwrap_or_default()),
+            None => name.to_string(),
+        };
+        let (shown, name) = (name, key.as_str());
         // The second wrapper has a prefix of its own, which no name of
         // the program can make.
         let (value, wrap) = match made {
@@ -7329,7 +7553,7 @@ impl Emitter<'_> {
                 }
                 Ok(())
             })?;
-            let text = self.string(name);
+            let text = self.string(shown);
             self.globals.push(match self.collector {
                 true => format!("{value} = internal constant {{ ptr, ptr }} {{ ptr {wrap}, ptr {text} }}"),
                 // With no collector a function value says what frees
@@ -7429,7 +7653,7 @@ impl Emitter<'_> {
             return self.closure_named(decl, method, written.span);
         }
         let now = self.expr(object)?;
-        let copy = Variable { place: Place::Value(now.code), kind: now.kind, open: false, owner: false };
+        let copy = Variable { place: Place::Value(now.code), kind: now.kind, open: false, owner: false, inner: None };
         self.scopes.push(HashMap::from([(name.clone(), copy)]));
         let made = self.closure_named(decl, method, written.span);
         self.scopes.pop();
@@ -7443,6 +7667,14 @@ impl Emitter<'_> {
     /// A function written where a value goes, under the name `print`
     /// shows: none, or the method's for one used as a value.
     fn closure_named(&mut self, decl: &Arc<Function>, shown: &str, span: Span) -> Result<Val, Error> {
+        self.closure_made(decl, shown, None, span)
+    }
+
+    /// The same, for a function with a name written inside a function
+    /// (`own`, decision 56.16): inside its body its name is the function
+    /// itself, and the checker's notes for its body are under its own
+    /// declaration.
+    fn closure_made(&mut self, decl: &Arc<Function>, shown: &str, own: Option<&Arc<Function>>, span: Span) -> Result<Val, Error> {
         let Some(kind) = self.types.function(decl) else {
             return Err(cannot("this function", span));
         };
@@ -7482,11 +7714,15 @@ impl Emitter<'_> {
         let mut taken = Vec::new();
         let mut owns = Vec::new();
         for name in mentioned {
-            if decl.params.iter().any(|param| param.name == name) {
+            if decl.params.iter().any(|param| param.name == name) || (own.is_some() && name == decl.name) {
                 continue;
             }
             if let Some(variable) = self.scopes[1..].iter().rev().find_map(|scope| scope.get(&name)) {
                 let mut variable = variable.clone();
+                // A function written where a value goes may outlive the
+                // block that owns a function with a name it would take,
+                // unless there is a collector.
+                variable.inner = variable.inner.map(|(decl, usable)| (decl, usable && (self.collector || own.is_some())));
                 if takes.contains(&name) {
                     let Place::Slot(slot) = &variable.place else {
                         return Err(cannot(format!("a function that takes `{name}` from outside it"), span));
@@ -7597,7 +7833,17 @@ impl Emitter<'_> {
                 Place::Value(_) => Place::Value(self.set(format!("load {}, ptr {at}", inside[index + first]))),
                 Place::Slot(_) => Place::Slot(self.set(format!("load ptr, ptr {at}"))),
             };
-            brought.insert(name.clone(), Variable { place, kind: variable.kind.clone(), open: variable.open, owner: false });
+            brought.insert(name.clone(), Variable { place, kind: variable.kind.clone(), open: variable.open, owner: false, inner: variable.inner.clone() });
+        }
+        if let Some(own) = own {
+            let itself = Variable {
+                place: Place::Value("%self".to_string()),
+                kind: Kind::Function(Box::new(kind.clone())),
+                open: false,
+                owner: false,
+                inner: Some((own.clone(), true)),
+            };
+            brought.insert(decl.name.clone(), itself);
         }
         let (mut params, list) = self.parameters(decl, &kind, span)?;
         // A parameter that takes over a value is its owner, as in a
@@ -7608,11 +7854,16 @@ impl Emitter<'_> {
                 let ty = ir_type(&kind, span)?;
                 let slot = self.stack_slot(&param.name, ty);
                 self.store(ty, &named('%', "arg.", &param.name), &slot);
-                params.insert(param.name.clone(), Variable { place: Place::Slot(slot), kind, open: false, owner: true });
+                params.insert(param.name.clone(), Variable { place: Place::Slot(slot), kind, open: false, owner: true, inner: None });
             }
         }
         self.scopes = vec![globals, brought, params];
+        let within = match own {
+            Some(own) => std::mem::replace(&mut self.within, Arc::as_ptr(own) as usize),
+            None => self.within,
+        };
         let mut done = self.block(&decl.body);
+        self.within = within;
         if done.is_ok() && !self.code.ended {
             // The end of the body: free what the parameters still own.
             done = self.free_owned(1);
@@ -9739,12 +9990,8 @@ for n in [1, 5] {
         );
         let refused = [
             (
-                "function outer() -> int {\n    function inner() -> int { return 1 }\n    return inner()\n}\nprint(outer())\n",
-                "a function with a name inside a function or a block",
-            ),
-            (
-                "function f(n: int = 1 + 1) -> int { return n }\nprint(f())\n",
-                "a default value that is not a plain literal",
+                "function outer() -> int {\n    function id[T](x: T) -> T {\n        return x\n    }\n    return id(4)\n}\nprint(outer())\n",
+                "a generic function inside a function or block",
             ),
         ];
         for (source, what) in refused {

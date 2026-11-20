@@ -890,6 +890,12 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     with `--memory` a write to a block after it was given back stops
     the program. See [`docs/pool-size.md`](docs/pool-size.md) and
     56.15 of [`docs/decisions.md`](docs/decisions.md))
+61. A function inside a function, and a default that is worked out,
+    in every build (on `main`, for 0.8.0: a function with a name
+    written inside a function and `function f(a: int, b: int = a * 2)`
+    build through C and LLVM, with or without a collector. See
+    [`docs/inner-functions.md`](docs/inner-functions.md) and 56.16 of
+    [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).

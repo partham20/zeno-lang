@@ -1,0 +1,203 @@
+# Functions with names written inside functions, and defaults that are
+# more than a literal (decision 56.16). Every build prints what `zeno run`
+# prints; with no collector nothing is left.
+
+let base = 10
+var calls = 0
+function outer(n: int) -> int {
+    let scale = 3
+    function times(x: int) -> int {
+        return x * scale
+    }
+    function fact(k: int) -> int {
+        if k <= 1 {
+            return 1
+        }
+        return k * fact(k - 1)
+    }
+    return times(n) + fact(n)
+}
+print(outer(4))
+function early() -> int {
+    let a = later(2)
+    function later(x: int, by: int = 1) -> int {
+        return x + by
+    }
+    return a + later(by = 10, x = 0)
+}
+print(early())
+function mutual(n: int) -> bool {
+    function is_even(k: int) -> bool {
+        if k == 0 {
+            return true
+        }
+        return is_odd(k - 1)
+    }
+    function is_odd(k: int) -> bool {
+        if k == 0 {
+            return false
+        }
+        return is_even(k - 1)
+    }
+    return is_even(n)
+}
+print(mutual(10), mutual(7))
+function maker() -> function(int) -> int {
+    function add(x: int) -> int {
+        return x + 5
+    }
+    return add
+}
+let made = maker()
+print(made(1))
+function looped() -> list[int] {
+    var out: list[int] = []
+    for i in range(3) {
+        function scaled(x: int) -> int {
+            return x * i
+        }
+        out.append(scaled(10))
+    }
+    return out
+}
+print(looped())
+function plain() -> list[int] {
+    function sq(x: int) -> int {
+        return x * x
+    }
+    return [1, 2, 3].map(sq)
+}
+print(plain())
+function texty(name: str) -> str {
+    function greet(greeting: str) -> str {
+        return f"{greeting}, {name}"
+    }
+    return greet("hi")
+}
+print(texty("ann"))
+function twice(x: int) -> int {
+    return x * 2
+}
+function layers(n: int) -> int {
+    let k = n + 1
+    function shift(x: int) -> int {
+        return x + k
+    }
+    function both(x: int, more: int = 1) -> int {
+        return shift(x) + helper(x) + more
+    }
+    function helper(x: int) -> int {
+        function deep(y: int) -> int {
+            return twice(y) + 1
+        }
+        return deep(x)
+    }
+    return both(n) + both(more = 0, x = 1)
+}
+print(layers(3))
+function nested(n: int) -> int {
+    let a = n * 10
+    function middle(x: int) -> int {
+        let b = x + 1
+        function inmost(y: int) -> int {
+            return y + a + b
+        }
+        return inmost(x)
+    }
+    return middle(1) + middle(2)
+}
+print(nested(2))
+class Box {
+    size: int = 4
+    function grow(self, by: int) -> int {
+        function step(x: int) -> int {
+            return x + by
+        }
+        return step(self.size)
+    }
+}
+print(Box(5).grow(2))
+function words(name: str) -> list[str] {
+    var out: list[str] = []
+    function tag(word: str) -> str {
+        return f"{word}-{name}"
+    }
+    for w in ["a", "b"] {
+        out.append(tag(w))
+    }
+    return out
+}
+print(words("z"))
+function counts(n: int) -> int {
+    var seen = 0
+    for i in range(n) {
+        seen += i
+    }
+    function report(x: int) -> int {
+        return x + n
+    }
+    return report(seen)
+}
+print(counts(4))
+function safe(xs: list[int], limit: int) -> int {
+    function check(x: int) -> int raises ValueError {
+        if x > limit {
+            raise ValueError(f"too big: {x}")
+        }
+        return x
+    }
+    function plain_check(x: int) -> int raises ValueError {
+        if x < 0 {
+            raise ValueError("negative")
+        }
+        return x
+    }
+    var total = 0
+    for x in xs {
+        try {
+            total += check(x) + plain_check(x)
+        } except ValueError as e {
+            print(e.message)
+        }
+    }
+    return total
+}
+print(safe([1, 5, -2, 2], 4))
+class Scaled {
+    by: int = 2
+    function times(self, x: int, extra: int = x + self.by) -> int {
+        return x * self.by + extra
+    }
+}
+print(Scaled(3).times(4), Scaled().times(1, 0))
+function bump() -> int {
+    calls += 1
+    return calls
+}
+function f(a: int, b: int = a * 2, c: int = base + bump()) -> int {
+    return a + b + c
+}
+function g() -> int {
+    let base = 1000
+    return f(1)
+}
+print(f(1), f(1, 1), g(), f(a = 2, c = 0), f(c = bump(), a = bump()))
+function label(text: str, width: int = len(text) + 2) -> str {
+    return f"{text}:{width}"
+}
+print(label("ab"), label("abc", 1))
+class Meter {
+    scale: float = 1.0
+    function read(self, raw: float, at: float = raw * self.scale) -> float {
+        return at
+    }
+}
+let m = Meter(2.0)
+print(m.read(3.0), m.read(3.0, 1.0))
+function adds(k: int) -> int {
+    function inner(x: int, y: int = x + base) -> int {
+        return x + y
+    }
+    return inner(k) + inner(1, 1)
+}
+print(adds(2))

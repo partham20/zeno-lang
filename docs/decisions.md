@@ -17503,7 +17503,7 @@ both compilers read and write an item. It does:
 B needs neither. The free and the copy that keeps a box of its own
 exist already for text (5.9x), and a box is freed with the same
 `zeno_free` as any block of the pool. So B is built, with no collector
-alone, and A stays on the list (56.16).
+alone, and A stays on the list (56.17).
 
 **The rule.** With no collector, a list owns the box of each number
 that may be `none`, as it owns its copy of each text. Each way into a
@@ -17649,7 +17649,106 @@ hundreds of blocks and keeps to its own runs as `zeno run` runs it, with
 0 blocks left (`with_memory_a_write_to_a_block_given_back_stops_the_program`).
 The page is [`pool-size.md`](pool-size.md).
 
-### 56.16 Left for later
+### 56.16 A function inside a function, and a default that is worked out
+
+```zeno
+function g(n: int, top: int = n * 10) -> int {
+    let a = sq(2)                 # above its line
+    function sq(x: int) -> int {  # uses nothing around it
+        return x * x
+    }
+    let k = n * 2
+    function add(x: int) -> int { # uses `k`
+        return x + k
+    }
+    return a + add(1)
+}
+```
+
+**The need.** Both compilers refused a function with a name written
+inside a function, and a default that is more than a literal. `zeno
+run` takes both, so a program that used either could not be built at
+all, and the plan (9.8) puts them first among the refusals of a build.
+
+**Not "a `let` at its line".** The plan's first way was to make each
+such function a function value in a `let` at its own line. That
+refuses what `zeno run` takes: a call above the function's line runs
+there, and so do two such functions that call each other. What `zeno
+run` refuses is a use above a `let` the function needs, and the
+checker already says so in every engine ("`k` is declared further down
+than the first use of `add`, which needs it"). The build stands on
+that rule instead.
+
+**Three kinds.** `inner_plan`, which both compilers call so that they
+agree, sorts the functions of a block by what each uses that it does
+not declare (`free_names`):
+
+- **Nothing of the function around it** (only its parameters, the
+  file's names and other functions of this kind): a function of the
+  file, under a name of its own, `zeno_inner_N_name` in C and
+  `@zeno.inner.N.name` in LLVM, since two functions may each have an
+  `sq` inside. It is in sight from the start of its block to the end,
+  and compiled after the function it is in, seeing what it saw there.
+  A call above its line and two that call each other work, and it
+  costs what a function of the file costs. This is the common case.
+- **A `let`, a `var`, a parameter or an `import` around it, or a call
+  to one of this kind**: a closure, made once, just after the last
+  declaration of its block it uses, and after each closure beside it
+  that it calls. The checker holds every use below that line. Inside
+  its body its own name is the closure, so it can call itself.
+- **Two of the second kind that call each other**: each would have to
+  be made first. Refused, with a message that says to give one to the
+  other as a parameter; left for later.
+
+**Who owns the closure.** With a collector the closure is the
+collector's, as any function value is. With no collector the block
+owns it and frees it as it ends, so it may be called and not used as a
+value, and a function written where a value goes may not call it,
+since that one may outlive the block. Copying it on each use was the
+other way (the planning thread's point 3); it was not taken, because a
+function value with no collector already has one owner and a `let` of
+a function written where a value goes is the way to one that can be
+given. Both are refused with a message that says so. A `var` around it
+that it changes is shared, and with no collector refused as before.
+
+**Defaults.** A default that is more than a literal is worked out at a
+call that leaves the argument out, in the order of the parameters,
+after the arguments given (which keep the order they are written in).
+It reads what it reads where the function is written: the file's
+variables and functions, the parameters before it, and `self` in a
+method. The compiler swaps its scopes for those while it writes the
+default, so a variable of the calling function with the same name is
+not seen, and the default sees the inner functions that were in sight
+where its function is written. In C each given argument is held in a
+variable first, so that a default reads it once; in LLVM each is a
+value already. A default on a closure is refused for now: the call
+goes through a function value, which has no defaults.
+
+**Opt-in.** Nothing asks for this but the program itself: only a
+program that a build refused before builds in a new way, and the C and
+the IR of every other program are what they were (`tools/same.py`).
+
+**The other refusals.** As the plan asks, every other refusal of the
+two compilers was listed and tried against `zeno run`. Nearly all are
+guards behind the checker, which refuses the program first. The ones a
+program can reach are in [`compiler.md`](compiler.md), each with its
+reason. The message for `print([])` and `[none]` alone said "a list of
+these"; it now says that a build needs to know what the list holds,
+and how to say it.
+
+**Tests.** `functions_inside_functions_every_way` holds
+`tools/targets/edge-inner-functions.zeno` to `zeno run` in every build
+of both compilers and with memory that grows, with 0 blocks left: a
+call above the line, two of the first kind calling each other, one
+calling itself, one made in a loop, one in a method, three deep, one
+that raises, and defaults that read earlier parameters, the file's
+variables, a function with a side effect, and `self`. With a collector,
+a `var` changed after the function was written and a function
+returned as a value. It checks where each kind goes in the C and the
+IR, and every refusal word for word through both. The page is
+[`inner-functions.md`](inner-functions.md).
+
+### 56.17 Left for later
 
 - **A list of kinds after `raises` in a type**, inside brackets of its
   own. Refused with "a function type names one kind of error after
@@ -17686,3 +17785,14 @@ The page is [`pool-size.md`](pool-size.md).
   that an item that may be `none` takes 9 bytes and no block. It needs
   a field in `zeno_list` or a second kind of list with every list
   function twice; see 56.14.
+- **Two functions inside a function that call each other and use
+  variables around them** (56.16). Refused with "...Give one of them to
+  the other as a parameter".
+- **A default that is more than a literal on a function inside a
+  function that uses variables around it** (56.16). Refused; give the
+  argument at the call.
+- **A generic function, a class or an enum inside a function or a
+  block.** Refused by both compilers; write it at the top of the file.
+- **Named arguments to a function held in a variable, and a built-in
+  function used as a value** (`xs.map(str)`). Refused by both
+  compilers; see [`compiler.md`](compiler.md) for the reasons.
