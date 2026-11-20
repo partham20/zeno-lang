@@ -91,6 +91,55 @@ values. Zeno has the comparison in front of it, so the one
 \verb|assert| is not an error of the program, so \verb|except Error|
 does not catch it.
 
+\section{A message for a failure}
+
+When the two sides of a comparison do not say why they matter, an
+\verb|assert| can say it, after a comma:
+
+\begin{zeno}[file=smooth.zeno, dir=message, cmd=zeno test {file}, fails=yes]
+function smooth(readings: list[float]) -> list[float] {
+    var result: list[float] = []
+    for index in range(1, len(readings)) {
+        result.append((readings[index - 1] + readings[index]) / 2.0)
+    }
+    return result
+}
+
+test "smoothing gives one value for each reading" {
+    let readings = [20.0, 22.0, 21.0]
+    let smoothed = smooth(readings)
+    assert len(smoothed) == len(readings), f"the readings gave {smoothed}"
+}
+\end{zeno}
+
+The text is printed on a line of its own, above the line that says
+what was false, which stays. Here the sides say only that 2 is not 3;
+the text shows the list that came back, and that the first reading
+has no value of its own. A condition that is not a comparison, such
+as \verb|assert heater.is_on()|, shows no values at all, and there the
+text is the only way to say more than ``this is false''.
+
+What comes after the comma must be text, and only one text: when
+\verb|total| is an \verb|int|, \verb|assert total == 6, total| is
+refused, and \verb|f"the total was {total}"| is what to write. An
+f-string makes anything text, so nothing is lost. The
+text is worked out only when the \verb|assert| fails, so a passing
+test does not pay for it, and it can use what is only there when
+something has gone wrong. \verb|assert raises| takes no text: its
+failure already says what was wanted and what came.
+
+\begin{why}
+The test's name and the two sides of a comparison say most of what a
+message would say, which is why the first versions of Zeno had none.
+What they cannot say is why the values matter, in the words of the
+thing being tested, and a condition with no comparison in it says
+nothing but that it is false. The comma is how Python writes it, so
+most readers have seen it, and after the one expression of an
+\verb|assert| it can mean nothing else. \verb|assert c else "text"|
+would make \verb|else| begin a value, and \verb|assert(c, "text")|
+would read as a call. (Decision 60.1.)
+\end{why}
+
 \section{Testing that something fails}
 
 Fault paths are half of what firmware has to get right. \verb|assert raises|
@@ -198,21 +247,104 @@ test "it stays on until it is warm" {
 The simulated board says each change of a pin as it happens, which is
 why \verb|pin 5 on| appears among the results.
 
+\section{Tests of the compiled program}
+
+\verb|zeno test| runs the tests in the interpreter. The program that
+goes onto a board is another thing: the one C or LLVM makes of it,
+perhaps with no collector, and with numbers of a fixed width
+(\hyperref[ch-compiling]{Compiling}). \verb|zeno test --build|
+compiles each file with its tests in it, as \verb|zeno build| would,
+runs that program, and prints what \verb|zeno test| prints, line for
+line:
+
+\begin{zeno}[file=total.zeno, dir=build, cmd=zeno test --build {file}]
+function total(values: list[int]) -> int {
+    var sum = 0
+    for value in values {
+        sum += value
+    }
+    return sum
+}
+
+test "three numbers add up" {
+    assert total([1, 2, 3]) == 6
+}
+
+test "a list counted twice" {
+    let values = [1, 2, 3]
+    let again = values
+    assert total(values) + total(again) == 12
+}
+\end{zeno}
+
+It takes what \verb|zeno build| takes, such as \verb|--firmware|,
+\verb|--no-collector|, \verb|--llvm|, \verb|--release| and
+\verb|--board|, so a test is held to the rules of the build it is for.
+The second test gives one list two names. The interpreter lets it,
+and so does an ordinary build. With no collector a list has one owner
+(\hyperref[ch-no-collector]{Building with No Collector}), so \verb|let again = values|
+gives it away, and the test is refused as the program would be:
+
+\begin{zeno}[file=total.zeno, dir=build, show=no, fails=yes, cmd=zeno test --build --firmware --no-collector {file}]
+function total(values: list[int]) -> int {
+    var sum = 0
+    for value in values {
+        sum += value
+    }
+    return sum
+}
+
+test "three numbers add up" {
+    assert total([1, 2, 3]) == 6
+}
+
+test "a list counted twice" {
+    let values = [1, 2, 3]
+    let again = values
+    assert total(values) + total(again) == 12
+}
+\end{zeno}
+
+A test that passes under \verb|zeno test| and fails here says where
+the interpreter and the build part. With \verb|--board| the command
+writes the test program for the board, such as \verb|total-tests.elf|,
+and the board prints the same lines and the totals itself.
+
+A few things differ on purpose. A fault of a firmware build, such as
+an index out of range, stops the program, as it stops any firmware
+program; the command names the test it was in and says how many after
+it were not run. And an \verb|assert| must stand in the test itself,
+not in a function written inside the test: a failed \verb|assert|
+leaves its test as \verb|return| would, and from inside another
+function it would leave the wrong one.
+
+\begin{why}
+A test the programmer writes was run only in the interpreter, but the
+program that is trusted on the board is the compiled one. The two are
+meant to agree, and Zeno's own examples are run both ways to check it,
+but the place to find out where a program's own code parts is its own
+tests. \verb|zeno test| without \verb|--build| is what it was, and a
+program built with \verb|zeno build| has not one line more for the
+tests. (Decision 60.2.)
+\end{why}
+
 \section{What tests leave out}
 
-In version 0.1 there is no message after an \verb|assert| (the test's
-name and the values shown already say most of it), no \verb|assert|
-outside a test, no code run before and after each test (a function
-that builds what the tests need does that), and no running of tests
-in a compiled program. (Decisions 10.21 and 17.5.)
+There is no \verb|assert| outside a test, and no code run before and
+after each test (a function that builds what the tests need does
+that). Tests do not run side by side. Under \verb|--build| an
+\verb|assert| cannot stand in a function written inside a test, and
+the command does not read the totals back from a board: the board
+prints them. (Decisions 10.21, 17.5 and 60.2.)
 
 \begin{summary}
 \verb|test "what it checks" { ... }| stands at the top of a file.
 \verb|assert condition| fails the test when the condition is false,
-and shows both sides of a comparison. \verb|assert raises Kind { ... }|
-checks that a block raises. \verb|zeno test| runs a file, a folder or
-the folder it is in, and fails if any test fails. Builds leave tests
-out.
+and shows both sides of a comparison; \verb|assert condition, "text"|
+prints the text as well. \verb|assert raises Kind { ... }| checks that
+a block raises. \verb|zeno test| runs a file, a folder or the folder
+it is in, and fails if any test fails. \verb|zeno test --build| runs
+the tests in the compiled program. Builds leave tests out.
 \end{summary}
 
 \begin{tryit}
@@ -228,5 +360,9 @@ out.
   the failure.
 \item Make a test in one file change a \verb|var| at the top of the
   file, and see the next test find it changed.
+\item Give the failing \verb|assert| of \verb|average| a message
+  that names the list. Then run the tests of \verb|total| with
+  \verb|zeno test --build --firmware|, and with \verb|--no-collector|
+  as well, and change the second test so that it passes there.
 \end{enumerate}
 \end{tryit}

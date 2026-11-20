@@ -22,6 +22,9 @@ ask if a file is there & \verb|files.exists(path)| & \verb|bool| \\
 remove a file & \verb|files.remove(path)| & nothing \\
 read a file as bytes & \verb|files.read_bytes(path)| & \verb|list[u8]| \\
 write bytes to a file & \verb|files.write_bytes(path, bytes)| & nothing \\
+list a folder & \verb|files.list(folder)| & \verb|list[str]| \\
+make a folder & \verb|files.make_folder(path)| & nothing \\
+put a path together & \verb|files.join(first, second)| & \verb|str| \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -286,6 +289,92 @@ is refused too, because it could hold anything. Write
 errors are those of \verb|files.read|: no file, or one that cannot be
 read. (Decision 36.1.)
 
+\section{Folders}
+
+\verb|files.make_folder| makes a folder, and every folder above it
+that is not there yet. \verb|files.list| gives the names in a folder,
+and \verb|files.join| puts a folder and a name together into a path:
+
+\begin{zeno}[file=logs.zeno, dir=folders]
+import files
+
+let day = "logs/2026/november"
+files.make_folder(day)
+files.make_folder(day)
+files.write(files.join(day, "20.txt"), "temp 23.5\n")
+files.write(files.join(day, "9.txt"), "temp 21.0\n")
+files.write(files.join("logs/2026", "Notes.txt"), "calibrated\n")
+
+print(files.list("logs/2026"))
+for name in files.list(day) {
+    let path = files.join(day, name)
+    print(path, files.read(path).strip())
+}
+\end{zeno}
+
+Making a folder that is already there is no error: what counts is
+that there is a folder at the path at the end. So a program can make
+its folders each time it starts, without asking first. Something else
+in the way, such as a file, is a \verb|FileError|.
+
+\verb|files.list| gives the names of everything in the folder, files
+and folders alike, as a \verb|list[str]|. A name is only the last
+part of the path, \verb|"20.txt"| and not
+\verb|"logs/2026/november/20.txt"|, and \verb|files.join| puts the
+two back together. To tell a folder from a file, ask
+\verb|files.exists|, which is true only for a file.
+
+The list is sorted in the order \verb|<| gives two texts, by the
+numbers of the characters. So \verb|"20.txt"| comes before
+\verb|"9.txt"|, since the character \verb|2| comes before \verb|9|,
+and \verb|"Notes.txt"| before \verb|"november"|, since capitals come
+before small letters. A program that wants another order sorts the
+list itself.
+
+\begin{why}
+A system gives the names in a folder in an order of its own, and not
+the same one on Linux, on Windows or on a board's card. A program that
+printed them as they came would print something different from one
+machine to the next, and a test of it could not be written once. The
+order a person would sort in, with \verb|"9"| before \verb|"10"|,
+depends on a language and on the machine's settings. The order of
+\verb|<| is the same everywhere. (Decision 59.20.)
+\end{why}
+
+\verb|files.join| puts one \verb|/| between the two parts, whatever
+their ends hold. An empty first part is no folder, and the second
+comes back as it is:
+
+\begin{zeno}[file=paths.zeno, dir=folders]
+import files
+
+print(files.join("logs", "today.txt"))
+print(files.join("logs/", "/today.txt"))
+print(files.join("", "today.txt"))
+
+try {
+    print(files.list("no-such-folder"))
+} except FileError as e {
+    print(e.message)
+}
+files.write("notes.txt", "")
+try {
+    files.make_folder("notes.txt/old")
+} except FileError as e {
+    print(e.message)
+}
+files.remove("notes.txt")
+\end{zeno}
+
+The path uses \verb|/| on Windows too, which every system Zeno runs on
+takes, so a program that prints a path prints the same text on every
+machine. \verb|join| does not look at the disk, and takes two parts
+only: for three, write \verb|files.join(files.join(a, b), c)|. A board
+has no folders, so there \verb|files.list| and
+\verb|files.make_folder| raise a \verb|FileError|, which the program
+can catch; \verb|files.join| works anywhere. There is no way yet to
+remove a folder. (Decisions 59.21 to 59.23.)
+
 \section{A worked example: a log book}
 
 This program keeps a log of readings in a file. Each run adds the
@@ -394,8 +483,11 @@ the words after the file. \verb|files.read|, \verb|write|,
 \verb|append|, \verb|exists| and \verb|remove| work on whole files of
 text, and every one but \verb|exists| may raise a \verb|FileError|,
 which can always be caught. \verb|files.read_bytes| and
-\verb|write_bytes| work on a file as its bytes, in a \verb|list[u8]|. \verb|json.parse| and \verb|json.write|
-read and write JSON.
+\verb|write_bytes| work on a file as its bytes, in a \verb|list[u8]|.
+\verb|files.list| gives the names in a folder, sorted, and
+\verb|files.make_folder| makes one; \verb|files.join| puts a path
+together. \verb|json.parse| and \verb|json.write| read and write
+JSON.
 \end{summary}
 
 \begin{tryit}
@@ -410,6 +502,9 @@ read and write JSON.
 \item Try to read a picture with \verb|files.read| and read the
   message. Then read it with \verb|files.read_bytes|, and print its
   first eight bytes. A PNG begins \verb|137, 80, 78, 71, 13, 10, 26, 10|.
+\item Write \verb|tree.zeno|, which prints the names in a folder,
+  and the names inside each folder in it, indented. Tell a folder
+  from a file with \verb|files.exists|.
 \item Keep the counter as JSON instead, \verb|{"runs": 3}|, with
   \verb|json.parse| and \verb|json.write|.
 \end{enumerate}
