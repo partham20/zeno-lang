@@ -5398,8 +5398,8 @@ static const char *zeno_file_list(const char *folder, zeno_list **result) {
     bool good = true;
 #if defined(_WIN32)
     /* `_findfirst64` is asked for every name in the folder: the folder,
-     * a `/` and a `*`. With no folder at all, it would be `/*`, the
-     * names at the top of the disk. */
+     * a `/` and a `*`. With no folder at all, that would be a slash and
+     * a star alone, the names at the top of the disk. */
     if (folder[0] == '\0') {
         zeno_list_drop(names);
         return zeno_join(3, "there is no folder `", folder, "`");
