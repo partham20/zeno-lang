@@ -2586,6 +2586,18 @@ impl Emitter<'_> {
     /// given to a function, or returned. In a build with no collector a
     /// value that the statement owns cannot be (see `belongs`). (Text
     /// can: see `keep`. An error can: whoever keeps it owns it.)
+    /// Several values written out (`return make(n), fail(n)`, `let xs, s
+    /// = make(n), fail(n)`) are all worked out before any reaches its
+    /// place. In a firmware build a later one may fail, and the failure
+    /// leaves at once. Hold each value that has to be freed until then,
+    /// so that such a failure frees it, as `call_c` holds an argument
+    /// (decision 57). `copied` says a text is a copy of its own.
+    fn hold_for_later(&mut self, val: &Val, copied: bool, later: &[Expr]) -> Option<String> {
+        let frees = self.drops.owns(&val.kind) || (copied && is_text(&val.kind));
+        let later_work = later.iter().any(|value| !is_plain(value));
+        (self.firmware && !self.collector && frees && later_work).then(|| self.hold(val.kind.clone(), &val.code))
+    }
+
     fn stays(&self, val: &Val, span: Span) -> Result<(), Error> {
         if !self.collector && val.passing {
             // It is freed when this statement is over.
@@ -3503,7 +3515,7 @@ impl Emitter<'_> {
                         // pointers.
                         let (val, later, written) = match (&value.kind, &returns) {
                             (ExprKind::Several(values), Kind::Several(kinds)) => {
-                                let mut vals = Vec::new();
+                                let (mut vals, mut held) = (Vec::new(), Vec::new());
                                 for (at, (value, kind)) in values.iter().zip(kinds).enumerate() {
                                     let val = self.expr_as(value, Some(kind))?;
                                     self.stays(&val, value.span)?;
@@ -3511,7 +3523,12 @@ impl Emitter<'_> {
                                     if at > 0 {
                                         val = self.keep(val, is_written(value));
                                     }
-                                    vals.push(self.temp(val, span)?);
+                                    let val = self.temp(val, span)?;
+                                    held.extend(self.hold_for_later(&val, at > 0 && !is_written(value), &values[at + 1..]));
+                                    vals.push(val);
+                                }
+                                for key in &held {
+                                    self.let_go(key);
                                 }
                                 let first = vals.remove(0);
                                 (first, vals, is_written(&values[0]))
@@ -4411,6 +4428,7 @@ impl Emitter<'_> {
         let mut vals = Vec::new();
         match &value.kind {
             ExprKind::Several(values) => {
+                let mut held = Vec::new();
                 for (at, value) in values.iter().enumerate() {
                     let val = self.expr_as(value, expected.get(at).and_then(Option::as_ref))?;
                     let val = match dropped(at) {
@@ -4420,7 +4438,12 @@ impl Emitter<'_> {
                             self.keep(val, is_written(value))
                         }
                     };
-                    vals.push((if val.kind == Kind::None { val } else { self.temp(val, value.span)? }, false));
+                    let val = if val.kind == Kind::None { val } else { self.temp(val, value.span)? };
+                    held.extend(self.hold_for_later(&val, !dropped(at) && !is_written(value), &values[at + 1..]));
+                    vals.push((val, false));
+                }
+                for key in &held {
+                    self.let_go(key);
                 }
             }
             _ => {
@@ -8746,7 +8769,7 @@ fn bare(code: &str) -> &str {
 
 /// Is this expression a name or a literal: something that cannot fail, does
 /// nothing, and may safely be mentioned twice?
-fn is_plain(expr: &Expr) -> bool {
+pub(crate) fn is_plain(expr: &Expr) -> bool {
     matches!(expr.kind, ExprKind::Name(_)) || is_literal(expr)
 }
 

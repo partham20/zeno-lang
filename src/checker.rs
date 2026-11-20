@@ -2228,6 +2228,10 @@ struct Checker {
     /// `return` gives is looked at: the one expression that may give
     /// several values (decision 57). The next `expr` takes it down.
     several: bool,
+    /// The calls refused because they give several values where one is
+    /// wanted, so that the call they are an argument of does not also
+    /// say that an argument is missing: `divide(divide(9, 2))`.
+    not_one: HashSet<usize>,
     /// Set while the argument of `u64.wrap( )` is about to be looked
     /// at, and kept down through `+`, `-`, `*` and `<<`: those sums cut
     /// their answer to 64 bits (decision 42.6).
@@ -2382,6 +2386,7 @@ impl Checker {
         Checker {
             wrap_mode: false,
             several: false,
+            not_one: HashSet::new(),
             big_numbers: Vec::new(),
             strict,
             strict_files: Vec::new(),
@@ -4441,6 +4446,28 @@ impl Checker {
     /// what each may hold; then all of the right, left to right; then the
     /// places are filled, left to right.
     fn receive(&mut self, declare: Option<bool>, places: &[Place], value: &Expr, env: &Env, span: Span) {
+        // `_` drops a value only where no variable is called `_`, which
+        // 0.7.0 allowed: there it would be the variable, and say nothing.
+        if places.iter().any(|place| matches!(place, Place::Drop)) && env.get("_").is_some() {
+            self.error(
+                "`_` on the left of `=` drops a value, but here `_` is a variable, which would be given it instead. \
+                 Give the variable another name",
+                span,
+            );
+        }
+        // A plain name given two values at once: which one it keeps would
+        // be a rule nobody can see. (Items, `xs[i], xs[j]`, are told apart
+        // only as the program runs, and are filled left to right.)
+        if declare.is_none() {
+            let mut seen = HashSet::new();
+            for place in places {
+                if let Place::Target(Expr { kind: ExprKind::Name(name), span: at }) = place {
+                    if !seen.insert(name.as_str()) {
+                        self.error(format!("`{name}` is on the left of `=` twice. Each place receives one value"), *at);
+                    }
+                }
+            }
+        }
         let mut wanted = Vec::new();
         let mut fields = Vec::new();
         for place in places {
@@ -6399,6 +6426,7 @@ impl Checker {
         let ty = self.expr_inner(expr, env);
         // Several values are not a value (decision 57, rule 3).
         if let (Ty::Several(types), false) = (&ty, several) {
+            self.not_one.insert(expr as *const Expr as usize);
             return self.error(several_not_one(expr, types.len()), expr.span);
         }
         match &expr.kind {
@@ -7789,6 +7817,11 @@ impl Checker {
             self.expect(&given, &slots[index].ty, &label, argument.span);
         }
 
+        // One argument that gives several values was meant as several: rule
+        // 3 has said so, and a missing argument would only repeat it.
+        if arguments.iter().any(|argument| argument.place != 0 && self.not_one.contains(&argument.place)) {
+            return;
+        }
         for (slot, filled) in slots.iter().zip(filled) {
             if !filled && !slot.has_default {
                 self.error(format!("`{what}` needs a value for `{}`", slot.name), span);
@@ -14498,6 +14531,16 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         ] {
             assert_eq!(error(&with(place)), not_one, "{place}");
         }
+        // The same name twice on the left, and `_` where it is a variable.
+        assert_eq!(error(&with("var a = 0\na, a = divide(7, 2)")), "`a` is on the left of `=` twice. Each place receives one value");
+        ok(&with("var xs = [1, 2]\nxs[0], xs[1] = divide(7, 2)\nprint(xs)"));
+        let shadowed = "`_` on the left of `=` drops a value, but here `_` is a variable, which would be given it instead. \
+                        Give the variable another name";
+        assert_eq!(error(&with("var _ = 9\nvar b = 0\n_, b = divide(7, 2)")), shadowed);
+        assert_eq!(error(&with("var _ = 9\nlet _, c = divide(7, 2)")), shadowed);
+        // A call of several given as the one argument of another says rule
+        // 3, and not that an argument is missing.
+        assert_eq!(error(&with("let x, y = divide(divide(9, 2))")), not_one);
         // A function given to `map` and the others gives one value a call.
         assert_eq!(
             error("function two(n: int) -> (int, int) {\n    return n, n\n}\nprint([1].map(two))"),

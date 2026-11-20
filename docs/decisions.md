@@ -18059,6 +18059,16 @@ for the swap; refusing them after `let` would be an exception to it.
 - "the function given to `map` gives 2 values, and `map` needs one
   value from each call. To keep them together, declare a class and
   return one object" (and `filter`, `reduce`, `sort`)
+- "`a` is on the left of `=` twice. Each place receives one value":
+  which of the two a name would keep is a rule nobody can see. Items,
+  `xs[i], xs[j] = ...`, are told apart only as the program runs, and
+  are filled left to right.
+- "`_` on the left of `=` drops a value, but here `_` is a variable,
+  which would be given it instead. Give the variable another name":
+  `_` is a legal name in 0.7.0, and where one is in sight `_` on the
+  left would quietly mean two things.
+- `divide(divide(9, 2))` gives rule 3's message, and not "`divide`
+  needs a value for `b`", which is what follows from it.
 - In the parser: "one value is written without brackets: `-> int`.
   Brackets hold two or more: `-> (int, str)`"; "several values cannot
   be `none` together. One of them can: `(int, str or none)`"; "a
@@ -18174,7 +18184,14 @@ this section says why.
   here are mended and tested (a third is in 57.5): an object received
   as a further value kept the type "owned" inside the list of values
   and could not be read, and the text room was not given back after a
-  `Receive`, so a loop of them ran out of room.
+  `Receive`, so a loop of them ran out of room. The review found a
+  fourth: values written out, `return make(n), fail(n)` or `let xs, s
+  = make(n), fail(n)`, where a later one raised after an earlier one
+  had made a list, left the list behind, since the failure leaves at
+  once and the list had not reached its place. Each value that has to
+  be freed is now held until all are worked out, as an argument is
+  held until its call, and `edge-several-2.zeno` counts the blocks of
+  all three forms.
 - **The targets**: `lower.rs` makes `return a, b` a call of
   `several(...)`, and a `Receive` a temporary and one call of
   `received(value, count, at, line)` for each place, which checks the

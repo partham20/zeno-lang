@@ -96,3 +96,44 @@ function stepped() -> (function(int) -> int, int) {
 let step, first = with_step(function(n: int) -> int { return n + 1 })
 let step2, first2 = stepped()
 print(step(3), first, step2(3), first2)
+
+# Values written out, where a later one raises after an earlier one made
+# a list: with no collector the list is given back, in all three forms.
+function squares(n: int) -> list[int] {
+    var xs: list[int] = []
+    for i in range(n) {
+        xs.append(i * i)
+    }
+    return xs
+}
+function even(n: int) -> str raises ValueError {
+    if n % 2 == 1 {
+        raise ValueError(f"odd {n}")
+    }
+    return f"even {n}"
+}
+function both(n: int) -> (list[int], str) raises ValueError {
+    return squares(n), even(n)
+}
+for n in range(4) {
+    try {
+        let xs, s = both(n)
+        print(len(xs), s)
+    } except ValueError as e {
+        print("returned", e.message)
+    }
+    try {
+        let ys, t = squares(n), even(n)
+        print(len(ys), t)
+    } except ValueError as e {
+        print("received", e.message)
+    }
+    try {
+        var zs: list[int] = []
+        var u = ""
+        zs, u = squares(n), even(n)
+        print(len(zs), u)
+    } except ValueError as e {
+        print("given", e.message)
+    }
+}

@@ -1102,11 +1102,21 @@ impl Parser {
             if !self.check(TokenKind::Function) {
                 // `(int, str)` is what a function gives, after `->` alone
                 // (decision 57).
-                if self.type_().is_ok() && self.check(TokenKind::Comma) {
-                    return self.error(
-                        "`(int, str)` is written only after `->`, for a function that gives two values or more. \
-                         A value that holds several things is an object: declare a class",
-                    );
+                if let Ok(first) = self.type_() {
+                    let mut types = vec![first];
+                    while self.eat(TokenKind::Comma) {
+                        match self.type_() {
+                            Ok(ty) => types.push(ty),
+                            Err(_) => break,
+                        }
+                    }
+                    if types.len() > 1 {
+                        let written = crate::printer::type_(&Type::Several(types));
+                        return self.error(format!(
+                            "`{written}` is written only after `->`, for a function that gives two values or more. \
+                             A value that holds several things is an object: declare a class"
+                        ));
+                    }
                 }
                 return self.error(
                     "brackets in a type go only around a function type, as in \
@@ -2623,6 +2633,7 @@ mod tests {
             "several values cannot be `none` together. One of them can: `(int, str or none)`"
         );
         assert!(error("let x: (int, str) = 3").starts_with("`(int, str)` is written only after `->`"));
+        assert!(error("let t: (int, list[int]) = 3").starts_with("`(int, list[int])` is written only after `->`"));
         assert!(error("function f(a: (int, str)) { }").starts_with("`(int, str)` is written only after `->`"));
         assert_eq!(error("const a, b = 1, 2"), "a `const` names one value. Write a `const` for each");
         assert_eq!(error("a, b += 1, 2"), "`+=` and the others change one place each. Write a line for each place");

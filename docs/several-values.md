@@ -53,7 +53,9 @@ not write it is unchanged.
    `box.low, items[0] = divide(20, 6)`. Each name may have a type:
    `let q: int, r = divide(7, 2)`.
 3. **Every value is received.** `_` receives one and drops it: `let _,
-   r = divide(9, 4)`.
+   r = divide(9, 4)`. (Where a variable is called `_`, `_` cannot drop
+   a value on the left of `=`; rename the variable.) A name is on the
+   left once.
 4. **Several values are not one value.** They cannot be kept in one
    variable, put in a list or a field, passed as one argument, used
    with an operator, or printed. To keep them together, declare a
