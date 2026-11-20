@@ -19243,6 +19243,141 @@ of the file.
   line where nothing is written.
 - **A release that raises.**
 
+### 59.6 A file read and written in pieces: `files.Reader` and `files.Writer`
+
+```zeno
+import files
+
+let source = files.read_from("big.log")
+let errors = files.write_to("errors.log")
+
+for line in source {
+    if line.find("error") is not none {
+        errors.write(line + "\n")
+    }
+}
+```
+
+| Written | Gives |
+|---|---|
+| `files.read_from(path)` | a `files.Reader`, at the start of the file |
+| `files.write_to(path)` | a `files.Writer` on a new, empty file, as `files.write` begins one |
+| `files.append_to(path)` | a `files.Writer` at the end of the file, made if it is not there, as `files.append` |
+| `reader.read_line()` | the next line without its line end, or `none` after the last (6.17, 6.18) |
+| `reader.read_bytes(count)` | up to `count` bytes as a `list[u8]`: fewer at the end, none after it |
+| `for line in reader` | each line in turn (59.7) |
+| `writer.write(text)`, `writer.write_bytes(bytes)` | writes, and adds no line end (6.13) |
+
+All of them but `for` raise `FileError`, with the messages of `files.read`
+and `files.write`: ``there is no file `big.log` ``, ``cannot read
+`big.log` ``, ``cannot write `errors.log` ``, and ``` `big.log` does not
+hold text ``` for a line that is not UTF-8 or holds a zero byte, which is
+what `files.read` says of such a file. A Reader and a Writer are
+resources (59.1): the file is closed when the owner ends. There is no
+`close`, which is what 6.12 wanted of an open file: nothing to forget.
+
+**Why three functions and two types**, and not `open(path, "r")`: 12.2
+of the plan. A wrong letter is found when the program runs, and reading
+from a file opened for writing is a mistake the checker finds.
+
+**Written in Zeno, over six small built-ins** (plan, Changes 20). The two
+classes are in `library/files.zeno`, as `owned class Reader is Resource`
+and `owned class Writer is Resource`, with `read_line`, `read_bytes`,
+`write` and `write_bytes` as their functions and a `release` that closes
+the file. Each holds the number of its open file and its path, both
+`private`. So the release, its order, every way out of a block and every
+engine and target come from 59.1 with nothing new. What asks the
+machine is six built-ins beside `files.read`, one for each thing done
+to an open file: `handle_open(path, how)` gives the number (0 to read,
+1 to write from empty, 2 to add to the end), and `handle_line`,
+`handle_bytes`, `handle_write`, `handle_write_bytes` and `handle_close`
+take it, and the path for their messages. The library gives a program
+only the functions it reaches (33), and the six are pieces of the
+runtime (56.19), so a program that reads no file in pieces is built as
+it was, to the byte.
+
+| | How | Verdict |
+|---|---|---|
+| A | Two classes in Zeno over six built-ins | **Chosen.** One place for the classes, and the built-ins are small enough to write sixteen times |
+| B | Two types built into Zeno, as a `Serial` is | A new type, its methods and its release in the interpreter, the VM, C, LLVM and fifteen runtimes, twice; and a second road for a resource beside 59.1's |
+
+**What a program cannot touch.** Only `read_from`, `write_to` and
+`append_to` make one: `files.Reader(3, "x")` is refused, because the
+class has private fields (10.2), and so is reading `reader.file`. In C
+the number is the address of the open file, so a made-up one would be a
+wild address. The six built-ins are callable only from
+`library/files.zeno`: to any other file they are names the module does
+not have, ``module `files` has no `handle_open` ``, the words a program
+would have got before they were there. The checker knows the file a
+call is written in (the line of a span says it), and asks it.
+
+**A `write` hands its text to the system before it gives back.** Zeno
+holds nothing back for the close: `release` raises nothing (59.1), so
+what could not be written at the close would be lost without a word.
+So the `write` that meets a full disk raises `FileError` on its own line,
+and a program can catch it there (tested with `/dev/full` on Linux). A
+writer that gathers its pieces before it writes them is left for later.
+
+**Bytes on every system.** The file is opened as bytes, so a line end is
+what 6.17 says, `\n` with a `\r` before it going too, and not what
+Windows makes of it. A file written in pieces is the bytes that were
+written.
+
+**A count below 0** is a `ValueError`: ``` `read_bytes` was asked for -1
+bytes, and a count of bytes is never below 0 ```. It is a value no count
+can have, and it is said, rather than taken as 0 (which would hide the
+mistake) or as "all of it" (Python's `read(-1)`, a second meaning for a
+number). The check is written once, in Zeno, in `read_bytes`.
+
+**On a board** these are the C library's, and a board with no file
+system answers `FileError`, as `files.read` does there (6.20).
+
+### 59.7 `for line in reader`
+
+A loop over a dict is given its keys (6.38), and a loop over a reader is
+given its lines: it is what everyone writes first, and it holds one line
+at a time, where `files.read(path).lines()` holds the file.
+
+It is not a new loop in each engine. The checker finds each `for` over a
+`files.Reader`, and `checked` makes it the loop it means, as it makes
+the rest of a resource's block a `Scoped` (59.4):
+
+```text
+while true {
+    let line..next = source.read_line()
+    if line..next is none { break }
+    let line = line..next
+    ...the body...
+}
+```
+
+No name a program writes has two dots in a row (35.2), so `line..next`
+is no one else's. `break` and `continue` mean what they mean in any
+`for`. Every engine, build and target runs a `while`, a call and an
+`if`, which they all could already.
+
+**A reader that a call gives** has no owner to close it when the loop
+ends: `for line in files.read_from(path)` is refused by rule 7 of 59.1,
+in words of its own, ``a `for` cannot read from a reader that nothing
+keeps: it would be closed at once. Give it a name first, `let source =
+files.read_from(path)`, and then write `for line in source` ``. Two names,
+`for i, line in source`, are refused: a reader has lines, not places. A
+`Writer` cannot be looped over, as before.
+
+**Tests.** Both engines: a file written by `write_to`, `write_bytes` and
+`append_to`, read by `read_line`, by `for` with `continue`, and by
+`read_bytes` across the end; a count below 0; a missing file; a write to
+`/dev/full`, caught at the `write`; each refusal above. Every engine,
+build and target:
+[`tools/targets/edge-files.zeno`](../tools/targets/edge-files.zeno)
+grows a file of a thousand lines with both line ends and none at the
+end, read by `for` and by `read_line` and held to `lines()`; a file
+opened three times in a row and then removed, which fails on Windows if
+the first was not closed; files of every shape of line end; bytes read
+in pieces across the end; a writer that adds and one that empties; a
+file that is not there, a folder, a missing folder, a line that is not
+text and a zero byte.
+
 ### 59.20 `files.list(folder)`: the names, sorted by their characters
 
 `files.list("logs")` gives the names of everything in the folder, as a

@@ -444,8 +444,9 @@ can catch. The simulated board (`board.md`) is not involved.
 
 ## What it does not do
 
-- **Large files.** A file is read whole. Reading in pieces needs an
-  open file with an owner, and is left until a program needs it (6.12).
+- **Large files, in these functions.** `files.read` reads a file whole.
+  To read or write one a line or a few bytes at a time, see
+  [`files-in-pieces.md`](files-in-pieces.md).
 - **Remove a folder.** Listing and making one are in
   [`folders.md`](folders.md); removing one is left for later.
 - **Typed text that is not UTF-8.** `zeno run` replaces the bad bytes

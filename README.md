@@ -393,6 +393,7 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
   [`docs/library.md`](docs/library.md),
   [`docs/reading-and-writing.md`](docs/reading-and-writing.md),
   [`docs/folders.md`](docs/folders.md), [`docs/resource.md`](docs/resource.md),
+  [`docs/files-in-pieces.md`](docs/files-in-pieces.md),
   [`docs/running-programs.md`](docs/running-programs.md),
   [`docs/python.md`](docs/python.md), [`docs/node.md`](docs/node.md),
   [`docs/java.md`](docs/java.md), [`docs/ruby.md`](docs/ruby.md),
@@ -914,6 +915,11 @@ written for bytes by hand ([`docs/generics.md`](docs/generics.md)).
     in every engine, every build and every target. See
     [`docs/resource.md`](docs/resource.md) and 59.1 to 59.5 of
     [`docs/decisions.md`](docs/decisions.md))
+64. A file in pieces (on `main`, for 0.8.0: `files.read_from(path)`
+    and `for line in reader`, `read_bytes(count)`, `files.write_to` and
+    `files.append_to` with `write(text)`; the file closes when its
+    owner ends. See [`docs/files-in-pieces.md`](docs/files-in-pieces.md)
+    and 59.6 and 59.7 of [`docs/decisions.md`](docs/decisions.md))
 
 What Zeno still does not have, in the order it will be built, with
 the reason for each: [`docs/missing.md`](docs/missing.md).
