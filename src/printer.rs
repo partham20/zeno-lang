@@ -93,7 +93,7 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
             }
         }
         StmtKind::Enum(e) => {
-            line(&format!("enum {}", e.name), depth, out);
+            line(&format!("enum {}{}", e.name, type_params(&e.type_params)), depth, out);
             for variant in &e.variants {
                 let mut text = variant.name.clone();
                 if !variant.fields.is_empty() {

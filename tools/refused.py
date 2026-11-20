@@ -58,7 +58,8 @@ BUILDS = {
 }
 PAIRS = [("plain", "llvm"), ("firmware", "llvm-firmware"), ("no-collector", "llvm-no-collector")]
 
-# What every program may use. A class, an owned class, and an enum.
+# What every program may use. A class, an owned class, an enum, and a
+# generic enum (decision 58.1).
 PRELUDE = """class P {
     x: int
 }
@@ -68,6 +69,10 @@ owned class Q {
 enum Color {
     Red
     Green
+}
+enum Opt[T] {
+    Empty
+    Has(value: T)
 }
 """
 
@@ -99,6 +104,10 @@ TYPES = [
     ("P", "P(1)", "P(2)", set()),
     ("Q", "Q(1)", "Q(2)", set()),
     ("Color", "Color.Red", "Color.Green", {"eq", "key"}),
+    ("Opt[int]", "Has(1)", "Empty", {"eq"}),
+    ("Opt[str]", 'Has("a")', "Empty", {"eq"}),
+    ("Opt[list[int]]", "Has([1])", "Empty", {"eq"}),
+    ("Opt[P]", "Has(P(1))", "Empty", set()),
     ("function(int) -> int", "function(n: int) -> int { return n + 1 }", "function(n: int) -> int { return n * 2 }", {"call"}),
 ]
 

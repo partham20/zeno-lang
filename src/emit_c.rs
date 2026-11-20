@@ -405,6 +405,7 @@ fn emit_all(program: &Program, types: &Types, file: &str, build: Build, options:
         is_a: HashMap::new(),
         numbered: 0,
         cases: HashMap::new(),
+        copied_enums: HashSet::new(),
         imported: HashMap::new(),
         scopes: vec![HashMap::new()],
         used: HashMap::new(),
@@ -454,6 +455,11 @@ fn emit_all(program: &Program, types: &Types, file: &str, build: Build, options:
             StmtKind::Class(decl) => {
                 emitter.type_names.insert(format!("z_{}", ident(&decl.name)));
             }
+            StmtKind::Enum(decl) if !decl.type_params.is_empty() => {
+                for copy in types.enum_copies(decl) {
+                    emitter.type_names.insert(format!("z_{}", ident(&copy.name)));
+                }
+            }
             StmtKind::Enum(decl) => {
                 emitter.type_names.insert(format!("z_{}", ident(&decl.name)));
             }
@@ -476,6 +482,13 @@ fn emit_all(program: &Program, types: &Types, file: &str, build: Build, options:
                 }
             }
             StmtKind::Class(decl) => emitter.register_class(decl, statement.span)?,
+            // The same for a generic enum: `Maybe[int]` (decision 58.1).
+            StmtKind::Enum(decl) if !decl.type_params.is_empty() => {
+                for copy in types.enum_copies(decl) {
+                    emitter.copied_enums.insert(copy.name.clone());
+                    emitter.register_enum(copy, statement.span)?;
+                }
+            }
             StmtKind::Enum(decl) => emitter.register_enum(decl, statement.span)?,
             _ => {}
         }
@@ -1095,8 +1108,11 @@ impl Drops {
             // An enum and a class cannot have the same name, so one set
             // holds both.
             if let StmtKind::Enum(decl) = &statement.kind {
-                if types.owned_enum(decl) {
-                    owned.insert(decl.name.clone());
+                let copies = types.enum_copies(decl).iter().map(|copy| &**copy);
+                for decl in std::iter::once(decl).chain(copies) {
+                    if types.owned_enum(decl) {
+                        owned.insert(decl.name.clone());
+                    }
                 }
             }
         }
@@ -1402,6 +1418,9 @@ struct Emitter<'a> {
     /// Each enum case, by its own name: which enum it belongs to, and its
     /// number within it.
     cases: HashMap<String, (String, usize)>,
+    /// The copies of generic enums, `Maybe[int]`, whose cases are not in
+    /// `cases`: each copy has a case of the same name (decision 58.1).
+    copied_enums: HashSet<String>,
     /// Names brought in by `from math import sqrt`: the name, and its module.
     imported: HashMap<String, String>,
     /// The variables in sight, innermost block last. The first entry holds
@@ -3012,7 +3031,11 @@ impl Emitter<'_> {
         let mut drop = String::from("    if (self == NULL) return;\n    switch (self->tag) {\n");
         let mut takes = Vec::new();
         for (index, (case, case_kinds)) in decl.variants.iter().zip(&kinds).enumerate() {
-            self.cases.insert(case.name.clone(), (name.clone(), index));
+            // A case of a copy of a generic enum is found through the
+            // copy the checker noted, since each copy has a `Just`.
+            if !self.copied_enums.contains(name) {
+                self.cases.insert(case.name.clone(), (name.clone(), index));
+            }
             let (case_kinds, owned): (Vec<Kind>, Vec<bool>) = case_kinds.iter().cloned().map(disown).unzip();
             let fields: Vec<(String, Kind)> =
                 case.fields.iter().map(|field| field.name.clone()).zip(case_kinds).collect();
@@ -3094,6 +3117,33 @@ impl Emitter<'_> {
         );
         self.enums.insert(name.clone(), EnumEntry { cases, takes });
         Ok(())
+    }
+
+    /// The enum and the place of the case `name`, in a pattern matched
+    /// against a value of the kind `there`. A case of a copy of a generic
+    /// enum is a case of the copy matched (decision 58.1); any other is
+    /// found by its name alone.
+    fn case_in(&self, name: &str, there: &Kind) -> Option<(String, usize)> {
+        match there {
+            Kind::Enum(subject) if self.copied_enums.contains(subject) => {
+                let index = self.enums[subject].cases.iter().position(|(case, _)| case == name)?;
+                Some((subject.clone(), index))
+            }
+            _ => self.cases.get(name).cloned(),
+        }
+    }
+
+    /// The place of the case named at `expr` (a name, or the callee of a
+    /// call) in the copy `owner` of a generic enum.
+    fn copied_case(&self, owner: &str, expr: &Expr, span: Span) -> Result<usize, Error> {
+        let ExprKind::Name(name) = &expr.kind else {
+            return Err(cannot("a case of a generic enum written this way", span));
+        };
+        self.enums[owner]
+            .cases
+            .iter()
+            .position(|(case, _)| case == name)
+            .ok_or_else(|| cannot(format!("the case `{name}` of `{owner}`"), span))
     }
 
     /// Compile one function or method, and add it to the output.
@@ -4810,9 +4860,9 @@ impl Emitter<'_> {
         let there = some(kind);
         match pattern {
             Pattern::Wildcard => {}
-            Pattern::Name(name) => match (self.cases.get(name), there) {
+            Pattern::Name(name) => match (self.case_in(name, there), there) {
                 // A bare enum case, such as `Idle`, is compared.
-                (Some((owner, index)), Kind::Enum(subject)) if owner == subject && self.lookup(name).is_none() => {
+                (Some((owner, index)), Kind::Enum(subject)) if owner == *subject && self.lookup(name).is_none() => {
                     if there != kind {
                         tests.push(format!("{code} != NULL"));
                     }
@@ -4831,8 +4881,8 @@ impl Emitter<'_> {
                 tests.push(self.equal(&common, &subject.code, &literal.code, span)?);
             }
             Pattern::Variant { name, fields } => {
-                let (owner, index) = match (self.cases.get(name), there) {
-                    (Some((owner, index)), Kind::Enum(subject)) if owner == subject => (owner.clone(), *index),
+                let (owner, index) = match (self.case_in(name, there), there) {
+                    (Some((owner, index)), Kind::Enum(subject)) if owner == *subject => (owner, index),
                     _ => return Err(cannot(format!("the pattern `{name}(...)` here"), span)),
                 };
                 let carried = self.enums[&owner].cases[index].1.clone();
@@ -5273,6 +5323,16 @@ impl Emitter<'_> {
             // settled there. See `coerce`.
             ExprKind::None => Ok(Val::plain("NULL", Kind::None)),
 
+            // `Nothing` of a generic enum: the case of the copy the
+            // checker found for this place (decision 58.1).
+            ExprKind::Name(name) if self.lookup(name).is_none() && self.types.copy_called(expr).is_some() => {
+                let owner = self.types.copy_called(expr).unwrap_or_default().to_string();
+                let index = self.copied_case(&owner, expr, span)?;
+                if !self.enums[&owner].cases[index].1.is_empty() {
+                    return Err(cannot("an enum case that carries values, used without them", span));
+                }
+                Ok(Val::plain(format!("(&zeno_case_{}_{})", ident(&owner), ident(name)), Kind::Enum(owner)))
+            }
             ExprKind::Name(name) if self.lookup(name).is_none() && self.cases.contains_key(name) => {
                 // A bare enum case, such as `Idle`.
                 let (owner, index) = self.cases[name].clone();
@@ -5429,11 +5489,16 @@ impl Emitter<'_> {
             ExprKind::FormatStr(parts) => self.format_string(parts, span),
             // A call of a generic goes to one of its copies, and the
             // checker noted which: `first([1, 2])` calls `first[int]`.
-            ExprKind::Call { args, .. } if self.types.copy_called(expr).is_some() => {
+            ExprKind::Call { callee, args } if self.types.copy_called(expr).is_some() => {
                 let copy = self.types.copy_called(expr).unwrap_or_default().to_string();
                 match self.functions.contains_key(&copy) {
                     true => self.call_function(&copy, args, span),
                     false if self.classes.contains_key(&copy) => self.construct(&copy, args, span),
+                    // `Just(3)`: the case of the copy `Maybe[int]`.
+                    false if self.copied_enums.contains(&copy) => {
+                        let index = self.copied_case(&copy, callee, span)?;
+                        self.construct_case(&copy, index, args, span)
+                    }
                     false => Err(cannot(format!("`{copy}`, a generic that is not at the top of the file,"), span)),
                 }
             }
@@ -11713,6 +11778,27 @@ print("after")
             };
             assert_eq!((printed.as_str(), errors.as_str(), finished), ("before\n", wanted, false), "{name}");
         }
+    }
+
+    #[test]
+    fn a_generic_enum_every_way() {
+        // `Maybe`, `Result` and `Chain` with numbers, text, a list and an
+        // object, `Nothing` everywhere its type is said, copies made
+        // inside generics, a thousand rounds and every way out of a
+        // `match` (decision 58.1). Every build prints what `zeno run`
+        // prints, and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-generic-enum.zeno");
+        no_collector_as_interpreter("generic-enum", source);
+        // One enum for each copy, each with its own cases, and nothing
+        // for the generic itself.
+        let c = compile(
+            "enum Maybe[T] {\n    Nothing\n    Just(value: T)\n}\nlet a = Just(3)\nlet b: Maybe[str] = Nothing\nprint(a, b)\n",
+        )
+        .unwrap();
+        for wanted in ["struct z_Maybe_int {", "struct z_Maybe_str {", "zeno_new_Maybe_int_Just(", "zeno_case_Maybe_str_Nothing"] {
+            assert!(c.contains(wanted), "{wanted}\n{c}");
+        }
+        assert!(!c.contains("z_Maybe ") && !c.contains("zeno_new_Maybe_Just"), "{c}");
     }
 
     #[test]

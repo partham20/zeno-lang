@@ -490,6 +490,17 @@ impl Function {
     }
 }
 
+impl Enum {
+    /// A copy of this enum that shares nothing with it, for a copy of a
+    /// generic enum. See `Function::fresh`.
+    pub fn fresh(&self) -> Enum {
+        let mut copy = self.clone();
+        let fields = copy.variants.iter_mut().flat_map(|case| &mut case.fields);
+        fields.filter_map(|field| field.default.as_mut()).for_each(|value| fresh_expr(Arc::make_mut(value), &mut |_| {}));
+        copy
+    }
+}
+
 impl Class {
     /// A copy of this class that shares nothing with it. See `Function::fresh`.
     pub fn fresh(&self) -> Class {
@@ -649,6 +660,10 @@ pub struct Field {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Enum {
     pub name: String,
+    /// `enum Maybe[T]` has the one type parameter `T` (decision 58.1).
+    /// Like a generic class, it is not an enum yet: each set of types it
+    /// is used with gets a copy that is one.
+    pub type_params: Vec<String>,
     pub variants: Vec<Variant>,
 }
 
