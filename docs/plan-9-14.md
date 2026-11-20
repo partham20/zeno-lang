@@ -2032,3 +2032,64 @@ those of section 9:
 acceptance of all three. The second and the third each write their
 own part of the release notes and tell the first what the book and
 the website need.
+
+### 12. 13.2, 2026-11-20: five things the code asked
+
+The second builder read 13.2 against the code and found five places
+where this page was wrong or silent. `zeno test` prints, for a file,
+its path, what the program prints, a line for each test, and then the
+report of each failure; and after the last file one line of totals.
+
+1. **An `assert` in a function written inside a test.** This page
+   said an `assert` stands only in a test, so the jump out of a failed
+   one never crosses a function. The parser takes an `assert` in a
+   function literal that is written in a test. `zeno test` goes on
+   taking it, as 0.7.0 did. `zeno test --build` refuses it and says
+   what to write: let the function give back what it found, and
+   `assert` that. A way out of a function whose type says it raises
+   nothing does not exist in a firmware build, and making one for
+   this would be a second kind of error. It is a row of the table of
+   what a build refuses.
+2. **A failed `assert` leaves the test as `return` does.** It reports,
+   and then takes the road each build already has out of a `try` and
+   past what must be freed. No new road, no block left, and no
+   `except` catches it.
+3. **The reports are held until every line is printed**, as `zeno
+   test` prints them. They are held in a fixed room of 8 KB that
+   exists only in a test build: nothing is asked of the pool, so it
+   works with no collector and on a board. A report that does not fit
+   is left out whole and counted, and one line says how many were
+   left out and that `zeno test` shows them all. Two things are added
+   to the builder's proposal. The room is not written into
+   `src/runtime.c` (section 10): it is text of the test build. And a
+   program that is stopped before its last test, by a fault or by
+   `program.exit`, prints what it holds before it ends, where the
+   platform has a moment for that (a host has), so a fault in the
+   fifth test does not cost the reports of the first four.
+4. **How the command learns the count.** Not from the number the
+   program ends with, which the builder proposed. A program that an
+   error or a fault stops already ends with 1, and `program.exit` can
+   end it with any number, so "ended with 1" would mean one failed
+   test, or a fault, or neither; and a number that stops at 100 makes
+   the line of totals wrong past it. Instead:
+   - The program ends with 1 if a test failed and 0 if none did, as
+     this page said.
+   - Run by itself, on a board or by hand, the program prints the
+     line of totals for its file itself, since nobody else will.
+   - Run by `zeno test --build`, it is given the name of a file to
+     write to (in the environment), prints no line of totals, and
+     writes one mark there as each test ends, passed or failed, and a
+     last mark after the last test, each written through at once. The
+     command adds the marks up. A file with no last mark is a program
+     that was stopped: the test it was in is counted as failed and
+     named, and the command says the tests after it were not run.
+   Nothing the program prints is read for its meaning, so no line a
+   program prints can be taken for a result.
+5. **An error that leaves a test is shown at the line that raised
+   it**, in whatever file. A test build holds the text of every file
+   of the program and looks the line up, so the report is the one
+   `zeno test` prints, notes and all. It costs flash on a board, in a
+   test build only, and chapter 60 says so. A fault of a firmware
+   build stops the test program as it stops any program (5.5l); the
+   command says which test it was in, by the marks of 4. That is a
+   real difference from `zeno test` and is written down as one.
