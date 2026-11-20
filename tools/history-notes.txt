@@ -551,9 +551,20 @@ eb3c486 Every check that asked GCC or Clang for a built-in is written a second t
 951c666 The version is 0.7.0, with its release notes. GCC and Clang get the top of the program as 0.6.0 gave it to them, so a built program runs the instructions it ran before, and the interpreter keeps the board behind a pointer, as the VM does.
 17453fd Three tests of the last two stages failed in a debug build or on Windows, by their own arithmetic and line ends. They are mended. Nothing of Zeno itself changed.
 
-= Unreleased: what has come since 0.7.0
+= 0.8.0: several values, generic enums, and a block that puts back what it opened
 
-What is on `main` since 0.7.0 was released.
+0.8.0 is a release for the language itself. A function can give several
+values, an enum and an interface can leave a type open, and a type
+parameter can say what it asks of its type. An `owned class` that `is
+Resource` is put back on every way out of its block, a file can be read
+and written in pieces, a program can list and make folders, an `assert`
+can say why it matters, and `zeno test --build` runs a program's tests in
+the program C or LLVM makes of it. Most of what a build with no collector
+refused is now built. Every new feature is asked for by a word or a flag:
+a program that writes none of them is built as 0.7.0 built it, to the
+byte. It ends items 9 to 12 of `docs/missing.md` and two tools of item
+13; the rest of item 13 and item 14 are put off. The engines were not
+timed for it, and nothing of it has run on a real board.
 
 fdf8c23 The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
 d4f3faa The benchmark figures of 0.7.0.
@@ -629,3 +640,39 @@ dc369eb In a C or LLVM build on Windows, `files.list` and `files.make_folder` ta
 f65f31e The folder test in every build takes away the files each engine made.
 2e6e036 The book: a file read and written in pieces, in the chapter on reading and writing; the limits and the design chapter say what is left of it.
 ffab0c6 The book for Zeno 0.8: rebuilt as a PDF and HTML, 323 pages, with its 378 programs and 103 commands run by this version.
+cab1573 The plan: item 9 is accepted, with what its sweep of the code missed.
+f10c24b The plan: the count of builds whose C differs from 0.7.0, set right (114 and 128).
+a7a31ab The plan: two builders at once, who builds what, and a review that holds nobody up.
+a0ce9dc The plan: the follow-up of item 9 is accepted, and the runtime grows only for a program that asks.
+30a1223 The plan: three builders, and item 11 with a builder of its own.
+ba2817a The plan: five things the code asked about the tests of a compiled program.
+2440fab The plan: the numbers inside chapter 58 of the decisions, and how a generic enum is built.
+6b04ce3 The plan: three things the code asked about interfaces, and `owned interface`.
+8f0b647 The plan: the runtime in pieces is accepted, and several values where no type is written.
+1e245bf The plan: item 10 is accepted, with one fault and four small things to mend.
+b20ed7d The plan: a message on `assert` and the tests of a compiled program are accepted.
+d69b592 The plan: folders are accepted, and three things a resource asked.
+0c01265 Folders: what `files.join` does at the ends of its parts, and Java's names where the language setting is not UTF-8.
+532ac68 The plan: the mending of item 10 and what interfaces left out are accepted.
+0052fc0 The plan: a Reader and a Writer are written in Zeno, over five small built-ins.
+a0ca116 The plan: generic enums, bounds and generic interfaces are accepted.
+d063941 The plan: a method with a type parameter of its own stays refused, and item 11 is accepted.
+63c7f27 The plan: cleaning up when a block ends is accepted, with one fault to mend.
+7a69bc2 The plan: a file in pieces is sent back with two faults; the mend of cleaning up is accepted.
+0e08020 The plan: the last check of where the items meet, and a crash in LLVM builds to mend.
+870164e The plan: the crash of several values through LLVM is mended and accepted.
+e393ca1 The plan: a file in pieces is accepted, and with it every item; the release waits only for a green run of the targets.
+c81708d The plan: folders on Windows and macOS, found by the trial; the tag waits for them.
+799b443 The plan: folders on Windows and macOS are mended and accepted.
+5a7c8be What Zeno lacks: in a C or LLVM build on Windows a file name goes through the code page, not UTF-8, and why that waits (59.20).
+0dcf295 The book: a file's name on Windows, among the limits.
+09ccc64 The plan: the run of the targets is green, and what the tag may hold.
+facfa27 The notes of 0.8.0 are finished, the install lines name 0.8.0, and the page on targets gives the counts of this version.
+bc9f25b The notes of 0.8.0 say how many tests ran on each system.
+
+= Unreleased: what has come since 0.8.0
+
+What is on `main` since 0.8.0 was released.
+
+68e021c The Homebrew, pacman and winget recipes for 0.8.0, with its checksums.
+3ae9202 The plan: 0.8.0 is out, and the plan for items 9 to 13 is closed.

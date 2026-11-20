@@ -26,7 +26,8 @@ to be built is in [`docs/missing.md`](docs/missing.md).
 - [**Zeno 0.5.2**](#zeno-052), 18 November 2026, 41 commits: four more targets, a registry, and the libraries of other languages
 - [**Zeno 0.6.0**](#zeno-060), 19 November 2026, 33 commits: the release for firmware, and the libraries of five more languages
 - [**Zeno 0.7.0**](#zeno-070), 19 November 2026, 18 commits: from a `.zeno` file to a chip in one step
-- [**Unreleased**](#unreleased), on `main` now, 2 commits: what has come since 0.7.0
+- [**Zeno 0.8.0**](#zeno-080), 20 November 2026, 103 commits: several values, generic enums, and a block that puts back what it opened
+- [**Unreleased**](#unreleased), on `main` now, 2 commits: what has come since 0.8.0
 
 ## Zeno 0.1.0
 
@@ -692,15 +693,136 @@ of C. This ends the eighth of the fourteen items of `docs/missing.md`.
 - [`951c666`](https://github.com/zeno-src/zeno-lang/commit/951c66600a40978d3e1de3d81537e5e8900092fb) The version is 0.7.0, with its release notes. GCC and Clang get the top of the program as 0.6.0 gave it to them, so a built program runs the instructions it ran before, and the interpreter keeps the board behind a pointer, as the VM does.
 - [`17453fd`](https://github.com/zeno-src/zeno-lang/commit/17453fdb4bca357fefe0ba582a17960516eedee0) Three tests of the last two stages failed in a debug build or on Windows, by their own arithmetic and line ends. They are mended. Nothing of Zeno itself changed. **This commit is Zeno 0.7.0.**
 
-## Unreleased
+## Zeno 0.8.0
 
-*Not in a release yet · 2 commits · 19 November 2026*
+*Released 20 November 2026 · 103 commits · [the release on GitHub](https://github.com/zeno-src/zeno-lang/releases/tag/v0.8.0)*
 
-What is on `main` since 0.7.0 was released.
+0.8.0 is a release for the language itself. A function can give several
+values, an enum and an interface can leave a type open, and a type
+parameter can say what it asks of its type. An `owned class` that `is
+Resource` is put back on every way out of its block, a file can be read
+and written in pieces, a program can list and make folders, an `assert`
+can say why it matters, and `zeno test --build` runs a program's tests in
+the program C or LLVM makes of it. Most of what a build with no collector
+refused is now built. Every new feature is asked for by a word or a flag:
+a program that writes none of them is built as 0.7.0 built it, to the
+byte. It ends items 9 to 12 of `docs/missing.md` and two tools of item
+13; the rest of item 13 and item 14 are put off. The engines were not
+timed for it, and nothing of it has run on a real board.
 
 - [`fdf8c23`](https://github.com/zeno-src/zeno-lang/commit/fdf8c2330e0f775090e1486b61ea4f574cbac26c) The Homebrew, pacman and winget recipes for 0.7.0, with its checksums.
 - [`d4f3faa`](https://github.com/zeno-src/zeno-lang/commit/d4f3faa07c57c8c78f2f2b0326d41453f08c69c4) The benchmark figures of 0.7.0.
+- [`3a1ee8c`](https://github.com/zeno-src/zeno-lang/commit/3a1ee8cd7870d1457786576bc27f9f43a5b6cb1a) The version on `main` is 0.8.0, and the notes of 0.8.0 are begun.
+- [`14ce321`](https://github.com/zeno-src/zeno-lang/commit/14ce32141a6a84f90efe8020235df396938b620a) `docs/plan-9-14.md`: the plan for items 9 to 14 of what Zeno lacks, with the design of each part, the ways weighed, the tests, and how each is shown to cost nothing.
+- [`d6673ec`](https://github.com/zeno-src/zeno-lang/commit/d6673ec98715f35923abce354225be72c9b39ac7) `tools/same.py` builds every program each way a build can be asked for with two `zeno` programs, and shows that the C, the IR, the joined program and the bytecode they write are the same: the same C means the same speed.
+- [`60dba12`](https://github.com/zeno-src/zeno-lang/commit/60dba127fdc71d2ce8174fa34ef611ef809e22dd) Python's compiled files are kept out of the repository.
+- [`ea5d687`](https://github.com/zeno-src/zeno-lang/commit/ea5d6879a11e94a35f1001286b1fa6c1fbda14f4) The plan: `raises` after a result belongs to the function it ends, a type ends at a comma, and an ordinary build holds what a function value raises against a type neither way.
+- [`e1d726d`](https://github.com/zeno-src/zeno-lang/commit/e1d726db7d3440783c3db739bbd1856d46d80be1) `raises` in a function type: `function(str) -> int raises ValueError`. A call through such a value is checked as raising, and a firmware build and a build with no collector now take a raising function as a value, which they refused (decision 56).
+- [`4c2b97d`](https://github.com/zeno-src/zeno-lang/commit/4c2b97d815d1fff91e7a64802f88c0fc73ed757a) The plan: what the review of `raises` in a function type settled, and what the first half of 9.2 asked.
+- [`909ca90`](https://github.com/zeno-src/zeno-lang/commit/909ca9073379b1396b116d7254fee6c2e996fafd) The plan: the tests leave out the same firmware builds as before.
+- [`a24bb55`](https://github.com/zeno-src/zeno-lang/commit/a24bb55af2334c3bd8b4a45020569dd93643ab38) Giving a value away is one function in the checker, so that a function that is kept can give away what it uses by the same rule as `let b = a`. Nothing changes.
+- [`80be701`](https://github.com/zeno-src/zeno-lang/commit/80be7012f0a718d2857d7bc16be9643e21ee78b3) A function that is kept takes what it uses: `compose(f, g)` builds with no collector (decision 56.8). With it, four fixes from the review of `raises` in a function type, and a function called straight from the call that made it is freed with no collector, which 0.7.0 left.
+- [`36b2d90`](https://github.com/zeno-src/zeno-lang/commit/36b2d9098c184f27b0291b6e630ba0891cd8917a) The plan: a function that is kept cannot take a `var`, in any build.
+- [`dc322b6`](https://github.com/zeno-src/zeno-lang/commit/dc322b6affbab0590040db70d49f7aca5614146a) A function that is kept cannot take a `var`, in any build: with a collector one that said `owned` was taken, and the program stopped with a fault of memory. `self` gets a message that can be followed (decision 56.8).
+- [`e1079cc`](https://github.com/zeno-src/zeno-lang/commit/e1079ccfa96c21f2f4df377748e2a1c5b41d2438) A method used as a value builds every way: `let m = counter.bump` is the function that calls the method, bound to the object of that line, and it looks or takes by the rule of a kept function (decision 56.9).
+- [`31a0593`](https://github.com/zeno-src/zeno-lang/commit/31a0593a68169f7d6fde145f9a93690d788cc03a) A method of an object that no variable holds is refused with words that say what to write, and chapter 56 counts what tools/same.py found.
+- [`0ff7d7e`](https://github.com/zeno-src/zeno-lang/commit/0ff7d7ec124c30efb35a67b4eb9026d19737f03e) `take slot.task` and `take tasks[i]` give what is there and leave `none`, in every engine and build, so an object with one owner can hand on what it holds (decision 56.10).
+- [`2f7ec0b`](https://github.com/zeno-src/zeno-lang/commit/2f7ec0b3bb233a9e161f499288dfbd20e2e859dd) The plan: items 9 to 12 are built in full, and of item 13 the tests of a compiled program and a message on `assert`. The other tools of item 13 and the whole of item 14 are put off, with their designs kept.
+- [`5fba04d`](https://github.com/zeno-src/zeno-lang/commit/5fba04d4edd86baf445e0455779f9345d42e2e00) The plan: no benchmarks for these parts, and every feature is asked for by a word or a flag, so that a program that does not ask builds and runs as before.
+- [`4a66de7`](https://github.com/zeno-src/zeno-lang/commit/4a66de7767a2116844093108c842eaff6eb0a382) The plan: which tests of 0.7.0 changed, said exactly.
+- [`052ea30`](https://github.com/zeno-src/zeno-lang/commit/052ea30c5eb443870c4b93eeec7e06b31b83528d) With no collector a list or an object can fill a type parameter: `Stack[Frame]`, `Box([1, 2])` and `same(frame)` build, and `take T` says that a generic keeps what it is given (decision 56.11).
+- [`74091cd`](https://github.com/zeno-src/zeno-lang/commit/74091cdc94274c5f5fb323d076936b18db1c296b) The engines count what 0.7.0 counted again: the kind after `raises` in a type is boxed, and the VM's two arms for `take` call a cold function of their own.
+- [`bd717a7`](https://github.com/zeno-src/zeno-lang/commit/bd717a7e9c3da31dae2442f0da0c0353bd00d276) A function that tests a parameter that may be `none` and then reads a field of it reads the field after the test, in C and LLVM. 0.7.0 read it before, and so read through `NULL` when given `none`.
+- [`697b4bc`](https://github.com/zeno-src/zeno-lang/commit/697b4bc2548c65a5d6a4019507555cb67466517d) With no collector a dict of lists or of objects builds, and the dict owns its values as a list owns its items: `d[key]` looks, a store frees the value that was there, `pop` hands it over (decision 56.12).
+- [`2666f98`](https://github.com/zeno-src/zeno-lang/commit/2666f98bf73fbd80d69a64c2647e62bee8c44143) The two instructions of `take` come after the superinstructions, and the interpreter's `take` is in a cold function of its own.
+- [`9bd9566`](https://github.com/zeno-src/zeno-lang/commit/9bd9566deb201a7fa3d248c098a7398787d0c761) What was known of the speed of items 9.1 to 9.4 when the benchmarks stopped (decision 56.13).
+- [`2b90f07`](https://github.com/zeno-src/zeno-lang/commit/2b90f0736955b2261257c6ab2a151193adf802e9) What Zeno lacks: item 9 says which of its parts are done.
+- [`59be546`](https://github.com/zeno-src/zeno-lang/commit/59be5469505edefc6ec6828564614c23740dfb96) The plan: a list of numbers that may be `none` with no collector owns a block of the pool for each number, since flags beside the list would change the C of every program.
+- [`9dc71d6`](https://github.com/zeno-src/zeno-lang/commit/9dc71d64c9684a5b005b4f0a1440c28b0095031c) With no collector a list of numbers that may be `none` builds, and the list owns a block of the pool for each number, as it owns its copy of each text (decision 56.14).
+- [`ac6518d`](https://github.com/zeno-src/zeno-lang/commit/ac6518d4edd48fac3d44bc9cfd341638ab56d25b) The size of the pool and of the text room on the command line, `--pool` and `--text-room`, and with `--memory` a write to a block after it was given back stops the program (decision 56.15).
+- [`fae3563`](https://github.com/zeno-src/zeno-lang/commit/fae3563629fe7c39b243128359b7b9db196ce9dd) A function with a name inside a function, and a default that is more than a literal, build through C and LLVM, with or without a collector: one that uses nothing around it is a function of the file, one that does is a closure made after the last thing it uses (decision 56.16).
+- [`e9a4346`](https://github.com/zeno-src/zeno-lang/commit/e9a43468aa223d825ac2d6efa103d95e90e823ad) What a build still refuses is one table for a build with no collector, all by design, and one for every build, each with its reason, and a test holds both compilers to them (decision 56.17).
+- [`cab1573`](https://github.com/zeno-src/zeno-lang/commit/cab15739e902cbe57cbd25014598a2a8f90f8851) The plan: item 9 is accepted, with what its sweep of the code missed.
+- [`f10c24b`](https://github.com/zeno-src/zeno-lang/commit/f10c24bc7f880f03c8f74cd00f34a2bbabc1d22b) The plan: the count of builds whose C differs from 0.7.0, set right (114 and 128).
+- [`a7a31ab`](https://github.com/zeno-src/zeno-lang/commit/a7a31ab9cf17f41f74dd17d5fbdb0a3a99863de3) The plan: two builders at once, who builds what, and a review that holds nobody up.
+- [`0ddcb6a`](https://github.com/zeno-src/zeno-lang/commit/0ddcb6a3e1ec69eff1e36102440f2be8fde3c706) `in` on a list of values that may be `none` builds through C as through LLVM, and `range(...)` used as a value is the list `zeno run` makes, in every build (decision 56.19).
+- [`5d8b280`](https://github.com/zeno-src/zeno-lang/commit/5d8b280a4a71975b83440e023733dcbb006f0b2b) tools/refused.py tries one operation on each type six ways and fails on a refusal no table lists; what it and the review of item 9 found builds now or is a row with its reason, and a default is shared so the compilers see what the checker saw (decision 56.19).
+- [`a0ce9dc`](https://github.com/zeno-src/zeno-lang/commit/a0ce9dc5b64c3274f67c407c91dc4b829f1ef102) The plan: the follow-up of item 9 is accepted, and the runtime grows only for a program that asks.
+- [`56d31ac`](https://github.com/zeno-src/zeno-lang/commit/56d31ace86c15a1332dad9e25261d28be1d84144) A message on `assert`: `assert c, "text"` prints the text on a line of its own above what was false, and the text is worked out only when the `assert` fails (decision 60.1).
+- [`30a1223`](https://github.com/zeno-src/zeno-lang/commit/30a12239cd5aa4ef41f22e44c078f6c3a7a58576) The plan: three builders, and item 11 with a builder of its own.
+- [`ba2817a`](https://github.com/zeno-src/zeno-lang/commit/ba2817aa7cb896c017aa3e81a81ed7e7b1963d62) The plan: five things the code asked about the tests of a compiled program.
+- [`2440fab`](https://github.com/zeno-src/zeno-lang/commit/2440fabfeacf80d7b952be6d20c335c113a4db6d) The plan: the numbers inside chapter 58 of the decisions, and how a generic enum is built.
+- [`6b04ce3`](https://github.com/zeno-src/zeno-lang/commit/6b04ce39f8c6bf294b7ed6d2803f04914dbef62b) The plan: three things the code asked about interfaces, and `owned interface`.
+- [`43c17bf`](https://github.com/zeno-src/zeno-lang/commit/43c17bf79d11ffb5b2c646d256a379aa9b6226ea) The runtime grows only for a program that uses what is added: each new part of runtime.c is a piece, written in only when the program uses it, so a program that uses nothing new gets 0.7.0's runtime to the byte in every build (decision 56.19).
+- [`8f0b647`](https://github.com/zeno-src/zeno-lang/commit/8f0b6478a28debecbe2de7e8406f60c7efc71cea) The plan: the runtime in pieces is accepted, and several values where no type is written.
+- [`0c6e6f8`](https://github.com/zeno-src/zeno-lang/commit/0c6e6f8fdfc6c1abfe41ab6c1f38df25ccb64f0f) Several values from one function: `-> (int, str)`, `return a, b`, `let q, r = f()` and `a, b = b, a`, in every engine, every build and every target; several values are never one value, and are shown as `<2 values: ...>` where no type is written (decision 57).
+- [`1e245bf`](https://github.com/zeno-src/zeno-lang/commit/1e245bfe291a61ac531edecac9b96cb777216d6c) The plan: item 10 is accepted, with one fault and four small things to mend.
+- [`3a7b737`](https://github.com/zeno-src/zeno-lang/commit/3a7b737f62246384b290cb3f6b9ebaf5515aab15) Tests of a compiled program: `zeno test --build` compiles each file with its tests as `zeno build` would, in C or LLVM, with or without a collector, for a computer or a board, and the program prints what `zeno test` prints, line for line (decision 60.2).
+- [`e2c9d2c`](https://github.com/zeno-src/zeno-lang/commit/e2c9d2c4876e49a972be194e97970589efefc08f) Several values received, swapped and raised past in a test of a compiled program, in every build: where items 10 and 13 meet.
+- [`b20ed7d`](https://github.com/zeno-src/zeno-lang/commit/b20ed7d883834ff3e4b1042ae56822ec96d8bd41) The plan: a message on `assert` and the tests of a compiled program are accepted.
+- [`4390fa8`](https://github.com/zeno-src/zeno-lang/commit/4390fa87ef31be6a5f4f5868237179c1089a720e) Folders: `files.list` gives a folder's names sorted by the numbers of their characters, the same in every engine, build and target; `files.make_folder` makes a folder and those above it; `files.join` is written in Zeno (decisions 59.20 to 59.23).
+- [`b57c0f8`](https://github.com/zeno-src/zeno-lang/commit/b57c0f8ff607c010aaf4524447361dd1acef4fc7) Folders in the docs: docs/folders.md, decisions 59.20 to 59.23, and the notes of 0.8.0.
+- [`510336b`](https://github.com/zeno-src/zeno-lang/commit/510336b91a7c325e98f01d320cf305b14e573e0d) Several values: with no collector, values written out free what an earlier one made when a later one raises; the same name twice on the left, and `_` where it is a variable, are refused (decision 57).
+- [`e2d317b`](https://github.com/zeno-src/zeno-lang/commit/e2d317bf142c2b533347936ae9fad2f0e0f226ec) The book: several values from one function, in the chapter on functions.
+- [`d69b592`](https://github.com/zeno-src/zeno-lang/commit/d69b5927273276f5d51c172f8f4de2b09d08b400) The plan: folders are accepted, and three things a resource asked.
+- [`0c01265`](https://github.com/zeno-src/zeno-lang/commit/0c0126527abc9b1e1b947ee368ba89eb4f564597) Folders: what `files.join` does at the ends of its parts, and Java's names where the language setting is not UTF-8.
+- [`f5d4e01`](https://github.com/zeno-src/zeno-lang/commit/f5d4e014afe13b4a912bcabac81a62025257eca1) A parameter of an interface's function may have a default: a plain value (a number, text, `true`, `false`, `none`, a quantity, or a case that carries nothing) that each class writes the same, and a call through the interface may leave it out (decision 58.20).
+- [`a038f09`](https://github.com/zeno-src/zeno-lang/commit/a038f09db4091e4c075553c52cd6d7505e1a55d9) A function that takes out what its object owns can stand for one of an interface: a call through the interface is held to the guards of taking out, found over the checker's rounds, so a call read before the class is held as one read after it (decision 58.21).
+- [`ec5cd10`](https://github.com/zeno-src/zeno-lang/commit/ec5cd107cea1d7c04bd74aac455be52eb9ff9000) `owned interface`: each object that is one has one owner, with a collector too; only an `owned class` can be one, and an `owned class` can only be one (decision 58.22).
+- [`0a50a71`](https://github.com/zeno-src/zeno-lang/commit/0a50a71970d36e12347cee6b5d4a92f6ec440685) What interfaces left out, in the decisions (58.20 to 58.23), docs/interfaces.md, what Zeno lacks, and the notes of 0.8.0.
+- [`3c28ca2`](https://github.com/zeno-src/zeno-lang/commit/3c28ca23b4d71e8540cd821c911d604efd7b43c5) A default, a function that takes out and an `owned interface`, each with two results, in every build: where 11.4 meets several values.
+- [`532ac68`](https://github.com/zeno-src/zeno-lang/commit/532ac68ec091acfe35c3bf6b6f1cce74b6dd1f01) The plan: the mending of item 10 and what interfaces left out are accepted.
+- [`a1be903`](https://github.com/zeno-src/zeno-lang/commit/a1be903f9166e65c689da5a8ae9fdaaf1aa8aeda) The book: what items 9 and 10 change, in the chapters on functions as values, compiling, ownership, firmware and no collector, and in the list of limits.
+- [`2f2504b`](https://github.com/zeno-src/zeno-lang/commit/2f2504b137b9bfaef24a54f14056ecae4390fc9c) The book: a message on `assert`, `zeno test --build`, folders, and a default, taking out and `owned interface` in the chapter on interfaces.
+- [`b0a22b2`](https://github.com/zeno-src/zeno-lang/commit/b0a22b2f067b6034495bda96042a63bf5b7bdbbd) Generic enums: `enum Maybe[T]` and `Result[T, E]`, a copy for each set of types, `Nothing` typed by the place it goes, in every engine and build; with no collector a look at a copy of a generic goes to a parameter of a generic that looks (decisions 58.1 and 58.2).
+- [`0052fc0`](https://github.com/zeno-src/zeno-lang/commit/0052fc0155da6d7ed96e20f22725da16a838e45a) The plan: a Reader and a Writer are written in Zeno, over five small built-ins.
+- [`7357805`](https://github.com/zeno-src/zeno-lang/commit/73578055f38e22df8cd868797a95b219157eedc7) Bounds: `function largest[T is Ordered]` and `[S is Shape]` on a function, a class and an enum, refused at the call when a type lacks them; `Ordered` comes with Zeno unless the program has its own, and a bound makes no code (decisions 58.3 to 58.5).
+- [`144f4f6`](https://github.com/zeno-src/zeno-lang/commit/144f4f6121f8c05b2d713c4140c5d5fa091d1db3) Generic interfaces: `interface Source[T]`, and a class that says which copy it is, `is Source[int]` or `is Source[T]`; each copy is an interface of its own, in every build (decision 58.6).
+- [`d7ca291`](https://github.com/zeno-src/zeno-lang/commit/d7ca291c71d20ae993d082427eca2a6e727cdbe1) The book: bounds, generic enums and generic interfaces in the chapter on generics; the limits and the design chapter say what is left.
+- [`a0ca116`](https://github.com/zeno-src/zeno-lang/commit/a0ca116210c75b98eda455138a721d85d20f478e) The plan: generic enums, bounds and generic interfaces are accepted.
+- [`ba41819`](https://github.com/zeno-src/zeno-lang/commit/ba41819deda2968d04105e44d9f805ccf91ddb65) A method with a type parameter of its own stays refused, with a message that shows the function of the file to write instead (decision 58.7); a generic given a list of two types, as `first([200 ms, 1 s])`, says in a build why and what to write (58.8).
+- [`5ec9077`](https://github.com/zeno-src/zeno-lang/commit/5ec9077bfd508d29311be04f6424b20fcfda06b1) The book: in what generics leave out, a function of the file in place of a method with a type of its own (58.7), and a list of two units given to a generic (58.8).
+- [`d063941`](https://github.com/zeno-src/zeno-lang/commit/d06394122de8c83eaddfb723eb6c6a78eecc047f) The plan: a method with a type parameter of its own stays refused, and item 11 is accepted.
+- [`3dab71b`](https://github.com/zeno-src/zeno-lang/commit/3dab71b7814d63d055ffb7a439c2579b62f86945) A method with a type parameter of its own is refused on its own line, not on the first line of its class (58.7).
+- [`117c236`](https://github.com/zeno-src/zeno-lang/commit/117c236f5a725b67c30c2553d9ec5f0d4f133965) Cleaning up when a block ends: `owned class Selected is Resource`, whose `release` runs when the owner of the object ends, on every way out of its block, last made first, and not when it was given away, in every engine, build and target; a resource lives in a `let` or a parameter, and every other place is refused with a message (decisions 59.1 to 59.3).
+- [`9fb78a8`](https://github.com/zeno-src/zeno-lang/commit/9fb78a8f1adb021b2c64d4d5b1e021e17e17c6cf) Decisions 59.1 to 59.5 and docs/resource.md: what a resource is, where it can be, the top of a file under `zeno test`, how each engine releases it, and what it still leaves out.
+- [`63c7f27`](https://github.com/zeno-src/zeno-lang/commit/63c7f278faa1eb5387b5dcef4072da99c1f4a097) The plan: cleaning up when a block ends is accepted, with one fault to mend.
+- [`5365b64`](https://github.com/zeno-src/zeno-lang/commit/5365b64d347dd592cbe0bb56d40341f89ab80f8d) The book: `is Resource` and `release`, when it runs and where a resource may live, in the chapter on ownership, and its limit in the appendix.
+- [`ab9fdc7`](https://github.com/zeno-src/zeno-lang/commit/ab9fdc7af2637488b3f82f7351ea678e5fb5171a) A resource written out among several values is refused as one a call gives, a default cannot make a resource, and the refusal of several values says only to give the resource back alone (the mending of 59.1).
+- [`615a32b`](https://github.com/zeno-src/zeno-lang/commit/615a32bd2af30dd7af3ec358021c074012b362b1) The Lua target jumps to the next round of a loop from a `try` only when the body holds a `continue`, so a `while` whose `try` holds only a `break` runs.
+- [`0d12e31`](https://github.com/zeno-src/zeno-lang/commit/0d12e31fad6d6f0c4e2e977f5a2643510271f9b3) A file in pieces: `files.read_from` gives a Reader with `read_line`, `read_bytes` and `for line in reader`, `files.write_to` and `files.append_to` give a Writer, closed when the owner ends, written in Zeno over six built-ins, in every engine, build and target (decisions 59.6 and 59.7).
+- [`9645274`](https://github.com/zeno-src/zeno-lang/commit/9645274c543d67a957fb4d92b96b1b88b682268b) Decisions 59.6 and 59.7 and docs/files-in-pieces.md: a file read and written in pieces, and what a program cannot touch.
+- [`7a69bc2`](https://github.com/zeno-src/zeno-lang/commit/7a69bc2c93808bd01256143527469c4e65a74200) The plan: a file in pieces is sent back with two faults; the mend of cleaning up is accepted.
+- [`fe23d35`](https://github.com/zeno-src/zeno-lang/commit/fe23d35bc03805135a0695139c8981f5902caa4f) `files.list("")` raises in the WebAssembly target too, where WASI took an empty path for the current folder.
+- [`0e08020`](https://github.com/zeno-src/zeno-lang/commit/0e0802082467823827ee93553e51ee8206d6eb41) The plan: the last check of where the items meet, and a crash in LLVM builds to mend.
+- [`6c93f7a`](https://github.com/zeno-src/zeno-lang/commit/6c93f7a171996aa2f6d3937ef8bac0a7fc2efbe7) A named function given to a function that gives several values is called with the places for the later ones in every LLVM build (the last check of where the items meet).
+- [`870164e`](https://github.com/zeno-src/zeno-lang/commit/870164e371b405cb62ccba7e96fc4bc2872a958b) The plan: the crash of several values through LLVM is mended and accepted.
+- [`53c24be`](https://github.com/zeno-src/zeno-lang/commit/53c24be28cbb4f6a4733a4184ef7fb3849252ea3) A reader reads on when the file has grown since it met the end, in every engine, build and target, and `zeno test --build --llvm` takes the pieces of the runtime a test uses.
+- [`c1b5897`](https://github.com/zeno-src/zeno-lang/commit/c1b5897cfceb8123189848a7dc5b7fe4c0b2d21c) Decision 59.6 and docs/files-in-pieces.md: a file that grows, a long line with no collector, and the line an uncaught error names.
+- [`e393ca1`](https://github.com/zeno-src/zeno-lang/commit/e393ca11d1450262f5e7d55ae5e40773fcdec66e) The plan: a file in pieces is accepted, and with it every item; the release waits only for a green run of the targets.
+- [`2e6e036`](https://github.com/zeno-src/zeno-lang/commit/2e6e036554a41bb571792130ae4e54715c7c7d93) The book: a file read and written in pieces, in the chapter on reading and writing; the limits and the design chapter say what is left of it.
+- [`c81708d`](https://github.com/zeno-src/zeno-lang/commit/c81708d8dd6d1385408d27836317f3151e681f78) The plan: folders on Windows and macOS, found by the trial; the tag waits for them.
+- [`ffab0c6`](https://github.com/zeno-src/zeno-lang/commit/ffab0c671e68882cc56069be85a702a2dbcd5637) The book for Zeno 0.8: rebuilt as a PDF and HTML, 323 pages, with its 378 programs and 103 commands run by this version.
+- [`dc369eb`](https://github.com/zeno-src/zeno-lang/commit/dc369eba19bbbc1882fc81eeb0d08b764b55f379) In a C or LLVM build on Windows, `files.list` and `files.make_folder` take names through the code page as `fopen` does, so a listed name opens; the folder tests hold on disks that ignore case.
+- [`132e3a1`](https://github.com/zeno-src/zeno-lang/commit/132e3a1016164c42610b10d280b9f0b82387b1c3) A comment in the runtime's folder piece no longer holds a slash and a star.
+- [`728f562`](https://github.com/zeno-src/zeno-lang/commit/728f5625d5c3019728228335502b5a839c7e5cee) The folder test makes a name that is not UTF-8 only where the disk allows one.
+- [`f65f31e`](https://github.com/zeno-src/zeno-lang/commit/f65f31e5e833c49b870a641cc90073496bc71f0e) The folder test in every build takes away the files each engine made.
+- [`799b443`](https://github.com/zeno-src/zeno-lang/commit/799b44393a39831ea3db1c6a97092c11ab90cd65) The plan: folders on Windows and macOS are mended and accepted.
+- [`5a7c8be`](https://github.com/zeno-src/zeno-lang/commit/5a7c8be70dfffeb1b29441ace597fc481a9d77b2) What Zeno lacks: in a C or LLVM build on Windows a file name goes through the code page, not UTF-8, and why that waits (59.20).
+- [`0dcf295`](https://github.com/zeno-src/zeno-lang/commit/0dcf295ee7ba08feb2eaa0174f6f354a2f66fd89) The book: a file's name on Windows, among the limits.
+- [`09ccc64`](https://github.com/zeno-src/zeno-lang/commit/09ccc6401c714481231246c62932524ac4eb5269) The plan: the run of the targets is green, and what the tag may hold.
+- [`facfa27`](https://github.com/zeno-src/zeno-lang/commit/facfa27964b9f9925b85f7d289d3fa5dff913d8e) The notes of 0.8.0 are finished, the install lines name 0.8.0, and the page on targets gives the counts of this version.
+- [`bc9f25b`](https://github.com/zeno-src/zeno-lang/commit/bc9f25b982cc67383ecd027af164889253106c51) The notes of 0.8.0 say how many tests ran on each system. **This commit is Zeno 0.8.0.**
+
+## Unreleased
+
+*Not in a release yet · 2 commits · 20 November 2026*
+
+What is on `main` since 0.8.0 was released.
+
+- [`68e021c`](https://github.com/zeno-src/zeno-lang/commit/68e021c8a947d179dc8a50f3721b181ac3a3022f) The Homebrew, pacman and winget recipes for 0.8.0, with its checksums.
+- [`3ae9202`](https://github.com/zeno-src/zeno-lang/commit/3ae920251654b0a45b2acaeaf53bbd977bf35c7d) The plan: 0.8.0 is out, and the plan for items 9 to 13 is closed.
 
 ---
 
-This file is written by [`tools/history.py`](tools/history.py) from the commits themselves and the notes in [`tools/history-notes.txt`](tools/history-notes.txt). It lists 337 commits, up to `d4f3faa` of 19 November 2026. A commit that only brings this file or its notes up to date is not listed.
+This file is written by [`tools/history.py`](tools/history.py) from the commits themselves and the notes in [`tools/history-notes.txt`](tools/history-notes.txt). It lists 440 commits, up to `3ae9202` of 20 November 2026. A commit that only brings this file or its notes up to date is not listed.
