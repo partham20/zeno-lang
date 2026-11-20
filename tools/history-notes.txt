@@ -623,3 +623,7 @@ ab9fdc7 A resource written out among several values is refused as one a call giv
 fe23d35 `files.list("")` raises in the WebAssembly target too, where WASI took an empty path for the current folder.
 53c24be A reader reads on when the file has grown since it met the end, in every engine, build and target, and `zeno test --build --llvm` takes the pieces of the runtime a test uses.
 c1b5897 Decision 59.6 and docs/files-in-pieces.md: a file that grows, a long line with no collector, and the line an uncaught error names.
+dc369eb In a C or LLVM build on Windows, `files.list` and `files.make_folder` take names through the code page as `fopen` does, so a listed name opens; the folder tests hold on disks that ignore case.
+132e3a1 A comment in the runtime's folder piece no longer holds a slash and a star.
+728f562 The folder test makes a name that is not UTF-8 only where the disk allows one.
+f65f31e The folder test in every build takes away the files each engine made.
