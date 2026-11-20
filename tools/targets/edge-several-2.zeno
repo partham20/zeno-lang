@@ -137,3 +137,38 @@ for n in range(4) {
         print("given", e.message)
     }
 }
+
+# A function named, not written out, given to a function that gives
+# several values: the call still has places for the later ones.
+function count(at: str) -> int {
+    return len(at)
+}
+function apply(each: function(str) -> int) -> (int, int) {
+    return each("abc"), 2
+}
+let counted, two = apply(count)
+print(counted, two)
+
+function double(n: int) -> int {
+    return n * 2
+}
+function pair_of[T](item: T, each: function(T) -> T) -> (T, T) {
+    return item, each(item)
+}
+let four, eight = pair_of(4, double)
+print(four, eight)
+
+function shout(at: str) -> str {
+    return at.upper()
+}
+function tag(n: int, each: function(str) -> str) -> (int, str) {
+    return n, each(f"n{n}")
+}
+var tagged = 0
+var last = ""
+for round in range(1000) {
+    let k, name = tag(round, shout)
+    tagged += k
+    last = name
+}
+print(tagged, last)

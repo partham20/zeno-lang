@@ -8496,8 +8496,12 @@ impl Emitter<'_> {
                     emitter.end(format!("ret i1 {worked}"));
                     return Ok(());
                 }
-                emitter.outs = Some(gives_params(&kind.returns));
-                let result = emitter.call_entry(&entry, args, span)?;
+                // The wrapper's own places for later values, kept apart
+                // from those of the call this value is an argument of.
+                let outer = emitter.outs.replace(gives_params(&kind.returns));
+                let result = emitter.call_entry(&entry, args, span);
+                emitter.outs = outer;
+                let result = result?;
                 match (raising, result.kind) {
                     (false, Kind::None) => emitter.end("ret void"),
                     (false, _) => emitter.end(format!("ret {returns} {}", result.code)),
