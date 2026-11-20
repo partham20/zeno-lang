@@ -82,11 +82,18 @@ empty path.
 files.join("logs", "today.txt")    # "logs/today.txt"
 files.join("logs/", "today.txt")   # "logs/today.txt"
 files.join("logs", "/today.txt")   # "logs/today.txt"
+files.join("logs/", "/today.txt")  # "logs/today.txt"
 files.join("", "today.txt")        # "today.txt"
+files.join("logs", "")             # "logs/"
 ```
 
-One `/` between the two parts, whatever they had at their ends, and a
-first part that is empty is no folder at all. Every system Zeno runs
+What it does is small. Where neither part has a `/` at the end that
+meets the other, it puts one between them; where one has, it puts in
+none; where both have, it drops the one at the start of the second.
+That is all: `files.join("a//", "b")` is `"a//b"`, since the first
+part's own `//` is left as it is, and `files.join("logs", "")` is
+`"logs/"`, a folder with nothing named in it yet. A first part that is
+empty is no folder at all, and the second comes back as it is. Every system Zeno runs
 on takes `/` in a path, Windows too, so the path is the same text
 everywhere. It does no more than that: it does not look at the disk,
 and does not take out `..` or a `/` that is doubled inside a part.
@@ -132,6 +139,11 @@ as before, to the byte.
   languages turn such a name into text of their own before a program
   sees it, so the Java, Kotlin, C# and Dart targets give a changed name
   where every other engine raises a `FileError`.
+- **A name that is not ASCII, in Java where the system's language
+  setting is not UTF-8.** With no `LANG` set, or `LC_ALL=C`, the JVM
+  reads `é` in a name as `?`, so the Java and Kotlin targets list a
+  name that `files.read` cannot open. Set `LC_ALL=C.UTF-8`, or any
+  UTF-8 setting, and they list it as every other engine does.
 - **Lua without LuaFileSystem on Windows.** Lua itself cannot see into
   a folder; the Lua target uses LuaFileSystem where it is installed,
   and `find` and `mkdir -p` where there is a POSIX shell.
