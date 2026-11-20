@@ -606,3 +606,4 @@ ec5cd10 `owned interface`: each object that is one has one owner, with a collect
 a1be903 The book: what items 9 and 10 change, in the chapters on functions as values, compiling, ownership, firmware and no collector, and in the list of limits.
 2f2504b The book: a message on `assert`, `zeno test --build`, folders, and a default, taking out and `owned interface` in the chapter on interfaces.
 b0a22b2 Generic enums: `enum Maybe[T]` and `Result[T, E]`, a copy for each set of types, `Nothing` typed by the place it goes, in every engine and build; with no collector a look at a copy of a generic goes to a parameter of a generic that looks (decisions 58.1 and 58.2).
+7357805 Bounds: `function largest[T is Ordered]` and `[S is Shape]` on a function, a class and an enum, refused at the call when a type lacks them; `Ordered` comes with Zeno unless the program has its own, and a bound makes no code (decisions 58.3 to 58.5).
