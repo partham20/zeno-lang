@@ -2670,18 +2670,20 @@ static class Z
         arity("handle_open", args, 2, 2, line);
         string path = text("handle_open", args[0], line);
         long how = args[1] is long n ? n : 0;
+        // Shared both ways, so that a file can be read while it is written,
+        // as on every other engine (59.6).
         System.IO.FileStream file;
         if (how == 0)
         {
             string where = at(path);
             if (where == "nothing") throw fileError("there is no file `" + path + "`", line);
             if (where == "other") throw fileError("cannot read `" + path + "`", line);
-            try { file = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read); }
+            try { file = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite); }
             catch (System.Exception) { throw fileError("cannot read `" + path + "`", line); }
         }
         else
         {
-            try { file = new System.IO.FileStream(path, how == 2 ? System.IO.FileMode.Append : System.IO.FileMode.Create, System.IO.FileAccess.Write); }
+            try { file = new System.IO.FileStream(path, how == 2 ? System.IO.FileMode.Append : System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite); }
             catch (System.Exception) { throw fileError("cannot write `" + path + "`", line); }
         }
         int place = openFiles.IndexOf(null);

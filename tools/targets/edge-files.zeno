@@ -192,6 +192,29 @@ attempt("read_line zero byte", function() -> str {
     let line = source.read_line()
     return "read"
 })
+# A file that grows after its end was met: the end is where the file
+# ends at that moment, and a later read looks again (59.6).
+function grow(at: str) raises FileError, ValueError {
+    let out = files.write_to(at)
+    let source = files.read_from(at)
+    print("grow", source.read_line(), source.read_bytes(3))
+    out.write("one\n")
+    print("grow", source.read_line(), source.read_line())
+    out.write("tw")
+    print("grow", source.read_bytes(5), source.read_bytes(1))
+    out.write("o\nthree")
+    for piece in source {
+        print("grow for", [piece])
+    }
+    out.write("\nfour\n")
+    print("grow", [source.read_line()], source.read_line(), source.read_line())
+    out.write_bytes([0x66, 0x69, 0x76, 0x65])
+    for piece in source {
+        print("grow for", [piece])
+    }
+    print("grow", source.read_bytes(2))
+}
+grow(path)
 files.remove(path)
 # A sleep of no time, or less, is no sleep.
 import time

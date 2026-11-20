@@ -17630,7 +17630,30 @@ function bytes_in_pieces(at: str) raises FileError, ValueError {
     }
 }
 
+# The end is where the file ends at that moment: a read after more was
+# written looks again (59.6).
+function grow(at: str) raises FileError, ValueError {
+    let out = files.write_to(at)
+    let source = files.read_from(at)
+    print("grow", source.read_line(), len(source.read_bytes(3)))
+    out.write("one\n")
+    print("grow", source.read_line(), source.read_line())
+    out.write("tw")
+    print("grow", source.read_bytes(5), len(source.read_bytes(1)))
+    out.write("o\nthree")
+    for piece in source {
+        print("grow for", piece)
+    }
+    out.write("\nfour\n")
+    print("grow", source.read_line() == "", source.read_line(), source.read_line())
+    out.write_bytes([0x66, 0x69, 0x76, 0x65])
+    for piece in source {
+        print("grow for", piece)
+    }
+}
+
 function main() raises FileError, ValueError {
+    grow(path)
     write_lines(path)
     by_for(path)
     by_read_line(path)

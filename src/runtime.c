@@ -5604,6 +5604,9 @@ static const char *zeno_file_handle_open(const char *path, int64_t how, int64_t 
  * own message, and in a block that doubles with one. */
 static const char *zeno_file_handle_line(int64_t handle, const char *path, const char **result) {
     FILE *file = zeno_open_file(handle);
+    /* The end is where the file ends now: a stream remembers that it met
+     * the end, and would give nothing written there since (59.6). */
+    clearerr(file);
     char *line = NULL;
     size_t used = 0;
     size_t room = 0;
@@ -5646,6 +5649,7 @@ static const char *zeno_file_handle_line(int64_t handle, const char *path, const
 static const char *zeno_file_handle_bytes(int64_t handle, const char *path, int64_t count, zeno_list **result) {
     FILE *file = zeno_open_file(handle);
     int64_t want = count < 0 ? 0 : count;
+    clearerr(file);
     long here = ftell(file);
     if (here >= 0 && fseek(file, 0, SEEK_END) == 0) {
         long end = ftell(file);

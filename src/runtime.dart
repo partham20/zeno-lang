@@ -173,7 +173,6 @@ class ZOpenFile {
   final bool reading;
   Uint8List buffer = Uint8List(0);
   int at = 0;
-  bool ended = false;
   ZOpenFile(this.file, this.reading);
 }
 
@@ -2653,17 +2652,14 @@ class Z {
 
   // More of a file that is read, into its buffer. False at the end.
   static bool fill(ZOpenFile open, String path, int line) {
-    if (open.ended) return false;
     Uint8List piece;
     try {
       piece = open.file.readSync(65536);
     } on FileSystemException {
       fileError("cannot read `" + path + "`", line);
     }
-    if (piece.isEmpty) {
-      open.ended = true;
-      return false;
-    }
+    // The end for now: a later read looks again (59.6).
+    if (piece.isEmpty) return false;
     final rest = open.buffer.length - open.at;
     final joined = Uint8List(rest + piece.length);
     joined.setRange(0, rest, open.buffer, open.at);

@@ -2871,6 +2871,9 @@ V b_files_handle_line(const Args& args, int line) {
     string path = text("handle_line", args[1], line);
     OpenFile& open = handle("handle_line", args, line);
     if (!open.reading) fileError("cannot read `" + path + "`", line);
+    // The end is where the file ends now: a stream remembers that it met
+    // the end, and would give nothing written there since (59.6).
+    clearerr(open.f);
     string data;
     bool any = false, ended = false;
     int c;
@@ -2896,6 +2899,7 @@ V b_files_handle_bytes(const Args& args, int line) {
     int64_t count = args[2].t == V::INT && args[2].i > 0 ? args[2].i : 0;
     OpenFile& open = handle("handle_bytes", args, line);
     if (!open.reading) fileError("cannot read `" + path + "`", line);
+    clearerr(open.f);
     Args items;
     unsigned char buf[65536];
     while ((int64_t)items.size() < count) {

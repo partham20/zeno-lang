@@ -2040,6 +2040,9 @@ final class Z {
         self::arity("handle_line", $args, 2, 2, $line);
         $path = self::text("handle_line", $args[1], $line);
         $file = self::handle("handle_line", $args, $line);
+        // The end is where the file ends now: a stream remembers that it
+        // met the end, and a seek to where it is forgets it (59.6).
+        fseek($file, 0, SEEK_CUR);
         $s = @fgets($file);
         if ($s === false) {
             if (!feof($file)) self::fileError("cannot read `" . $path . "`", $line);
@@ -2058,6 +2061,7 @@ final class Z {
         $path = self::text("handle_bytes", $args[1], $line);
         $count = max($args[2], 0);
         $file = self::handle("handle_bytes", $args, $line);
+        fseek($file, 0, SEEK_CUR);
         $s = "";
         while (strlen($s) < $count && !feof($file)) {
             $piece = @fread($file, $count - strlen($s));

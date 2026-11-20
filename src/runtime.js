@@ -1510,11 +1510,10 @@ const Z = (function () {
   }
   // More of a file that is read, into its buffer. False at the end.
   function fill(file, path, line) {
-    if (file.ended) return false;
     const piece = Buffer.alloc(65536);
     let got = 0;
     try { got = fs.readSync(file.fd, piece, 0, piece.length, null); } catch (e) { fileError("cannot read `" + path + "`", line); }
-    if (got === 0) { file.ended = true; return false; }
+    if (got === 0) return false; // the end for now: a later read looks again (59.6)
     file.buffer = Buffer.concat([file.buffer.subarray(file.at), piece.subarray(0, got)]);
     file.at = 0;
     return true;
@@ -1858,7 +1857,7 @@ const Z = (function () {
         if (!inNode) fileError("cannot write `" + path + "`", line);
         try { fd = fs.openSync(path, how === 2 ? "a" : "w"); } catch (e) { fileError("cannot write `" + path + "`", line); }
       }
-      const file = { fd, buffer: Buffer.alloc(0), at: 0, ended: false };
+      const file = { fd, buffer: Buffer.alloc(0), at: 0 };
       let place = openFiles.indexOf(null);
       if (place < 0) { openFiles.push(file); place = openFiles.length - 1; } else openFiles[place] = file;
       return place + 1;

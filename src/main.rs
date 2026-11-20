@@ -631,6 +631,9 @@ fn build_and_run_tests(
                 }
             };
             let runtime = emit_llvm::runtime_for(kind, options.grows);
+            // The pieces of the runtime the tests use, as `zeno build
+            // --llvm` takes them (decision 56.19).
+            let runtime = emit_c::with_pieces(&runtime, &emit_c::pieces_in_ir(&ir));
             let mut runtime = emit_c::with_board_parts(&runtime, &emit_c::board_parts_in_ir(&ir));
             runtime += &emit_llvm::tests_runtime(built, kind);
             let (ir_file, runtime_file) = (folder.join(format!("{name}.ll")), folder.join(format!("{name}_runtime.c")));

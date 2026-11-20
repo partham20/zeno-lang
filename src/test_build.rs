@@ -475,7 +475,9 @@ mod tests {
     /// prints it, with the line of totals that a program built for its
     /// tests prints when it runs by itself.
     fn interpreted(source: &str) -> String {
-        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses").with_resource();
+        // Joined as `zeno test` joins it, so that a test can use the part
+        // of the library written in Zeno, such as `files.read_from`.
+        let program = crate::modules::testing::load(source).program.unwrap_or_else(|errors| panic!("{}", errors[0].message));
         let (program, errors, _) = checker::checked(program, checker::Rules::default());
         assert!(errors.is_empty(), "the checker refused the program: {:?}", errors[0].message);
         let (output, tested) = interpreter::run_tests(&program, true, value::testing::outside(), None);
@@ -499,7 +501,9 @@ mod tests {
     /// what it printed, what it wrote as errors, and the number it ended
     /// with. `None` if this machine has no compiler for it.
     fn compiled(name: &str, source: &str, build: Build, llvm: bool) -> Option<(String, String, i32)> {
-        let program = parser::parse(lexer::lex(source).expect("it reads")).expect("it parses").with_resource();
+        // Joined as `zeno test` joins it, so that a test can use the part
+        // of the library written in Zeno, such as `files.read_from`.
+        let program = crate::modules::testing::load(source).program.unwrap_or_else(|errors| panic!("{}", errors[0].message));
         let (program, tests) = with_tests(program, None).expect("the tests are made functions");
         let (program, errors, types) = checker::checked(program, build.rules());
         assert!(errors.is_empty(), "the build's checker refused the program: {:?}", errors[0].message);
@@ -519,7 +523,8 @@ mod tests {
             true => {
                 let ir = emit_llvm::emit_tests(&program, &types, "test.zeno", build, true, emit_c::Options::default(), &built)
                     .unwrap_or_else(|error| panic!("the LLVM build refused it: {}", error.message));
-                let runtime = emit_c::with_board_parts(&emit_llvm::runtime_for(build, false), &emit_c::board_parts_in_ir(&ir));
+                let runtime = emit_c::with_pieces(&emit_llvm::runtime_for(build, false), &emit_c::pieces_in_ir(&ir));
+                let runtime = emit_c::with_board_parts(&runtime, &emit_c::board_parts_in_ir(&ir));
                 let runtime = runtime + &emit_llvm::tests_runtime(&built, build);
                 std::fs::write(dir.join("tests.ll"), ir).expect("the IR is written");
                 std::fs::write(dir.join("tests_runtime.c"), runtime).expect("the runtime is written");
@@ -588,6 +593,33 @@ mod tests {
 
     const HELD: &str = "owned class Held is Resource {\n    name: str\n\n    function release(self) {\n        \
                         print(\"released\", self.name)\n    }\n}\n";
+
+    #[test]
+    fn a_test_that_uses_a_piece_of_the_runtime_is_built() {
+        // A piece of the runtime (`PIECES`, decision 56.19) is written
+        // only for a program that uses it; a test build takes it as a
+        // build of the program does, through C and through LLVM. One
+        // file for each piece.
+        let folder = std::env::temp_dir().join(format!("zeno-test-build-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("empty")).expect("a temporary folder");
+        let at = folder.to_string_lossy().replace('\\', "/");
+        for (piece, _) in emit_c::PIECES {
+            let test = match *piece {
+                "ZENO_RANGE_LIST" => "test \"in a range\" {\n    assert 3 in range(5)\n}\n".to_string(),
+                "ZENO_FILES_LIST" => format!("import files\ntest \"listed\" {{\n    assert len(files.list(\"{at}/empty\")) == 0\n}}\n"),
+                "ZENO_FILES_MAKE_FOLDER" => format!("import files\ntest \"made\" {{\n    files.make_folder(\"{at}/made/deeper\")\n}}\n"),
+                "ZENO_FILES_PIECES" => format!(
+                    "import files\ntest \"in pieces\" {{\n    if true {{\n        let out = files.write_to(\"{at}/pieces.txt\")\n        \
+                     out.write(\"one\\n\")\n    }}\n    let source = files.read_from(\"{at}/pieces.txt\")\n    \
+                     assert source.read_line() == \"one\"\n}}\n"
+                ),
+                _ => panic!("no test here uses the piece `{piece}`: add one"),
+            };
+            same_every_way(&format!("piece-{piece}"), &test, EVERY_BUILD);
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
 
     #[test]
     fn a_failed_assert_releases_what_the_test_owns() {
