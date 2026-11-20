@@ -428,12 +428,34 @@ pub struct Function {
     pub name: String,
     /// `function first[T](items: list[T]) -> T` has the one type
     /// parameter `T`: a type that each call fills in.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     /// The errors named after `raises`.
     pub raises: Vec<String>,
     pub body: Block,
+}
+
+/// One type parameter: `T`, or `T is Ordered`, which asks that what
+/// `T` stands for is that interface (decision 58.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    /// The interface after `is`.
+    pub bound: Option<Type>,
+}
+
+impl TypeParam {
+    /// A type parameter with no bound.
+    #[cfg(test)]
+    pub fn plain(name: &str) -> TypeParam {
+        TypeParam { name: name.to_string(), bound: None }
+    }
+}
+
+/// The names of these type parameters, in order.
+pub fn param_names(params: &[TypeParam]) -> Vec<String> {
+    params.iter().map(|param| param.name.clone()).collect()
 }
 
 /// One parameter: `who`, `who: str`, or `excited: bool = false`.
@@ -450,7 +472,7 @@ pub struct Param {
 pub struct Class {
     pub name: String,
     /// `class Stack[T]` has the one type parameter `T`.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     /// `owned class`: every object of it has exactly one owner.
     pub owned: bool,
     pub fields: Vec<Field>,
@@ -663,7 +685,7 @@ pub struct Enum {
     /// `enum Maybe[T]` has the one type parameter `T` (decision 58.1).
     /// Like a generic class, it is not an enum yet: each set of types it
     /// is used with gets a copy that is one.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<Variant>,
 }
 

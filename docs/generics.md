@@ -192,6 +192,59 @@ for carrying a `T`.
   written for it did not change, to the byte.
 - **The fifteen targets** do not look at types, and run it as it is.
 
+## Bounds
+
+A type parameter may say what it asks of its type, with `is` and an
+interface, as a class says what it is (decision 58.3):
+
+```zeno
+function largest[T is Ordered](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best { best = item }
+    }
+    return best
+}
+
+function total[S is Shape](shapes: list[S]) -> float {
+    var sum = 0.0
+    for s in shapes { sum += s.area() }
+    return sum
+}
+
+print(largest([3, 9, 2]), largest(["pear", "apple"]), largest([3 V, 12 V]))
+print(total([Circle(1.0), Circle(2.0)]))
+```
+
+Each use is checked against the bound first, and a type that lacks it
+is refused at the call, which names both:
+
+```
+error: `Task` is not `Shape`, which `total` asks of `S`. It is one if it says so: `class Task is Shape`, with what `Shape` lists
+```
+
+- **`Ordered` comes with Zeno.** A type is `Ordered` when `<` works on
+  two of it: every kind of number, a quantity, and text. A class cannot
+  be `Ordered` yet; that comes with operators for a class. A program
+  that declares its own `Ordered` has its own.
+- **A bound of the program's own** takes a class that says it is the
+  interface, or the interface itself. `total` takes a `list[Circle]`
+  as one, which `shapes: list[Shape]` would not, and a `list[Shape]`
+  too.
+- **A class and an enum take bounds too**: `class Range[T is
+  Ordered]`, `enum Span[T is Ordered]`.
+- **One interface for each type parameter.** A comma begins the next
+  parameter, so `[T is Ordered, Shape]` would make `Shape` a second
+  type parameter, and is refused with a message that says so.
+- **The body is still checked for each copy.** A bound is a promise
+  checked at the call, not all that the body may do: a generic with no
+  bound that uses `>` is still accepted.
+- **A generic that nothing uses** is checked with each bounded
+  parameter standing for its interface, so a call of a function the
+  interface does not list is found (58.5).
+- **A bound makes no code.** The checker answers it, and the C of a
+  program with bounds is the C of the same program without them.
+
 ## Through the stages
 
 ### The parser
@@ -388,10 +441,9 @@ define internal double @"z_Cell[float].get"(ptr %arg.self) {
 
 ## What it does not do yet
 
-- **No bounds.** There is no way to write "`T` must be something `>`
-  works on". The body is checked for each type it is used with, so a
-  wrong use is still found before the program runs. But it is reported
-  inside the generic, with a note, and not at the call.
+- **A bound is one interface.** `[T is Ordered]` or `[S is Shape]`,
+  not two at once, and a class cannot be `Ordered` until a class can
+  say what `<` means for its objects.
 - **A case of a generic enum cannot be written after the enum's
   name**, as `Maybe.Just(3)`, and cannot be kept as a value: `let f =
   Just` is refused, as `let f = first` is.
@@ -453,6 +505,14 @@ the same thing. The new ones:
   generics, a thousand rounds and every way out of a `match`, built
   every way (with no collector, nothing is left), and one struct for
   each copy.
+- `checker::tests::a_type_parameter_may_ask_for_an_interface`,
+  `a_type_that_lacks_what_is_asked_is_refused_at_the_call` and
+  `what_a_bound_says_when_it_is_written_wrong`: bounds over numbers,
+  quantities, text and a program's own interface, and the words of
+  each refusal.
+- `emit_c::tests::a_bound_every_way`: `tools/targets/edge-bounds.zeno`,
+  bounds on functions, a class and an enum, built every way, and the
+  same C as without the bounds.
 
 ## Things to try
 

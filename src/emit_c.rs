@@ -11802,6 +11802,23 @@ print("after")
     }
 
     #[test]
+    fn a_bound_every_way() {
+        // `[T is Ordered]` over every kind of number, a quantity and text,
+        // and `[S is Shape]` over circles, squares and shapes, on a
+        // function, a class and an enum (decision 58.3). Every build
+        // prints what `zeno run` prints, and with no collector nothing is
+        // left.
+        let source = include_str!("../tools/targets/edge-bounds.zeno");
+        no_collector_as_interpreter("bounds", source);
+        // A bound is checked at the call and makes no code: the C is what
+        // it is without one.
+        let plain = source.replace(" is Ordered", "").replace(" is Shape]", "]");
+        assert_ne!(plain, source);
+        assert_eq!(compile(source).unwrap(), compile(&plain).unwrap());
+        assert_eq!(compile_no_collector(source).unwrap(), compile_no_collector(&plain).unwrap());
+    }
+
+    #[test]
     fn a_value_with_one_owner_fills_a_type_parameter_every_way() {
         // `same`, `Box`, `Stack`, `Pair` and `Slot` with a list, an object
         // and an enum value that carries values, a thousand rounds, and

@@ -49,7 +49,7 @@ release ([`release.md`](release.md)).
 | 8 | One step from a `.zeno` file to a board: the board's compiler run by `zeno build --board` (**done**, [`board-build.md`](board-build.md), chapter 51), a runtime with no `printf` and no `exit` (**done** for a board that brings four functions, chapter 52), a float made into text and read with no `snprintf` and no `strtod` (**done**, chapter 53), checks without GCC built-ins (**done**, [`plain-c.md`](plain-c.md), chapter 55). No part has been tried on a real board, or with a compiler that is neither GCC nor Clang but tcc | large | The same |
 | 9 | What a build with no collector still refuses, and `raises` in a function type. Parts 9.1 to 9.9 **done** (chapter 56): `raises` in a function type ([`raises-in-types.md`](raises-in-types.md)), a function that is kept ([`kept-functions.md`](kept-functions.md)), a method as a value ([`method-values.md`](method-values.md)), `take` in front of a place ([`take.md`](take.md)), a value with one owner in a generic ([`generic-owned.md`](generic-owned.md)), a dict that owns its values ([`dict-owned.md`](dict-owned.md)), a list of numbers that may be `none` ([`none-list.md`](none-list.md)), the size of the pool on the command line ([`pool-size.md`](pool-size.md)), a function inside a function and a default that is worked out, in every build ([`inner-functions.md`](inner-functions.md)), and what a build still refuses, in one table for a build with no collector ([`no-collector.md`](no-collector.md)) and one for every build ([`compiler.md`](compiler.md)), all held by a test. Left: what those tables list, each with its reason, and 56.18 | medium | Firmware builds should take every program `zeno run` takes |
 | 10 | Several values from one function. **Done** ([`several-values.md`](several-values.md), chapter 57): `-> (int, str)`, `let q, r = f()`, `a, b = b, a`, in every engine, build and target. Left: swapping two items a list owns with no collector, several names in a `for`, a default for one of several results | medium | Go, Python and Rust all have it, and a driver's `read` wants a value and a status |
-| 11 | Generic enums, generic interfaces, and bounds. Generic enums **done** (chapter 58, [`generics.md`](generics.md)) | large | A `Maybe[T]` and a `sort` that asks for an order |
+| 11 | Generic enums, generic interfaces, and bounds. Generic enums and bounds **done** (chapter 58, [`generics.md`](generics.md)) | large | A `Maybe[T]` and a `sort` that asks for an order |
 | 12 | Cleaning up when a block ends, and files read in pieces | medium | An open file, a lock and an interrupt mask all need "and put it back" |
 | 13 | Tools: tests of a compiled program (**done**, `zeno test --build`, [`testing.md`](testing.md), decision 60.2) and a message on `assert` (**done**, decision 60.1); step through a `.zeno` file in gdb, completion and rename in the editor, a REPL (**put off**, 2026-11-19) | medium, in pieces | Each is small by itself |
 | 14 | More than one thing at a time: tasks, threads, `async` (**put off**, 2026-11-19; designed in the plan) | very large | Last, because it touches memory, errors and every engine |
@@ -106,7 +106,8 @@ C.
 | ~~An enum case with a number, an enum from a number~~, a loop over the cases | C, C++, Java, Rust, Go (`iota`) | **Done** (chapter 35): `Ack = 6`, `int(Ack)`, `Reply(6)` gives a `Reply or none`. The loop over the cases is next |
 | ~~**Several values from one function**, and `a, b = b, a`~~ | Python, Go, Rust, C++ | **Done** in 0.8.0 as two or more results and not as a new kind of value: `-> (int, str)`, taken apart where it is received ([`several-values.md`](several-values.md), chapter 57). A tuple that is kept in a list is a class |
 | ~~**Generic enums**~~ (3.16e) | Rust, Java, C++ | **Done** (58.1): `enum Maybe[T]`, `Result[T, E]` |
-| **Generic interfaces and bounds** (3.16d, 10.10) | Rust traits, Java, Go, C++ concepts | Build after generic enums. `function largest[T is Ordered]` moves the error from inside the generic to the call |
+| ~~**Bounds**~~ (3.16d) | Rust traits, Java, Go, C++ concepts | **Done** (58.3): `function largest[T is Ordered]` moves the error from inside the generic to the call. `Ordered` comes with Zeno |
+| **Generic interfaces** (10.10) | Rust traits, Java, Go | Build after bounds |
 | **A method with a type parameter of its own**, type arguments written at a call | Rust, Java, C++, Go | With bounds |
 | **Something that runs when a block ends** | C++ destructors, Rust `Drop`, Go `defer`, Python `with`, Java `try` with resources | Build it for owned values: a function of the class that the owner's end calls. It is what an open file needs (6.12) |
 | **`finally`** | Python, Java, JavaScript | Leave. The item above does its work, and one way is the rule |
@@ -206,7 +207,7 @@ that comes with it.
 | Errors a function must declare | no | no | no | no | yes | yes | no | yes |
 | Enums that carry data | no | some | no | no | some | yes | no | yes |
 | An enum case with a number | yes | yes | yes | no | yes | yes | yes | yes |
-| Generics | no | yes | no | no | yes | yes | yes | yes, no bounds |
+| Generics | no | yes | no | no | yes | yes | yes | yes, with bounds |
 | Several results from a function | no | yes | yes | yes | no | yes | yes | yes |
 | Cleaning up at the end of a block | no | yes | yes | yes | yes | yes | yes | freeing only |
 | Operators for a class | no | yes | yes | no | no | yes | no | no |

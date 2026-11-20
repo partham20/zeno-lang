@@ -1219,7 +1219,7 @@ impl<'a> Renamer<'a> {
                 for interface in &mut class.is {
                     self.named(interface, span);
                 }
-                self.scopes.push(class.type_params.iter().cloned().collect());
+                self.scopes.push(class.type_params.iter().map(|param| param.name.clone()).collect());
                 for field in &mut class.fields {
                     self.field(field, span);
                 }
@@ -1233,7 +1233,7 @@ impl<'a> Renamer<'a> {
                     decl.name = full(&decl.name);
                 }
                 // `T` of `enum Maybe[T]` is no name of the file (58.1).
-                self.scopes.push(decl.type_params.iter().cloned().collect());
+                self.scopes.push(decl.type_params.iter().map(|param| param.name.clone()).collect());
                 for case in &mut decl.variants {
                     if renamed {
                         case.name = full(&case.name);
@@ -1320,7 +1320,7 @@ impl<'a> Renamer<'a> {
 
     /// A function's types, then its body with the parameters declared.
     fn function(&mut self, function: &mut Function, span: Span) {
-        self.scopes.push(function.type_params.iter().cloned().collect());
+        self.scopes.push(function.type_params.iter().map(|param| param.name.clone()).collect());
         for param in &mut function.params {
             if let Some(ty) = &mut param.ty {
                 self.ty(ty, span);

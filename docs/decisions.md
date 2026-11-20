@@ -18399,6 +18399,134 @@ to meet it (`count(chain)` of 58.1), and it is mended in the one place
 both go through (`bind`). A program 0.7.0 built is not touched: the
 change is only reached where the refusal was.
 
+### 58.3 Bounds: `function largest[T is Ordered]`
+
+```zeno
+function largest[T is Ordered](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best { best = item }
+    }
+    return best
+}
+
+function total[S is Shape](shapes: list[S]) -> float { ... }
+```
+
+**The rule.** A type parameter may say `is` and an interface, on a
+function, a class or an enum. Each use is checked against it before a
+copy is made or found: the type that `T` stands for must be a class
+that says it is the interface, or the interface itself. If it is not,
+the error is at the use, where the program can mend it, and names
+both: "`Task` is not `Shape`, which `total` asks of `S`. It is one if
+it says so: `class Task is Shape`, with what `Shape` lists". Before,
+the same mistake was found inside the copy, with a note saying which
+copy; now the generic's own line says what it needs, and the call is
+told. A line that asks twice, as `let r: Range[Task] = Range(...)`
+does with the type and the call, is told once.
+
+**How it is written.**
+
+| | Written | Verdict |
+|---|---|---|
+| A | `[T is Ordered]` | **Chosen.** It is the sentence a class already says, `class Circle is Shape`, with a word that was reserved already |
+| B | `[T: Ordered]` | A colon in Zeno says "this name has this type" (`port: int`). `T` does not have the type `Ordered` |
+| C | `function largest[T](...) where T is Ordered` | A second place to look for what the first has room for |
+
+**`Ordered` comes with Zeno.** A type is `Ordered` when `<` works on
+two values of it: every kind of number (int, float, f32, u64 and the
+sized whole numbers), a quantity, and text. It is what `largest`, a
+`sort` of one's own or a `Range[T]` need. It is a question the checker
+answers about a type, not an interface that a program can see, since
+no class could list the functions it would have. A class cannot be
+`Ordered` yet: what `<` means for objects of a class is "operators for
+a class" in `missing.md`, which comes later by the same road, and
+each message that meets it says so: `largest([Task(1)])`, `class
+Task is Ordered`, and `Ordered` written as a plain type. A program
+that declares its own `Ordered` has its own, as with every name that
+comes with Zeno: the name is looked up in the program first, and the
+one that comes with Zeno is only reached where the program has none.
+So no program that built before changes meaning, and nothing is
+reserved.
+
+**After `is` comes an interface.** `[T is int]` says that after `is`
+comes an interface, such as `Ordered` or one the program declares;
+`[T is Task]`, a class, says to write `Task` itself where `T` is used,
+or to declare an interface that `Task` is. A name that is not declared
+is "there is no type called" it, as anywhere a type goes.
+
+**The body is still checked for each copy** (3.16d). A bound is a
+promise checked at the use. It is not all that the body may do: a
+generic with no bound that uses `>` is accepted, and stays accepted,
+and `smaller[T is Ordered]` may call a function that is no part of
+`Ordered`. Making the bound the whole truth would refuse generics that
+build now, and would need a bound for each operator before the first
+could be used; C++ took this road with concepts for the same reason.
+What a bound buys is what `missing.md` asked for: the error moves from
+inside the generic to the call.
+
+**Why a bound, and not a parameter of the interface's type.** `shapes:
+list[Shape]` does not take a `list[Circle]` (10.7): a list of circles
+cannot take a square. `[S is Shape](shapes: list[S])` takes a list of
+circles as one, and gives back an `S` that is a `Circle`, with its
+fields.
+
+**How it is built.** `ast::TypeParam` is a name and the type after
+`is`, if any; `Function`, `Class` and `Enum` keep a list of them, and
+`param_names` gives the names where only they matter. The parser reads
+`is` and a type after each name; the printer writes it back. In the
+checker each `Generic` keeps its bounds as written, and `asks` works
+them out once, in the generic's own scope, so a program's own
+`Ordered` is found first. `meets_bounds` is asked by `copy_function`,
+`copy_class` and `copy_enum` before a copy is made or looked up; a
+copy that does not meet its bounds is not made. Nothing else changes:
+inside a copy `T` is the real type, so a call of the interface's
+functions is checked as on any object, and a bound makes no code. The
+compilers, the interpreter, the VM and the targets need nothing; a test
+holds that the C of a program with bounds is the C of the same program
+without them.
+
+**Tests.** `parser::tests` (the bound read back);
+`checker::tests::a_type_parameter_may_ask_for_an_interface`,
+`a_type_that_lacks_what_is_asked_is_refused_at_the_call` and
+`what_a_bound_says_when_it_is_written_wrong`;
+`emit_c::tests::a_bound_every_way` with
+`tools/targets/edge-bounds.zeno`: `largest` over ints, floats, text,
+volts, milliseconds, u8, i16, f32 and u64; `total` over a list of
+circles, a list of squares and a list of shapes; a generic class
+`Range[T is Ordered]` whose methods call two other bounded generics,
+`Pair[K is Ordered, V]`, a generic enum `Span[T is Ordered]`, and a
+thousand rounds. It prints what `zeno run` prints in the six builds,
+with 0 blocks left with no collector, and its C with and without the
+bounds is the same.
+
+### 58.4 One interface for each type parameter
+
+`[T is Ordered, U]` must read one way: a comma begins the next type
+parameter. So `[T is Ordered, Shape]` does not ask two things of `T`;
+it makes `Shape` a second type parameter, which would hide the
+interface of that name inside the generic. Where a name after a comma
+is an interface of the program and an earlier parameter has a bound,
+that is refused: "`Shape` after a comma is a second type parameter,
+which hides the interface `Shape`. A type parameter asks for one
+interface: `[T is ...]`. If `Shape` is meant to be a type parameter,
+give it another name". A program that needs two has not been written
+yet, and how to write two is left for when one is; the message keeps
+that room free.
+
+### 58.5 A generic that nothing uses, checked as its bound
+
+A generic that nothing uses has no copy to check, so it is checked
+once on its own (5.14d), with each type parameter standing for
+"anything". A type parameter with a bound of the program's own now
+stands for that interface instead. So `function f[S is Shape](s: S)`
+that calls `s.perimeter()`, which `Shape` does not list, is found
+though nothing calls `f`, with the message any call through an
+interface gets. A parameter that is `Ordered`, or has no bound, still
+stands for "anything": `Ordered` has no functions to list, and a
+generic with no bound promised nothing. Once a copy is made, the copy
+is checked as before, with the real type.
+
 ### 58.20 A default on a parameter of an interface's function
 
 ```zeno

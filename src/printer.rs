@@ -223,9 +223,16 @@ fn signature(f: &Function) -> String {
     text
 }
 
-/// `[T, U]`, or nothing when there are none.
-fn type_params(names: &[String]) -> String {
-    if names.is_empty() { String::new() } else { format!("[{}]", names.join(", ")) }
+/// `[T, U is Shape]`, or nothing when there are none.
+fn type_params(params: &[TypeParam]) -> String {
+    let shown: Vec<String> = params
+        .iter()
+        .map(|param| match &param.bound {
+            Some(bound) => format!("{} is {}", param.name, type_(bound)),
+            None => param.name.clone(),
+        })
+        .collect();
+    if shown.is_empty() { String::new() } else { format!("[{}]", shown.join(", ")) }
 }
 
 fn param(p: &Param) -> String {

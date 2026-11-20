@@ -1,0 +1,131 @@
+# Bounds (decision 58.3): `[T is Ordered]` over every kind of number, a
+# quantity and text, and `[S is Shape]` over a list of circles, a list
+# of squares and a list of shapes; on a function, a class and an enum,
+# and copies made inside other generics. A bound makes no code, so every
+# build prints what `zeno run` prints, and a build with no collector
+# leaves nothing.
+
+interface Shape {
+    function area(self) -> float
+    function name(self) -> str
+}
+
+class Circle is Shape {
+    r: float
+    function area(self) -> float { return 3.0 * self.r * self.r }
+    function name(self) -> str { return "circle" }
+}
+
+class Square is Shape {
+    side: float
+    function area(self) -> float { return self.side * self.side }
+    function name(self) -> str { return "square" }
+}
+
+function largest[T is Ordered](items: list[T]) -> T {
+    var best = items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+function smaller[T is Ordered](a: T, b: T) -> T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+function total[S is Shape](shapes: list[S]) -> float {
+    var sum = 0.0
+    for s in shapes {
+        sum += s.area()
+    }
+    return sum
+}
+
+function names[S is Shape](shapes: list[S]) -> str {
+    var text = ""
+    for s in shapes {
+        text += s.name() + " "
+    }
+    return text
+}
+
+class Range[T is Ordered] {
+    low: T
+    high: T
+
+    function holds(self, x: T) -> bool {
+        return self.low <= x and x <= self.high
+    }
+
+    function clamp(self, x: T) -> T {
+        return smaller(largest([self.low, x]), self.high)
+    }
+}
+
+class Pair[K is Ordered, V] {
+    key: K
+    value: V
+}
+
+enum Span[T is Ordered] {
+    Empty
+    Between(low: T, high: T)
+}
+
+function width(s: Span[int]) -> int {
+    match s {
+        case Empty { return 0 }
+        case Between(low, high) { return high - low }
+    }
+}
+
+function first_key[K is Ordered, V](pairs: list[Pair[K, V]]) -> K {
+    var best = pairs[0].key
+    for p in pairs {
+        best = smaller(best, p.key)
+    }
+    return best
+}
+
+print(largest([3, 9, 2]))
+print(largest([1.5, -0.5]))
+print(largest(["pear", "apple", "quince"]))
+print(largest([3 V, 12 V, 5 V]))
+print(largest([200 ms, 1500 ms]))
+let bytes: list[u8] = [3, 200, 7]
+print(largest(bytes))
+let small: list[i16] = [-4, -9]
+print(largest(small))
+let halves: list[f32] = [0.5, 2.5]
+print(largest(halves))
+let big: list[u64] = [7, 18000000000000000000]
+print(largest(big))
+print(smaller("b", "a"), smaller(4, 2))
+
+let circles = [Circle(1.0), Circle(2.0)]
+let squares = [Square(3.0)]
+let shapes: list[Shape] = [Circle(1.0), Square(2.0)]
+print(total(circles), total(squares), total(shapes))
+print(names(circles) + names(shapes))
+
+let r = Range(10, 20)
+print(r.holds(15), r.holds(25), r.clamp(3), r.clamp(30))
+let t = Range("b", "d")
+print(t.holds("c"), t.clamp("z"))
+let pairs = [Pair(3, "three"), Pair(1, "one")]
+print(first_key(pairs))
+print(width(Between(2, 9)), width(Empty))
+
+var sum = 0
+var round = 0
+while round < 1000 {
+    sum += largest([round, 3, round // 2])
+    round += 1
+}
+print(sum)

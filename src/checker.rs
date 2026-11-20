@@ -912,6 +912,11 @@ struct Generic {
     name: String,
     /// The names of its type parameters: `T`.
     params: Vec<String>,
+    /// What each type parameter asks of its type, as written after `is`:
+    /// `[T is Ordered]` (decision 58.3). Usually none.
+    bounds: Vec<Option<ast::Type>>,
+    /// The same, worked out the first time it is needed.
+    asks: RefCell<Option<Rc<[Option<Bound>]>>>,
     template: Template,
     env: Env,
     span: Span,
@@ -919,6 +924,17 @@ struct Generic {
     /// Its parameters and what it returns, with the type parameters still
     /// in them. Worked out the first time it is called.
     outline: RefCell<Option<Rc<Outline>>>,
+}
+
+/// What a type parameter asks of the type it stands for (decision 58.3).
+#[derive(Clone)]
+enum Bound {
+    /// `[T is Ordered]`: that `<` works on two of it. Every kind of
+    /// number, a quantity and text are; no class is yet.
+    Ordered,
+    /// `[S is Shape]`: a class that says it is the interface, or the
+    /// interface itself.
+    Interface(Rc<ClassInfo>),
 }
 
 /// What a copy of a generic is copied from.
@@ -2404,6 +2420,9 @@ struct Checker {
     firmware: bool,
     /// False while types are still being worked out over several passes.
     last_round: bool,
+    /// The types already reported as not having what a type parameter
+    /// asks, by generic and line, so that one line says it once.
+    unmet: HashSet<(usize, String, usize)>,
     /// What earlier passes worked out for untyped parameters and fields.
     known: HashMap<SlotId, Key>,
     /// The untyped parameters and fields that cannot be worked out.
@@ -2532,6 +2551,7 @@ impl Checker {
             one_owner: false,
             firmware: false,
             last_round,
+            unmet: HashSet::new(),
             known,
             open,
             seen: HashMap::new(),
@@ -3661,6 +3681,14 @@ impl Checker {
                                 span,
                             )
                         }
+                        // 58.3: a question asked of a type parameter.
+                        _ if name == "Ordered" => {
+                            return self.error(
+                                "`Ordered` is not a type: it is what a type parameter may ask of its type, that `<` \
+                                 works on two of it, as in `function largest[T is Ordered](items: list[T]) -> T`",
+                                span,
+                            )
+                        }
                         _ => return self.error(format!("there is no type called `{name}`"), span),
                     },
                     // A register of the board. A class of the program's
@@ -3748,7 +3776,9 @@ impl Checker {
                         at: decl as *const ast::Enum as usize,
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
-                        params: decl.type_params.clone(),
+                        params: ast::param_names(&decl.type_params),
+                        bounds: decl.type_params.iter().map(|param| param.bound.clone()).collect(),
+                        asks: RefCell::new(None),
                         template: Template::Enum(Rc::new(decl.clone())),
                         env: env.clone(),
                         span: statement.span,
@@ -3767,7 +3797,9 @@ impl Checker {
                         at: decl as *const ast::Class as usize,
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
-                        params: decl.type_params.clone(),
+                        params: ast::param_names(&decl.type_params),
+                        bounds: decl.type_params.iter().map(|param| param.bound.clone()).collect(),
+                        asks: RefCell::new(None),
                         template: Template::Class(Rc::new(decl.clone())),
                         env: env.clone(),
                         span: statement.span,
@@ -3869,7 +3901,9 @@ impl Checker {
                         at: Arc::as_ptr(decl) as usize,
                         id: decl_id(statement.span, &decl.name),
                         name: decl.name.clone(),
-                        params: decl.type_params.clone(),
+                        params: ast::param_names(&decl.type_params),
+                        bounds: decl.type_params.iter().map(|param| param.bound.clone()).collect(),
+                        asks: RefCell::new(None),
                         template: Template::Function(decl.clone()),
                         env: env.clone(),
                         span: statement.span,
@@ -3966,8 +4000,8 @@ impl Checker {
                     env.clone()
                 } else {
                     let inner = Scope::child(env);
-                    for name in &method.type_params {
-                        inner.declare(name, Ty::Alias(Box::new(Ty::Invalid)), false);
+                    for param in &method.type_params {
+                        inner.declare(&param.name, Ty::Alias(Box::new(Ty::Invalid)), false);
                     }
                     inner
                 };
@@ -4034,6 +4068,18 @@ impl Checker {
                 }
                 Some(_) => {
                     self.error(format!("`{name}` is not an interface"), span);
+                }
+                // 58.3: a class cannot be `Ordered` until a class can say
+                // what `<` means for its objects.
+                None if name == "Ordered" => {
+                    self.error(
+                        format!(
+                            "`{}` cannot be `Ordered` yet: `Ordered` is what `<` works on, numbers, quantities and \
+                             text, and `<` between objects of a class comes with operators for a class",
+                            decl.name
+                        ),
+                        span,
+                    );
                 }
                 None => {
                     self.error(
@@ -9624,7 +9670,8 @@ impl Checker {
     /// Inside the generic the name wins over anything else called the
     /// same, so `A` and `V` are type parameters there and not amperes
     /// and volts.
-    fn type_params(&mut self, names: &[String], span: Span) {
+    fn type_params(&mut self, params: &[ast::TypeParam], span: Span) {
+        let names = ast::param_names(params);
         for (index, name) in names.iter().enumerate() {
             if !name.starts_with(|c: char| c.is_ascii_uppercase()) {
                 self.error(
@@ -10303,6 +10350,135 @@ impl Checker {
         }
     }
 
+    /// What each type parameter of `generic` asks of its type, worked out
+    /// once from what is written after `is` (decision 58.3). A mistake in
+    /// a bound is reported here, on the line of the generic.
+    fn asks(&mut self, generic: &Rc<Generic>) -> Rc<[Option<Bound>]> {
+        if let Some(asks) = generic.asks.borrow().as_ref() {
+            return asks.clone();
+        }
+        let mut asks = Vec::new();
+        for (index, (param, bound)) in generic.params.iter().zip(&generic.bounds).enumerate() {
+            let Some(bound) = bound else {
+                // `[T is Ordered, Shape]` makes `Shape` a second type
+                // parameter, not a second thing `T` asks (58.4).
+                if generic.bounds[..index].iter().any(Option::is_some) {
+                    if let Some(Ty::Class(interface)) = generic.env.get(param).map(|variable| variable.ty) {
+                        if interface.interface {
+                            let first = &generic.params[index - 1];
+                            self.error(
+                                format!(
+                                    "`{param}` after a comma is a second type parameter, which hides the interface \
+                                     `{param}`. A type parameter asks for one interface: `[{first} is ...]`. \
+                                     If `{param}` is meant to be a type parameter, give it another name"
+                                ),
+                                generic.span,
+                            );
+                        }
+                    }
+                }
+                asks.push(None);
+                continue;
+            };
+            let is_ordered = matches!(bound, ast::Type::Named { name, args } if name == "Ordered" && args.is_empty());
+            // `Ordered` comes with Zeno, unless the program has its own.
+            if is_ordered && generic.env.get("Ordered").is_none() {
+                asks.push(Some(Bound::Ordered));
+                continue;
+            }
+            let written = crate::printer::type_(bound);
+            let ask = match self.resolve(bound, &generic.env, generic.span) {
+                Ty::Instance(interface) if interface.interface => Some(Bound::Interface(interface)),
+                Ty::Invalid => None,
+                Ty::Instance(_) => {
+                    self.error(
+                        format!(
+                            "after `is` comes an interface, and `{written}` is a class. Write `{written}` itself \
+                             where `{param}` is used, or declare an interface that `{written}` is"
+                        ),
+                        generic.span,
+                    );
+                    None
+                }
+                _ => {
+                    self.error(
+                        format!(
+                            "after `is` comes an interface, such as `Ordered` or one the program declares, \
+                             and `{written}` is not one"
+                        ),
+                        generic.span,
+                    );
+                    None
+                }
+            };
+            asks.push(ask);
+        }
+        let asks: Rc<[Option<Bound>]> = Rc::from(asks);
+        *generic.asks.borrow_mut() = Some(asks.clone());
+        asks
+    }
+
+    /// Does each type given to `generic` have what its parameter asks?
+    /// If not, the error is here, where it is asked for: "`Task` is not
+    /// `Ordered`, which `largest` asks of `T`" (decision 58.3).
+    fn meets_bounds(&mut self, generic: &Rc<Generic>, types: &[Ty], asked: Option<Span>) -> bool {
+        if generic.bounds.iter().all(Option::is_none) {
+            return true;
+        }
+        let asks = self.asks(generic);
+        let mut meets = true;
+        for (index, ty) in types.iter().enumerate() {
+            let Some(Some(ask)) = asks.get(index) else {
+                continue;
+            };
+            let mut bare = ty;
+            while let Ty::Owned(inner) | Ty::Borrowed(inner) = bare {
+                bare = inner;
+            }
+            let param = &generic.params[index];
+            let shown = self.spelled(bare);
+            let message = match ask {
+                Bound::Ordered => match bare {
+                    Ty::Int | Ty::Float | Ty::F32 | Ty::U64 | Ty::Sized(_) | Ty::Quantity(_) | Ty::Str => None,
+                    Ty::Invalid | Ty::Dynamic => None,
+                    Ty::Instance(_) => Some(format!(
+                        "`{shown}` is not `Ordered`, which `{}` asks of `{param}`. `Ordered` is what `<` works \
+                         on: a number, a quantity or text. A class cannot be `Ordered` yet, since `<` between \
+                         its objects comes with operators for a class",
+                        generic.name
+                    )),
+                    _ => Some(format!(
+                        "`{shown}` is not `Ordered`, which `{}` asks of `{param}`. `Ordered` is what `<` works \
+                         on: a number, a quantity or text",
+                        generic.name
+                    )),
+                },
+                Bound::Interface(interface) => match bare {
+                    Ty::Invalid | Ty::Dynamic => None,
+                    Ty::Instance(class) if Rc::ptr_eq(class, interface) || is_one(bare, &Ty::Instance(interface.clone())) => None,
+                    Ty::Instance(class) if !class.interface => Some(format!(
+                        "`{shown}` is not `{1}`, which `{0}` asks of `{param}`. It is one if it says so: \
+                         `class {shown} is {1}`, with what `{1}` lists",
+                        generic.name, interface.name
+                    )),
+                    _ => Some(format!(
+                        "`{shown}` is not `{}`, which `{}` asks of `{param}`",
+                        interface.name, generic.name
+                    )),
+                },
+            };
+            if let Some(message) = message {
+                // `let b: Box[Task] = Box(Task(1))` asks twice on one line.
+                let at = asked.unwrap_or(generic.span);
+                if self.unmet.insert((generic.at, shown, at.line)) {
+                    self.error(message, at);
+                }
+                meets = false;
+            }
+        }
+        meets
+    }
+
     fn copy_setting(&mut self, generic: &Rc<Generic>, types: &[Ty], asked: Option<Span>) -> Option<(String, Env, String)> {
         let spelled: Vec<String> = types.iter().map(|ty| self.spelled(ty)).collect();
         let name = format!("{}[{}]", generic.name, spelled.join(", "));
@@ -10322,8 +10498,18 @@ impl Checker {
         }
         let env = Scope::child(&generic.env);
         let mut means = Vec::new();
-        for (param, ty) in generic.params.iter().zip(types) {
-            env.declare(param, Ty::Alias(Box::new(ty.clone())), false);
+        // Checked on its own, a generic whose parameter says `is Shape`
+        // is checked with that parameter as a `Shape`, so a call of a
+        // function `Shape` does not list is found though nothing uses
+        // the generic (58.5). Any other parameter stands for "anything".
+        let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        let asks = if alone { self.asks(generic) } else { Rc::from(Vec::new()) };
+        for (index, (param, ty)) in generic.params.iter().zip(types).enumerate() {
+            let ty = match asks.get(index) {
+                Some(Some(Bound::Interface(interface))) => Ty::Instance(interface.clone()),
+                _ => ty.clone(),
+            };
+            env.declare(param, Ty::Alias(Box::new(ty)), false);
             self.type_params.extend(env.get(param).map(|variable| variable.id));
             means.push(format!("{param} = {}", spelled.get(means.len()).cloned().unwrap_or_default()));
         }
@@ -10343,6 +10529,9 @@ impl Checker {
             return None;
         };
         let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        if !alone && !self.meets_bounds(generic, &types, asked) {
+            return None;
+        }
         let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
         if let Some(Made::Function(copy)) = self.copies.get(&key) {
             return Some(copy.clone());
@@ -10379,6 +10568,9 @@ impl Checker {
         // Checking the generic on its own fills every parameter with
         // `Invalid`, the type that is accepted everywhere.
         let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        if !alone && !self.meets_bounds(generic, &types, asked) {
+            return None;
+        }
         let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
         if let Some(Made::Class(copy)) = self.copies.get(&key) {
             return Some(copy.clone());
@@ -10417,6 +10609,9 @@ impl Checker {
             return None;
         };
         let alone = types.iter().all(|ty| matches!(ty, Ty::Invalid));
+        if !alone && !self.meets_bounds(generic, &types, asked) {
+            return None;
+        }
         let key = (generic.at, if alone { String::new() } else { types.iter().map(|ty| self.spelled(ty)).collect::<Vec<_>>().join(", ") });
         if let Some(Made::Enum(copy)) = self.copies.get(&key) {
             return Some(copy.clone());
@@ -10491,6 +10686,8 @@ impl Checker {
                 break;
             };
             alone += 1;
+            // A mistake after `is` is found though nothing uses it.
+            self.asks(&generic);
             if !self.used.contains(&generic.at) {
                 let anything = vec![Ty::Invalid; generic.params.len()];
                 match &generic.template {
@@ -12268,6 +12465,94 @@ mod tests {
         assert_eq!(
             error("enum Maybe[t] {\n    Nothing\n}"),
             "a type parameter starts with a capital letter, as in `T` or `Item`, and this is `t`"
+        );
+    }
+
+    /// A generic function and a generic class that ask something of `T`.
+    const BOUNDS: &str = "interface Shape {\n    function area(self) -> float\n}\n\
+        class Circle is Shape {\n    r: float\n    function area(self) -> float { return 3.0 * self.r * self.r }\n}\n\
+        class Task {\n    n: int\n}\n\
+        function largest[T is Ordered](items: list[T]) -> T {\n    var best = items[0]\n    \
+        for item in items {\n        if item > best { best = item }\n    }\n    return best\n}\n\
+        function total[S is Shape](shapes: list[S]) -> float {\n    var sum = 0.0\n    \
+        for s in shapes { sum += s.area() }\n    return sum\n}\n\
+        class Range[T is Ordered] {\n    low: T\n    high: T\n}\n";
+
+    #[test]
+    fn a_type_parameter_may_ask_for_an_interface() {
+        // `Ordered` is every kind of number, a quantity and text; a bound
+        // of the program's own takes its classes and itself (58.3).
+        ok(&format!(
+            "{BOUNDS}let a: int = largest([3, 9, 2])\nlet b: float = largest([1.5, 0.5])\nlet c: str = largest([\"a\", \"b\"])\n\
+             let d = largest([3 V, 12 V])\nlet bytes: list[u8] = [3, 200]\nlet e: u8 = largest(bytes)\n\
+             let halves: list[f32] = [0.5]\nlet f: f32 = largest(halves)\n\
+             let g: float = total([Circle(1.0)])\nlet shapes: list[Shape] = [Circle(2.0)]\nlet h: float = total(shapes)\n\
+             let r = Range(1 ms, 5 ms)\nenum Span[T is Ordered] {{\n    Empty\n    Between(low: T, high: T)\n}}\n\
+             let s: Span[int] = Between(1, 2)\n"
+        ));
+        // A program's own `Ordered` is the program's.
+        ok("interface Ordered {\n    function rank(self) -> int\n}\nclass Task is Ordered {\n    n: int\n    \
+            function rank(self) -> int { return self.n }\n}\n\
+            function best[T is Ordered](items: list[T]) -> int { return items[0].rank() }\nprint(best([Task(4)]))");
+        // The body is still checked for each copy: a bound does not have
+        // to name everything the body does.
+        ok("function smaller[T is Ordered](a: T, b: T) -> T {\n    if a < b { return a }\n    return b\n}\nprint(smaller(2, 1))");
+    }
+
+    #[test]
+    fn a_type_that_lacks_what_is_asked_is_refused_at_the_call() {
+        assert_eq!(
+            error(&format!("{BOUNDS}print(largest([Task(1)]))")),
+            "`Task` is not `Ordered`, which `largest` asks of `T`. `Ordered` is what `<` works on: a number, a quantity \
+             or text. A class cannot be `Ordered` yet, since `<` between its objects comes with operators for a class"
+        );
+        assert_eq!(
+            error(&format!("{BOUNDS}print(largest([true]))")),
+            "`bool` is not `Ordered`, which `largest` asks of `T`. `Ordered` is what `<` works on: a number, a quantity or text"
+        );
+        assert_eq!(
+            error(&format!("{BOUNDS}print(total([Task(1)]))")),
+            "`Task` is not `Shape`, which `total` asks of `S`. It is one if it says so: `class Task is Shape`, with what `Shape` lists"
+        );
+        // For a class too, and once though a line asks twice.
+        assert_eq!(
+            error(&format!("{BOUNDS}let r: Range[bool] = Range(true, false)")),
+            "`bool` is not `Ordered`, which `Range` asks of `T`. `Ordered` is what `<` works on: a number, a quantity or text"
+        );
+        // Checked on its own, a generic sees `S` as a `Shape` (58.5).
+        assert_eq!(
+            error("interface Shape {\n    function area(self) -> float\n}\n\
+                   function f[S is Shape](s: S) -> float { return s.perimeter() }"),
+            "`perimeter` is not a function of the interface `Shape`, which has `area`. What else this object has depends on \
+             its class, and that is only known when the program runs. Give `Shape` a function for it"
+        );
+    }
+
+    #[test]
+    fn what_a_bound_says_when_it_is_written_wrong() {
+        assert_eq!(
+            error("function f[T is int](x: T) -> T { return x }"),
+            "after `is` comes an interface, such as `Ordered` or one the program declares, and `int` is not one"
+        );
+        assert_eq!(
+            error("class Task {\n    n: int\n}\nfunction f[T is Task](x: T) -> T { return x }"),
+            "after `is` comes an interface, and `Task` is a class. Write `Task` itself where `T` is used, \
+             or declare an interface that `Task` is"
+        );
+        assert_eq!(
+            error("interface Shape {\n    function area(self) -> float\n}\nfunction f[T is Ordered, Shape](x: T) -> T { return x }"),
+            "`Shape` after a comma is a second type parameter, which hides the interface `Shape`. A type parameter asks \
+             for one interface: `[T is ...]`. If `Shape` is meant to be a type parameter, give it another name"
+        );
+        assert_eq!(
+            error("class Task is Ordered {\n    n: int\n}"),
+            "`Task` cannot be `Ordered` yet: `Ordered` is what `<` works on, numbers, quantities and text, \
+             and `<` between objects of a class comes with operators for a class"
+        );
+        assert_eq!(
+            error("let x: Ordered = 3"),
+            "`Ordered` is not a type: it is what a type parameter may ask of its type, that `<` works on two of it, \
+             as in `function largest[T is Ordered](items: list[T]) -> T`"
         );
     }
 

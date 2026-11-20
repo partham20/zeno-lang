@@ -782,25 +782,28 @@ impl Parser {
 
     /// `[T]` or `[Key, Value]` after the name of a function or a class:
     /// the types that each use of it fills in. Usually there are none.
-    fn type_params(&mut self) -> Result<Vec<String>, Error> {
-        let mut names = Vec::new();
+    /// Each may say `is` and an interface: `[T is Ordered]` (58.3).
+    fn type_params(&mut self) -> Result<Vec<TypeParam>, Error> {
+        let mut params = Vec::new();
         if self.eat(TokenKind::LBracket) {
             loop {
-                names.push(self.name("a name for a type, such as `T`")?);
+                let name = self.name("a name for a type, such as `T`")?;
+                let bound = if self.eat(TokenKind::Is) { Some(self.type_()?) } else { None };
+                params.push(TypeParam { name, bound });
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
             self.expect(TokenKind::RBracket)?;
         }
-        Ok(names)
+        Ok(params)
     }
 
     /// Everything from the `(` on, shared by named and nameless functions.
     fn function_after_name(
         &mut self,
         name: String,
-        type_params: Vec<String>,
+        type_params: Vec<TypeParam>,
         in_interface: bool,
     ) -> Result<Function, Error> {
         if name.is_empty() && self.check(TokenKind::LBracket) {
@@ -2223,12 +2226,18 @@ mod tests {
         // An enum takes them as a class does (decision 58.1).
         let program = parse_source("enum Maybe[T] {\n    Nothing\n    Just(value: T)\n}").unwrap();
         let StmtKind::Enum(decl) = &program.statements[0].kind else { panic!("not an enum") };
-        assert_eq!(decl.type_params, ["T"]);
+        assert_eq!(decl.type_params, [TypeParam::plain("T")]);
         assert_eq!(error("enum Maybe[] {\n    Nothing\n}"), "expected a name for a type, such as `T`, found `]`");
         assert_eq!(
             error("let f = function[T](x: T) -> T { return x }"),
             "a function with no name cannot have type parameters. Give it a name"
         );
+        // Each may say what it asks of its type (decision 58.3).
+        let program = parse_source("function f[K is Ordered, V](x: K, y: V) { }").unwrap();
+        let StmtKind::Function(decl) = &program.statements[0].kind else { panic!("not a function") };
+        let ordered = Type::Named { name: "Ordered".to_string(), args: Vec::new() };
+        assert_eq!(decl.type_params, [TypeParam { name: "K".to_string(), bound: Some(ordered) }, TypeParam::plain("V")]);
+        assert_eq!(error("function f[T is](x: T) { }"), "expected a type, found `]`");
     }
 
     #[test]
