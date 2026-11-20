@@ -136,6 +136,7 @@ C.
 | ~~Writing to the error stream~~ | **Done**: `program.warn(text)` (34.3) |
 | ~~**A file read in pieces**~~ (6.12, 6.20) | **Done** in 0.8.0 (59.6): `files.read_from`, `files.write_to`, `files.append_to`, closed when the owner ends ([`files-in-pieces.md`](files-in-pieces.md)) |
 | **An uncaught error of a library function written in Zeno names the library's line** (59.6, 33.2) | Leave for now. `files.read_from` of a missing file, uncaught, points at `library/files.zeno:86`, not the program's line. Naming the caller's line too wants a line for each call a library makes, in every engine |
+| **In a C or LLVM build on Windows a file name goes through the code page, not UTF-8** (59.20) | A later version. A build opens a file with `fopen`, which takes a name through the machine's code page, and `files.list` takes names the same way so that what it lists opens; a name the code page cannot hold, made by another program, comes back with question marks. Taking names as UTF-8 there changes how every file function opens a path, in the runtime of every program, so it waits for a version that decides it |
 | ~~**Folders**: what is in one, making one, joining the parts of a path~~ | **Done** in 0.8.0 (59.20 to 59.22, [`folders.md`](folders.md)). Removing one is left |
 | **The date and the time of day** | Build: `time` has only a stopwatch today |
 | **The network** outside a page: a socket, an HTTP request | After tasks, for a server. `web.fetch` in a page is there |
