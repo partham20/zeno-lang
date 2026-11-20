@@ -166,6 +166,17 @@ class ZUnitInfo {
   const ZUnitInfo(this.kind, this.size);
 }
 
+// An open file under a `files.Reader` or a `files.Writer` (decision
+// 59.6), and what has been read of it and not yet given.
+class ZOpenFile {
+  final RandomAccessFile file;
+  final bool reading;
+  Uint8List buffer = Uint8List(0);
+  int at = 0;
+  bool ended = false;
+  ZOpenFile(this.file, this.reading);
+}
+
 class ZWidth {
   final int lo, hi, bits;
   final bool signed;
@@ -2597,6 +2608,162 @@ class Z {
     fileError("cannot make the folder `" + path + "`", line);
   }
 
+  // What a `files.Reader` and a `files.Writer` are made of (decision
+  // 59.6). A file's number is its place in `openFiles`, plus one; a
+  // closed file leaves its place empty. Files are read as bytes.
+  static final List<ZOpenFile?> openFiles = <ZOpenFile?>[];
+
+  static ZOpenFile handle(String name, List<Object?> args, int line) {
+    final number = args[0];
+    if (number is! int) wrongType(name, "an int", number, line);
+    final file = number >= 1 && number <= openFiles.length ? openFiles[number - 1] : null;
+    if (file == null) fatal("there is no open file numbered " + number.toString(), line);
+    return file;
+  }
+
+  static Object? b_files_handle_open(List<Object?> args, int line) {
+    arity("handle_open", args, 2, 2, line);
+    final path = text("handle_open", args[0], line);
+    final how = args[1] is int ? args[1] as int : 0;
+    ZOpenFile open;
+    if (how == 0) {
+      final where = at(path);
+      if (where == "nothing") fileError("there is no file `" + path + "`", line);
+      if (where == "other") fileError("cannot read `" + path + "`", line);
+      try {
+        open = ZOpenFile(File(path).openSync(mode: FileMode.read), true);
+      } on FileSystemException {
+        fileError("cannot read `" + path + "`", line);
+      }
+    } else {
+      try {
+        open = ZOpenFile(File(path).openSync(mode: how == 2 ? FileMode.append : FileMode.write), false);
+      } on FileSystemException {
+        fileError("cannot write `" + path + "`", line);
+      }
+    }
+    final place = openFiles.indexOf(null);
+    if (place < 0) {
+      openFiles.add(open);
+      return openFiles.length;
+    }
+    openFiles[place] = open;
+    return place + 1;
+  }
+
+  // More of a file that is read, into its buffer. False at the end.
+  static bool fill(ZOpenFile open, String path, int line) {
+    if (open.ended) return false;
+    Uint8List piece;
+    try {
+      piece = open.file.readSync(65536);
+    } on FileSystemException {
+      fileError("cannot read `" + path + "`", line);
+    }
+    if (piece.isEmpty) {
+      open.ended = true;
+      return false;
+    }
+    final rest = open.buffer.length - open.at;
+    final joined = Uint8List(rest + piece.length);
+    joined.setRange(0, rest, open.buffer, open.at);
+    joined.setRange(rest, joined.length, piece);
+    open.buffer = joined;
+    open.at = 0;
+    return true;
+  }
+
+  // The next line without its line end (a `\r` before the `\n` goes
+  // with it), or none at the end.
+  static Object? b_files_handle_line(List<Object?> args, int line) {
+    arity("handle_line", args, 2, 2, line);
+    final path = text("handle_line", args[1], line);
+    final open = handle("handle_line", args, line);
+    if (!open.reading) fileError("cannot read `" + path + "`", line);
+    var end = open.buffer.indexOf(10, open.at);
+    while (end < 0 && fill(open, path, line)) {
+      end = open.buffer.indexOf(10, open.at);
+    }
+    if (end < 0 && open.at >= open.buffer.length) return null;
+    List<int> bytes;
+    if (end < 0) {
+      bytes = open.buffer.sublist(open.at);
+      open.at = open.buffer.length;
+    } else {
+      var stop = end;
+      if (stop > open.at && open.buffer[stop - 1] == 13) stop--;
+      bytes = open.buffer.sublist(open.at, stop);
+      open.at = end + 1;
+    }
+    final s = decoded(bytes);
+    if (s == null || s.contains("\x00")) fileError("`" + path + "` does not hold text", line);
+    return s;
+  }
+
+  // Up to `count` bytes, fewer at the end, none after it.
+  static Object? b_files_handle_bytes(List<Object?> args, int line) {
+    arity("handle_bytes", args, 3, 3, line);
+    final path = text("handle_bytes", args[1], line);
+    final asked = args[2] is int ? args[2] as int : 0;
+    final count = asked < 0 ? 0 : asked;
+    final open = handle("handle_bytes", args, line);
+    if (!open.reading) fileError("cannot read `" + path + "`", line);
+    while (open.buffer.length - open.at < count && fill(open, path, line)) {}
+    final take = math.min(count, open.buffer.length - open.at);
+    final bytes = List<Object?>.of(open.buffer.sublist(open.at, open.at + take));
+    open.at += take;
+    return bytes;
+  }
+
+  // Every byte is handed to the system before this gives back (a
+  // `RandomAccessFile` holds nothing back), so that a full disk is an
+  // error at the write that met it.
+  static Object? handlePut(String name, List<Object?> args, List<int> data, String path, int line) {
+    final open = handle(name, args, line);
+    if (open.reading) fileError("cannot write `" + path + "`", line);
+    try {
+      open.file.writeFromSync(data);
+    } on FileSystemException {
+      fileError("cannot write `" + path + "`", line);
+    }
+    return null;
+  }
+
+  static Object? b_files_handle_write(List<Object?> args, int line) {
+    arity("handle_write", args, 3, 3, line);
+    final path = text("handle_write", args[1], line);
+    final s = text("handle_write", args[2], line);
+    return handlePut("handle_write", args, utf8.encode(s), path, line);
+  }
+
+  static Object? b_files_handle_write_bytes(List<Object?> args, int line) {
+    arity("handle_write_bytes", args, 3, 3, line);
+    final path = text("handle_write_bytes", args[1], line);
+    final items = args[2];
+    if (items is! List<Object?>) wrongType("handle_write_bytes", "a list[u8]", items, line);
+    final data = Uint8List(items.length);
+    for (var i = 0; i < data.length; i++) {
+      final n = items[i];
+      if (n is! int) wrongType("handle_write_bytes", "a list[u8]", n, line);
+      if (n < 0 || n > 255) raiseError("ValueError", n.toString() + " is not a byte: a byte is a number from 0 to 255", line);
+      data[i] = n;
+    }
+    return handlePut("handle_write_bytes", args, data, path, line);
+  }
+
+  // The file is closed, and its number free.
+  static Object? b_files_handle_close(List<Object?> args, int line) {
+    arity("handle_close", args, 1, 1, line);
+    final open = handle("handle_close", args, line);
+    openFiles[(args[0] as int) - 1] = null;
+    try {
+      open.file.closeSync();
+    } on FileSystemException {
+      // Closed as far as the program can tell.
+    }
+    return null;
+  }
+
   static Object? b_files_remove(List<Object?> args, int line) {
     final path = paths("remove", args, 1, line)[0];
     final where = at(path);
@@ -2758,6 +2925,12 @@ class Z {
     "files.remove": b_files_remove,
     "files.list": b_files_list,
     "files.make_folder": b_files_make_folder,
+    "files.handle_open": b_files_handle_open,
+    "files.handle_line": b_files_handle_line,
+    "files.handle_bytes": b_files_handle_bytes,
+    "files.handle_write": b_files_handle_write,
+    "files.handle_write_bytes": b_files_handle_write_bytes,
+    "files.handle_close": b_files_handle_close,
     "program.arguments": b_program_arguments,
     "program.exit": b_program_exit,
     "program.environment": b_program_environment,

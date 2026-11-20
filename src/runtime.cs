@@ -2652,6 +2652,154 @@ static class Z
         throw fileError("cannot make the folder `" + path + "`", line);
     }
 
+    // What a `files.Reader` and a `files.Writer` are made of (decision
+    // 59.6). A file's number is its place in `openFiles`, plus one; a
+    // closed file leaves its place empty. Files are read as bytes.
+    static readonly System.Collections.Generic.List<System.IO.FileStream> openFiles = new System.Collections.Generic.List<System.IO.FileStream>();
+
+    static System.IO.FileStream handle(string name, object[] args, int line)
+    {
+        if (args[0] is not long number) throw wrongType(name, "an int", args[0], line);
+        var file = number >= 1 && number <= openFiles.Count ? openFiles[(int)(number - 1)] : null;
+        if (file == null) throw fatal("there is no open file numbered " + number, line);
+        return file;
+    }
+
+    public static object b_files_handle_open(object[] args, int line)
+    {
+        arity("handle_open", args, 2, 2, line);
+        string path = text("handle_open", args[0], line);
+        long how = args[1] is long n ? n : 0;
+        System.IO.FileStream file;
+        if (how == 0)
+        {
+            string where = at(path);
+            if (where == "nothing") throw fileError("there is no file `" + path + "`", line);
+            if (where == "other") throw fileError("cannot read `" + path + "`", line);
+            try { file = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read); }
+            catch (System.Exception) { throw fileError("cannot read `" + path + "`", line); }
+        }
+        else
+        {
+            try { file = new System.IO.FileStream(path, how == 2 ? System.IO.FileMode.Append : System.IO.FileMode.Create, System.IO.FileAccess.Write); }
+            catch (System.Exception) { throw fileError("cannot write `" + path + "`", line); }
+        }
+        int place = openFiles.IndexOf(null);
+        if (place < 0)
+        {
+            openFiles.Add(file);
+            return (long)openFiles.Count;
+        }
+        openFiles[place] = file;
+        return (long)place + 1;
+    }
+
+    // The next line without its line end (a `\r` before the `\n` goes
+    // with it), or none at the end.
+    public static object b_files_handle_line(object[] args, int line)
+    {
+        arity("handle_line", args, 2, 2, line);
+        string path = text("handle_line", args[1], line);
+        var file = handle("handle_line", args, line);
+        if (!file.CanRead) throw fileError("cannot read `" + path + "`", line);
+        var bytes = new System.IO.MemoryStream();
+        bool any = false, ended = false;
+        try
+        {
+            int b;
+            while ((b = file.ReadByte()) >= 0)
+            {
+                any = true;
+                if (b == '\n') { ended = true; break; }
+                bytes.WriteByte((byte)b);
+            }
+        }
+        catch (System.Exception) { throw fileError("cannot read `" + path + "`", line); }
+        if (!any) return null;
+        byte[] data = bytes.ToArray();
+        int length = data.Length;
+        if (ended && length > 0 && data[length - 1] == '\r') length--;
+        string s;
+        try { s = new System.Text.UTF8Encoding(false, true).GetString(data, 0, length); }
+        catch (System.ArgumentException) { s = null; }
+        if (s == null || s.IndexOf('\0') >= 0) throw fileError("`" + path + "` does not hold text", line);
+        return s;
+    }
+
+    // Up to `count` bytes, fewer at the end, none after it.
+    public static object b_files_handle_bytes(object[] args, int line)
+    {
+        arity("handle_bytes", args, 3, 3, line);
+        string path = text("handle_bytes", args[1], line);
+        long count = args[2] is long n ? System.Math.Max(n, 0) : 0;
+        var file = handle("handle_bytes", args, line);
+        if (!file.CanRead) throw fileError("cannot read `" + path + "`", line);
+        var data = new byte[(int)System.Math.Min(count, int.MaxValue - 64)];
+        int got = 0;
+        try
+        {
+            while (got < data.Length)
+            {
+                int n2 = file.Read(data, got, data.Length - got);
+                if (n2 <= 0) break;
+                got += n2;
+            }
+        }
+        catch (System.Exception) { throw fileError("cannot read `" + path + "`", line); }
+        var items = new System.Collections.Generic.List<object>(got);
+        for (int i = 0; i < got; i++) items.Add((long)data[i]);
+        return new ZList(items);
+    }
+
+    // Every byte is handed to the system before this gives back, so that
+    // a full disk is an error at the write that met it.
+    static object handlePut(string name, object[] args, byte[] data, string path, int line)
+    {
+        var file = handle(name, args, line);
+        if (!file.CanWrite) throw fileError("cannot write `" + path + "`", line);
+        try
+        {
+            file.Write(data, 0, data.Length);
+            file.Flush();
+        }
+        catch (System.Exception) { throw fileError("cannot write `" + path + "`", line); }
+        return null;
+    }
+
+    public static object b_files_handle_write(object[] args, int line)
+    {
+        arity("handle_write", args, 3, 3, line);
+        string path = text("handle_write", args[1], line);
+        string s = text("handle_write", args[2], line);
+        return handlePut("handle_write", args, new System.Text.UTF8Encoding(false).GetBytes(s), path, line);
+    }
+
+    public static object b_files_handle_write_bytes(object[] args, int line)
+    {
+        arity("handle_write_bytes", args, 3, 3, line);
+        string path = text("handle_write_bytes", args[1], line);
+        if (args[2] is not ZList list) throw wrongType("handle_write_bytes", "a list[u8]", args[2], line);
+        var data = new byte[list.items.Count];
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (list.items[i] is not long n) throw wrongType("handle_write_bytes", "a list[u8]", list.items[i], line);
+            if (n < 0 || n > 255) throw raiseError("ValueError", n + " is not a byte: a byte is a number from 0 to 255", line);
+            data[i] = (byte)n;
+        }
+        return handlePut("handle_write_bytes", args, data, path, line);
+    }
+
+    // The file is closed, and its number free.
+    public static object b_files_handle_close(object[] args, int line)
+    {
+        arity("handle_close", args, 1, 1, line);
+        var file = handle("handle_close", args, line);
+        openFiles[(int)((long)args[0] - 1)] = null;
+        try { file.Dispose(); }
+        catch (System.Exception) { }
+        return null;
+    }
+
     static string[] arguments = new string[0];
 
     // `program.exit(code)`: what was printed goes out, and the program
@@ -2768,6 +2916,8 @@ static class Z
             ["time.sleep"] = b_time_sleep, ["time.now"] = b_time_now,
             ["files.read"] = b_files_read, ["files.write"] = b_files_write, ["files.read_bytes"] = b_files_read_bytes, ["files.write_bytes"] = b_files_write_bytes, ["files.append"] = b_files_append,
             ["files.exists"] = b_files_exists, ["files.remove"] = b_files_remove, ["files.list"] = b_files_list, ["files.make_folder"] = b_files_make_folder,
+            ["files.handle_open"] = b_files_handle_open, ["files.handle_line"] = b_files_handle_line, ["files.handle_bytes"] = b_files_handle_bytes,
+            ["files.handle_write"] = b_files_handle_write, ["files.handle_write_bytes"] = b_files_handle_write_bytes, ["files.handle_close"] = b_files_handle_close,
             ["program.arguments"] = b_program_arguments, ["program.exit"] = b_program_exit, ["program.environment"] = b_program_environment, ["program.warn"] = b_program_warn, ["json.parse"] = b_json_parse, ["json.write"] = b_json_write,
         };
         foreach (var name in WIDTHS.Keys)

@@ -2438,6 +2438,146 @@ object Z {
         return null
     }
 
+    // What a `files.Reader` and a `files.Writer` are made of (decision
+    // 59.6). A file's number is its place in `OPEN_FILES`, plus one; a
+    // closed file leaves its place empty. Files are read as bytes.
+    val OPEN_FILES = ArrayList<java.io.Closeable?>()
+
+    fun handle(name: String, args: Array<Any?>, line: Int): java.io.Closeable {
+        val number = args[0] as? Long ?: wrongType(name, "an int", args[0], line)
+        val file = if (number >= 1 && number <= OPEN_FILES.size) OPEN_FILES[(number - 1).toInt()] else null
+        return file ?: fatal("there is no open file numbered " + number, line)
+    }
+
+    fun b_files_handle_open(args: Array<Any?>, line: Int): Any? {
+        arity("handle_open", args, 2, 2, line)
+        val path = text("handle_open", args[0], line)
+        val how = args[1] as? Long ?: 0L
+        val file: java.io.Closeable
+        if (how == 0L) {
+            val where = at(path)
+            if (where == "nothing") fileError("there is no file `" + path + "`", line)
+            if (where == "other") fileError("cannot read `" + path + "`", line)
+            file = try {
+                java.io.BufferedInputStream(java.io.FileInputStream(path))
+            } catch (e: java.io.IOException) {
+                fileError("cannot read `" + path + "`", line)
+            }
+        } else {
+            file = try {
+                java.io.FileOutputStream(path, how == 2L)
+            } catch (e: java.io.IOException) {
+                fileError("cannot write `" + path + "`", line)
+            }
+        }
+        val place = OPEN_FILES.indexOf(null)
+        if (place < 0) {
+            OPEN_FILES.add(file)
+            return OPEN_FILES.size.toLong()
+        }
+        OPEN_FILES[place] = file
+        return place.toLong() + 1
+    }
+
+    // The next line without its line end (a `\r` before the `\n` goes
+    // with it), or none at the end.
+    fun b_files_handle_line(args: Array<Any?>, line: Int): Any? {
+        arity("handle_line", args, 2, 2, line)
+        val path = text("handle_line", args[1], line)
+        val input = handle("handle_line", args, line) as? java.io.InputStream ?: fileError("cannot read `" + path + "`", line)
+        val bytes = java.io.ByteArrayOutputStream()
+        var any = false
+        var ended = false
+        try {
+            while (true) {
+                val b = input.read()
+                if (b < 0) break
+                any = true
+                if (b == 10) {
+                    ended = true
+                    break
+                }
+                bytes.write(b)
+            }
+        } catch (e: java.io.IOException) {
+            fileError("cannot read `" + path + "`", line)
+        }
+        if (!any) return null
+        val data = bytes.toByteArray()
+        var length = data.size
+        if (ended && length > 0 && data[length - 1] == 13.toByte()) length--
+        val s: String? = try {
+            java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(data, 0, length)).toString()
+        } catch (e: java.nio.charset.CharacterCodingException) {
+            null
+        }
+        if (s == null || s.indexOf('\u0000') >= 0) fileError("`" + path + "` does not hold text", line)
+        return s
+    }
+
+    // Up to `count` bytes, fewer at the end, none after it.
+    fun b_files_handle_bytes(args: Array<Any?>, line: Int): Any? {
+        arity("handle_bytes", args, 3, 3, line)
+        val path = text("handle_bytes", args[1], line)
+        val count = maxOf(args[2] as? Long ?: 0L, 0L)
+        val input = handle("handle_bytes", args, line) as? java.io.InputStream ?: fileError("cannot read `" + path + "`", line)
+        val data: ByteArray = try {
+            input.readNBytes(minOf(count, (Int.MAX_VALUE - 8).toLong()).toInt())
+        } catch (e: java.io.IOException) {
+            fileError("cannot read `" + path + "`", line)
+        }
+        val items = ArrayList<Any?>(data.size)
+        for (b in data) items.add((b.toInt() and 0xFF).toLong())
+        return items
+    }
+
+    // Every byte is handed to the system before this gives back (a
+    // `FileOutputStream` holds nothing back), so that a full disk is an
+    // error at the write that met it.
+    fun handlePut(name: String, args: Array<Any?>, data: ByteArray, path: String, line: Int): Any? {
+        val out = handle(name, args, line) as? java.io.OutputStream ?: fileError("cannot write `" + path + "`", line)
+        try {
+            out.write(data)
+            out.flush()
+        } catch (e: java.io.IOException) {
+            fileError("cannot write `" + path + "`", line)
+        }
+        return null
+    }
+
+    fun b_files_handle_write(args: Array<Any?>, line: Int): Any? {
+        arity("handle_write", args, 3, 3, line)
+        val path = text("handle_write", args[1], line)
+        val s = text("handle_write", args[2], line)
+        return handlePut("handle_write", args, s.toByteArray(java.nio.charset.StandardCharsets.UTF_8), path, line)
+    }
+
+    fun b_files_handle_write_bytes(args: Array<Any?>, line: Int): Any? {
+        arity("handle_write_bytes", args, 3, 3, line)
+        val path = text("handle_write_bytes", args[1], line)
+        val list = args[2] as? ArrayList<*> ?: wrongType("handle_write_bytes", "a list[u8]", args[2], line)
+        val data = ByteArray(list.size)
+        for (i in data.indices) {
+            val n = list[i] as? Long ?: wrongType("handle_write_bytes", "a list[u8]", list[i], line)
+            if (n < 0 || n > 255) raiseError("ValueError", n.toString() + " is not a byte: a byte is a number from 0 to 255", line)
+            data[i] = n.toByte()
+        }
+        return handlePut("handle_write_bytes", args, data, path, line)
+    }
+
+    // The file is closed, and its number free.
+    fun b_files_handle_close(args: Array<Any?>, line: Int): Any? {
+        arity("handle_close", args, 1, 1, line)
+        val file = handle("handle_close", args, line)
+        OPEN_FILES[((args[0] as Long) - 1).toInt()] = null
+        try {
+            file.close()
+        } catch (e: java.io.IOException) {
+            // Closed as far as the program can tell.
+        }
+        return null
+    }
+
     var arguments = arrayOf<String>()
 
     // `program.exit(code)`: what was printed goes out, and the program
@@ -2591,6 +2731,12 @@ object Z {
         BUILTINS["files.remove"] = ::b_files_remove
         BUILTINS["files.list"] = ::b_files_list
         BUILTINS["files.make_folder"] = ::b_files_make_folder
+        BUILTINS["files.handle_open"] = ::b_files_handle_open
+        BUILTINS["files.handle_line"] = ::b_files_handle_line
+        BUILTINS["files.handle_bytes"] = ::b_files_handle_bytes
+        BUILTINS["files.handle_write"] = ::b_files_handle_write
+        BUILTINS["files.handle_write_bytes"] = ::b_files_handle_write_bytes
+        BUILTINS["files.handle_close"] = ::b_files_handle_close
         BUILTINS["program.arguments"] = ::b_program_arguments
         BUILTINS["program.exit"] = ::b_program_exit
         BUILTINS["program.environment"] = ::b_program_environment

@@ -4443,4 +4443,79 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         // `zeno run` runs no test, and the top is released at its end.
         assert_eq!(resourced("let top = Held(\"top\")\ntest \"one\" {\n    print(\"no\")\n}\nprint(\"program\")\n").output, "program\nreleased top\n");
     }
+
+    // ----- A file in pieces (decisions 59.6 and 59.7) -----
+
+    /// How a program that imports a part of the library written in Zeno
+    /// ends, on both engines: the program as `zeno run` gets it.
+    fn joined(source: &str) -> crate::value::Ran {
+        let program = crate::modules::testing::program(source);
+        crate::vm::run_both_ending(&program, source)
+    }
+
+    /// The messages of the checker for such a program.
+    fn joined_errors(source: &str) -> Vec<String> {
+        let program = crate::modules::testing::load(source).program.expect("it reads");
+        let (_, errors, _) = crate::checker::checked(program, crate::checker::Rules::default());
+        errors.into_iter().map(|error| error.message).collect()
+    }
+
+    #[test]
+    fn a_file_is_read_and_written_in_pieces() {
+        let path = scratch("pieces.txt");
+        let source = format!(
+            "import files\nlet path = \"{path}\"\n\
+             if true {{\n    let out = files.write_to(path)\n    out.write(\"one\\r\\ntwo\\n\")\n    out.write_bytes([116, 104, 114, 101, 101])\n}}\n\
+             if true {{\n    let more = files.append_to(path)\n    more.write(\"\\nfour\")\n}}\n\
+             let source = files.read_from(path)\n\
+             print(source.read_line())\n\
+             for line in source {{\n    if line == \"three\" {{\n        continue\n    }}\n    print(\"for:\", line)\n}}\n\
+             print(source.read_line(), source.read_bytes(3))\n\
+             let again = files.read_from(path)\n\
+             print(again.read_bytes(5), again.read_bytes(0), again.read_line())\n\
+             try {{\n    print(again.read_bytes(-2))\n}} except ValueError as e {{\n    print(e.message)\n}}\n\
+             try {{\n    let missing = files.read_from(path + \".none\")\n}} except FileError as e {{\n    print(e.message == \"there is no file `\" + path + \".none`\")\n}}\n"
+        );
+        let ran = joined(&source);
+        assert_eq!(ran.result.map_err(|error| error.message), Ok(()));
+        assert_eq!(
+            ran.output,
+            "one\nfor: two\nfor: four\nnone []\n[111, 110, 101, 13, 10] [] two\n\
+             `read_bytes` was asked for -2 bytes, and a count of bytes is never below 0\ntrue\n"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A `write` hands its text to the system before it gives back, so a
+    /// full disk is an error at that `write`, which can be caught.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_that_meets_a_full_disk_raises_there() {
+        let ran = joined(
+            "import files\nlet full = files.write_to(\"/dev/full\")\n\
+             try {\n    full.write(\"x\")\n} except FileError as e {\n    print(\"at the write:\", e.message)\n}\n\
+             print(\"goes on\")\n",
+        );
+        assert_eq!(ran.output, "at the write: cannot write `/dev/full`\ngoes on\n");
+    }
+
+    #[test]
+    fn a_reader_is_made_and_read_only_as_the_library_says() {
+        // The number of the open file is the class's own, and the
+        // built-ins under it are no name a program has (59.6).
+        let refused = [
+            ("import files\nlet r = files.Reader(3, \"x\")\n", "`files.Reader` has the private field `file`, so only the file that declares the class can build one. Write a function in that file that builds one and returns it, and call that function here"),
+            ("import files\nlet r = files.read_from(\"x\")\nprint(r.file)\n", "`file` is private in the class `files.Reader`: only the file that declares the class can use it. To use it from another file, take the word `private` off where it is declared"),
+            ("import files\nprint(files.handle_open(\"x\", 0))\n", "module `files` has no `handle_open`"),
+            ("import files\nlet r = files.read_from(\"x\")\nprint(files.handle_line(1, \"x\"))\n", "module `files` has no `handle_line`"),
+            ("from files import handle_close\n", "module `files` has no `handle_close`"),
+            ("import files\nfor line in files.read_from(\"x\") {\n    print(line)\n}\n", "a `for` cannot read from a reader that nothing keeps: it would be closed at once. Give it a name first, `let source = files.read_from(path)`, and then write `for line in source`"),
+            ("import files\nlet source = files.read_from(\"x\")\nfor i, line in source {\n    print(line)\n}\n", "a `for` over a `files.Reader` gives one line at a time, so it takes one name: `for line in source`"),
+            ("import files\nlet out = files.write_to(\"x\")\nfor line in out {\n    print(line)\n}\n", "files.Writer cannot be looped over"),
+        ];
+        for (source, message) in refused {
+            let errors = joined_errors(source);
+            assert!(errors.iter().any(|error| error.starts_with(message)), "{errors:?}\n{source}");
+        }
+    }
 }

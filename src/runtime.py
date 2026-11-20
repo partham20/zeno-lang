@@ -2422,6 +2422,134 @@ def _b_files_make_folder(args, line):
     return None
 
 
+# ------------------------------------------------- A file in pieces
+#
+# What a `files.Reader` and a `files.Writer` are made of (decision 59.6).
+# A file's number is its place in `_open_files`, plus one; a closed file
+# leaves its place empty. Every file is opened as bytes, so a line end
+# is what Zeno says it is on every system.
+_open_files = []
+
+
+def _b_files_handle_open(args, line):
+    _arity("handle_open", args, 2, 2, line)
+    path = _text("handle_open", args[0], line)
+    how = args[1]
+    if how == 0:
+        where = _at(path)
+        if where == "nothing":
+            _file_error("there is no file `" + path + "`", line)
+        if where == "other":
+            _file_error("cannot read `" + path + "`", line)
+        try:
+            f = open(path, "rb")
+        except (OSError, ValueError):
+            _file_error("cannot read `" + path + "`", line)
+    else:
+        try:
+            f = open(path, "ab" if how == 2 else "wb", buffering=0)
+        except (OSError, ValueError):
+            _file_error("cannot write `" + path + "`", line)
+    for place, there in enumerate(_open_files):
+        if there is None:
+            _open_files[place] = f
+            return place + 1
+    _open_files.append(f)
+    return len(_open_files)
+
+
+def _handle(name, args, line):
+    number = args[0]
+    if type(number) is not int:
+        _wrong_type(name, "an int", number, line)
+    if 1 <= number <= len(_open_files) and _open_files[number - 1] is not None:
+        return _open_files[number - 1]
+    fatal("there is no open file numbered " + str(number), line)
+
+
+def _b_files_handle_line(args, line):
+    _arity("handle_line", args, 2, 2, line)
+    path = _text("handle_line", args[1], line)
+    f = _handle("handle_line", args, line)
+    try:
+        data = f.readline()
+    except (OSError, ValueError):
+        _file_error("cannot read `" + path + "`", line)
+    if not data:
+        return None
+    if data.endswith(b"\n"):
+        data = data[:-1]
+        if data.endswith(b"\r"):
+            data = data[:-1]
+    try:
+        s = data.decode("utf-8")
+    except UnicodeDecodeError:
+        s = None
+    if s is None or "\0" in s:
+        _file_error("`" + path + "` does not hold text", line)
+    return s
+
+
+def _b_files_handle_bytes(args, line):
+    _arity("handle_bytes", args, 3, 3, line)
+    path = _text("handle_bytes", args[1], line)
+    count = args[2]
+    f = _handle("handle_bytes", args, line)
+    try:
+        return list(f.read(max(count, 0)))
+    except (OSError, ValueError):
+        _file_error("cannot read `" + path + "`", line)
+
+
+# Each write is handed to the system before it gives back, so that a
+# full disk is an error at the write that met it.
+def _handle_put(name, args, data, path, line):
+    f = _handle(name, args, line)
+    try:
+        view = memoryview(data)
+        while len(view):
+            done = f.write(view)
+            if not done:
+                raise OSError("nothing written")
+            view = view[done:]
+        f.flush()
+    except (OSError, ValueError):
+        _file_error("cannot write `" + path + "`", line)
+    return None
+
+
+def _b_files_handle_write(args, line):
+    _arity("handle_write", args, 3, 3, line)
+    path = _text("handle_write", args[1], line)
+    s = _text("handle_write", args[2], line)
+    return _handle_put("handle_write", args, s.encode("utf-8"), path, line)
+
+
+def _b_files_handle_write_bytes(args, line):
+    _arity("handle_write_bytes", args, 3, 3, line)
+    path = _text("handle_write_bytes", args[1], line)
+    items = args[2]
+    if type(items) is not list:
+        _wrong_type("handle_write_bytes", "a list[u8]", items, line)
+    for n in items:
+        if type(n) is not int:
+            _wrong_type("handle_write_bytes", "a list[u8]", n, line)
+        if n < 0 or n > 255:
+            _raise("ValueError", str(n) + " is not a byte: a byte is a number from 0 to 255", line)
+    return _handle_put("handle_write_bytes", args, bytes(items), path, line)
+
+
+def _b_files_handle_close(args, line):
+    _arity("handle_close", args, 1, 1, line)
+    f = _handle("handle_close", args, line)
+    _open_files[args[0] - 1] = None
+    try:
+        f.close()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _b_json_parse(args, line):
     _arity("parse", args, 1, 1, line)
     s = _text("parse", args[0], line)
@@ -2479,6 +2607,12 @@ BUILTINS = {
     "files.remove": _b_files_remove,
     "files.list": _b_files_list,
     "files.make_folder": _b_files_make_folder,
+    "files.handle_open": _b_files_handle_open,
+    "files.handle_line": _b_files_handle_line,
+    "files.handle_bytes": _b_files_handle_bytes,
+    "files.handle_write": _b_files_handle_write,
+    "files.handle_write_bytes": _b_files_handle_write_bytes,
+    "files.handle_close": _b_files_handle_close,
     "program.exit": _b_program_exit,
     "program.environment": _b_program_environment,
     "program.warn": _b_program_warn,

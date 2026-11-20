@@ -3439,6 +3439,175 @@ func Zb_files_make_folder(args []ZV, line int) ZV {
 	return nil
 }
 
+// What a `files.Reader` and a `files.Writer` are made of (decision
+// 59.6). A file's number is its place in `zOpenFiles`, plus one; a closed
+// file leaves its place empty. Files are read as bytes.
+type zOpenFile struct {
+	file   *os.File
+	reader *bufio.Reader
+}
+
+var zOpenFiles []*zOpenFile
+
+func zHandle(name string, args []ZV, line int) *zOpenFile {
+	number, ok := args[0].(int64)
+	if !ok {
+		zWrongType(name, "an int", args[0], line)
+	}
+	if number < 1 || number > int64(len(zOpenFiles)) || zOpenFiles[number-1] == nil {
+		Zfatal("there is no open file numbered "+strconv.FormatInt(number, 10), line)
+	}
+	return zOpenFiles[number-1]
+}
+
+func Zb_files_handle_open(args []ZV, line int) ZV {
+	zArity("handle_open", args, 2, 2, line)
+	path := zText("handle_open", args[0], line)
+	how, _ := args[1].(int64)
+	open := &zOpenFile{}
+	if how == 0 {
+		switch zAt(path) {
+		case "nothing":
+			zFileError("there is no file `"+path+"`", line)
+		case "other":
+			zFileError("cannot read `"+path+"`", line)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			zFileError("cannot read `"+path+"`", line)
+		}
+		open.file, open.reader = f, bufio.NewReader(f)
+	} else {
+		flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		if how == 2 {
+			flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+		}
+		f, err := os.OpenFile(path, flags, 0o644)
+		if err != nil {
+			zFileError("cannot write `"+path+"`", line)
+		}
+		open.file = f
+	}
+	for place, there := range zOpenFiles {
+		if there == nil {
+			zOpenFiles[place] = open
+			return int64(place + 1)
+		}
+	}
+	zOpenFiles = append(zOpenFiles, open)
+	return int64(len(zOpenFiles))
+}
+
+// The next line without its line end (a `\r` before the `\n` goes with
+// it), or none at the end.
+func Zb_files_handle_line(args []ZV, line int) ZV {
+	zArity("handle_line", args, 2, 2, line)
+	path := zText("handle_line", args[1], line)
+	open := zHandle("handle_line", args, line)
+	if open.reader == nil {
+		zFileError("cannot read `"+path+"`", line)
+	}
+	data, err := open.reader.ReadBytes('\n')
+	if err != nil && len(data) == 0 {
+		if err.Error() == "EOF" {
+			return nil
+		}
+		zFileError("cannot read `"+path+"`", line)
+	}
+	if n := len(data); n > 0 && data[n-1] == '\n' {
+		data = data[:n-1]
+		if n := len(data); n > 0 && data[n-1] == '\r' {
+			data = data[:n-1]
+		}
+	}
+	if !utf8.Valid(data) || strings.ContainsRune(string(data), 0) {
+		zFileError("`"+path+"` does not hold text", line)
+	}
+	return string(data)
+}
+
+// Up to `count` bytes, fewer at the end, none after it.
+func Zb_files_handle_bytes(args []ZV, line int) ZV {
+	zArity("handle_bytes", args, 3, 3, line)
+	path := zText("handle_bytes", args[1], line)
+	count, _ := args[2].(int64)
+	if count < 0 {
+		count = 0
+	}
+	open := zHandle("handle_bytes", args, line)
+	if open.reader == nil {
+		zFileError("cannot read `"+path+"`", line)
+	}
+	data := make([]byte, count)
+	got := 0
+	for int64(got) < count {
+		n, err := open.reader.Read(data[got:])
+		got += n
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			zFileError("cannot read `"+path+"`", line)
+		}
+	}
+	out := make([]ZV, got)
+	for i, b := range data[:got] {
+		out[i] = int64(b)
+	}
+	return &ZList{out}
+}
+
+// Every byte is handed to the system before this gives back (an
+// `*os.File` holds nothing back), so that a full disk is an error at the
+// write that met it.
+func zHandlePut(name string, args []ZV, data []byte, path string, line int) ZV {
+	open := zHandle(name, args, line)
+	if open.reader != nil {
+		zFileError("cannot write `"+path+"`", line)
+	}
+	if _, err := open.file.Write(data); err != nil {
+		zFileError("cannot write `"+path+"`", line)
+	}
+	return nil
+}
+
+func Zb_files_handle_write(args []ZV, line int) ZV {
+	zArity("handle_write", args, 3, 3, line)
+	path := zText("handle_write", args[1], line)
+	text := zText("handle_write", args[2], line)
+	return zHandlePut("handle_write", args, []byte(text), path, line)
+}
+
+func Zb_files_handle_write_bytes(args []ZV, line int) ZV {
+	zArity("handle_write_bytes", args, 3, 3, line)
+	path := zText("handle_write_bytes", args[1], line)
+	items, ok := args[2].(*ZList)
+	if !ok {
+		zWrongType("handle_write_bytes", "a list[u8]", args[2], line)
+	}
+	data := make([]byte, len(items.items))
+	for i, item := range items.items {
+		n, ok := item.(int64)
+		if !ok {
+			zWrongType("handle_write_bytes", "a list[u8]", item, line)
+		}
+		if n < 0 || n > 255 {
+			zRaise("ValueError", strconv.FormatInt(n, 10)+" is not a byte: a byte is a number from 0 to 255", line)
+		}
+		data[i] = byte(n)
+	}
+	return zHandlePut("handle_write_bytes", args, data, path, line)
+}
+
+// The file is closed, and its number free.
+func Zb_files_handle_close(args []ZV, line int) ZV {
+	zArity("handle_close", args, 1, 1, line)
+	open := zHandle("handle_close", args, line)
+	zOpenFiles[args[0].(int64)-1] = nil
+	_ = open.file.Close()
+	return nil
+}
+
 // `program.exit(code)`: what was printed goes out, and the program ends
 // with `code`.
 func Zb_program_exit(args []ZV, line int) ZV {
@@ -3572,6 +3741,8 @@ func init() {
 		"time.sleep": Zb_time_sleep, "time.now": Zb_time_now,
 		"files.read": Zb_files_read, "files.write": Zb_files_write, "files.read_bytes": Zb_files_read_bytes, "files.write_bytes": Zb_files_write_bytes, "files.append": Zb_files_append,
 		"files.exists": Zb_files_exists, "files.remove": Zb_files_remove, "files.list": Zb_files_list, "files.make_folder": Zb_files_make_folder,
+		"files.handle_open": Zb_files_handle_open, "files.handle_line": Zb_files_handle_line, "files.handle_bytes": Zb_files_handle_bytes,
+		"files.handle_write": Zb_files_handle_write, "files.handle_write_bytes": Zb_files_handle_write_bytes, "files.handle_close": Zb_files_handle_close,
 		"program.arguments": Zb_program_arguments, "program.exit": Zb_program_exit, "program.environment": Zb_program_environment, "program.warn": Zb_program_warn, "json.parse": Zb_json_parse, "json.write": Zb_json_write,
 		"u8": Zb_u8, "u8.wrap": Zb_u8_wrap, "u16": Zb_u16, "u16.wrap": Zb_u16_wrap,
 		"u32": Zb_u32, "u32.wrap": Zb_u32_wrap, "i8": Zb_i8, "i8.wrap": Zb_i8_wrap,

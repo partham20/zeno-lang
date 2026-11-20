@@ -369,12 +369,36 @@ pub struct Outside {
     /// The environment the program was started in, which is how the
     /// tests set it. `None` asks the machine itself.
     pub environment: Option<Vec<(String, String)>>,
+    /// The files that are open under a `Reader` or a `Writer`.
+    pub files: OpenFiles,
+}
+
+/// The files a program has open under a `Reader` or a `Writer` of the
+/// module `files` (decision 59.6). A file's number is its place here,
+/// plus one; a closed file leaves its place empty. A copy of a running
+/// program's `Outside` starts with none open, since a file cannot be
+/// open twice by one handle.
+#[derive(Default)]
+pub struct OpenFiles {
+    pub open: Vec<Option<OpenFile>>,
+}
+
+/// One open file: read in pieces, or written in pieces.
+pub enum OpenFile {
+    Reading(std::io::BufReader<std::fs::File>),
+    Writing(std::fs::File),
+}
+
+impl Clone for OpenFiles {
+    fn clone(&self) -> OpenFiles {
+        OpenFiles::default()
+    }
 }
 
 impl Outside {
     /// A program at the real keyboard, started with these words.
     pub fn started_with(arguments: Vec<String>) -> Outside {
-        Outside { typed: None, read: 0, arguments, page: None, environment: None }
+        Outside { typed: None, read: 0, arguments, page: None, environment: None, files: OpenFiles::default() }
     }
 
     /// The same, with the page that was written for the program.
@@ -392,6 +416,7 @@ impl Outside {
             arguments: arguments.iter().map(|word| word.to_string()).collect(),
             page: None,
             environment: None,
+            files: OpenFiles::default(),
         }
     }
 

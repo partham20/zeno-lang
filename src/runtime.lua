@@ -2424,6 +2424,125 @@ function Z.b_files_make_folder(args, line)
   return NONE
 end
 
+-- What a `files.Reader` and a `files.Writer` are made of (decision
+-- 59.6). A file's number is its place in `open_files`; a closed file
+-- leaves its place `false`. Files are read as bytes. Its own `do` block,
+-- so that its local names do not count toward the 200 of this file.
+do
+local open_files = {}
+local function handle(name, args, line)
+  local number = args[1]
+  if mtype(number) ~= "integer" then wrong_type(name, "an int", number, line) end
+  local open = number >= 1 and number <= #open_files and open_files[number] or nil
+  if not open then fatal("there is no open file numbered " .. tostring(number), line) end
+  return open
+end
+
+function Z.b_files_handle_open(args, line)
+  arity("handle_open", args, 2, 2, line)
+  local path = text("handle_open", args[1], line)
+  local how = mtype(args[2]) == "integer" and args[2] or 0
+  local file
+  if how == 0 then
+    local where = at_path(path)
+    if where == "nothing" then file_error("there is no file `" .. path .. "`", line) end
+    if where == "other" then file_error("cannot read `" .. path .. "`", line) end
+    file = io.open(path, "rb")
+    if not file then file_error("cannot read `" .. path .. "`", line) end
+  else
+    file = not path:find("\0", 1, true) and path ~= "" and io.open(path, how == 2 and "ab" or "wb")
+    if not file then file_error("cannot write `" .. path .. "`", line) end
+    -- Nothing is held back, so that a full disk is an error at the
+    -- write that met it.
+    file:setvbuf("no")
+  end
+  local open = {file = file, reading = how == 0}
+  for place = 1, #open_files do
+    if not open_files[place] then
+      open_files[place] = open
+      return place
+    end
+  end
+  open_files[#open_files + 1] = open
+  return #open_files
+end
+
+-- The next line without its line end (a `\r` before the `\n` goes with
+-- it), or none at the end.
+function Z.b_files_handle_line(args, line)
+  arity("handle_line", args, 2, 2, line)
+  local path = text("handle_line", args[2], line)
+  local open = handle("handle_line", args, line)
+  if not open.reading then file_error("cannot read `" .. path .. "`", line) end
+  local ok, s = pcall(open.file.read, open.file, "L")
+  if not ok then file_error("cannot read `" .. path .. "`", line) end
+  if s == nil then return NONE end
+  if s:sub(-1) == "\n" then
+    s = s:sub(1, -2)
+    if s:sub(-1) == "\r" then s = s:sub(1, -2) end
+  end
+  if not utf8.len(s) or s:find("\0", 1, true) then file_error("`" .. path .. "` does not hold text", line) end
+  return s
+end
+
+-- Up to `count` bytes, fewer at the end, none after it.
+function Z.b_files_handle_bytes(args, line)
+  arity("handle_bytes", args, 3, 3, line)
+  local path = text("handle_bytes", args[2], line)
+  local count = mtype(args[3]) == "integer" and math.max(args[3], 0) or 0
+  local open = handle("handle_bytes", args, line)
+  if not open.reading then file_error("cannot read `" .. path .. "`", line) end
+  local s = ""
+  if count > 0 then
+    local ok, got = pcall(open.file.read, open.file, count)
+    if not ok then file_error("cannot read `" .. path .. "`", line) end
+    s = got or ""
+  end
+  local bytes = {}
+  for i = 1, #s do bytes[i] = s:byte(i) end
+  return list(bytes)
+end
+
+local function handle_put(name, args, data, path, line)
+  local open = handle(name, args, line)
+  if open.reading then file_error("cannot write `" .. path .. "`", line) end
+  local ok, done = pcall(open.file.write, open.file, data)
+  if not ok or not done or not open.file:flush() then file_error("cannot write `" .. path .. "`", line) end
+  return NONE
+end
+
+function Z.b_files_handle_write(args, line)
+  arity("handle_write", args, 3, 3, line)
+  local path = text("handle_write", args[2], line)
+  local s = text("handle_write", args[3], line)
+  return handle_put("handle_write", args, s, path, line)
+end
+
+function Z.b_files_handle_write_bytes(args, line)
+  arity("handle_write_bytes", args, 3, 3, line)
+  local path = text("handle_write_bytes", args[2], line)
+  local items = args[3]
+  if not is(items, List) then wrong_type("handle_write_bytes", "a list[u8]", items, line) end
+  local pieces = {}
+  for i = 1, #items do
+    local n = items[i]
+    if mtype(n) ~= "integer" then wrong_type("handle_write_bytes", "a list[u8]", n, line) end
+    if n < 0 or n > 255 then raise_("ValueError", tostring(n) .. " is not a byte: a byte is a number from 0 to 255", line) end
+    pieces[i] = string.char(n)
+  end
+  return handle_put("handle_write_bytes", args, table.concat(pieces), path, line)
+end
+
+-- The file is closed, and its number free.
+function Z.b_files_handle_close(args, line)
+  arity("handle_close", args, 1, 1, line)
+  local open = handle("handle_close", args, line)
+  open_files[args[1]] = false
+  pcall(open.file.close, open.file)
+  return NONE
+end
+end
+
 -- `program.exit(code)`: what was printed goes out, and the program ends
 -- with `code`.
 function Z.b_program_exit(args, line)

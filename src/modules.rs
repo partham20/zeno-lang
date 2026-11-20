@@ -435,6 +435,9 @@ impl Loader<'_> {
                     let names = std::mem::take(&mut renamer.names);
                     match &statement.kind {
                         StmtKind::Function(function) => drop(by_function.insert(function.name.clone(), names)),
+                        // A class is joined only if it is reached, as a
+                        // function is: `files.Reader` (decision 59.6).
+                        StmtKind::Class(class) => drop(by_function.insert(class.name.clone(), names)),
                         _ => by_part.entry(unit.module.clone()).or_default().add(names),
                     }
                 }
@@ -457,7 +460,7 @@ impl Loader<'_> {
             });
         }
 
-        // Which functions of the parts the program reaches: the ones
+        // Which functions and classes of the parts the program reaches: the ones
         // its files name, the ones those name, and so on. A part that
         // has one of its names reached is in the program, with all that
         // is not a function, and what that names is reached too.
@@ -504,6 +507,7 @@ impl Loader<'_> {
             let is_in = parts_in.contains(&unit.module);
             unit.program.statements.retain(|statement| match &statement.kind {
                 StmtKind::Function(function) => reached.contains(&function.name),
+                StmtKind::Class(class) => reached.contains(&class.name),
                 _ => is_in,
             });
         }
@@ -1456,6 +1460,8 @@ impl<'a> Renamer<'a> {
         match self.whole.get(module).map(|global| (global, &self.declared[global])) {
             Some((global, names)) if names.iter().any(|declared| declared == member) => {
                 *name = format!("{global}.{member}");
+                // A class of a part named only as a type is reached.
+                self.names.used.push(name.clone());
             }
             Some((global, names)) => self.error(no_such_name(module, member, names, &self.hidden[global]), span),
             None => self.error(
@@ -1737,6 +1743,23 @@ mod tests {
         let joined = load("import random\nprint(random.between(1, 6))\n").program.expect("the program is joined");
         assert!(printer::print(&joined).starts_with("var random.a = 0\nvar random.b = 0\n"), "{}", printer::print(&joined));
         assert_eq!(functions("import random\nprint(random.between(1, 6))\n"), ["random.bits", "random.seed", "random.between"]);
+        // A class of a part is joined only when it is reached, by a
+        // function that makes one or by its name as a type (59.6).
+        let classes = |source: &str| -> Vec<String> {
+            let joined = load(source).program.expect("the program is joined");
+            let mut names = Vec::new();
+            for statement in &joined.statements {
+                if let crate::ast::StmtKind::Class(class) = &statement.kind {
+                    names.push(class.name.clone());
+                }
+            }
+            names
+        };
+        assert_eq!(classes("import files\nprint(files.join(\"a\", \"b\"))\n"), Vec::<String>::new());
+        assert_eq!(functions("import files\nprint(files.join(\"a\", \"b\"))\n"), ["files.join"]);
+        // With the `Resource` that comes with Zeno, which it is (59.1).
+        assert_eq!(classes("import files\nlet source = files.read_from(\"a\")\n"), ["Resource", "files.Reader"]);
+        assert_eq!(classes("import files\nfunction lines(source: files.Reader) -> int {\n    return 0\n}\n"), ["Resource", "files.Reader"]);
         // A function of a file of the program can be what reaches it.
         assert_eq!(
             functions("import shapes\nprint(shapes.far(1.0))\n==> shapes.zeno\nimport math\nfunction far(x: float) -> float { return math.cosh(x) }\n"),

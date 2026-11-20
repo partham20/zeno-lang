@@ -1573,6 +1573,12 @@ pub fn module(name: &str) -> Option<Rc<Module>> {
                 ("remove", Value::Builtin(Builtin { name: "remove", call: files_remove })),
                 ("list", Value::Builtin(Builtin { name: "list", call: files_list })),
                 ("make_folder", Value::Builtin(Builtin { name: "make_folder", call: files_make_folder })),
+                ("handle_open", Value::Builtin(Builtin { name: "handle_open", call: files_handle_open })),
+                ("handle_line", Value::Builtin(Builtin { name: "handle_line", call: files_handle_line })),
+                ("handle_bytes", Value::Builtin(Builtin { name: "handle_bytes", call: files_handle_bytes })),
+                ("handle_write", Value::Builtin(Builtin { name: "handle_write", call: files_handle_write })),
+                ("handle_write_bytes", Value::Builtin(Builtin { name: "handle_write_bytes", call: files_handle_write_bytes })),
+                ("handle_close", Value::Builtin(Builtin { name: "handle_close", call: files_handle_close })),
             ],
         ),
         "program" => (
@@ -1832,6 +1838,160 @@ fn files_write(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
 
 fn files_append(_: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
     put("append", args, true, span)
+}
+
+// ------------------------------------------------- A file in pieces
+//
+// What a `Reader` and a `Writer` of library/files.zeno are made of
+// (decision 59.6). Only that file can name these: the classes keep the
+// number of the open file to themselves, and close it in `release`.
+
+/// `files.handle_open(path, how)`: open the file to read (0), to write
+/// from empty (1) or to add to its end (2), as bytes on every system,
+/// and give its number.
+fn files_handle_open(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("handle_open", &args, 2, 2, span)?;
+    let path = text("handle_open", &args[0], span)?;
+    let Value::Int(how) = args[1] else { return wrong_type("handle_open", "an int", &args[1], span) };
+    let file = match how {
+        0 => {
+            match at(path) {
+                At::Nothing => return file_error(format!("there is no file `{path}`"), span),
+                At::Other => return file_error(format!("cannot read `{path}`"), span),
+                At::File => {}
+            }
+            match std::fs::File::open(path) {
+                Ok(file) => crate::value::OpenFile::Reading(std::io::BufReader::new(file)),
+                Err(_) => return file_error(format!("cannot read `{path}`"), span),
+            }
+        }
+        _ => {
+            let mut options = std::fs::OpenOptions::new();
+            if how == 2 { options.append(true) } else { options.write(true).truncate(true) };
+            match options.create(true).open(path) {
+                Ok(file) => crate::value::OpenFile::Writing(file),
+                Err(_) => return file_error(format!("cannot write `{path}`"), span),
+            }
+        }
+    };
+    let open = &mut machine.outside().files.open;
+    let place = match open.iter().position(Option::is_none) {
+        Some(place) => {
+            open[place] = Some(file);
+            place
+        }
+        None => {
+            open.push(Some(file));
+            open.len() - 1
+        }
+    };
+    Ok(Value::Int(place as i64 + 1))
+}
+
+/// The open file numbered by the first argument. Only library/files.zeno
+/// gives these numbers, and only while the file is open.
+fn handle<'a>(machine: &'a mut dyn Machine, name: &str, args: &[Value], span: Span) -> Result<&'a mut crate::value::OpenFile> {
+    let Value::Int(number) = args[0] else { return wrong_type(name, "an int", &args[0], span) };
+    let open = &mut machine.outside().files.open;
+    match usize::try_from(number - 1).ok().and_then(|place| open.get_mut(place)).and_then(Option::as_mut) {
+        Some(file) => Ok(file),
+        None => fatal(format!("there is no open file numbered {number}"), span),
+    }
+}
+
+/// `files.handle_line(file, path)`: the next line without its line end
+/// (a `\r` before the `\n` goes with it, 6.17), or `none` at the end.
+fn files_handle_line(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    use std::io::BufRead;
+    arity("handle_line", &args, 2, 2, span)?;
+    let path = text("handle_line", &args[1], span)?.to_string();
+    let crate::value::OpenFile::Reading(reader) = handle(machine, "handle_line", &args, span)? else {
+        return file_error(format!("cannot read `{path}`"), span);
+    };
+    let mut line = Vec::new();
+    match reader.read_until(b'\n', &mut line) {
+        Ok(0) => return Ok(Value::None),
+        Ok(_) => {}
+        Err(_) => return file_error(format!("cannot read `{path}`"), span),
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+    match String::from_utf8(line) {
+        Ok(text) if !text.contains('\0') => Ok(Value::str(text)),
+        _ => file_error(format!("`{path}` does not hold text"), span),
+    }
+}
+
+/// `files.handle_bytes(file, path, count)`: up to `count` bytes, fewer
+/// at the end, none after it. `count` is never below 0: `read_bytes`
+/// sees to that.
+fn files_handle_bytes(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    use std::io::Read;
+    arity("handle_bytes", &args, 3, 3, span)?;
+    let path = text("handle_bytes", &args[1], span)?.to_string();
+    let Value::Int(count) = args[2] else { return wrong_type("handle_bytes", "an int", &args[2], span) };
+    let crate::value::OpenFile::Reading(reader) = handle(machine, "handle_bytes", &args, span)? else {
+        return file_error(format!("cannot read `{path}`"), span);
+    };
+    let mut bytes = Vec::new();
+    match reader.take(count.max(0) as u64).read_to_end(&mut bytes) {
+        Ok(_) => Ok(Value::list(bytes.into_iter().map(|byte| Value::Int(byte as i64)).collect())),
+        Err(_) => file_error(format!("cannot read `{path}`"), span),
+    }
+}
+
+/// Hand `bytes` to the system before giving back, so that a full disk
+/// is an error at the `write` that met it (decision 59.6).
+fn handle_put(machine: &mut dyn Machine, name: &str, args: &[Value], path: &str, bytes: &[u8], span: Span) -> Result {
+    use std::io::Write;
+    let crate::value::OpenFile::Writing(file) = handle(machine, name, args, span)? else {
+        return file_error(format!("cannot write `{path}`"), span);
+    };
+    match file.write_all(bytes).and_then(|()| file.flush()) {
+        Ok(()) => Ok(Value::None),
+        Err(_) => file_error(format!("cannot write `{path}`"), span),
+    }
+}
+
+/// `files.handle_write(file, path, text)`: the text, and no line end.
+fn files_handle_write(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("handle_write", &args, 3, 3, span)?;
+    let path = text("handle_write", &args[1], span)?.to_string();
+    let written = text("handle_write", &args[2], span)?.to_string();
+    handle_put(machine, "handle_write", &args, &path, written.as_bytes(), span)
+}
+
+/// `files.handle_write_bytes(file, path, bytes)`.
+fn files_handle_write_bytes(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("handle_write_bytes", &args, 3, 3, span)?;
+    let path = text("handle_write_bytes", &args[1], span)?.to_string();
+    let Value::List(items) = &args[2] else {
+        return wrong_type("handle_write_bytes", "a list[u8]", &args[2], span);
+    };
+    let mut bytes = Vec::with_capacity(items.borrow().len());
+    for item in items.borrow().iter() {
+        match item {
+            Value::Int(n) if (0..=255).contains(n) => bytes.push(*n as u8),
+            Value::Int(n) => {
+                return raise("ValueError", format!("{n} is not a byte: a byte is a number from 0 to 255"), span)
+            }
+            other => return wrong_type("handle_write_bytes", "a list[u8]", other, span),
+        }
+    }
+    handle_put(machine, "handle_write_bytes", &args, &path, &bytes, span)
+}
+
+/// `files.handle_close(file)`: the file is closed, and its number free.
+fn files_handle_close(machine: &mut dyn Machine, args: Vec<Value>, span: Span) -> Result {
+    arity("handle_close", &args, 1, 1, span)?;
+    handle(machine, "handle_close", &args, span)?;
+    let Value::Int(number) = args[0] else { unreachable!("`handle` looked") };
+    machine.outside().files.open[number as usize - 1] = None;
+    Ok(Value::None)
 }
 
 /// `files.exists(path)`: is there a file there that can be read?

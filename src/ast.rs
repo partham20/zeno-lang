@@ -273,6 +273,56 @@ impl Program {
         self
     }
 
+    /// `for line in source` over a `files.Reader` (decision 59.7), at the
+    /// places the checker found, made into the loop it means:
+    ///
+    /// ```text
+    /// while true {
+    ///     let line..next = source.read_line()
+    ///     if line..next is none { break }
+    ///     let line = line..next
+    ///     ...
+    /// }
+    /// ```
+    ///
+    /// No name a program writes has two dots in a row, so `line..next`
+    /// is no one else's. `break` and `continue` mean what they mean in
+    /// any `for`, and every engine, build and target runs a `while`, a
+    /// method call and an `if`, which they all could already.
+    pub fn with_readers(mut self, readers: &HashSet<(usize, usize)>) -> Program {
+        if readers.is_empty() {
+            return self;
+        }
+        let mut visit = |node: Node| {
+            let Node::Stmt(statement) = node else { return };
+            if !matches!(statement.kind, StmtKind::For { .. }) || !readers.contains(&(statement.span.line, statement.span.col)) {
+                return;
+            }
+            let span = statement.span;
+            let StmtKind::For { variable, iterable, body, .. } = std::mem::replace(&mut statement.kind, StmtKind::Break) else {
+                return;
+            };
+            let next = format!("{variable}..next");
+            let at = |kind| Expr { kind, span };
+            let method = at(ExprKind::Field { object: Box::new(iterable), name: "read_line".to_string(), at: span });
+            let read = at(ExprKind::Call { callee: Box::new(method), args: Vec::new() });
+            let ended = at(ExprKind::Binary {
+                op: BinaryOp::Is,
+                left: Box::new(at(ExprKind::Name(next.clone()))),
+                right: Box::new(at(ExprKind::None)),
+            });
+            let mut statements = vec![
+                Stmt { kind: StmtKind::Let { mutable: false, name: next.clone(), ty: None, value: read }, span },
+                Stmt { kind: StmtKind::If { condition: ended, then_block: vec![Stmt { kind: StmtKind::Break, span }], else_block: None }, span },
+                Stmt { kind: StmtKind::Let { mutable: false, name: variable, ty: None, value: at(ExprKind::Name(next)) }, span },
+            ];
+            statements.extend(body);
+            statement.kind = StmtKind::While { condition: at(ExprKind::Bool(true)), body: statements };
+        };
+        fresh_block(&mut self.statements, &mut visit);
+        self
+    }
+
     /// `int(Ack)` and `Reply(6)`, for an enum whose cases have numbers
     /// (decision 35.2). The checker says where each such call is, and
     /// which enums they use. Each of those enums gets two functions,

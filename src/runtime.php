@@ -2000,6 +2000,112 @@ final class Z {
         return null;
     }
 
+    // What a `files.Reader` and a `files.Writer` are made of (decision
+    // 59.6). A file's number is its place in `$open_files`, plus one; a
+    // closed file leaves its place empty. Files are opened as bytes.
+    private static array $open_files = [];
+    private static function handle(string $name, array $args, int $line) {
+        $number = $args[0];
+        if (!is_int($number)) self::wrongType($name, "an int", $number, $line);
+        $file = self::$open_files[$number - 1] ?? null;
+        if ($file === null) self::fatal("there is no open file numbered " . $number, $line);
+        return $file;
+    }
+    static function b_files_handle_open(array $args, int $line) {
+        self::arity("handle_open", $args, 2, 2, $line);
+        $path = self::text("handle_open", $args[0], $line);
+        $how = $args[1];
+        $file = false;
+        if ($how === 0) {
+            $where = self::at($path);
+            if ($where === "nothing") self::fileError("there is no file `" . $path . "`", $line);
+            if ($where === "other") self::fileError("cannot read `" . $path . "`", $line);
+            try { $file = @fopen($path, "rb"); } catch (ValueError $e) { $file = false; }
+            if ($file === false) self::fileError("cannot read `" . $path . "`", $line);
+        } else {
+            try { $file = @fopen($path, $how === 2 ? "ab" : "wb"); } catch (ValueError $e) { $file = false; }
+            if ($file === false || is_dir($path)) self::fileError("cannot write `" . $path . "`", $line);
+        }
+        $place = array_search(null, self::$open_files, true);
+        if ($place === false) {
+            self::$open_files[] = $file;
+            return count(self::$open_files);
+        }
+        self::$open_files[$place] = $file;
+        return $place + 1;
+    }
+    // The next line without its line end (a `\r` before the `\n` goes
+    // with it), or none at the end.
+    static function b_files_handle_line(array $args, int $line) {
+        self::arity("handle_line", $args, 2, 2, $line);
+        $path = self::text("handle_line", $args[1], $line);
+        $file = self::handle("handle_line", $args, $line);
+        $s = @fgets($file);
+        if ($s === false) {
+            if (!feof($file)) self::fileError("cannot read `" . $path . "`", $line);
+            return null;
+        }
+        if (substr($s, -1) === "\n") {
+            $s = substr($s, 0, -1);
+            if (substr($s, -1) === "\r") $s = substr($s, 0, -1);
+        }
+        if (preg_match('//u', $s) !== 1 || strpos($s, "\0") !== false) self::fileError("`" . $path . "` does not hold text", $line);
+        return $s;
+    }
+    // Up to `count` bytes, fewer at the end, none after it.
+    static function b_files_handle_bytes(array $args, int $line) {
+        self::arity("handle_bytes", $args, 3, 3, $line);
+        $path = self::text("handle_bytes", $args[1], $line);
+        $count = max($args[2], 0);
+        $file = self::handle("handle_bytes", $args, $line);
+        $s = "";
+        while (strlen($s) < $count && !feof($file)) {
+            $piece = @fread($file, $count - strlen($s));
+            if ($piece === false) self::fileError("cannot read `" . $path . "`", $line);
+            if ($piece === "") break;
+            $s .= $piece;
+        }
+        return new ZList($s === "" ? [] : array_values(unpack("C*", $s)));
+    }
+    // Every byte is handed to the system before this gives back, so that
+    // a full disk is an error at the write that met it.
+    private static function handlePut(string $name, array $args, string $bytes, string $path, int $line) {
+        $file = self::handle($name, $args, $line);
+        $done = 0;
+        while ($done < strlen($bytes)) {
+            $wrote = @fwrite($file, substr($bytes, $done));
+            if ($wrote === false || $wrote === 0) self::fileError("cannot write `" . $path . "`", $line);
+            $done += $wrote;
+        }
+        if (!@fflush($file)) self::fileError("cannot write `" . $path . "`", $line);
+        return null;
+    }
+    static function b_files_handle_write(array $args, int $line) {
+        self::arity("handle_write", $args, 3, 3, $line);
+        $path = self::text("handle_write", $args[1], $line);
+        $s = self::text("handle_write", $args[2], $line);
+        return self::handlePut("handle_write", $args, $s, $path, $line);
+    }
+    static function b_files_handle_write_bytes(array $args, int $line) {
+        self::arity("handle_write_bytes", $args, 3, 3, $line);
+        $path = self::text("handle_write_bytes", $args[1], $line);
+        $items = $args[2];
+        if (!($items instanceof ZList)) self::wrongType("handle_write_bytes", "a list[u8]", $items, $line);
+        foreach ($items->v as $n) {
+            if (!is_int($n)) self::wrongType("handle_write_bytes", "a list[u8]", $n, $line);
+            if ($n < 0 || $n > 255) self::raise_("ValueError", $n . " is not a byte: a byte is a number from 0 to 255", $line);
+        }
+        return self::handlePut("handle_write_bytes", $args, pack("C*", ...$items->v), $path, $line);
+    }
+    // The file is closed, and its number free.
+    static function b_files_handle_close(array $args, int $line) {
+        self::arity("handle_close", $args, 1, 1, $line);
+        $file = self::handle("handle_close", $args, $line);
+        self::$open_files[$args[0] - 1] = null;
+        @fclose($file);
+        return null;
+    }
+
     // `program.exit(code)`: what was printed goes out, and the program
     // ends with `code`.
     static function b_program_exit(array $args, int $line) {

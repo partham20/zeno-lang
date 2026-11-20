@@ -5560,6 +5560,175 @@ static bool zeno_files_make_folder(const char *path, int line, int col) {
 #endif /* ZENO_FIRMWARE */
 
 #endif /* ZENO_FILES_MAKE_FOLDER */
+#ifdef ZENO_FILES_PIECES
+/* ---------------------------------------------------------- A file in pieces
+ *
+ * What a `files.Reader` and a `files.Writer` of library/files.zeno are made
+ * of (decision 59.6): a file opened once, read a line or a few bytes at a
+ * time, or written a piece at a time, and closed by the `release` of its
+ * object. Each function has a twin in builtins.rs, with the same answers
+ * and the same messages. This piece is written only into a program that
+ * reads or writes a file in pieces (decision 56.19).
+ *
+ * The number a Zeno program keeps for the open file is the address of its
+ * `FILE`, and only library/files.zeno ever holds it: no program can make
+ * one up. A file is opened as bytes ("rb", "wb", "ab"), so that a line end
+ * is what Zeno says it is (6.17) on every system. A board with no file
+ * system cannot open one, and says FileError, as it does for `files.read`. */
+
+static FILE *zeno_open_file(int64_t file) {
+    return (FILE *)(intptr_t)file;
+}
+
+/* Open `path` to read (0), to write from empty (1), or to add to its end
+ * (2). NULL when all went well, or the message of the FileError. */
+static const char *zeno_file_handle_open(const char *path, int64_t how, int64_t *result) {
+    FILE *file;
+    if (how == 0) {
+        int at = zeno_file_at(path);
+        if (at == 0) return zeno_join(3, "there is no file `", path, "`");
+        file = at == 1 ? fopen(path, "rb") : NULL;
+        if (file == NULL) return zeno_join(3, "cannot read `", path, "`");
+    } else {
+        file = fopen(path, how == 2 ? "ab" : "wb");
+        if (file == NULL) return zeno_join(3, "cannot write `", path, "`");
+    }
+    *result = (int64_t)(intptr_t)file;
+    return NULL;
+}
+
+/* The next line, without its line end, or NULL (`none`) after the last.
+ * A "\r" just before the "\n" goes with it, as in `lines()`; one anywhere
+ * else stays. The line grows as `input()`'s does: in the text room with
+ * no collector, so that one longer than the room stops with the room's
+ * own message, and in a block that doubles with one. */
+static const char *zeno_file_handle_line(int64_t handle, const char *path, const char **result) {
+    FILE *file = zeno_open_file(handle);
+    char *line = NULL;
+    size_t used = 0;
+    size_t room = 0;
+    bool carriage = false; /* a "\r" is held back until the next byte is seen */
+    bool got = false;      /* was there anything at all, even an empty line? */
+    for (;;) {
+        int c = getc(file);
+        if (c == '\n') {
+            got = true;
+            break;
+        }
+        if (carriage) {
+            zeno_line_add(&line, &used, &room, '\r');
+            carriage = false;
+        }
+        if (c == EOF) {
+            if (ferror(file)) return zeno_join(3, "cannot read `", path, "`");
+            break;
+        }
+        got = true;
+        if (c == '\r') {
+            carriage = true;
+        } else {
+            zeno_line_add(&line, &used, &room, (char)c);
+        }
+    }
+    if (!got) {
+        *result = NULL;
+        return NULL;
+    }
+    if (!zeno_is_text((const unsigned char *)line, used)) return zeno_join(3, "`", path, "` does not hold text");
+    zeno_line_add(&line, &used, &room, '\0');
+    *result = line;
+    return NULL;
+}
+
+/* Up to `count` bytes as a new list[u8]: fewer at the end, none after it.
+ * The list has room for what is left of the file, and no more, so a large
+ * count asks for no more memory than the file holds. */
+static const char *zeno_file_handle_bytes(int64_t handle, const char *path, int64_t count, zeno_list **result) {
+    FILE *file = zeno_open_file(handle);
+    int64_t want = count < 0 ? 0 : count;
+    long here = ftell(file);
+    if (here >= 0 && fseek(file, 0, SEEK_END) == 0) {
+        long end = ftell(file);
+        if (fseek(file, here, SEEK_SET) != 0) return zeno_join(3, "cannot read `", path, "`");
+        if (end >= here && (int64_t)(end - here) < want) want = (int64_t)(end - here);
+    }
+    zeno_list *bytes = zeno_bytes_new(want);
+    size_t got = want > 0 ? fread(bytes->items, 1, (size_t)want, file) : 0;
+    if (got < (size_t)want && ferror(file)) {
+        zeno_list_drop(bytes);
+        return zeno_join(3, "cannot read `", path, "`");
+    }
+    bytes->len = (int64_t)got;
+    *result = bytes;
+    return NULL;
+}
+
+/* Bytes handed to the system before giving back: a full disk is an error
+ * at the `write` that met it, and the close loses nothing (59.6). */
+static const char *zeno_file_handle_put(int64_t handle, const char *path, const void *data, size_t size) {
+    FILE *file = zeno_open_file(handle);
+    bool good = (size == 0 || fwrite(data, 1, size, file) == size) && fflush(file) == 0;
+    return good ? NULL : zeno_join(3, "cannot write `", path, "`");
+}
+
+/* `files.handle_close(file)`: called once, by `release`. */
+static void zeno_files_handle_close(int64_t handle) {
+    (void)fclose(zeno_open_file(handle));
+}
+
+#ifndef ZENO_FIRMWARE
+
+static int64_t zeno_files_handle_open(const char *path, int64_t how, int line, int col) {
+    int64_t file = 0;
+    zeno_file_done(zeno_file_handle_open(path, how, &file), line, col);
+    return file;
+}
+
+static const char *zeno_files_handle_line(int64_t file, const char *path, int line, int col) {
+    const char *text = NULL;
+    zeno_file_done(zeno_file_handle_line(file, path, &text), line, col);
+    return text;
+}
+
+static zeno_list *zeno_files_handle_bytes(int64_t file, const char *path, int64_t count, int line, int col) {
+    zeno_list *bytes = NULL;
+    zeno_file_done(zeno_file_handle_bytes(file, path, count, &bytes), line, col);
+    return bytes != NULL ? bytes : zeno_bytes_new(0);
+}
+
+static void zeno_files_handle_write(int64_t file, const char *path, const char *text, int line, int col) {
+    zeno_file_done(zeno_file_handle_put(file, path, text, strlen(text)), line, col);
+}
+
+static void zeno_files_handle_write_bytes(int64_t file, const char *path, zeno_list *bytes, int line, int col) {
+    zeno_file_done(zeno_file_handle_put(file, path, bytes->items, (size_t)bytes->len), line, col);
+}
+
+#else /* ZENO_FIRMWARE */
+
+static bool zeno_files_handle_open(const char *path, int64_t how, int line, int col, int64_t *result) {
+    return zeno_file_done(zeno_file_handle_open(path, how, result), line, col);
+}
+
+static bool zeno_files_handle_line(int64_t file, const char *path, int line, int col, const char **result) {
+    return zeno_file_done(zeno_file_handle_line(file, path, result), line, col);
+}
+
+static bool zeno_files_handle_bytes(int64_t file, const char *path, int64_t count, int line, int col, zeno_list **result) {
+    return zeno_file_done(zeno_file_handle_bytes(file, path, count, result), line, col);
+}
+
+static bool zeno_files_handle_write(int64_t file, const char *path, const char *text, int line, int col) {
+    return zeno_file_done(zeno_file_handle_put(file, path, text, strlen(text)), line, col);
+}
+
+static bool zeno_files_handle_write_bytes(int64_t file, const char *path, zeno_list *bytes, int line, int col) {
+    return zeno_file_done(zeno_file_handle_put(file, path, bytes->items, (size_t)bytes->len), line, col);
+}
+
+#endif /* ZENO_FIRMWARE */
+
+#endif /* ZENO_FILES_PIECES */
 /* `program.environment(name)`: a copy of what the environment says,
  * or NULL, which is `none`. The copy is the program's to keep: the
  * environment's own text can change under it. */

@@ -2950,6 +2950,166 @@ mod z {
         }
     }
 
+    /// What a `files.Reader` and a `files.Writer` are made of (decision
+    /// 59.6). A file's number is its place in `OPEN_FILES`, plus one; a
+    /// closed file leaves its place empty. Files are read as bytes.
+    enum OpenFile {
+        Reading(std::io::BufReader<std::fs::File>),
+        // A `File` holds nothing back, so that a full disk is an error at
+        // the write that met it.
+        Writing(std::fs::File),
+    }
+
+    thread_local! {
+        static OPEN_FILES: RefCell<Vec<Option<OpenFile>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The place of the open file numbered `args[0]`.
+    fn handle(name: &str, args: &[V], line: usize) -> Result<usize, Exc> {
+        let V::Int(number) = args[0] else {
+            return wrong_type(name, "an int", &args[0], line);
+        };
+        let open = OPEN_FILES.with(|files| {
+            let files = files.borrow();
+            number >= 1 && number as u64 <= files.len() as u64 && files[(number - 1) as usize].is_some()
+        });
+        if !open {
+            return fatal(format!("there is no open file numbered {number}"), line);
+        }
+        Ok((number - 1) as usize)
+    }
+
+    pub fn b_files_handle_open(args: Vec<V>, line: usize) -> R {
+        arity("handle_open", &args, 2, 2, line)?;
+        let path = text("handle_open", &args[0], line)?;
+        let how = if let V::Int(n) = args[1] { n } else { 0 };
+        let open = if how == 0 {
+            match at(&path) {
+                At::Nothing => return file_error(format!("there is no file `{path}`"), line),
+                At::Other => return file_error(format!("cannot read `{path}`"), line),
+                At::File => {}
+            }
+            match std::fs::File::open(&*path) {
+                Ok(file) => OpenFile::Reading(std::io::BufReader::new(file)),
+                Err(_) => return file_error(format!("cannot read `{path}`"), line),
+            }
+        } else {
+            let file = std::fs::OpenOptions::new().write(true).create(true).append(how == 2).truncate(how != 2).open(&*path);
+            match file {
+                Ok(file) if !path.is_empty() => OpenFile::Writing(file),
+                _ => return file_error(format!("cannot write `{path}`"), line),
+            }
+        };
+        let number = OPEN_FILES.with(|files| {
+            let mut files = files.borrow_mut();
+            match files.iter().position(|f| f.is_none()) {
+                Some(place) => {
+                    files[place] = Some(open);
+                    place + 1
+                }
+                None => {
+                    files.push(Some(open));
+                    files.len()
+                }
+            }
+        });
+        Ok(V::Int(number as i64))
+    }
+
+    /// The next line without its line end (a `\r` before the `\n` goes
+    /// with it), or none at the end.
+    pub fn b_files_handle_line(args: Vec<V>, line: usize) -> R {
+        use std::io::BufRead;
+        arity("handle_line", &args, 2, 2, line)?;
+        let path = text("handle_line", &args[1], line)?;
+        let place = handle("handle_line", &args, line)?;
+        let mut data = Vec::new();
+        let got = OPEN_FILES.with(|files| match &mut files.borrow_mut()[place] {
+            Some(OpenFile::Reading(reader)) => Some(reader.read_until(b'\n', &mut data)),
+            _ => None,
+        });
+        match got {
+            Some(Ok(0)) => return Ok(V::None),
+            Some(Ok(_)) => {}
+            _ => return file_error(format!("cannot read `{path}`"), line),
+        }
+        if data.last() == Some(&b'\n') {
+            data.pop();
+            if data.last() == Some(&b'\r') {
+                data.pop();
+            }
+        }
+        match String::from_utf8(data) {
+            Ok(t) if !t.contains('\0') => Ok(st(t)),
+            _ => file_error(format!("`{path}` does not hold text"), line),
+        }
+    }
+
+    /// Up to `count` bytes, fewer at the end, none after it.
+    pub fn b_files_handle_bytes(args: Vec<V>, line: usize) -> R {
+        arity("handle_bytes", &args, 3, 3, line)?;
+        let path = text("handle_bytes", &args[1], line)?;
+        let count = if let V::Int(n) = args[2] { n.max(0) as u64 } else { 0 };
+        let place = handle("handle_bytes", &args, line)?;
+        let mut data = Vec::new();
+        let got = OPEN_FILES.with(|files| match &mut files.borrow_mut()[place] {
+            Some(OpenFile::Reading(reader)) => Some(reader.by_ref().take(count).read_to_end(&mut data)),
+            _ => None,
+        });
+        match got {
+            Some(Ok(_)) => Ok(new_list(data.into_iter().map(|b| V::Int(b as i64)).collect())),
+            _ => file_error(format!("cannot read `{path}`"), line),
+        }
+    }
+
+    fn handle_put(name: &str, args: &[V], data: &[u8], path: &str, line: usize) -> R {
+        let place = handle(name, args, line)?;
+        let done = OPEN_FILES.with(|files| match &mut files.borrow_mut()[place] {
+            Some(OpenFile::Writing(file)) => file.write_all(data).and_then(|()| file.flush()).is_ok(),
+            _ => false,
+        });
+        if done {
+            Ok(V::None)
+        } else {
+            file_error(format!("cannot write `{path}`"), line)
+        }
+    }
+
+    pub fn b_files_handle_write(args: Vec<V>, line: usize) -> R {
+        arity("handle_write", &args, 3, 3, line)?;
+        let path = text("handle_write", &args[1], line)?;
+        let t = text("handle_write", &args[2], line)?;
+        handle_put("handle_write", &args, t.as_bytes(), &path, line)
+    }
+
+    pub fn b_files_handle_write_bytes(args: Vec<V>, line: usize) -> R {
+        arity("handle_write_bytes", &args, 3, 3, line)?;
+        let path = text("handle_write_bytes", &args[1], line)?;
+        let V::List(items) = &args[2] else {
+            return wrong_type("handle_write_bytes", "a list[u8]", &args[2], line);
+        };
+        let mut bytes = Vec::with_capacity(items.borrow().len());
+        for item in items.borrow().iter() {
+            match item {
+                V::Int(n) if (0..=255).contains(n) => bytes.push(*n as u8),
+                V::Int(n) => {
+                    return raise_error("ValueError", format!("{n} is not a byte: a byte is a number from 0 to 255"), line)
+                }
+                other => return wrong_type("handle_write_bytes", "a list[u8]", other, line),
+            }
+        }
+        handle_put("handle_write_bytes", &args, &bytes, &path, line)
+    }
+
+    /// The file is closed, and its number free.
+    pub fn b_files_handle_close(args: Vec<V>, line: usize) -> R {
+        arity("handle_close", &args, 1, 1, line)?;
+        let place = handle("handle_close", &args, line)?;
+        let open = OPEN_FILES.with(|files| files.borrow_mut()[place].take());
+        drop(open);
+        Ok(V::None)
+    }
+
     /// `program.exit(code)`: what was printed goes out, and the program
     /// ends with `code`.
     pub fn b_program_exit(args: Vec<V>, line: usize) -> R {
@@ -3109,6 +3269,12 @@ mod z {
             "files.remove" => b_files_remove,
             "files.list" => b_files_list,
             "files.make_folder" => b_files_make_folder,
+            "files.handle_open" => b_files_handle_open,
+            "files.handle_line" => b_files_handle_line,
+            "files.handle_bytes" => b_files_handle_bytes,
+            "files.handle_write" => b_files_handle_write,
+            "files.handle_write_bytes" => b_files_handle_write_bytes,
+            "files.handle_close" => b_files_handle_close,
             "program.arguments" => b_program_arguments,
             "program.exit" => b_program_exit,
             "program.environment" => b_program_environment,

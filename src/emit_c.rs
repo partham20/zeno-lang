@@ -116,7 +116,22 @@ pub const PIECES: &[(&str, &str)] = &[
     ("ZENO_RANGE_LIST", "zeno_range_list"),
     ("ZENO_FILES_LIST", "zeno_files_list"),
     ("ZENO_FILES_MAKE_FOLDER", "zeno_files_make_folder"),
+    ("ZENO_FILES_PIECES", "zeno_files_handle_open"),
 ];
+
+/// Are these the kinds of what `files.{name}` is given, for one of the
+/// built-ins under a `files.Reader` or a `files.Writer` (decision 59.6)?
+pub fn handle_arguments(name: &str, kinds: &[&Kind]) -> bool {
+    let bytes = Kind::List(Box::new(Kind::Byte));
+    match name {
+        "handle_open" => matches!(kinds[..], [Kind::Str, Kind::Int]),
+        "handle_line" => matches!(kinds[..], [Kind::Int, Kind::Str]),
+        "handle_bytes" => matches!(kinds[..], [Kind::Int, Kind::Str, Kind::Int]),
+        "handle_write" => matches!(kinds[..], [Kind::Int, Kind::Str, Kind::Str]),
+        "handle_write_bytes" => matches!(kinds[..], [Kind::Int, Kind::Str, written] if *written == bytes),
+        _ => false,
+    }
+}
 
 /// `runtime` with each piece of `PIECES` that `used` names, and no other.
 pub fn with_pieces(runtime: &str, used: &[&str]) -> String {
@@ -7264,6 +7279,37 @@ impl Emitter<'_> {
                     return self.checked_call(call, Kind::None, &["FileError".to_string()], span);
                 }
                 Ok(self.called(call, &vals, Kind::None))
+            }
+            // What a `files.Reader` and a `files.Writer` are made of, in a
+            // piece of the runtime (decision 59.6). The number of the
+            // open file is an int, the address of its `FILE`.
+            ("files", "handle_open" | "handle_line" | "handle_bytes" | "handle_write" | "handle_write_bytes", _)
+                if handle_arguments(name, &vals.iter().map(|val| &val.kind).collect::<Vec<_>>()) =>
+            {
+                self.uses_piece("ZENO_FILES_PIECES");
+                let codes: Vec<&str> = vals.iter().map(|val| val.code.as_str()).collect();
+                let call = format!("zeno_files_{name}({}, {})", codes.join(", "), self.at(span));
+                let returns = match name {
+                    "handle_open" => Kind::Int,
+                    "handle_line" => Kind::Optional(Box::new(Kind::Str)),
+                    "handle_bytes" => Kind::List(Box::new(Kind::Byte)),
+                    _ => Kind::None,
+                };
+                // The message of an error, and a line, are built in the
+                // text room.
+                self.built = !self.collector;
+                let mut val = if self.firmware {
+                    self.checked_call(call, returns, &["FileError".to_string()], span)?
+                } else {
+                    self.called(call, &vals, returns)
+                };
+                // The bytes are a new list, which is nobody's yet.
+                val.made = name == "handle_bytes";
+                Ok(val)
+            }
+            ("files", "handle_close", [file]) if file.kind == Kind::Int => {
+                self.uses_piece("ZENO_FILES_PIECES");
+                Ok(self.called(format!("zeno_files_handle_close({})", file.code), &vals, Kind::None))
             }
             ("files", "write_bytes", [path, bytes])
                 if path.kind == Kind::Str && bytes.kind == Kind::List(Box::new(Kind::Byte)) =>
@@ -17448,6 +17494,252 @@ print(files.join("a", "b"), files.join("a/", "/b"), files.join("", "b"), files.j
         assert!(!without.contains("zeno_file_list") && !without.contains("opendir"), "folder code in a program without folders");
         let with = compile("import files\nprint(files.list(\".\"))\n").expect("it compiles");
         assert!(with.contains("zeno_file_list") && with.contains("opendir"), "no folder code in a program that lists a folder");
+    }
+
+    /// A file in pieces (decision 59.6): a thousand lines written by a
+    /// `Writer`, every seventh with a Windows line end and the last with
+    /// none, read by `for` and by `read_line`; a file opened again at
+    /// once; the shapes a file can end in; bytes in pieces across the end;
+    /// a writer that adds; and each thing that cannot be opened or read.
+    const IN_PIECES: &str = r#"import files
+
+let path = "PATH"
+
+function if_seventh(i: int) -> str {
+    if i % 7 == 0 {
+        return "\r\n"
+    }
+    return "\n"
+}
+
+function write_lines(at: str) raises FileError {
+    let out = files.write_to(at)
+    for i in range(1000) {
+        out.write(f"line {i}")
+        if i == 999 {
+            break
+        }
+        out.write(if_seventh(i))
+    }
+}
+
+function read_all(at: str) -> list[str] raises FileError {
+    let source = files.read_from(at)
+    var lines: list[str] = []
+    while true {
+        let line = source.read_line()
+        if line is none {
+            break
+        }
+        lines.append(line)
+    }
+    return lines
+}
+
+function by_for(at: str) raises FileError {
+    var count = 0
+    var total = 0
+    let source = files.read_from(at)
+    for line in source {
+        count += 1
+        total += len(line)
+        if line == "line 3" {
+            continue
+        }
+        if count == 1000 {
+            print("last:", line)
+        }
+    }
+    print("by for:", count, total)
+}
+
+function by_read_line(at: str) raises FileError {
+    let source = files.read_from(at)
+    var count = 0
+    while true {
+        let line = source.read_line()
+        if line is none {
+            break
+        }
+        count += 1
+        if count == 1 or count == 8 or count == 1000 {
+            print(count, line)
+        }
+    }
+    print("by read_line:", count)
+}
+
+function attempt_read(at: str) {
+    try {
+        let source = files.read_from(at)
+        while true {
+            let line = source.read_line()
+            if line is none {
+                print("the end")
+                return
+            }
+        }
+    } except FileError as e {
+        print("FileError:", e.message.replace(path, "PATH"))
+    }
+}
+
+function attempt_write(at: str, adding: bool) {
+    try {
+        if adding {
+            let out = files.append_to(at)
+        } else {
+            let out = files.write_to(at)
+        }
+        print("opened")
+    } except FileError as e {
+        print("FileError:", e.message.replace(path, "PATH"))
+    }
+}
+
+function bytes_in_pieces(at: str) raises FileError, ValueError {
+    var all: list[u8] = []
+    for b in range(256) {
+        all.append(u8(b))
+    }
+    if true {
+        let out = files.write_to(at)
+        out.write_bytes(all)
+        out.write_bytes([])
+        out.write("tail")
+    }
+    let source = files.read_from(at)
+    print("no bytes:", len(source.read_bytes(0)))
+    var sizes: list[int] = []
+    var sum = 0
+    while true {
+        let piece = source.read_bytes(100)
+        sizes.append(len(piece))
+        for b in piece {
+            sum += int(b)
+        }
+        if len(piece) == 0 {
+            break
+        }
+    }
+    print("pieces:", sizes, sum, len(source.read_bytes(5)), source.read_line())
+    try {
+        print(len(source.read_bytes(-1)))
+    } except ValueError as e {
+        print("ValueError:", e.message)
+    }
+}
+
+function main() raises FileError, ValueError {
+    write_lines(path)
+    by_for(path)
+    by_read_line(path)
+    for round in range(3) {
+        let again = files.read_from(path)
+        print("round", round, again.read_line(), again.read_line())
+    }
+    files.remove(path)
+    print("removed:", not files.exists(path))
+    let shapes = ["a\n", "", "\n", "\n\n", "x\r\n\r\ny", "\r", "é😀தமிழ்\r"]
+    for shape in shapes {
+        files.write(path, shape)
+        print(shape.lines() == read_all(path), len(read_all(path)))
+    }
+    bytes_in_pieces(path)
+    files.write(path, "first\n")
+    if true {
+        let more = files.append_to(path)
+        more.write("second\n")
+        more.write("é😀தமிழ்\n")
+    }
+    print(read_all(path))
+    if true {
+        let fresh = files.write_to(path)
+    }
+    print("emptied:", len(files.read(path)))
+    attempt_read(path + ".none")
+    attempt_read(".")
+    files.write_bytes(path, [0x41, 0x0A, 0xFF, 0x0A])
+    attempt_read(path)
+    files.write_bytes(path, [0x41, 0x00, 0x42])
+    attempt_read(path)
+    attempt_write(path + ".none/x.txt", false)
+    attempt_write(".", true)
+    files.remove(path)
+}
+
+main()
+"#;
+
+    #[test]
+    fn a_file_in_pieces_is_the_same_in_every_build() {
+        let path = scratch("pieces.txt");
+        no_collector_as_interpreter("pieces", &IN_PIECES.replace("PATH", &path));
+        let _ = std::fs::remove_file(&path);
+        // Uncaught, it stops the program as `files.read` does.
+        same_as_interpreter(
+            "pieces-uncaught",
+            &format!("import files\nlet source = files.read_from(\"{path}.none\")\nprint(source.read_line())\n"),
+        );
+    }
+
+    /// Reading a thousand lines takes no more of the pool than reading
+    /// ten: each line is built text, and the statement gives it back.
+    #[test]
+    fn reading_a_file_in_pieces_does_not_grow_the_pool() {
+        let taken = |lines: usize| {
+            let path = scratch(&format!("pool-{lines}.txt"));
+            let source = format!(
+                "import files\nfunction count(at: str) -> int raises FileError {{\n    let source = files.read_from(at)\n    \
+                 var n = 0\n    for line in source {{\n        n += len(line)\n    }}\n    return n\n}}\n\
+                 if true {{\n    let out = files.write_to(\"{path}\")\n    for i in range({lines}) {{\n        \
+                 out.write(f\"line number {{i}} of the file\\n\")\n    }}\n}}\nprint(count(\"{path}\"))\nfiles.remove(\"{path}\")\n"
+            );
+            let c = compile_no_collector(&source).expect("it compiles");
+            let (_, errors, finished) = build_and_run(&format!("pieces-pool-{lines}"), &c, &["-DZENO_MEMORY_REPORT"])?;
+            assert!(finished, "{errors}");
+            assert!(errors.contains("no collector, 0 blocks left at the end"), "{errors}");
+            errors.lines().find(|line| line.starts_with("pool:")).map(str::to_string)
+        };
+        if let (Some(ten), Some(thousand)) = (taken(10), taken(1000)) {
+            assert_eq!(ten, thousand, "the pool grew with the lines read");
+        }
+    }
+
+    /// A line longer than the text room stops a build with no collector
+    /// with the room's own message, as any text too long for it does.
+    #[test]
+    fn a_line_longer_than_the_text_room_stops_with_its_message() {
+        let path = scratch("long-line.txt");
+        std::fs::write(&path, "x".repeat(3000) + "\n").expect("written");
+        let source = format!("import files\nlet source = files.read_from(\"{path}\")\nprint(source.read_line() is none)\n");
+        let c = compile_no_collector(&source).expect("it compiles");
+        let ran = build_and_run("pieces-long-line", &c, &[]);
+        let _ = std::fs::remove_file(&path);
+        let Some((_, errors, finished)) = ran else { return };
+        assert!(!finished && errors.contains("more text than there is room for"), "{errors}");
+    }
+
+    /// A `write` hands its text to the system before it gives back, so a
+    /// full disk is a FileError at that `write` (decision 59.6). Linux has
+    /// a file that is always full.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_to_a_full_disk_is_an_error_at_that_write() {
+        let source = "import files\nlet out = files.write_to(\"/dev/full\")\nfor piece in [\"a\", \"b\"] {\n    try {\n        \
+                      out.write(piece)\n        print(\"written\", piece)\n    } except FileError as e {\n        print(e.message)\n    }\n}\n\
+                      try {\n    out.write_bytes([1, 2])\n} except FileError as e {\n    print(e.message)\n}\n";
+        assert_eq!(interpreted(source), "cannot write `/dev/full`\ncannot write `/dev/full`\ncannot write `/dev/full`\n");
+        no_collector_as_interpreter("pieces-full", source);
+    }
+
+    /// A program that reads no file in pieces has none of that code in it.
+    #[test]
+    fn a_file_in_pieces_is_only_in_a_program_that_uses_one() {
+        let without = compile("import files\nprint(files.read(\"x\"))\n").expect("it compiles");
+        assert!(!without.contains("zeno_files_handle_open"), "piece code in a program without a reader");
+        let with = compile("import files\nlet source = files.read_from(\"x\")\nprint(source.read_line())\n").expect("it compiles");
+        assert!(with.contains("zeno_files_handle_open") && with.contains("zeno_file_handle_line"), "no piece code in a program with one");
     }
 
     /// `files.read_bytes` and `files.write_bytes` (decision 36.1). Each

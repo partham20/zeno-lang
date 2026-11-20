@@ -1495,6 +1495,45 @@ const Z = (function () {
   }
   const fileError = (message, line) => raise("FileError", message, line);
 
+  // What a `files.Reader` and a `files.Writer` are made of (decision
+  // 59.6). A file's number is its place in `openFiles`, plus one; a
+  // closed file leaves its place empty. A file is read as bytes, a piece
+  // at a time, so a line end is what Zeno says it is on every system.
+  const openFiles = [];
+  function handle(name, args, line) {
+    const number = args[0];
+    if (!isInt(number)) wrongType(name, "an int", number, line);
+    const place = Number(number) - 1;
+    const file = place >= 0 && place < openFiles.length ? openFiles[place] : null;
+    if (file === null || file === undefined) fatal("there is no open file numbered " + String(number), line);
+    return file;
+  }
+  // More of a file that is read, into its buffer. False at the end.
+  function fill(file, path, line) {
+    if (file.ended) return false;
+    const piece = Buffer.alloc(65536);
+    let got = 0;
+    try { got = fs.readSync(file.fd, piece, 0, piece.length, null); } catch (e) { fileError("cannot read `" + path + "`", line); }
+    if (got === 0) { file.ended = true; return false; }
+    file.buffer = Buffer.concat([file.buffer.subarray(file.at), piece.subarray(0, got)]);
+    file.at = 0;
+    return true;
+  }
+  // Hand every byte to the system before giving back, so that a full
+  // disk is an error at the write that met it.
+  function handlePut(name, args, bytes, path, line) {
+    const file = handle(name, args, line);
+    try {
+      let done = 0;
+      while (done < bytes.length) {
+        const wrote = fs.writeSync(file.fd, bytes, done, bytes.length - done);
+        if (wrote <= 0) throw new Error("nothing written");
+        done += wrote;
+      }
+    } catch (e) { fileError("cannot write `" + path + "`", line); }
+    return null;
+  }
+
   // ------------------------------------------------------------ Clock
 
   const started = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -1801,6 +1840,85 @@ const Z = (function () {
         try { folder = fs.statSync(path).isDirectory(); } catch (e) {}
       }
       if (!folder) fileError("cannot make the folder `" + path + "`", line);
+      return null;
+    },
+    // `files.handle_open(path, how)`: to read (0), to write from empty
+    // (1) or to add to the end (2).
+    "files.handle_open"(args, line) {
+      arity("handle_open", args, 2, 2, line);
+      const path = text("handle_open", args[0], line);
+      const how = Number(args[1]);
+      let fd;
+      if (how === 0) {
+        const where = at(path);
+        if (where === "nothing") fileError("there is no file `" + path + "`", line);
+        if (where === "other") fileError("cannot read `" + path + "`", line);
+        try { fd = fs.openSync(path, "r"); } catch (e) { fileError("cannot read `" + path + "`", line); }
+      } else {
+        if (!inNode) fileError("cannot write `" + path + "`", line);
+        try { fd = fs.openSync(path, how === 2 ? "a" : "w"); } catch (e) { fileError("cannot write `" + path + "`", line); }
+      }
+      const file = { fd, buffer: Buffer.alloc(0), at: 0, ended: false };
+      let place = openFiles.indexOf(null);
+      if (place < 0) { openFiles.push(file); place = openFiles.length - 1; } else openFiles[place] = file;
+      return place + 1;
+    },
+    // The next line without its line end (a `\r` before the `\n` goes
+    // with it), or none at the end.
+    "files.handle_line"(args, line) {
+      arity("handle_line", args, 2, 2, line);
+      const path = text("handle_line", args[1], line);
+      const file = handle("handle_line", args, line);
+      let end = file.buffer.indexOf(10, file.at);
+      while (end < 0 && fill(file, path, line)) end = file.buffer.indexOf(10, file.at);
+      if (end < 0 && file.at >= file.buffer.length) return null;
+      let bytes;
+      if (end < 0) { bytes = file.buffer.subarray(file.at); file.at = file.buffer.length; }
+      else {
+        bytes = file.buffer.subarray(file.at, end);
+        file.at = end + 1;
+        if (bytes.length > 0 && bytes[bytes.length - 1] === 13) bytes = bytes.subarray(0, bytes.length - 1);
+      }
+      let s;
+      try { s = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); } catch (e) { s = null; }
+      if (s === null || s.includes("\0")) fileError("`" + path + "` does not hold text", line);
+      return s;
+    },
+    // Up to `count` bytes, fewer at the end, none after it.
+    "files.handle_bytes"(args, line) {
+      arity("handle_bytes", args, 3, 3, line);
+      const path = text("handle_bytes", args[1], line);
+      const count = Math.max(Number(args[2]), 0);
+      const file = handle("handle_bytes", args, line);
+      while (file.buffer.length - file.at < count && fill(file, path, line)) {}
+      const take = Math.min(count, file.buffer.length - file.at);
+      const bytes = Array.from(file.buffer.subarray(file.at, file.at + take));
+      file.at += take;
+      return bytes;
+    },
+    "files.handle_write"(args, line) {
+      arity("handle_write", args, 3, 3, line);
+      const path = text("handle_write", args[1], line);
+      const s = text("handle_write", args[2], line);
+      return handlePut("handle_write", args, Buffer.from(s, "utf8"), path, line);
+    },
+    "files.handle_write_bytes"(args, line) {
+      arity("handle_write_bytes", args, 3, 3, line);
+      const path = text("handle_write_bytes", args[1], line);
+      const items = args[2];
+      if (!Array.isArray(items)) wrongType("handle_write_bytes", "a list[u8]", items, line);
+      for (const n of items) {
+        if (!isInt(n)) wrongType("handle_write_bytes", "a list[u8]", n, line);
+        if (n < 0 || n > 255) raise("ValueError", String(n) + " is not a byte: a byte is a number from 0 to 255", line);
+      }
+      return handlePut("handle_write_bytes", args, Buffer.from(Uint8Array.from(items, Number)), path, line);
+    },
+    // The file is closed, and its number free.
+    "files.handle_close"(args, line) {
+      arity("handle_close", args, 1, 1, line);
+      const file = handle("handle_close", args, line);
+      openFiles[Number(args[0]) - 1] = null;
+      try { fs.closeSync(file.fd); } catch (e) {}
       return null;
     },
 

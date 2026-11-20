@@ -2818,6 +2818,137 @@ V b_files_make_folder(const Args& args, int line) {
     return V();
 }
 
+// What a `files.Reader` and a `files.Writer` are made of (decision
+// 59.6). A file's number is its place in `openFiles`, plus one; a closed
+// file leaves its place empty. Files are read as bytes.
+struct OpenFile {
+    FILE* f;
+    bool reading;
+};
+std::vector<OpenFile> openFiles;
+
+OpenFile& handle(const string& name, const Args& args, int line) {
+    if (args[0].t != V::INT) wrongType(name, "an int", args[0], line);
+    int64_t number = args[0].i;
+    if (number < 1 || number > (int64_t)openFiles.size() || !openFiles[number - 1].f) {
+        fatal("there is no open file numbered " + num(number), line);
+    }
+    return openFiles[number - 1];
+}
+
+V b_files_handle_open(const Args& args, int line) {
+    arity("handle_open", args, 2, 2, line);
+    string path = text("handle_open", args[0], line);
+    int64_t how = args[1].t == V::INT ? args[1].i : 0;
+    OpenFile open{nullptr, how == 0};
+    if (how == 0) {
+        string where = at(path);
+        if (where == "nothing") fileError("there is no file `" + path + "`", line);
+        if (where == "other") fileError("cannot read `" + path + "`", line);
+        open.f = fopen(path.c_str(), "rb");
+        if (!open.f) fileError("cannot read `" + path + "`", line);
+    } else {
+        open.f = path.empty() ? nullptr : fopen(path.c_str(), how == 2 ? "ab" : "wb");
+        if (!open.f) fileError("cannot write `" + path + "`", line);
+        // Nothing is held back, so that a full disk is an error at the
+        // write that met it.
+        setvbuf(open.f, nullptr, _IONBF, 0);
+    }
+    for (size_t place = 0; place < openFiles.size(); place++) {
+        if (!openFiles[place].f) {
+            openFiles[place] = open;
+            return I((int64_t)place + 1);
+        }
+    }
+    openFiles.push_back(open);
+    return I((int64_t)openFiles.size());
+}
+
+// The next line without its line end (a `\r` before the `\n` goes with
+// it), or none at the end.
+V b_files_handle_line(const Args& args, int line) {
+    arity("handle_line", args, 2, 2, line);
+    string path = text("handle_line", args[1], line);
+    OpenFile& open = handle("handle_line", args, line);
+    if (!open.reading) fileError("cannot read `" + path + "`", line);
+    string data;
+    bool any = false, ended = false;
+    int c;
+    while ((c = getc(open.f)) != EOF) {
+        any = true;
+        if (c == '\n') {
+            ended = true;
+            break;
+        }
+        data.push_back((char)c);
+    }
+    if (ferror(open.f)) fileError("cannot read `" + path + "`", line);
+    if (!any) return V();
+    if (ended && !data.empty() && data.back() == '\r') data.pop_back();
+    if (!validUtf8(data) || data.find('\0') != string::npos) fileError("`" + path + "` does not hold text", line);
+    return S(data);
+}
+
+// Up to `count` bytes, fewer at the end, none after it.
+V b_files_handle_bytes(const Args& args, int line) {
+    arity("handle_bytes", args, 3, 3, line);
+    string path = text("handle_bytes", args[1], line);
+    int64_t count = args[2].t == V::INT && args[2].i > 0 ? args[2].i : 0;
+    OpenFile& open = handle("handle_bytes", args, line);
+    if (!open.reading) fileError("cannot read `" + path + "`", line);
+    Args items;
+    unsigned char buf[65536];
+    while ((int64_t)items.size() < count) {
+        size_t want = (size_t)std::min<int64_t>(count - (int64_t)items.size(), (int64_t)sizeof buf);
+        size_t got = fread(buf, 1, want, open.f);
+        for (size_t i = 0; i < got; i++) items.push_back(I(buf[i]));
+        if (got < want) break;
+    }
+    if (ferror(open.f)) fileError("cannot read `" + path + "`", line);
+    return list(items);
+}
+
+V handlePut(const string& name, const Args& args, const string& data, const string& path, int line) {
+    OpenFile& open = handle(name, args, line);
+    if (open.reading) fileError("cannot write `" + path + "`", line);
+    bool ok = fwrite(data.data(), 1, data.size(), open.f) == data.size();
+    ok = fflush(open.f) == 0 && ok;
+    if (!ok) fileError("cannot write `" + path + "`", line);
+    return V();
+}
+
+V b_files_handle_write(const Args& args, int line) {
+    arity("handle_write", args, 3, 3, line);
+    string path = text("handle_write", args[1], line);
+    const string& s = text("handle_write", args[2], line);
+    return handlePut("handle_write", args, s, path, line);
+}
+
+V b_files_handle_write_bytes(const Args& args, int line) {
+    arity("handle_write_bytes", args, 3, 3, line);
+    string path = text("handle_write_bytes", args[1], line);
+    if (!args[2].is(K::LIST)) wrongType("handle_write_bytes", "a list[u8]", args[2], line);
+    const Args& items = as<List>(args[2]).items;
+    string data;
+    data.reserve(items.size());
+    for (const V& item : items) {
+        if (item.t != V::INT) wrongType("handle_write_bytes", "a list[u8]", item, line);
+        if (item.i < 0 || item.i > 255) raiseError("ValueError", std::to_string(item.i) + " is not a byte: a byte is a number from 0 to 255", line);
+        data.push_back((char)(unsigned char)item.i);
+    }
+    return handlePut("handle_write_bytes", args, data, path, line);
+}
+
+// The file is closed, and its number free.
+V b_files_handle_close(const Args& args, int line) {
+    arity("handle_close", args, 1, 1, line);
+    OpenFile& open = handle("handle_close", args, line);
+    FILE* f = open.f;
+    open.f = nullptr;
+    fclose(f);
+    return V();
+}
+
 std::vector<string> arguments;
 
 // `program.exit(code)`: what was printed goes out, and the program ends
@@ -2923,6 +3054,8 @@ const std::unordered_map<string, BuiltinBody>& builtins() {
             {"time.sleep", b_time_sleep}, {"time.now", b_time_now},
             {"files.read", b_files_read}, {"files.write", b_files_write}, {"files.read_bytes", b_files_read_bytes}, {"files.write_bytes", b_files_write_bytes}, {"files.append", b_files_append},
             {"files.exists", b_files_exists}, {"files.remove", b_files_remove}, {"files.list", b_files_list}, {"files.make_folder", b_files_make_folder},
+            {"files.handle_open", b_files_handle_open}, {"files.handle_line", b_files_handle_line}, {"files.handle_bytes", b_files_handle_bytes},
+            {"files.handle_write", b_files_handle_write}, {"files.handle_write_bytes", b_files_handle_write_bytes}, {"files.handle_close", b_files_handle_close},
             {"program.arguments", b_program_arguments}, {"program.exit", b_program_exit}, {"program.environment", b_program_environment}, {"program.warn", b_program_warn}, {"json.parse", b_json_parse}, {"json.write", b_json_write},
         };
         for (auto& w : WIDTHS) {

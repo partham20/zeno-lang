@@ -2379,6 +2379,148 @@ final class Z {
         return new ZList(names);
     }
 
+    // What a `files.Reader` and a `files.Writer` are made of (decision
+    // 59.6). A file's number is its place in `OPEN_FILES`, plus one; a
+    // closed file leaves its place empty. Files are read as bytes.
+    static final java.util.ArrayList<java.io.Closeable> OPEN_FILES = new java.util.ArrayList<>();
+
+    static java.io.Closeable handle(String name, Object[] args, int line) {
+        if (!(args[0] instanceof Long number)) throw wrongType(name, "an int", args[0], line);
+        java.io.Closeable file = number >= 1 && number <= OPEN_FILES.size() ? OPEN_FILES.get((int) (long) number - 1) : null;
+        if (file == null) throw fatal("there is no open file numbered " + number, line);
+        return file;
+    }
+
+    static Object b_files_handle_open(Object[] args, int line) {
+        arity("handle_open", args, 2, 2, line);
+        String path = text("handle_open", args[0], line);
+        long how = args[1] instanceof Long n ? n : 0;
+        java.io.Closeable file;
+        if (how == 0) {
+            String where = at(path);
+            if (where.equals("nothing")) throw fileError("there is no file `" + path + "`", line);
+            if (where.equals("other")) throw fileError("cannot read `" + path + "`", line);
+            try {
+                file = new java.io.BufferedInputStream(new java.io.FileInputStream(path));
+            } catch (java.io.IOException e) {
+                throw fileError("cannot read `" + path + "`", line);
+            }
+        } else {
+            try {
+                file = new java.io.FileOutputStream(path, how == 2);
+            } catch (java.io.IOException e) {
+                throw fileError("cannot write `" + path + "`", line);
+            }
+        }
+        int place = OPEN_FILES.indexOf(null);
+        if (place < 0) {
+            OPEN_FILES.add(file);
+            return (long) OPEN_FILES.size();
+        }
+        OPEN_FILES.set(place, file);
+        return (long) place + 1;
+    }
+
+    // The next line without its line end (a `\r` before the `\n` goes
+    // with it), or none at the end.
+    static Object b_files_handle_line(Object[] args, int line) {
+        arity("handle_line", args, 2, 2, line);
+        String path = text("handle_line", args[1], line);
+        if (!(handle("handle_line", args, line) instanceof java.io.InputStream in)) throw fileError("cannot read `" + path + "`", line);
+        var bytes = new java.io.ByteArrayOutputStream();
+        boolean any = false, ended = false;
+        try {
+            int b;
+            while ((b = in.read()) >= 0) {
+                any = true;
+                if (b == '\n') {
+                    ended = true;
+                    break;
+                }
+                bytes.write(b);
+            }
+        } catch (java.io.IOException e) {
+            throw fileError("cannot read `" + path + "`", line);
+        }
+        if (!any) return null;
+        byte[] data = bytes.toByteArray();
+        int length = data.length;
+        if (ended && length > 0 && data[length - 1] == '\r') length--;
+        String s;
+        try {
+            s = java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(data, 0, length)).toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            s = null;
+        }
+        if (s == null || s.indexOf('\0') >= 0) throw fileError("`" + path + "` does not hold text", line);
+        return s;
+    }
+
+    // Up to `count` bytes, fewer at the end, none after it.
+    static Object b_files_handle_bytes(Object[] args, int line) {
+        arity("handle_bytes", args, 3, 3, line);
+        String path = text("handle_bytes", args[1], line);
+        long count = args[2] instanceof Long n ? Math.max(n, 0) : 0;
+        if (!(handle("handle_bytes", args, line) instanceof java.io.InputStream in)) throw fileError("cannot read `" + path + "`", line);
+        byte[] data;
+        try {
+            data = in.readNBytes((int) Math.min(count, Integer.MAX_VALUE - 8));
+        } catch (java.io.IOException e) {
+            throw fileError("cannot read `" + path + "`", line);
+        }
+        var items = new java.util.ArrayList<Object>(data.length);
+        for (byte b : data) items.add((long) (b & 0xFF));
+        return new ZList(items);
+    }
+
+    // Every byte is handed to the system before this gives back (a
+    // `FileOutputStream` holds nothing back), so that a full disk is an
+    // error at the write that met it.
+    static Object handlePut(String name, Object[] args, byte[] data, String path, int line) {
+        if (!(handle(name, args, line) instanceof java.io.OutputStream out)) throw fileError("cannot write `" + path + "`", line);
+        try {
+            out.write(data);
+            out.flush();
+        } catch (java.io.IOException e) {
+            throw fileError("cannot write `" + path + "`", line);
+        }
+        return null;
+    }
+
+    static Object b_files_handle_write(Object[] args, int line) {
+        arity("handle_write", args, 3, 3, line);
+        String path = text("handle_write", args[1], line);
+        String s = text("handle_write", args[2], line);
+        return handlePut("handle_write", args, s.getBytes(java.nio.charset.StandardCharsets.UTF_8), path, line);
+    }
+
+    static Object b_files_handle_write_bytes(Object[] args, int line) {
+        arity("handle_write_bytes", args, 3, 3, line);
+        String path = text("handle_write_bytes", args[1], line);
+        if (!(args[2] instanceof ZList list)) throw wrongType("handle_write_bytes", "a list[u8]", args[2], line);
+        byte[] data = new byte[list.items.size()];
+        for (int i = 0; i < data.length; i++) {
+            Object item = list.items.get(i);
+            if (!(item instanceof Long n)) throw wrongType("handle_write_bytes", "a list[u8]", item, line);
+            if (n < 0 || n > 255) throw raiseError("ValueError", n + " is not a byte: a byte is a number from 0 to 255", line);
+            data[i] = (byte) (long) n;
+        }
+        return handlePut("handle_write_bytes", args, data, path, line);
+    }
+
+    // The file is closed, and its number free.
+    static Object b_files_handle_close(Object[] args, int line) {
+        arity("handle_close", args, 1, 1, line);
+        java.io.Closeable file = handle("handle_close", args, line);
+        OPEN_FILES.set((int) (long) (Long) args[0] - 1, null);
+        try {
+            file.close();
+        } catch (java.io.IOException e) {
+            // Closed as far as the program can tell.
+        }
+        return null;
+    }
+
     // `files.make_folder(path)`: it worked if there is a folder there at the end.
     static Object b_files_make_folder(Object[] args, int line) {
         String path = paths("make_folder", args, 1, line)[0];
@@ -2537,6 +2679,12 @@ final class Z {
         BUILTINS.put("files.remove", Z::b_files_remove);
         BUILTINS.put("files.list", Z::b_files_list);
         BUILTINS.put("files.make_folder", Z::b_files_make_folder);
+        BUILTINS.put("files.handle_open", Z::b_files_handle_open);
+        BUILTINS.put("files.handle_line", Z::b_files_handle_line);
+        BUILTINS.put("files.handle_bytes", Z::b_files_handle_bytes);
+        BUILTINS.put("files.handle_write", Z::b_files_handle_write);
+        BUILTINS.put("files.handle_write_bytes", Z::b_files_handle_write_bytes);
+        BUILTINS.put("files.handle_close", Z::b_files_handle_close);
         BUILTINS.put("program.arguments", Z::b_program_arguments);
         BUILTINS.put("program.exit", Z::b_program_exit);
         BUILTINS.put("program.environment", Z::b_program_environment);

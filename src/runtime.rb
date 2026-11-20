@@ -2435,6 +2435,128 @@ module Z
       nil
     end
 
+    # What a `files.Reader` and a `files.Writer` are made of (decision
+    # 59.6). A file's number is its place in `@open_files`, plus one; a
+    # closed file leaves its place empty. Files are opened as bytes.
+    def handle(name, args, line)
+      number = args[0]
+      wrong_type(name, "an int", number, line) unless number.is_a?(Integer)
+      @open_files ||= []
+      file = number >= 1 ? @open_files[number - 1] : nil
+      fatal("there is no open file numbered " + number.to_s, line) if file.nil?
+      file
+    end
+
+    def b_files_handle_open(args, line)
+      arity("handle_open", args, 2, 2, line)
+      path = text("handle_open", args[0], line)
+      how = args[1]
+      if how == 0
+        where = at_path(path)
+        file_error("there is no file `" + path + "`", line) if where == "nothing"
+        file_error("cannot read `" + path + "`", line) if where == "other"
+        begin
+          file = File.open(path, "rb")
+        rescue SystemCallError, IOError, ArgumentError
+          file_error("cannot read `" + path + "`", line)
+        end
+      else
+        begin
+          file = File.open(path, how == 2 ? "ab" : "wb")
+        rescue SystemCallError, IOError, ArgumentError
+          file_error("cannot write `" + path + "`", line)
+        end
+      end
+      @open_files ||= []
+      place = @open_files.index(nil)
+      if place.nil?
+        @open_files << file
+        return @open_files.length
+      end
+      @open_files[place] = file
+      place + 1
+    end
+
+    # The next line without its line end (a `\r` before the `\n` goes
+    # with it), or none at the end.
+    def b_files_handle_line(args, line)
+      arity("handle_line", args, 2, 2, line)
+      path = text("handle_line", args[1], line)
+      file = handle("handle_line", args, line)
+      begin
+        s = file.gets("\n".b)
+      rescue SystemCallError, IOError
+        file_error("cannot read `" + path + "`", line)
+      end
+      return nil if s.nil?
+      if s.end_with?("\n".b)
+        s = s[0...-1]
+        s = s[0...-1] if s.end_with?("\r".b)
+      end
+      s = s.force_encoding(UTF8)
+      file_error("`" + path + "` does not hold text", line) if !s.valid_encoding? || s.include?("\0")
+      s
+    end
+
+    # Up to `count` bytes, fewer at the end, none after it.
+    def b_files_handle_bytes(args, line)
+      arity("handle_bytes", args, 3, 3, line)
+      path = text("handle_bytes", args[1], line)
+      count = [args[2], 0].max
+      file = handle("handle_bytes", args, line)
+      begin
+        got = file.read(count)
+      rescue SystemCallError, IOError
+        file_error("cannot read `" + path + "`", line)
+      end
+      got.nil? ? [] : got.bytes
+    end
+
+    # Every byte is handed to the system before this gives back, so that
+    # a full disk is an error at the write that met it.
+    def handle_put(name, args, bytes, path, line)
+      file = handle(name, args, line)
+      begin
+        file.write(bytes)
+        file.flush
+      rescue SystemCallError, IOError
+        file_error("cannot write `" + path + "`", line)
+      end
+      nil
+    end
+
+    def b_files_handle_write(args, line)
+      arity("handle_write", args, 3, 3, line)
+      path = text("handle_write", args[1], line)
+      s = text("handle_write", args[2], line)
+      handle_put("handle_write", args, s.b, path, line)
+    end
+
+    def b_files_handle_write_bytes(args, line)
+      arity("handle_write_bytes", args, 3, 3, line)
+      path = text("handle_write_bytes", args[1], line)
+      items = args[2]
+      wrong_type("handle_write_bytes", "a list[u8]", items, line) unless items.is_a?(Array)
+      items.each do |n|
+        wrong_type("handle_write_bytes", "a list[u8]", n, line) unless n.is_a?(Integer)
+        raise_("ValueError", n.to_s + " is not a byte: a byte is a number from 0 to 255", line) if n < 0 || n > 255
+      end
+      handle_put("handle_write_bytes", args, items.pack("C*"), path, line)
+    end
+
+    # The file is closed, and its number free.
+    def b_files_handle_close(args, line)
+      arity("handle_close", args, 1, 1, line)
+      file = handle("handle_close", args, line)
+      @open_files[args[0] - 1] = nil
+      begin
+        file.close
+      rescue SystemCallError, IOError
+        # Closed as far as the program can tell.
+      end
+      nil
+    end
+
     # `program.exit(code)`: what was printed goes out, and the program
     # ends with `code`. `exit!` is not an exception a `rescue` could stop.
     def b_program_exit(args, line)

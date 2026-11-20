@@ -64,6 +64,135 @@ attempt("remove twice", function() -> str {
     files.remove(path)
     return "removed"
 })
+# A file in pieces (decision 59.6): a thousand lines written by a
+# Writer, every seventh with a Windows line end and the last with none.
+function write_lines(at: str) raises FileError {
+    let out = files.write_to(at)
+    for i in range(1000) {
+        out.write(f"line {i}")
+        if i == 999 {
+            break
+        }
+        out.write(if_seventh(i))
+    }
+}
+function if_seventh(i: int) -> str {
+    if i % 7 == 0 {
+        return "\r\n"
+    }
+    return "\n"
+}
+write_lines(path)
+var count = 0
+var total = 0
+var last = ""
+if true {
+    let source = files.read_from(path)
+    for line in source {
+        count += 1
+        total += len(line)
+        last = line
+    }
+}
+print("by for:", count, total, last, files.read(path).lines() == read_all(path))
+function read_all(at: str) -> list[str] raises FileError {
+    let source = files.read_from(at)
+    var lines: list[str] = []
+    while true {
+        let line = source.read_line()
+        if line is none {
+            break
+        }
+        lines.append(line)
+    }
+    return lines
+}
+# The same file opened again at once: the first was closed.
+for round in range(3) {
+    let again = files.read_from(path)
+    print("round", round, again.read_line(), again.read_line())
+}
+files.remove(path)
+print("removed:", not files.exists(path))
+# A file whose last line has an end, an empty one, and empty lines.
+let shapes = ["a\n", "", "\n", "\n\n", "x\r\n\r\ny", "\r"]
+for shape in shapes {
+    files.write(path, shape)
+    print([shape], read_all(path), shape.lines() == read_all(path))
+}
+# Bytes in pieces, across the end.
+var all: list[u8] = []
+for b in range(256) {
+    all.append(u8(b))
+}
+if true {
+    let out = files.write_to(path)
+    out.write_bytes(all)
+    out.write_bytes([])
+    out.write("tail")
+}
+if true {
+    let source = files.read_from(path)
+    print("no bytes:", source.read_bytes(0))
+    var sizes: list[int] = []
+    while true {
+        let piece = source.read_bytes(100)
+        sizes.append(len(piece))
+        if len(piece) == 0 {
+            break
+        }
+    }
+    print("pieces:", sizes, source.read_bytes(5), source.read_line())
+    try {
+        print(source.read_bytes(-1))
+    } except ValueError as e {
+        print("ValueError:", e.message)
+    }
+}
+# Added to the end, and a writer that begins empty.
+files.write(path, "first\n")
+if true {
+    let more = files.append_to(path)
+    more.write("second\n")
+    more.write("é😀தமிழ்\n")
+}
+print(read_all(path))
+if true {
+    let fresh = files.write_to(path)
+}
+print("emptied:", [files.read(path)])
+# What cannot be opened, and a line that is not text.
+attempt("read_from missing", function() -> str {
+    let source = files.read_from("zeno-targets-no-such-file.txt")
+    return "opened"
+})
+attempt("read_from folder", function() -> str {
+    let source = files.read_from(".")
+    return "opened"
+})
+attempt("write_to in missing folder", function() -> str {
+    let out = files.write_to("zeno-targets-no-such-folder/x.txt")
+    return "opened"
+})
+attempt("append_to folder", function() -> str {
+    let out = files.append_to(".")
+    return "opened"
+})
+attempt("read_line not text", function() -> str {
+    let source = files.read_from("edge-files.bytes")
+    while true {
+        let line = source.read_line()
+        if line is none {
+            return "the end"
+        }
+    }
+})
+attempt("read_line zero byte", function() -> str {
+    let source = files.read_from("edge-files.nul")
+    let line = source.read_line()
+    return "read"
+})
+files.remove(path)
 # A sleep of no time, or less, is no sleep.
 import time
 time.sleep(0 ms)

@@ -31,3 +31,69 @@ function join(first: str, second: str) -> str {
     }
     return first + "/" + second
 }
+
+# A file read in pieces, from its start, one line or a few bytes at a
+# time: `let source = files.read_from("big.log")`. It holds the open
+# file, and closes it when its owner ends, as every `Resource` is
+# released (decision 59.1), so there is no `close` to forget. Only
+# `read_from` makes one: the number of the open file is its own.
+owned class Reader is Resource {
+    private file: int
+    private path: str
+
+    # The next line, without its line end, or `none` after the last.
+    function read_line(self) -> str or none raises FileError {
+        return files.handle_line(self.file, self.path)
+    }
+
+    # Up to `count` bytes: fewer at the end of the file, none after it.
+    function read_bytes(self, count: int) -> list[u8] raises FileError, ValueError {
+        if count < 0 {
+            raise ValueError(f"`read_bytes` was asked for {count} bytes, and a count of bytes is never below 0")
+        }
+        return files.handle_bytes(self.file, self.path, count)
+    }
+
+    function release(self) {
+        files.handle_close(self.file)
+    }
+}
+
+# A file written in pieces: `files.write_to(path)` begins it empty,
+# `files.append_to(path)` goes on from its end. Each `write` hands its
+# text to the system before it gives back, so a disk that is full is
+# an error at the `write` that met it, and the close loses nothing.
+owned class Writer is Resource {
+    private file: int
+    private path: str
+
+    # The text as it is: no line end is added.
+    function write(self, text: str) raises FileError {
+        files.handle_write(self.file, self.path, text)
+    }
+
+    function write_bytes(self, bytes: list[u8]) raises FileError {
+        files.handle_write_bytes(self.file, self.path, bytes)
+    }
+
+    function release(self) {
+        files.handle_close(self.file)
+    }
+}
+
+# The file at `path`, to read in pieces from its start.
+function read_from(path: str) -> Reader raises FileError {
+    return Reader(files.handle_open(path, 0), path)
+}
+
+# A new, empty file at `path`, to write in pieces, as `files.write`
+# begins one.
+function write_to(path: str) -> Writer raises FileError {
+    return Writer(files.handle_open(path, 1), path)
+}
+
+# The file at `path`, to write in pieces after what it holds, as
+# `files.append` does; made if it is not there.
+function append_to(path: str) -> Writer raises FileError {
+    return Writer(files.handle_open(path, 2), path)
+}

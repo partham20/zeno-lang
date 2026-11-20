@@ -257,6 +257,9 @@ pub struct Types {
     resource_lets: HashSet<(usize, usize)>,
     resource_params: HashSet<(usize, usize, String)>,
     gives: HashSet<(usize, usize)>,
+    /// Each `for line in source` over a `files.Reader`, by where it is
+    /// written: `checked` makes it a loop of `read_line` (decision 59.7).
+    readers: HashSet<(usize, usize)>,
     /// Each `let`, `var` or `const` whose variable owns its value, and so
     /// frees it when its block ends.
     owners: HashSet<usize>,
@@ -661,17 +664,21 @@ pub fn checked(program: Program, rules: Rules) -> (Program, Vec<Error>, Types) {
             && types.wrapping.is_empty()
             && types.limits.is_empty()
             && types.resource_lets.is_empty()
-            && types.resource_params.is_empty())
+            && types.resource_params.is_empty()
+            && types.readers.is_empty())
     {
         return (program, errors, types);
     }
-    let Types { fits, numbered, numbered_enums, f32s, widened, u64s, wrapping, limits, resource_lets, resource_params, gives, .. } =
+    let Types {
+        fits, numbered, numbered_enums, f32s, widened, u64s, wrapping, limits, resource_lets, resource_params, gives, readers, ..
+    } =
         types;
     let program = program
         .with_u64s(u64s, wrapping, limits)
         .with_fits(&fits)
         .with_numbers(numbered, &numbered_enums)
         .with_f32s(f32s, widened)
+        .with_readers(&readers)
         .with_resources(resource_lets, resource_params, gives);
     let (errors, types) = check_by(&program, rules);
     (program, errors, types)
@@ -683,6 +690,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     // A file that begins with the line `strict` asks for every type in
     // that file to be known. `--strict` and `zeno build` ask it of all
     // the files of the program.
+    let files_part = program.modules.iter().position(|file| file.path == "library/files.zeno").map(|place| place + 1);
     let strict_files: Vec<bool> =
         std::iter::once(program.strict).chain(program.modules.iter().map(|module| module.strict)).collect();
     let one_owner = rules.one_owner;
@@ -704,6 +712,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     for _ in 0..MAX_ROUNDS {
         let mut checker = Checker::new(strict, false, known.clone(), open.clone());
         checker.strict_files = strict_files.clone();
+        checker.files_part = files_part;
         checker.one_owner = one_owner;
         checker.firmware = rules.firmware;
         checker.taken = taken.clone();
@@ -748,6 +757,7 @@ pub fn check_by(program: &Program, rules: Rules) -> (Vec<Error>, Types) {
     let checker = loop {
         let mut checker = Checker::new(strict, true, known.clone(), open.clone());
         checker.strict_files = strict_files.clone();
+        checker.files_part = files_part;
         checker.one_owner = one_owner;
         checker.firmware = rules.firmware;
         checker.types.one_owner = one_owner;
@@ -2297,6 +2307,14 @@ fn module_member(module: &str, name: &str) -> Option<Ty> {
         ("files", "remove") => Ty::Builtin("files.remove"),
         ("files", "list") => Ty::Builtin("files.list"),
         ("files", "make_folder") => Ty::Builtin("files.make_folder"),
+        // What a `Reader` and a `Writer` of library/files.zeno are made
+        // of, and no program can name (decision 59.6).
+        ("files", "handle_open") => Ty::Builtin("files.handle_open"),
+        ("files", "handle_line") => Ty::Builtin("files.handle_line"),
+        ("files", "handle_bytes") => Ty::Builtin("files.handle_bytes"),
+        ("files", "handle_write") => Ty::Builtin("files.handle_write"),
+        ("files", "handle_write_bytes") => Ty::Builtin("files.handle_write_bytes"),
+        ("files", "handle_close") => Ty::Builtin("files.handle_close"),
         ("program", "arguments") => Ty::Builtin("program.arguments"),
         ("program", "run") => Ty::Builtin("program.run"),
         ("program", "exit") => Ty::Builtin("program.exit"),
@@ -2370,6 +2388,28 @@ fn no_member(module: &str, name: &str) -> String {
 }
 
 // -------------------------------------------------------------------- Checker
+
+impl Checker {
+    /// Is this a `files.Reader`, or a look at one? A `for` over it is
+    /// given its lines (decision 59.7).
+    fn is_reader(&self, ty: &Ty) -> bool {
+        let mut bare = ty;
+        while let Ty::Owned(inner) | Ty::Borrowed(inner) = bare {
+            bare = inner;
+        }
+        matches!(bare, Ty::Instance(class) if class.name == "files.Reader" && Some(class.file) == self.files_part)
+    }
+
+    /// `module_member`, but for the built-ins a `files.Reader` and a
+    /// `files.Writer` are made of, which only library/files.zeno can
+    /// call: to any other file they are names the module does not have.
+    fn member(&self, module: &str, name: &str, span: Span) -> Option<Ty> {
+        if module == "files" && name.starts_with("handle_") && Some(span.file()) != self.files_part {
+            return None;
+        }
+        module_member(module, name)
+    }
+}
 
 /// What the checker tracks for the function body it is currently inside.
 /// The bottom frame stands for the top level of the file.
@@ -2456,6 +2496,10 @@ struct Checker {
     /// For each file of the program, whether it begins with the line
     /// `strict`. See `strict_at`.
     strict_files: Vec<bool>,
+    /// The number of the file library/files.zeno, if it is joined to the
+    /// program: the one file that may call `files.handle_open` and the
+    /// other built-ins under a `Reader` and a `Writer` (decision 59.6).
+    files_part: Option<usize>,
     /// Does every list and object have one owner, said or not? True for
     /// a build with no collector. See `Rules`.
     one_owner: bool,
@@ -2595,6 +2639,7 @@ impl Checker {
             big_numbers: Vec::new(),
             strict,
             strict_files: Vec::new(),
+            files_part: None,
             one_owner: false,
             firmware: false,
             last_round,
@@ -4573,10 +4618,29 @@ impl Checker {
                 condition.kind == ExprKind::Bool(true) && !has_break(body)
             }
             StmtKind::For { variable, second, iterable, body } => {
+                // A reader that a call gives has no owner to close it at
+                // the end of the loop: said below, in a `for`'s words.
+                let made = matches!(iterable.kind, ExprKind::Call { .. });
+                if made {
+                    self.receiving.insert(iterable as *const Expr as usize);
+                }
                 let iterable_type = self.look(iterable, env);
+                let reader = self.is_reader(&iterable_type);
+                if made && self.is_resource(&iterable_type) {
+                    self.error(
+                        "a `for` cannot read from a reader that nothing keeps: it would be closed at once. \
+                         Give it a name first, `let source = files.read_from(path)`, and then write `for line in source`",
+                        iterable.span,
+                    );
+                } else if reader && second.is_some() {
+                    self.error("a `for` over a `files.Reader` gives one line at a time, so it takes one name: `for line in source`", span);
+                } else if reader {
+                    self.types.readers.insert((span.line, span.col));
+                }
                 // With two names the first is the key, or the position,
                 // and the second is what is there.
                 let (first, item) = match second {
+                    None if reader => (None, Ty::Str),
                     None => (None, self.item_type(&iterable_type, iterable.span)),
                     Some(_) => {
                         let (first, item) = self.pair_types(&iterable_type, iterable.span);
@@ -4801,7 +4865,7 @@ impl Checker {
                     self.declare(env, module, Ty::Module(module), false, span);
                 }
                 for name in names {
-                    let ty = match module_member(module, name) {
+                    let ty = match self.member(module, name, span) {
                         Some(ty) => ty,
                         None => self.error(no_member(module, name), span),
                     };
@@ -7903,7 +7967,7 @@ impl Checker {
                         return Ty::CLibrary(library);
                     }
                 }
-                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes" | "files.list" | "range")) {
+                if matches!(callee, Ty::Builtin("program.arguments" | "files.read_bytes" | "files.handle_bytes" | "files.list" | "range")) {
                     // The list of arguments, the bytes of a file, the
                     // names in a folder and the numbers of a range, are
                     // new at each call.
@@ -8170,7 +8234,7 @@ impl Checker {
                     None => self.error(format!("enum `{}` has no case `{name}`", info.name), span),
                 }
             }
-            Ty::Module(module) => match module_member(module, name) {
+            Ty::Module(module) => match self.member(module, name, span) {
                 Some(ty) => ty,
                 None => self.error(no_member(module, name), span),
             },
@@ -9030,6 +9094,48 @@ impl Checker {
                 }
                 self.can_raise("FileError", span);
                 if short == "read_bytes" { bytes } else { Ty::None }
+            }
+            // The open file under a `Reader` or a `Writer` (decision
+            // 59.6): `handle_open(path, how)` gives its number (`how` is 0
+            // to read, 1 to write, 2 to add to the end); the rest take
+            // that number and the path, which their messages name.
+            "files.handle_open" => {
+                if self.arity("handle_open", arguments, 2, 2, span) {
+                    self.expect(&first, &Ty::Str, "the path given to `files.handle_open`", arguments[0].span);
+                    self.expect(&arguments[1].ty, &Ty::Int, "how `files.handle_open` opens", arguments[1].span);
+                }
+                self.can_raise("FileError", span);
+                Ty::Int
+            }
+            "files.handle_line" | "files.handle_bytes" | "files.handle_write" | "files.handle_write_bytes"
+            | "files.handle_close" => {
+                let short = &name["files.".len()..];
+                let bytes = Ty::List(Box::new(Ty::Sized(ints::WIDTHS[0])));
+                let count = if short == "handle_close" { 1 } else if short == "handle_line" { 2 } else { 3 };
+                if self.arity(short, arguments, count, count, span) {
+                    self.expect(&first, &Ty::Int, &format!("the file given to `files.{short}`"), arguments[0].span);
+                    if count > 1 {
+                        self.expect(&arguments[1].ty, &Ty::Str, &format!("the path given to `files.{short}`"), arguments[1].span);
+                    }
+                    if count > 2 {
+                        let given = &arguments[2];
+                        let wanted = match short {
+                            "handle_bytes" => Ty::Int,
+                            "handle_write" => Ty::Str,
+                            _ => bytes.clone(),
+                        };
+                        let ty = self.adapted(given.written.clone(), given.place, given.ty.clone(), &wanted, given.span);
+                        self.expect(&ty, &wanted, &format!("what is given to `files.{short}`"), given.span);
+                    }
+                }
+                if short != "handle_close" {
+                    self.can_raise("FileError", span);
+                }
+                match short {
+                    "handle_line" => Ty::Optional(Box::new(Ty::Str)),
+                    "handle_bytes" => bytes,
+                    _ => Ty::None,
+                }
             }
             // `input()`, `input("Name: ")`: a line from the keyboard, or
             // `none` when there are no more. The answer has to be tested

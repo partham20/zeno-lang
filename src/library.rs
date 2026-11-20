@@ -49,7 +49,7 @@ pub const PARTS: &[Part] = &[
         module: "files",
         path: "library/files.zeno",
         source: include_str!("../library/files.zeno"),
-        names: &["join"],
+        names: &["join", "Reader", "Writer", "read_from", "write_to", "append_to"],
         built_in_too: true,
     },
     Part {

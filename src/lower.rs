@@ -270,7 +270,10 @@ pub fn module_members(module: &str) -> Option<&'static [&'static str]> {
             "log", "log2", "log10",
         ],
         "time" => &["sleep", "now"],
-        "files" => &["read", "write", "append", "exists", "remove", "read_bytes", "write_bytes", "list", "make_folder"],
+        "files" => &[
+            "read", "write", "append", "exists", "remove", "read_bytes", "write_bytes", "list", "make_folder",
+            "handle_open", "handle_line", "handle_bytes", "handle_write", "handle_write_bytes", "handle_close",
+        ],
         "program" => &["arguments", "exit", "environment", "warn"],
         "json" => &["parse", "write"],
         _ => return None,

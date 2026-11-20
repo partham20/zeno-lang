@@ -385,6 +385,13 @@ const DECLARED: &[(&str, &str)] = &[
     ("zeno_files_write_bytes", "declare void @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_list", "declare ptr @zeno_files_list(ptr, i32 signext, i32 signext)"),
     ("zeno_files_make_folder", "declare void @zeno_files_make_folder(ptr, i32 signext, i32 signext)"),
+    // What a `files.Reader` and a `files.Writer` are made of (59.6).
+    ("zeno_files_handle_open", "declare i64 @zeno_files_handle_open(ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_files_handle_line", "declare ptr @zeno_files_handle_line(i64, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_handle_bytes", "declare ptr @zeno_files_handle_bytes(i64, ptr, i64, i32 signext, i32 signext)"),
+    ("zeno_files_handle_write", "declare void @zeno_files_handle_write(i64, ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_handle_write_bytes", "declare void @zeno_files_handle_write_bytes(i64, ptr, ptr, i32 signext, i32 signext)"),
+    ("zeno_files_handle_close", "declare void @zeno_files_handle_close(i64)"),
     ("zeno_char_code", "declare i64 @zeno_char_code(ptr, i32 signext, i32 signext)"),
     ("zeno_char", "declare ptr @zeno_char(i64, i32 signext, i32 signext)"),
     ("zeno_list_sum_int", "declare i64 @zeno_list_sum_int(ptr, i32 signext, i32 signext)"),
@@ -1331,6 +1338,14 @@ const DECLARED_FOR_FIRMWARE: &[(&str, &str)] = &[
     ("zeno_files_write_bytes", "declare zeroext i1 @zeno_files_write_bytes(ptr, ptr, i32 signext, i32 signext)"),
     ("zeno_files_list", "declare zeroext i1 @zeno_files_list(ptr, i32 signext, i32 signext, ptr)"),
     ("zeno_files_make_folder", "declare zeroext i1 @zeno_files_make_folder(ptr, i32 signext, i32 signext)"),
+    ("zeno_files_handle_open", "declare zeroext i1 @zeno_files_handle_open(ptr, i64, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_handle_line", "declare zeroext i1 @zeno_files_handle_line(i64, ptr, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_handle_bytes", "declare zeroext i1 @zeno_files_handle_bytes(i64, ptr, i64, i32 signext, i32 signext, ptr)"),
+    ("zeno_files_handle_write", "declare zeroext i1 @zeno_files_handle_write(i64, ptr, ptr, i32 signext, i32 signext)"),
+    (
+        "zeno_files_handle_write_bytes",
+        "declare zeroext i1 @zeno_files_handle_write_bytes(i64, ptr, ptr, i32 signext, i32 signext)",
+    ),
 ];
 
 /// The error for a list that would outlive the statement that owns it:
@@ -7222,6 +7237,58 @@ impl Emitter<'_> {
                     return self.checked_call(call, &Kind::None, &["FileError".to_string()], span);
                 }
                 self.run("zeno_files_make_folder", list);
+                Ok(Val::nothing())
+            }
+            // What a `files.Reader` and a `files.Writer` are made of
+            // (decision 59.6). The number of an open file is the address
+            // of its `FILE`, an i64. The part of the runtime they are in
+            // is written when the IR calls one.
+            ("files", "handle_open" | "handle_line" | "handle_bytes" | "handle_write" | "handle_write_bytes", _)
+                if emit_c::handle_arguments(name, &vals.iter().map(|val| &val.kind).collect::<Vec<_>>()) =>
+            {
+                let runtime = match name {
+                    "handle_open" => "zeno_files_handle_open",
+                    "handle_line" => "zeno_files_handle_line",
+                    "handle_bytes" => "zeno_files_handle_bytes",
+                    "handle_write" => "zeno_files_handle_write",
+                    _ => "zeno_files_handle_write_bytes",
+                };
+                let mut list = String::new();
+                for val in &vals {
+                    let ty = if val.kind == Kind::Int { "i64" } else { "ptr" };
+                    list += &format!("{ty} {}, ", val.code);
+                }
+                list += &at(span);
+                let returns = match name {
+                    "handle_open" => Kind::Int,
+                    "handle_line" => Kind::Optional(Box::new(Kind::Str)),
+                    "handle_bytes" => Kind::List(Box::new(Kind::Byte)),
+                    _ => Kind::None,
+                };
+                // The message of an error, and a line, are built in the
+                // text room.
+                self.code.built = !self.collector;
+                if self.firmware {
+                    self.uses(runtime);
+                    let call = format!("call zeroext i1 @{runtime}({list}");
+                    let val = self.checked_call(call, &returns, &["FileError".to_string()], span)?;
+                    return Ok(if name == "handle_bytes" { val.made() } else { val });
+                }
+                Ok(match name {
+                    "handle_open" => Val::new(self.call("i64", runtime, list), Kind::Int),
+                    "handle_line" | "handle_bytes" => {
+                        let val = Val::new(self.call("ptr", runtime, list), returns);
+                        let val = self.came_back(val);
+                        if name == "handle_bytes" { val.made() } else { val }
+                    }
+                    _ => {
+                        self.run(runtime, list);
+                        Val::nothing()
+                    }
+                })
+            }
+            ("files", "handle_close", [file]) if file.kind == Kind::Int => {
+                self.run("zeno_files_handle_close", format!("i64 {}", file.code));
                 Ok(Val::nothing())
             }
             // `program.arguments()`: a new list, which is nobody's yet.
