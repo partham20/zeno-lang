@@ -1994,3 +1994,41 @@ reason standing, and the runtime is half of what a program is.
 run for 9.8 (fae3563) has stood "in progress" since 00:12Z; its
 commit is under 9.9's, which passed every program in every language,
 so it is taken as a runner that hangs and not as a fault of 9.8.
+
+### 11. 2026-11-20: three builders
+
+Partha said more threads may be used. Item 11 has a builder of its
+own from now on, and section 9 holds for three as it held for two.
+
+| Builder | Builds | Chapters of the decisions |
+|---|---|---|
+| The first | The runtime in pieces (section 10), item 10, and the release of 0.8.0 | 57 (item 10) |
+| The second | 13.1, 13.2, then 12.3, 12.1, 12.2 | 59 (item 12), 60 (13.1 and 13.2) |
+| The third | Item 11: 11.1, 11.2, 11.3, 11.4, and 11.5 only if it is a small step | 58 (item 11) |
+
+**Why item 11 can be cut loose.** Its design is nearly all in the
+parser and the checker, and the compilers write one more copy of
+what they already write for a generic class. It stands on 9.4 (a
+value with one owner as what a type parameter stands for), which is
+on `main`. Nothing in it waits for item 10.
+
+**The third builder sends 11.1 to 11.3 as one piece for review, then
+11.4, then 11.5 or the reason it stays refused.** 11.4 changes what
+the checker asks of a call through an interface with no collector,
+which is a different matter from generics and is read by itself.
+
+**`Ordered` (11.2) is the third builder's**, as section 9 gave it to
+whoever builds item 11.
+
+**Where the items meet, whoever pushes second tests the pair.** With
+those of section 9:
+
+- Several values from one function (10) in a generic function, and
+  where one of the values is a `Maybe[T]`.
+- `match` on a generic enum inside a test with a message on its
+  `assert`, under `zeno test --build` (13.2).
+
+**The release** is still the first builder's, after the last
+acceptance of all three. The second and the third each write their
+own part of the release notes and tell the first what the book and
+the website need.
