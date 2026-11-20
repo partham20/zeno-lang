@@ -596,3 +596,5 @@ e9a4346 What a build still refuses is one table for a build with no collector, a
 e2c9d2c Several values received, swapped and raised past in a test of a compiled program, in every build: where items 10 and 13 meet.
 4390fa8 Folders: `files.list` gives a folder's names sorted by the numbers of their characters, the same in every engine, build and target; `files.make_folder` makes a folder and those above it; `files.join` is written in Zeno (decisions 59.20 to 59.23).
 b57c0f8 Folders in the docs: docs/folders.md, decisions 59.20 to 59.23, and the notes of 0.8.0.
+510336b Several values: with no collector, values written out free what an earlier one made when a later one raises; the same name twice on the left, and `_` where it is a variable, are refused (decision 57).
+e2d317b The book: several values from one function, in the chapter on functions.
