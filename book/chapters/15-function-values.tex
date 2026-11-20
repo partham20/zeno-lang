@@ -213,6 +213,85 @@ and it lets the compiler decide once which variables a function must
 take with it. (Decisions 3.6c and 3.6d.)
 \end{why}
 
+\section{A function that raises}
+
+A function that can raise says so in its heading, and its type says so
+too, after what it gives back:
+
+\begin{zeno}
+function parse(text: str) -> int raises ValueError {
+    if text == "x" {
+        raise ValueError("not a number: x")
+    }
+    return int(text)
+}
+
+function total(texts: list[str], convert: function(str) -> int raises ValueError) -> int raises ValueError {
+    var sum = 0
+    for text in texts {
+        sum += convert(text)
+    }
+    return sum
+}
+
+print(total(["1", "2", "3"], parse))
+try {
+    print(total(["4", "x"], parse))
+} except ValueError as e {
+    print("caught:", e)
+}
+\end{zeno}
+
+A function fits \verb|raises ValueError| if \verb|except ValueError|
+would catch everything it raises, so one that raises nothing fits as
+well. Where the type says nothing, \verb|zeno run| and an ordinary
+build let a raising function in, as they always did. A firmware build
+holds it, because there the error travels as a value that each call
+through the type has to test:
+
+\begin{zeno}[file=apply.zeno, cmd=zeno build --firmware {file}, fails=yes]
+function parse(text: str) -> int raises ValueError {
+    return int(text)
+}
+function apply(f: function(str) -> int, text: str) -> int {
+    return f(text)
+}
+print(apply(parse, "3"))
+\end{zeno}
+
+\begin{why}
+A call through a function value is checked as a call of the function
+is: \verb|total| must say that it raises \verb|ValueError| or catch it.
+That works only if the type carries the kind of error, as Java's
+\verb|throws| does on a method. It is also what a firmware build needs
+to know to test every call through the value. (Decisions 56.1 to
+56.5; new in 0.8.)
+\end{why}
+
+\section{A method as a value}
+
+A method written without the brackets of a call is a function, with
+its object already in it:
+
+\begin{zeno}
+class Counter {
+    count: int
+    function bump(self, by: int) -> int {
+        self.count += by
+        return self.count
+    }
+}
+
+let c = Counter(0)
+let step = c.bump
+print(step(5), step(1), [1, 2].map(c.bump), c.count)
+\end{zeno}
+
+Its type is the method's, without \verb|self|: \verb|c.bump| is a
+\verb|function(int) -> int|. It holds the object that \verb|c| held on
+that line, so a \verb|var| given another object later does not change
+it. (Decision 56.9; it builds since 0.8.)
+
 \section{Calling something that is not a function}
 
 Only a function can be called, and the checker knows which names hold
@@ -228,6 +307,8 @@ A function is a value: its name without brackets is the function. Its
 type is written \verb|function(int, str) -> bool|. A function with no
 name is written \verb|function(n) { return n * 2 }|. Functions can be
 passed, stored in lists and dicts, and given back by other functions.
+A type can say what its function raises, and a method without its
+brackets is a function with its object in it.
 A function given back keeps the variables around it, the variables
 themselves and not copies, as they were in sight where it was written.
 \end{summary}

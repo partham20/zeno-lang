@@ -48,6 +48,8 @@ The numbers are the decisions, for anyone who wants the argument.
   method (3.16d).
 \item[Generic enums.] An enum cannot take a type parameter, and a
   generic function cannot be kept as a value (3.16e).
+\item[Several values in a \texttt{for}] (\verb|for q, r in pairs()|),
+  and a default for one of several results (57.6).
 \end{description}
 
 \section{The library}
@@ -87,9 +89,6 @@ The numbers are the decisions, for anyone who wants the argument.
 \section{Builds}
 
 \begin{description}
-\item[A named function inside a function] runs under \verb|zeno run|,
-  but is refused by a build. Write it at the top, or as a function
-  value.
 \item[One file at a time.] A build compiles the whole program at once
   (7.11).
 \item[A board by its name.] \verb|zeno build --board| takes the
@@ -117,29 +116,25 @@ The numbers are the decisions, for anyone who wants the argument.
 \section{Firmware and no collector}
 
 \begin{description}
-\item[A raising function as a value.] In a firmware build, a function
-  that says \verb|raises| cannot be passed around, because a function
-  type does not say whether it raises (5.5l).
-\item[Lists of maybe.] \verb|list[int or none]| is refused with no
-  collector; an enum with a case for the missing value is the answer
-  (5.16h).
-\item[Dicts of lists or objects] with no collector (10.14).
-\item[Some moves of an owned value] that have no rule yet for what is
-  left behind (5.8i, 5.15e, 5.17d).
-\item[\texttt{raise e} with no collector,] raising again an error that
-  was caught (5.9d).
-\item[The pool's size] is set on the C compiler's line, not in the
-  program (5.9j); spare blocks are not filled with a pattern to catch
-  their use (5.9k).
+\item[What a build with no collector refuses by design.] Replacing
+  what a field holds through a parameter that only looks, taking an
+  item out of a list a \verb|for| walks (5.15e), keeping an item that
+  \verb|[ ]| only looks at, and a kept function that uses a \verb|var|
+  from outside it. Each is refused with the reason, and the table of
+  \verb|docs/no-collector.md| lists them all (56.17).
+\item[Swapping two items a list owns,] \verb|xs[i], xs[j] = xs[j], xs[i]|
+  on a list of lists or objects with no collector: each item is only
+  looked at there (57.6).
 \end{description}
 
 \section{Interfaces}
 
 \begin{description}
-\item[Functions of an interface] have no defaults for parameters, no
-  type parameters, and cannot be private (10.5).
-\item[An owned class as an interface,] and an interface with type
-  parameters of its own (10.10).
+\item[Functions of an interface] have no type parameters and cannot
+  be private (10.5), and a default for one of their parameters is a
+  plain value (58.20).
+\item[An interface with type parameters of its own,] and an interface
+  that is another interface (10.10, 58.23).
 \end{description}
 
 \section{The web}
@@ -164,9 +159,7 @@ The numbers are the decisions, for anyone who wants the argument.
 \begin{description}
 \item[Going to a field.] The language server shows the type of a
   field, but cannot yet jump to where it was declared (17.4).
-\item[Tests of a compiled program.] \verb|zeno test| runs tests under
-  the interpreter only. \verb|assert| takes no message, and is only
-  for tests (10.21).
+\item[\texttt{assert} is only for tests] (10.21).
 \end{description}
 
 \section{Not limits}

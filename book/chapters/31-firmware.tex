@@ -216,9 +216,10 @@ asks GCC and Clang for their built-ins for checked arithmetic (built
 with \verb|-DZENO_PLAIN_C|, the checks are plain C). Taking memory from
 the heap, which MISRA also bans, is answered by \verb|--no-collector|,
 in the next chapter. None of these is hidden, and each is a later piece
-of work. A function that can raise cannot yet be passed around as a
-value in a firmware build, because a function type does not say whether
-it raises.
+of work. A function that can raise is passed around as a value like
+any other, since 0.8.0: its type says so,
+\verb|function(str) -> int raises ValueError|, and every call through
+it is tested.
 
 \begin{summary}
 \verb|zeno build --firmware| carries errors the program raises as

@@ -174,12 +174,53 @@ the easy default. (Decisions 5.8 and 5.15, and the audit, which made
 looking the default.)
 \end{why}
 
+\section{Taking a value out of a field}
+
+Reading a field only looks, so an object could not hand on what one of
+its fields holds: giving it away would leave nothing in the field.
+\verb|take| in front of a field or an item gives what is there and
+leaves \verb|none| in its place, so the field's type must say it may
+be \verb|none|:
+
+\begin{zeno}
+owned class Buffer {
+    bytes: list[int]
+}
+
+owned class Uart {
+    filling: Buffer or none
+
+    function hand_on(self) -> Buffer or none {
+        return take self.filling
+    }
+}
+
+function send(buffer: take Buffer) -> int {
+    return len(buffer.bytes)
+}
+
+let uart = Uart(Buffer([1, 2, 3]))
+let full = uart.hand_on()
+print(uart.filling is none)
+if full is not none {
+    print(send(full))
+}
+\end{zeno}
+
+\begin{why}
+A list could always give an item away with \verb|pop()|, and a field
+had nothing like it. \verb|take| is the word a parameter already uses
+for the same act, and writing it at the place makes the hole visible:
+the type says \verb|or none|, and the next reader of the field must
+test it. (Decision 56.10; new in 0.8.)
+\end{why}
+
 \section{What owned values cannot do}
 
-In version 0.1 an owned value cannot sit in a function type, be taken
-out of a field (that would leave a hole the type does not admit to),
-be replaced through a look, or be raised. Each is an error that says
-what to do instead, and allowing any of them later breaks no program.
+An owned value cannot be replaced through a look, or taken out of a
+field whose type does not say \verb|or none| (that would leave a hole
+the type does not admit to). Each is an error that says what to do
+instead.
 
 \begin{summary}
 \verb|owned class| and \verb|owned list[T]| have one owner, and are

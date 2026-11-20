@@ -346,18 +346,22 @@ Nearly the whole language compiles. A few corners do not, and
 \verb|zeno build| names each one and points at the line, while
 \verb|zeno run| still runs the program:
 
-\begin{zeno}[file=inner.zeno, cmd=zeno build {file}, fails=yes]
-function outer() -> int {
-    function inner() -> int {
-        return 2
-    }
-    return inner()
+\begin{zeno}[file=named.zeno, cmd=zeno build {file}, fails=yes]
+function area(width: int, height: int) -> int {
+    return width * height
 }
-print(outer())
+let measure = area
+print(measure(height = 2, width = 3))
 \end{zeno}
 
-A function written with no name, \verb|let inner = function() { ... }|,
-does compile. \hyperref[app-limits]{Appendix G} has the full list.
+The type of a function value has no names for its parameters, so a
+build cannot know which argument is which; \verb|zeno run| reads them
+off the function the variable holds. Passing them in order builds.
+The table in \verb|docs/compiler.md| lists every such corner with its
+reason, and a test holds the compilers to it. Since 0.8.0 a function
+with a name written inside another, a default worked out at the call,
+a method used as a value and a function value that raises all build;
+\hyperref[app-limits]{Appendix G} has what is left.
 
 A program that uses the library of another language through
 \verb|import python| or one of its like is refused too, because a

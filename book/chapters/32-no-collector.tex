@@ -113,13 +113,19 @@ compiler for the board:
 $ zeno build --no-collector --memory buffer.zeno
 $ ./buffer | grep pool
 pool: 25384 bytes taken, in a pool of 32768
-$ cc -O2 -DZENO_POOL=25384 -o buffer buffer.c -lm
+$ zeno build --no-collector --pool 25384 buffer.zeno
 \end{zenofrag}
 
-It is exact for that run. A program whose lists depend on its input
-needs the report from its worst input, and some room on top. A full
-pool is a fault: the program stops with
-\verb|the memory pool is full|.
+\verb|--pool| sets the size of the pool and \verb|--text-room| that of
+the text room; both go into the C as it is written, so a board's own
+compiler needs no flag for them (new in 0.8; before, they were given to
+the C compiler as \verb|-DZENO_POOL=|). It is exact for that run. A
+program whose lists depend on its input needs the report from its
+worst input, and some room on top. A full pool is a fault: the program
+stops with \verb|the memory pool is full|. With \verb|--memory|, a
+block given back is filled with a pattern, and a write to it after
+that stops the program and says so, which finds a use after a free
+that would otherwise go unseen (56.15).
 
 \subsection{The text room}
 
@@ -140,17 +146,31 @@ refuses it, with the line and what to write instead:
 \item a list, object or enum value used after it was given away;
 \item a function that uses a \verb|var| of the function around it,
   because the two would share it;
-\item keeping a function that uses a list or object from outside it;
-\item a list or object as what a type parameter stands for, and a list
-  of \verb|int or none|, which are limits of version 0.1.
+\item keeping an item of a list of lists or of objects, which
+  \verb|[ ]| only looks at, and returning or keeping what a parameter
+  only looks at;
+\item taking an item out of a list while a \verb|for| walks it.
 \end{itemize}
 
 \begin{zeno}[file=items.zeno, cmd=zeno build --no-collector {file}, fails=yes]
-var readings: list[int or none] = [1, none, 3]
+var grid = [[1, 2], [3, 4]]
+let row = grid[0]
+print(row)
 \end{zeno}
 
-The answer the message gives is an enum with a case for the missing
-value, which costs nothing for the case that carries nothing.
+The message says what to write instead: use the row where it is, pass
+it to a parameter that looks, or take it out of the list with
+\verb|pop()|. The whole list, each row with its reason, is in
+\verb|docs/no-collector.md|, and a test holds both compilers to it, so
+a refusal that is not in the table fails the test (56.17).
+
+Since 0.8 much that was refused here builds: a function that is kept
+takes the lists and objects it uses (56.8); a list or an object can be
+what a type parameter stands for (56.11); a dict owns the lists and
+objects it holds (56.12); \verb|list[int or none]| keeps each number in
+a small block of its own (56.14); and \verb|take| takes a value out of a
+field or an item, leaving \verb|none| (56.10, in
+\hyperref[ch-ownership]{Ownership}).
 
 That is the whole idea of the build. It does not find leaks while the
 program runs. It refuses to build a program that could have one.
