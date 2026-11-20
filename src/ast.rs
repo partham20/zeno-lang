@@ -481,8 +481,9 @@ pub struct Class {
     /// the class is written in can use them.
     pub private: Vec<String>,
     /// `class Circle is Shape, Named`: the interfaces the class says it
-    /// is. It must have every function they list.
-    pub is: Vec<String>,
+    /// is. It must have every function they list. Each is a type, since
+    /// an interface may have types of its own: `is Source[int]` (58.6).
+    pub is: Vec<Type>,
     /// True for `interface Shape { ... }`. An interface is kept as a
     /// class with no fields, whose functions have no bodies: it is a
     /// type that objects of other classes are seen as.

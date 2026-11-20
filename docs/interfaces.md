@@ -106,6 +106,12 @@ them.
 11. **`owned interface Shape`**: each object that is one has one
     owner, with a collector too. Only an `owned class` can be one,
     and an `owned class` can only be one (58.22).
+12. **An interface may have types of its own**, as a class may:
+    `interface Source[T]`. A class says which copy it is, `class
+    Countdown is Source[int]`, or, if it is generic itself, `class
+    Repeat[T] is Source[T]`. `Source[int]` and `Source[str]` are two
+    interfaces: a class that is one does not go where the other is
+    wanted. A bound may be one: `[S is Source[str]]` (58.6).
 
 An object seen through an interface prints as the class it is. Two
 of them are equal when they are the same class and that class says
@@ -395,13 +401,13 @@ reasons.
 
 - A default body for a function of an interface, and a default for a
   parameter that is not a plain value (58.20).
-- Type parameters: `interface Stack[T]`.
 - An interface that is another interface.
 - A way back from an interface to the class (10.8).
 
 A default for a parameter, a function that takes out what its object
 owns, and an `owned class` as an interface were on this list, and
-are in the language since 0.8.0 (58.20 to 58.22). A dict whose values
+are in the language since 0.8.0 (58.20 to 58.22), and so are type
+parameters, `interface Source[T]` (58.6). A dict whose values
 are of an interface is in it since 10.11.
 
 ## Things to try

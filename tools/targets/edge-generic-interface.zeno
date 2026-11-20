@@ -1,0 +1,145 @@
+# Generic interfaces (decision 58.6): `Source[T]` with a class that is
+# `Source[int]`, one that is `Source[str]`, and a generic class that is
+# `Source[T]`; used through `Source[int]`, in a list, as a bound
+# (`[S is Source[str]]`) and inside a generic function; and an `owned
+# interface Holder[T]` with a default and a function that takes out
+# (58.20 to 58.22). Every build prints what `zeno run` prints, and a
+# build with no collector leaves nothing.
+
+interface Source[T] {
+    function next(self) -> T or none
+    function name(self) -> str
+}
+
+class Countdown is Source[int] {
+    left: int
+    function next(self) -> int or none {
+        if self.left == 0 {
+            return none
+        }
+        self.left -= 1
+        return self.left + 1
+    }
+    function name(self) -> str { return "countdown" }
+}
+
+class Words is Source[str] {
+    words: list[str]
+    at: int = 0
+    function next(self) -> str or none {
+        if self.at == len(self.words) {
+            return none
+        }
+        self.at += 1
+        return self.words[self.at - 1]
+    }
+    function name(self) -> str { return "words" }
+}
+
+class Repeat[T] is Source[T] {
+    value: T
+    times: int
+    function next(self) -> T or none {
+        if self.times == 0 {
+            return none
+        }
+        self.times -= 1
+        return self.value
+    }
+    function name(self) -> str { return "repeat" }
+}
+
+function drain(source: Source[int]) -> int {
+    var sum = 0
+    var item = source.next()
+    while item is not none {
+        sum += item
+        item = source.next()
+    }
+    return sum
+}
+
+function count[S is Source[str]](source: S) -> int {
+    var n = 0
+    while source.next() is not none {
+        n += 1
+    }
+    return n
+}
+
+print(drain(Countdown(4)))
+print(drain(Repeat(5, 3)))
+let sources: list[Source[int]] = [Countdown(3), Repeat(10, 2)]
+for s in sources {
+    print(s.name(), drain(s))
+}
+print(count(Words(["a", "b", "c"])))
+print(count(Repeat("x", 4)))
+
+function total[T](sources: list[Source[T]]) -> int {
+    var n = 0
+    for s in sources {
+        while s.next() is not none {
+            n += 1
+        }
+    }
+    return n
+}
+
+let words: list[Source[str]] = [Words(["x", "y"]), Repeat("z", 3)]
+print(total(words))
+
+var rounds = 0
+var sum = 0
+while rounds < 1000 {
+    sum += drain(Countdown(rounds % 5))
+    rounds += 1
+}
+print(sum)
+
+owned interface Holder[T] {
+    function give(self) -> T or none
+    function size(self, extra: int = 0) -> int
+}
+
+owned class Slot is Holder[list[int]] {
+    items: list[int] or none
+    function give(self) -> list[int] or none {
+        return take self.items
+    }
+    function size(self, extra: int = 0) -> int {
+        if self.items is none {
+            return extra
+        }
+        return 1 + extra
+    }
+}
+
+owned class Cell[T] is Holder[T] {
+    value: T or none
+    function give(self) -> T or none {
+        return take self.value
+    }
+    function size(self, extra: int = 0) -> int {
+        if self.value is none {
+            return extra
+        }
+        return 1 + extra
+    }
+}
+
+function show(h: Holder[list[int]]) {
+    print(h.size(), h.size(10))
+}
+
+let s = Slot([1, 2, 3])
+show(s)
+let got = s.give()
+print(got)
+show(s)
+let c = Cell("hi")
+print(c.size(), c.give(), c.size(5))
+let holders: owned list[Holder[list[int]]] = [Slot([4]), Cell([5, 6])]
+for h in holders {
+    print(h.size())
+}

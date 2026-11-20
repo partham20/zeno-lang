@@ -2758,7 +2758,8 @@ impl Emitter<'_> {
             body += "    int32_t zeno_class;\n";
             fill += &format!("    self->zeno_class = {};\n", self.numbered);
             for interface in &decl.is {
-                self.is_a.entry(interface.clone()).or_default().push((self.numbered, decl.name.clone()));
+                let interface = self.types.interface_name(interface);
+                self.is_a.entry(interface).or_default().push((self.numbered, decl.name.clone()));
             }
         }
         let mut shown = Vec::new();
@@ -11816,6 +11817,24 @@ print("after")
         assert_ne!(plain, source);
         assert_eq!(compile(source).unwrap(), compile(&plain).unwrap());
         assert_eq!(compile_no_collector(source).unwrap(), compile_no_collector(&plain).unwrap());
+    }
+
+    #[test]
+    fn a_generic_interface_every_way() {
+        // `Source[T]` with classes that are `Source[int]`, `Source[str]`
+        // and `Source[T]`, through the interface, in a list and as a
+        // bound, and an `owned interface Holder[T]` with a default and a
+        // function that takes out (decision 58.6). Every build prints
+        // what `zeno run` prints, and with no collector nothing is left.
+        let source = include_str!("../tools/targets/edge-generic-interface.zeno");
+        no_collector_as_interpreter("generic-interface", source);
+        // One `switch` for each copy of the interface, over the classes
+        // that are that copy, and nothing for the generic itself.
+        let c = compile(source).unwrap();
+        for wanted in ["struct z_Source_int {", "struct z_Source_str {", "z_Source_int_next(z_Source_int *a0)"] {
+            assert!(c.contains(wanted), "{wanted}\n{c}");
+        }
+        assert!(!c.contains("z_Source *") && !c.contains("struct z_Source {"), "{c}");
     }
 
     #[test]

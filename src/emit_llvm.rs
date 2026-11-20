@@ -2333,7 +2333,8 @@ impl Emitter<'_> {
             self.numbered += 1;
             number = Some(self.numbered);
             for interface in &decl.is {
-                self.is_a.entry(interface.clone()).or_default().push((self.numbered, decl.name.clone()));
+                let interface = self.types.interface_name(interface);
+                self.is_a.entry(interface).or_default().push((self.numbered, decl.name.clone()));
             }
         }
         if inside.is_empty() {

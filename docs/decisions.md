@@ -18527,6 +18527,102 @@ stands for "anything": `Ordered` has no functions to list, and a
 generic with no bound promised nothing. Once a copy is made, the copy
 is checked as before, with the real type.
 
+### 58.6 Generic interfaces
+
+```zeno
+interface Source[T] {
+    function next(self) -> T or none
+}
+
+class Countdown is Source[int] { ... }
+class Repeat[T] is Source[T] { ... }
+
+function drain(source: Source[int]) -> int { ... }
+```
+
+**The rule.** An interface may have type parameters, written as a
+class writes them. An interface is a class to every stage after the
+parser (10.9), and a generic class has copies (5.14), so `Source[int]`
+is a copy of the interface: an interface of its own, whose `next`
+gives an `int or none`. A class says which copy it is after `is`, with
+the types: `class Countdown is Source[int]`. A generic class may say
+`is Source[T]`, and each of its copies is the copy of `Source` for its
+own `T`: `Repeat[int]` is a `Source[int]`, `Repeat[str]` a
+`Source[str]`. Everything else is the rules of an interface, unchanged
+(10.4 to 10.8, 58.20 to 58.22): the class has each function of the
+copy, written the same way; an object of the class goes where the copy
+is wanted; a list of them written out is a list of the copy; a bound
+may be a copy, `[S is Source[str]]` (58.3).
+
+**`Source[int]` and `Source[str]` are two interfaces.** A `Countdown`
+does not go where a `Source[str]` is wanted, and a `Source[str]` does
+not go where a `Source[int]` is: "`a` should be Source[int], but this
+is Source[str]". A class may be two copies, `is Source[int],
+Source[str]`, if it has the functions of both, which can only be when
+they do not meet; a class that has the functions of `Source[int]` and
+says `Source[str]` is told what `Source[str]` asks for.
+
+**Each copy is an interface of its own for 58.21 and 58.22 too.** A
+copy has its own place in the checker's tables, so when `Slot`, a
+`Holder[list[int]]`, takes out what it holds and `Name`, a
+`Holder[str]`, does not, a call through a `Holder[list[int]]` is for
+its owner only and one through a `Holder[str]` is for anybody. An
+`owned interface Holder[T]` makes every copy owned, and each takes
+only an `owned class`.
+
+**The messages.** `class Words is Source`, with no types, says that
+`Source` has type parameters and shows the class with them. `is
+Shape[int]` on an interface with none says to write it without `[ ]`.
+The wrong number of types is said as for a class. `Source()` says that
+an interface has nothing to build, as for one with no types, and
+`Source` kept as a value says it is written where a type goes.
+
+**Why copies, and not one interface over every `T`.** The road of
+Java, where `Source<Integer>` and `Source<String>` are one interface
+at run time, is erasure, which 5.14 turned down for classes: a
+`next()` would give back "anything", and every caller would need a
+cast that the checker cannot see. A copy is what a generic class
+already is, so nothing new had to be decided for the C, the LLVM, an
+object with one owner, or `--memory`.
+
+**How it is built.** The parser's refusal is gone: an interface reads
+`[T]` after its name into `Class::type_params`, and `Class::is` is a
+list of types where it was a list of names, so that `Source[int]` can
+be written there (`interface_named`). `modules.rs` renames the names
+in it as in any type, inside the class's own type parameters. In the
+checker a generic interface is a `Generic` whose template is a class
+that is an interface, and `copy_class` makes its copies as it makes a
+class's. In `fill_class`, a name after `is` is looked up as before,
+and a name with types is resolved as a type, which makes or finds the
+copy; a copy is the same `ClassInfo` each time, so `is_one`, `fits`
+and `stands_for` compare it as they compare any interface. The
+compilers read the name of each interface after `is` from the
+checker, which notes what each written type stands for
+(`Types::interface_name`): `Source[int]` for a copy, and the name as
+written for an interface with no types, as before. Both compilers
+register a copy of an interface as they register a copy of a class,
+and write the `switch` of 10.9 for each copy the program uses, over
+the classes that are that copy. A program with no generic interface
+reads the same names as before, and `tools/same.py` shows its C, IR,
+joined program and bytecode the same. The interpreter, the VM and the
+targets do not look at interfaces' types.
+
+**Tests.** `parser::tests::interfaces`;
+`checker::tests::an_interface_may_have_types_of_its_own`,
+`what_a_generic_interface_says_when_it_cannot` and
+`each_copy_of_a_generic_interface_is_held_to_taking_out_by_itself`;
+`emit_c::tests::a_generic_interface_every_way` with
+`tools/targets/edge-generic-interface.zeno`: `Countdown is
+Source[int]`, `Words is Source[str]` and `Repeat[T] is Source[T]`,
+used through `Source[int]`, in a list, as a bound, in a generic
+function over `list[Source[T]]`, and a thousand rounds; and an `owned
+interface Holder[T]` whose classes take out what they hold and whose
+functions have a default, `Slot is Holder[list[int]]` and `Cell[T] is
+Holder[T]`, in an owned list. It prints what `zeno run` prints in the
+six builds, with 0 blocks left with no collector, and in each target
+whose tools are installed. A program in two files with `class Count is
+sources.Source[int]` was tried by hand in three builds.
+
 ### 58.20 A default on a parameter of an interface's function
 
 ```zeno

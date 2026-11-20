@@ -1216,10 +1216,11 @@ impl<'a> Renamer<'a> {
                 if renamed {
                     class.name = full(&class.name);
                 }
-                for interface in &mut class.is {
-                    self.named(interface, span);
-                }
+                // `class Lines[T] is Source[T]`: the `T` after `is` is the class's.
                 self.scopes.push(class.type_params.iter().map(|param| param.name.clone()).collect());
+                for interface in &mut class.is {
+                    self.ty(interface, span);
+                }
                 for field in &mut class.fields {
                     self.field(field, span);
                 }

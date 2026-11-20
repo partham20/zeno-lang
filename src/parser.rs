@@ -859,9 +859,8 @@ impl Parser {
     fn interface(&mut self, owned: bool) -> Result<StmtKind, Error> {
         self.advance(); // interface
         let name = self.name("a name for the interface")?;
-        if self.check(TokenKind::LBracket) {
-            return self.error("an interface cannot have type parameters yet. A class can: `class Box[T]`");
-        }
+        // `interface Source[T]`, as a class has them (decision 58.6).
+        let type_params = self.type_params()?;
         if self.check(TokenKind::Is) {
             return self.error(
                 "an interface cannot be another interface yet. Name both after `is` on the class: `class Circle is Shape, Named`",
@@ -928,7 +927,7 @@ impl Parser {
         self.advance(); // the }
         Ok(StmtKind::Class(Class {
             name,
-            type_params: Vec::new(),
+            type_params,
             owned,
             fields: Vec::new(),
             methods,
@@ -943,15 +942,17 @@ impl Parser {
         self.advance(); // class
         let name = self.name("a name for the class")?;
         let type_params = self.type_params()?;
-        // `class Circle is Shape, Named`: the interfaces it is.
+        // `class Circle is Shape, Named`: the interfaces it is, each with
+        // its types if it has them: `is Source[int]` (decision 58.6).
         let mut is = Vec::new();
         if self.eat(TokenKind::Is) {
-            is.push(self.name_in_module("the name of an interface")?);
+            is.push(self.interface_named()?);
             while self.eat(TokenKind::Comma) {
                 let span = self.span();
-                let interface = self.name_in_module("the name of an interface")?;
+                let interface = self.interface_named()?;
                 if is.contains(&interface) {
-                    return Err(Error::new(format!("`{interface}` is written twice after `is`. Once is enough"), span));
+                    let written = crate::printer::type_(&interface);
+                    return Err(Error::new(format!("`{written}` is written twice after `is`. Once is enough"), span));
                 }
                 is.push(interface);
             }
@@ -982,6 +983,23 @@ impl Parser {
         }
         self.advance(); // the }
         Ok(StmtKind::Class(Class { name, type_params, owned, fields, methods, private, is, interface: false }))
+    }
+
+    /// An interface after `is` on a class: `Shape`, `shapes.Shape`, or
+    /// one with its types, `Source[int]`.
+    fn interface_named(&mut self) -> Result<Type, Error> {
+        let name = self.name_in_module("the name of an interface")?;
+        let mut args = Vec::new();
+        if self.eat(TokenKind::LBracket) {
+            loop {
+                args.push(self.type_()?);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBracket)?;
+        }
+        Ok(Type::Named { name, args })
     }
 
     /// `name`, optionally with `: type` and `= default`
@@ -2185,10 +2203,14 @@ mod tests {
         );
         // What is left out for now says so.
         assert_eq!(inside("function scale[T](self, by: T)"), "a function of an interface cannot have type parameters yet");
+        // An interface may have types of its own, and a class says which
+        // copy it is (decision 58.6).
         assert_eq!(
-            error("interface Shape[T] {\n}"),
-            "an interface cannot have type parameters yet. A class can: `class Box[T]`"
+            tree("interface Source[T] {\n    function next(self) -> T or none\n}\nclass Lines[T] is Source[T], Named {\n}"),
+            "interface Source[T]\n    function next(self) -> T or none\nclass Lines[T] is Source[T], Named\n"
         );
+        assert_eq!(error("class Lines is Source[int], Source[int] {\n}"), "`Source[int]` is written twice after `is`. Once is enough");
+        assert_eq!(error("class Lines is Source[] {\n}"), "expected a type, found `]`");
         assert_eq!(
             error("interface Shape is Named {\n}"),
             "an interface cannot be another interface yet. Name both after `is` on the class: \

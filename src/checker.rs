@@ -475,6 +475,20 @@ impl Types {
         self.annotations.get(&(ty as *const ast::Type as usize))
     }
 
+    /// The name of the interface written after `is` at `ty`: `Shape`, or
+    /// for a copy of a generic interface, `Source[int]` (decision 58.6).
+    pub fn interface_name(&self, ty: &ast::Type) -> String {
+        let mut found = self.annotation(ty);
+        while let Some(Kind::Owned(inner)) = found {
+            found = Some(inner);
+        }
+        match (found, ty) {
+            (Some(Kind::Class(name)), _) => name.clone(),
+            (_, ast::Type::Named { name, .. }) => name.clone(),
+            (_, other) => crate::printer::type_(other),
+        }
+    }
+
     pub fn function(&self, decl: &Arc<ast::Function>) -> Option<&FunctionKind> {
         self.functions.get(&(Arc::as_ptr(decl) as usize))
     }
@@ -4026,8 +4040,51 @@ impl Checker {
         }
         // `class Circle is Shape`: which interfaces those are. Whether
         // the class has what they list is checked with its body.
-        for name in &decl.is {
-            match env.get(name).map(|variable| variable.ty) {
+        for written in &decl.is {
+            let ast::Type::Named { name: interface_name, args } = written else {
+                continue;
+            };
+            // What is written, `Shape` or `Source[int]`, is what each
+            // message names.
+            let name = &crate::printer::type_(written);
+            let looked = env.get(interface_name).map(|variable| variable.ty);
+            let found = match looked {
+                // `is Source[int]`: a copy of a generic interface, made as
+                // a copy of a generic class is (decision 58.6).
+                Some(Ty::Generic(generic)) if matches!(&generic.template, Template::Class(template) if template.interface) => {
+                    if args.is_empty() {
+                        let example = vec!["int"; generic.params.len()].join(", ");
+                        self.error(
+                            format!(
+                                "`{name}` has type parameters, so a class says which `{name}` it is: \
+                                 `class {} is {name}[{example}]`",
+                                decl.name
+                            ),
+                            span,
+                        );
+                        continue;
+                    }
+                    match self.resolve(written, env, span) {
+                        Ty::Instance(copy) => Some(Ty::Class(copy)),
+                        // A mistake in the types was reported, or the class
+                        // is a generic checked on its own.
+                        _ => continue,
+                    }
+                }
+                Some(Ty::Class(interface)) if interface.interface && !args.is_empty() => {
+                    self.error(
+                        format!(
+                            "`{interface_name}` has no type parameters, so it is written without `[ ]`: \
+                             `class {} is {interface_name}`",
+                            decl.name
+                        ),
+                        span,
+                    );
+                    continue;
+                }
+                looked => looked,
+            };
+            match found {
                 Some(Ty::Class(interface)) if interface.interface => {
                     // An object with one owner cannot be where a shared one
                     // is wanted, nor the other way round: an `owned class`
@@ -4037,8 +4094,8 @@ impl Checker {
                         self.error(
                             format!(
                                 "`{0}` is an owned class, and `{name}` is not an `owned interface`: an object with one \
-                                 owner cannot be where a shared one is wanted. Write `owned interface {name}`, or take \
-                                 `owned` off `{0}`",
+                                 owner cannot be where a shared one is wanted. Write `owned interface {interface_name}`, \
+                                 or take `owned` off `{0}`",
                                 decl.name
                             ),
                             span,
@@ -4047,7 +4104,7 @@ impl Checker {
                         self.error(
                             format!(
                                 "`{0}` is not an owned class, and `{name}` is an `owned interface`, whose objects each \
-                                 have one owner. Write `owned class {0}`, or take `owned` off `{name}`",
+                                 have one owner. Write `owned class {0}`, or take `owned` off `{interface_name}`",
                                 decl.name
                             ),
                             span,
@@ -6915,6 +6972,17 @@ impl Checker {
             );
         }
         if let Ty::Generic(generic) = &ty {
+            // A generic interface is a type and nothing more (58.6).
+            if matches!(&generic.template, Template::Class(decl) if decl.interface) {
+                return self.error(
+                    format!(
+                        "`{0}` is an interface, and is written where a type goes, with its types: `{0}[{1}]`",
+                        generic.name,
+                        vec!["int"; generic.params.len()].join(", ")
+                    ),
+                    expr.span,
+                );
+            }
             // `let f = first` would need `f` to be every copy at once.
             return self.error(
                 format!(
@@ -9806,6 +9874,18 @@ impl Checker {
                 span,
             );
         }
+        // An interface has no objects of its own, generic or not (58.6).
+        if let Template::Class(decl) = &generic.template {
+            if decl.interface {
+                return self.error(
+                    format!(
+                        "`{0}` is an interface, so there is nothing to build. Build an object of a class that is a `{0}`",
+                        generic.name
+                    ),
+                    span,
+                );
+            }
+        }
         // `first(buffer)`, where `first` takes a `list[T]`: as for any
         // function, a list of a fixed length goes there if the function
         // never changes how long it is (decision 36.4).
@@ -12553,6 +12633,104 @@ mod tests {
             error("let x: Ordered = 3"),
             "`Ordered` is not a type: it is what a type parameter may ask of its type, that `<` works on two of it, \
              as in `function largest[T is Ordered](items: list[T]) -> T`"
+        );
+    }
+
+    /// A generic interface and two classes that are copies of it.
+    const SOURCE: &str = "interface Source[T] {\n    function next(self) -> T or none\n}\n\
+        class Count is Source[int] {\n    left: int\n    function next(self) -> int or none { return none }\n}\n\
+        class Words is Source[str] {\n    function next(self) -> str or none { return none }\n}\n\
+        class Again[T] is Source[T] {\n    value: T\n    function next(self) -> T or none { return self.value }\n}\n";
+
+    #[test]
+    fn an_interface_may_have_types_of_its_own() {
+        // A class says which copy it is, and fits that copy and no other
+        // (decision 58.6).
+        ok(&format!(
+            "{SOURCE}let a: Source[int] = Count(3)\nlet b: Source[str] = Words()\nlet c: Source[int] = Again(4)\n\
+             let d: Source[str] = Again(\"x\")\nlet all: list[Source[int]] = [Count(1), Again(2)]\n\
+             function drain(s: Source[int]) -> int {{\n    let n = s.next()\n    if n is none {{ return 0 }}\n    return n\n}}\n\
+             print(drain(Count(1)), drain(Again(5)))\n\
+             function first[S is Source[str]](s: S) -> str or none {{ return s.next() }}\nprint(first(Words()))\n"
+        ));
+        assert_eq!(
+            error(&format!("{SOURCE}let a: Source[int] = Words()")),
+            "`a` should be Source[int], but this is Words"
+        );
+        assert_eq!(
+            error(&format!("{SOURCE}let b: Source[str] = Words()\nlet a: Source[int] = b")),
+            "`a` should be Source[int], but this is Source[str]"
+        );
+        assert_eq!(
+            error(&format!("{SOURCE}function first[S is Source[str]](s: S) {{ }}\nfirst(Count(1))")),
+            "`Count` is not `Source[str]`, which `first` asks of `S`. It is one if it says so: `class Count is Source[str]`, \
+             with what `Source[str]` lists"
+        );
+    }
+
+    #[test]
+    fn each_copy_of_a_generic_interface_is_held_to_taking_out_by_itself() {
+        // `Slot`, a `Holder[list[int]]`, takes out; `Name`, a
+        // `Holder[str]`, does not. A call through a `Holder[str]` is for
+        // anybody, and one through a `Holder[list[int]]` for the owner
+        // only (58.6 with 58.21 and 58.22).
+        let holder = "owned interface Holder[T] {\n    function give(self) -> T or none\n}\n\
+                      owned class Slot is Holder[list[int]] {\n    items: list[int] or none\n    \
+                      function give(self) -> list[int] or none { return take self.items }\n}\n\
+                      owned class Name is Holder[str] {\n    text: str\n    \
+                      function give(self) -> str or none { return self.text }\n}\n";
+        one_owner_ok(&format!(
+            "{holder}function peek(h: Holder[str]) -> str or none {{ return h.give() }}\nprint(peek(Name(\"a\")))\n"
+        ));
+        assert_eq!(
+            one_owner_error(&format!("{holder}function peek(h: Holder[list[int]]) -> list[int] or none {{ return h.give() }}\n")),
+            "only the owner can call `give`, which takes out or replaces something the object owns (`Slot` is a \
+             `Holder[list[int]]`, and its `give` does): somebody else may have been lent it. Here `h` only looks at it"
+        );
+        // An `owned interface` copy takes only an `owned class`.
+        assert_eq!(
+            error("owned interface Holder[T] {\n    function give(self) -> T or none\n}\n\
+                   class Name is Holder[str] {\n    function give(self) -> str or none { return none }\n}"),
+            "`Name` is not an owned class, and `Holder[str]` is an `owned interface`, whose objects each have one owner. \
+             Write `owned class Name`, or take `owned` off `Holder`"
+        );
+    }
+
+    #[test]
+    fn what_a_generic_interface_says_when_it_cannot() {
+        let source = "interface Source[T] {\n    function next(self) -> T or none\n}\n";
+        assert_eq!(
+            error(&format!("{source}class Words is Source[str] {{\n    function next(self) -> int or none {{ return 1 }}\n}}")),
+            "`next` of `Words` is `function next(self) -> int or none`, and `Source[str]` asks for \
+             `function next(self) -> str or none`. Write the two the same"
+        );
+        assert_eq!(
+            error(&format!("{source}class Words is Source {{\n    function next(self) -> int or none {{ return 1 }}\n}}")),
+            "`Source` has type parameters, so a class says which `Source` it is: `class Words is Source[int]`"
+        );
+        assert_eq!(
+            error("interface Shape {\n    function area(self) -> float\n}\nclass C is Shape[int] {\n    function area(self) -> float { return 1.0 }\n}"),
+            "`Shape` has no type parameters, so it is written without `[ ]`: `class C is Shape`"
+        );
+        assert_eq!(
+            error(&format!("{source}class W is Source[int, str] {{\n    function next(self) -> str or none {{ return none }}\n}}")),
+            "`Source` takes 1 type in `[ ]`, as in `Source[int]`, but 2 were written"
+        );
+        assert_eq!(
+            error(&format!("{source}let s = Source()")),
+            "`Source` is an interface, so there is nothing to build. Build an object of a class that is a `Source`"
+        );
+        assert_eq!(
+            error(&format!("{source}let s: Source[int] = Source()")),
+            "`Source` is an interface, so there is nothing to build. Build an object of a class that is a `Source`"
+        );
+        assert_eq!(
+            error(&format!("{source}let s = Source")),
+            "`Source` is an interface, and is written where a type goes, with its types: `Source[int]`"
+        );
+        assert_eq!(
+            error(&format!("{source}function f(s: Source) {{ }}")),
+            "`Source` takes 1 type in `[ ]`, as in `Source[int]`, but 0 were written"
         );
     }
 

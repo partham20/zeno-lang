@@ -245,6 +245,33 @@ error: `Task` is not `Shape`, which `total` asks of `S`. It is one if it says so
 - **A bound makes no code.** The checker answers it, and the C of a
   program with bounds is the C of the same program without them.
 
+## Generic interfaces
+
+An interface can have type parameters too (decision 58.6), and a
+class says which copy it is:
+
+```zeno
+interface Source[T] {
+    function next(self) -> T or none
+}
+
+class Countdown is Source[int] { ... }
+class Repeat[T] is Source[T] { ... }
+
+function drain(source: Source[int]) -> int { ... }
+
+print(drain(Countdown(4)), drain(Repeat(5, 3)))
+```
+
+`Source[int]` is a copy of the interface, as `Stack[int]` is a copy of
+a class, and every rule of an interface holds for it
+([`interfaces.md`](interfaces.md)). `Repeat[int]` is a `Source[int]`
+and `Repeat[str]` a `Source[str]`. The two copies are two interfaces:
+a `Source[str]` does not go where a `Source[int]` is wanted. A copy
+can be a bound, `[S is Source[str]]`, and an `owned interface
+Holder[T]` has owned copies. The compilers write one `switch` for
+each copy the program uses, over the classes that are that copy.
+
 ## Through the stages
 
 ### The parser
@@ -510,6 +537,11 @@ the same thing. The new ones:
   `what_a_bound_says_when_it_is_written_wrong`: bounds over numbers,
   quantities, text and a program's own interface, and the words of
   each refusal.
+- `checker::tests::an_interface_may_have_types_of_its_own`,
+  `what_a_generic_interface_says_when_it_cannot` and
+  `each_copy_of_a_generic_interface_is_held_to_taking_out_by_itself`.
+- `emit_c::tests::a_generic_interface_every_way`:
+  `tools/targets/edge-generic-interface.zeno`, built every way.
 - `emit_c::tests::a_bound_every_way`: `tools/targets/edge-bounds.zeno`,
   bounds on functions, a class and an enum, built every way, and the
   same C as without the bounds.

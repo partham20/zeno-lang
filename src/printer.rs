@@ -77,7 +77,7 @@ fn stmt(statement: &Stmt, depth: usize, out: &mut String) {
         StmtKind::Class(class) => {
             let owned = if class.owned { "owned " } else { "" };
             let word = if class.interface { "interface" } else { "class" };
-            let is = if class.is.is_empty() { String::new() } else { format!(" is {}", class.is.join(", ")) };
+            let is = if class.is.is_empty() { String::new() } else { format!(" is {}", class.is.iter().map(type_).collect::<Vec<_>>().join(", ")) };
             line(&format!("{owned}{word} {}{}{is}", class.name, type_params(&class.type_params)), depth, out);
             for f in &class.fields {
                 let private = if class.private.contains(&f.name) { "private " } else { "" };
