@@ -589,3 +589,4 @@ fae3563 A function with a name inside a function, and a default that is more tha
 e9a4346 What a build still refuses is one table for a build with no collector, all by design, and one for every build, each with its reason, and a test holds both compilers to them (decision 56.17).
 0ddcb6a `in` on a list of values that may be `none` builds through C as through LLVM, and `range(...)` used as a value is the list `zeno run` makes, in every build (decision 56.19).
 5d8b280 tools/refused.py tries one operation on each type six ways and fails on a refusal no table lists; what it and the review of item 9 found builds now or is a row with its reason, and a default is shared so the compilers see what the checker saw (decision 56.19).
+56d31ac A message on `assert`: `assert c, "text"` prints the text on a line of its own above what was false, and the text is worked out only when the `assert` fails (decision 60.1).
