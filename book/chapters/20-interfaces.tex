@@ -73,7 +73,8 @@ its first line: \verb|class Box is Named, Sized|. It is not one unless
 it says so.
 
 \paragraph{The class has every function of the interface, written the
-same way}: the same parameter names, the same types, the same result.
+same way}: the same parameter names, the same types, the same result,
+and the same defaults, if the interface has any (below).
 It may have more of its own. A missing function, or one written
 differently, is reported at the class:
 
@@ -109,6 +110,78 @@ something else is a \verb|Shape| by accident, and a class meant to be
 one, with \verb|scale| misspelt, is found out far away, at some call
 that passes it. With \verb|is Shape| the promise is written where the
 reader of the class sees it, and it is checked there. (Decision 10.4.)
+\end{why}
+
+\section{A default for a parameter}
+
+A parameter of an interface's function can have a default, as a
+parameter of any function can (\hyperref[ch-functions]{Functions}).
+Each class writes the same default, so a call that leaves it out
+means the same through the interface and on the object:
+
+\begin{zeno}[file=motors.zeno, dir=defaults]
+interface Motor {
+    function spin(self, speed: int = 1000, wait: ms = 5 ms)
+}
+
+class Fan is Motor {
+    function spin(self, speed: int = 1000, wait: ms = 5 ms) {
+        print("fan at", speed, "after", wait)
+    }
+}
+
+class Pump is Motor {
+    function spin(self, speed: int = 1_000, wait: ms = 5 ms) {
+        print("pump at", speed, "after", wait)
+    }
+}
+
+function start(motors: list[Motor]) {
+    for motor in motors {
+        motor.spin()
+        motor.spin(wait=20 ms)
+    }
+}
+
+start([Fan(), Pump()])
+Fan().spin(400)
+\end{zeno}
+
+``The same'' is the same value: \verb|1_000| and \verb|1000| are the
+same, and so is a case of an enum written bare, \verb|Fast|, and with
+its enum's name, \verb|Mode.Fast|. A class that writes
+another value, or none, is refused at the class, with both defaults:
+
+\begin{zeno}[fails=yes]
+interface Motor {
+    function spin(self, speed: int = 1000)
+}
+
+class Fan is Motor {
+    function spin(self, speed: int = 2000) {
+        print("fan at", speed)
+    }
+}
+\end{zeno}
+
+A default in an interface is a plain value: a number, text that is
+not an f-string, \verb|true|, \verb|false|, \verb|none|, a quantity
+such as \verb|5 ms|, or a case of an enum that carries nothing. A sum
+such as \verb|2 * 500|, or a call, is refused where it is written.
+
+Where the interface writes no default, a class may still have one of
+its own. A call on the object can leave that argument out, but a call
+through the interface must give it, so the two cannot mean different
+things without the reader seeing it.
+
+\begin{why}
+\verb|motor.spin()| is one line that runs a different class each
+time. If each class filled in its own default, the line would mean a
+different speed for each motor, and nothing on the line or in the
+interface would say so. With one value written in both places, the
+interface tells the whole truth. Only a plain value is allowed so that
+``the same'' has one meaning, which the reader can check by eye:
+\verb|2 * 3| and \verb|6| would need working out. (Decision 58.20.)
 \end{why}
 
 \section{Where an interface goes}
@@ -245,6 +318,140 @@ for turn in range(3) {
 A class whose \verb|send| raised something \verb|Port| does not list
 would be refused at the class.
 
+\section{Interfaces and owners}
+
+Some lists and objects have one owner, which frees them when it is
+done with them: those of an \verb|owned class| in any program, and
+every one in a program built with no collector
+(\hyperref[ch-ownership]{Ownership},
+\hyperref[ch-no-collector]{Building with No Collector}). Two things
+about interfaces follow from that.
+
+\paragraph{A function that takes out what its object owns} can stand
+for one of an interface. Here \verb|take_last| of a \verb|Stack| takes
+a task out of the stack's own list:
+
+\begin{zeno}[file=pile.zeno, dir=owners, cmd=zeno build --no-collector {file} ;; ./pile]
+class Task {
+    name: str
+}
+
+interface Pile {
+    function take_last(self) -> Task
+    function size(self) -> int
+}
+
+class Stack is Pile {
+    tasks: list[Task]
+
+    function take_last(self) -> Task {
+        return self.tasks.pop()
+    }
+
+    function size(self) -> int {
+        return len(self.tasks)
+    }
+}
+
+function drain(pile: take Pile) {
+    while pile.size() > 0 {
+        print(pile.take_last().name)
+    }
+}
+
+drain(Stack([Task("wash"), Task("dry")]))
+\end{zeno}
+
+A call through the interface is then held to the same rule as a call
+on the object: only the owner may make it. \verb|drain| takes the
+pile, so it is the owner. A function that was only lent the pile may
+not take anything out of it, since whoever lent it may still be using
+what is inside:
+
+\begin{zeno}[file=pile.zeno, dir=owners, lines=28-30, cmd=zeno build --no-collector {file}, fails=yes]
+class Task {
+    name: str
+}
+
+interface Pile {
+    function take_last(self) -> Task
+    function size(self) -> int
+}
+
+class Stack is Pile {
+    tasks: list[Task]
+
+    function take_last(self) -> Task {
+        return self.tasks.pop()
+    }
+
+    function size(self) -> int {
+        return len(self.tasks)
+    }
+}
+
+function drain(pile: take Pile) {
+    while pile.size() > 0 {
+        print(pile.take_last().name)
+    }
+}
+
+function peek(pile: Pile) -> str {
+    return pile.take_last().name
+}
+
+drain(Stack([Task("wash"), Task("dry")]))
+\end{zeno}
+
+Nothing is written on the interface's function to say so. It takes out
+if the function of any class that is the interface does, and the
+checker reads the whole program to find out. So one class that takes
+out makes every call of \verb|take_last| through a \verb|Pile| a call
+for the owner, even for a pile whose class takes nothing: the caller
+cannot know which class it has. (Decision 58.21.)
+
+\paragraph{An owned interface} is to an interface what an
+\verb|owned class| is to a class: each object that is one has one
+owner, with a collector too. Only an \verb|owned class| can be one,
+and an \verb|owned class| can only be an owned interface:
+
+\begin{zeno}[file=shapes.zeno, dir=owned]
+owned interface Shape {
+    function area(self) -> float
+}
+
+owned class Circle is Shape {
+    radius: float
+
+    function area(self) -> float {
+        return 3.0 * self.radius * self.radius
+    }
+}
+
+var shapes: owned list[Shape] = [Circle(1.0), Circle(2.0)]
+let last = shapes.pop()
+print(last.area(), len(shapes))
+\end{zeno}
+
+A list of them is an \verb|owned list|, a parameter only looks at one
+unless it says \verb|take|, and a field that holds one is in an
+\verb|owned class|, as for any owned value. An \verb|owned class| that
+says it is a plain interface, or a plain class that says it is an
+owned one, is refused at the class, and the message says which word
+to write.
+
+\begin{why}
+With a collector, an object seen through a plain interface is shared:
+it can be copied anywhere. An owned object put there would be an owned
+thing inside a shared one, and its owner could free it while a copy
+was still in use. \verb|owned interface| says on the interface's first
+line, where its reader looks, which kind its objects are, with a word
+the language already has. Working it out from the classes would let
+one new class change every use of the interface. With no collector
+every object has one owner already, so there the word is allowed and
+says nothing new. (Decision 58.22.)
+\end{why}
+
 \section{No parent classes}
 
 There is no inheritance in Zeno: a class cannot be another class, only
@@ -271,7 +478,11 @@ interfaces it is with \verb|class Name is Interface|, and must have
 each function written the same way. An object goes where its interface
 is wanted, a list of it only where the list was made as one. Through
 an interface only its functions are there. A class may raise less than
-its interface says, never more.
+its interface says, never more. A default on an interface's parameter
+is a plain value, and each class writes the same one. A function that
+takes out what its object owns can stand for one of an interface, and
+a call through it is then for the owner. Each object of an
+\verb|owned interface| has one owner.
 \end{summary}
 
 \begin{tryit}
@@ -286,5 +497,11 @@ its interface says, never more.
   every class say what it is.
 \item Make \verb|MemoryLog.send| raise a \verb|ValueError| for an
   empty text, and read the message.
+\item Give \verb|Port.send| a parameter \verb|wait: ms = 10 ms|. Which
+  classes must change, and what does the message say to a class that
+  writes \verb|wait: ms = 20 ms|?
+\item Add a \verb|Queue| to \verb|pile.zeno| whose \verb|take_last|
+  takes the first task, \verb|self.tasks.pop(0)|, and drain one of
+  each.
 \end{enumerate}
 \end{tryit}
