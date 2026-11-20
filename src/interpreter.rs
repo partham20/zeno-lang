@@ -493,32 +493,36 @@ impl Interpreter {
     /// `assert total == 6`. A failure is not an error of the program
     /// that an `except` could catch: it ends the test at once, and says
     /// what was on each side of a comparison.
-    fn assert(&mut self, condition: &Expr, env: &Env) -> Result<(), Control> {
+    fn assert(&mut self, condition: &Expr, message: Option<&Expr>, env: &Env) -> Result<(), Control> {
         let span = condition.span;
         let compares = |op: &BinaryOp| {
             use BinaryOp::*;
             matches!(op, Eq | NotEq | Lt | LtEq | Gt | GtEq | Is | IsNot | In | NotIn)
         };
-        match &condition.kind {
+        let false_because = match &condition.kind {
             ExprKind::Binary { op, left, right } if compares(op) => {
                 let left = self.eval(left, env)?;
                 let right = self.eval(right, env)?;
                 let (was_left, was_right) = (left.repr(), right.repr());
                 match ops::binary(*op, left, right, span)? {
-                    Value::Bool(true) => Ok(()),
-                    _ => fatal(
-                        format!(
-                            "this is false. The left of `{}` is {was_left}, and the right is {was_right}",
-                            op.text()
-                        ),
-                        span,
-                    ),
+                    Value::Bool(true) => return Ok(()),
+                    _ => format!("this is false. The left of `{}` is {was_left}, and the right is {was_right}", op.text()),
                 }
             }
             _ => match self.eval(condition, env)? {
-                Value::Bool(true) => Ok(()),
-                _ => fatal("this is false", span),
+                Value::Bool(true) => return Ok(()),
+                _ => "this is false".to_string(),
             },
+        };
+        // The text of `assert c, "text"` is worked out only now that the
+        // `assert` has failed, and goes on a line of its own above what
+        // was false (decision 60.1).
+        match message {
+            Some(message) => match self.eval(message, env)? {
+                Value::Str(text) => fatal(format!("{text}\n{false_because}"), span),
+                other => fatal(format!("{other}\n{false_because}"), span),
+            },
+            None => fatal(false_because, span),
         }
     }
 
@@ -725,7 +729,7 @@ impl Interpreter {
             // The tests of a program are run by `zeno test`, after the
             // program (see `run_tests`). `zeno run` goes past them.
             StmtKind::Test { .. } => Ok(()),
-            StmtKind::Assert(condition) => self.assert(condition, env),
+            StmtKind::Assert(condition, message) => self.assert(condition, message.as_ref(), env),
             StmtKind::AssertRaises { error, body } => match self.exec_block(body, env) {
                 Ok(()) => fatal(format!("this block was expected to raise {error}, and it raised nothing"), span),
                 Err(Control::Raise(raised, at)) => {
@@ -3510,6 +3514,30 @@ print(json.parse("\"" + bs + "u0041" + bs + "ud83d" + bs + "ude00\""))"#;
         );
         // `zeno run` goes past the tests, in both engines.
         assert_eq!(output_of_run(source), "the program\n");
+    }
+
+    #[test]
+    fn an_assert_says_what_it_was_given() {
+        // The text goes on a line of its own above what was false, and is
+        // worked out only when the `assert` fails (decision 60.1).
+        let source = "let xs = [1, 2]\n\
+             test \"compared\" {\n let reply = len(xs)\n assert reply == 3, f\"the board answered {reply}\"\n}\n\
+             test \"plain\" {\n assert xs[0] == 2 or false, \"the first is not two\"\n}\n\
+             test \"passes\" {\n assert len(xs) == 2, f\"never worked out: {xs[9]}\"\n}\n\
+             test \"the text fails\" {\n assert false, f\"{xs[9]}\"\n}";
+        let (output, tests) = tested(source);
+        assert_eq!(output, "  FAILED  compared\n  FAILED  plain\n  ok      passes\n  FAILED  the text fails\n");
+        let failures: Vec<&str> = tests.iter().map(|(_, failure)| failure.as_deref().unwrap_or("ok")).collect();
+        assert_eq!(
+            failures,
+            [
+                "the board answered 2\nthis is false. The left of `==` is 2, and the right is 3",
+                "the first is not two\nthis is false",
+                "ok",
+                // An error in working out the text fails the test with that error.
+                "uncaught IndexError: index 9 is out of range for a list of length 2",
+            ]
+        );
     }
 
     fn output_of_run(source: &str) -> String {

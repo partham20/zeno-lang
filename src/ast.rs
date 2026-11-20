@@ -364,8 +364,11 @@ pub enum StmtKind {
     /// `test "a new ring is empty" { ... }`, at the top of a file. Run
     /// by `zeno test`, and left out of a build. See docs/testing.md.
     Test { name: String, body: Block },
-    /// `assert total == 6`: what must be so, in a test.
-    Assert(Expr),
+    /// `assert total == 6`: what must be so, in a test. With
+    /// `assert total == 6, "the total"`, the text that a failure prints
+    /// above what was false; it is worked out only when the `assert`
+    /// fails (decision 60.1).
+    Assert(Expr, Option<Expr>),
     /// `assert raises ValueError { ... }`: the block must raise that.
     AssertRaises { error: String, body: Block },
 
@@ -519,7 +522,10 @@ fn fresh_block(block: &mut Block, visit: &mut dyn FnMut(Node)) {
             }
             StmtKind::Unsafe(body) => fresh_block(body, visit),
             StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => fresh_block(body, visit),
-            StmtKind::Assert(condition) => fresh_expr(condition, visit),
+            StmtKind::Assert(condition, message) => {
+                fresh_expr(condition, visit);
+                message.iter_mut().for_each(|message| fresh_expr(message, visit));
+            }
             StmtKind::Break | StmtKind::Continue | StmtKind::Import { .. } => {}
         }
     }
@@ -925,7 +931,8 @@ fn stmt_leaves(stmt: &Stmt, root: &str, built_in: &dyn Fn(&str) -> bool) -> bool
             };
             target_ok && expr(value)
         }
-        StmtKind::Expr(e) | StmtKind::Assert(e) | StmtKind::Raise(e) => expr(e),
+        StmtKind::Expr(e) | StmtKind::Raise(e) => expr(e),
+        StmtKind::Assert(e, message) => expr(e) && message.as_ref().is_none_or(expr),
         StmtKind::Return(value) => value.as_ref().is_none_or(expr),
         StmtKind::If { condition, then_block, else_block } => {
             expr(condition) && block(then_block) && else_block.as_ref().is_none_or(block)

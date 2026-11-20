@@ -2767,7 +2767,7 @@ impl Emitter<'_> {
             // The checker has seen to what is written inside. In IR it
             // is a block like any other.
             // A build leaves the tests of a program out (decision 10.20).
-            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => Ok(()),
+            StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => Ok(()),
             StmtKind::Unsafe(body) => {
                 let n = self.number();
                 let (inside, after) = (format!("unsafe{n}"), format!("safe{n}"));

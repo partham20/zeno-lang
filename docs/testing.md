@@ -43,6 +43,7 @@ is checked in plain words. Inside, `assert` says what must be so.
 |---|---|
 | `test "name" { ... }` | a test, at the top of a file |
 | `assert total == 6` | this must be true, or the test fails here |
+| `assert total == 6, "the total of the three"` | the same, and a failure prints that text first |
 | `assert raises ValueError { ... }` | the block must raise that kind of error |
 
 Three more things are worth knowing.
@@ -84,6 +85,24 @@ languages have `assert_eq`, `assert_ne`, `assertIn` and more, each so
 that a failure can show the values. Zeno has the one `assert`,
 because the interpreter can see that the condition is a comparison
 and keep the two sides (10.17).
+
+When the values alone do not say what went wrong, an `assert` can
+say it, after a comma:
+
+```zeno
+assert reply == Reply.Ack, f"the board answered {reply} to the reset"
+```
+
+```
+FAILED: the board answers a reset
+error: the board answered Nak to the reset
+this is false. The left of `==` is Nak, and the right is Ack
+```
+
+The text is printed on a line of its own above what was false, which
+stays. It must be text, and it is worked out only when the `assert`
+fails, so it can use what a passing test would never need. If working
+it out raises an error, the test fails with that error (60.1).
 
 When an error was expected and did not come:
 
@@ -230,7 +249,6 @@ with the imports it has in the real program.
 
 ## What is left out
 
-- A message on `assert`.
 - `assert` in a function outside a test.
 - Lines to run before and after each test.
 - Running tests side by side.
@@ -275,8 +293,8 @@ with the imports it has in the real program.
    are written in matter? Write them so that it does, and then so
    that it does not.
 
-10. Add a message to `assert`: `assert total == 6, "the total"`.
-    The parser reads a comma and an expression, the tree keeps it,
-    and `Interpreter::assert` puts it in front of what it says.
-    Then decide whether the language is better with it, and take it
-    out again if it is not.
+10. Give an `assert` a message: `assert total == 6, f"the total of
+    {xs}"`. Make it fail, and read where the text goes. Then write
+    `xs[99]` inside the text of an `assert` that passes. Why does
+    nothing go wrong, and what happens when it fails? Find the lines
+    in `Interpreter::assert` that decide it.

@@ -296,6 +296,7 @@ mod tests {
         assert_eq!(formatted("if(a or b)and c{\n}\n"), "if (a or b) and c {\n}\n");
         assert_eq!(formatted("let f = function (x: int) -> int { return x }\n"), "let f = function(x: int) -> int { return x }\n");
         assert_eq!(formatted("if x {}\n"), "if x { }\n");
+        assert_eq!(formatted("test \"t\" {\n    assert x==1 , f\"x is {x}\"\n}\n"), "test \"t\" {\n    assert x == 1, f\"x is {x}\"\n}\n");
         // The `=` that names an argument has no spaces. Any other has.
         assert_eq!(formatted("let p = Point(x = 3.0,y=-4.0)\n"), "let p = Point(x=3.0, y=-4.0)\n");
         assert_eq!(

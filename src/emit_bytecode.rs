@@ -592,7 +592,7 @@ impl Compiler {
             }
             StmtKind::Unsafe(body) => self.scoped(body, span),
             // Tests are run by `zeno test`, which does not use the VM.
-            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
+            StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => {}
             StmtKind::While { condition, body } => {
                 let start = self.f().code.len();
                 self.expr(condition);
@@ -1326,7 +1326,7 @@ impl Names {
                 }
             }
             StmtKind::Unsafe(body) => self.block(body),
-            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
+            StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => {}
             StmtKind::While { condition, body } => {
                 self.expr(condition);
                 self.block(body);

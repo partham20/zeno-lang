@@ -1242,7 +1242,12 @@ impl<'a> Renamer<'a> {
             }
             StmtKind::Unsafe(body) => self.block(body),
             StmtKind::Test { body, .. } => self.block(body),
-            StmtKind::Assert(condition) => self.expr(condition),
+            StmtKind::Assert(condition, message) => {
+                self.expr(condition);
+                if let Some(message) = message {
+                    self.expr(message);
+                }
+            }
             StmtKind::AssertRaises { error, body } => {
                 self.named(error, span);
                 self.block(body);

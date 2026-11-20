@@ -900,7 +900,9 @@ impl Lowerer {
             }
             // A build leaves the tests out; one met here is not run.
             StmtKind::Test { .. } => {}
-            StmtKind::Assert(condition) => {
+            // An `assert` stands only in a test, so this is not met; its
+            // text, if it has one, would go with the tests.
+            StmtKind::Assert(condition, _) => {
                 let test = self.cond(condition, out)?;
                 let fail = Block { decls: Vec::new(), stmts: vec![Stmt::Fatal { message: "this is false".to_string(), line: at }] };
                 out.push(Stmt::If { condition: Cond::Not(Box::new(test)), then: fail, otherwise: None });

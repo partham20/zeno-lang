@@ -4008,8 +4008,20 @@ impl Checker {
                 self.raised.pop();
                 false
             }
-            StmtKind::Assert(condition) => {
+            StmtKind::Assert(condition, message) => {
                 self.condition(condition, env);
+                if let Some(message) = message {
+                    let ty = self.look(message, env);
+                    if !fits(&ty, &Ty::Str) {
+                        self.error(
+                            format!(
+                                "what an `assert` prints when it fails must be text, but this is {ty}. \
+                                 Write `assert total == 6, f\"the total was {{total}}\"`"
+                            ),
+                            message.span,
+                        );
+                    }
+                }
                 false
             }
             // The block must raise that kind of error: a `try` with one
@@ -12682,6 +12694,14 @@ function total(xs: owned list[int]) -> int { return len(xs) }
         );
         assert_eq!(error("test \"x\" {\n let n: int = \"a\"\n}"), "`n` should be int, but this is str");
         assert_eq!(error("test \"x\" {\n assert 5\n}"), "a condition must be true or false, but this is int");
+        // What a failed `assert` prints is text (decision 60.1).
+        strict_ok("test \"x\" {\n let n = 3\n assert n == 3, f\"n is {n}\"\n assert true, \"plain\"\n}");
+        assert_eq!(
+            error("test \"x\" {\n assert true, 5\n}"),
+            "what an `assert` prints when it fails must be text, but this is int. Write `assert total == 6, f\"the \
+             total was {total}\"`"
+        );
+        assert_eq!(error("test \"x\" {\n assert true, nothing\n}"), "`nothing` is not defined");
         assert_eq!(error("test \"x\" {\n assert raises Nothing {\n }\n}"), "`Nothing` is not a kind of error");
         assert_eq!(error("test \"x\" {\n return\n}"), "`return` outside a function");
         assert_eq!(error("test \"x\" {\n let inside = 1\n}\nprint(inside)"), "`inside` is not defined");

@@ -17976,3 +17976,85 @@ their thirteen ways and print what `zeno run` prints, and
 before with two errors fewer after it, in the five ways with one
 owner, since `[1] in [[1], [2]]` builds there now. None of the 36 is a
 program that 0.7.0 or item 9 built.
+
+## 60. Tools: a message on `assert`, and tests of a compiled program
+
+Item 13 of [`missing.md`](missing.md) is six small tools. Two are
+built now: a message on `assert` (13.1 of
+[`plan-9-14.md`](plan-9-14.md)) and the same tests run on the
+compiled program (13.2). The other four are put off (section 5 of the
+plan's changes). Neither changes what a program means: the first is
+asked for by a second thing after `assert`, the second by
+`zeno test --build`, and a program or a command that does not write
+them does what it did.
+
+### 60.1 A message on `assert`
+
+```zeno
+test "the board answers a reset" {
+    let reply = reset()
+    assert reply == Reply.Ack, f"the board answered {reply} to the reset"
+}
+```
+
+```
+FAILED: the board answers a reset
+error: the board answered Nak to the reset
+this is false. The left of `==` is Nak, and the right is Ack
+ --> board.zeno:8:12
+```
+
+**The rule.** After the condition of an `assert`, a comma and one
+text. When the `assert` fails, the text is printed on a line of its
+own above "this is false...", which stays as it was. When it passes,
+the text is not worked out.
+
+**Why it is added now.** 10.17 turned it down because the test's name
+and the two sides of the comparison already say most of what a
+message says, and said it could be added later without changing
+anything. What it cannot say is why the values matter: "the board
+answered Nak to the reset" names the thing being tested in the
+words of the board, which `== Ack` does not. And a condition that is
+not a comparison, `assert ring.is_full()`, shows no values at all;
+the text is the only way for it to say more than "this is false".
+
+**Why a comma.** It is how Python writes it, so the reader has seen
+it. `assert` is a statement and its condition is one expression, so
+a comma after the condition can mean nothing else; it is not a list,
+and not a call. The ways weighed:
+
+| | Written | Verdict |
+|---|---|---|
+| A | `assert c, "text"` | **Chosen.** One mark, read one way |
+| B | `assert c else "text"` | `else` already begins a block after `if`; here it would begin a value |
+| C | `assert(c, "text")` | Reads as a call of a function named `assert`, which the word was reserved to prevent (10.17) |
+| D | `assert c` with a comment after it, which a failure prints | A comment that does something is a rule nobody can see |
+
+**It must be text.** An `int` or a list after the comma is refused
+with "what an `assert` prints when it fails must be text, but this is
+int. Write `assert total == 6, f"the total was {total}"`". An
+f-string makes anything text, so nothing is lost, and a message is
+never a value shown in a form the reader has to guess.
+
+**Worked out only when it fails.** A passing test does not pay for
+building the text, and the text can use what is only there when
+something has gone wrong: `f"the reply was {replies[9]}"` in a test
+that passes never reads item 9. If working it out raises an error,
+the test fails with that error, as any error that leaves a test
+fails it (10.17); the line shown is the line of the `assert`.
+
+**One text.** A second comma is refused with "an `assert` prints one
+text when it fails. Join the parts into one: ...", and a comma with
+nothing after it with "after the comma of an `assert` comes the text
+that a failure prints: ...". `assert raises ValueError { }` takes no
+text: the failure already says what was expected and what came.
+
+**What is not changed.** The words "this is false..." and where a
+failure points. `zeno run` goes past tests, as before. A build leaves
+tests out (10.20), and so their messages with them.
+
+**How it is built.** `ast.rs`: `StmtKind::Assert` holds the condition
+and an optional text. `parser.rs` reads the comma, `checker.rs` checks
+that the text is `str`, `printer.rs` writes it back, and
+`Interpreter::assert` works it out after the condition is found false
+and puts it above the line it always printed.

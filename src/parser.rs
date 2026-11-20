@@ -630,7 +630,27 @@ impl Parser {
         if matches!(self.peek(), TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof) {
             return self.error("`assert` needs what must be so after it: `assert total == 6`");
         }
-        Ok(StmtKind::Assert(self.expression()?))
+        let condition = self.expression()?;
+        // `assert reply == Ack, "the board did not answer"`: the text a
+        // failure prints. `assert` is a statement, so a comma after its
+        // condition can be nothing else (decision 60.1).
+        let message = match self.eat(TokenKind::Comma) {
+            true if matches!(self.peek(), TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof) => {
+                return self.error(
+                    "after the comma of an `assert` comes the text that a failure prints: \
+                     `assert total == 6, \"the total of the three\"`",
+                );
+            }
+            true => Some(self.expression()?),
+            false => None,
+        };
+        if message.is_some() && *self.peek() == TokenKind::Comma {
+            return self.error(
+                "an `assert` prints one text when it fails. Join the parts into one: \
+                 `assert total == 6, f\"{first} and {second}\"`",
+            );
+        }
+        Ok(StmtKind::Assert(condition, message))
     }
 
     /// `import a.b` or `from a.b import x, y`
@@ -1981,6 +2001,22 @@ mod tests {
         );
         // Inside a function that is written in a test it is still in the test.
         tree("test \"x\" {\n    let f = function(n: int) -> bool {\n        assert n > 0\n        return true\n    }\n}");
+        // `assert c, text`: the text that a failure prints (decision 60.1).
+        assert_eq!(
+            tree("test \"x\" {\n    assert r == 1, f\"r is {r}\"\n    assert ok, \"plain\"\n}"),
+            "test \"x\"\n    assert (r == 1), f\"r is {r}\"\n    assert ok, \"plain\"\n"
+        );
+        assert_eq!(
+            error("test \"x\" {\n    assert ok,\n}"),
+            "after the comma of an `assert` comes the text that a failure prints: `assert total == 6, \"the total of \
+             the three\"`"
+        );
+        // One message, not a list of things.
+        assert_eq!(
+            error("test \"x\" {\n    assert ok, \"a\", \"b\"\n}"),
+            "an `assert` prints one text when it fails. Join the parts into one: `assert total == 6, f\"{first} and \
+             {second}\"`"
+        );
     }
 
     #[test]

@@ -3354,7 +3354,7 @@ impl Emitter<'_> {
             // The checker has seen to what is written inside. In C it is
             // a block like any other: C is unsafe all the way through.
             // A build leaves the tests of a program out (decision 10.20).
-            StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
+            StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => {}
             StmtKind::Unsafe(body) => {
                 self.line("{");
                 self.block(body)?;
@@ -8276,7 +8276,7 @@ pub fn names_in_functions(statement: &Stmt, inside: bool, names: &mut HashSet<St
             block(body, inside, names);
         }
         StmtKind::Unsafe(body) => block(body, inside, names),
-        StmtKind::Test { .. } | StmtKind::Assert(_) | StmtKind::AssertRaises { .. } => {}
+        StmtKind::Test { .. } | StmtKind::Assert(..) | StmtKind::AssertRaises { .. } => {}
         StmtKind::For { iterable, body, .. } => {
             names_in_expr(iterable, inside, names);
             block(body, inside, names);
@@ -8553,7 +8553,8 @@ fn declared_in(statements: &[Stmt], names: &mut HashSet<String>) {
                 }
             }
             StmtKind::Assign { target, value, .. } => exprs.extend([target, value]),
-            StmtKind::Expr(expr) | StmtKind::Raise(expr) | StmtKind::Return(Some(expr)) | StmtKind::Assert(expr) => exprs.push(expr),
+            StmtKind::Expr(expr) | StmtKind::Raise(expr) | StmtKind::Return(Some(expr)) | StmtKind::Assert(expr, None) => exprs.push(expr),
+            StmtKind::Assert(expr, Some(message)) => exprs.extend([expr, message]),
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         }
         for expr in exprs {

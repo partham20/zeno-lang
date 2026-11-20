@@ -128,7 +128,12 @@ impl Reader<'_> {
                 }
             }
             StmtKind::Unsafe(body) | StmtKind::Test { body, .. } | StmtKind::AssertRaises { body, .. } => self.block(body),
-            StmtKind::Assert(condition) => self.look(condition),
+            StmtKind::Assert(condition, message) => {
+                self.look(condition);
+                if let Some(message) = message {
+                    self.look(message);
+                }
+            }
             StmtKind::Return(None)
             | StmtKind::Class(_)
             | StmtKind::Enum(_)
