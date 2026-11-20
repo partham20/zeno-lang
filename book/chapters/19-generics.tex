@@ -450,10 +450,10 @@ generic by itself: a program asks for copies by writing \verb|[T]|.
 \section{What generics leave out}
 
 These are refused, each with a message that says so: a method with
-type parameters of its own (the class can have them), a generic
-function or a case of a generic enum kept as a value or passed along,
-the types written at the call (there is no \verb|first[int](xs)|), and
-raising an object of a generic class.
+type parameters of its own, a generic function or a case of a generic
+enum kept as a value or passed along, the types written at the call
+(there is no \verb|first[int](xs)|), and raising an object of a
+generic class.
 
 \begin{zeno}[fails=yes]
 function first[T](items: list[T]) -> T {
@@ -466,6 +466,31 @@ let pick = first
 function written where a value goes can stand for one copy:
 \verb|function(xs: list[int]) -> int { return first(xs) }|.
 (Decisions 3.16e and 58.1.)
+
+A method of \verb|class Box[T]| can use \verb|T|, but cannot have a
+\verb|U| of its own. The message says what to write instead: a
+function of the file that takes the object first, which does the same
+work and which every build takes:
+
+\begin{zeno}[file=boxes.zeno, dir=leave-out]
+class Box[T] {
+    item: T
+}
+
+function convert[T, U](box: Box[T], change: function(T) -> U) -> Box[U] {
+    return Box(change(box.item))
+}
+
+let count = Box(42)
+let text = convert(count, function(n: int) -> str { return f"#{n}" })
+print(text.item)
+\end{zeno}
+
+(Decision 58.7.) And a build cannot tell what \verb|T| is from a list
+whose items are not all one type, such as \verb|first([200 ms, 1 s])|,
+since a compiled list has one type; \verb|zeno run| takes it. The
+message says to write them all in one unit, such as \verb|ms|.
+(Decision 58.8.)
 
 \begin{summary}
 \verb|function name[T](...)| and \verb|class Name[T]| leave a type
